@@ -516,6 +516,9 @@ pub struct VersionPrefix {
     /// Its main file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main: Option<MainFile>,
+    /// The shape its render asked for, `16:9`, whatever size its model made: what its box says of it. None: Auto, or no render's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<String>,
     /// A cut's: what it was cut from, `<asset> <version>` each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub from: Vec<String>,

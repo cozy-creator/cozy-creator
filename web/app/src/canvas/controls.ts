@@ -1,5 +1,6 @@
 import type { Asset, ToolField, Tool } from "../api/calcifer"
 import type { Media } from "../types"
+import { ratioWords } from "./ratios"
 import { ratioOf } from "./shown"
 import { type Row, rowsIn } from "./text"
 
@@ -111,26 +112,13 @@ export function totalOf(group: ToolField, rows: Row[]): { member: ToolField; sum
   return { member, sum: Math.round(rows.reduce((all, row) => all + (Number(row[member.field] ?? member.default) || 0), 0) * 100) / 100 }
 }
 
-/** The shapes a box snaps to when its tool gives bounds, not a list (cl-936). */
-const SHAPES = ["21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"]
-
 const parts = (shape: string) => shape.split(":").map(Number)
 
 /** The ratios a shape allows that are shapes. */
 const ratiosOf = (field: ToolField) => ((field.ratios ?? []) as string[]).filter((ratio) => ratioOf(ratio) !== undefined)
 
-export const shapesOf = (field: ToolField): string[] => {
-  const ratios = ratiosOf(field)
-  if (ratios.length) return ratios
-  const fits = (shape: string) => {
-    const [w, h] = parts(shape)
-    return w / h >= (field.min ?? 0) && w / h <= (field.max ?? Infinity)
-  }
-  return SHAPES.filter(fits)
-}
-
 /** Of `shapes`, what's closest to `ratio`, as eyes judge it: by how many times over. */
-export function snapped(ratio: number, shapes: string[]): string {
+function snapped(ratio: number, shapes: string[]): string {
   const off = (shape: string) => {
     const [w, h] = parts(shape)
     return Math.abs(Math.log(ratio / (w / h)))
@@ -138,11 +126,13 @@ export function snapped(ratio: number, shapes: string[]): string {
   return shapes.reduce((best, shape) => (off(shape) < off(best) ? shape : best))
 }
 
-/** A picture's shape as people say it: one of the usual shapes when it's that, else `1.85:1`. */
-export function shapeWords(ratio: number): string {
-  const near = snapped(ratio, SHAPES)
-  const [w, h] = parts(near)
-  return Math.abs(Math.log(ratio / (w / h))) < 0.01 ? near : `${Number(ratio.toFixed(2))}:1`
+/** The shape a pulled corner sets: the nearest its tool lists; else, within its bounds, a standard one within about 2%, and past that what
+ *  was pulled (cl-936; Paul, 11-13: "users can resize to arbitrary ratios, but you should probably round to more commonly used ratios"). */
+export function shapeNear(field: ToolField, ratio: number): string {
+  const ratios = ratiosOf(field)
+  if (ratios.length) return snapped(ratio, ratios)
+  const [low, high] = [field.min ?? 0, field.max ?? Infinity]
+  return ratioWords(Math.min(high, Math.max(low, ratio)), (shape) => shape >= low && shape <= high)
 }
 
 /** `ratio` as its tool can make it: the nearest of its ratios, else held to its bounds. */
