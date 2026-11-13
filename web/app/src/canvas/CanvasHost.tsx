@@ -740,13 +740,14 @@ function Canvas({
       const { clientX, clientY } = pointOf(event)
       const { target, why } = store.offered(clientX, clientY, nodes.map((node) => node.data.name), draggedEls(nodes))
       store.refusing.set(null)
-      if (why) say(why)
-      if (!target || why) {
+      if (!target) {
         store.setHot(null)
         return store.dragStopped(nodes)
       }
+      // Let go on what takes boxes, what was carried goes back where it was: a drop is never a move, a refused one included.
       store.dragDropped(nodes)
-      target.drop(nodes.map((node) => node.data.name), clientX, clientY)
+      if (why) say(why)
+      else target.drop(nodes.map((node) => node.data.name), clientX, clientY)
       store.setHot(null)
     },
     [store, placer, selectOnly],
