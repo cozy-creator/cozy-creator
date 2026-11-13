@@ -582,9 +582,13 @@ sha256?: string | null, };
 /**
  * A code on its way: `POST /v1/account/codes/{id}` with what arrived finishes it, once.
  */
-export type Code = { id: string, email: string,
+export type Code = {
 /**
- * Asked again too soon: `id` is the code already out, and the Hub sends another after this.
+ * None when asked too soon with no code out: nothing was sent, and `retry_after_s` says when the Hub will.
+ */
+id?: string | null, email: string,
+/**
+ * Asked again too soon: the Hub sends another after this; a client counts it down rather than ask into a refusal.
  */
 retry_after_s?: number | null, };
 

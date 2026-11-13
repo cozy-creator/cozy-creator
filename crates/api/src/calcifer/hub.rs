@@ -63,9 +63,11 @@ pub struct CodeRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Code {
-    pub id: String,
+    /// None when asked too soon with no code out: nothing was sent, and `retry_after_s` says when the Hub will.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub email: String,
-    /// Asked again too soon: `id` is the code already out, and the Hub sends another after this.
+    /// Asked again too soon: the Hub sends another after this; a client counts it down rather than ask into a refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_s: Option<u64>,
 }

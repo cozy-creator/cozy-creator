@@ -443,11 +443,11 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
 - `GET /v1/account`: `Account`, who this computer signs in as, its credit (`billing`,
   `balance_usd_micros`, none where unmetered) and where to buy more; `key_refused` when the Hub no
   longer accepts the key.
-- `POST /v1/account/codes` `{hub, purpose, email}`: `Code {id, email, retry_after_s?}`. `purpose` is
+- `POST /v1/account/codes` `{hub, purpose, email}`: `Code {id?, email, retry_after_s?}`. `purpose` is
   `sign_in`, `export` (a key for another computer, such as CI) or `sign_out_everywhere` (mails the
-  signed-in key's address; `not_logged_in` without one). Asked again before the Hub will send another,
-  `id` is the code already out and `retry_after_s` when it will, the wait the Hub stated; with none out
-  it's `429 rate_limited` with the same `retry_after_s` and `Retry-After`.
+  signed-in key's address; `not_logged_in` without one). Asked again before the Hub will send another is
+  an answer, not a refusal: `retry_after_s` is when it will, the wait the Hub stated, and `id` the code
+  already out, none when none is (nothing was sent). A client counts the wait down instead of asking again.
 - `POST /v1/account/codes/{id}` `{code}`: `Proven`, tagged by `purpose`: `sign_in` keeps the key and
   answers the `Account` (`account` none until named); `export` answers the key file's text, kept
   nowhere here; `sign_out_everywhere` revokes every other key, then this one (`SignedOut`). Each email
