@@ -267,7 +267,8 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         machines.local_up().await.map_err(|e| e.message)?;
     }
     let (row, link) = machines.linked(text).map_err(|e| e.message)?;
-    let frame = match machines.frame(&row.name) {
+    // Its Status as its open stream says it; with none open (it stopped answering, or never did), what it answers now, or no quote.
+    let frame = match machines.live_frame(&row.name) {
         Some(frame) => frame,
         None => link.status().await.map_err(|e| e.to_string())?,
     };
