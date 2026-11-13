@@ -38,6 +38,13 @@ function json(...words) {
   const ran = cozy('--json', ...words);
   try { return { code: ran.code, ...JSON.parse(ran.out) }; } catch { return { code: ran.code, out: ran.out, err: ran.err }; }
 }
+/** Its rows against the document they were written with (cl-885), after a write: a read takes the rows, so any difference is a fault. */
+async function integrity(project, after) {
+  const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+  const answer = await fetch(`http://${holder.address}/v1/projects/${encodeURIComponent(project)}/integrity`, { headers: { Authorization: `Bearer ${holder.token}` } });
+  const found = answer.ok ? (await answer.json()).differences : [`${answer.status} ${await answer.text()}`];
+  check(`rows_equal_document_after_${after}`, found.length === 0, found);
+}
 /** What the page asks, by e2e/page.py: its JSON lines. */
 function page(verb, ...words) {
   const out = execFileSync(PYTHON, [PAGE, verb, folder, ...words], { encoding: 'utf8', timeout: RUN_MS, env: { ...process.env } });
@@ -219,6 +226,7 @@ film:
   seen.rewritten = rewritten;
   check('the_file_is_rewritten_with_revs', /^mara:\n  kind: image\n  description: Mara, in her thirties, red raincoat, short black hair\.\n  approved: 1\n  takes:\n    - number: 1\n      state: done\n      file: \//m.test(rewritten)
     && (rewritten.match(/^  rev: \"?[0-9a-f]{8}\"?$/gm) ?? []).length === 5 && /^        duration: 15$/m.test(rewritten), rewritten);
+  await integrity(pier, 'apply');
   const again = at('apply', '-f', file);
   check('applied_again_it_is_unchanged', again.code === 0 && /^unchanged: look, mara, shot_1, shot_2, film$/m.test(again.out) && !/^next:/m.test(again.out), again);
   const same = at('diff', '-f', file);
@@ -230,6 +238,7 @@ film:
   const render = at('render', 'film', '--on', 'local');
   const rendered = atJson('get', 'film', 'shot_2');
   seen.render = render;
+  await integrity(pier, 'render');
   check('rendered', render.code === 0 && rendered.nodes?.film?.takes?.[0]?.state === 'done' && rendered.nodes?.shot_2?.takes?.[0]?.number === 1, { render, nodes: rendered.nodes });
 
   // The agent edits shot_2's beat; the page meanwhile sets its length and adds to the summary.
@@ -238,6 +247,7 @@ film:
   const edited = read2.replace("      - description: She turns toward a ship's bell behind her.\n        duration: 15", '      - description: A ship\'s bell rings behind her. She turns toward it and smiles.\n        duration: 6');
   writeFileSync(file, edited);
   pageAt('set', 'shot_2', '--fields', JSON.stringify({ beats: [{ description: "She turns toward a ship's bell behind her.", duration: 8 }], summary: 'Close on <mara> at the railing of <look> as the fog lifts, in gold light.' }));
+  await integrity(pier, 'page_set');
   const conflicted = at('diff', '-f', file);
   seen.conflicted = conflicted.out;
   check('a_conflict_with_the_page', conflicted.code === 2 && /^shot_2\.beats\.0\.description\n  - She turns toward a ship's bell behind her\.\n  \+ A ship's bell rings behind her\. She turns toward it and smiles\.$/m.test(conflicted.out)
@@ -252,8 +262,10 @@ film:
   check('the_page_words_stand', merged?.summary === 'Close on <mara> at the railing of <look> as the fog lifts, in gold light.'
     && merged?.beats?.[0]?.description === "A ship's bell rings behind her. She turns toward it and smiles." && merged?.beats?.[0]?.duration === 8, merged);
 
+  await integrity(pier, 'merged_apply');
   // Undo of the agent's apply, from the page: its words go, the page's stay.
   const undone = pageAt('undo')[0];
+  await integrity(pier, 'page_undo');
   const back = atJson('get', 'shot_2').nodes?.shot_2?.[tool];
   check('the_page_undoes_the_apply', back?.beats?.[0]?.description === "She turns toward a ship's bell behind her." && back?.summary?.endsWith('in gold light.'), { undone, back });
 
@@ -264,6 +276,7 @@ film:
   pageAt('set', 'shot_1', '--fields', JSON.stringify({ summary: '<mara> walks along <look> at dawn, handheld, one continuous shot, in fog.' }));
   const textual = at('apply', '-f', file);
   const summary = atJson('get', 'shot_1').nodes?.shot_1?.[tool]?.summary;
+  await integrity(pier, 'words_merged');
   check('words_apart_merge', textual.code === 0 && summary === 'Slowly, <mara> walks along <look> at dawn, handheld, one continuous shot, in fog.', { textual, summary });
   writeFileSync(file, at('get', 'shot_1').out.replace('handheld', 'on a tripod'));
   pageAt('set', 'shot_1', '--fields', JSON.stringify({ summary: 'Slowly, <mara> walks along <look> at dawn, steadicam, one continuous shot, in fog.' }));
@@ -271,6 +284,7 @@ film:
   check('words_overlapping_conflict', overlapping.code === 1 && /conflict: shot_1\.summary: yours /.test(overlapping.err), overlapping);
   const forced = at('apply', '-f', file, '--force-conflicts');
   const kept = atJson('get', 'shot_1').nodes?.shot_1?.[tool]?.summary;
+  await integrity(pier, 'force_conflicts');
   check('force_conflicts_keeps_yours', forced.code === 0 && kept?.includes('on a tripod') && !kept.includes('steadicam'), { forced, kept });
 
   // No rev, a node's typo, a take added from a file, approval, and stdin.
@@ -281,6 +295,7 @@ film:
   check('a_node_typo', /mara\.kinds: a node has no field kinds\. Did you mean kind\?/.test(at('apply', '-f', file).err));
   writeFileSync(file, at('get', 'look', 'film').out.replace(/^(look:\n(?:  .*\n)*?  takes:\n)/m, '$1    - file: look2.mp4\n').replace(/^(film:\n(?:  .*\n)*?)  approved: null\n/m, '$1  approved: 1\n'));
   const more = at('apply', '-f', file);
+  await integrity(pier, 'take_and_approval');
   check('a_take_from_a_file_and_an_approval', more.code === 0 && /configured: look \(take 2\), film \(approved 1\)/.test(more.out) && !/^next:/m.test(more.out), more);
   const rows2 = atJson('get');
   check('approved_on_the_list', rows2.nodes?.find((row) => row.name === 'film')?.approved === 1 && rows2.nodes?.find((row) => row.name === 'look')?.latest === '2 done', rows2.nodes);
@@ -299,8 +314,10 @@ film:
   // Delete, undone from the page; a name it doesn't have refuses all.
   check('delete_refuses_a_typo', /no node shot_3/.test(at('delete', 'shot_2', 'shot_3').err) && atJson('get').nodes?.length === 5);
   const gone = at('delete', 'shot_2', 'look');
+  await integrity(pier, 'delete');
   check('delete_removes_them', gone.code === 0 && /^deleted: shot_2, look$/m.test(gone.out) && atJson('get').nodes?.length === 3, gone);
   pageAt('undo');
+  await integrity(pier, 'delete_undone');
   check('the_page_brings_them_back', atJson('get').nodes?.length === 5, atJson('get').nodes);
 
   // Time downloading weights is no slowness: tool.py's `fetching`, its bar three quick runs, then a run 30 s slower drawing, which

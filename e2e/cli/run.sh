@@ -551,6 +551,7 @@ case $SHARD in
     prepares
     db_migrate
     db_opens
+    db_migrate_large
     db_waits
     agent_render
     logs
@@ -563,6 +564,8 @@ case $SHARD in
   projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
+  # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
+  projectdb-migrate-large) parts="db_migrate_large logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).
   projectdb-waits) parts="db_waits logs" ;;
   # A project opened and read again, across Calcifer's restart, with nothing in it changed (cl-885).
