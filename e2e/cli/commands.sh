@@ -1323,7 +1323,7 @@ keys=$("$probe" -v error -select_streams v:0 -show_entries frame=key_frame -of c
 }
 
 # cl-840's one retry rule, on an install a person waits on, against a Hub this part stands up (Calcifer on it, then back): a Hub that
-# takes the request and never answers is asked again, each attempt a line, and given up within about a minute and a half, saying hub_slow;
+# takes the request and never answers is asked again by the backoff, each attempt a line, and given up within a minute, saying hub_slow;
 # a 503 is asked again by the backoff, then named in the Hub's own words; a 404 is the Hub's refusal, failed at once, asked once.
 install_retries() {
 step "a package install against a Hub that's silent, down or says it has none: asked again, said, or failed at once (cl-840)"
@@ -1367,8 +1367,9 @@ cp "$config" "$dir/config.toml"
 cozy --json restart > "$dir/restart.json" 2>&1 || check "install retries: cozy restart onto the stand-in Hub: $(tail -c 300 "$dir/restart.json")"
 install_retry silent e2e/e2e-boxed
 grep -q hub_slow "$dir/silent.said" || check "install retries: a silent Hub isn't said hub_slow: $(tail -c 400 "$dir/silent.said")"
-grep -qE 'attempt 2/5 in [0-9]' "$dir/silent.said" && ! grep -q 'attempt 4/5' "$dir/silent.said" && [ "$(cat "$dir/silent.took")" -lt 100 ] \
-  || check "install retries: a silent Hub isn't asked again, then given up within a minute and a half ($(cat "$dir/silent.took") s): $(tail -c 400 "$dir/silent.said")"
+[ "$(grep -oE 'attempt [0-9]/5 in [0-9]' "$dir/silent.said" | cut -c9 | paste -sd' ')" = '2 3 4 5' ] && [ "$(grep -c '^silent ' "$dir/asked")" = 5 ] \
+  && [ "$(cat "$dir/silent.took")" -lt 60 ] \
+  || check "install retries: a silent Hub isn't asked again by the backoff, each attempt once, then given up within a minute ($(cat "$dir/silent.took") s, asked $(grep -c '^silent ' "$dir/asked") times): $(tail -c 400 "$dir/silent.said")"
 install_retry down e2e/e2e-boxed
 grep -qE 'attempt 5/5 in [0-9]' "$dir/down.said" && grep -q 'this Hub is down' "$dir/down.said" && [ "$(cat "$dir/down.took")" -lt 100 ] \
   || check "install retries: a 503 isn't asked again by the backoff, then named ($(cat "$dir/down.took") s): $(tail -c 400 "$dir/down.said")"

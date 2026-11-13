@@ -223,7 +223,8 @@ db_closes() {
 step "projects closed once nothing reads them: by the CLI and a page's stream, memory back, a reopen as quick, a render holding its own (cl-823)"
 [ "${RUNNER_OS:-}" = Linux ] || { echo "closes: Calcifer's open files are read on Linux"; return 0; }
 CLOSES=$OUT/closes CLOSES_PREV='' CLOSES_OPENS=() CLOSES_REOPENS=() CLOSES_OPEN=() CLOSES_HELD=()
-local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later code pid first second update run_first look queued=0 held_first=0 held_second=0 P
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later code pid first second update run_first look queued=0 held_first=0 held_second=0 P a b h1 h2 busy
+  local dropped=() looks=()
 mkdir -p "$CLOSES"
 ffmpeg -v error -y -f lavfi -i 'color=c=gray:size=32x18' -frames:v 1 "$CLOSES/seed.png"
 code=$(curl -fsS -X POST -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/session-codes" | jq -r .code) \
@@ -271,16 +272,28 @@ done
 for _ in $(seq 120); do cozy --json machine show local | J '.status.update // "" | test("^waiting for (other work|run [0-9]+) to end$")' && break; sleep 0.5; done
 cozy --json machine show local | J '.status.update // "" | test("^waiting for (other work|run [0-9]+) to end$")' \
   || check "closes: the machine's update never waited for the first render: $(cozy --json machine show local | jq -c .status.update)"
+a=$(id_of "$first" || true) b=$(id_of "$second" || true)
+closes_shut "$second" || check "closes: the second render's project open before its render"
 project_api "$second" /runs -X POST -H 'Content-Type: application/json' -d '{"names": ["waits"], "on": ["local"]}' > /dev/null || check "closes: the second render refused"
+# Held, read first: a read of a project opens it while it answers. Busy by the projects' list, which opens none.
 for _ in $(seq 240); do
+  h1=0 h2=0
+  ! closes_open "$first" || h1=1
+  ! closes_open "$second" || h2=1
+  busy=$(curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$lock")/v1/projects?limit=1000" \
+    | jq -r --arg a "$a" --arg b "$b" '[([.projects[] | select(.id == $a)][0].busy // false), ([.projects[] | select(.id == $b)][0].busy // false)] | map(tostring) | join(" ")' || true)
   look=$(project_api "$second" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | "\(.status)/\(.machine_state // "")"' || true)
-  [[ $look != *queued* ]] || { queued=1; ! closes_open "$second" || held_second=1; }
-  ! closes_open "$first" || held_first=1
-  fixture_projects | J --arg a "$(id_of "$first")" --arg b "$(id_of "$second")" 'any(.projects[]; (.id == $a or .id == $b) and .busy == true)' || break
+  [[ " ${looks[*]} " == *" ${look:-none} "* ]] || looks+=("${look:-none}")
+  [ "${busy% *}" != true ] || [ "$h1" = 1 ] || dropped+=("first while it ran")
+  # Waiting for its machine: its render going, its call not yet running there (queued, or not yet sent).
+  if [ "${busy#* }" = true ] && [[ $look != */running && $look != completed/* ]]; then queued=1; [ "$h2" = 1 ] && held_second=1 || dropped+=("second while it waited"); fi
+  [ "${busy% *}" = true ] && held_first=1
+  [ "$busy" != "false false" ] || break
   sleep 0.5
 done
-[ "$queued" = 1 ] || check "closes: the second render never queued behind the first"
-[ "$held_first" = 1 ] || check "closes: a render going didn't hold its project open"
+echo "closes: the second render went ${looks[*]}; dropped while going: ${dropped[*]:-none}"
+[ "$queued" = 1 ] || check "closes: the second render was never seen waiting behind the first: ${looks[*]}"
+[ "$held_first" = 1 ] && [ ${#dropped[@]} = 0 ] || check "closes: a render going didn't hold its project open: ${dropped[*]:-never seen going}"
 [ "$held_second" = 1 ] || check "closes: a render waiting for its machine didn't hold its project open"
 for _ in $(seq 300); do kill -0 "$update" 2> /dev/null || break; sleep 1; done
 kill "$update" 2> /dev/null || true; wait "$update" 2> /dev/null || true
