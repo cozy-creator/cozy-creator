@@ -229,7 +229,8 @@ async function died(why) {
   check('approved_shown_again', (await label()) === 'v1', await label());
   await page.reload();
   await rest.waitFor();
-  await page.waitForTimeout(1000);
+  // Its take drawn again, from the same read that carries its dots: only then does no dot mean something.
+  await until('its take drawn again', label, (text) => text === 'v1', 15_000).catch(() => {});
   check('reload_keeps_it_seen', (await nameDots()) === 0 && !(await asset()).unseen?.length);
   await shot('seen');
 

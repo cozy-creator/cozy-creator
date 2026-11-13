@@ -129,7 +129,7 @@ async function settled(page) {
 
 /** The actual fit action, independent of what control last had keyboard focus. */
 async function fitCanvas(page) {
-  if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
+  if (!(await page.getByRole('menu', { name: 'Zoom', exact: true }).count())) await page.getByRole('button', { name: /, more zoom options$/ }).click();
   await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
   await settled(page);
 }
@@ -250,7 +250,7 @@ async function openBox(page, name) {
   await media.waitFor({ state: 'attached', timeout: 1500 }).catch(() => {});
   if (!(await reached())) {
     await page.keyboard.press('f');
-    await page.waitForTimeout(300);
+    await settled(page);
     await until(`${name} in reach`, reached, Boolean);
   }
   const { x, y } = await middle();

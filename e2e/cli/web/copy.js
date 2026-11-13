@@ -246,8 +246,7 @@ async function died(why) {
   await field.click();
   await page.keyboard.press('End');
   await page.keyboard.press('ControlOrMeta+v');
-  await page.waitForTimeout(1500);
-  const typed = await field.innerText();
+  const typed = await until('pasted as words', () => field.innerText(), (text) => (text.match(/lighthouse/gi) ?? []).length >= 2, 5000).catch(() => field.innerText());
   seen.words_paste = { typed, names: await names() };
   check('paste_in_words_is_words', (typed.match(/lighthouse/gi) ?? []).length >= 2, seen.words_paste);
   check('paste_in_words_makes_no_box', (await names()).length === count, seen.words_paste);
