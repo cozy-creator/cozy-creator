@@ -28,15 +28,23 @@ async function carry(page, from, to, during) {
   return said;
 }
 
-/** Box `name` carried by its name and let go at `to`, on what takes it: it glides back where it was, and is there, still, before this ends. */
-async function carryBox(page, name, to) {
-  const node = page.locator('.react-flow__node', { has: page.locator(`.card[data-asset=${JSON.stringify(name)}]`) });
-  const at = () => node.evaluate((el) => (el.classList.contains('glide') || el.getAnimations({ subtree: true }).some((one) => one.playState === 'running' && one.effect?.getComputedTiming().iterations !== Infinity) ? 'moving' : el.style.transform));
-  await expect.poll(at, { message: `${name} still before it's carried` }).not.toBe('moving');
-  const was = await at();
-  await carry(page, await middle(box(page, name).locator('.nm')), to);
-  await expect.poll(at, { message: `${name} back where it was` }).toBe(was);
+/** Where each box of `names` stands, by name, once none is gliding or animating: else 'moving'. */
+const standing = (page, names) => page.evaluate((names) => {
+  const nodes = names.map((name) => document.querySelector(`.react-flow__node:has(.card[data-asset="${CSS.escape(name)}"])`));
+  const moving = (el) => el.classList.contains('glide') || el.getAnimations({ subtree: true }).some((one) => one.playState === 'running' && one.effect?.getComputedTiming().iterations !== Infinity);
+  return nodes.some((el) => !el || moving(el)) ? 'moving' : Object.fromEntries(names.map((name, i) => [name, nodes[i].style.transform]));
+}, names);
+
+/** Boxes let go on what takes them glide back where they were: `move` carries them, and they're back, still, before this ends. */
+async function backAfter(page, names, move) {
+  await expect.poll(() => standing(page, names), { message: `${names.join(', ')} still before they're carried` }).not.toBe('moving');
+  const was = await standing(page, names);
+  await move();
+  await expect.poll(() => standing(page, names), { message: `${names.join(', ')} back where they were` }).toEqual(was);
 }
+
+/** Box `name` carried by its name and let go at `to`, on what takes it, and back where it was. */
+const carryBox = async (page, name, to) => backAfter(page, [name], async () => carry(page, await middle(box(page, name).locator('.nm')), to));
 
 /** The zoom menu's Zoom to fit: every box in view, the canvas still. */
 async function fit(page) {
@@ -108,4 +116,4 @@ function ffmpeg(tool) {
   return (...args) => execFileSync(own, args, { encoding: tool === 'ffprobe' ? 'utf8' : 'buffer', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26 });
 }
 
-module.exports = { carry, carryBox, dropFiles, ffmpeg, fit, leave, rest, spread, toolRow };
+module.exports = { backAfter, carry, carryBox, dropFiles, ffmpeg, fit, leave, rest, spread, toolRow };

@@ -4,7 +4,7 @@
 // field's; a selection of three let go on it appends three. Rendered, its prompt holds Amy's file and only Walk's name, and `cozy run watch`
 // says so once.
 const { test, expect, box, focus, middle, fixtureTool, MP4, png } = require('./fixtures');
-const { carry, carryBox, fit, leave } = require('./hands');
+const { backAfter, carry, carryBox, fit, leave } = require('./hands');
 
 const STILL = fixtureTool('tool.py/still');
 const RUN_MS = 120_000;
@@ -122,7 +122,7 @@ test('mention', async ({ page, project, api, cli }) => {
     await expect(page.locator('.react-flow__node .card[aria-selected="true"]')).toHaveCount(3);
     const was = await said();
     const held = page.locator('.react-flow__nodesselection-rect');
-    await carry(page, await middle(held), await middle(box(page, 'still').locator('.media')));
+    await backAfter(page, ['ann', 'walk', 'bea'], async () => carry(page, await middle(held), await middle(box(page, 'still').locator('.media'))));
     await expect.poll(async () => (await said()).startsWith(was) && (await said()).slice(was.length).match(/<[^>]+>/g)?.sort(), { message: 'three refs appended' }).toEqual(['<ann>', '<bea>', '<walk>']);
   });
 
