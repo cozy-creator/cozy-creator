@@ -144,6 +144,8 @@ pub(crate) struct Extra {
     pub ops_gone: Vec<(String, u64)>,
     /// A request's key, with the digest of its ask: done, its answer kept after.
     pub key: Option<(String, String)>,
+    /// A request's answer, said in its act, under its key: status, media type and body (cl-885).
+    pub answer: Option<(String, (u16, String, Vec<u8>))>,
 }
 
 /// A kept request key: its ask's digest and, once kept, its answer.
@@ -909,6 +911,9 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra, diges
         let now = super::now_ms();
         tx.execute("DELETE FROM request_keys WHERE at_ms < ?1", [now - KEY_KEPT_MS])?;
         tx.execute("INSERT OR REPLACE INTO request_keys (key, digest, at_ms) VALUES (?1, ?2, ?3)", params![key, digest, now])?;
+    }
+    if let Some((key, (status, content_type, body))) = &extra.answer {
+        tx.execute("UPDATE request_keys SET status = ?2, content_type = ?3, body = ?4 WHERE key = ?1", params![key, *status as i64, content_type, body])?;
     }
     Ok(())
 }
