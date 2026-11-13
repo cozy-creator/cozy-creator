@@ -341,7 +341,7 @@ impl<'a> Sequence<'a> {
 /// Of `came` bytes outside this process since its quietest sample, what other programs took
 /// (`cooperative::others_came`), never this process's own; where no ledger or NVML can say (not
 /// Linux), all of it, as before.
-pub(crate) fn theirs(device: i32, came: usize) -> usize {
+fn theirs(device: i32, came: usize) -> usize {
     #[cfg(target_os = "linux")]
     return came.min(crate::cooperative::others_came(device));
     #[cfg(not(target_os = "linux"))]
@@ -373,9 +373,8 @@ pub(crate) fn acquire<T>(
             Err(AllocationFailure::ReserveShort(_)) => {
                 // The pages fit, not beside the driver's reserve: what is idle and done goes for it,
                 // with no wait, no owner and no peer; short of that, the demand takes the reserve.
-                let reserve = sequence.gpu.driver_reserve.load(Ordering::Acquire);
                 let mut released = 0;
-                release(device, reserve, usize::MAX, Wait::No, protect, ReclaimReason::Allocator, &mut released)?;
+                release(device, crate::DRIVER_RESERVE, usize::MAX, Wait::No, protect, ReclaimReason::Allocator, &mut released)?;
                 if released == 0 {
                     return crate::waived(&mut try_map).map_err(Into::into);
                 }

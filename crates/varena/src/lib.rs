@@ -498,14 +498,14 @@ impl PlanPhase {
 /// What the driver's own charge may grow by between samples under a development cap.
 const CAP_SLACK: usize = 128 << 20;
 
-/// The card's free bytes every map of ours leaves to the driver, at first. It allocates on its own
-/// (a kernel's code at its first launch, local memory, a library's handle), and its refusal fails
-/// that launch, not an allocation of ours, so no reclaim answers it: a cold H3 on a full 5090 failed
-/// its first `index_select` (cr-293). `driver_short` doubles it, to at most an eighth of the card.
-const DRIVER_RESERVE: usize = 512 << 20;
+/// The card's free bytes every map of ours leaves to the driver, one fixed amount per GPU. It allocates
+/// on its own (a kernel's code at its first launch, local memory, a library's handle), and its refusal
+/// fails that launch, not an allocation of ours, so no reclaim answers it: a cold H3 on a full 5090
+/// failed its first `index_select` (cr-293).
+pub(crate) const DRIVER_RESERVE: usize = 512 << 20;
 
 thread_local! {
-    /// `reclaim::acquire`'s last try, every other lever gone: the reserve goes before the demand fails.
+    /// A map short only of the reserve, with nothing idle and done left to give (`reclaim::acquire`).
     static RESERVE_WAIVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -555,8 +555,6 @@ pub struct Device {
     reservation: OnceLock<usize>,
     /// That charge at the last sample: what the card uses beyond our own bytes.
     outside: AtomicUsize,
-    /// The free bytes every map leaves the driver (`DRIVER_RESERVE`, grown by `driver_short`).
-    driver_reserve: AtomicUsize,
     /// The least of it any sample read: this process's own context and what was there before it.
     /// What `outside` holds past it came since, and can go again (a game's, a peer's).
     outside_floor: AtomicUsize,
@@ -605,7 +603,6 @@ impl Device {
             total: AtomicUsize::new(usize::MAX),
             reservation: OnceLock::new(),
             outside: AtomicUsize::new(0),
-            driver_reserve: AtomicUsize::new(DRIVER_RESERVE),
             outside_floor: AtomicUsize::new(usize::MAX),
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
@@ -734,7 +731,7 @@ impl Device {
 
     /// Of the driver's `free` bytes, what a map of ours may take: all but its reserve.
     fn spare(&self, free: usize) -> usize {
-        if RESERVE_WAIVED.get() { free } else { free.saturating_sub(self.driver_reserve.load(Ordering::Acquire)) }
+        if RESERVE_WAIVED.get() { free } else { free.saturating_sub(DRIVER_RESERVE) }
     }
 
     /// Room for `bytes` of new pages: within our limit, and beside the driver's reserve of what the
@@ -1819,52 +1816,6 @@ fn reclaim_room(device: i32, state: &Device) -> Result<ReclaimReport> {
     report.evicted_regions = reclaim::release(device, over, usize::MAX, reclaim::Wait::No,
         reclaim::Protect::default(), ReclaimReason::Room, &mut report.reclaimed_bytes)?;
     Ok(report)
-}
-
-/// `driver_short`'s answer.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DriverShort {
-    /// The free bytes every map now leaves the driver.
-    pub reserve: usize,
-    /// It grew: this call raised it.
-    pub grew: bool,
-    /// What this process gave up for it.
-    pub released: usize,
-    /// The card's free bytes after.
-    pub free: usize,
-    /// Bytes other programs took since this process's quietest sample: what waiting may bring back.
-    pub others: usize,
-}
-
-/// The driver ran out of memory on its own (a kernel's first launch, local memory, a library's
-/// handle): no map of ours was refused, so no reclaim ran. The reserve every map leaves free
-/// doubles, to at most an eighth of the card, and this process gives up what it can (completed
-/// working pages, idle pools, idle weights, owner caches) until the card has that much free. The
-/// caller then runs what failed again.
-pub fn driver_short(device: i32) -> Result<DriverShort> {
-    let gpu = gpu(device)?;
-    if gpu.driver.get().is_none() {
-        return Ok(DriverShort::default());  // never opened: nothing here holds the card
-    }
-    let sample = || -> Result<usize> {
-        let gate = gate(device)?;
-        gate.not_capturing()?;
-        let _context = gpu.driver().enter()?;
-        gpu.sample()
-    };
-    let free = sample()?;
-    let before = gpu.driver_reserve.load(Ordering::Acquire);
-    let most = (gpu.total.load(Ordering::Acquire) / 8).max(DRIVER_RESERVE);
-    let reserve = before.saturating_mul(2).min(most).max(before);
-    gpu.driver_reserve.store(reserve, Ordering::Release);
-    let mut released = 0;
-    let want = reserve.saturating_sub(free);
-    if want != 0 {
-        reclaim::release(device, want, usize::MAX, reclaim::Wait::Yes, reclaim::Protect::default(),
-            ReclaimReason::Room, &mut released)?;
-    }
-    let came = gpu.outside.load(Ordering::Acquire).saturating_sub(gpu.outside_floor.load(Ordering::Acquire));
-    Ok(DriverShort { reserve, grew: reserve > before, released, free: sample()?, others: reclaim::theirs(device, came) })
 }
 
 /// What a development cap sets aside for the driver's own reservation; 0 until one is sampled.

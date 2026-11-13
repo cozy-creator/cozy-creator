@@ -56,21 +56,6 @@ fn _varena_room(py: Python<'_>, device: i32) -> PyResult<std::collections::BTree
         ("pinned", room.pinned as u64),
         ("weights_resident", room.weights_resident as u64),
         ("free", room.free as u64),
-        ("driver_reserve", room.driver_reserve as u64),
-    ].into_iter().collect())
-}
-
-/// The driver ran out of memory on its own: its reserve grows and this process gives up what it
-/// can (`varena::driver_short`).
-#[pyfunction]
-fn _varena_driver_short(py: Python<'_>, device: i32) -> PyResult<std::collections::BTreeMap<&'static str, u64>> {
-    let short = py.detach(|| { check()?; varena::driver_short(device) }).map_err(|e| super::raise(py, e))?;
-    Ok([
-        ("reserve", short.reserve as u64),
-        ("grew", short.grew as u64),
-        ("released", short.released as u64),
-        ("free", short.free as u64),
-        ("others", short.others as u64),
     ].into_iter().collect())
 }
 
@@ -903,7 +888,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = GIL_CHECK.set(unsafe { std::mem::transmute::<usize, unsafe extern "C" fn() -> std::ffi::c_int>(address) });
     varena::set_host_lock_probe(|| GIL_CHECK.get().is_some_and(|check| unsafe { check() } != 0));
     module.add_function(wrap_pyfunction!(_varena_room, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_driver_short, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;

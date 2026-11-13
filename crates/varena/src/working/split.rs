@@ -127,8 +127,6 @@ pub struct Room {
     pub weights_resident: usize,
     /// What can be mapped now with no reclaim.
     pub free: usize,
-    /// The card's free bytes every map leaves the driver.
-    pub driver_reserve: usize,
 }
 
 pub fn room(device: i32) -> Result<Room> {
@@ -147,7 +145,6 @@ pub fn room(device: i32) -> Result<Room> {
         pinned: owner.held.load(Ordering::Acquire),
         weights_resident: owner.pages.load(Ordering::Acquire),
         free: headroom(owner, owner.spare(free), 0),
-        driver_reserve: owner.driver_reserve.load(Ordering::Acquire),
     })
 }
 
