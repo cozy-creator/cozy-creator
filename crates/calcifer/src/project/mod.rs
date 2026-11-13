@@ -2579,7 +2579,15 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str, &s
     for pending in lock.pending.iter().filter(|(key, pending)| pending.run > 0 && wanted(&pending.asset, pending.job_of(key))).map(|(_, pending)| pending) {
         let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
         if row.state != crate::store::State::Settled {
-            api.calcifer.cancel(&row.id).map_err(|e| Error::new(Kind::Internal, "run_cancel", e.to_string()))?;
+            if project.folder.in_act() {
+                // Its journal is this project.db, whose writer the act holds (a delete): canceled once the act ends.
+                let calcifer = api.calcifer.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = calcifer.cancel(&row.id) { warn!("canceling a deleted asset's run: {e}"); }
+                });
+            } else {
+                api.calcifer.cancel(&row.id).map_err(|e| Error::new(Kind::Internal, "run_cancel", e.to_string()))?;
+            }
             canceled.push(pending.run);
         }
     }

@@ -1242,6 +1242,12 @@ impl Folder {
         Arc::as_ptr(&self.shared) as usize
     }
 
+    /// Whether this thread is inside one of this project's acts, which holds its writer: the project's run journal,
+    /// kept in the same project.db, is written only once the act ends.
+    pub(crate) fn in_act(&self) -> bool {
+        acting(self.id()).is_some()
+    }
+
     /// Its history, as `read` first reads it, for as long as anything holds the project.
     pub(super) fn book(&self, read: impl FnOnce() -> super::history::Book) -> Arc<super::history::Book> {
         self.shared.book.lock().expect("history cache").get_or_insert_with(|| Arc::new(read())).clone()
