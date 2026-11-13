@@ -174,7 +174,7 @@ test('layout', async ({ page, project, api }) => {
     };
     /** Looked at once what animates has finished: every finding, said whole. */
     const looked = async (what, focused = false) => {
-      await expect.poll(() => page.evaluate(() => document.getAnimations().filter((one) => one.playState === 'running' && one.effect?.getComputedTiming().iterations !== Infinity).length), { message: `${what}: still` }).toBe(0);
+      await expect.poll(() => page.evaluate(() => document.getAnimations().filter((one) => one.playState === 'running' && one.timeline === document.timeline && one.effect?.getComputedTiming().iterations !== Infinity).length), { message: `${what}: still` }).toBe(0);
       expect.soft(await page.evaluate(audit, { floor: FLOOR, focused }), `${what}: laid out`).toEqual([]);
     };
     const cancelShows = async (zoom) => {

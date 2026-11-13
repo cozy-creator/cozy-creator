@@ -113,9 +113,17 @@ test('focus', async ({ page, project, api }) => {
     // Edit fits the frame again as it opens its words: pressed once they've stopped moving, the press is on them.
     await expect.poll(() => observeStill(page, 300, '.focus-viewport .in-frame .mention-text'), { message: 'the words at rest' }).toEqual([]);
     const away = await background(page);
+    // Each change of the selection as the drag goes, for what's said if none is left at the end.
+    await page.evaluate(() => {
+      const said = (window.__selections = []);
+      document.addEventListener('selectionchange', () => {
+        const at = document.getSelection();
+        said.push(`${Math.round(performance.now())} ${at?.isCollapsed ? 'caret' : `"${at?.toString().slice(-24)}"`} at ${at?.anchorOffset}-${at?.focusOffset} in ${at?.anchorNode?.parentElement?.className ?? at?.anchorNode?.nodeName}`);
+      });
+    });
     await drag(page, await inWords(prompt), away);
     await expect.soft(region, 'a press from the prompt let go outside keeps Focus').toBeVisible();
-    expect.soft((await selected(page)).length, 'and the words it selected').toBeGreaterThan(0);
+    expect.soft((await selected(page)).length, `and the words it selected, as the drag went: ${(await page.evaluate(() => window.__selections)).join('; ')}`).toBeGreaterThan(0);
     await page.mouse.click(away.x, away.y);
     await backHome(page, project, before, 'a press and release outside');
   });
@@ -127,7 +135,7 @@ test('focus', async ({ page, project, api }) => {
     await expect(drawer).toBeVisible();
     await expect(page).toHaveURL(project.url('files'));
     // Slid in to where it stays.
-    await expect.poll(() => drawer.evaluate((aside) => aside.getAnimations({ subtree: true }).filter((one) => one.playState === 'running' && one.effect?.getComputedTiming().iterations !== Infinity).length), { message: 'the drawer slid in' }).toBe(0);
+    await expect.poll(() => drawer.evaluate((aside) => aside.getAnimations({ subtree: true }).filter((one) => one.playState === 'running' && one.timeline === document.timeline && one.effect?.getComputedTiming().iterations !== Infinity).length), { message: 'the drawer slid in' }).toBe(0);
     let away = await openPoint(page);
     await drag(page, await inside(drawer.locator('.drawer-head b').first()), away);
     await expect.soft(drawer, 'a press from the drawer let go on the canvas keeps it').toBeVisible();
