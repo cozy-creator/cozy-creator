@@ -245,6 +245,15 @@ done
 # (schema 3's check of an opening project.db waited rusqlite's own 5 s, so the laptop's second run said "project.db is open in another
 # program" while Calcifer's own close checkpointed on a busy disk). Held 20 s, past it: Calcifer says so, and the CLI asks again and says
 # what's in the way, as the page waits out a held project.db, until it's let go.
+# A keyed write cut off mid-request, sent again under its key, hears what it did, and its key is never in project.db without its answer
+# (cl-885): a create, an import and an apply, by HTTP as the page and the CLI send them (keyed.py).
+db_keyed() {
+step "project.db: a keyed write cut off mid-request hears what it did when sent again; its key is kept with its answer"
+COZY=$COZY python3 "$here/keyed.py" "$OUT/db-keyed" "$OUT" > "$OUT/db-keyed.json" 2> "$OUT/db-keyed.err" \
+  || check "keyed writes: $(jq -c .failures "$OUT/db-keyed.json" 2> /dev/null) $(tail -c 500 "$OUT/db-keyed.err")"
+cat "$OUT/db-keyed.json"
+}
+
 db_waits() {
 step "project.db held by another program while a cozy run begins: waited out within Calcifer's wait and past it (cl-885)"
 local P=$OUT/db-waits hold holder began let_go

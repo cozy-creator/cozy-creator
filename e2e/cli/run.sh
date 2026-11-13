@@ -555,6 +555,7 @@ case $SHARD in
     db_opens
     db_migrate_large
     db_waits
+    db_keyed
     agent_render
     logs
   " ;;
@@ -562,6 +563,8 @@ case $SHARD in
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
+  # A keyed write cut off mid-request, sent again (cl-885).
+  projectdb-keyed) parts="db_keyed logs" ;;
   # cozy render alone (cl-956), with the project part's fixtures.
   projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).

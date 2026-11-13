@@ -1361,7 +1361,8 @@ impl Folder {
         if let Some(key) = super::keyed::claimed() {
             extra.key = Some(key);
         }
-        if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.key.is_none() {
+        extra.answer = super::keyed::answer_now();
+        if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.key.is_none() && extra.answer.is_none() {
             return Ok(answer);
         }
         // A document decoded in it, or by its history since, at the heads it began from: the commit needn't decode it again.

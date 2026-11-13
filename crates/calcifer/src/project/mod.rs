@@ -2783,7 +2783,12 @@ async fn import(
         }
     }
     let kept = keep_file(folder, &asked.source).await?;
-    let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, &asked.placed)?;
+    // Its answer is kept with it, in its transaction (cl-885).
+    let answer = folder.act(|| {
+        let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, &asked.placed).map_err(|Refusal(why)| why)?;
+        keyed::answering(StatusCode::OK, &answer);
+        Ok(answer)
+    }).map_err(Refusal)?;
     measure_soon(&api, &project);
     Ok(Json(answer))
 }

@@ -63,7 +63,14 @@ pub(super) async fn create(
     let mut asked: NewAsset = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
     let ready = ready_new(&api, &project.folder, &mut asked).await.map_err(Refusal)?;
-    Ok((StatusCode::CREATED, Json(made(&project.folder, &project.id, &asked, &ready).map_err(Refusal)?)))
+    // Its answer is kept with it, in its transaction (cl-885).
+    let folder = &project.folder;
+    let made = folder.act(|| {
+        let made = made(folder, &project.id, &asked, &ready)?;
+        super::keyed::answering(StatusCode::CREATED, &made);
+        Ok(made)
+    }).map_err(Refusal)?;
+    Ok((StatusCode::CREATED, Json(made)))
 }
 
 /// What a new box needs read before its transaction: what its tool makes and calls a box of it, its models checked.

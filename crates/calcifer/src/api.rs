@@ -51,6 +51,17 @@ tokio::task_local! {
     static IGNORED: Arc<std::sync::Mutex<Vec<String>>>;
 }
 
+/// `work`, spawned by a request, hearing what it ignores as the request does (`Cozy-Ignored-Fields`).
+pub(crate) fn carry_ignored<F: std::future::Future>(work: F) -> impl std::future::Future<Output = F::Output> {
+    let held = IGNORED.try_with(Arc::clone).ok();
+    async move {
+        match held {
+            Some(held) => IGNORED.scope(held, work).await,
+            None => work.await,
+        }
+    }
+}
+
 /// The header a client reads to learn which of its request's fields this Calcifer did not read.
 pub(crate) const IGNORED_FIELDS: &str = "cozy-ignored-fields";
 
