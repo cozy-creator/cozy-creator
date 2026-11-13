@@ -49,8 +49,8 @@ unplanned, and other phases' loops go after every single pass's.
 The driver allocates on its own: a kernel's code at its first launch, local memory, a library's handle.
 Its refusal fails that launch, not an allocation of ours, so no reclaim can answer it. Every map tries
 to leave 800 MiB of the card free for it, read from the driver at the map: pages that fit, but not beside
-the reserve, take only what is idle and done for it (no wait, no owner, no peer), and short of that take
-the reserve. The reserve never makes a demand wait or fail.
+the reserve, take what is idle and done for it (no wait on our own work, no owner), an idle peer's
+before our weights, and short of that take the reserve. The reserve never makes a demand fail.
 
 The amount is measured: 2x the largest out-of-books growth (driver used less varena's books) a request
 showed, rounded up to 32 MiB. The cold H3 15 s runs of cr-293:
