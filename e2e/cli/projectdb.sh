@@ -246,7 +246,8 @@ done
 # program" while Calcifer's own close checkpointed on a busy disk). Held 20 s, past it: Calcifer says so, and the CLI asks again and says
 # what's in the way, as the page waits out a held project.db, until it's let go.
 # A keyed write cut off mid-request, sent again under its key, hears what it did, and its key is never in project.db without its answer
-# (cl-885): a create, an import and an apply, by HTTP as the page and the CLI send them (keyed.py).
+# (cl-885): a create, an import and an apply cut off, and those, a patch, rename, copy, delete, undo, redo, unpin, approve and render
+# watched for their key's first sight, by HTTP as the page and the CLI send them (keyed.py).
 db_keyed() {
 step "project.db: a keyed write cut off mid-request hears what it did when sent again; its key is kept with its answer"
 COZY=$COZY python3 "$here/keyed.py" "$OUT/db-keyed" "$OUT" > "$OUT/db-keyed.json" 2> "$OUT/db-keyed.err" \

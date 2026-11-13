@@ -1,9 +1,8 @@
 //! One answer per `Idempotency-Key` for every project write (cl-812). A write sent again under its key, the same ask, is answered what
 //! it was the first time, across a restart too, and one still going is waited for; nothing is done twice. The same key for another ask
-//! is a conflict. A project's write keeps its key in `project.db`, in the transaction of its effect (cl-803), with its answer when the
-//! route says it there (`answering`: a create, an import, an apply), and its whole answer on that row just after; `POST /v1/projects`,
-//! before there's a project, keeps its answer in `state.db`. A keyed write goes on to its answer, kept, whether or not its asker stays to
-//! hear it (cl-885). Kept a day.
+//! is a conflict. A project's write keeps its key in `project.db`, in the transaction of its effect (cl-803), with its answer as its route
+//! says it there (`answering`), and its whole answer on that row just after; `POST /v1/projects`, before there's a project, keeps its
+//! answer in `state.db`. A keyed write goes on to its answer, kept, whether or not its asker stays to hear it (cl-885). Kept a day.
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -45,8 +44,8 @@ struct Claim {
     key: Option<(String, String)>,
     /// Its key, once taken: what an answer said in a later act is kept under.
     taken: Option<String>,
-    /// What it answers, said in its act: status, media type and body.
-    answer: Option<(u16, String, Vec<u8>)>,
+    /// What it answers, said in its act.
+    answer: Option<super::db::Said>,
 }
 
 /// The key of the write this act is of, once: it commits with the act's effect.
@@ -62,19 +61,30 @@ pub(super) fn claimed() -> Option<(String, String)> {
 }
 
 /// What this act's write answers, said in it, under its key: it commits with the act's effect, so a write that's done is never answered
-/// again with less than it said, Calcifer stopped between them or not.
-pub(super) fn answer_now() -> Option<(String, (u16, String, Vec<u8>))> {
+/// again with less than it said, Calcifer stopped between them or not. Taken whether the act commits or not: a failed act's words go with it.
+pub(super) fn answer_now() -> Option<(String, super::db::Said)> {
     CLAIM.try_with(|claim| {
         let mut claim = claim.borrow_mut();
+        let answer = claim.answer.take()?;
         let key = claim.key.as_ref().map(|(key, _)| key.clone()).or_else(|| claim.taken.clone())?;
-        Some((key, claim.answer.take()?))
+        Some((key, answer))
     }).ok().flatten()
 }
 
-/// What this write answers, as its route will say it, said inside the act that does it (cl-885).
+/// What this write answers, as its route will say it, said inside the act that does it (cl-885). Said again in that act, by the route
+/// around a helper that said it too, the last word stands.
 pub(super) fn answering<T: serde::Serialize>(status: StatusCode, answer: &T) {
     let Ok(body) = serde_json::to_vec(answer) else { return };
-    let _ = CLAIM.try_with(|claim| claim.borrow_mut().answer = Some((status.as_u16(), "application/json".to_owned(), body)));
+    said(status, Box::new(move |_: &[String]| body.clone()));
+}
+
+/// `answering` what `answer` makes of the heads its act's commit leaves the document at: what words typed on next are typed on.
+pub(super) fn answering_at<T: serde::Serialize>(status: StatusCode, answer: impl Fn(&[String]) -> T + Send + 'static) {
+    said(status, Box::new(move |heads: &[String]| serde_json::to_vec(&answer(heads)).unwrap_or_default()));
+}
+
+fn said(status: StatusCode, body: Box<dyn Fn(&[String]) -> Vec<u8> + Send>) {
+    let _ = CLAIM.try_with(|claim| claim.borrow_mut().answer = Some(super::db::Said { status: status.as_u16(), body }));
 }
 
 /// The project a write's route names (`{id}`), if it names one this Calcifer knows.

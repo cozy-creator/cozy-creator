@@ -1,6 +1,7 @@
 """A keyed write cut off mid-request, and sent again under its key, hears what it did (cl-885): a create, an import and an apply. Each is
 held inside its transaction by another program's hold on project.db while its connection is closed, then let go and sent again. And a
-write's key is never in project.db without its answer, from the first moment it can be read.
+write's key is never in project.db without its answer, from the first moment it can be read: a create, an import, an apply, a patch, a
+rename, a copy, a delete, an undo, a redo (the delete again, a helper's answer the step's own), an unpin, an approve and a render.
     python3 keyed.py <project> <out>: $COZY the cozy under test. Prints what it saw as JSON and exits 1 if anything failed."""
 from __future__ import annotations
 
@@ -98,7 +99,7 @@ def main() -> int:
         while not stop.is_set():
             row = db.execute("SELECT status, body FROM request_keys WHERE key = ?", (key,)).fetchone()
             if row:
-                found["status"], found["body"] = row[0], (row[1] or b"")[:200].decode("utf-8", "replace")
+                found["status"], found["body"], found["whole"] = row[0], (row[1] or b"")[:200].decode("utf-8", "replace"), row[1] or b""
                 break
         db.close()
 
@@ -145,8 +146,47 @@ def main() -> int:
         time.sleep(0.5)
         stop.set()
         watcher.join()
+        found.pop("whole", None)
         seen[f"{case}_first_sight"] = {"status": status, "row": found}
         check(f"{case}_key_kept_with_its_answer", status == code and found.get("status") == code, seen[f"{case}_first_sight"])
+
+    def parsed(body: object) -> object:
+        try:
+            return json.loads(body)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    def kept_with(case: str, method: str, suffix: str, ask_body: Json | None, code: int, said: str, whole: bool) -> object:
+        """Sent once under a new key, its row watched from before it's there: its answer with it from the first sight, saying `said`, and,
+        for a write whose answer is all known in its transaction (`whole`), the answer it gave."""
+        key, stop = uuid.uuid4().hex, threading.Event()
+        found: dict[str, object] = {}
+        watcher = threading.Thread(target=first_sight, args=(key, stop, found))
+        watcher.start()
+        status, _, answer = ask(method, at + suffix, b"" if ask_body is None else json.dumps(ask_body).encode(), key)
+        time.sleep(0.5)
+        stop.set()
+        watcher.join()
+        kept, heard = parsed(found.pop("whole", None)), parsed(answer)
+        seen[f"{case}_first_sight"] = {"status": status, "row": found, "answer": answer[-300:].decode("utf-8", "replace")}
+        ok = status == code and found.get("status") == code and isinstance(kept, dict) and bool(kept.get(said)) and (not whole or kept == heard)
+        check(f"{case}_key_kept_with_its_answer", ok, seen[f"{case}_first_sight"])
+        return heard
+
+    kept_with("patch", "PATCH", "/assets/keyed_box", {"fields": {"text": "Words a key patched."}}, 200, "heads", True)
+    kept_with("rename", "POST", "/rename", {"from": "keyed_box_2", "to": "keyed_renamed"}, 200, "to", True)
+    copied = kept_with("copy", "POST", "/copies", {"boxes": [{"from": "keyed_renamed"}]}, 201, "made", True)
+    copies = copied.get("made") if isinstance(copied, dict) else None
+    copy = copies[0].get("name") if isinstance(copies, list) and copies and isinstance(copies[0], dict) else "keyed_renamed_2"
+    kept_with("delete", "DELETE", f"/assets/{quote(str(copy), safe='')}", None, 200, "name", True)
+    kept_with("undo", "POST", "/history/undo", {}, 200, "entries", True)
+    kept_with("redo", "POST", "/history/redo", {}, 200, "entries", True)
+    # The still, a version of its own, to unpin and approve again.
+    status, _, said = ask("POST", at + "/assets/keyed_still/versions", json.dumps({"source": f"sha256:{sha}"}).encode(), None)
+    check("still_numbered", status == 200, said[-300:].decode("utf-8", "replace"))
+    kept_with("unpin", "POST", "/unpin", {"name": "keyed_still"}, 200, "name", False)
+    kept_with("approve", "POST", "/approve", {"name": "keyed_still", "version": "1"}, 200, "name", False)
+    kept_with("render", "POST", "/runs", {"names": ["keyed_note"], "on": []}, 202, "board", False)
 
     print(json.dumps({"failures": failures, "seen": seen}, indent=1, default=str))
     return 1 if failures else 0

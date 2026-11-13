@@ -1335,6 +1335,8 @@ impl Folder {
             let _in = In::enter(act.clone());
             change()
         };
+        // What it said it answers, taken whether it commits or not: a failed act's words go with it.
+        let said = super::keyed::answer_now();
         let answer = done?;
         let mut act = Rc::try_unwrap(act).unwrap_or_else(|_| panic!("an act outlives its turn"));
         let mut after = act.base.clone();
@@ -1361,7 +1363,7 @@ impl Folder {
         if let Some(key) = super::keyed::claimed() {
             extra.key = Some(key);
         }
-        extra.answer = super::keyed::answer_now();
+        extra.answer = said;
         if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.key.is_none() && extra.answer.is_none() {
             return Ok(answer);
         }

@@ -16,7 +16,7 @@ use axum::{
     Json,
     body::Bytes,
     extract::{Path, Query, Request, State, rejection::BytesRejection},
-    http::{HeaderMap, Method},
+    http::{HeaderMap, Method, StatusCode},
     middleware::Next,
     response::Response,
 };
@@ -625,8 +625,8 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
         return Ok(Json(HistoryStepped { entries: vec![], already: true, stopped: None, lost: vec![], undo: now.undo, redo: now.redo }));
     };
     let by = by_of(&headers);
-    let mut done = vec![];
-    let mut lost = vec![];
+    let mut done: Vec<HistoryEntry> = vec![];
+    let mut lost: Vec<String> = vec![];
     let mut stopped = None;
     // `walking` before any transaction, as every writer takes them: a rename put back follows a walk going.
     let walking = project.walking.lock().expect("walking lock");
@@ -645,6 +645,15 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
             }
             marked.undone = (way == Way::Back).then(|| Undone { at_ms: now_ms(), by: by.clone() });
             project.folder.write_ops(vec![marked.row()], vec![])?;
+            // Its answer is kept with it, in its transaction (cl-885): what the step has done with this entry, as if it were its last.
+            let mut entries = book.entries.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(held) = entries.iter_mut().find(|held| held.uid == marked.uid) {
+                *held = marked.clone();
+            }
+            let now = told(&entries);
+            let lost = lost.iter().cloned().chain(bare.iter().map(|held| held.said.clone())).collect();
+            let entries = done.iter().cloned().chain([marked.listed()]).collect();
+            super::keyed::answering(StatusCode::OK, &HistoryStepped { entries, already: false, stopped: None, lost, undo: now.undo, redo: now.redo });
             Ok((marked, bare))
         });
         match stepped {
