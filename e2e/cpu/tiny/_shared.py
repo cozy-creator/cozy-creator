@@ -120,3 +120,55 @@ def picture(name: str, width: int, height: int) -> Callable[[Path], Path]:
         return path
 
     return make
+
+
+def lines(name: str, width: int, height: int, offset: int = 0) -> Callable[[Path], Path]:
+    """White lines on black, as a lineart map is drawn: diagonals every 96 px from `offset`, and a ring."""
+
+    def make(folder: Path) -> Path:
+        y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+        ring = np.abs(np.hypot(x - width * 0.6, y - height * 0.45) - min(width, height) * 0.25) < 2
+        drawn = ((x + y + offset) % 96 < 3) | ring
+        path = folder / f"{name}.png"
+        Image.fromarray(np.repeat(np.where(drawn, 255, 0).astype(np.uint8)[..., None], 3, axis=-1)).save(path)
+        return path
+
+    return make
+
+
+def bones(name: str, width: int, height: int, dx: float = 0.0) -> Callable[[Path], Path]:
+    """A pose map as DWPose draws one: a stick figure's limbs in their own colours on black, moved `dx` of the width."""
+    joints = {"head": (0.5, 0.15), "neck": (0.5, 0.28), "hips": (0.5, 0.6), "hand_l": (0.2, 0.25), "hand_r": (0.85, 0.45),
+              "foot_l": (0.35, 0.92), "foot_r": (0.7, 0.9)}
+    limbs = [("head", "neck", (255, 0, 0)), ("neck", "hips", (255, 170, 0)), ("neck", "hand_l", (0, 255, 0)),
+             ("neck", "hand_r", (0, 170, 255)), ("hips", "foot_l", (170, 0, 255)), ("hips", "foot_r", (255, 0, 170))]
+
+    def make(folder: Path) -> Path:
+        y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+        rgb = np.zeros((height, width, 3), np.uint8)
+        for a, b, colour in limbs:
+            (ax, ay), (bx, by) = joints[a], joints[b]
+            ax, bx, ay, by = (ax + dx) * width, (bx + dx) * width, ay * height, by * height
+            t = np.clip(((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2), 0, 1)
+            rgb[np.hypot(x - ax - t * (bx - ax), y - ay - t * (by - ay)) < max(2, width // 64)] = colour
+        path = folder / f"{name}.png"
+        Image.fromarray(rgb).save(path)
+        return path
+
+    return make
+
+
+def holed(name: str, width: int, height: int, centre: tuple[float, float] = (0.55, 0.45)) -> Callable[[Path], Path]:
+    """An inpaint map: `picture`'s gradient and disc with the area to redraw, a disc at `centre`, transparent."""
+
+    def make(folder: Path) -> Path:
+        y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+        hole = (x - width * centre[0]) ** 2 + (y - height * centre[1]) ** 2 < (min(width, height) * 0.2) ** 2
+        disc = ((x - width * 0.6) ** 2 + (y - height * 0.45) ** 2) < (min(width, height) * 0.25) ** 2
+        rgba = np.stack([x / width * 255, y / height * 255, np.where(disc, 230.0, 40.0), np.where(hole, 0.0, 255.0)],
+                        axis=-1).astype(np.uint8)
+        path = folder / f"{name}.png"
+        Image.fromarray(rgba).save(path)
+        return path
+
+    return make
