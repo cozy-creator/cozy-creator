@@ -22,17 +22,19 @@
 #              two failed cells stop the session
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
 #   need_s     seconds the cap must buy (3600)
+#   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
 #   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
 #              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
 . "$(dirname "$0")/lib.sh"
-CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '')
+CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1)
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
+[[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
 VRAM=$(dirname "$0")/../suites/bench/vram.py
 [ -z "$FREE_GIB" ] || [ -f "$VRAM" ] || fail "no suites/bench/vram.py"
 # ssh for the holder and for what holds the GPU when a cell fails (`gpu`)
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
-RENT_ARGS=--ssh
+RENT_ARGS=--ssh; [ "$GPUS" = 1 ] || RENT_ARGS="--ssh --gpus $GPUS"
 command -v ffmpeg > /dev/null || fail "no ffmpeg (pod-session.yaml installs it from the tool cache)"
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
