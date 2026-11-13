@@ -655,6 +655,8 @@ pub(crate) fn start(api: &Arc<Api>) {
     });
 }
 
+/// How long an explicit lock, its view revoked, waits for what still holds its project to finish before it refuses.
+const LOCK_DRAIN: Duration = Duration::from_secs(10);
 /// How long past an idle or maximum deadline a vault waits for Cozy's browser to confirm its edits are saved before it
 /// locks anyway: the deadline is a security one.
 const SAVE_GRACE: Duration = Duration::from_secs(30);
@@ -759,12 +761,29 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
             return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![] });
         }
     }
-    let transition = exclusive(&root)?;
+    let mut transition = exclusive(&root)?;
     progress.phase("preparing");
-    let mut changed = match change(&api, &root, ask, progress, &transition, &mut browser) {
-        // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-        Err(busy) if !ended.is_empty() && busy.code == "project_busy" => VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended: vec![], skipped_files: vec![] },
-        changed => changed?,
+    let draining = std::time::Instant::now() + LOCK_DRAIN;
+    let mut changed = loop {
+        match change(&api, &root, ask, progress, &transition, &mut browser) {
+            // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
+            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended: vec![], skipped_files: vec![] },
+            // Its view is revoked, so nothing new opens it: what still holds it (a journal read, a measurement) is
+            // finishing. A lock waits for that a moment rather than refuse; Cozy's browser was asked already.
+            Err(busy) if ask.action == "lock" && busy.code == "project_busy" && std::time::Instant::now() < draining => {
+                say(root, "lock drain", || format!("its lock waits: {}", busy.message));
+                drop(transition);
+                transition = loop {
+                    std::thread::sleep(Duration::from_millis(200));
+                    match exclusive(&root) {
+                        Ok(transition) => break transition,
+                        Err(busy) if std::time::Instant::now() >= draining => return Err(busy),
+                        Err(_) => {}
+                    }
+                };
+            }
+            changed => break changed?,
+        }
     };
     changed.ended = ended;
     // Capture this exact mount's revocation token while the operation still
