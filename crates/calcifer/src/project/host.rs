@@ -258,7 +258,11 @@ impl Host {
         // cozy updates itself first for a release only a newer cozy's line runs (cl-978): the render waits behind it, and Calcifer
         // restarts on the new cozy, whose walk takes it up again.
         if let Some(wanted) = &cozy {
-            let (run, note) = crate::cozy::update(&self.api, wanted).await?;
+            let (run, note) = match crate::cozy::update(&self.api, wanted).await {
+                // Installed already: this Calcifer restarts on it.
+                Err(e) if e.code == api::error::STOPPING => return std::future::pending().await,
+                updating => updating?,
+            };
             tracing::info!("{}: the render waits for run {}", note.message, run.number);
             let ended = self.ended(&run.id).await?;
             if ended.status != RunStatus::Completed {

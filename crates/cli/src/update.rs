@@ -137,6 +137,14 @@ pub(crate) fn after_update(ctx: &Context, run: &api::calcifer::Run) -> Result<()
     if said.as_deref().is_ok_and(|said| said == format!("cozy {}", ::api::VERSION)) {
         return Ok(());
     }
+    // Calcifer restarts on it once nothing else is going: the new cozy then asks that one. One still busy is waited for by
+    // the new cozy, which it refuses until then.
+    let record = platform::lock::LockFile::new(ctx.home.calcifer_lock());
+    let moved = || record.holder().ok().flatten().and_then(|raw| serde_json::from_slice::<api::calcifer::Holder>(&raw).ok()).is_some_and(|holder| holder.version != ::api::VERSION);
+    let began = std::time::Instant::now();
+    while !moved() && began.elapsed() < std::time::Duration::from_secs(30) {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
     let failed = |e: std::io::Error| {
         Error::new(Kind::Internal, "cozy_continue_failed", format!("{} didn't take this command over: {e}", binary.display())).next("cozy run ls")
     };

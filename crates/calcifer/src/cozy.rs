@@ -62,6 +62,9 @@ pub(crate) async fn update(api: &Arc<Api>, wanted: &Wanted) -> Result<(Run, Note
         let run = calcifer.record(&row).map_err(crate::runs::refused)?;
         return match run.status {
             Status::Failed | Status::Canceled => Err(failure(&run)),
+            // Installed, this Calcifer restarts on it once nothing else is going: asked again of the next.
+            Status::Completed => Err(Error::new(Kind::Unavailable, api::error::STOPPING, format!("cozy {to} is installed: Calcifer restarts on it once nothing else is going"))
+                .remedy("ask again once it is back; nothing was carried out")),
             _ => Ok((run, note)),
         };
     }

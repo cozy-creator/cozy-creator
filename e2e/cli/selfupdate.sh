@@ -70,9 +70,19 @@ machine_ready
 jq -e --arg m "${latest%.*}." '.status.version | startswith($m)' "$OUT/machine.json" > /dev/null \
   || check "self update: local runs cozy $(jq -r .status.version "$OUT/machine.json"), not $latest's minor"
 
-# A run of it, in a project of the Latest's: it completes, local moved to a Runtime that runs it.
+# A run of it, in a project of the Latest's: it completes, local moved to a Runtime that runs it. 0.25.x predates cl-952's floors:
+# there its machine names `cozy machine update local`, which a person then runs (its Hub's software, 0.25's).
 local P=$OUT/selfupdate-project
 mkdir -p "$P" && in_project "$P" --json new --unencrypted > "$OUT/su-new.json" 2>&1 || { check "self update: cozy new: $(tail -c 300 "$OUT/su-new.json")"; return; }
+case $latest in
+  0.25.*)
+    if ! RUN_PROJECT=$P run_cell "$OUT" su-run-first "$E2E_NEXT/echo" text=updated --on local; then
+      grep -q 'cozy machine update local' "$OUT/su-run-first.ndjson" "$OUT/su-run-first.err" 2> /dev/null \
+        || check "self update: on $latest the run ended without naming cozy machine update local: $(tail -c 300 "$OUT/su-run-first.err")"
+      cozy --json machine update local -y > "$OUT/su-after.json" 2>&1 || check "self update: cozy machine update local on $latest: $(tail -c 300 "$OUT/su-after.json")"
+      machine_ready
+    fi ;;
+esac
 RUN_PROJECT=$P cell su-run "$E2E_NEXT/echo" text=updated || true
 machine_ready
 jq -e '.status.runtime | test("^0\\.(4[6-9]|[5-9][0-9])\\.")' "$OUT/machine.json" > /dev/null \
