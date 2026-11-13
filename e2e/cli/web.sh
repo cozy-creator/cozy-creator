@@ -91,6 +91,6 @@ web_alone() {
     CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
     node "$(web_path "$here/web/$name.js")" > "$json" 2> "$OUT/web-$name.err" || code=$?
   [ "$code" = 0 ] || check "web-$name: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '(.failures // []) as $f | .seen | with_entries(select(.key as $k | $f | index($k)))' "$json" 2> /dev/null | head -c 2000) $(tail -c 500 "$OUT/web-$name.err")"
-  folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null)
-  case $folder in */web-*) rm -rf "$folder" 2> /dev/null || { sleep 5; rm -rf "$folder"; } || true ;; esac
+  folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null || true)
+  case $folder in */web-*) drop_folder "$folder" ;; esac
 }

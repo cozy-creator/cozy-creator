@@ -60,7 +60,7 @@ calcifer_halt() {
   pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")
   kill -TERM "$pid" 2> /dev/null || true
   while kill -0 "$pid" 2> /dev/null; do
-    [ "$waited" -lt 600 ] || { check "Calcifer $pid still runs 120 s after SIGTERM"; kill -9 "$pid" 2> /dev/null; return 1; }
+    [ "$waited" -lt 600 ] || { check "Calcifer $pid still runs 120 s after SIGTERM"; kill -9 "$pid" 2> /dev/null || true; return 1; }
     sleep 0.2; waited=$((waited + 1))
   done
 }
@@ -73,7 +73,7 @@ entry_of() { project_api "$1" '/history?limit=50' | jq -r --arg w "$2" '[.entrie
 # place_of <project> <box>: where its card is, `x,y`.
 place_of() { sql "$1" "SELECT x, y FROM canvas WHERE name = '$2'" | jq -r 'map(round | tostring) | join(",")'; }
 # asset_of <project> <box>: the box as `GET …/assets/<box>` answers it (`.asset`), else nothing.
-asset_of() { held "$1" "$2" 2> /dev/null | jq -c '.asset // empty' 2> /dev/null; }
+asset_of() { { held "$1" "$2" 2> /dev/null || true; } | jq -c '.asset // empty' 2> /dev/null || true; }
 # box_kept <project> <box>: it's there again, with no file and no take.
 box_kept() { asset_of "$1" "$2" | J '(.sha256 // null) == null and ((.versions // []) | length) == 0'; }
 
@@ -144,14 +144,14 @@ J '(.lost // []) | any(startswith("twin_a'"'"'s files were removed"))' "$OUT/del
 project_import "$P" "$OUT/deleted-gc-green.png" late > /dev/null || check "deleted gc: import late"
 late=$(asset_of "$P" late | jq -r .sha256)
 project_api "$P" /assets/late -X DELETE > /dev/null || check "deleted gc: delete late"
-calcifer_halt
+calcifer_halt || { undo_window "$lock" ''; return; }
 sleep $((window + 3))
 in_files "$P" "$late" || check "deleted gc: late's file went with Calcifer stopped"
 cozy --json machine ls > /dev/null || check "deleted gc: Calcifer didn't start again"
 for _ in $(seq 150); do in_files "$P" "$late" || break; sleep 0.2; done
 ! in_files "$P" "$late" || check "deleted gc: late's file is still there 30 s after Calcifer started past its window"
 undo_window "$lock" ''
-rm -rf "$P"
+drop_folder "$P"
 }
 
 # cl-919: Undo after the real 3-hour window. Two boxes deleted, a tool's box with its words and a take, and a picture; Calcifer stopped,
@@ -186,7 +186,7 @@ PY
 cozy --json machine ls > /dev/null || check "purged: Calcifer didn't start again"
 read -r rows ops <<< "$aged"
 [ "${rows:-0}" = 2 ] && [ "${ops:-0}" -ge 5 ] || check "purged: not both deletes and the history dated back: ${aged:-nothing}"
-status "$P" > /dev/null
+status "$P" > /dev/null || check "purged: the project doesn't open past the window"
 for _ in $(seq 150); do in_files "$P" "$hero" || in_files "$P" "$pic" || break; sleep 0.2; done
 ! in_files "$P" "$hero" && ! in_files "$P" "$pic" || check "purged: the open past the window kept a deleted box's file"
 in_files "$P" "$stays" || check "purged: the purge took the file of a box no one deleted"
@@ -211,7 +211,7 @@ project_api "$P" /history/redo -X POST -H 'Content-Type: application/json' -d '{
 project_api "$P" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > /dev/null 2>&1 || true
 asset_of "$P" hero | J --arg p "$prompt" '.fields.instructions == $p' || check "purged: a second Undo didn't bring hero back"
 ! in_files "$P" "$hero" && ! in_files "$P" "$pic" || check "purged: a file came back"
-rm -rf "$P"
+drop_folder "$P"
 }
 
 # cl-823: Calcifer closes a project nothing reads. Projects of 200 boxes each, made by `cozy apply`, opened by the CLI and shown by a
@@ -231,17 +231,17 @@ code=$(curl -fsS -X POST -H "Authorization: Bearer $(jq -r .token "$lock")" "htt
   || { check "closes: no page session"; return; }
 curl -sSN -H "Authorization: Bearer $CLOSES_SESSION" -H 'cozy-project-storage: 3' -H 'Accept: text/event-stream' "http://$(jq -r .address "$lock")/v1/events" > "$CLOSES/page.sse" 2>&1 & pid=$!
 for _ in $(seq 100); do CLOSES_STREAM=$(sse "$CLOSES/page.sse" | jq -r 'select(.type == "hello") | .stream' | head -1) && [ -n "$CLOSES_STREAM" ] && break; sleep 0.1; done
-[ -n "$CLOSES_STREAM" ] || { check "closes: the page's stream said no hello: $(head -c 300 "$CLOSES/page.sse")"; kill "$pid"; return; }
-closes_pass 1 2 || { kill "$pid"; return; }
-closes_show '' > /dev/null; closes_shut "$CLOSES/p$CLOSES_PREV" || CLOSES_OPEN+=("stream:$CLOSES_PREV"); CLOSES_PREV=''
+[ -n "$CLOSES_STREAM" ] || { check "closes: the page's stream said no hello: $(head -c 300 "$CLOSES/page.sse")"; kill "$pid" 2> /dev/null || true; return; }
+closes_pass 1 2 || { kill "$pid" 2> /dev/null || true; return; }
+closes_show '' > /dev/null || true; closes_shut "$CLOSES/p$CLOSES_PREV" || CLOSES_OPEN+=("stream:$CLOSES_PREV"); CLOSES_PREV=''
 sleep 15
-start=$(closes_heap)
+start=$(closes_heap || true)
 CLOSES_OPENS=() CLOSES_REOPENS=()
-closes_pass 3 $((n + 2)) || { kill "$pid"; return; }
-closes_show '' > /dev/null; closes_shut "$CLOSES/p$CLOSES_PREV" || CLOSES_OPEN+=("stream:$CLOSES_PREV")
-kill "$pid" 2> /dev/null
+closes_pass 3 $((n + 2)) || { kill "$pid" 2> /dev/null || true; return; }
+closes_show '' > /dev/null || true; closes_shut "$CLOSES/p$CLOSES_PREV" || CLOSES_OPEN+=("stream:$CLOSES_PREV")
+kill "$pid" 2> /dev/null || true
 sleep 60
-later=$(closes_heap)
+later=$(closes_heap || true)
 local open_median reopen_median
 open_median=$(printf '%s\n' "${CLOSES_OPENS[@]}" | sort -n | awk '{ a[NR] = $1 } END { print a[int((NR + 1) / 2)] }')
 reopen_median=$(printf '%s\n' "${CLOSES_REOPENS[@]}" | sort -n | awk '{ a[NR] = $1 } END { print a[int((NR + 1) / 2)] }')
@@ -262,7 +262,7 @@ done
 closes_shut "$first" && closes_shut "$second" || check "closes: a render's project open before its render"
 project_api "$first" /runs -X POST -H 'Content-Type: application/json' -d '{"names": ["waits"], "on": ["local"]}' > /dev/null || { check "closes: the first render refused"; return; }
 for _ in $(seq 300); do
-  run_first=$(project_api "$first" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | select(.status == "in_progress" and .machine_state == "running") | .number')
+  run_first=$(project_api "$first" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | select(.status == "in_progress" and .machine_state == "running") | .number' || true)
   [ -z "$run_first" ] || break; sleep 1
 done
 [ -n "$run_first" ] || { check "closes: the first render never ran"; return; }
@@ -273,7 +273,7 @@ cozy --json machine show local | J '.status.update // "" | test("^waiting for (o
   || check "closes: the machine's update never waited for the first render: $(cozy --json machine show local | jq -c .status.update)"
 project_api "$second" /runs -X POST -H 'Content-Type: application/json' -d '{"names": ["waits"], "on": ["local"]}' > /dev/null || check "closes: the second render refused"
 for _ in $(seq 240); do
-  look=$(project_api "$second" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | "\(.status)/\(.machine_state // "")"')
+  look=$(project_api "$second" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | "\(.status)/\(.machine_state // "")"' || true)
   [[ $look != *queued* ]] || { queued=1; ! closes_open "$second" || held_second=1; }
   ! closes_open "$first" || held_first=1
   fixture_projects | J --arg a "$(id_of "$first")" --arg b "$(id_of "$second")" 'any(.projects[]; (.id == $a or .id == $b) and .busy == true)' || break
@@ -287,7 +287,7 @@ kill "$update" 2> /dev/null || true; wait "$update" 2> /dev/null || true
 [ "$(cat "$CLOSES/update.code" 2> /dev/null)" = 0 ] || check "closes: the machine's update did not succeed: $(tail -c 300 "$CLOSES/update.json")"
 machine_ready
 closes_shut "$first" && closes_shut "$second" || check "closes: a render's project still open once it landed"
-rm -rf "$CLOSES"
+drop_folder "$CLOSES"
 }
 # closes_heap: Calcifer's heap, MiB, as its status says.
 closes_heap() { local lock=$HOME/.cozy/calcifer/calcifer.lock.holder; curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/status" | jq '.heap_bytes / 1048576 * 10 | round / 10'; }
@@ -328,7 +328,7 @@ closes_pass() {
     closes_shut "$P" || CLOSES_OPEN+=("apply:$i")
     t=$(closes_status "$i") && CLOSES_OPENS+=("$t")
     closes_shut "$P" || CLOSES_OPEN+=("status:$i")
-    id=$(id_of "$P")
+    id=$(id_of "$P" || true)
     closes_shut "$P" || CLOSES_OPEN+=("status:$i")
     closes_show "$id" > "$CLOSES/show-$i.json" || { check "closes: the stream couldn't show project $i: $(cat "$CLOSES/show-$i.json")"; return 1; }
     J --arg id "$id" '.held | index($id)' "$CLOSES/show-$i.json" || check "closes: the stream doesn't hold project $i: $(cat "$CLOSES/show-$i.json")"

@@ -243,6 +243,9 @@ boxes_in() {
       || { check "box $(jq -r .name <<< "$box") in $1: $(tail -c 300 "$OUT/boxes-in.txt")"; return 1; }
   done <<< "$boxes"
 }
+# drop_folder <folder>: a cell's project gone. Its machine storage (`.vault-calcifer`, `.vault-machine`) may still be settling a run or
+# a look-ahead install: its leftovers never end the suite (run.sh is `set -e`).
+drop_folder() { rm -rf "$1" 2> /dev/null || { sleep 5; rm -rf "$1" 2> /dev/null; } || true; }
 # db_sql <project> <sql>: statements run on its project.db past Calcifer, as another program would.
 db_sql() {
   python3 - "$1/project.db" "$2" <<'PY'

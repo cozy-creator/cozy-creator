@@ -1267,7 +1267,7 @@ local json=$OUT/agent.json code=0 folder
 HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") ARGV_LOG=$(web_path "$OUT/argv.log") \
   node "$(web_path "$here/agent.js")" > "$json" 2> "$OUT/agent.err" || code=$?
 [ "$code" = 0 ] || check "agent: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '(.failures // []) as $f | .seen | with_entries(select(.key as $k | $f | index($k)))' "$json" 2> /dev/null | head -c 2000) $(tail -c 500 "$OUT/agent.err")"
-for folder in $(jq -r '.seen.project.folder // empty, .seen.pier // empty' "$json" 2> /dev/null); do rm -rf "$folder"; done
+for folder in $(jq -r '.seen.project.folder // empty, .seen.pier // empty' "$json" 2> /dev/null || true); do drop_folder "$folder"; done
 }
 
 # cl-944 (Paul, 11-12: "the runtime will just ignore that input modality that the model cannot use"), past Calcifer's binder: an API
@@ -1316,9 +1316,9 @@ step "an orbit's take: its metadata in cozy run's result, every frame a keyframe
 local probe file keys
 cell orbit "$here/project/orbit.py/turn" frames:=24 || return 0
 J '.result.video.metadata.orbit == {"degrees": 360, "direction": "cw", "loops": true}' "$OUT/orbit.json" || check "orbit: cozy run's result says no orbit: $(jq -c .result "$OUT/orbit.json" | head -c 300)"
-probe=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1)
-probe=${probe:-$(command -v ffprobe)} file=$(output orbit mp4)
-keys=$("$probe" -v error -select_streams v:0 -show_entries frame=key_frame -of csv=p=0 "$file" | cut -d, -f1 | sort | uniq -c | tr -s ' ')
+probe=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1 || true)
+probe=${probe:-$(command -v ffprobe || true)} file=$(output orbit mp4 || true)
+keys=$("$probe" -v error -select_streams v:0 -show_entries frame=key_frame -of csv=p=0 "$file" | cut -d, -f1 | sort | uniq -c | tr -s ' ' || true)
 [ "$keys" = " 24 1" ] || check "orbit: not every frame of $file is a keyframe (count key_frame): ${keys:-no frames}"
 }
 
@@ -1363,7 +1363,7 @@ for _ in $(seq 50); do [ -s "$dir/addr" ] && break; sleep 0.1; done
 hub=http://$(cat "$dir/addr")
 cp "$config" "$dir/config.toml"
 # Top-level: after a [table] it would be that table's.
-{ echo "hub_url = \"$hub\""; grep -v '^hub_url' "$dir/config.toml"; } > "$config"
+{ echo "hub_url = \"$hub\""; grep -v '^hub_url' "$dir/config.toml" || true; } > "$config"
 cozy --json restart > "$dir/restart.json" 2>&1 || check "install retries: cozy restart onto the stand-in Hub: $(tail -c 300 "$dir/restart.json")"
 install_retry silent e2e/e2e-boxed
 grep -q hub_slow "$dir/silent.said" || check "install retries: a silent Hub isn't said hub_slow: $(tail -c 400 "$dir/silent.said")"
@@ -1410,19 +1410,19 @@ for directive in "default-src 'none'" "script-src 'self' 'wasm-unsafe-eval'" "st
 done
 ! grep -i '^content-security-policy:' "$dir/doc.headers" | grep -qF "'unsafe-eval'" || check "page http: the page's CSP allows eval"
 ! grep -qi '^set-cookie:' "$dir/doc.headers" || check "page http: GET / sets a cookie"
-grep -oE '/assets/[^"'"'"' )]+' "$dir/doc.html" | sort -u > "$dir/assets.txt"
+grep -oE '/assets/[^"'"'"' )]+' "$dir/doc.html" | sort -u > "$dir/assets.txt" || true
 [ -s "$dir/assets.txt" ] || check "page http: the document names no /assets/*"
 while read -r asset; do
-  curl -sS -D - -o /dev/null "$base$asset" | tr -d '\r' > "$dir/asset.headers"
+  curl -sS -D - -o /dev/null "$base$asset" | tr -d '\r' > "$dir/asset.headers" || true
   grep -qE '^HTTP/[0-9.]+ 200' "$dir/asset.headers" && grep -i '^cache-control:' "$dir/asset.headers" | grep -q no-store \
     || check "page http: $asset is not 200 and no-store: $(head -1 "$dir/asset.headers") $(grep -i '^cache-control:' "$dir/asset.headers")"
 done < "$dir/assets.txt"
 
 # A session from a code, as `cozy open`'s link redeems one, with no cookie.
 page_answers "the holder asks for a code" 200 - -X POST -H "Authorization: Bearer $token" "$base/v1/session-codes"
-once=$(jq -r '.code // empty' "$dir/reply.json")
+once=$(jq -r '.code // empty' "$dir/reply.json" 2> /dev/null || true)
 curl -sS -D "$dir/session.headers" -o "$dir/session.json" -X POST -H 'Content-Type: application/json' -d "{\"code\":\"$once\"}" "$base/v1/session" || true
-session=$(jq -r '.token // empty' "$dir/session.json") media=$(jq -r '.media // empty' "$dir/session.json")
+session=$(jq -r '.token // empty' "$dir/session.json" 2> /dev/null || true) media=$(jq -r '.media // empty' "$dir/session.json" 2> /dev/null || true)
 [ -n "$session" ] && [ -n "$media" ] || { check "page http: the code wasn't redeemed for a session and a media token: $(head -c 300 "$dir/session.json")"; return; }
 ! grep -qi '^set-cookie:' "$dir/session.headers" || check "page http: POST /v1/session sets a cookie"
 page_redeem "a used code" 400 session_code_invalid "$once"
@@ -1453,9 +1453,9 @@ page_answers "the page's own Origin" 200 - -H "Authorization: Bearer $session" -
 
 # A code works once, and a fresh one only for 15 minutes.
 page_answers "the holder asks for a code" 200 - -X POST -H "Authorization: Bearer $token" "$base/v1/session-codes"
-once=$(jq -r '.code // empty' "$dir/reply.json")
+once=$(jq -r '.code // empty' "$dir/reply.json" 2> /dev/null || true)
 page_redeem "a code" 200 - "$once"
-other=$(jq -r '.token // empty' "$dir/reply.json")
+other=$(jq -r '.token // empty' "$dir/reply.json" 2> /dev/null || true)
 page_redeem "a used code" 400 session_code_invalid "$once"
 page_answers "ending that session" 204 - -X DELETE -H "Authorization: Bearer $other" "$base/v1/session"
 page_answers "no credential" 401 unauthenticated "$base/v1/machines"
@@ -1464,12 +1464,12 @@ page_answers "a code asked for by a session, not the holder" 403 session_code_ne
 issued_before=$(date +%s)
 page_answers "the holder asks for another code" 200 - -X POST -H "Authorization: Bearer $token" "$base/v1/session-codes"
 issued_after=$(date +%s)
-fresh=$(jq -r '.code // empty' "$dir/reply.json") expires=$(jq -r '.expires_ms // 0' "$dir/reply.json")
+fresh=$(jq -r '.code // empty' "$dir/reply.json" 2> /dev/null || true) expires=$(jq -r '.expires_ms // 0' "$dir/reply.json" 2> /dev/null || echo 0)
 issued_at=$((expires / 1000 - 900))
 [ "$issued_at" -ge "$issued_before" ] && [ "$issued_at" -le "$issued_after" ] && [ -n "$fresh" ] || check "page http: a sign-in code's lifetime is not 15 minutes"
 
 # ?media= reads a file and nothing else.
-file=$(jq -r '.path // empty' "$dir/imported.json") sha=$(jq -r '.sha256 // empty' "$dir/imported.json"); file=${file##*/}
+file=$(jq -r '.path // empty' "$dir/imported.json" 2> /dev/null || true) sha=$(jq -r '.sha256 // empty' "$dir/imported.json" 2> /dev/null || true); file=${file##*/}
 if [ -n "$file" ]; then
   page_answers "?media= on GET of a file" 200 - "$base/v1/projects/$id/files/$file?media=$media"
   page_answers "?media= on HEAD of a file" 200 - -I "$base/v1/projects/$id/files/$file?media=$media"
@@ -1483,7 +1483,7 @@ page_answers "?media= as a bearer" 401 unauthenticated -H "Authorization: Bearer
 page_answers "ending the session" 204 - -X DELETE -H "Authorization: Bearer $session" "$base/v1/session"
 page_answers "an ended session" 401 unauthenticated -H "Authorization: Bearer $session" "$base/v1/machines"
 page_answers "an ended session's ?media=" 401 unauthenticated "$base/v1/projects/$id/files/$file?media=$media"
-rm -rf "$P"
+drop_folder "$P"
 }
 # page_answers <what> <status, a regex> <error code, or -> <curl args…>: the answer, in page-http-said/reply.json.
 page_answers() {
