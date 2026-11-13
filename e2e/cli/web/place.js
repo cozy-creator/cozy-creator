@@ -572,7 +572,9 @@ async function placedInView(page, expected) {
     check('held_over_a_name_it_is_on_the_name', onScreen && carried > 100 && offered.on_its_name && label.height >= 8, { carried, ...seen.over_a_name });
     check('a_name_offers_nothing', !offered.offering && !offered.hot.includes(over), seen.over_a_name);
     check('let_go_over_a_name_nothing_joins', stillThere && Boolean(afterLabel[carriedName]), seen.over_a_name);
-    check('let_go_over_a_name_it_lands_there', Boolean(afterLabel[carriedName]) && Math.abs(afterLabel[carriedName].x - heldAt.x) <= 3 && Math.abs(afterLabel[carriedName].y - heldAt.y) <= 3, seen.over_a_name);
+    // Where it was let go, at most a little smaller about its middle, as any box let go in a crowd (`a_crowded_drop_stays_where_it_was_let_go`).
+    const letGoAt = { ...beforeLabel[carriedName], x: heldAt.x, y: heldAt.y };
+    check('let_go_over_a_name_it_lands_there', Boolean(afterLabel[carriedName]) && apart(afterLabel[carriedName], letGoAt) <= 3 && afterLabel[carriedName].w >= 0.8 * letGoAt.w, { by: afterLabel[carriedName] && apart(afterLabel[carriedName], letGoAt), ...seen.over_a_name });
     if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-let-go-over-a-name.png` });
   }
 
