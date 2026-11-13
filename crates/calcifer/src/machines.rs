@@ -74,6 +74,11 @@ pub(crate) struct Machines {
     /// What this computer's machine does for each open project's own runs, read in that project's scope (`follow_project`): the
     /// machine's own status never lists it.
     project_activity: Mutex<HashMap<String, Vec<v1::Operation>>>,
+    /// Each Hub catalog model's public releases, as the default Hub last said: what machine views list of the models a machine holds.
+    public: Mutex<HashMap<String, HashSet<String>>>,
+    /// What each open project's own engine on this computer's machine holds, as its own Status last said: listed with local's models
+    /// where public, never as whose.
+    project_models: Mutex<HashMap<String, Vec<v1::Model>>>,
     /// Rentals whose boot is followed, by rental id.
     pub(crate) booting: Mutex<HashSet<String>>,
     /// Runs a rental is being asked for.
@@ -146,6 +151,8 @@ impl Machines {
             seen: Mutex::default(),
             watching: Mutex::default(),
             project_activity: Mutex::default(),
+            public: Mutex::default(),
+            project_models: Mutex::default(),
             booting: Mutex::default(),
             renting: Mutex::default(),
             asking: Mutex::default(),
@@ -283,6 +290,7 @@ impl Machines {
         let mut machines = Vec::new();
         let listed = |r: &&MachineRow| r.state != MachineState::Ended && (here || r.kind != MachineKind::Local);
         for row in rows.iter().filter(listed) {
+            self.learn_holdings(&row.name).await;
             machines.push(self.picture_for(row, projects)?);
         }
         let (hubs, unanswered, signed_out) = self.hubs.listing();
@@ -300,6 +308,48 @@ impl Machines {
 
     /// One machine by its name, former name or rental id (`named`), with its Status read now:
     /// `local` starts for it.
+    /// Whether `release` of `model` is public on the default Hub, as it last said; one not asked yet isn't.
+    fn public_release(&self, model: &str, release: &str) -> bool {
+        lock(&self.public).get(model).is_some_and(|public| public.contains(release.trim_start_matches('v')))
+    }
+
+    /// What `machine` (its frame) and, on this computer's machine, each open project's own engine hold, read now: each project's own
+    /// Status asked, and the default Hub asked once which of their models' releases are public (`public_release`).
+    async fn learn_holdings(&self, machine: &str) {
+        let mut models: Vec<String> = self.frame(machine).map(|frame| frame.models.iter().map(|m| m.model.clone()).collect()).unwrap_or_default();
+        if machine == "local" && let Some(link) = self.calcifer.link("local").ok().flatten() {
+            let open = self.calcifer.open_projects();
+            let mut held = HashMap::new();
+            for (id, root) in open {
+                let Ok(scope) = crate::private_io::scope_for_project(&id, &root) else { continue };
+                // Only a project that has run here has an engine of its own to ask: asking makes none.
+                if !scope.storage.view_root.join(".vault-machine").exists() { continue; }
+                if let Ok(frame) = link.with_private(scope).status().await {
+                    models.extend(frame.models.iter().map(|m| m.model.clone()));
+                    held.insert(id, frame.models);
+                }
+            }
+            *lock(&self.project_models) = held;
+        }
+        models.sort();
+        models.dedup();
+        let unknown: Vec<String> = models.into_iter().filter(|model| !model.starts_with("local/") && !lock(&self.public).contains_key(model)).collect();
+        if unknown.is_empty() {
+            return;
+        }
+        let Ok(client) = self.hubs.client(&self.hubs.default_origin()) else { return };
+        for model in unknown {
+            let Ok(id) = api::model_ref::ModelId::parse(&model) else { continue };
+            let public = match client.anonymous().get_model(&id.org, &id.name).await {
+                Ok(card) => card.releases.iter().filter(|release| release.visibility == api::model_ref::ReleaseVisibility::Public)
+                    .map(|release| release.version.trim_start_matches('v').to_owned()).collect(),
+                Err(::api::hub::Error::Hub { status: 404, .. }) => HashSet::new(),
+                Err(_) => continue,
+            };
+            lock(&self.public).insert(model, public);
+        }
+    }
+
     pub(crate) async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
         if let Some(order) = self.order_named(text)? {
             return Ok(self.order(&order));
@@ -333,6 +383,7 @@ impl Machines {
                 Err(_) => {}
             }
         }
+        self.learn_holdings(&row.name).await;
         self.picture(&row)
     }
 
@@ -764,9 +815,26 @@ impl Machines {
                         }
                     }
                 }
+                let _ = manifests;
+                // Public Hub catalog models are no project's data, for whatever work they came: what a project's own engine on this
+                // computer's machine holds beside them, never as whose. A local alias, a private or an uploaded release isn't listed.
+                if row.kind == MachineKind::Local {
+                    let open: HashSet<String> = self.calcifer.open_projects().into_iter().map(|(id, _)| id).collect();
+                    let held = lock(&self.project_models);
+                    for model in held.iter().filter(|(id, _)| open.contains(*id)).flat_map(|(_, models)| models) {
+                        match visible.models.iter_mut().find(|seen| seen.model == model.model) {
+                            Some(seen) => {
+                                let new: Vec<v1::Checkpoint> = model.checkpoints.iter().filter(|c| !seen.checkpoints.iter().any(|held| held.manifest == c.manifest)).cloned().collect();
+                                if !new.is_empty() { seen.checkpoints.extend(new); seen.total_bytes = 0; seen.unique_bytes = 0; }
+                            }
+                            None => visible.models.push(model.clone()),
+                        }
+                    }
+                }
                 for model in &mut visible.models {
                     let total=model.checkpoints.len();
-                    model.checkpoints.retain(|checkpoint|manifests.contains(&(model.model.clone(),checkpoint.manifest.clone())));
+                    let catalog = !model.model.starts_with("local/");
+                    model.checkpoints.retain(|checkpoint| catalog && !checkpoint.release.is_empty() && self.public_release(&model.model, &checkpoint.release));
                     if total!=model.checkpoints.len() {model.total_bytes=0;model.unique_bytes=0;}
                 }
                 visible.models.retain(|model|!model.checkpoints.is_empty());

@@ -1023,7 +1023,7 @@ struct Walker {
     /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
     starts: HashMap<String, (i64, Vec<String>)>,
     /// What each machine is told to have ready for each job, by machine and job key: its Hub, item and function; none: nothing.
-    items: HashMap<(String, String), Option<(String, v1::Ahead, String)>>,
+    items: HashMap<(String, String), Option<(String, v1::Ahead, String, Vec<api::calcifer::StagedInput>)>>,
     /// Items being made.
     making: HashSet<(String, String)>,
     /// The last turn held a job for a busy machine.
@@ -3549,7 +3549,7 @@ impl Walk {
                     };
                     let mut walker = self.project.walker.lock().expect("walker lock");
                     walker.making.remove(&at);
-                    walker.items.insert(at, item.map(|(item, function)| (wanted.hub.clone(), item, function)));
+                    walker.items.insert(at, item.map(|(item, function, files)| (wanted.hub.clone(), item, function, files)));
                     Done::Ahead
                 }.boxed());
             }
@@ -3644,7 +3644,7 @@ impl Walk {
             let walker = self.project.walker.lock().expect("walker lock");
             for (key, asset, wanted) in jobs {
                 let On::Machine(name) = &wanted.machine else { continue };
-                let Some(Some((hub, item, function))) = walker.items.get(&(name.clone(), key.clone())) else { continue };
+                let Some(Some((hub, item, function, files))) = walker.items.get(&(name.clone(), key.clone())) else { continue };
                 let (start_at_ms, fits) = walker.starts.get(key).cloned().unwrap_or((i64::MAX, vec![]));
                 let listed = crate::ahead::Listed {
                     project: self.project.clone(),
@@ -3653,6 +3653,7 @@ impl Walk {
                     hub: hub.clone(),
                     item: item.clone(),
                     function: function.clone(),
+                    files: files.clone(),
                     fits,
                 };
                 by_machine.entry(name.clone()).or_default().push(listed);
@@ -3666,7 +3667,7 @@ impl Walk {
     /// What `wanted`'s machine has ready for job `key` (`PUT /v1/upcoming`): the function its text names, else the first of its package
     /// that makes this kind, with its model choices; and the function, as its row says it. None: its package makes nothing of the kind.
     /// Local code is installed there first, as a call's is.
-    async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
+    async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String, Vec<api::calcifer::StagedInput>)>, Error> {
         let Wanted { machine, hub, with, kind, made } = wanted;
         let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
@@ -3680,16 +3681,17 @@ impl Walk {
         let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
         choices.take(&mut payload)?;
         let models = choices::wire(&choices.into_choices())?;
-        let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
+        let (source, files) = match &renderer.local {
+            None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
             Some(path) => {
-                // Staged in its project's storage scope, as its call's code is: its list goes over that project's own link.
+                // Staged in its project's storage scope, as its call's code is, its files going to its machine with its list as a call's do.
                 let scope = crate::private_io::of_path(&self.folder().dir)?;
-                v1::Source::Local(crate::private_io::context(scope, self.host.ready(path, machine, hub)).await?.source)
+                let prepared = crate::private_io::context(scope, self.host.ready(path, machine, hub)).await?;
+                (v1::Source::Local(prepared.source), prepared.files)
             }
         };
         let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
-        Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
+        Ok(Some((item, package.name.clone() + "/" + &renderer.function, files)))
     }
 
     /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices. None when its package doesn't say in
@@ -3784,7 +3786,9 @@ impl Walk {
             }
         }
         let mut pictures = vec![];
-        for (on, pictured) in machines.iter().zip(placement::pictures(&api, &machines, update, now).await) {
+        // In its own storage scope: what this project holds on local, in its own engine, is in local's picture (`placement::picture`).
+        let scope = crate::private_io::of_path(&self.folder().dir).ok().flatten();
+        for (on, pictured) in machines.iter().zip(crate::private_io::context(scope, placement::pictures(&api, &machines, update, now)).await) {
             match pictured {
                 Ok(picture) => pictures.push(picture),
                 Err(why) => warn!("{dir}: {on} isn't planned on: {why}"),

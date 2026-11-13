@@ -35,6 +35,8 @@ pub(crate) struct Listed {
     pub function: String,
     /// The machines its plan found can run it: where it is prepared with no job.
     pub fits: Vec<String>,
+    /// Its local code's files, written to its machine before its list, as a call's are.
+    pub files: Vec<api::calcifer::StagedInput>,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -163,13 +165,14 @@ impl Lists {
                     false => drop(lock(&self.sent).insert(place.clone(), (now, project.clone()))),
                 }
                 let hubs: Vec<String> = upcoming.iter().map(|listed| listed.hub.clone()).chain(prepare.iter().map(|(hub, _)| hub.clone())).collect();
+                let files: Vec<api::calcifer::StagedInput> = upcoming.iter().flat_map(|listed| listed.files.clone()).collect();
                 let upcoming: Vec<(String, v1::Ahead)> = upcoming.iter().map(|listed| (listed.hub.clone(), listed.item.clone())).collect();
                 let (machines, name) = (machines.clone(), name.clone());
                 if let Some(project) = project.as_ref().filter(|_| !empty) {
                     machines.follow_project(project.scope_of().0);
                 }
                 machines.clone().spawn(async move {
-                    if let Err(why) = put(&machines, &name, project, hubs, upcoming, prepare).await {
+                    if let Err(why) = put(&machines, &name, project, files, hubs, upcoming, prepare).await {
                         warn!(machine = name, "its upcoming jobs: {why}");
                         // Sent again at the next change.
                         lock(&machines.lists.sent).remove(&place);
@@ -247,7 +250,7 @@ fn listed_folder(listed: &Listed) -> String {
 
 /// Sends `machine` its lists, each item under the access its Hub gives that machine: a project's over its own execution link there,
 /// as its runs go.
-async fn put(machines: &Arc<Machines>, machine: &str, project: Option<Arc<Project>>, hubs: Vec<String>, upcoming: Vec<(String, v1::Ahead)>, prepare: Vec<(String, v1::Ahead)>) -> Result<(), String> {
+async fn put(machines: &Arc<Machines>, machine: &str, project: Option<Arc<Project>>, files: Vec<api::calcifer::StagedInput>, hubs: Vec<String>, upcoming: Vec<(String, v1::Ahead)>, prepare: Vec<(String, v1::Ahead)>) -> Result<(), String> {
     let (_, link) = machines.linked(machine).map_err(|e| e.message)?;
     let link = match &project {
         Some(project) => {
@@ -256,6 +259,17 @@ async fn put(machines: &Arc<Machines>, machine: &str, project: Option<Arc<Projec
         }
         None => link,
     };
+    // Its local code's files first, those it doesn't hold, as a call's are written.
+    let digests: Vec<api::ids::Digest> = files.iter().map(|file| file.digest).collect();
+    if !digests.is_empty() {
+        let held = link.held_many(&digests).await.map_err(|e| e.to_string())?;
+        for (file, held) in files.iter().zip(held) {
+            if file.length > 0 && v1::held_bytes(&held) >= file.length {
+                continue;
+            }
+            link.write(&file.digest, file.length, &file.path, held, |_, _| {}).await.map_err(|e| e.to_string())?;
+        }
+    }
     let mut access: HashMap<String, Option<v1::HubAccess>> = HashMap::new();
     for hub in hubs {
         if access.contains_key(&hub) {

@@ -268,10 +268,18 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     }
     let (row, link) = machines.linked(text).map_err(|e| e.message)?;
     // Its Status as its open stream says it; with none open (it stopped answering, or never did), what it answers now, or no quote.
-    let frame = match machines.live_frame(&row.name) {
+    let mut frame = match machines.live_frame(&row.name) {
         Some(frame) => frame,
         None => link.status().await.map_err(|e| e.to_string())?,
     };
+    // A project's work on this computer's machine runs in its own engine: what it holds, queues and has measured there is
+    // in its own Status alone.
+    if row.name == "local"
+        && let Some(scope) = crate::private_io::current()
+        && let Ok(own) = link.with_private(scope).status().await
+    {
+        frame = with_own(frame, own);
+    }
     let own = this_release();
     if !same_minor(&frame.version, own) && !rc_version() {
         if !update {
@@ -283,6 +291,29 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         }
     }
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![] })
+}
+
+/// `frame`, the machine's own Status, with what a project's own engine there said of itself: its models, environments, warm set,
+/// residents, queue and measured times beside the machine's.
+fn with_own(mut frame: v1::StatusFrame, own: v1::StatusFrame) -> v1::StatusFrame {
+    frame.models.extend(own.models);
+    frame.environments.extend(own.environments);
+    frame.warm.extend(own.warm);
+    frame.resident.extend(own.resident);
+    if let Some(queued) = own.queue {
+        frame.queue.get_or_insert_with(Vec::new).extend(queued);
+    }
+    for timed in own.times.into_iter().flatten() {
+        let times = frame.times.get_or_insert_with(Vec::new);
+        match times.iter_mut().find(|held| held.function == timed.function) {
+            Some(held) => held.runs.extend(timed.runs),
+            None => times.push(timed),
+        }
+    }
+    if frame.link_bytes_per_s <= 0.0 {
+        frame.link_bytes_per_s = own.link_bytes_per_s;
+    }
+    frame
 }
 
 /// An offer in a line of the log: `stand-c finishes in 480 s (Measured, warm)`, `pluto finishes in 390 s (None), ready in 210 s`,
