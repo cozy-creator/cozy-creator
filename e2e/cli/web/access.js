@@ -223,7 +223,13 @@ async function otherChrome(base, project) {
   rmSync(copy, { recursive: true, force: true });
   execFileSync('cp', ['-r', process.env.PLAYWRIGHT, copy]);
   execFileSync('chmod', ['-R', 'a+rX', copy]);
-  const launch = `require(${JSON.stringify(copy)}).chromium.launchServer({ executablePath: ${JSON.stringify(process.env.CHROME)}, headless: true }).then((server) => console.log(server.wsEndpoint()))`;
+  // Chrome's crash handler needs a database it can name: this fresh account's own folders, made here.
+  const launch = `
+    const fs = require('fs'), dir = '/tmp/${OTHER}-chrome-home';
+    for (const sub of ['config', 'cache', 'crash']) fs.mkdirSync(dir + '/' + sub, { recursive: true });
+    const env = { ...process.env, HOME: dir, XDG_CONFIG_HOME: dir + '/config', XDG_CACHE_HOME: dir + '/cache' };
+    require(${JSON.stringify(copy)}).chromium.launchServer({ executablePath: ${JSON.stringify(process.env.CHROME)}, headless: true, env, args: ['--crash-dumps-dir=' + dir + '/crash'] })
+      .then((server) => console.log(server.wsEndpoint()));`;
   const server = spawn('sudo', ['-n', '-u', OTHER, '-H', process.execPath, '-e', launch], { cwd: '/tmp', stdio: ['ignore', 'pipe', 'pipe'] });
   let said = '';
   server.stdout.on('data', (chunk) => { said += chunk; });
