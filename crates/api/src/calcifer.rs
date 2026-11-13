@@ -125,6 +125,10 @@ pub struct Warning {
 /// A run's `Warning` code for a mention its function can't use, left out (cl-944): a note, nothing to act on.
 pub const MENTION_UNUSED: &str = "mention_unused";
 
+/// A run's `Warning` code for a first-party package run from a dev home's packages checkout (xs-195): its branch and commit, a
+/// note.
+pub const FROM_SOURCE: &str = "from_source";
+
 /// A run that has not moved: since when, on which machine, and what that machine costs an hour
 /// (none: not a rental, or its Hub has not said).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,6 +333,15 @@ pub enum ReleaseFrom {
     Latest,
     /// Local code: its source as it is now.
     Local,
+    /// A first-party package from a dev home's packages checkout (xs-195): its source at the checkout's commit.
+    Source,
+}
+
+impl ReleaseFrom {
+    /// Whether it runs code from this computer, not a release.
+    pub fn local(self) -> bool {
+        matches!(self, ReleaseFrom::Local | ReleaseFrom::Source)
+    }
 }
 
 impl fmt::Display for ReleaseFrom {
@@ -338,6 +351,7 @@ impl fmt::Display for ReleaseFrom {
             ReleaseFrom::Installed => "installed",
             ReleaseFrom::Latest => "the Hub's latest",
             ReleaseFrom::Local => "local",
+            ReleaseFrom::Source => "from source",
         })
     }
 }

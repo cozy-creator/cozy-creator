@@ -15,7 +15,7 @@ use axum::{
     response::Response,
 };
 use api::{
-    calcifer::{Kind as RunKind, MachineEstimate, MachineKind, MachineState, Note, NoteLevel, On, RunEstimate, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted},
+    calcifer::{Kind as RunKind, MachineEstimate, MachineKind, MachineState, Note, NoteLevel, On, RunEstimate, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted, Warning},
     code::LocalCode,
     error::{Error, Kind},
     interface::{Callable, Interface},
@@ -91,12 +91,17 @@ pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<Run
 }
 
 async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
-    let bound = match &ask.code {
+    let home = api.machines.hubs.home();
+    // A dev home's checkout's first-party package is local code too (xs-195).
+    let code = match &ask.code {
+        Some(code) => Some(code.clone()),
+        None => crate::checkout::named(&ask.target).map(|(path, _)| crate::local_code::own(home, &path)).transpose()?,
+    };
+    let bound = match &code {
         // Local code rents with its install, which the call then follows to its machine.
         Some(code) => {
             let on = ask.on.first().cloned().unwrap_or_else(|| default_on(api));
             let hub = hub(api, &ask.hub);
-            let home = api.machines.hubs.home();
             let origin = api::config::Origin::parse(&hub)?;
             let source = crate::local_code::source(home, code, &api.machines.hubs, &origin).await?;
             crate::local_code::install_run(home, &hub, on, &source)
@@ -427,7 +432,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     }
     // Local code installs as it resolves. A package answers for itself first: one named without a
     // function lists its functions on an OS that runs no models here.
-    if ask.code.is_some() {
+    if ask.code.is_some() || crate::checkout::named(&ask.target).is_some() {
         api::calcifer::local_usable(&on.to_string())?;
         // Refused before that install, not after it.
         project_of(api, ask)?;
@@ -484,6 +489,11 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let named = format!("{package}/{}", callable.name);
     let (interface, release) = (code.interface, code.release);
     let (mut submit, mut notes) = Box::pin(call(api, code, callable, ask, key, &hub)).await?;
+    if let Resolved::Local { local, .. } = &resolved
+        && let Some(from) = &local.from
+    {
+        submit.warnings.push(Warning { code: api::calcifer::FROM_SOURCE.into(), message: from.line() });
+    }
     // Placed by its machines' quotes, the payload bound: a published release among several, and every machine when asked for them.
     let size = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).map(|input| v1::JobSize::of(&input)).unwrap_or_default();
     let gpus = ask.gpus.unwrap_or(0);

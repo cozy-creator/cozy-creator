@@ -95,12 +95,15 @@ fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBu
 
 pub(crate) use api::target::local;
 
-/// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path): a folder of
-/// Calcifer's own computer, as the project is, and the function it names. None: `text` is not written as a path (a published
-/// name). A client's own code comes by content instead (`copied`).
+/// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path), or a
+/// first-party package a dev home's checkout holds (`qwen-image-2/generate`, `checkout::named`): a folder of Calcifer's own
+/// computer, as the project is, and the function it names. None: a published name. A client's own code comes by content instead
+/// (`copied`).
 pub(crate) fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Result<(PathBuf, Option<String>), Error>> {
     let raw = text.trim();
-    let path = local(raw, cwd.unwrap_or(Path::new("")), home)?;
+    let Some(path) = local(raw, cwd.unwrap_or(Path::new("")), home) else {
+        return crate::checkout::named(raw).map(Ok);
+    };
     if !path.is_absolute() {
         let said = format!("{raw} is relative, and names no folder of the project's");
         return Some(Err(Error::new(Kind::Usage, "target_relative", said).remedy("name local code by its path from the project's folder")));
@@ -154,7 +157,14 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
 /// A folder of Calcifer's own (a project's `with: ./dir`) as local code: read as a client reads its own, and copied as a
 /// client's is, so the one path from here on is the copy's.
 pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
-    let staged = shared::stage(path, Some(&crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?))?;
+    let memo = crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?;
+    let staged = match crate::checkout::package_at(path) {
+        Some(_) => {
+            let patched = crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("patched"), "patched")?;
+            crate::checkout::stage(path, Some(&memo), &patched)?
+        }
+        None => shared::stage(path, Some(&memo))?,
+    };
     if !staged.left.is_empty() && crate::private_io::current().is_none() {
         tracing::info!("left out of {}: {}", path.display(), staged.left.join(", "));
     }
@@ -466,7 +476,8 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         files,
         project: relative(&project_dir),
         locals: locals.iter().map(|l| relative(l)).collect(),
-        callees: callees(&project_dir)?,
+        // The checkout's packages it calls are its path dependencies here, named as the packages they are (xs-195).
+        callees: callees(&project_dir)?.into_iter().chain(crate::checkout::of(code).into_iter().flat_map(|from| from.callees)).collect(),
         wheels,
     };
     let own = match manifest.project.is_empty() {
@@ -843,7 +854,10 @@ pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
 /// interface (kept for this source and Runtime, or what its install answered). While an install
 /// it asked for is going, `install` is that run and `interface` is None: follow it, then ask again.
 pub(crate) struct Prepared {
+    /// `local/<name>`, or the first-party name of a package from the dev home's checkout (`_/qwen-image-2`).
     pub package: String,
+    /// The checkout and commit it came from, when it did (xs-195).
+    pub from: Option<crate::checkout::From>,
     pub source: v1::LocalSource,
     pub files: Vec<StagedInput>,
     pub interface: Option<Value>,
@@ -872,8 +886,10 @@ pub(crate) async fn prepare(
     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
     let code = source(&home, local, hubs, &origin).await?;
     let runtime = runtime(api, on).await;
+    let from = crate::checkout::of(local);
     let prepared = |interface, installation, machine, install| Prepared {
-        package: code.package.clone(),
+        package: from.as_ref().map_or_else(|| code.package.clone(), |from| from.package.clone()),
+        from: from.clone(),
         source: code.source.clone(),
         files: code.inputs.clone(),
         interface,
@@ -1230,10 +1246,15 @@ fn last_runtime(api: &Api, on: &On) -> Option<String> {
     Some(status.runtime).filter(|runtime| !runtime.is_empty())
 }
 
-/// `code` as a run `on` its machine reads it: `local/<name>` and its interface. What that machine's Runtime said installing this
+/// `code` as a run `on` its machine reads it: `local/<name>` (a checkout's first-party name, xs-195) and its interface. What that machine's Runtime said installing this
 /// very source, else Runtime's static describer, using its lock, plain version bounds or PyPI's newest. That can
 /// be older than the machine's, and refuse what the machine runs. No package code runs and no machine is asked.
 pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
+    let (package, document) = described(api, code, on, hub).await?;
+    Ok((crate::checkout::of(code).map_or(package, |from| from.package), document))
+}
+
+async fn described(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
     let runtime = last_runtime(api, on);
     let held = if crate::private_io::current().is_some() {
         copied(api.machines.hubs.home(), code)?;

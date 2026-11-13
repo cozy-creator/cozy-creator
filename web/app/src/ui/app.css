@@ -3481,6 +3481,19 @@ a.tab:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A first-party package from the dev home's packages checkout (xs-195). */
+.tool-source,
+.image-tool-source {
+  flex: none;
+  color: var(--mute);
+  font-size: var(--small);
+  white-space: nowrap;
+}
+.image-tool-source {
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tool-off {
   flex: none;
   padding: 2px;

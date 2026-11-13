@@ -72,6 +72,9 @@ pub struct CalciferConfig {
     /// Tests only: a shorter window than the fixed 3 hours in which Undo can bring a deleted box back, after which its files leave
     /// its project (cl-919).
     pub undo_seconds: Option<u32>,
+    /// A packages checkout whose first-party packages run from source instead of the Hub (xs-195). Read only with `dev = true` on
+    /// an RC build.
+    pub packages: Option<PathBuf>,
 }
 
 /// `[machine]`: this computer's machine (TensorD, `cozy machine serve`), which judges these. A

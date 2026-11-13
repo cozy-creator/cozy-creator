@@ -1102,6 +1102,20 @@ impl Store {
         })
     }
 
+    /// Whether this computer is at rest: no run going or waiting but an update, and none ended in the last `quiet_ms` (xs-195:
+    /// `local` moves to the RC only then, never between a render's steps).
+    pub(crate) fn at_rest(&self, quiet_ms: i64) -> Result<bool> {
+        self.read(|conn| {
+            let busy: bool = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM runs WHERE state <> 'settled' AND kind <> 'update')
+                     OR EXISTS (SELECT 1 FROM runs WHERE settled_at > ?1 AND kind <> 'update')",
+                [now_ms() - quiet_ms],
+                |r| r.get(0),
+            )?;
+            Ok(!busy)
+        })
+    }
+
     /// Whether an update of `machine` is yet to end: what's sent to it waits for that.
     pub(crate) fn updating(&self, machine: &str) -> Result<bool> {
         self.read(|conn| {
