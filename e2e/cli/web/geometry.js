@@ -21,25 +21,28 @@ const onCanvas = (page, point) => page.evaluate(({ x, y }) => {
 /** Each box's row as the API holds it: `{x, y, w}` by name. */
 const rows = async (project) => (await project.api.get(project.at('/canvas'))).cards;
 
-/** Each box drawn, by name: its card's rect on the canvas (flow units) and on screen. */
+/** Each box drawn, by name: where its node is on the canvas (React Flow's own translate, its row as drawn) and its card's size, both in
+ *  canvas units, and the card's rect on the canvas, which a box's body may be narrower than its row and inset in. */
 const drawn = (page) => page.evaluate(() => {
   const pane = document.querySelector('.react-flow').getBoundingClientRect();
   const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   return Object.fromEntries([...document.querySelectorAll('.react-flow__node .card[data-asset]')].map((card) => {
+    const at = new DOMMatrix(getComputedStyle(card.closest('.react-flow__node')).transform);
     const r = card.getBoundingClientRect();
-    return [card.dataset.asset, { x: (r.left - pane.left - m.e) / m.a, y: (r.top - pane.top - m.f) / m.a, w: r.width / m.a, h: r.height / m.a, screen: { x: r.left, y: r.top, w: r.width, h: r.height } }];
+    const rect = { x: (r.left - pane.left - m.e) / m.a, y: (r.top - pane.top - m.f) / m.a, w: r.width / m.a, h: r.height / m.a };
+    return [card.dataset.asset, { x: at.e, y: at.f, w: rect.w, h: rect.h, card: rect }];
   }));
 });
 
 const on = (a, b) => a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5;
 
-/** Every pair of boxes on each other, `a on b`: as drawn, and as the API's rows place them at the height each is drawn. [] when none. */
+/** Every pair of boxes on each other, `a on b`: their cards as drawn, and the API's rows at the height each is drawn. [] when none. */
 async function lying(page, project) {
   const [shown, held] = [await drawn(page), await rows(project)];
   const names = Object.keys(shown).sort();
   const said = [];
   for (const [i, a] of names.entries()) for (const b of names.slice(i + 1)) {
-    if (on(shown[a], shown[b])) said.push(`${a} on ${b}, drawn`);
+    if (on(shown[a].card, shown[b].card)) said.push(`${a} on ${b}, drawn`);
     const [ra, rb] = [held[a], held[b]];
     if (ra && rb && on({ ...ra, w: ra.w ?? shown[a].w, h: shown[a].h }, { ...rb, w: rb.w ?? shown[b].w, h: shown[b].h })) said.push(`${a} on ${b}, in the API`);
   }

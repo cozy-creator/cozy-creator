@@ -164,7 +164,20 @@ const test = base.extend({
     const folder = join(need('OUT'), 'web', 'projects', `${MADE}${slug(testInfo.title)}-${randomBytes(4).toString('hex')}`);
     leftovers.push(folder);
     const passphrase = projectOptions.encrypted ? randomBytes(18).toString('base64url') : undefined;
-    const opened = await api.post('/v1/projects', { path: folder, starter: projectOptions.starter, ...(passphrase ? { passphrase } : { unencrypted: true }) });
+    const body = { path: folder, starter: projectOptions.starter, ...(passphrase ? { passphrase } : { unencrypted: true }) };
+    // Calcifer refuses a creation while another is being made, as if a source capture held it (409 `source_capture_busy`: creation takes
+    // its fence by try_write, so two at once collide): asked again, backing off, as its message says to. Anything else is the cell's failure.
+    let opened;
+    for (let wait = 100, until = Date.now() + 60_000; ; wait = Math.min(wait * 2, 2000)) {
+      const answer = await api.raw('POST', '/v1/projects', { body });
+      const text = await answer.text();
+      if (answer.ok) {
+        opened = JSON.parse(text);
+        break;
+      }
+      if (answer.status !== 409 || !text.includes('"source_capture_busy"') || Date.now() > until) throw new Error(`POST /v1/projects: ${answer.status} ${text.slice(0, 500)}`);
+      await new Promise((done) => setTimeout(done, wait));
+    }
     await use(new Project(api, opened, passphrase));
   },
 

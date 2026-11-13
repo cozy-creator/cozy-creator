@@ -6,8 +6,8 @@
 const { createHash } = require('crypto');
 const { readdirSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasIdle, focus, middle, openPoint, png } = require('./fixtures');
-const { drag, rows, rowsOf } = require('./geometry');
+const { test, expect, box, canvasIdle, focus, middle, png } = require('./fixtures');
+const { drag, drawn, rows, rowsOf } = require('./geometry');
 
 const WORDS = 'a lighthouse in <hei.2> beside <other>';
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -68,7 +68,13 @@ test('box-actions', async ({ page, project, api }) => {
     await clickOn('words', 'Shift');
     await expect(box(page, 'words')).toHaveAttribute('aria-selected', 'true');
     await page.keyboard.press('ControlOrMeta+c');
-    const spot = await openPoint(page);
+    // The pointer on open canvas under the row, in the middle of what's visible: the copies land around it, all in view.
+    const spot = await page.evaluate(() => {
+      const left = document.querySelector('.tools').getBoundingClientRect().right;
+      const below = Math.max(...[...document.querySelectorAll('.react-flow__node .card[data-asset]')].map((card) => card.getBoundingClientRect().bottom));
+      return { x: Math.round((left + innerWidth) / 2), y: Math.round(below + 220) };
+    });
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), spot), `the pointer on open canvas at ${JSON.stringify(spot)}`).toBe(true);
     await page.mouse.move(spot.x, spot.y);
     await page.keyboard.press('ControlOrMeta+v');
     await expect.poll(names, { message: 'two boxes more' }).toEqual([...before, 'hei_2', 'words_2'].sort());
@@ -93,11 +99,16 @@ test('box-actions', async ({ page, project, api }) => {
     expect.soft((await project.asset(copy)).sha256, `${copy}: Ctrl+D copies other`).toBe(original);
 
     before = await names();
-    const was = (await rows(project)).other;
+    const [was, drawnWas] = [(await rows(project)).other, (await drawn(page)).other];
     const from = await middle(box(page, 'other').locator('.head .nm'));
     await page.keyboard.press('Escape');
     await drag(page, from, { x: from.x, y: from.y + 320 }, 'Alt');
     copy = await another(before, 'an Alt-drag');
+    // What was carried goes back where it was, as it's drawn too.
+    await expect.poll(async () => {
+      const now = (await drawn(page)).other;
+      return Math.abs(now.x - drawnWas.x) + Math.abs(now.y - drawnWas.y) < 1;
+    }, { message: 'other drawn back where it was' }).toBe(true);
     expect.soft((await project.asset(copy)).sha256, `${copy}: an Alt-drag copies other`).toBe(original);
     const after = await rowsOf(project, ['other', copy]);
     expect.soft({ x: after.other.x, y: after.other.y }, 'and leaves other where it was').toEqual({ x: was.x, y: was.y });

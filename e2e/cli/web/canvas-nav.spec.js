@@ -36,15 +36,16 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
   const page = await context.newPage();
   await signIn(page, project.url());
   const cardsDrawn = page.locator('.react-flow__node .card[data-asset]');
-  // Opened for the first time, it fits them all.
-  await expect(cardsDrawn).toHaveCount(COUNT);
-  await canvasIdle(page);
+  await expect(cardsDrawn.first()).toBeVisible();
   const zoomButton = page.getByRole('button', { name: /more zoom options$/ });
   const zoomMenu = async (item) => {
     await zoomButton.click();
     await page.getByRole('menuitem', { name: new RegExp(`^${item}`) }).click();
     await canvasIdle(page);
   };
+  // All of them in view to begin from.
+  await zoomMenu('Zoom to fit');
+  await expect(cardsDrawn).toHaveCount(COUNT);
   const shows = async (zoom) => expect.soft(zoomButton, `the zoom says ${Math.round(zoom * 100)}%`).toHaveText(`${Math.round(zoom * 100)}%`);
   /** The dots drawn at the step `zoom` asks for. */
   const dotsFollow = async (zoom) => {

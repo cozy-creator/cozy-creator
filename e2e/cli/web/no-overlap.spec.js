@@ -37,7 +37,11 @@ test('no-overlap', async ({ page, project, api }) => {
     await expect.poll(async () => (await rows(project)).A?.x, { message: 'A is let go' }).not.toBe(ROW.A.x);
     await settled(page, project, 'A over B');
     const now = await rows(project);
-    expect.soft(Math.abs(now.A.x - 200) <= 2 && Math.abs(now.A.y) <= 2, `A stays where it was let go, at 200,0: ${JSON.stringify(now.A)}`).toBe(true);
+    // Where it was let go, its middle, at its own width or a little less (Paul, 11-06: "the new object can also of course shrink in size if
+    // needed slightly"), as place.js judges a crowded drop: 80% of its width at least.
+    const tall = (w) => 32 + (w * 150) / 240;
+    const middle = { x: now.A.x + now.A.w / 2, y: now.A.y + tall(now.A.w) / 2 };
+    expect.soft(Math.hypot(middle.x - (200 + 120), middle.y - tall(240) / 2) <= 4 && now.A.w >= 0.8 * 240, `A stays where it was let go, its middle at 320,${tall(240) / 2}: ${JSON.stringify(now.A)}`).toBe(true);
     expect.soft(now.B.x, 'B is pushed').not.toBe(ROW.B.x);
     expect.soft(now.B.y, 'along the row').toBe(ROW.B.y);
   });
@@ -50,8 +54,12 @@ test('no-overlap', async ({ page, project, api }) => {
   });
 
   await test.step('have the CLI place one box on an occupied spot, the way place.js lays boxes out', async () => {
-    // As place.js lays them out: the canvas's PATCH, as the holder (`cozy` has no verb that places a box).
+    // All of them in view, then n1 put where C is as place.js lays boxes out: the canvas's PATCH, as the holder (`cozy` has no verb that places a box).
+    await page.getByRole('button', { name: /more zoom options$/ }).click();
+    await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
+    await canvasIdle(page);
     const [held, shown] = [await rows(project), await drawn(page)];
+    expect(Object.keys(shown).sort(), 'every box drawn').toEqual([...Object.keys(ROW), ...ADDED].sort());
     const spot = { x: held.C.x, y: held.C.y, w: held.C.w ?? 240 };
     await api.patch(project.at('/canvas'), { cards: { n1: spot } });
     await expect.poll(async () => {

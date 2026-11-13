@@ -48,8 +48,12 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
   /** A box where it was let go: on screen over the point, and its row the point's place. */
   const whereLetGo = async (name) => {
     const { what, point, flow } = made[name];
-    const rect = await box(page, name).boundingBox();
-    expect.soft(rect.x <= point.x && point.x <= rect.x + rect.width && rect.y <= point.y && point.y <= rect.y + rect.height, `${what}: drawn over where it was let go, ${JSON.stringify(point)} in ${JSON.stringify(rect)}`).toBe(true);
+    // The box as drawn: its node, its name over its card, and the card.
+    const rect = await box(page, name).evaluate((card) => {
+      const all = [card.closest('.react-flow__node'), card, card.querySelector('.head')].filter(Boolean).map((el) => el.getBoundingClientRect());
+      return { left: Math.min(...all.map((r) => r.left)), top: Math.min(...all.map((r) => r.top)), right: Math.max(...all.map((r) => r.right)), bottom: Math.max(...all.map((r) => r.bottom)) };
+    });
+    expect.soft(rect.left <= point.x && point.x <= rect.right && rect.top <= point.y && point.y <= rect.bottom, `${what}: drawn over where it was let go, ${JSON.stringify(point)} in ${JSON.stringify(rect)}`).toBe(true);
     const row = (await rowsOf(project, [name]))[name];
     const want = placedAt(flow);
     expect.soft(Math.abs(row.x - want.x) <= 1 && Math.abs(row.y - want.y) <= 1, `${what}: its row ${JSON.stringify(row)} is the drop's place on the canvas, ${JSON.stringify(want)}`).toBe(true);
