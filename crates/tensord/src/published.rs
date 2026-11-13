@@ -183,6 +183,8 @@ pub(crate) struct Providers {
     pub civitai: String,
 }
 
+/// Checkpoints by header, each with the components read (`access::Selected`).
+type Selected = Vec<(String, Vec<String>)>;
 /// Where a preparation's stage and bytes are reported as they change.
 pub(crate) type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
 
@@ -1095,15 +1097,9 @@ impl Publisher {
                 return Ok(held);
             }
         }
-        // An earlier environment of this release (another SDK's): its card, kept beside it, and
-        // the Runtime pair it holds. A kept card whose wheels the store no longer holds is read
-        // again: its URLs expire.
+        let card = self.card(service, actor, request, &release, &catalog)?;
+        // An earlier environment of this release (another SDK's): the Runtime pair it holds.
         let earlier = self.earlier(service, actor, request, &release);
-        let kept = earlier.as_ref().and_then(|dir| serde_json::from_slice::<Card>(&fs::read(dir.join(CARD)).ok()?).ok());
-        let card = match kept.filter(|card| card.wheels.iter().all(|wheel| self.held_file(wheel))) {
-            Some(card) => card,
-            None => hub_card(&catalog()?, &request.package, &release, &self.sdk.python)?,
-        };
         let locked = read_lock(&card.pyproject, &card.lock, Some(source))?;
         let before = earlier.and_then(|dir| fs::read(dir.join("generation.json")).ok())
             .and_then(|raw| serde_json::from_slice::<crate::catalog::Generation>(&raw).ok())
@@ -1163,6 +1159,38 @@ impl Publisher {
             Err(error) => tracing::warn!("package {} {}: its earlier installations stay: {error}", installed.package, installed.release),
         }
         Ok(installed)
+    }
+
+    /// `release`'s card: as an earlier environment of it (another SDK's) kept it beside itself, else read at its Hub. A kept
+    /// card whose wheels the store no longer holds is read again: its URLs expire.
+    fn card(&self, service: &Service, actor: &str, request: &Request, release: &str, catalog: &dyn Fn() -> Result<Catalog, Failure>) -> Result<Card, Failure> {
+        let earlier = self.earlier(service, actor, request, release);
+        let kept = earlier.as_ref().and_then(|dir| serde_json::from_slice::<Card>(&fs::read(dir.join(CARD)).ok()?).ok());
+        match kept.filter(|card| card.wheels.iter().all(|wheel| self.held_file(wheel))) {
+            Some(card) => Ok(card),
+            None => hub_card(&catalog()?, &request.package, release, &self.sdk.python),
+        }
+    }
+
+    /// The installation of the request's release this signer holds, its environment here; none: one installs.
+    pub(crate) fn held_installation(&self, service: &Service, actor: &str, request: &Request) -> io::Result<Option<Installation>> {
+        let held = service.engine.installation(actor, &self.alias(service, actor, request)?)?;
+        Ok(held.filter(|held| service.catalog.resolve(&held.generation).is_ok()))
+    }
+
+    /// The installation the request's release will be, before its environment is built (cl-966): its card is its static
+    /// reading, the interface its installation holds.
+    pub(crate) fn reading(&self, service: &Service, actor: &str, request: &Request) -> Result<Installation, Failure> {
+        let (org, name) = request.package.split_once('/').ok_or(("release_root_invalid", "package must be org/name".to_string()))?;
+        let source = request.hub("a release")?;
+        let catalog = || Catalog::new(source).map_err(|e| ("catalog_read_failed", e.0));
+        let release = match request.release.is_empty() {
+            true => newest_release(&catalog()?, org, name)?,
+            false => request.release.clone(),
+        };
+        let card = self.card(service, actor, request, &release, &catalog)?;
+        let interface = serde_json::to_vec(&card.interface).map_err(|e| io_failure(io::Error::other(e)))?;
+        Ok(Installation { actor: actor.into(), package: request.package.clone(), release, interface, hub: request.origin(), ..Default::default() })
     }
 
     /// Builds one immutable environment at its final path (its interpreter embeds the path);
@@ -1340,13 +1368,8 @@ impl Publisher {
         Ok(lock)
     }
 
-    /// The run's model grants and its precision warnings. Each slot takes the run's choice, else
-    /// its declared default (also under a choice of adapters alone); a Hub one is exact as its
-    /// choice names it (th-241), else in the first lane of the rule's order its release
-    /// publishes (`precision`). The request's GPU
-    /// count chooses the group independently of the weight lane; 0 uses the widest group every
-    /// slot supports on the machine. A slot with neither is refused; an on-demand slot that does
-    /// not bind is the plan's `unbound` instead (xs-186).
+    /// The run's plan and its precision warnings, its slots resolved (`grants`) and the plan journaled
+    /// for its installation.
     fn model(
         &self,
         service: &Service,
@@ -1356,6 +1379,71 @@ impl Publisher {
         request: &Request,
         job: &Job,
     ) -> Result<(Plan, Vec<String>), Failure> {
+        // Read before its names: one read anew meanwhile moves it, and this plan stays under the old.
+        let catalog = service.engine.with_journal(|j| j.catalog()).map_err(io_failure)?;
+        let Granted { grants, warnings: said, unbound } = self.grants(service, gpu, installation, request, job)?;
+        let warnings: Vec<String> = gpu.problems().into_iter().chain(said).collect();
+        job.stage(match request.package.is_empty() {
+            true => "preparing the plan".to_owned(),
+            false => format!("preparing the plan for {}", request.package),
+        });
+        let plan = gpu
+            .prepare_root(
+                installation,
+                &request.entrypoint,
+                &request.choices,
+                &grants,
+                unbound,
+                request.gpus,
+            )
+            .map_err(|e| ("model_preparation_failed", e.to_string()))?;
+        service
+            .engine
+            .bind_preparation(Preparation {
+                actor: actor.into(),
+                id: plan.id.clone(),
+                installation: installation.alias.clone(),
+                document: serde_json::to_vec(&plan).map_err(|e| io_failure(io::Error::other(e)))?,
+            })
+            .map_err(io_failure)?;
+        // One that left a slot unbound is made again by the next run: a model published since binds then.
+        if plan.unbound.is_empty() {
+            let key = Self::resolution_key(installation, request, &machine_row(gpu), catalog).map_err(io_failure)?;
+            let said = Value::from(warnings.clone()).to_string();
+            service
+                .engine
+                .with_journal(|j| {
+                    j.bind_resolution(actor, &key, &installation.package, &plan.id)?;
+                    j.bind_named(&warnings_key(&key), &said)
+                })
+                .map_err(io_failure)?;
+        }
+        Ok((plan, warnings))
+    }
+
+    /// What `request`'s function reads up front and may read on demand (`Plan::upfront`, `Plan::possible`), from its
+    /// installation's interface alone: each slot resolved and its structure landed, nothing journaled, so its environment
+    /// need not be built yet (cl-966).
+    pub(crate) fn predicted(&self, service: &Service, request: &Request, observe: Option<Observer>, stop: Option<&Stop>) -> Result<(Selected, Selected), Failure> {
+        let installation = request.installed.as_ref().ok_or(("release_root_installation_absent", "no installation to read".to_string()))?;
+        if !declares_models(installation, &request.entrypoint) {
+            return Ok(Default::default());
+        }
+        let gpu = service.pool().ok_or(("capability_unavailable", "this machine runs no functions".to_string()))?;
+        let job = Job { observer: observe, stop: stop.cloned(), order: request.order, caller: service.engine.caller_id(&request.run), ..Default::default() };
+        let Granted { grants, unbound, .. } = self.grants(service, &gpu, installation, request, &job)?;
+        let plan = gpu.prepare_root(installation, &request.entrypoint, &request.choices, &grants, unbound, request.gpus)
+            .map_err(|e| ("model_preparation_failed", e.to_string()))?;
+        Ok((plan.upfront(), plan.possible()))
+    }
+
+    /// Each model slot of the request's function resolved, all at once (cl-966): its choice, else its declared default (also
+    /// under a choice of adapters alone); a Hub one exact as its choice names it (th-241), else in the first lane of the rule's
+    /// order its release publishes (`precision`), its checkpoint's structure landed. The request's GPU count chooses the group
+    /// independently of the weight lane; 0 uses the widest group every slot supports on the machine. A slot with neither is
+    /// refused; an on-demand slot that does not bind is `unbound` instead (xs-186). An installation not built yet (no
+    /// generation: its static reading) has its adapter views checked once it is.
+    fn grants(&self, service: &Service, gpu: &Pool, installation: &Installation, request: &Request, job: &Job) -> Result<Granted, Failure> {
         let interface: Value = serde_json::from_slice(&installation.interface).map_err(|_| {
             (
                 "package_prepare_interface_invalid",
@@ -1372,8 +1460,6 @@ impl Publisher {
         let entry = api::interface::entrypoint(&interface, &request.entrypoint).cloned().unwrap_or_default();
         let degree = gpu.degree(&entry, request.gpus);
         let hardware = gpu.hardware(degree);
-        // Read before its names: one read anew meanwhile moves it, and this plan stays under the old.
-        let catalog = service.engine.with_journal(|j| j.catalog()).map_err(io_failure)?;
         let main = main_model(&slots);
         // One slot's grant, its Hub checkpoint and its warnings.
         let pick = |slot: &Value| -> Result<(ModelGrant, Option<Named>, Vec<String>), Failure> {
@@ -1442,17 +1528,26 @@ impl Publisher {
                 let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order);
                 // It adapts a component this call runs (`components=`; none declared: any).
                 let runs = slot_components(slot);
-                opens_views(service, installation, choice)?;
+                if !installation.generation.is_empty() {
+                    opens_views(service, installation, choice)?;
+                }
                 warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, &mut grant, &runs, &request.providers, job)?);
             }
             Ok((grant, warnings))
         };
-        let (mut grants, mut warnings, mut unbound) = (vec![], gpu.problems(), BTreeMap::new());
-        for slot in &slots {
-            match bind(slot) {
+        // Each slot on a thread of its own: a cold call's names and headers come in one round, not one after another.
+        // Each thread works in the run's project, as this one does.
+        let private = crate::private_io::current();
+        let bound: Vec<_> = std::thread::scope(|scope| {
+            let each: Vec<_> = slots.iter().map(|slot| scope.spawn(|| crate::private_io::within(private.clone(), || bind(slot)))).collect();
+            each.into_iter().map(|slot| slot.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
+        });
+        let mut granted = Granted::default();
+        for (slot, bound) in slots.iter().zip(bound) {
+            match bound {
                 Ok((grant, said)) => {
-                    grants.push(grant);
-                    warnings.extend(said);
+                    granted.grants.push(grant);
+                    granted.warnings.extend(said);
                 }
                 // A slot the call may never read: a definite answer why it did not bind fails the
                 // call only when its function reads it. A Hub that doesn't answer is waited for
@@ -1462,48 +1557,22 @@ impl Publisher {
                     if crate::private_io::current().is_none() {
                         tracing::info!(slot = %parameter, code = %refusal.0, "an on-demand slot is unbound: {}", refusal.1);
                     }
-                    unbound.insert(parameter, refusal);
+                    granted.unbound.insert(parameter, refusal);
                 }
                 Err(failure) => return Err(failure),
             }
         }
-        job.stage(match request.package.is_empty() {
-            true => "preparing the plan".to_owned(),
-            false => format!("preparing the plan for {}", request.package),
-        });
-        let plan = gpu
-            .prepare_root(
-                installation,
-                &request.entrypoint,
-                &request.choices,
-                &grants,
-                unbound,
-                request.gpus,
-            )
-            .map_err(|e| ("model_preparation_failed", e.to_string()))?;
-        service
-            .engine
-            .bind_preparation(Preparation {
-                actor: actor.into(),
-                id: plan.id.clone(),
-                installation: installation.alias.clone(),
-                document: serde_json::to_vec(&plan).map_err(|e| io_failure(io::Error::other(e)))?,
-            })
-            .map_err(io_failure)?;
-        // One that left a slot unbound is made again by the next run: a model published since binds then.
-        if plan.unbound.is_empty() {
-            let key = Self::resolution_key(installation, request, &machine_row(gpu), catalog).map_err(io_failure)?;
-            let said = Value::from(warnings.clone()).to_string();
-            service
-                .engine
-                .with_journal(|j| {
-                    j.bind_resolution(actor, &key, &installation.package, &plan.id)?;
-                    j.bind_named(&warnings_key(&key), &said)
-                })
-                .map_err(io_failure)?;
-        }
-        Ok((plan, warnings))
+        Ok(granted)
     }
+}
+
+/// A function's model slots resolved (`Publisher::grants`): each bound one's grant, the on-demand ones that did not bind by
+/// parameter with why, and their warnings.
+#[derive(Default)]
+struct Granted {
+    grants: Vec<ModelGrant>,
+    warnings: Vec<String>,
+    unbound: BTreeMap<String, (String, String)>,
 }
 
 /// A named release as the newest of its series (xs-183): a model republished complete as a patch
@@ -2072,7 +2141,7 @@ fn model_slots(interface: &Value, entrypoint: &str) -> Option<Vec<Value>> {
     entry["models"].is_array().then(|| api::interface::models(entry).to_vec())
 }
 
-fn declares_models(installation: &Installation, entrypoint: &str) -> bool {
+pub(crate) fn declares_models(installation: &Installation, entrypoint: &str) -> bool {
     serde_json::from_slice(&installation.interface)
         .ok()
         .and_then(|i: Value| model_slots(&i, entrypoint))
