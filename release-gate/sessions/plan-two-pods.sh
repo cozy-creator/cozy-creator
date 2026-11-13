@@ -64,7 +64,7 @@ since=$(date -u -d "@$((ASK / 1000))" +%Y-%m-%dT%H:%M:%S)
 said=$(awk -v t="$since" 'substr($1, 1, 19) >= t' "$OUT/planned.log" | grep -E "goes to $went: " | tail -1)
 say "planned: ${said:-no placement line}"
 [ "$went" = "$WARM" ] || fail "the third shot went to $went, not $WARM, which holds its model"
-grep -q "$went finishes in [0-9]* s (Measured, warm)" <<< "$said" || fail "the third shot's quote isn't its warm time: ${said:-no placement line}"
+grep -qE "$went finishes in [0-9]+ s \(Measured, warm[;)]" <<< "$said" || fail "the third shot's quote isn't its warm time: ${said:-no placement line}"
 quoted=$(grep -oE "$went finishes in [0-9]+ s" <<< "$said" | grep -oE '[0-9]+' | head -1)
 actual=$(( ($(jq -r .settled_at_ms <<< "$run") - ASK) / 1000 ))
 bound=$(( actual / 5 > 30 ? actual / 5 : 30 ))
