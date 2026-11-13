@@ -524,6 +524,12 @@ impl Provider {
                         if process.birth().pid == mounted.child.id() {
                             continue;
                         }
+                        // The provider is the supervisor's own child. Read at its acknowledgment, the tree can
+                        // still hold the fusermount that mounted the view, exiting: its exit is no unmount.
+                        #[cfg(not(windows))]
+                        if platform::process::parent_of(process.birth().pid).ok() != Some(mounted.child.id()) {
+                            continue;
+                        }
                         #[cfg(windows)]
                         if process
                             .executable()
