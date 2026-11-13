@@ -2370,6 +2370,27 @@ async fn runs(
             .collect(),
     };
     let judged = |j: usize| judges.contains(&name_key(&doc.assets[j].name));
+    // A node named that reads, all the way up, something out of date or with no take isn't brought up to date by standing: a cut reads
+    // an out-of-date clip's newest take, so it can stand on one its words no longer make. What it reads renders first, then it. A read
+    // of one take (`<shot_2.1>`) is that take, whatever its box's words say now.
+    let behind = |i: usize| {
+        if all || !matches!(stand[i].state, Stand::Current(_)) {
+            return false;
+        }
+        let (mut up, mut seen) = (vec![i], HashSet::new());
+        while let Some(k) = up.pop() {
+            for j in doc.assets[k].reads.iter().filter(|read| read.number.is_none()).map(|read| read.asset) {
+                if !seen.insert(j) {
+                    continue;
+                }
+                if doc.makes(j) && matches!(stand[j].state, Stand::Stale(_) | Stand::Missing) {
+                    return true;
+                }
+                up.push(j);
+            }
+        }
+        false
+    };
     for i in named {
         let asset = &doc.assets[i];
         let name = asset.name.clone();
@@ -2387,7 +2408,7 @@ async fn runs(
                 said(&name, format!("{name} is rendering: joined"));
                 continue;
             }
-            if stand[i].files.is_some() && !above(i).into_iter().any(judged) {
+            if stand[i].files.is_some() && !above(i).into_iter().any(judged) && !behind(i) {
                 said(&name, match &stand[i].state {
                     Stand::Pinned { version: Some(version), changed } if !changed.is_empty() => {
                         format!("{name} take {version} is approved, though {} changed (--outdated renders it again)", changed.join(", "))
