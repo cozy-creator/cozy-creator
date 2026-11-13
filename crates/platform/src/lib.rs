@@ -12,6 +12,8 @@
 use std::{fmt, io, path::PathBuf};
 
 #[cfg(feature = "seams")]
+pub mod alarm;
+#[cfg(feature = "seams")]
 pub mod contain;
 #[cfg(feature = "seams")]
 pub mod durable;
@@ -28,6 +30,8 @@ pub mod lock;
 #[cfg(all(unix, feature = "seams"))]
 pub mod net;
 #[cfg(feature = "seams")]
+pub mod mounts;
+#[cfg(feature = "seams")]
 pub mod paths;
 #[cfg(feature = "seams")]
 pub mod process;
@@ -43,7 +47,7 @@ pub mod tail;
 #[cfg(feature = "seams")]
 pub mod tools;
 #[cfg(feature = "seams")]
-mod watch;
+pub mod watch;
 
 /// A seam's failure: unsupported on this OS, an I/O or OS call, a service manager, or NVML.
 #[derive(Debug, thiserror::Error)]
@@ -137,6 +141,7 @@ pub enum Seam {
     Paths,
     FileWatch,
     PrivateExecution,
+    MountWatch,
 }
 
 impl fmt::Display for Seam {
@@ -155,6 +160,7 @@ impl fmt::Display for Seam {
             Self::Paths => "paths",
             Self::FileWatch => "file watching",
             Self::PrivateExecution => "protected project execution",
+            Self::MountWatch => "mount watching",
         })
     }
 }

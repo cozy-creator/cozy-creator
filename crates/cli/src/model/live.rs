@@ -277,7 +277,7 @@ impl Preview {
         if !model.tags.is_empty() { lines.push(format!("Tags: {}", model.tags.join(", "))); }
         if let Some(author) = &model.author { lines.push(format!("Publisher: {}", author.name)); }
         if model.role.as_deref() == Some("lora") || model.content_kind == Some(api::calcifer::hub::ModelContentKind::Lora) {
-            if let Some(trigger) = &model.trigger { lines.push(format!("Trigger: {trigger}")); }
+            lines.extend(model.triggers.iter().map(|trigger| format!("Trigger: {trigger}")));
             if let Some(strength) = model.strength { lines.push(format!("Suggested strength: {strength}")); }
         }
         if let Some(release) = model.releases.first() {

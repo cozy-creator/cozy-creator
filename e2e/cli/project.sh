@@ -11,9 +11,28 @@ in_project() { local directory=$1; shift; (cd "$directory" && cozy "$@"); }
 project_api() {
   local directory=$1 suffix=$2; shift 2
   cozy --json machine ls > /dev/null || return
-  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded arg wrote=
   encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
-  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix" || return
+  for arg in "$@"; do case $arg in POST|PATCH|PUT|DELETE|-d|--data*) wrote=1 ;; esac; done
+  [ -z "$wrote" ] || project_integrity "$directory" "$suffix"
+}
+# The rows a read takes against the document they were written with (cl-885): after any write, nowhere different. A Calcifer from
+# before the check (0.24.0's, in the cells that make a project with it) serves no such route, and is no Calcifer under test.
+project_integrity() {
+  local directory=$1 after=${2:-a write} holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded found code
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
+  found=$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$holder")/v1/projects/$encoded/integrity") \
+    || { check "rows_equal_document after $after in $directory: the integrity read failed: $found"; return 0; }
+  code=${found##*$'\n'} found=${found%$'\n'*}
+  if [ "$code" = 404 ] && [ "$(jq -r '.error.code? // empty' <<< "$found" 2> /dev/null)" = unknown_route ]; then
+    return 0
+  elif [ "$code" != 200 ]; then
+    check "rows_equal_document after $after in $directory: the integrity read answered $code: $found"
+  elif [ "$(jq '.differences | length' <<< "$found")" != 0 ]; then
+    check "rows_equal_document after $after in $directory: $(jq -c .differences <<< "$found")"
+  fi
+  return 0
 }
 # project_upload <folder> <file>: the file into that project's own content store, as the page sends it; its sha256:.
 project_upload() {
@@ -362,6 +381,16 @@ soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told noth
 soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$id\"" \
   || check "stream: no run.updated says run $n completed in $id: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
 soon told "$other" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\"" || check "stream: a connection with no projects missed the global run"
+# Another program's change (xs-189: Calcifer watches the folder, it no longer looks): a file leaving files/, as a sync tool's would,
+# and coming back.
+local kept aside=$OUT/stream-aside
+kept=$(find "$R/files" -type f | head -1)
+seen=$(revs "$log" "$id" | wc -l)
+{ [ -n "$kept" ] && mv "$kept" "$aside"; } || check "stream: the landing left nothing in files/"
+soon told_more "$log" "$id" "$seen" || check "stream: a file leaving files/ told nothing"
+seen=$(revs "$log" "$id" | wc -l)
+[ -z "$kept" ] || mv "$aside" "$kept"
+soon told_more "$log" "$id" "$seen" || check "stream: a file back in files/ told nothing"
 [ -z "$(revs "$other" "$id")" ] || check "stream: project changes reached a connection with no interest"
 soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
 [ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"

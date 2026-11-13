@@ -12,7 +12,7 @@ const { execSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectAction, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, storedOf, until, rowsOf, upload } = require('./page');
+const { projectFromPage, projectAction, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, storedOf, until, rowsOf, upload, integrity } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -48,6 +48,11 @@ function check(name, ok, detail) {
   const asset = async (name) => (await api(at)).body.assets.find((row) => row.name === name);
   const folder = (await api(at)).body.path;
   seen.project = { id, folder };
+  // After each write: the rows a read takes are the document's (cl-885).
+  const intact = (after) => {
+    const found = integrity(folder);
+    check(`rows_equal_document_after_${after}`, found.length === 0, found);
+  };
   // What the project holds, box by box, whatever their order: one put back goes at the end.
   const held = () => JSON.stringify(Object.entries(storedOf(folder)).sort(([a], [b]) => a.localeCompare(b)));
   // A box's fields as project.db stores them: none, it isn't there.
@@ -141,10 +146,12 @@ function check(name, ok, detail) {
   await says('delete_written', () => lines('spare'), (held) => held === null);
   await undo();
   check('delete_undone_at_once', (await box('spare').count()) === 1);
+  intact('delete_undone');
   await says('delete_undone_in_the_file', () => lines('spare'), (held) => held?.approved !== undefined);
   await says('delete_undone_its_row', () => row('spare'), (held) => held === '1280,120');
   await redo();
   check('delete_redone_at_once', (await box('spare').count()) === 0);
+  intact('delete_redone');
   await says('delete_redone_in_the_file', () => lines('spare'), (held) => held === null);
   await undo();
   await says('spare_back', () => lines('spare'), Boolean);
@@ -202,6 +209,7 @@ function check(name, ok, detail) {
   }
   await undo();
   check('merge_undone_at_once', (await box('green').count()) === 1);
+  intact('merge_undone');
   await says('merge_undone_in_the_file', () => lines('green'), Boolean);
   merge.red_after_undo = await says('merge_undone_its_version', red, (held) => held.status === 200 && Boolean(held.asset) && !holds(held));
   await redo();
@@ -216,6 +224,7 @@ function check(name, ok, detail) {
   await says('tool_off_written', () => lines('tooled'), (held) => held && held.tool === undefined);
   await undo();
   check('tool_back_at_once', (await box('tooled').locator('.node-tool').count()) === 1);
+  intact('tool_undone');
   await says('tool_undone_in_the_file', () => lines('tooled'), (held) => held?.tool === 'undo-e2e/still' && held.instructions?.includes('a lighthouse'));
   await redo();
   await says('tool_redone', () => lines('tooled'), (held) => held && held.tool === undefined);
@@ -252,6 +261,7 @@ function check(name, ok, detail) {
   const moved = row('red');
   await undo();
   check('move_undone_at_once', (await place('red')) === was, { now: await place('red'), was });
+  intact('move_undone');
   await says('move_undone_in_the_file', () => row('red'), (held) => held === was);
   await redo();
   await says('move_redone', () => row('red'), (held) => held === moved);
@@ -292,6 +302,7 @@ function check(name, ok, detail) {
   check('discard_redone', (await until('discarded again', takes, (n) => n === had - 1).catch(() => null)) === had - 1);
   await undo();
   check('discard_undone_again', (await until('back again', takes, (n) => n === had).catch(() => null)) === had);
+  intact('discards');
   await closeBox(page);
 
   // The API client's edit, undone from the page's Undo button, which says whose it is.
@@ -324,6 +335,7 @@ function check(name, ok, detail) {
   seen.refused = refused?.find((line) => /Couldn't undo/.test(line));
   check('conflicting_undo_refused', Boolean(seen.refused?.includes('spare is in the project again') && seen.refused.includes('Added spare')), refused);
   check('nothing_clobbered', (await asset('spare'))?.sha256 === theirs.sha256 && String(lines('spare')?.approved ?? '').startsWith(theirs.sha256.slice(7, 19)), lines('spare'));
+  intact('refused_undo');
 
   // Calcifer stopped: a delete and its undo, both shown at once and waiting; started again, both land in order, and the history keeps them.
   const before = held();
@@ -341,14 +353,22 @@ function check(name, ok, detail) {
   await until('all saved', pills, (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
   const landed = await until('the delete and its undo', history, (held) => held.entries.some((entry) => entry.words === 'Deleted red' && entry.undone)).catch(history);
   check('offline_landed_in_order', landed.entries?.some((entry) => entry.words === 'Deleted red' && entry.undone) && Boolean(lines('red')), landed.entries?.slice(0, 3));
+  intact('offline');
   check('offline_file_as_before', held() === before, storedOf(folder));
+  // A real restart: STOP is a SIGTERM, which returns while Calcifer drains, so the old one is waited out before START starts another.
+  const calciferPid = () => JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).pid;
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (why) { return why.code === 'EPERM'; } };
+  const stopped = calciferPid();
   execSync(process.env.STOP, { shell: 'bash', stdio: 'ignore' });
+  await until('the old Calcifer gone', () => Promise.resolve(alive(stopped)), (up) => !up);
   execSync(process.env.START, { shell: 'bash', stdio: 'ignore' });
+  check('calcifer_restarted', calciferPid() !== stopped, { before: stopped, after: calciferPid() });
   const kept = await edit('history', '-n', '3');
   check('history_survives_a_restart', kept.entries.some((entry) => entry.words === 'Deleted red' && entry.undone), kept);
   const again = await edit('redo');
   check('redo_after_a_restart', again.entries.some((entry) => entry.words === 'Deleted red') && lines('red') === null, again);
   check('page_follows_the_api', await until('red gone', () => box('red').count(), (n) => n === 0).then(() => true, () => false));
+  intact('redo_after_restart');
 
   // The same two history entries remain accessible through the unchanged Undo/Redo controls.
   await away();

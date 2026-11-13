@@ -133,6 +133,46 @@ J --arg lane "$lane" 'any(.models[]; .model == "zhengpeng7/birefnet" and .lane =
 grep -q e2e-birefnet "$OUT/models.json" || check "model ls --on local: the local/e2e-birefnet alias is not listed"
 }
 
+# xs-190: a model of one component (e2e/parts-vae, uploaded as `<file>:vae` by e2e/isolated.sh), composed at run time with another
+# model's other components. Its card and install hold its `vae` alone; a run whose `vae` slot names it reads the default
+# pipeline's transformer and its VAE, and its stored picture differs from the default's. xs-192: an unversioned pick of
+# e2e/parts, whose 0.2.0 is 0.1.0's vae alone, is the whole 0.1.0 for an install and the part for a slot that reads it.
+component_models() {
+step "a model of one component, composed with another model's at run time"
+local script=$here/script/parts.py default composed
+cozy --json model show e2e/parts-vae > "$OUT/parts-show.json" 2>&1 \
+  && J '[.lanes[].components[] | {name, bytes}] == [{name: "vae", bytes: 262144}]' "$OUT/parts-show.json" \
+  || check "model show e2e/parts-vae: not its 256 KiB vae alone: $(jq -c '[.lanes[]?.components[]? | {name, bytes}]' "$OUT/parts-show.json" 2>/dev/null || head -c 300 "$OUT/parts-show.json")"
+cozy --json model show e2e/parts@0.1.0 > "$OUT/parts-pipeline.json" 2>&1 && J '[.lanes[].components[].name] == ["transformer", "vae"]' "$OUT/parts-pipeline.json" \
+  || check "model show e2e/parts@0.1.0: not a transformer and a VAE: $(jq -c '[.lanes[]?.components[]?.name]' "$OUT/parts-pipeline.json" 2>/dev/null || head -c 300 "$OUT/parts-pipeline.json")"
+cozy --json model install e2e/parts-vae --on local > "$OUT/parts-install.ndjson" 2>&1 || check "model install e2e/parts-vae failed: $(tail -c 300 "$OUT/parts-install.ndjson")"
+# Its 256 KiB VAE, never the pipeline's 4 MiB transformer.
+cozy --json model ls --on local > "$OUT/parts-models.json" \
+  && J 'any(.models[]; .model == "e2e/parts-vae" and .bytes >= 262144 and .bytes < 1048576)' "$OUT/parts-models.json" \
+  || check "model install e2e/parts-vae: not its VAE alone on local: $(jq -c '[.models[]? | select(.model | startswith("e2e/parts")) | {model, bytes}]' "$OUT/parts-models.json")"
+# An unversioned pick: an install reads the checkpoint whole, so it takes 0.1.0, never the part 0.2.0 (e2e/parts@0.1.0:vae).
+cozy --json model install e2e/parts --on local > "$OUT/parts-whole.ndjson" 2>&1 || check "model install e2e/parts failed: $(tail -c 300 "$OUT/parts-whole.ndjson")"
+cozy --json model ls --on local > "$OUT/parts-whole.json" \
+  && J '[.models[] | select(.model == "e2e/parts") | .release] == ["0.1.0"]' "$OUT/parts-whole.json" \
+  || check "model install e2e/parts (unversioned): not its whole 0.1.0: $(jq -c '[.models[]? | select(.model == "e2e/parts") | {release, bytes}]' "$OUT/parts-whole.json")"
+cell parts-default "$script" || return 0
+cell parts-composed "$script" --model vae=e2e/parts-vae@0.1.0 || return 0
+default=$(jq -c .result "$OUT/parts-default.json") composed=$(jq -c .result "$OUT/parts-composed.json")
+J '.result.transformer.part == "dit" and .result.vae.part == "vae-a"' "$OUT/parts-default.json" \
+  || check "parts-default: not e2e/parts's transformer and VAE: $default"
+J --argjson was "$default" '.result.transformer == $was.transformer and .result.vae.part == "vae-b" and .result.vae.sum != $was.vae.sum' "$OUT/parts-composed.json" \
+  || check "parts-composed: not e2e/parts's transformer with e2e/parts-vae's VAE: $composed (default $default)"
+# A slot that reads the part takes it, unversioned: `vae` names e2e/parts and resolves its newest holding a vae, 0.2.0.
+if cell parts-newest "$script" --model vae=e2e/parts; then
+  J '[.measurements.models[] | {slot, release}] | (any(.slot == "vae" and .release == "0.2.0") and any(.slot == "model" and .release == "0.1.0"))' "$OUT/parts-newest.json" \
+    && J '.result.vae.part == "vae-a"' "$OUT/parts-newest.json" \
+    || check "parts-newest: vae=e2e/parts is not its part 0.2.0: $(jq -c '[.measurements.models[]? | {slot, release}]' "$OUT/parts-newest.json")"
+fi
+local was is
+was=$(output parts-default png) is=$(output parts-composed png)
+{ [ -n "$was" ] && [ -n "$is" ] && ! cmp -s "$was" "$is"; } || check "parts: the composed run's stored picture is not another than the default's (${was:-none}, ${is:-none})"
+}
+
 # safetensors_file <file>: a 4×4 F16 .safetensors file.
 safetensors_file() {
 uv run -q --no-project python -I - "$1" <<'PY'
@@ -270,6 +310,40 @@ fi
 (cd "$dir" && in_project "$RUN_PROJECT" --json run "$here/project/mentions.py/mentions" 'instructions=<Nobody> waves' --on local) > "$OUT/own-refs-nothing.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q input_missing "$OUT/own-refs-nothing.json" && grep -q 'cozy open' "$OUT/own-refs-nothing.json" \
   || check "own references: <Nobody> was not refused with the command that makes it a box (exit $code): $(tail -c 300 "$OUT/own-refs-nothing.json")"
+# xs-191: a relative path in an --input file starts at that file's folder, the run's working directory being the project:
+# in/run.yaml names amy.png beside it. One written from elsewhere (se-131's inputs/edit.json named inputs/meadow-ref.jpg)
+# is refused saying where a relative path starts.
+mkdir -p "$dir/in"; cp "$dir/amy.png" "$dir/in/amy.png"
+printf 'instructions: "<Amy> waves"\nreferences:\n  - name: Amy\n    image: amy.png\n' > "$dir/in/run.yaml"
+if cell own-refs-input "$here/project/mentions.py/mentions" --input "$dir/in/run.yaml"; then
+  grep -qE '"keys": *\[ *"Amy" *\]' "$OUT/own-refs-input.ndjson" && grep -qE '"widths": *\[ *48 *\]' "$OUT/own-refs-input.ndjson" \
+    || check "own references: in/run.yaml's amy.png, beside it, did not send its picture: $(grep -oE '"(text|keys|widths)": *("[^"]*"|\[[^]]*\])' "$OUT/own-refs-input.ndjson" | head -3 | paste -sd' ')"
+fi
+printf 'instructions: "<Amy> waves"\nreferences:\n  - name: Amy\n    image: in/amy.png\n' > "$dir/in/elsewhere.yaml"
+code=0; in_project "$RUN_PROJECT" --json run "$here/project/mentions.py/mentions" --input "$dir/in/elsewhere.yaml" --on local > "$OUT/own-refs-elsewhere.json" 2>&1 || code=$?
+[ "$code" != 0 ] && grep -q reference_file_missing "$OUT/own-refs-elsewhere.json" && grep -q "starts at that file's folder" "$OUT/own-refs-elsewhere.json" \
+  || check "own references: in/elsewhere.yaml's in/amy.png (in/in/amy.png) wasn't refused saying where it starts (exit $code): $(tail -c 300 "$OUT/own-refs-elsewhere.json")"
+}
+
+# xs-191: a lane fits on the components its slot reads, not its whole checkpoint (madebyollin/texture-fix-vae@0.2.0 is
+# Qwen-Image-2.1 with its VAE replaced; its `vae` slot warned that 30.8 GiB doesn't fit for 1.35 GB). TensorD asks the Hub
+# with its GPUs, their free bytes and the slot's components; a CPU runner has no GPUs to send, so the cell asks it the same
+# way. isolated.sh's fitting/vae is an 8 MiB `model` and a 1 MiB `vae`: with 4 MiB free the whole checkpoint doesn't fit,
+# its `vae` does, and its `model` still doesn't.
+lane_fit() {
+step "a lane fits on the components its slot reads, not its whole checkpoint (xs-191)"
+[ -n "${E2E_FIT:-}" ] || { check "lane fit: isolated.sh published no fitting/vae"; return; }
+local ask="${COZY_HUB_URL:?}/v1/models/$E2E_FIT/resolve?release=0.1.0&gpus=8.6&free_vram=$((4 << 20))" part
+for part in whole vae model; do
+  curl -fsS "$ask$([ "$part" = whole ] || echo "&components=$part")" > "$OUT/fit-$part.json" 2>&1 \
+    || { check "lane fit: resolving $E2E_FIT for its $part failed: $(head -c 300 "$OUT/fit-$part.json")"; return; }
+done
+J '.reasons | any(startswith("no lane of fitting/vae@0.1.0 fits"))' "$OUT/fit-whole.json" \
+  || check "lane fit: the whole 9 MiB checkpoint wasn't told it doesn't fit 4 MiB: $(jq -c .reasons "$OUT/fit-whole.json")"
+J '.reasons == []' "$OUT/fit-vae.json" \
+  || check "lane fit: its 1 MiB vae was told it doesn't fit 4 MiB: $(jq -c .reasons "$OUT/fit-vae.json")"
+J '.reasons | any(startswith("no lane of fitting/vae@0.1.0'"'"'s model fits"))' "$OUT/fit-model.json" \
+  || check "lane fit: its 8 MiB model wasn't told it doesn't fit 4 MiB: $(jq -c .reasons "$OUT/fit-model.json")"
 }
 
 # cl-900: descriptions are off for now (tools §9). A described picture's mention reaches its function with an empty description, and the
@@ -689,6 +763,34 @@ cozy --json machine update local -y > "$OUT/floor-unhold.json" 2>&1 \
   || { check "runtime floor: cozy machine update local (its Hub's pin) failed: $(tail -c 300 "$OUT/floor-unhold.json")"; return; }
 machine_ready
 jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "runtime floor: off its hold, local runs $(jq -r .status.runtime "$OUT/machine.json"), not its Hub's pinned 0.45.0"
+# xs-191: an RC build named by hand is a pin too. se-131's aishela, given the RC's TensorFS and cozy by version (each said
+# `(RC)`), was moved off them as the RC moved; held, local refuses e2e-floor 0.2.0 as above, and nothing named lets it go.
+# The RC's cozy is named: its TensorFS is 0.25's since 0.25.0's merge-back and doesn't install beside the held Runtime 0.45.0.
+# The RC is the one this cozy's version names: a dev build's (0.26.0-dev) its own minor, a release's the next (as rc.rs reads).
+local rc td was=$OUT/cozy-before-rc-pin
+rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] + ($2 ~ /-/ ? 0 : 1) ".0"}')
+td=$(curl -fsSL "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
+  | sed -n 's/.*  cozy-\(.*\)-linux-x86_64$/\1/p' | head -1) || td=
+if [ -n "$td" ]; then
+  cp "$COZY" "$was"
+  cozy --json machine update local --tensord "$td" -y > "$OUT/floor-rc-pin.json" 2>&1 \
+    || { check "runtime floor: local refused the RC's cozy $td: $(tail -c 300 "$OUT/floor-rc-pin.json")"; return; }
+  machine_ready
+  code=0
+  in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=rc-pin --on local > "$OUT/floor-rc-pin.ndjson" 2> "$OUT/floor-rc-pin.err" || code=$?
+  [ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-rc-pin.ndjson" "$OUT/floor-rc-pin.err" \
+    || check "runtime floor: given the RC's cozy $td by hand, local wasn't held: exit $code $(tail -c 300 "$OUT/floor-rc-pin.ndjson") $(tail -c 300 "$OUT/floor-rc-pin.err")"
+  # This computer's cozy back as it was, then let go (an update naming nothing; the Hub's target names no cozy).
+  cozy --json machine update local --tensord "$was" -y > "$OUT/floor-rc-back.json" 2>&1 \
+    || { check "runtime floor: local refused its own cozy back after the RC pin: $(tail -c 300 "$OUT/floor-rc-back.json")"; return; }
+  cozy --json machine update local -y > "$OUT/floor-rc-unpin.json" 2>&1 \
+    || { check "runtime floor: cozy machine update local failed after the RC pin: $(tail -c 300 "$OUT/floor-rc-unpin.json")"; return; }
+  machine_ready
+  [ "$(cozy --version)" = "$("$was" --version)" ] || check "runtime floor: after the RC pin this computer's cozy is $(cozy --version), not $("$was" --version)"
+  jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "runtime floor: after the RC pin, local runs $(jq -r .status.runtime "$OUT/machine.json"), not 0.45.0"
+else
+  echo "runtime floor: rc-$rc holds no cozy for linux x86_64: an RC pin isn't asked here"
+fi
 in_project "$RUN_PROJECT" run "$E2E_FLOOR/relay" text=upgrade --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
   || check "runtime floor: the unversioned e2e-floor run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
 grep -q "upgrading local.s Runtime 0.45.0 → 0.45.[1-9][0-9]* for .*e2e-floor 0.2.0" "$OUT/floor-upgrade.err" \

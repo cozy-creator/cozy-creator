@@ -11,8 +11,10 @@
 #              ("<package>/<function>"), "args" ([inputs and flags]),
 #              "update" (optional: {"runtime", "tensorfs"}, each a wheel URL, `artifact:<run id>/<name>` of a
 #              cozy-creator run (a dev-build's tensorfs-wheel-<sha>) or, for runtime, a cozy-runtime dev-build
-#              run id, and "gpu_memory_limit" (`10GiB`, `off`: the development VRAM cap); the pod's `machine update`
-#              before this cell, so cells before and after compare two pairs)}];
+#              run id, "tensord": true (this session's cozy as the pod's TensorD: a dev build's, `cozy` a run id,
+#              which the open RC's Runtime needs, `rc_runtime_needs_rc_cozy`), and "gpu_memory_limit" (`10GiB`,
+#              `off`: the development VRAM cap); the pod's `machine update` before this cell, so cells before and
+#              after compare two pairs)}];
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
 #              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
@@ -20,8 +22,17 @@
 #              two failed cells stop the session
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
 #   need_s     seconds the cap must buy (3600)
+#   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
+#              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
+#              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
 . "$(dirname "$0")/lib.sh"
-CELLS=$(param cells '[]') COMPARE=$(param compare '[]')
+CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '')
+[[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
+VRAM=$(dirname "$0")/../suites/bench/vram.py
+[ -z "$FREE_GIB" ] || [ -f "$VRAM" ] || fail "no suites/bench/vram.py"
+# ssh for the holder and for what holds the GPU when a cell fails (`gpu`)
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
 command -v ffmpeg > /dev/null || fail "no ffmpeg (pod-session.yaml installs it from the tool cache)"
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
@@ -53,6 +64,9 @@ for k in "${names[@]}"; do
     f=$(wheel "$k" "$kind" "$src") && [ -n "$f" ] || fail "cell $k: no $kind wheel from $src"
     say "cell $k: updates $kind to ${f##*/}"; w+=("--$kind" "$f")
   done
+  if [ "$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update.tensord // false' <<<"$CELLS")" = true ]; then
+    say "cell $k: updates TensorD to this session's $(cozy --version)"; w+=(--tensord "$(command -v cozy)")
+  fi
   cap=$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update.gpu_memory_limit // empty' <<<"$CELLS")
   [[ -z $cap || $cap =~ ^([0-9]+[MG]iB|off)$ ]] || fail "cell $k: gpu_memory_limit $cap"
   [ -z "$cap" ] || { say "cell $k: caps VRAM at $cap"; w+=(--gpu-memory-limit "$cap"); }
@@ -64,8 +78,13 @@ current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$
 quote "$(param need_s 3600)"
 rent
 
+
+# gpu: the processes holding GPU 0 and the card's reading, from the pod's root shell.
+gpu() { timeout 60 cozy machine ssh "$NAME" "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader; nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader" 2>&1 | grep -v '^Warning: Permanently added'; }
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
-( while :; do
+( p=0; while :; do
+    # Each minute, what holds the card (gpu.log): a stalled cell's other holder is named there.
+    [ $((p++ % 4)) != 0 ] || { echo "$(date -u +%T) $(gpu | paste -sd';')" >> "$OUT/gpu.log"; }
     t=$(date +%s%3N); s=$(timeout 120 cozy machine show "$RID" --json 2>&1); src=$?; sm=$(( $(date +%s%3N) - t ))
     k=$(cat "$OUT/current" 2>/dev/null); N=''; [ -z "$k" ] || N=$(current "$k")
     rs='' rms='' rrc='' rst=''
@@ -84,7 +103,8 @@ summary() { jq -r '"exec \((.execution_ms // 0) / 1000 | floor)s" + ([.calls[]? 
   + "attention \([$m.observations[]? | select(.name == "attention.selected") | "\(.fields.component | split("/") | last)=\(.value)"] | unique | join(" ")), "
   + "gemm \([$m.observations[]? | select(.name == "gemm.selected") | .value] | unique | join(",")), "
   + "ready \([$m.observations[]? | select(.name == "kernel.ready") | .value] | unique | join(",")), "
-  + "plan \([$m.execution.plan_reports[]? | to_entries[] | "\(.key)=\(.value.applied)\(if (.value.code // "") != "" then "(\(.value.code))" else "" end)"] | join(" "))"] | join(""))' "$OUT/$1.json" 2>/dev/null; }
+  + "plan \([$m.execution.plan_reports[]? | to_entries[] | "\(.key)=\(.value.applied)\(if (.value.code // "") != "" then "(\(.value.code))" else "" end)"] | join(" ")), "
+  + "reruns \([$m.memory.stats.varena[]?.stats.reruns[]? | "\(.site): \(.error) (reserve \(.reserve / 1048576 | floor) MiB, gave \(.released / 1048576 | floor) MiB, paused \(.paused_ms) ms)"] | join("; "))"] | join(""))' "$OUT/$1.json" 2>/dev/null; }
 # weights <name>: each GPU call's text encode, the pod's disk and host-to-GPU ceilings, its LoRA bakes, where its weight fills
 # came from (GB/fills/s by origin), and its host tier's reads ahead and derived pages written (cr-277).
 weights() { jq -r '[.calls[]? | select(.measurements.memory.stats.varena? != null) | .measurements as $m
@@ -93,6 +113,39 @@ weights() { jq -r '[.calls[]? | select(.measurements.memory.stats.varena? != nul
   + ([$v.stats.moved | to_entries[] | select(.key != "bake") | "\(.key) \((.value.bytes // 0) / 1e8 | floor / 10)/\(.value.fills // 0)/\((.value.ns // 0) / 1e8 | floor / 10)s"] | join(" "))
   + ", read ahead \($t.read_ahead // "-") \(($t.read_ahead_bytes // 0) / 1e8 | floor / 10) GB refused \($t.read_ahead_refused // "-"), persisted \($t.persisted // "-") "
   + "\(($t.persisted_bytes // 0) / 1e8 | floor / 10) GB skipped \($t.persist_skipped // "-") failed \($t.persist_failed // "-")"] | join("; ")' "$OUT/$1.json" 2>/dev/null; }
+# hold <cell> <on|off>: suites/bench/vram.py from a root shell takes all of GPU 0 but FREE_GIB, or ends. A package can't
+# hold it (the Runtime refuses one that starts a process), and TensorD takes a GPU out of service that another program
+# holds memory on when it starts, so the holder ends before each update's restart and starts again after it.
+hold() {
+  local script
+  if [ "$2" = off ]; then
+    script='pgrep -f /var/tmp/ab-vram.py | xargs -r kill; rm -f /var/tmp/ab-vram.ready; sleep 2'
+  else
+    script=$(cat <<EOS
+[ -s /var/tmp/ab-vram.ready ] && kill -0 "\$(cut -d' ' -f1 /var/tmp/ab-vram.ready)" 2> /dev/null && { cat /var/tmp/ab-vram.ready; exit 0; }
+if ! pgrep -f /var/tmp/ab-vram.py > /dev/null; then
+  echo $(base64 -w0 "$VRAM") | base64 -d > /var/tmp/ab-vram.py && rm -f /var/tmp/ab-vram.ready
+  setsid nohup python3 /var/tmp/ab-vram.py $(awk -v g="$FREE_GIB" 'BEGIN { printf "%d", g * 1073741824 }') /var/tmp/ab-vram.ready > /var/tmp/ab-vram.out 2>&1 < /dev/null &
+fi
+i=0; while [ ! -s /var/tmp/ab-vram.ready ] && [ \$i -lt 240 ]; do sleep 0.5; i=\$((i + 1)); done
+cat /var/tmp/ab-vram.ready 2> /dev/null || tail -c 300 /var/tmp/ab-vram.out
+EOS
+)
+  fi
+  # Right after an update's restart the pod's ssh can answer nothing (pod-session 43325104295): try again, and an `on`
+  # that did start its holder says so the next time instead of starting another.
+  local try held='' free=''
+  for try in 1 2 3 4 5 6; do
+    cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$script") | base64 -d | sh" > "$OUT/hold-$1-$2.txt" 2>&1; local code=$?
+    if [ "$2" = off ]; then [ "$code" = 0 ] && return 0; else
+      read -r _ held free _ < <(tail -1 "$OUT/hold-$1-$2.txt"); [[ ${held:-x} =~ ^[0-9]+$ ]] && break
+    fi
+    say "$1: holder $2, try $try: exit $code $(head -c 200 "$OUT/hold-$1-$2.txt")"; sleep 10
+  done
+  [ "$2" = on ] || fail "$1: the holder did not end"
+  [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "$1: no holder: $(head -c 300 "$OUT/hold-$1-$2.txt")"
+  say "$1: holder $((held >> 20)) MiB held, $((free >> 20)) MiB left free"
+}
 fails=0
 declare -A MADE=()
 for k in "${names[@]}"; do
@@ -106,10 +159,12 @@ for k in "${names[@]}"; do
     args[$i]=$a
   done
   if [ -n "${UPDATE[$k]:-}" ]; then
+    [ -z "$FREE_GIB" ] || [ "$k" = "${names[0]}" ] || hold "$k" off
     # shellcheck disable=SC2086 # the update's flags and wheel paths (no spaces)
     step "update-$k" machine update "$NAME" ${UPDATE[$k]} -y || fail "$k: the update"
     say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
   fi
+  [ -z "$FREE_GIB" ] || { [ -z "${UPDATE[$k]:-}" ] && [ "$k" != "${names[0]}" ]; } || hold "$k" on
   mapfile -t downloads < <(jq -c '.download // [] | .[]' <<<"$c")
   for i in "${!downloads[@]}"; do
     mapfile -t dl < <(jq -r '.[]' <<<"${downloads[$i]}")
@@ -121,7 +176,7 @@ for k in "${names[@]}"; do
   [ -z "$tree" ] || target=./$target
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   cd "$OUT" || fail "no $OUT"
-  N=$(runno "$k")
+  N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   if [ -n "$N" ]; then cozy run watch "$N" --once --json --full > "$OUT/$k.json" 2>/dev/null; cozy run watch "$N" --once -o "$OUT/$k.out" > /dev/null 2>&1; fi
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
   MADE[$k]=$(ls "$OUT/$k.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
@@ -131,6 +186,8 @@ for k in "${names[@]}"; do
   if [ "$st" != completed ]; then
     why=$(jq -r '.reason.message // .reason // empty' "$OUT/$k.json" 2>/dev/null)
     say "$k reason: $(printf '%s' "${why:-$(tr '\r' '\n' < "$OUT/$k.txt" | grep -m1 -E '^error:' || tail -c 600 "$OUT/$k.txt")}" | head -c 600)"
+    say "$k: the GPU now: $(gpu | paste -sd';')"
+    cozy machine logs "$NAME" -n 0 > "$OUT/$k-tensord.log" 2>&1
   fi
   # A refusal before any run (st none) is the failure an `expect: failed` cell proves.
   [ "$st" = "$want" ] || { [ "$want" = failed ] && [ "$st" = none ] && [ "$code" != 0 ]; } ||

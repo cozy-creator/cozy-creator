@@ -79,8 +79,8 @@ fn entries(model: &Model) -> impl Iterator<Item = (&str, Option<&str>, &ObjectRe
     released.chain(model.checkpoints.iter().map(|tree| ("", None, tree)))
 }
 
-/// Each model's rows: model, release, lane, header.
-type Seen = Vec<(String, String, String, ObjectRef)>;
+/// Each model's rows: model, release, lane, header, tree.
+type Seen = Vec<(String, String, String, ObjectRef, ObjectRef)>;
 
 #[derive(PartialEq, Eq)]
 struct Stamp {
@@ -142,14 +142,14 @@ pub(crate) fn listing(root: &Path) -> Listing {
 fn seen(store: &Store) -> std::io::Result<Seen> {
     let mut seen = Seen::new();
     for model in store.refs().map_err(storage::io_error)? {
-        for (release, lane, tree) in entries(&model) {
-            let Ok(tree) = store.tree(tree) else {
+        for (release, lane, reference) in entries(&model) {
+            let Ok(tree) = store.tree(reference) else {
                 continue;
             };
             let Ok((_, header)) = tree.header() else { continue };
             if store.holds(header) {
                 let lane = lane.unwrap_or(&tree.lane);
-                seen.push((model.name.clone(), release.into(), lane.into(), header.clone()));
+                seen.push((model.name.clone(), release.into(), lane.into(), header.clone(), reference.clone()));
             }
         }
     }
@@ -161,10 +161,12 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
     let mut closures: BTreeMap<&str, Vec<ObjectRef>> = BTreeMap::new();
     let mut holders: HashMap<ObjectRef, usize> = HashMap::new();
     let mut models: Vec<v1::Model> = vec![];
-    for (model, release, lane, header) in seen {
+    for (model, release, lane, header, tree) in seen {
         let closure = store.closure(header).map_err(storage::io_error)?;
         let complete = closure.iter().all(|object| store.holds(object));
+        let bytes = closure.iter().map(|o| o.length).sum();
         let held: Vec<ObjectRef> = closure.into_iter().filter(|o| store.holds(o)).collect();
+        let held_bytes = held.iter().map(|o| o.length).sum();
         let entry = closures.entry(model).or_default();
         for object in held {
             if !entry.contains(&object) {
@@ -185,6 +187,9 @@ fn list(store: &Store, seen: &Seen) -> std::io::Result<Listing> {
             manifest: header.id(),
             role,
             complete: Some(complete),
+            tree: tree.id(),
+            bytes,
+            held_bytes,
         });
     }
     for objects in closures.values() {

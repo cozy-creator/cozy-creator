@@ -113,9 +113,17 @@ async fn plan_scoped(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) 
     }
 }
 
+/// What a job's request or quote comes to: its answer, or the call it plans (a quantization's), which its caller then asks
+/// as any run, under the same key. The call never runs inside the job's own future: nested, the two overflowed a worker's
+/// stack (cl-974).
+pub(crate) enum Job<T> {
+    Done(T),
+    Call(Box<RunRequest>),
+}
+
 /// Records the job `ask` names under `key` as the ask `digest` names, and starts it: `Submitted`, as any run's. The same key
 /// again answers the recorded run.
-pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunRequest) -> Result<Submitted, Error> {
+pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunRequest) -> Result<Job<Submitted>, Error> {
     let calcifer = &api.calcifer;
     if ask.project.is_none() { if let Some(code)=&ask.code { crate::maintenance_source::require(api,code)?; } }
     let project = match ask.project.as_deref() {
@@ -130,12 +138,12 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunReq
     }.map_err(store)?;
     if let Some((row, _)) = recorded.filter(|(_, recorded)| recorded == digest) {
         let run = calcifer.record(&row).map_err(crate::runs::refused)?;
-        return Ok(Submitted { run, replay: true, notes: vec![], preparing: false, lock: None });
+        return Ok(Job::Done(Submitted { run, replay: true, notes: vec![], preparing: false, lock: None }));
     }
     let hub = origin(api, Some(&ask.hub)).map_err(|Refusal(e)| e)?;
-    match plan(api, key, &hub, &ask).await.map_err(|Refusal(e)| e)? {
+    let submitted = match plan(api, key, &hub, &ask).await.map_err(|Refusal(e)| e)? {
         Planned::Preparing(run) => Ok(Submitted { run: *run, replay: false, notes: vec![], preparing: true, lock: None }),
-        Planned::Request(mut request) => { request.project = project.clone(); Box::pin(crate::runs::request(api, key, *request)).await },
+        Planned::Request(mut request) => { request.project = project.clone(); return Ok(Job::Call(request)) },
         Planned::Run { mut submit, after, mut notes, mirror } => {
             submit.project = project.clone();
             if let Some(project) = project.as_deref() {
@@ -162,7 +170,8 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunReq
             let work = move |here: Here| async move { work.run(&its_api, &its_hub, &its_key, &here).await };
             calcifer.here(project.as_deref(), key, digest, target, &hub, kept, work).await.map_err(crate::runs::refused)
         }
-    }
+    };
+    submitted.map(Job::Done)
 }
 
 /// Carries out again each of Calcifer's own jobs an earlier Calcifer stopped under, from its kept ask, under the same run: each
@@ -220,18 +229,18 @@ async fn resume_ids(api:Arc<Api>, ids:Vec<api::ids::RunId>) {
 }
 
 /// What the job `ask` names would rent on a `new` machine, renting nothing; none for Calcifer's own work, which rents nothing.
-pub(crate) async fn quote(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
+pub(crate) async fn quote(api: &Arc<Api>, ask: RunRequest) -> Result<Job<Option<RunQuote>>, Error> {
     if ask.target == job::MODEL_QUANTIZE && ask.code.is_some() {
         let said = "local code runs where it was made ready; a `new` machine takes a published release";
         return Err(Error::new(Kind::Usage, "quote_local", said).next("cozy machine rent"));
     }
     let hub = origin(api, Some(&ask.hub)).map_err(|Refusal(e)| e)?;
     match plan(api, "quote", &hub, &ask).await.map_err(|Refusal(e)| e)? {
-        Planned::Here { .. } => Ok(None),
-        Planned::Request(request) => Box::pin(crate::runs::priced(api, *request)).await,
+        Planned::Here { .. } => Ok(Job::Done(None)),
+        Planned::Request(request) => Ok(Job::Call(request)),
         Planned::Run { submit, .. } => {
             api.machines.hubs.client(&submit.hub)?;
-            Ok(Some(api.machines.run_quote(&submit).await?))
+            Ok(Job::Done(Some(api.machines.run_quote(&submit).await?)))
         }
         Planned::Preparing(_) => unreachable!("a published package installs nothing first"),
     }

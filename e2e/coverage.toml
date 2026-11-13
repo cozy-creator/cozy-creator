@@ -218,6 +218,29 @@ test = "pr: run ls filters"
 "--limit" = "pr: run ls filters"
 ["run cancel"]
 test = "pr: a run followed, a snapshot, a cancel"
+["render"]
+test = "pr: agent_render, a chain from what it reads, nothing to render, -n forcing nothing, a joined render, a killed CLI rejoined, a failure stopping its readers"
+"--on" = "pr: agent_render, on local; without it, where Calcifer places it once the local-fit question says nothing"
+"--new" = "pr: agent_render, -n 2 new takes of a current shot, as --json"
+"--outdated" = "pr: agent_render, an approved shot out of date rendered again, its approval kept"
+"--pickup" = "pr: agent_render, a take kept to its seam and the rest rendered; refused for two nodes"
+
+[get]
+test = "pr: web-agent (web-core), 0 nodes, one line per node, and named nodes whole with every default, their takes and rev; a typo refused"
+"--all" = "pr: web-agent, every node whole, in the project's order"
+"--takes" = "pr: web-agent, every take of a node; alone, refused"
+[apply]
+test = "pr: web-agent, the design's session: a typo refused with its fix, nodes made from a file, rewritten, applied again unchanged; a conflict with the page's edit, settled; words apart merged; a take from a file; approved; no rev refused; undone from the page"
+"--filename" = "pr: web-agent, a file, and - for stdin with the merged nodes on stdout"
+"--force-conflicts" = "pr: web-agent, overlapping words, the file's kept"
+[diff]
+test = "pr: web-agent, exit 2 for a refusal, 1 with what it would make, 0 and no changes after an apply, a conflict with the page's edit and its next step"
+"--filename" = "pr: web-agent, the session's file"
+[delete]
+test = "pr: web-agent, two nodes deleted as one edit and brought back by the page's Undo; a name it doesn't have refuses all"
+[explain]
+test = "pr: web-agent, the file, a kind, a tool's block and one field of it in words; a field's typo refused with its fix"
+"--schema" = "pr: web-agent, JSON Schema 2020-12 of the file and of a tool's block"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]

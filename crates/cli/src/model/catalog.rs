@@ -85,12 +85,12 @@ pub(crate) async fn edit(ctx: &Context, args: Edit) -> Result<ExitCode, Error> {
     let ask = ModelEdit {
         hub: Some(ctx.hub().to_string()),
         family: args.family,
-        trigger: args.trigger,
+        triggers: args.triggers,
         strength: args.strength.map(|s| s.0),
         add_tags: args.tag,
         remove_tags: args.untag,
     };
-    if ask.family.is_none() && ask.trigger.is_none() && ask.strength.is_none() && !ask.tags_change() {
+    if ask.family.is_none() && ask.triggers.is_none() && ask.strength.is_none() && !ask.tags_change() {
         return Err(Error::new(Kind::Usage, "model_edit_empty", "No model changes specified")
             .next("cozy model edit --help"));
     }

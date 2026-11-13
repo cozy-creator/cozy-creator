@@ -246,6 +246,8 @@ async fn calcifer_log(ctx: &Context, q: &LogQuery) -> Result<ExitCode, Error> {
             true => Error::new(Kind::Unavailable, "log_follow_unsupported", e.to_string()),
             false => unreadable(&e),
         })?;
+    // Dropped after `batches`: the follower, woken, finds no reader.
+    let _leave = follow.on_leave();
     let (sender, mut batches) = tokio::sync::mpsc::channel(16);
     let reading = tokio::task::spawn_blocking(move || {
         follow.run(

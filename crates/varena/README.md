@@ -44,6 +44,14 @@ the streamed regions. A plan phase that
 ran through last time with no region coming back is a single pass: its used regions rank with the
 unplanned, and other phases' loops go after every single pass's.
 
+## The driver's reserve
+
+The driver allocates on its own: a kernel's code at its first launch, local memory, a library's handle.
+Its refusal fails that launch, not an allocation of ours, so no reclaim can answer it. Every map tries
+to leave 512 MiB of the card free for it, read from the driver at the map: pages that fit, but not beside
+the reserve, take only what is idle and done for it (no wait, no owner, no peer), and short of that take
+the reserve. The reserve never makes a demand wait or fail. It is one fixed amount per GPU.
+
 ## Fills
 
 A Region has a `Source`, and only the core calls it. `use` on an absent Region runs it on the caller's

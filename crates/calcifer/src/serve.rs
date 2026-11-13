@@ -311,7 +311,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         address,
         token,
         pid: std::process::id(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         started_at_ms: crate::store::now_ms(),
     };
     let mut record = serde_json::to_vec(&holder).expect("serializes");
@@ -382,6 +382,9 @@ async fn shutdown_after_signal(api: Arc<Api>) {
     let began = Instant::now();
     let mut reported: Option<(String, Instant)> = None;
     loop {
+        // Listening before it asks: a view that closes meanwhile isn't missed. The vault clock tries each close again.
+        let mut closed = std::pin::pin!(crate::project::vault::CLOSED.notified());
+        closed.as_mut().enable();
         let error = match api.shutdown().await {
             Ok(_) => return,
             Err(error) => error,
@@ -397,7 +400,7 @@ async fn shutdown_after_signal(api: Arc<Api>) {
         }
         tokio::select! {
             () = api.stopped() => return,
-            () = tokio::time::sleep(Duration::from_millis(250)) => {},
+            () = closed => {},
         }
     }
 }

@@ -194,6 +194,10 @@ def read_db(path: Path):
         connection.close()
 
 
+# project.db's current schema (db.rs VERSION): what Calcifer migrates a released project to.
+PROJECT_SCHEMA = 5
+
+
 def read_schema(path: Path) -> int:
     with read_db(path) as connection:
         return connection.execute("PRAGMA user_version").fetchone()[0]
@@ -648,7 +652,7 @@ def interrupted_import(native: Native, project: Path, reference: str, identifier
     first project write waits on the project database, which this fixture holds. Real contention only."""
     state = CALCIFER / "state.db"
     # Calcifer's startup scan moves project.db to the current schema without any project request.
-    wait(lambda: read_schema(project / "project.db"), lambda version: version == 4, "startup_schema_migrated", 120)
+    wait(lambda: read_schema(project / "project.db"), lambda version: version == PROJECT_SCHEMA, "startup_schema_migrated", 120)
     exact = birth(native.holder()["pid"])
     blocker = sqlite3.connect(project / "project.db", timeout=0)
     try:

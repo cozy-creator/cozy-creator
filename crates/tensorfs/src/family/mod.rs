@@ -137,7 +137,7 @@ pub fn families_digest() -> &'static str {
 /// What [`Facts`] are read under: the families and what [`parts`] counts. A reader keeping facts reads them again when it changes.
 pub fn facts_digest() -> &'static str {
     static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    DIGEST.get_or_init(|| crate::sha256::hex_digest(format!("{}\0parts 2", families_digest()).as_bytes()))
+    DIGEST.get_or_init(|| crate::sha256::hex_digest(format!("{}\0parts 3", families_digest()).as_bytes()))
 }
 
 pub(crate) fn named(name: &str) -> Option<&'static Family> {
@@ -161,6 +161,14 @@ pub(crate) fn of_classes<'a>(classes: impl IntoIterator<Item = &'a str>) -> Vec<
         }
     }
     out
+}
+
+/// Every family whose component of a stored component's name is of its class: what a part stored alone (a VAE, whose class no
+/// family's `classes` names) may be.
+pub(crate) fn of_parts<'a>(components: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<&'static Family> {
+    let parts: Vec<(&str, &str)> = components.into_iter().collect();
+    let has = |f: &Family, name: &str, class: &str| f.def(name).and_then(|(_, def)| def.class.as_deref()) == Some(class);
+    families().iter().filter(|f| parts.iter().any(|(name, class)| has(f, name, class))).collect()
 }
 
 /// What a LoRA's tensors end in: its factors, alpha and a DoRA's magnitude.
@@ -339,17 +347,24 @@ fn based(header: &Header, bases: &[&Component]) -> Option<String> {
     }
 }
 
-/// The family `based` verifies, its form and the components it verified.
+/// The family `based` verifies, its form and the components it verified. A part stored alone is the one family's whose component
+/// it verifies as; a part several families share (FLUX.2's VAE) is none of theirs alone.
 fn verified<'h>(header: &'h Header, bases: &[&'h Component]) -> Option<(&'static Family, String, Vec<&'h str>)> {
     let classes = header.pipeline().map(|p| p.class.name.as_str()).into_iter().chain(header.components().iter().map(|c| c.class.name.as_str()));
-    of_classes(classes).into_iter().find_map(|family| {
+    let check = |family: &'static Family| {
         let (named, rest): (Vec<&Component>, Vec<&Component>) = bases.iter().copied().filter(|c| family.def(&c.name).is_some()).partition(|c| family.classes.contains(&c.class.name));
         let stored: Vec<Stored> = (if named.is_empty() { rest } else { named }.iter())
             .map(|c| Stored { name: &c.name, keys: c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice())).collect() })
             .collect();
         let form = family.form_of(&stored).ok().filter(|_| !stored.is_empty())?;
         Some((family, form, stored.iter().map(|s| s.name).collect()))
-    })
+    };
+    let named = of_classes(classes);
+    if !named.is_empty() {
+        return named.into_iter().find_map(check);
+    }
+    let mut parts = of_parts(bases.iter().map(|c| (c.name.as_str(), c.class.name.as_str()))).into_iter().filter_map(check);
+    parts.next().filter(|_| parts.next().is_none())
 }
 
 /// One stored component: its name and every tensor's key and logical shape.

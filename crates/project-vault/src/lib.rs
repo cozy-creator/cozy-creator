@@ -781,6 +781,23 @@ impl SessionTimer {
         expired
     }
 
+    /// When [`SessionTimer::expired`] turns true if nothing moves it: the earlier of each limit's
+    /// wall and monotonic ends. None while work holds it, or with no limit.
+    pub fn deadline(&self) -> Option<SystemTime> {
+        if self.held {
+            return None;
+        }
+        let (wall, now) = (SystemTime::now(), Instant::now());
+        let end = |since: Instant, since_wall: SystemTime, seconds: u64| {
+            let limit = Duration::from_secs(seconds);
+            let monotonic = wall.checked_add((since + limit).saturating_duration_since(now));
+            since_wall.checked_add(limit).into_iter().chain(monotonic).min()
+        };
+        let idle = self.policy.idle_seconds.and_then(|seconds| end(self.activity, self.activity_wall, seconds));
+        let maximum = self.policy.maximum_seconds.and_then(|seconds| end(self.opened, self.opened_wall, seconds));
+        idle.into_iter().chain(maximum).min()
+    }
+
     pub fn policy(&self) -> SessionPolicy {
         self.policy
     }

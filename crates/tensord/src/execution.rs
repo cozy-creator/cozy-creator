@@ -750,6 +750,9 @@ impl Engine {
     pub(crate) fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<crate::journal::RunTime>> {
         self.journal.lock().unwrap().run_times(function, limit)
     }
+    pub(crate) fn all_run_times(&self, limit: usize) -> io::Result<Vec<api::machine::Timed>> {
+        self.journal.lock().unwrap().all_run_times(limit)
+    }
     pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.nonterminal(limit))
     }

@@ -60,8 +60,10 @@ const HOLDER = join(dirname(process.env.HOLDER), '..', 'machine', 'var', 'lib', 
   process.kill(pid, 'SIGTERM');
   const stopped = await until('local stopped', local, (machine) => machine?.state === 'stopped').catch(() => null);
   check('stopped_before', stopped !== null, (await local())?.state);
-  // The page hears it before the press.
-  await page.waitForTimeout(1500);
+  // The page hears it before the press (cl-894's bug was the page counting only a ready local): its chip says it's stopped.
+  const chip = page.locator('.mtabs [data-machine="local"]');
+  const heard = await until('the page shows local stopped', () => chip.getAttribute('title').catch(() => ''), (title) => /\bstopped\b/.test(title ?? '')).then(() => true, () => false);
+  check('the_page_shows_it_stopped', heard, await chip.getAttribute('title').catch(() => null));
   await shot('stopped');
 
   await page.locator('.render-all button.primary').click();

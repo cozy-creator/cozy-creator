@@ -67,8 +67,12 @@ def role(pid: int) -> str | None:
     argv = [a for a in raw.split("\0") if a and a != "--json"]
     if "cozy_runtime.internal.executor" in argv:
         return "executor"
+    if argv and Path(argv[0]).name == "securefs":
+        return "securefs"
     if not argv or not Path(argv[0]).name.startswith("cozy"):
         return None
+    if argv[1:2] == ["__cozy_vault_provider"]:
+        return "vault supervisor"
     if argv[1:] == ["calcifer"]:
         return "calcifer"
     if argv[1:3] == ["machine", "serve"]:

@@ -4,6 +4,7 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use platform::durable;
@@ -41,18 +42,43 @@ impl Card {
 
 }
 
-/// Where `(hub, package)`'s cards live under `root`, the cozy home.
-fn dir(root: &Path, hub: &str, package: &str) -> PathBuf {
+/// Where `hub`'s cards live under `root`, the cozy home.
+fn hub_dir(root: &Path, hub: &str) -> PathBuf {
     let host = hub.split_once("://").map_or(hub, |(_, rest)| rest);
     let host: String = host
         .trim_end_matches('/')
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
         .collect();
-    let mut dir = root.join("packages").join(host);
+    root.join("packages").join(host)
+}
+
+/// Where `(hub, package)`'s cards live under `root`.
+fn dir(root: &Path, hub: &str, package: &str) -> PathBuf {
+    let mut dir = hub_dir(root, hub);
     dir.extend(package.split('/'));
     dir
 }
+
+/// Keeps what `hub` listed at its last whole read, each package with its newest release, beside their cards: a list asked before
+/// the Hub answers again, after a restart too, stands on it (cl-975).
+pub fn keep_listed(root: &Path, hub: &str, listed: &[(String, String)]) {
+    let dir = hub_dir(root, hub);
+    let read_at_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    let document = serde_json::json!({ "read_at_ms": read_at_ms, "packages": listed });
+    // One that cannot be kept is the next restart's to read again.
+    drop(durable::private_dir(&dir).and_then(|()| durable::replace(&dir.join(LISTED), document.to_string().as_bytes(), 0o600)));
+}
+
+/// What `hub` listed at its last whole read (`keep_listed`), and when.
+pub fn kept_listed(root: &Path, hub: &str) -> Option<(SystemTime, Vec<(String, String)>)> {
+    let document: Value = serde_json::from_slice(&std::fs::read(hub_dir(root, hub).join(LISTED)).ok()?).ok()?;
+    let at = UNIX_EPOCH + Duration::from_millis(document["read_at_ms"].as_u64()?);
+    Some((at, serde_json::from_value(document["packages"].clone()).ok()?))
+}
+
+/// The file `keep_listed` writes: not a card, nor an org's folder.
+const LISTED: &str = "listed.json";
 
 /// A failed Hub call as a refusal.
 pub fn refusal(error: crate::hub::Error) -> Error {
@@ -148,7 +174,7 @@ fn absent(error: Error, what: &str) -> Error {
 }
 
 /// The kept card of `release`.
-pub(crate) fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card> {
+pub fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card> {
     let path = file(&dir(root, hub, package), release);
     let document: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     read(&document).ok()

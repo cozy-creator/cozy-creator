@@ -418,6 +418,7 @@ impl LocalSources {
             release: manifest.release,
             interface: serde_json::to_vec(&held.record.interface).map_err(std::io::Error::other)?,
             hub: String::new(),
+            manifest: manifest_digest.to_string(),
         })?;
         service.installed(&held);
         Ok(installed)
