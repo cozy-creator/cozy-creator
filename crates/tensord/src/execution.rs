@@ -419,11 +419,18 @@ impl Engine {
                 let _ = fs::remove_dir_all(self.root.join(dir).join(id.to_string()));
             }
         }
+        // Their own logs (`<id>.<kind>`), as reclaim names them.
+        for entry in fs::read_dir(self.root.join("logs")).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if ids.iter().any(|id| name.split('.').next() == Some(id.to_string().as_str())) { let _ = fs::remove_file(entry.path()); }
+        }
         for subject in subjects.iter().filter(|subject| subject.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
             let _ = fs::remove_file(self.root.join("triage").join(format!("{subject}.json")));
         }
         if !objects.is_empty() {
-            self.store.retire_objects(&objects, &[], &[]).map_err(crate::storage::io_error)?;
+            // Their own uses go with them: a use naming only their objects is theirs.
+            let uses: Vec<String> = objects.iter().map(|object| object.sha256.clone()).collect();
+            self.store.retire_objects(&objects, &uses, &[]).map_err(crate::storage::io_error)?;
         }
         Ok(true)
     }

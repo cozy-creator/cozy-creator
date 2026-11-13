@@ -379,8 +379,11 @@ impl LocalSources {
             environment::compile_bytecode(&platform::paths::venv_python(&environment));
         }
         let built: environment::Built = serde_json::from_slice(&fs::read(&ready)?).map_err(std::io::Error::other)?;
-        // One generation per environment and tree: a run of code unchanged since reads it as it is.
-        let identity = sha256::hex_digest(serde_json::json!([environment, digest]).to_string().as_bytes())[..32].to_string();
+        // One generation per environment, tree and project: a run of code unchanged since reads it as it is. Its project names
+        // it too, as the generation is the project's own (cl-984): the same code in two projects is two generations on one
+        // machine environment, and a dispatch outside any request scope finds exactly one.
+        let owner = crate::private_io::current().map(|scope| scope.project_id).unwrap_or_default();
+        let identity = sha256::hex_digest(serde_json::json!([environment, digest, owner]).to_string().as_bytes())[..32].to_string();
         if service.catalog.resolve(&identity).is_err() {
             job.stage(format!("describing {}", manifest.package));
             let dir = crate::private_io::cache_root(service.catalog.root().to_owned(), "generations")?.join(&identity);

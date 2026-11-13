@@ -848,6 +848,17 @@ impl Journal {
                 let rows = only.query_map([id], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? })).map_err(db_error)?;
                 for row in rows { objects.push(row.map_err(db_error)?); }
             }
+            // Its inputs, uploaded for it: objects its record names that no other run holds.
+            let record: Option<String> = tx.query_row("SELECT record FROM executions WHERE id=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+            if let Some(execution) = record.and_then(|record| decoded_execution(&record).ok()) {
+                for input in &execution.invocation.inputs {
+                    let sha256 = input.digest.strip_prefix("sha256:").unwrap_or(&input.digest).to_owned();
+                    let others: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM run_objects WHERE sha256=?1 AND execution<>?2)", params![sha256, id], |row| row.get(0)).map_err(db_error)?;
+                    if !others && sha256.len() == 64 && !objects.iter().any(|held| held.sha256 == sha256) {
+                        objects.push(tensorfs::format::ObjectRef { sha256, length: input.length });
+                    }
+                }
+            }
             let triage: Option<String> = tx.query_row("SELECT record FROM triage WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
             subjects.extend(triage.and_then(|record| serde_json::from_str::<Value>(&record).ok()?.get("subject_id")?.as_str().map(String::from)));
             for table in OWNED {
@@ -862,8 +873,12 @@ impl Journal {
             }
         }
         tx.commit().map_err(db_error)?;
-        // Their cells are zeroed (`secure_delete`); the WAL's older images of those pages go once a reader lets them.
-        let _ = self.connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        // Their cells are zeroed (`secure_delete`); the WAL's older images of those pages go once no reader holds them.
+        for _ in 0..40 {
+            let busy: i64 = self.connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0)).unwrap_or(1);
+            if busy == 0 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
         Ok((objects, subjects))
     }
 
