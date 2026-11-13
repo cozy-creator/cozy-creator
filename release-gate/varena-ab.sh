@@ -4,6 +4,7 @@
 # build, and the candidate (<cell>). The same cells, prompts, seeds, caps and order as tensorfs-ab.sh. By hand, on a pod:
 #   AB_BASE_TENSORD=<cozy> AB_BASE_TENSORFS=<whl> AB_TENSORD=<cozy> AB_TENSORFS=<whl> \
 #     gate.sh <SKU> --on <pod> --suite inputs --only varena-ab --establish --cells release-gate/varena-ab.sh
+# AB_SKIP="ab-h3-off …" leaves out rows a run already has.
 ONLY=  # the suites' --only chose their cells, not these
 ab_version() { case $1 in *.whl) basename "$1" | cut -d- -f2 ;; *) "$1" --version | awk '{print $2}' ;; esac; }
 for f in "${AB_BASE_TENSORD:-}" "${AB_BASE_TENSORFS:-}" "${AB_TENSORD:-}" "${AB_TENSORFS:-}"; do
@@ -70,6 +71,7 @@ log "varena-ab: base $(cut -d' ' -f3- <<< "$AB_BASE") against candidate $(cut -d
 for lvl in off 8 6; do
   for m in h3 qwen4mp sdxl klein ideogram; do
     [ "$m" != ideogram ] || [ "$lvl" = off ] || continue
+    [[ " ${AB_SKIP:-} " != *" ab-$m-$lvl "* ]] || continue
     [ "$lvl" = 8 ] || ab_arm "$AB_BASE" "$lvl" "$m" "ab-$m-$lvl" -released
     ab_arm "$AB_CAND" "$lvl" "$m" "ab-$m-$lvl" ''
     [ "$lvl" != 8 ] || ab_arm "$AB_BASE" "$lvl" "$m" "ab-$m-$lvl" -released
