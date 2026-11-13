@@ -260,7 +260,8 @@ function replaceFile(at, text) {
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
     const bare = await bareFrom(x, y);
-    const fresh = await dragOut(fromTheList, bare.x, bare.y);
+    // Taken from the list as it is now: back from Focus, its open category isn't (the panel comes back as it starts), and a person opens it.
+    const fresh = await dragOut(await implementationRow(page, 'image'), bare.x, bare.y);
     // Its model is carried onto it, in view as toolOnto has it: let go near the window's foot, most of a box is under it.
     await fitCanvas(page);
     await chooseModel(page, fresh.name, tool, "image");
@@ -531,7 +532,11 @@ function replaceFile(at, text) {
   const rowsOut = new Promise((done) => (rowsHeld = done));
   const rowsLate = (call) => (call.request().method() === 'PATCH' ? (rowsHeld(), rowsGoing.then(() => call.fallback().catch(() => {}))) : call.fallback());
   await page.route('**/v1/projects/*/assets/knobs', rowsLate);
-  await page.locator('.card.here[data-asset="knobs"] .beat .mention-text').nth(0).click();
+  // One beat open at a time (de4808cf2, cl-938): the second open, the page opens the first to type in it, as a person does. Shut, its words
+  // are clipped and inert, under the second's head.
+  await knobBeats.nth(0).locator('.beat-toggle').click();
+  await knobBeats.nth(0).locator('.beat-panel[data-open]').waitFor();
+  await knobBeats.nth(0).locator('.mention-text').click();
   await page.keyboard.press('End');
   await page.keyboard.type(' Page.');
   check('the_pages_beat_write_went_out', await Promise.race([rowsOut.then(() => true), new Promise((done) => setTimeout(() => done(false), 20_000))]));
@@ -727,9 +732,10 @@ function replaceFile(at, text) {
     await until('its two retained previews', () => box('Sheet').locator('.image-history.here-side .take[data-take]').count(), (count) => count === 2);
 
     // Preview is local; double-click approval is the separate persistent action.
-    const beforePreview = (await of('Sheet')).version;
+    const beforePreview = await of('Sheet');
     await previewVersion(page, 'Sheet', 1);
-    check('thumbnail_preview_does_not_approve', (await of('Sheet')).version === beforePreview);
+    const afterPreview = await of('Sheet');
+    check('thumbnail_preview_does_not_approve', afterPreview.version === beforePreview.version, { before: beforePreview, after: afterPreview });
     await approveVersion(page, 'Sheet', 1);
     await until('first version selected in the project', () => of('Sheet'), (held) => held.version === 1);
     check('selected_version_is_persistent', await box('Sheet').locator('.image-history .take.on[data-take]').getAttribute('data-take') === '1');
@@ -864,10 +870,15 @@ function replaceFile(at, text) {
 
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
     const [heldFile, heldTakes] = [(await of('Sheet')).sha256, await versions('Sheet')];
+    // As it stands before: its words are its second take's (New wrote them, cl-909), so the first, approved, may already be out of date.
+    const { standing: standsBefore, changed: changedBefore } = await of('Sheet');
     const filesThen = readdirSync(join(folder, 'files')).length;
-    const deleting = page.waitForResponse((answer) => answer.request().method() === 'DELETE' && answer.url().endsWith('/assets/source-a'));
+    // Held until the press: if the press can't be made, that's what's said, not this wait's own timeout.
+    const deleting = page.waitForResponse((answer) => answer.request().method() === 'DELETE' && answer.url().endsWith('/assets/source-a')).catch((error) => error);
     await deleteBox('source-a');
-    const edit = (await deleting).request().headers()['cozy-edit'];
+    const deleted = await deleting;
+    if (deleted instanceof Error) throw deleted;
+    const edit = deleted.request().headers()['cozy-edit'];
     await until('gone at once', () => box('source-a').count(), (n) => n === 0);
     check('no_dialog', (await page.locator('dialog, [role=dialog]').count()) === 0);
     const noted = await until('its note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-a')));
@@ -879,7 +890,9 @@ function replaceFile(at, text) {
     await away();
     await page.waitForTimeout(300);
     check('approved_stands', (await of('Sheet')).sha256 === heldFile && (await of('Sheet')).pinned, await of('Sheet'));
-    check('approved_shows_nothing_wrong', (await box('Sheet').locator('.state-dot.failed').count()) === 0 && (await of('Sheet')).standing === 'current', await of('Sheet'));
+    // A deleted input is no change to it (df98b8246): it stands as it did, and nothing on it says otherwise.
+    const standsAfter = await of('Sheet');
+    check('approved_shows_nothing_wrong', (await box('Sheet').locator('.state-dot.failed').count()) === 0 && standsAfter.standing === standsBefore && JSON.stringify(standsAfter.changed ?? []) === JSON.stringify(changedBefore ?? []), { before: { standing: standsBefore, changed: changedBefore }, after: standsAfter });
     await open('Sheet');
     check('approved_face_has_no_warning', (await box('Sheet').locator('.status.ood, .status.bad, .warned').count()) === 0, await box('Sheet').innerText());
     check('wire_missing', (await of('Sheet')).missing?.join() === 'source-a', (await of('Sheet')).missing);
@@ -891,9 +904,10 @@ function replaceFile(at, text) {
     // Rendering it again fails, naming what's gone, and the rest goes on.
     await box('Sheet').locator('button[aria-label=Render]').click();
     const failed = await until('it says why', () => of('Sheet'), (held) => held.failure);
-    check('fails_naming_it', failed.failure.code === 'input_missing' && failed.failure.message.includes('<source-a> is no longer in the project'), failed.failure);
+    // Deleted, it's named as deleted until Undo brings it back (cl-919, 815b5e40c).
+    check('fails_naming_it', failed.failure.code === 'input_missing' && failed.failure.message.includes('<source-a> was deleted'), failed.failure);
     // The failure is a toast with its next steps, the box open and its picture standing, and no line on the box says it.
-    await until('a toast says why', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render") && line.includes('no longer in the project')));
+    await until('a toast says why', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render") && line.includes('source-a') && line.includes('was deleted')));
     const toastSteps = page.locator('.note:has-text("Sheet didn\'t render")').first();
     check('its_next_steps_as_text', (await toastSteps.locator('.remedy, .copyable').count()) > 0, await toastSteps.innerText());
     check('render_keeps_it_open_saying_nothing', (await page.locator('.card.here[data-asset="Sheet"]').count()) === 1 && (await box('Sheet').locator('.status').count()) === 0, await box('Sheet').innerText());
