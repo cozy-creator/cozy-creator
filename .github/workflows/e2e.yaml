@@ -752,7 +752,7 @@ jobs:
         working-directory: .creator/web/app
         run: pnpm install --frozen-lockfile
       - name: Install the optional project-encryption filesystem driver
-        if: matrix.shard == 'projectvault' || startsWith(matrix.shard, 'containment') || matrix.shard == 'web-opens'
+        if: matrix.shard == 'projectvault' || matrix.shard == 'web-home' || startsWith(matrix.shard, 'containment') || matrix.shard == 'web-opens'
         run: bash .creator/e2e/cli/install-vault-driver.sh
       - uses: actions/download-artifact@v4
         with:

@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { BARS, DARK_OPEN, MP4, STEP_MS, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload } = require('./page');
+const { projectFolder, BARS, DARK_OPEN, MP4, STEP_MS, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const SIZES = [[1440, 900], [1920, 1080]];
@@ -172,7 +172,7 @@ async function died(why) {
 
   during = 'a project';
   await goto(paper, '/projects');
-  await paper.fill('input[aria-label="New project\'s name"]', `web-look-${Date.now()}`);
+  await paper.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-look-${Date.now()}`));
   await paper.getByLabel('Create without encryption', { exact: true }).check();
   await paper.click('form button[type=submit]');
   await paper.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
@@ -382,7 +382,7 @@ async function died(why) {
     open: async (page) => {
       await goto(page, projectPath);
       await page.click('nav.ptabs a.ptab.on');
-      await page.locator('.drawer input[aria-label="New project\'s name"]').waitFor();
+      await page.locator('.drawer input[aria-label="New project\'s folder"]').waitFor();
     },
   });
   await shoot('drawer-library', { open: (page) => goto(page, `${projectPath}/packages`) });

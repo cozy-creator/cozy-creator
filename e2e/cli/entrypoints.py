@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
+import urllib.error
+import urllib.request
 import re
 import subprocess
 import sys
@@ -189,6 +191,23 @@ def main() -> None:
         initialized = json.loads(run("new current directory", ["--json", "new", "--unencrypted"], existing_directory).stdout)
         assert Path(initialized["path"]).resolve() == existing_directory
         assert initialized["created"] is True
+        # cl-980: `cozy new` and the page's New are one create, Calcifer's `POST /v1/projects {path}`: what the CLI made is in the index
+        # the page lists, and a create by name alone, the page's old second way, is gone.
+        holder = json.loads((Path.home() / ".cozy" / "calcifer" / "calcifer.lock.holder").read_text())
+        def calcifer(method: str, path: str, body: object = None) -> tuple[int, str]:
+            request = urllib.request.Request(f"http://{holder['address']}{path}", method=method,
+                data=None if body is None else json.dumps(body).encode(),
+                headers={"Authorization": f"Bearer {holder['token']}", "Content-Type": "application/json", "cozy-project-storage": "3"})
+            try:
+                with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30) as answer:
+                    return answer.status, answer.read().decode()
+            except urllib.error.HTTPError as refusal:
+                return refusal.code, refusal.read().decode()
+        listed = json.loads(calcifer("GET", "/v1/projects?limit=1000")[1])["projects"]
+        assert any(row["id"] == created["id"] and Path(row["path"]).resolve() == project for row in listed), "new's project is not in the index"
+        status, said = calcifer("POST", "/v1/projects", {"name": "by-name-only", "unencrypted": True})
+        assert status == 400 and json.loads(said)["error"]["code"] == "body_invalid", f"a create by name alone: {status} {said}"
+        assert not (Path.home() / "by-name-only").exists(), "a create by name alone made a folder"
         environment["COZY_PROJECT"] = str(project)
 
         for name, words in (

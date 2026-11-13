@@ -9,7 +9,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, storedOf, until, STEP_MS } = require('./page');
+const { projectFolder, addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, storedOf, until, STEP_MS } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 // A still made in steps of `pace` s, so a render lasts long enough to be seen at rest.
@@ -76,7 +76,7 @@ async function died(why) {
   await signIn(page);
   await page.waitForSelector('.top');
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-newtakes-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-newtakes-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

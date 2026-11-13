@@ -15,7 +15,7 @@ const { exec } = require('child_process');
 const { existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { basename, join } = require('path');
-const { projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, addBoxes, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, storedOf, summary, until, watchBoxes, wav } = require('./page');
+const { projectFolder, projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, addBoxes, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, storedOf, summary, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -145,7 +145,7 @@ async function rest(page, handle) {
 
   // A project of its own, by name, from the Projects drawer: the page is open on it from here on, and nothing below reloads it unless it says so.
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-see-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-see-${Date.now()}`));
   await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
@@ -469,7 +469,7 @@ async function rest(page, handle) {
   }
 
   // 300 elements, on React Flow, by project-web-ui §8's three cases. What's measured is reported; what's checked is that each case really happened.
-  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `see-${Date.now()}` }, body: JSON.stringify({ name: `web-see-scale-${Date.now()}`, unencrypted: true }) });
+  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `see-${Date.now()}` }, body: JSON.stringify({ path: projectFolder(`web-see-scale-${Date.now()}`), unencrypted: true }) });
   const scalePages = new Set();
   try {
     const big = made.path;
@@ -689,9 +689,10 @@ async function rest(page, handle) {
     check('tabs_still_while_resizing', frames.length >= 40 && moved.length === 0, { frames: frames.length, moved: moved.slice(0, 5) });
     check('tabs_back_when_narrower', (await bar()).tabs.join() === narrow.tabs.join(), { narrow, now: await bar() });
 
-    // With no project open its "untitled" tab is measured too, so what has a tab keeps its width.
+    // With no project open there's no tab of its own (cl-980), and what has a tab keeps its width.
     await tab.goto(`${base}/projects`);
-    await loaded('nav.ptabs span.ptab.on');
+    await loaded('nav.ptabs a.ptab');
+    check('tabs_none_untitled', (await tab.locator('nav.ptabs span.ptab').count()) === 0);
     const untitled = await tab.evaluate(() => [...document.querySelectorAll('nav.ptabs a.ptab:not(.more):not(.new)')].map((link) => ({ code: link.getAttribute('href').split('/').pop(), width: link.getBoundingClientRect().width })));
     const squeezed = untitled.filter((one) => first.has(one.code) && !first.get(one.code).on && Math.abs(first.get(one.code).width - one.width) > 0.5);
     check('tabs_untitled_measured', untitled.length > 0 && squeezed.length === 0, { untitled, squeezed });
@@ -721,11 +722,11 @@ async function rest(page, handle) {
     // The open project's name: the New field, ready, from the drawer open and from the canvas.
     const naming = () => tab.evaluate(() => document.activeElement?.getAttribute('aria-label'));
     await tab.click('nav.ptabs a.ptab.on');
-    await until('+ in the drawer names a new one', naming, (label) => label === "New project's name").then(() => check('tabs_plus_in_drawer', true), (error) => check('tabs_plus_in_drawer', false, error.message));
+    await until('+ in the drawer names a new one', naming, (label) => label === "New project's folder").then(() => check('tabs_plus_in_drawer', true), (error) => check('tabs_plus_in_drawer', false, error.message));
     await tab.click('.drawer [aria-label="Close"]');
     await tab.waitForSelector('.drawer', { state: 'detached' });
     await tab.click('nav.ptabs a.ptab.on');
-    await until('+ names a new one', naming, (label) => label === "New project's name").then(() => check('tabs_plus', true), (error) => check('tabs_plus', false, error.message));
+    await until('+ names a new one', naming, (label) => label === "New project's folder").then(() => check('tabs_plus', true), (error) => check('tabs_plus', false, error.message));
     await tab.close();
   } finally {
     if (treeTab && !treeTab.isClosed()) await treeTab.close();

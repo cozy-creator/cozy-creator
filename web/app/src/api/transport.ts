@@ -25,6 +25,15 @@ export interface Transport {
 export const TAB = crypto.randomUUID().slice(0, 4)
 
 /** This origin's Calcifer. Only a relative API path is ever followed. */
+/** The storage proof's 401: the session is gone, said as Calcifer said it. */
+class SessionRefused extends Error {
+  readonly response: Response
+  constructor(response: Response) {
+    super("This page's session ended")
+    this.response = response
+  }
+}
+
 export function sameOrigin(session: () => BrowserSession | null): Transport {
   const resolve = (path: string) => {
     const url = new URL(path, location.origin)
@@ -62,6 +71,8 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     if (!token) throw new Error("A browser session is required before opening project data")
     if (proven === token) return
     const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { Authorization: `Bearer ${token}`, [PROJECT_STORAGE_HEADER]: PROJECT_STORAGE_VERSION } })
+    // The session gone: that answer is the caller's, so the page's one no-session state follows, wherever it asked from (cl-980).
+    if (response.status === 401) throw new SessionRefused(response)
     const capability = response.ok ? await response.json() : null
     const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
     const principal = [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("")
@@ -87,7 +98,9 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     async fetch(path, init = {}) {
       const project = guard(path)
       const signal = project ? (init.signal ? AbortSignal.any([init.signal, project.signal]) : project.signal) : init.signal
-      if (needsStorage(path) && unproven()) await storage(signal)
+      if (needsStorage(path) && unproven()) {
+        try { await storage(signal) } catch (error) { if (error instanceof SessionRefused) return error.response; throw error }
+      }
       project?.check()
       const headers = new Headers(init.headers)
       const token = session()?.token

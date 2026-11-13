@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readdirSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, projectUrl, settled, signIn, STEP_MS, until, upload } = require('./page');
+const { projectFolder, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, projectUrl, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -50,7 +50,7 @@ async function died(why) {
   const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-copy-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-copy-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

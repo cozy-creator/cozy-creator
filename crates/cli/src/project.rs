@@ -107,7 +107,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
         meter.finalizing("Preparing encrypted storage");
         meter
     });
-    let request = Open { path: Some(directory.clone()), unencrypted: args.unencrypted, passphrase, ..Open::default() };
+    let request = Open { path: directory.clone(), unencrypted: args.unencrypted, passphrase, ..Open::default() };
     let key = args.unencrypted.then(mint_key);
     let (id, code, path, created, mut recovery_secret) = if let Some(address) = existing {
         (address.id, address.code, directory.clone(), false, None)

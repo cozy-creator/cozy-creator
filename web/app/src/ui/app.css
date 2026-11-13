@@ -82,18 +82,44 @@ html.carrying * {
   cursor: grabbing !important;
 }
 
-.project-setup {
-  width: min(36rem, calc(100vw - 2rem));
-  max-height: calc(100vh - 2rem);
-  overflow: auto;
-  padding: 24px;
-  border: 1px solid var(--mute);
-  border-radius: 12px;
-  background: var(--bg);
-  color: var(--ink);
+/* At `/` with no project open, what to do, over the empty canvas; and a new project made in place, the + 's or a first drop's (cl-980). */
+.home-line {
+  margin: 0;
+  color: var(--mute);
+  font-size: var(--title);
 }
-.project-setup::backdrop {
-  background: rgb(0 0 0 / 0.65);
+.home {
+  position: fixed;
+  inset: var(--top) 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  pointer-events: none;
+  z-index: 30;
+}
+.new-project {
+  width: min(36rem, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 20px 24px;
+  border: 1px solid var(--line2);
+  border-radius: 14px;
+  background: var(--float);
+  box-shadow: 0 10px 40px var(--shadow);
+  color: var(--ink);
+  pointer-events: auto;
+}
+.new-project h2 {
+  margin: 0 0 4px;
+  font-size: var(--title);
+  font-weight: var(--w-title);
+}
+/* What's wrong with a field, one line, under it in its column. */
+.said-beside > .beside {
+  grid-column: 2;
+  color: var(--bad);
+  font-size: var(--body);
 }
 
 /* The five steps at a surface's size. The frame draws them at --ui; a drawer is zoomed, an open box's sheet and takes are drawn larger
@@ -4543,7 +4569,8 @@ input[type="checkbox"] {
   align-items: center;
   gap: calc(8px * var(--ui));
 }
-.ptabs {
+.ptabs,
+.ptabs-add {
   display: flex;
   align-items: stretch;
   gap: calc(2px * var(--ui));
@@ -4576,6 +4603,11 @@ input[type="checkbox"] {
 }
 .ptab.more {
   flex: none;
+}
+/* The + that makes a project, right after the tabs, in a strip of its own as tall as theirs. */
+.ptab.add {
+  flex: none;
+  cursor: pointer;
 }
 /* What each tab takes at its full width, laid out where no one sees it: a row as wide as all of them, so a font arriving resizes it. */
 .ptabs-ghost {

@@ -455,7 +455,11 @@ heap_bytes: number,
 /**
  * Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
  */
-encrypted_project_creation: boolean, };
+encrypted_project_creation: boolean,
+/**
+ * This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
+ */
+home: string, };
 
 /**
  * One settled call of a run (the run's own function or a child call).
@@ -1846,11 +1850,11 @@ export type NoteLevel = "info" | "warning";
 export type On = string;
 
 /**
- * `POST /v1/projects`: a new project called `name`, in Calcifer's home folder (`~/<name>`, the next free name when that is
- * taken) or at `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in
- * its `project.db`: the folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.
+ * `POST /v1/projects`: a new project at `path` (absolute, on Calcifer's computer), named for its folder, with the starter film
+ * when `starter`. `cozy new` and the page's New both make one so (cl-980). A project is its id, kept in its `project.db`: the
+ * folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.
  */
-export type Open = { name?: string | null, path?: string | null, starter?: boolean,
+export type Open = { path: string, starter?: boolean,
 /**
  * Explicitly create ordinary local storage instead of the default encrypted project.
  */

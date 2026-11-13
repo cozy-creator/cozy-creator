@@ -2265,6 +2265,9 @@ pub struct CalciferStatus {
     /// Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
     #[serde(default)]
     pub encrypted_project_creation: bool,
+    /// This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
+    #[serde(default)]
+    pub home: PathBuf,
 }
 
 /// The header each request of a `cozy` process carries: its pid, so Calcifer tells its requests from everyone else's (cl-962).

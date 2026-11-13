@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, openCanvas, png, launch, noStall, settled, until, wav, rowsOf, addBoxes, assetsOf, storedOf, fitCanvas, observeResizes } = require('./page');
+const { projectFolder, projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, openCanvas, png, launch, noStall, settled, until, wav, rowsOf, addBoxes, assetsOf, storedOf, fitCanvas, observeResizes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -139,7 +139,7 @@ async function placedInView(page, expected) {
   // A project of its own, by name, from the Projects drawer.
   const projectName = `web-place-${Date.now()}`;
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', projectName);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(projectName));
   await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

@@ -10,7 +10,7 @@ const { execFileSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, projectAction, projectFromPage, signIn, STEP_MS, until, upload } = require('./page');
+const { projectFolder, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, projectAction, projectFromPage, signIn, STEP_MS, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -47,7 +47,7 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   seen.ran = local;
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-videotiles-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-videotiles-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

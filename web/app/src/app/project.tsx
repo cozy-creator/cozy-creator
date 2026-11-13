@@ -1,11 +1,12 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query"
-import { createContext, type ReactNode, useCallback, useContext, useLayoutEffect } from "react"
+import { createContext, type ReactNode, useCallback, useContext, useLayoutEffect, useRef } from "react"
 import { useLocation, useMatch, useNavigate } from "react-router-dom"
 import { ApiError, type Client } from "../api/client"
 import type { ProjectAddress } from "../api/calcifer"
 import { noHash } from "../canvas/text"
 import { Copyable } from "../ui/Copyable"
 import { useConnection } from "./Connection"
+import { privateProject } from "./view"
 
 const CurrentProject = createContext<ProjectAddress | null>(null)
 const referenceKey = (reference: string) => ["project-reference", reference]
@@ -62,9 +63,14 @@ export function ProjectRoute({ children }: { children: ReactNode }) {
     if (`${location.pathname}${location.search}` !== canonical) navigate(canonical, { replace: true })
   }, [data, reference, location.pathname, location.search, navigate, queries])
 
+  // While the next one's address is read, the page shown stays as it is: the frame never goes, and the screen never goes blank (cl-980).
+  // Not an encrypted project's: that's covered at once.
+  const shown = useRef<{ project: ProjectAddress | null } | null>(null)
   if (reference && error && !data) return <main className="gate"><Unopened error={error} /></main>
-  if (reference && !data) return <main className="gate">Opening project…</main>
-  return <CurrentProject.Provider value={reference ? data ?? null : null}>{children}</CurrentProject.Provider>
+  if (reference && !data && (!shown.current || privateProject(shown.current.project?.id ?? null))) return <main className="gate">Opening project…</main>
+  const project = !reference ? null : data ?? shown.current?.project ?? null
+  shown.current = { project }
+  return <CurrentProject.Provider value={project}>{children}</CurrentProject.Provider>
 }
 
 /** A newly created project can be navigated to before the project list refetches. */
