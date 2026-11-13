@@ -197,6 +197,17 @@ fn exclusive(root: &FsPath) -> Result<ProjectTransition, Error> {
     Ok(ProjectTransition { root: root.to_owned(), _access: guard })
 }
 
+/// [`exclusive`], waiting up to `within` for a request that holds the project (a read, a measurement) to finish.
+fn exclusive_within(root: &FsPath, within: Duration) -> Result<ProjectTransition, Error> {
+    let until = std::time::Instant::now() + within;
+    loop {
+        match exclusive(root) {
+            Err(busy) if busy.code == "project_busy" && std::time::Instant::now() < until => std::thread::sleep(Duration::from_millis(200)),
+            done => return done,
+        }
+    }
+}
+
 /// Upload routes are outside the project router, but must hold the same storage transition
 /// lease through their body and commit. A delayed upload cannot write into a reused drive.
 pub(crate) async fn admit_project(api: &Api, named: &str) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
@@ -748,7 +759,8 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         // A lock that found the project busy already revoked its view: this one finishes it, and admits no receipt into
         // a view that can no longer be opened.
         let revoked = held(root).is_some_and(|session| lapsed(&session.lock().expect("vault session")));
-        let busy = match held(root).filter(|_| !revoked).map(|_| exclusive(root)) {
+        // A read that holds it a moment is no reason to refuse: the lock waits for it, as it does below for what ends.
+        let busy = match held(root).filter(|_| !revoked).map(|_| exclusive_within(root, LOCK_DRAIN)) {
             Some(Ok(transition)) => {
                 let id = project_id(root).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
                 let store = api.projects.transition_store(api, &id, &transition)?;
