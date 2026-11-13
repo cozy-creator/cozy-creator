@@ -51,6 +51,15 @@ static PROJECTS: LazyLock<Projects> = LazyLock::new(|| {
     }
 });
 
+/// Moves whenever a project's revision does (a commit of this Calcifer's, or another program's its look read): what a walk looks at
+/// its deletions on, never a clock (xs-189).
+static EDITS: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+/// Told each time a project's revision moves.
+pub(crate) fn edits() -> tokio::sync::watch::Receiver<u64> {
+    EDITS.subscribe()
+}
+
 struct Projects {
     generation: String,
     sequence: AtomicU64,
@@ -99,6 +108,7 @@ fn moved(dir: &Path, rev: impl FnOnce() -> String) {
     if revs.get(&id) != Some(&rev) {
         revs.insert(id, rev);
         drop(revs);
+        EDITS.send_modify(|n| *n += 1);
         owe(dir, false);
     }
 }

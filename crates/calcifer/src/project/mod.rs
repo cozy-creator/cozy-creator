@@ -3359,9 +3359,8 @@ impl Walk {
     async fn go(&self, following: &tokio::task::JoinHandle<()>) -> Result<(), Error> {
         let (mut first, mut followed) = (None, HashSet::new());
         let mut work: FuturesUnordered<BoxFuture<'_, Done>> = FuturesUnordered::new();
-        // Another program's commit to project.db says nothing, so its revision is looked at. One read a second, and nothing more if it's the same.
-        let mut edits = tokio::time::interval(std::time::Duration::from_secs(1));
-        edits.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // A project's revision moved (this Calcifer's commit, or another program's its folder watch saw): what was deleted stops.
+        let mut edits = crate::events::edits();
         // A machine's Status moved (a run started or ended, bytes came, a machine came or went): a job held for a machine is placed again.
         let mut machines = self.host.api().calcifer.machines_changed();
         // A machine became ready or ended: what isn't sent yet is placed again.
@@ -3458,7 +3457,7 @@ impl Walk {
                         }
                     }
                     Ok(()) = arrivals.changed() => break,
-                    _ = edits.tick() => {
+                    Ok(()) = edits.changed() => {
                         if self.deletions()? {
                             break;
                         }
