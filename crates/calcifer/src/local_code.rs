@@ -1279,9 +1279,57 @@ async fn described(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Resu
         *held = Some((found.clone(), true));
         return Ok(found);
     }
-    let known = read_interface(api, code, on, hub, runtime).await?;
+    let home = api.machines.hubs.home();
+    let private = crate::private_io::current().is_some();
+    if let Some(known) = Some(()).filter(|()| !private).and_then(|()| static_kept(home, code, hub, runtime.as_deref())) {
+        *held = Some((known.clone(), false));
+        return Ok(known);
+    }
+    let known = read_interface(api, code, on, hub, runtime.clone()).await?;
+    if !private {
+        keep_static(home, code, hub, runtime.as_deref(), &known);
+    }
     *held = Some((known.clone(), false));
     Ok(known)
+}
+
+/// Where the static describer's reading of a tree is kept across Calcifer's restarts (xs-195): by the tree's content, its package's
+/// place in it, the Hub its lock is for and the Runtime that read it. A restart reads again only what changed.
+fn static_file(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> PathBuf {
+    let key = Digest::of(format!("{}\n{}\n{hub}\n{}", code.tree, code.at, runtime.unwrap_or_default()).as_bytes());
+    home.calcifer().join("described").join(format!("{}.json", &hex(&key)[..32]))
+}
+
+/// The static reading kept for this tree, said used now.
+fn static_kept(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
+    let path = static_file(home, code, hub, runtime);
+    let mut kept: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+    let package = kept["package"].as_str()?.to_owned();
+    let document = kept["interface"].take();
+    let _ = fs::File::options().append(true).open(&path).and_then(|file| file.set_modified(SystemTime::now()));
+    interface(&document).then_some((package, document))
+}
+
+/// Keeps a static reading, and only the newest 512.
+fn keep_static(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>, (package, document): &(String, Value)) {
+    const KEPT: usize = 512;
+    if !interface(document) {
+        return;
+    }
+    let path = static_file(home, code, hub, runtime);
+    let Some(dir) = path.parent() else { return };
+    let kept = serde_json::json!({ "package": package, "interface": document });
+    // A reading that can't be kept is read again after the next restart.
+    let _ = durable::private_dir(dir).and_then(|()| durable::replace(&path, kept.to_string().as_bytes(), 0o600));
+    let mut files: Vec<(SystemTime, PathBuf)> = (fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    if files.len() > KEPT {
+        files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+        for (_, old) in files.into_iter().skip(KEPT) {
+            let _ = fs::remove_file(old);
+        }
+    }
 }
 
 /// What the machine's Runtime said installing this very source, if it's kept here.

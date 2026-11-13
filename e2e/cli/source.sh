@@ -122,6 +122,14 @@ echo "from source: the page's tools: $(jq -c '[.tools[]? | select(.id | startswi
 J --arg said "$said" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said]' "$OUT/source-tools.json" \
   || check "from source: the page's tools don't list e2e-boxed/one_field from $said: $(jq -c '[.tools[]? | {id, release, source}] | .[:8]' "$OUT/source-tools.json" 2> /dev/null || head -c 300 "$OUT/source-tools.json"), $(jq -c .note "$OUT/source-tools.json" 2> /dev/null)"
 
+# Its reading is kept across Calcifer's restart: the first list after one has it, nothing left to read.
+systemctl --user restart cozy-calcifer || check "from source: Calcifer didn't restart"
+machine_ready
+curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/source-tools-again.json" 2>&1
+echo "from source: after a restart, the page's tools: $(jq -c '{boxed: [.tools[]? | select(.id | startswith("e2e-boxed/")) | .id] | length, note}' "$OUT/source-tools-again.json" 2> /dev/null)"
+J --arg said "$said" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said] and ((.note // "") | contains("still reading") | not)' "$OUT/source-tools-again.json" \
+  || check "from source: after a restart, the first list read the checkout again: $(jq -c '.note' "$OUT/source-tools-again.json" 2> /dev/null || head -c 300 "$OUT/source-tools-again.json")"
+
 # Another machine is sent the source by content.
 cozy --json machine show local > "$OUT/set-local.json"
 if stand_in stand-s; then
