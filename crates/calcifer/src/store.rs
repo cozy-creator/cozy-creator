@@ -3522,6 +3522,16 @@ fn output_url(row:&RunRow, name: &str, index: u32) -> String {
 }
 
 /// A run row as the API answers it, with its output items in the order they first appeared.
+/// What names `row` to a person (cl-987): `KEY-N`, the key its project.db keeps now (a project's journal is its project.db) and its
+/// number there; `COZY-N` for Calcifer's own.
+fn run_name(conn: &Connection, row: &RunRow) -> String {
+    let key = match row.project_root {
+        Some(_) => conn.query_row("SELECT key FROM project_keys ORDER BY ord DESC LIMIT 1", [], |r| r.get::<_, String>(0)).ok(),
+        None => Some(api::calcifer::project::MACHINE_KEY.to_owned()),
+    };
+    key.map_or_else(|| row.number.to_string(), |key| format!("{key}-{}", row.number))
+}
+
 fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
     let mut statement = conn.prepare(&format!(
         "SELECT name, idx, rev, length, digest, media_type, label, done,
@@ -3583,7 +3593,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         placed,
         id: row.id.clone(),
         number: row.number,
-        name: format!("{}-{}", api::calcifer::project::MACHINE_KEY, row.number),
+        name: run_name(conn, row),
         machine_number: None,
         kind: row.kind,
         target: row.target.clone(),

@@ -206,8 +206,6 @@ impl ProjectStore {
         self.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' ORDER BY number")?;Ok(stmt.query_map([self.project_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get::<_,Option<i64>>(2)?.map(|value|value as u64))))?.collect::<rusqlite::Result<_>>()?)})
     }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
-    /// What its runs are named by, `KEY-N` (cl-987).
-    pub(crate) fn run_key(&self) -> String { self.project.key() }
     pub(crate) fn owner(&self) -> RunOwner { RunOwner { project: self.project.clone(), controller: self.controller.clone() } }
     pub(crate) fn input_root(&self) -> store::Result<PathBuf> {
         self.validate()?;

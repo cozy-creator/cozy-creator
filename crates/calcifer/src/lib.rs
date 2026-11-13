@@ -971,8 +971,6 @@ impl Calcifer {
         let journal=self.row_store(row)?;
         let mut run=journal.record(row)?;
         let owned=match &journal {store::RunStore::Project(store)=>row.owner==store.project_id(),store::RunStore::Maintenance(_)=>true};
-        // Its project's key and its number there (cl-987); Calcifer's own runs are the journal's `COZY-N`.
-        if let store::RunStore::Project(store) = &journal { run.name = format!("{}-{}", store.run_key(), run.number); }
         if let Some(dir) = project::of_landing(&row.out_dir) {
             let (id, name) = project::identity(dir);
             (run.project_id, run.project) = (Some(id), Some(name));
