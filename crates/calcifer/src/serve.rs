@@ -102,7 +102,14 @@ pub fn main() -> ExitCode {
     platform::process::cloexec_from(3);
     // The trusted controller never executes project code in-process. Stop OS-managed dump
     // capture before configuration, keybags, state recovery or native proof payloads are read.
-    if platform::private_exec::disable_project_parent_dumps().is_err() {
+    // Where the OS has no such control here (Windows), Calcifer starts without it (cl-989); a
+    // failure where it has one is refused, so the CLI that started it says why.
+    if let Err(e) = platform::private_exec::disable_project_parent_dumps()
+        && !e.is_unsupported()
+    {
+        if let Some(user_home) = std::env::home_dir() {
+            refuse(&Home::under(&user_home), Error::new(Kind::Internal, "calcifer_dumps", e.to_string()));
+        }
         return ExitCode::FAILURE;
     }
     // The panic payload and location never enter stderr or the health sink.

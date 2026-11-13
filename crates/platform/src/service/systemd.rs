@@ -1,7 +1,7 @@
 //! A systemd `--user` unit kept in the home and linked into the user's manager, so no XDG path is
 //! looked up. `Restart=on-failure`: a clean exit (a restart, an update) is not restarted.
 use super::{ServiceSpec, run};
-use crate::{Error, Result, durable, paths::Home};
+use crate::{Error, Result, durable, paths::Home, process::Detached};
 use std::{
     ffi::OsString,
     fs,
@@ -46,8 +46,8 @@ pub(super) fn current(dir: &Path, spec: &ServiceSpec) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-pub(super) fn start(_: &Path, spec: &ServiceSpec) -> Result<()> {
-    run(MANAGER, systemctl().args(["start", &unit(&spec.name)]))
+pub(super) fn start(_: &Path, spec: &ServiceSpec) -> Result<Option<Detached>> {
+    run(MANAGER, systemctl().args(["start", &unit(&spec.name)])).map(|()| None)
 }
 
 /// systemd refuses a unit started more than `StartLimitBurst` times in `StartLimitIntervalSec` (5 in
