@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { implementationRow, previewVersion, approveVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, upload, rowsOf, addBoxes, storedOf } = require('./page');
+const { projectFolder, implementationRow, previewVersion, approveVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, upload, rowsOf, addBoxes, storedOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -60,7 +60,7 @@ async function died(why) {
   const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-versions-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-versions-${Date.now()}`));
   await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

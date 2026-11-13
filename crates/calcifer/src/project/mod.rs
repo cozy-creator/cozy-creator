@@ -106,8 +106,8 @@ pub(crate) struct Projects {
     heard: Mutex<HashMap<String, Heard>>,
     /// How many times that changed: what a read said of them is good until then.
     heard_changes: AtomicU64,
-    /// Each project made by name since Calcifer started, by the `Idempotency-Key` that asked: a retry makes no `_2`.
-    made: Mutex<HashMap<String, PathBuf>>,
+    /// Held while a project is made: two first uses of one folder (two `cozy new`s, a page and the CLI) make one.
+    making: Mutex<()>,
     requests:Mutex<HashMap<PathBuf,usize>>,
 }
 
@@ -1273,8 +1273,8 @@ pub(super) fn not_saved(why: &str) -> String {
     format!("Not saved yet: {why}, and what landed goes in as soon as it can")
 }
 
-/// Makes a new project called `name`: in this person's home folder, or at `path`, a folder of this computer's, recorded in the index as
-/// used now.
+/// Makes a new project at `path`, a folder of this computer's by its absolute path, named for its folder and recorded in the index as
+/// used now: `cozy new` and the page's New alike (cl-980). A retry under its `Idempotency-Key` is answered once (`keyed`).
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum::Extension<keyed::CreationRetry>>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     let mut open: Open = parse(&body?)?;
     let _ownership=crate::maintenance_source::begin_project_creation().map_err(Refusal)?;
@@ -1292,46 +1292,26 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
             return Err(Refusal(Error::new(Kind::Usage, "vault_idempotency", "encrypted creation cannot use an Idempotency-Key: its recovery response must not be cached")));
         }
     }
+    let path = open.path.clone();
+    if !path.is_absolute() {
+        let said = format!("{} is relative: a project is made at a folder of Calcifer's computer by its absolute path", path.display());
+        return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
+    }
     let engine = if open.unencrypted { None } else { Some(tokio::task::block_in_place(|| vault::preflight_creation(&api)).map_err(Refusal)?) };
-    let io = |at: &FsPath, e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
-    let mut moved_on = None;
-    let (dir, recovery_secret) = if let Some(axum::Extension(retry))=retry {(retry.0,None)} else { match &open.path {
-        Some(path) if !path.is_absolute() => {
-            let said = format!("{} is relative: a project is made at a folder of Calcifer's computer by its absolute path", path.display());
-            return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
+    let (dir, recovery_secret) = if let Some(axum::Extension(retry)) = retry { (retry.0, None) } else {
+        let _making = api.projects.making.lock().expect("making lock");
+        refuse_own_folder(&path).map_err(Refusal)?;
+        refuse_encrypted_parent(&path).map_err(Refusal)?;
+        if Folder::is_project(&path) || vault::encrypted(&path) {
+            let said = format!("{} is a project already", path.display());
+            return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next("cozy status")));
         }
-        Some(path) => {
-            // First use from separate CLI processes can reach this path together.
-            let _creation = api.projects.made.lock().expect("made lock");
-            refuse_own_folder(path).map_err(Refusal)?;
-            refuse_encrypted_parent(path).map_err(Refusal)?;
-            if Folder::is_project(path) || vault::encrypted(path) {
-                let said = format!("{} is a project already", path.display());
-                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next("cozy status")));
-            }
-            std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
-            let name = open.name.clone().unwrap_or_else(|| folder_name(path));
-            tokio::task::block_in_place(|| create_new(&api, path, &name, open.starter, open.passphrase.take(), engine.as_ref())).map_err(Refusal)?
-        }
-        None => {
-            let Some(name) = &open.name else {
-                return Err(Refusal(Error::new(Kind::Usage, "project_path", "a new project needs a `name`, or a `path`")));
-            };
-            match key.and_then(|key| api.projects.made.lock().expect("made lock").get(key).cloned()) {
-                Some(dir) => (dir, None),
-                None => {
-                    let (dir, why, recovery) = tokio::task::block_in_place(|| named_project(&api, name, open.starter, open.passphrase.take(), engine.as_ref())).map_err(Refusal)?;
-                    moved_on = why;
-                    if let Some(key) = key {
-                        api.projects.made.lock().expect("made lock").insert(key.to_owned(), dir.clone());
-                    }
-                    (dir, recovery)
-                }
-            }
-        }
-    }};
-    // Named, a project nothing reads is only identified: the call that reads it opens it. One open, maybe where it was before it moved,
-    // is opened here.
+        std::fs::create_dir_all(&path).map_err(|e| Refusal(unmakeable(&path, e)))?;
+        let name = folder_name(&path);
+        tokio::task::block_in_place(|| create_new(&api, &path, &name, open.starter, open.passphrase.take(), engine.as_ref())).map_err(Refusal)?
+    };
+    // A project nothing reads is only identified: the call that reads it opens it. One open, maybe where it was before it moved, is
+    // opened here.
     let unread = match dir.join(db::DB).is_file() {
         true => {
             let (id, _, code) = tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?;
@@ -1351,37 +1331,21 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     let opened = opened(id, code, &dir);
     api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()), Some(&opened.code))?;
     let next = vec!["cozy open".into()];
-    let said = moved_on.into_iter().chain(said).collect();
     let response = Json(Opened { next, said, recovery_secret, ..opened }).into_response();
     Ok(if open.unencrypted { response } else { vault::private(response) })
+}
+
+/// A folder that can't be made, in a person's words: no permission there, or why not.
+fn unmakeable(path: &FsPath, e: std::io::Error) -> Error {
+    match e.kind() {
+        std::io::ErrorKind::PermissionDenied => Error::new(Kind::Forbidden, "project_permission", format!("no permission to make a folder at {}", path.display())),
+        _ => Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())),
+    }
 }
 
 /// The project `id`, in `dir`, as an answer gives it.
 fn opened(id: String, code: String, dir: &FsPath) -> Opened {
     Opened { id, code, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![], recovery_secret: None }
-}
-
-/// A new project called `name` in this person's home folder, or the next free name: what it could be called, `_2`, `_3`, …. Whatever is
-/// there already stays as it is, a folder of anything or another project, and it says so: nothing is made in a folder it didn't make.
-fn named_project(api: &Api, name: &str, starter: bool, passphrase: Option<String>, engine: Option<&project_mount::Provider>) -> Result<(PathBuf, Option<String>, Option<String>), Error> {
-    let home = &api.machines.user_home;
-    refuse_encrypted_parent(home)?;
-    let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", home.display()));
-    let wanted = format::plain_name(name).unwrap_or_else(|| "untitled".to_owned());
-    let names = std::iter::once(wanted.clone()).chain((2..).map(|n| format!("{wanted}_{n}")));
-    for name in names {
-        let dir = home.join(&name);
-        match std::fs::create_dir(&dir) {
-            Ok(()) => {
-                let (dir, recovery) = create_new(api, &dir, &name, starter, passphrase, engine)?;
-                let why = (name != wanted).then(|| format!("{} is taken, so this is {name}", home.join(&wanted).display()));
-                return Ok((dir, why, recovery));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(io(e)),
-        }
-    }
-    unreachable!("names go on")
 }
 
 /// A new project called `name` in `dir`, with a new id, holding the starter film or nothing: its `project.db`, made whole and then
@@ -1411,7 +1375,7 @@ fn create_new(api: &Api, dir: &FsPath, name: &str, starter: bool, passphrase: Op
     let Some(passphrase) = passphrase else { return made_new(api, dir, name, starter).map(|dir| (dir, None)); };
     refuse_encrypted_parent(dir)?;
     if std::fs::read_dir(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))?.next().is_some() {
-        return Err(Error::new(Kind::Conflict, "project_not_empty", "create an encrypted project in an empty directory; existing files are preserved")
+        return Err(Error::new(Kind::Conflict, "project_not_empty", format!("{} isn't empty: an encrypted project is made in an empty folder, and nothing in it was changed", dir.display()))
             .next("cozy new <new-directory>").next("cozy new --unencrypted"));
     }
     let canonical = platform::durable::canonical(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))?;

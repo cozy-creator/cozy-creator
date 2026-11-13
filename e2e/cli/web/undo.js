@@ -12,7 +12,7 @@ const { execSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectAction, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, storedOf, until, rowsOf, upload, integrity } = require('./page');
+const { projectFolder, projectFromPage, projectAction, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, storedOf, until, rowsOf, upload, integrity } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -34,7 +34,7 @@ function check(name, ok, detail) {
   await signIn(page);
   await page.waitForSelector('.top');
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-undo-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-undo-${Date.now()}`));
   await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

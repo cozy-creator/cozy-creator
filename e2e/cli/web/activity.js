@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
 const { mkdirSync, writeFileSync } = require('fs');
 const { dirname, join } = require('path');
-const { projectFromPage, projectAction, addBoxes, calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, settled, until } = require('./page');
+const { projectFolder, projectFromPage, projectAction, addBoxes, calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, settled, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -100,7 +100,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   seen.ran = true;
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-activity-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-activity-${Date.now()}`));
   await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

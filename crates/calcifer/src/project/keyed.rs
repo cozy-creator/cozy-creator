@@ -185,21 +185,14 @@ async fn keyed(api: Arc<Api>, key: String, request: Request, next: Next) -> Resp
     response
 }
 
-/// Resolve creation retry identity only inside the requested candidate folders.
-/// A locked/unavailable candidate or incomplete stage is not permission to make _2.
+/// Resolve creation retry identity only inside the requested folder (cl-980: a create names its folder, so there's no `_2` to look in).
+/// A locked/unavailable candidate or incomplete stage is not permission to make another.
 async fn creation(api:&Arc<Api>,bytes:&[u8],key:&str,digest:&str)->Result<Creation,Refusal> {
     let ask:api::calcifer::project::Open=crate::api::parse(bytes)?;
-    if !ask.unencrypted {return Ok(Creation::Fresh);}
-    let wanted=ask.name.as_ref().map(|name|super::format::plain_name(name).unwrap_or_else(||"untitled".into()));
+    if !ask.unencrypted || !ask.path.is_absolute() {return Ok(Creation::Fresh);}
     let pending=||Refusal(Error::new(Kind::Conflict,"project_creation_pending","the original project or creation stage must be available before this retry can be resolved"));
-    let mut index=1u64;
-    loop {
-        let path=match &ask.path {
-            Some(path) if path.is_absolute()=>path.clone(),
-            Some(_)=>return Ok(Creation::Fresh),
-            None=>{let Some(wanted)=&wanted else {return Ok(Creation::Fresh);}; api.machines.user_home.join(if index==1 {wanted.clone()} else {format!("{wanted}_{index}")})},
-        };
-        if !path.try_exists().map_err(|_|pending())? {break;}
+    let path=ask.path;
+    if path.try_exists().map_err(|_|pending())? {
         if path.join(format!("{}.new",super::db::DB)).try_exists().map_err(|_|pending())? {return Err(pending());}
         if path.join(super::db::DB).try_exists().map_err(|_|pending())? || path.join(project_vault::KEYBAG_FILE).try_exists().map_err(|_|pending())? {
             let store=api.projects.store(api,&path.to_string_lossy()).await.map_err(Refusal)?;
@@ -210,8 +203,6 @@ async fn creation(api:&Arc<Api>,bytes:&[u8],key:&str,digest:&str)->Result<Creati
                 return Ok(Creation::Resume(CreationRetry(path)));
             }
         }
-        if ask.path.is_some() {break;}
-        index=index.checked_add(1).ok_or_else(pending)?;
     }
     let legacy=api.calcifer.maintenance_store().read(|conn| {
         let exists=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_answers')",[],|row|row.get::<_,bool>(0))?;

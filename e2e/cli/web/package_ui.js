@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, implementationRow, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, storedOf, watchBoxes } = require('./page');
+const { projectFolder, projectFromPage, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, implementationRow, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, storedOf, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -144,7 +144,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   seen.ran = local;
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-package-ui-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-package-ui-${Date.now()}`));
   await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

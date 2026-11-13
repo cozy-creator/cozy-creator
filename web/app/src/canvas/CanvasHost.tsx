@@ -20,7 +20,7 @@ import { Unopened, useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Opened, ProjectViewPatch } from "../api/calcifer"
-import { ProjectCreate } from "../panels/ProjectCreate"
+import { type Ask, asked, giveUp } from "../app/making"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetMenu } from "./AssetMenu"
@@ -227,12 +227,15 @@ function Zoom({ zoomBy, items }: { zoomBy: (by: 1 | -1) => void; items: () => Zo
   return <ZoomControl zoom={zoom} zoomIn={() => zoomBy(1)} zoomOut={() => zoomBy(-1)} items={items} />
 }
 
-/** One line, and it does what it says when clicked too. */
+/** One line, and it does what it says when clicked too. At `/`, with no project open, what to do instead (cl-980). */
 function Empty({ choose }: { choose: () => void }) {
   const store = useCanvasStore()
   useSignal(store.names)
   const empty = useStore((state) => state.nodes.length === 0)
+  const home = useMatch({ path: "/", end: true })
+  const making = useSignal(asked)
   if (!empty || (store.projectId && !store.hasRead) || !store.empty) return null
+  if (home && !store.projectId) return making ? null : <div className="empty-canvas"><p className="home-line">No project open. Pick one above, or press +.</p></div>
   return (
     <div className="empty-canvas">
       <button type="button" onClick={choose}>
@@ -291,22 +294,23 @@ function Canvas({
   })
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
-  const [creation, setCreation] = useState<{ resolve(project: Opened): void; reject(why: Error): void } | null>(null)
-  const creating = useRef<typeof creation>(null)
+  // A first drop asks for its project in place, as the strip's + does (`making`), and waits for it; nothing closes this canvas meanwhile.
+  const creating = useRef<Ask | null>(null)
   useEffect(() => {
-    const blocked = () => Boolean(creating.current)
+    const blocked = () => creating.current !== null && asked.get() === creating.current
     closeBlockers.add(blocked)
     return () => { closeBlockers.delete(blocked) }
   }, [closeBlockers])
   const [placer] = useState(() => new Placer(store, client, {
     adopt: (id, code) => adopt.current(id, code),
     create: () => new Promise<Opened>((resolve, reject) => {
-      const pending = { resolve, reject }
-      creating.current = pending
-      setCreation(pending)
+      giveUp()
+      const ask: Ask = { by: "drop", resolve, reject }
+      creating.current = ask
+      asked.set(ask)
     }),
   }))
-  useEffect(() => () => { creating.current?.reject(new Error("Project creation was canceled")); creating.current = null }, [])
+  useEffect(() => () => { if (creating.current && asked.get() === creating.current) giveUp() }, [])
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
@@ -946,7 +950,6 @@ function Canvas({
 
   return (
     <CanvasStoreProvider value={store}>
-      {creation && <ProjectCreate modal onCreated={(project) => { creating.current = null; setCreation(null); creation.resolve(project) }} onCancel={() => { creating.current = null; setCreation(null); creation.reject(new Error("Project creation was canceled")) }} />}
       <ToolPanel
         project={readable}
         machine={machine}
@@ -1038,7 +1041,7 @@ function Canvas({
           onSelectionDragStop={selectionDragStop}
         >
           <Dots />
-          {unread ? <Unread error={unread} /> : <Empty choose={choose} />}
+          {unread ? <Unread error={unread} /> : active && <Empty choose={choose} />}
         </ReactFlow>
         <Zoom zoomBy={zoomBy} items={zoomItems} />
         {veil && <div className="dropveil" />}

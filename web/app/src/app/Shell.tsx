@@ -5,14 +5,17 @@ import { Link, Outlet, useLocation, useMatches, useNavigate } from "react-router
 import { TRIES } from "../api/client"
 import { ProjectLocked, vaultQuery } from "../panels/ProjectVault"
 import { protectProjectView, privateProject } from "./view"
-import { projectQuery, projectsQuery } from "../api/queries"
+import { say } from "../ui/notes"
+import { projectQuery, projectsQuery, projectViewQuery } from "../api/queries"
 import { CanvasHost } from "../canvas/CanvasHost"
 import { warningsOf } from "../canvas/graph"
 import { noHash } from "../canvas/text"
 import { MachineTabs } from "../panels/machines/MachineTabs"
 import type { ProjectsAsk } from "../panels/Projects"
 import { RunsLink } from "../panels/runs/RunsLink"
-import type { KnownProject } from "../api/calcifer"
+import type { KnownProject, Opened } from "../api/calcifer"
+import { ProjectCreate } from "../panels/ProjectCreate"
+import { asked, giveUp, newFolder } from "./making"
 import { Icon } from "../ui/Icon"
 import logo from "../ui/logo.png"
 import { Notes } from "../ui/NoteList"
@@ -95,6 +98,11 @@ function ProjectTabs({ id, readable, children }: { id: string | null; readable: 
   const { data: heldProject } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
   const data = readable ? heldProject : undefined
   const { data: list } = useQuery(projectsQuery(client))
+  const queries = useQueryClient()
+  const making = useSignal(asked)
+  const naming = useSignal(newFolder)
+  // A tab opens its project at once: its address is known from the list, so the page never waits on it, blank (cl-980).
+  useEffect(() => { for (const row of list?.projects ?? []) rememberProject(queries, row) }, [list, queries])
   const [count, setCount] = useState(Number.POSITIVE_INFINITY)
   const order = useOrder(list?.projects ?? [], id, count)
   const room = useRef<HTMLDivElement>(null)
@@ -105,8 +113,8 @@ function ProjectTabs({ id, readable, children }: { id: string | null; readable: 
   const hidden = order.filter((row) => !tabs.includes(row))
   const saidOfFile = data ? warningsOf(data).ofProject : []
   const name = data?.path.split(/[/\\]/).filter(Boolean).pop()
-  // The open project before the list has it, or none.
-  const lone = order.some((row) => row.id === id) ? null : (name ?? (id ? "…" : "untitled"))
+  // The open project before the list has it; at `/`, the one being made, its folder's name as it's typed, at once; else none.
+  const lone = order.some((row) => row.id === id) ? null : id ? (name ?? "…") : making ? (naming || "untitled") : null
   const named = `${id} ${lone} ${order.map((row) => `${row.id}:${row.name}`).join(" ")}`
   const fit = useRef(() => count)
 
@@ -171,6 +179,15 @@ function ProjectTabs({ id, readable, children }: { id: string | null; readable: 
         )}
       </nav>
       <span className="ptabs-said" ref={beside}>
+        <span className="ptabs-add">
+          <button type="button" className="ptab add" aria-label="New project" title="New project"
+            onClick={() => {
+              if (asked.get()?.by !== "drop") asked.set({ by: "plus" })
+              if (id || location.pathname !== "/") navigate("/")
+            }}>
+            +
+          </button>
+        </span>
         {saidOfFile.length > 0 && (
           <span className="sum ood" title={noHash(saidOfFile.join("\n"))}>
             !
@@ -207,6 +224,49 @@ function ThemeSwitch() {
         </button>
       )}
     </>
+  )
+}
+
+/** A new project, made in place over the empty canvas (cl-980): the strip's + asks for one, as a first drop does. A press that began outside it,
+ *  or Esc, puts it away; a drop waiting on it hears so. Made, it opens, or the drop goes on into it. */
+function NewProject() {
+  const navigate = useNavigate()
+  const queries = useQueryClient()
+  const held = useRef<HTMLElement>(null)
+  const holding = useRef(false)
+  const hold = useCallback((now: boolean) => { holding.current = now }, [])
+  useEffect(() => {
+    const inside = (element: Element) => Boolean(held.current?.contains(element) || element.closest("header.top"))
+    const click = (event: MouseEvent) => {
+      if (!holding.current && event.button === 0 && event.target instanceof Element && !inside(event.target) && pressBeganOutside(inside)) giveUp()
+    }
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || holding.current) return
+      event.preventDefault()
+      giveUp()
+    }
+    window.addEventListener("click", click)
+    window.addEventListener("keydown", key, true)
+    return () => {
+      window.removeEventListener("click", click)
+      window.removeEventListener("keydown", key, true)
+    }
+  }, [])
+  const created = (project: Opened) => {
+    const ask = asked.get()
+    asked.set(null)
+    rememberProject(queries, project)
+    for (const line of project.said ?? []) say(line)
+    if (ask?.by === "drop") ask.resolve(project)
+    else navigate(projectPath(project))
+  }
+  return (
+    <div className="home">
+      <section ref={held} className="new-project" aria-label="New project">
+        <h2>New project</h2>
+        <ProjectCreate autoFocus onCreated={created} onCancel={giveUp} onHolding={hold} />
+      </section>
+    </div>
   )
 }
 
@@ -264,6 +324,9 @@ export function Shell() {
   const { client, stream, bridge, outbox, canvases, retireProject, privateViewEpoch } = useConnection()
   const privateEpoch = useSignal(privateViewEpoch)
   const id = useProjectId()
+  const making = useSignal(asked)
+  // A project opened: what the + asked for is put away.
+  useEffect(() => { if (id && asked.get()?.by === "plus") asked.set(null) }, [id])
   const vault = useQuery({ ...vaultQuery(client, id ?? ""), enabled: Boolean(id) })
   const [verified, setVerified] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
@@ -303,6 +366,18 @@ export function Shell() {
   // The first import on an empty canvas makes a project: the same canvas stays mounted, so nothing on it is lost.
   const adopted = useRef(new Map<string, string>())
   const hostKey = (id && adopted.current.get(id)) ?? id ?? "empty"
+  // Switching projects, the canvas last shown stays, still and inert, until the next is checked: the frame stays, and the screen never goes
+  // blank between them (cl-980, Paul 11-13). Not from or to an encrypted project, and never the next one's own canvas (a first drop's,
+  // adopted): those are covered until they're checked, as before.
+  // The next one's canvas view is read first, as its canvas would read it before drawing anything: until it's here, the last canvas stays.
+  const nextView = useQuery({ ...projectViewQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
+  const viewing = readable && Boolean(id) && !nextView.data && !nextView.error
+  const shown = useRef<{ id: string | null; key: string } | null>(null)
+  if (readable && heldCanvas && !viewing) shown.current = { id, key: hostKey }
+  const last = shown.current
+  const plainNext = Boolean(id) && !privateProject(id) && !vault.data?.encrypted
+  const waiting = (!readable && (checking || !checked) && !vault.isError) || viewing
+  const between = plainNext && waiting && last && last.id !== id && last.key !== hostKey && !privateProject(last.id) ? last : null
   const queries = useQueryClient()
 
   useLayoutEffect(() => {
@@ -413,7 +488,7 @@ export function Shell() {
   useEffect(() => {
     if (!open) return
     const inside = (element: Element) => Boolean(drawer.current?.contains(element))
-    const own = (element: Element) => inside(element) || Boolean(element.closest("header.top, [role=menu], [role=dialog], dialog, .notes"))
+    const own = (element: Element) => inside(element) || Boolean(element.closest("header.top, [role=menu], [role=dialog], dialog, .notes, .new-project"))
     const click = (event: MouseEvent) => {
       if (event.button === 0 && event.target instanceof Element && !own(event.target) && pressBeganOutside(own)) navigate(to())
     }
@@ -442,8 +517,11 @@ export function Shell() {
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} />
       </header>
-      {heldCanvas && <div hidden={!readable} inert={!readable} style={{ display: readable ? "contents" : "none" }}><CanvasHost key={hostKey} projectId={id} active={readable} slot={readable ? slot : null} history={readable ? history : null} onAdopt={adopt} /></div>}
-      {!readable && id && (checking || !checked || uncertain ? <main className="gate"><p>{vault.isError ? "Project protection could not be checked." : "Checking project protection…"}</p>{vault.isError && <button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Project protection</p></main> : <ProjectLocked id={id} />)}
+      {between ? <div inert style={{ display: "contents" }}><CanvasHost key={between.key} projectId={between.id} active={false} slot={null} history={null} onAdopt={adopt} /></div>
+        // A first drop waiting on its project holds the canvas still: its box keeps its name field for when the project is made.
+        : heldCanvas && <div hidden={!readable} inert={!readable || making?.by === "drop"} style={{ display: readable ? "contents" : "none" }}><CanvasHost key={hostKey} projectId={id} active={readable} slot={readable ? slot : null} history={readable ? history : null} onAdopt={adopt} /></div>}
+      {making && !id && <NewProject />}
+      {!readable && id && !between && (checking || !checked || uncertain ? <main className="gate"><p>{vault.isError ? "Project protection could not be checked." : "Checking project protection…"}</p>{vault.isError && <button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Project protection</p></main> : <ProjectLocked id={id} />)}
       {handle?.drawer && (heldCanvas || drawerReadable) && (
         <aside ref={drawer} className="drawer" hidden={!drawerReadable} inert={!drawerReadable} style={drawerReadable ? undefined : { display: "none" }}>
           <Outlet key={drawerEpoch} />
