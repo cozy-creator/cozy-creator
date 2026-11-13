@@ -1277,7 +1277,7 @@ pub(super) fn not_saved(why: &str) -> String {
 /// used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum::Extension<keyed::CreationRetry>>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     let mut open: Open = parse(&body?)?;
-    let _ownership=crate::maintenance_source::begin_project_creation().map_err(Refusal)?;
+    let _ownership=crate::maintenance_source::begin_project_creation().await;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok());
     if open.unencrypted {
         if open.passphrase.is_some() {
