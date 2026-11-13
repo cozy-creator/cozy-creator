@@ -161,9 +161,16 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
 }
 
 /// A folder of Calcifer's own (a project's `with: ./dir`) as local code: read as a client reads its own, and copied as a
-/// client's is, so the one path from here on is the copy's.
-pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
-    if crate::private_io::current().is_none() { return Err(refuse("source_scope_required","use native independent source capture before staging project-independent code")); }
+/// client's is, so the one path from here on is the copy's. Where no project is, only a package of the dev home's packages
+/// checkout, admitted as independent source (xs-195).
+pub(crate) fn own(api: &Api, path: &Path) -> Result<LocalCode, Error> {
+    let home = api.machines.hubs.home();
+    if crate::private_io::current().is_none() {
+        if crate::checkout::package_at(path).is_some() {
+            return crate::maintenance_source::admit_checkout(api, path);
+        }
+        return Err(refuse("source_scope_required","use native independent source capture before staging project-independent code"));
+    }
     let memo = crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?;
     let staged = match crate::checkout::package_at(path) {
         Some(_) => {

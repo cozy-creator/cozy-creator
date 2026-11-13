@@ -217,7 +217,7 @@ impl Host {
     pub(crate) async fn ready(&self, path: &Path, on: &On, hub: &str) -> Result<local_code::Prepared, Error> {
         let scope = crate::private_io::current().or(crate::private_io::of_path(path)?);
         crate::private_io::context(scope, async {
-            let code = local_code::own(self.api.machines.hubs.home(), path)?;
+            let code = local_code::own(&self.api, path)?;
             local_code::ready(&self.api, &code, on, hub, &self.key(path, on)).await
         }).await
     }

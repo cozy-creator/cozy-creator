@@ -134,7 +134,7 @@ async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuot
     // A dev home's checkout's first-party package is local code too (xs-195).
     let code = match &ask.code {
         Some(code) => Some(code.clone()),
-        None => crate::checkout::named(&ask.target).map(|(path, _)| crate::local_code::own(home, &path)).transpose()?,
+        None => crate::checkout::named(&ask.target).map(|(path, _)| crate::local_code::own(api, &path)).transpose()?,
     };
     let bound = match &code {
         // Local code rents with its install, which the call then follows to its machine.

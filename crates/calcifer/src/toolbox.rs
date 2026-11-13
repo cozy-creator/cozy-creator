@@ -213,7 +213,7 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
     let private = private_io::current().is_some();
     let mut tools = vec![];
     for (written, path) in named {
-        let described = match local_code::own(api.machines.hubs.home(), &path) {
+        let described = match local_code::own(&api, &path) {
             Ok(code) => local_code::describe(api, &code, on, hub).await,
             Err(why) => Err(why),
         };
@@ -267,7 +267,7 @@ async fn from_source(api: &Arc<Api>, hub: &str, on: &On) -> (Vec<Tool>, Option<S
 /// `name`'s tools from its source at `dir` in the checkout.
 async fn source_tools(api: &Arc<Api>, hub: &str, on: &On, name: &str, dir: &Path) -> Vec<Tool> {
     let _turn = SOURCE_READS.acquire().await;
-    let described = match local_code::own(api.machines.hubs.home(), dir) {
+    let described = match local_code::own(&api, dir) {
         Ok(code) => local_code::describe(api, &code, on, hub).await.map(|described| (code, described)),
         Err(why) => Err(why),
     };
