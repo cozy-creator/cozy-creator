@@ -310,6 +310,39 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
     }
   }
   await theme(false);
+  // The canvas stops at the app bar (Paul: nothing covers a control). At 1920×1080 in Focus `still` is beside `scene`, its name as high as
+  // the bar: nothing of the canvas is under any of the bar's controls (se-132). `overlapping` says which boxes reach a control's rect.
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.waitForTimeout(300);
+  const barCheck = await page.evaluate(() => {
+    // What the canvas draws (its renderer: the pane and every box on it), not React Flow's own frame around it.
+    const canvas = document.querySelector('.react-flow__renderer');
+    // The bar's own controls, as shown: a closed menu's items keep a layout but aren't drawn, and an open menu's hang over the canvas on a
+    // panel of their own.
+    const bar = document.querySelector('.top').getBoundingClientRect();
+    const controls = [...document.querySelectorAll('.top button, .top a, .top summary, .top input')]
+      .filter((el) => el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }))
+      .map((el) => ({ el, box: el.getBoundingClientRect() }))
+      .filter(({ box }) => box.width && box.height && box.bottom <= bar.bottom + 1);
+    const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const label = (el) => el.getAttribute('aria-label') || el.textContent.trim().slice(0, 24);
+    const under = [];
+    for (const { el, box } of controls) {
+      for (const fx of [0.1, 0.5, 0.9]) for (const fy of [0.1, 0.5, 0.9]) {
+        const [x, y] = [box.left + box.width * fx, box.top + box.height * fy];
+        const canvasHere = document.elementsFromPoint(x, y).filter((hit) => canvas?.contains(hit));
+        if (canvasHere.length) under.push({ control: label(el), x: Math.round(x), y: Math.round(y), canvas: String(canvasHere[0].className) });
+      }
+    }
+    const overlapping = [...document.querySelectorAll('.react-flow__node')].flatMap((node) => {
+      const parts = [node, ...node.querySelectorAll('.nm')];
+      const reached = controls.filter(({ box }) => parts.some((part) => meets(part.getBoundingClientRect(), box))).map(({ el }) => label(el));
+      return reached.length ? [{ node: node.querySelector('.card')?.dataset.asset, controls: reached }] : [];
+    });
+    return { controls: controls.map(({ el }) => label(el)), under, overlapping };
+  });
+  seen.app_bar = barCheck;
+  check('no_canvas_under_the_app_bars_controls', barCheck.controls.length >= 3 && barCheck.under.length === 0, barCheck);
   await page.setViewportSize({ width: 1600, height: 1100 });
   // The LoRA removed: its words stay as written, no longer drawn.
   await button.click();
