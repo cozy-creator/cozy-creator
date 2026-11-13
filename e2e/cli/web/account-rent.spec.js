@@ -314,9 +314,10 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       expect(cpu, "the docker provider's cpu, listed").toBeDefined();
       const [width] = cpu.widths;
       const row = rent.getByRole('listitem').filter({ has: page.getByText('cpu', { exact: true }) });
-      // Its vCPUs as its width lists them, "?" for none. The isolated Hub lists none: tensorhub's docker provider sizes its container by
-      // the CPU worker image's shape but leaves the shape off the offer it lists (internal/provider/docker.go, Inventory).
-      await expect.soft(row.locator('small'), 'its vCPUs, as the Hub lists them').toHaveText(`${width.vcpu_count ?? '?'} vCPU, no GPU`);
+      // Runs 43405964751, 43415541836: tensorhub's docker provider left its shape off the offer it lists (internal/provider/docker.go,
+      // Inventory), and the row said "? vCPU".
+      expect.soft(width.vcpu_count, 'its vCPUs, as the Hub lists them').toBeGreaterThan(0);
+      await expect.soft(row.locator('small'), 'its vCPUs').toHaveText(`${width.vcpu_count} vCPU, no GPU`);
       await expect.soft(row.locator('.price'), 'its price').toHaveText(`$${(width.price_usd_micros_per_hour / 1e6).toFixed(2)}/h`);
       await row.getByRole('button', { name: 'Rent', exact: true }).click();
       await expect.soft(rent.getByText('It bills until you end it, or after 15 minutes idle.', { exact: true }), 'what the quote bills').toBeVisible();
