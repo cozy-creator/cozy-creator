@@ -147,12 +147,14 @@ pub(crate) struct Extra {
     pub key: Option<(String, String)>,
     /// A request's answer, said in its act, under its key (cl-885).
     pub answer: Option<(String, Said)>,
+    /// `meta` rows set, or with none gone.
+    pub meta: Vec<(&'static str, Option<String>)>,
 }
 
-/// A request's answer as its act says it: its status, and its JSON made at the heads the act's commit leaves the document at.
+/// A request's answer as its act says it: its status, and its JSON made at the revision and heads the act's commit leaves it at.
 pub(crate) struct Said {
     pub status: u16,
-    pub body: Box<dyn Fn(&[String]) -> Vec<u8> + Send>,
+    pub body: Box<dyn Fn(u64, &[String]) -> Vec<u8> + Send>,
 }
 
 /// A kept request key: its ask's digest and, once kept, its answer.
@@ -838,7 +840,7 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
         || (!Arc::ptr_eq(&before.lock, &after.lock) && owners(&before.lock) != owners(&after.lock));
     if !documented {
         (after.crdt, after.heads, after.conflicts, after.rows_held) = (before.crdt.clone(), before.heads.clone(), before.conflicts.clone(), before.rows_held);
-        answered(&tx, extra, &after.heads).map_err(e)?;
+        answered(&tx, extra, seq, &after.heads).map_err(e)?;
         tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('seq', ?1)", [seq.to_string()]).map_err(e)?;
         before_commit();
         tx.commit().map_err(e)?;
@@ -873,7 +875,7 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     // What a read takes besides the rows `write` wrote: the heads they stand at, and the alternatives the document keeps.
     after.heads = Arc::new(doc.heads());
     after.conflicts = Arc::new(doc.conflicts());
-    answered(&tx, extra, &after.heads).map_err(e)?;
+    answered(&tx, extra, seq, &after.heads).map_err(e)?;
     let digest = match kept {
         Some(mut digest) => {
             if after.conflicts != before.conflicts {
@@ -945,6 +947,12 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra, diges
             params![op.id as i64, seq as i64, op.at_ms, op.by, op.words, op.edits, op.changes, op.undone],
         )?;
     }
+    for (key, value) in &extra.meta {
+        match value {
+            Some(value) => drop(tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", params![key, value])?),
+            None => drop(tx.execute("DELETE FROM meta WHERE key = ?1", [key])?),
+        }
+    }
     if let Some((key, digest)) = &extra.key {
         let now = super::now_ms();
         tx.execute("DELETE FROM request_keys WHERE at_ms < ?1", [now - KEY_KEPT_MS])?;
@@ -953,10 +961,10 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra, diges
     Ok(())
 }
 
-/// The answer its act said, on its key's row, made at `heads`: where the commit leaves the document.
-fn answered(tx: &Transaction, extra: &Extra, heads: &[String]) -> rusqlite::Result<()> {
+/// The answer its act said, on its key's row, made at `seq` and `heads`: where the commit leaves the project.
+fn answered(tx: &Transaction, extra: &Extra, seq: u64, heads: &[String]) -> rusqlite::Result<()> {
     let Some((key, said)) = &extra.answer else { return Ok(()) };
-    tx.execute("UPDATE request_keys SET status = ?2, content_type = 'application/json', body = ?3 WHERE key = ?1", params![key, said.status as i64, (said.body)(heads)]).map(drop)
+    tx.execute("UPDATE request_keys SET status = ?2, content_type = 'application/json', body = ?3 WHERE key = ?1", params![key, said.status as i64, (said.body)(seq, heads)]).map(drop)
 }
 
 /// Project the selected box for each normalized name, with each side's own ordinal.
