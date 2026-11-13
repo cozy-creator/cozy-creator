@@ -267,6 +267,7 @@ impl Fetcher {
         config: Config,
     ) -> Fetcher {
         let shared = Arc::new(Shared::new(store, client, volume, config.requests));
+        shared.join_link();
         tokio::spawn(Arc::clone(&shared).dispatch());
         tokio::spawn(Arc::clone(&shared).pace());
         Fetcher { shared }
