@@ -1269,8 +1269,7 @@ static DESCRIBED: LazyLock<Mutex<HashMap<(LocalCode, Option<String>), Described>
 fn last_runtime(api: &Api, on: &On) -> Option<String> {
     let On::Machine(name) = on else { return None };
     let row = api.machines.named(name).ok()??;
-    let status = api.machines.picture(&row).ok()?.status?;
-    Some(status.runtime).filter(|runtime| !runtime.is_empty())
+    Some(api.machines.frame(&row.name)?.runtime).filter(|runtime| !runtime.is_empty())
 }
 
 /// `code` as a run `on` its machine reads it: `local/<name>` (a checkout's first-party name, xs-195) and its interface. What that machine's Runtime said installing this

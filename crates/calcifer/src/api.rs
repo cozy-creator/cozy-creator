@@ -305,6 +305,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .layer(middleware::from_fn(guard))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(no_store))
+        .layer(middleware::from_fn(crate::took::request))
         .with_state(api)
 }
 

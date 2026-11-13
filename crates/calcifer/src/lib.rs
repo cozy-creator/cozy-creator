@@ -52,6 +52,7 @@ mod state;
 mod store;
 mod tool_ui;
 mod toolbox;
+mod took;
 mod update;
 
 use std::{
@@ -1177,13 +1178,13 @@ impl Calcifer {
             for prior in known { if let Some(item)=items.iter().find(|item|same_warm(prior,item)) {prior.holds.clone_from(&item.holds);prior.held_back.clear();} }
         }
     }
-    pub(crate) fn maintenance_rows(&self,machine:&str)->Vec<RunRow> {
-        self.maintenance_store().runs(&store::RunFilter {machine:Some(machine.into()),limit:u64::MAX,..Default::default()}).map(|(rows,..)|rows).unwrap_or_default()
-    }
+    /// The items of `items` Calcifer's own runs set on `machine`. `held_back` stays: TensorD's fixed reason why an item holds
+    /// less, which names nothing of a project.
     pub(crate) fn maintenance_warm(&self,machine:&str,items:Vec<v1::WarmItem>)->Vec<v1::WarmItem> {
-        let rows=self.maintenance_rows(machine);
-        // `held_back` stays: TensorD's fixed reason why an item holds less, which names nothing of a project.
-        items.into_iter().filter(|item|rows.iter().flat_map(|row|row.spec.set.iter().flat_map(|set|&set.items)).any(|known|same_warm(known,item))).collect()
+        match self.maintenance_store().holdings(machine) {
+            Ok(ours) => ours.warm(items),
+            Err(e) => { warn!("reading what this controller's runs put on a machine: {e}"); vec![] }
+        }
     }
 
     /// The machine's downloads, as its Status lists them (none: it went quiet). A run with bytes still to come, none of
