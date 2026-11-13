@@ -47,18 +47,26 @@ fi
 [ -n "$cands" ] || { expect publish-candidates FAIL "no package in the checkout is a candidate (a prerelease version)"; verdict; }
 log "candidates: $cands, and birefnet to run"
 
-# The promotion's own publish, aimed at this Hub: its commits stay in this checkout, which it leaves as it was.
+# The promotion's own publish, aimed at this Hub, one candidate at a time so each is its own cell (in-repo packages it
+# takes come with it): its commits stay in this checkout, which it leaves as it was.
 git -C "$PKGS" config user.name "Paul Fidika"; git -C "$PKGS" config user.email paul@fidika.com
-(cd "$PKGS" && task publish -- --hub "$COZY_HUB_URL" $cands birefnet) > publish.log 2>&1; code=$?
-shipped=$(sed -n 's/^published on .* only, nothing pushed: //p' publish.log | tail -1)
-if [ "$code" = 0 ] && [ -n "$shipped" ]; then expect publish-task PASS "task publish -- --hub: $shipped"
-else expect publish-task FAIL "task publish -- --hub exit $code: $(grep -vE '^\s*$' publish.log | tail -n 3 | paste -sd' ')"; verdict; fi
-grep -E ': [0-9]+ kernels, ' publish.log | sed 's/^/  /' | tee -a gate.log
+here() { cozy --json package ls "$1" --limit 200 2>/dev/null | jq -r --arg p "_/$1" --arg q "$1" '[.packages[] | select(.package == $p or .package == $q)][0].latest_release // empty'; }
+published=''
+for p in $cands birefnet; do
+  if [ "$(here "$p")" = "$(final "$p")" ]; then expect "publish-$p" PASS "$p $(final "$p") published already, with a package that takes it"; published="$published $p"; continue; fi
+  (cd "$PKGS" && task publish -- --hub "$COZY_HUB_URL" "$p") > "publish-$p.log" 2>&1; code=$?
+  shipped=$(sed -n 's/^published on .* only, nothing pushed: //p' "publish-$p.log" | tail -1)
+  if [ "$code" = 0 ] && [ -n "$shipped" ]; then
+    expect "publish-$p" PASS "task publish -- --hub: $shipped$(grep -E ': [0-9]+ kernels, ' "publish-$p.log" | sed 's/^/; /' | paste -sd' ')"
+    published="$published $p"
+  else expect "publish-$p" FAIL "task publish -- --hub $p exit $code: $(grep -vE '^\s*$' "publish-$p.log" | tail -n 3 | paste -sd' ')"; fi
+done
 
 # Each candidate, installed from the Hub's index: its release is the final, its lock rebound here, its Triton sets in its
 # environment beside the module that declares them.
 generations() { find "$HOME/.cozy" "$HOME/.local/share" /var/lib/cozy -path '*/generations/*/generation.json' 2>/dev/null; }
 for p in $cands; do
+  [[ " $published " == *" $p "* ]] || continue
   want=$(final "$p")
   (cd "$RUN_PROJECT" && cozy --json package install "$p@$want" --on local -y) > "install-$p.json" 2>&1; code=$?
   if [ "$code" != 0 ]; then expect "publish-install-$p" FAIL "package install $p@$want exit $code: $(tail -c 300 "install-$p.json")"; continue; fi
@@ -78,6 +86,7 @@ for p in $cands; do
 done
 
 # One function run from the Hub: BiRefNet, its weights mirrored here first.
+[[ " $published " == *" birefnet "* ]] || verdict
 if (cd "$RUN_PROJECT" && cozy --json model upload hf://ZhengPeng7/BiRefNet@e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 zhengpeng7/birefnet --lane fp16 \
     --mirror https://huggingface.co/ZhengPeng7/BiRefNet --on local -y) > upload-birefnet.json 2>&1 \
   && commit=$(python3 "$HERE/e2e/model-details.py" zhengpeng7/birefnet | jq -r '.checkpoints[0].checkpoint // empty') && [ -n "$commit" ] \
