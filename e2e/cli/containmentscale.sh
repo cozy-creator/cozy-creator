@@ -50,9 +50,10 @@ PY
 local lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid
 pid=$(jq -r .pid < "$lock" 2> /dev/null) || pid=''
 systemctl --user stop cozy-calcifer.service 2> /dev/null || true
-[ -z "$pid" ] || { kill -TERM "$pid" 2> /dev/null; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done; }
+# Stopped already, as a service manager stops it: under `set -e` a kill of what's gone must not end the shard.
+[ -z "$pid" ] || { kill -TERM "$pid" 2> /dev/null || true; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done; }
 rm -f "$HOME"/.cozy/calcifer/state.db*
-cp "$S"/state.db "$HOME/.cozy/calcifer/state.db" && chmod 600 "$HOME/.cozy/calcifer/state.db"
+cp "$S"/state.db "$HOME/.cozy/calcifer/state.db" && chmod 600 "$HOME/.cozy/calcifer/state.db" || { check "containment scale: the grown store not in place"; return; }
 local bytes; bytes=$(stat -c %s "$HOME/.cozy/calcifer/state.db")
 began=$EPOCHREALTIME
 cozy --json machine ls > "$S/first.json" 2> "$S/first.err" || check "containment scale: the first start: $(tail -c 300 "$S/first.err")"
@@ -61,7 +62,7 @@ began=$EPOCHREALTIME
 timeout 120 cozy --json doctor > "$S/doctor.json" 2> "$S/doctor.err" || true
 doctor=$(python3 -c "print(round($EPOCHREALTIME - $began, 2))")
 local after
-after=$(python3 - "$HOME/.cozy/calcifer/state.db" <<'PY'
+after=$(python3 - "$HOME/.cozy/calcifer/state.db" <<'PY' || echo '{}'
 import json, os, sqlite3, sys
 db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 count = lambda table: db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] if db.execute("SELECT 1 FROM sqlite_schema WHERE name=?", (table,)).fetchone() else None
