@@ -202,6 +202,7 @@ jobs:
           path: ${{ runner.temp }}/skew-tools
           key: skew-minio-RELEASE.2025-09-07T16-13-09Z
       - name: Prepare candidate CLI
+        id: prep
         env:
           GH_TOKEN: ${{ github.token }}
           COZY: ${{ inputs.cozy }}
@@ -249,7 +250,7 @@ jobs:
           mapfile -t args < "$RUNNER_TEMP/hub-fixture-args.txt"
           bash creator/e2e/skew/run.sh --hub-src tensorhub --cozy-bin "$RUNNER_TEMP/cozy-candidate" --out "$RUNNER_TEMP/hub-fixture" "${args[@]}"
       - name: Candidate packages through a throwaway Hub
-        if: ${{ !cancelled() && needs.select.outputs.publish == 'true' }}
+        if: ${{ !cancelled() && steps.prep.outcome == 'success' && needs.select.outputs.publish == 'true' }}
         env:
           SKEW_TOOLS: ${{ runner.temp }}/skew-tools
           ONLY: ${{ inputs.only }}
