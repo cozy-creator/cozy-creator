@@ -35,7 +35,8 @@ const shown = (number, folder) => JSON.parse(cozyAt(folder, '--json', 'run', 'wa
 let holding;
 const body = (page) => page.textContent('.drawer');
 const rowOf = (page, words) => page.locator('.runrow').filter({ hasText: words });
-const numberIn = async (row) => Number((await row.first().locator('b').textContent()).slice(1));
+// A row names its run KEY-N (cl-987): its number in this project is N.
+const numberIn = async (row) => Number((await row.first().locator('b').textContent()).match(/^[A-Z][A-Z0-9]*-(\d+)$/)?.[1] ?? NaN);
 
 async function runs(page, base, id, folder) {
   /** A real run the terminal asks for: the CLI follows it, and exits when it ends. */
