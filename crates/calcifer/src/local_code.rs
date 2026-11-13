@@ -1292,29 +1292,28 @@ async fn described(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Resu
         return Ok(found);
     }
     let home = api.machines.hubs.home();
-    let private = crate::private_io::current().is_some();
-    if let Some(known) = Some(()).filter(|()| !private).and_then(|()| static_kept(home, code, hub, runtime.as_deref())) {
+    if let Some(known) = static_kept(home, code, hub, runtime.as_deref()) {
         *held = Some((known.clone(), false));
         return Ok(known);
     }
     let known = read_interface(api, code, on, hub, runtime.clone()).await?;
-    if !private {
-        keep_static(home, code, hub, runtime.as_deref(), &known);
-    }
+    keep_static(home, code, hub, runtime.as_deref(), &known);
     *held = Some((known.clone(), false));
     Ok(known)
 }
 
 /// Where the static describer's reading of a tree is kept across Calcifer's restarts (xs-195): by the tree's content, its package's
-/// place in it, the Hub its lock is for and the Runtime that read it. A restart reads again only what changed.
-fn static_file(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> PathBuf {
+/// place in it, the Hub its lock is for and the Runtime that read it. A restart reads again only what changed. A project's code: in
+/// the project's own storage, never Calcifer's; none while it is locked.
+fn static_file(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> Result<PathBuf, Error> {
     let key = Digest::of(format!("{}\n{}\n{hub}\n{}", code.tree, code.at, runtime.unwrap_or_default()).as_bytes());
-    home.calcifer().join("described").join(format!("{}.json", &hex(&key)[..32]))
+    let dir = crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("described"), "described")?;
+    Ok(dir.join(format!("{}.json", &hex(&key)[..32])))
 }
 
 /// The static reading kept for this tree, said used now.
 fn static_kept(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
-    let path = static_file(home, code, hub, runtime);
+    let path = static_file(home, code, hub, runtime).ok()?;
     let mut kept: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
     let package = kept["package"].as_str()?.to_owned();
     let document = kept["interface"].take();
@@ -1328,7 +1327,7 @@ fn keep_static(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>, 
     if !interface(document) {
         return;
     }
-    let path = static_file(home, code, hub, runtime);
+    let Ok(path) = static_file(home, code, hub, runtime) else { return };
     let Some(dir) = path.parent() else { return };
     let kept = serde_json::json!({ "package": package, "interface": document });
     // A reading that can't be kept is read again after the next restart.
