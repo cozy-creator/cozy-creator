@@ -205,11 +205,11 @@ def download(keys: list[Key]) -> Download:
 # A project's install turns, from the board's stages (every 5 s) when TensorD's log has none: each job's or fetch ahead's
 # `installing <org>/<package> <release> on this machine (…)`, from the first board that says it to the first that doesn't.
 if not turns:
-    boards = [cast(Row, json.loads(b)) for b in (out / "board.ndjson").read_text().splitlines() if b.strip()] if (out / "board.ndjson").exists() else []
-    for b in boards:
-        at, board = num(b.get("at_ms")) or 0, row(b.get("board"))
+    snapshots = [cast(Row, json.loads(line)) for line in (out / "board.ndjson").read_text().splitlines() if line.strip()] if (out / "board.ndjson").exists() else []
+    for snapshot in snapshots:
+        at, shown = num(snapshot.get("at_ms")) or 0, row(snapshot.get("board"))
         now = {f"{kind}:{text(row(e).get('asset')) or text(row(e).get('function'))}": INSTALLING.search(text(row(e).get("stage")))
-               for kind in ("jobs", "ahead") for e in items(board.get(kind))}
+               for kind in ("jobs", "ahead") for e in items(shown.get(kind))}
         for key, said in now.items():
             if said:
                 turn = turns.setdefault(f"{key}:{said[1]}", Turn(what=said[1]))
