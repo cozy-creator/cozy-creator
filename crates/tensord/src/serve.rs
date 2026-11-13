@@ -37,9 +37,6 @@ fn run(lifetime: Lifetime) -> io::Result<()> {
     if let Err(error) = platform::exe::record() {
         eprintln!("cannot record this binary's launch path ({error}): it never activates another");
     }
-    // Before config/journal records: trusted parents can retain private allocator bytes for
-    // their lifetime. Unsupported private execution still leaves ordinary maintenance usable.
-    let _ = platform::private_exec::disable_project_parent_dumps();
     // Linux names the calling thread: this one, before any other starts.
     if let Err(error) = platform::process::set_name("tensord") {
         if !error.is_unsupported() {
@@ -195,9 +192,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     }
     // A tool that composes holds a CPU slot while it computes, and every run's output work takes one: one slot for every four cores.
     let cpu_slots = std::thread::available_parallelism().map_or(1, |cores| (cores.get() / 4).max(1));
-    // A local upgrade fences pre-project rows for verified adoption. A rental keeps
-    // its existing remote working-copy replay through software restarts.
-    let service = crate::service::Service::open(&engine, &generations, cpu_slots, store.clone(), !rental)?;
+    let service = crate::service::Service::open(&engine, &generations, cpu_slots, store.clone())?;
     crate::objects::restore(&service.engine, &engine.join("writes"))?;
     // A short store admit frees the machine's garbage before the store evicts a model.
     let reclaimer = Arc::downgrade(&service);

@@ -33,6 +33,16 @@ pub fn prepare_managed_child(
     imp::prepare(command, inherited)
 }
 
+/// This process writes no core, and stays dumpable (cl-984): its /proc and descriptors open to the same user.
+pub fn limit_own_cores() -> Result<()> {
+    imp::own_cores()
+}
+
+/// A managed child that never writes a core: an encrypted project's executor, whose memory holds its data.
+pub fn limit_cores(command: &mut Command) -> Result<()> {
+    imp::limit_cores(command)
+}
+
 /// Native authority check before a trusted parent exports a descriptor. Read-only source
 /// authority comes from its existing object/grant resolver; writable disk files must be in the
 /// actual project. Deleted disk files are not treated as anonymous RAM.
@@ -257,6 +267,25 @@ mod imp {
         }
         Ok(())
     }
+    pub(super) fn own_cores() -> Result<()> {
+        // SAFETY: setrlimit reads only this constant structure.
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 }) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    pub(super) fn limit_cores(command: &mut Command) -> Result<()> {
+        // SAFETY: setrlimit is async-signal-safe and reads only this constant structure.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 }) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        Ok(())
+    }
     pub(super) fn quiescent(scope: &crate::contain::Scope) -> Result<bool> {
         #[cfg(target_os = "linux")]
         {
@@ -298,6 +327,12 @@ mod imp {
         Err(unsupported())
     }
     pub(super) fn prepare(_: &mut Command, _: Vec<PrivateDescriptor>) -> Result<()> {
+        Err(unsupported())
+    }
+    pub(super) fn own_cores() -> Result<()> {
+        Err(unsupported())
+    }
+    pub(super) fn limit_cores(_: &mut Command) -> Result<()> {
         Err(unsupported())
     }
     pub(super) fn quiescent(_: &crate::contain::Scope) -> Result<bool> {

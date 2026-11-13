@@ -18,15 +18,15 @@ pub(crate) struct Line {
 
 #[derive(Default)]
 struct State {
-    /// The run whose turn it is (as its caller names it), what it does, how many turns it holds, and whether it's a project's.
-    holder: Option<(String, String, usize, bool)>,
+    /// The run whose turn it is (as its caller names it), what it does, and how many turns it holds.
+    holder: Option<(String, String, usize)>,
     /// Who waits, by order and then arrival.
     waiting: BTreeMap<(u64, u64), String>,
     arrivals: u64,
 }
 
-/// A turn in the line, given up when it drops: its line, whose it is, and whether it's a project's.
-pub(crate) struct Turn(&'static Line, String, bool);
+/// A turn in the line, given up when it drops: its line, and whose it is.
+pub(crate) struct Turn(&'static Line, String);
 
 impl Line {
     fn state(&self) -> MutexGuard<'_, State> {
@@ -37,12 +37,10 @@ impl Line {
     /// `said` hears its place and whose turn it is, and None once its turn comes. A run holding the
     /// turn already has it at once. None: `stop` ended the wait.
     pub(crate) fn turn(&'static self, order: u64, caller: &str, what: &str, stop: Option<&Stop>, said: &dyn Fn(Option<String>)) -> Option<Turn> {
-        // A project's install names itself in neither the machine's log nor another run's wait.
-        let private = crate::private_io::current().is_some();
         let mut state = self.state();
-        if let Some((_, _, held, _)) = state.holder.as_mut().filter(|(holder, ..)| holder == caller) {
+        if let Some((_, _, held)) = state.holder.as_mut().filter(|(holder, ..)| holder == caller) {
             *held += 1;
-            return Some(Turn(self, caller.to_owned(), private));
+            return Some(Turn(self, caller.to_owned()));
         }
         state.arrivals += 1;
         let key = (order, state.arrivals);
@@ -56,15 +54,13 @@ impl Line {
         loop {
             if state.holder.is_none() && state.waiting.keys().next() == Some(&key) {
                 state.waiting.remove(&key);
-                state.holder = Some((caller.to_owned(), what.to_owned(), 1, private));
+                state.holder = Some((caller.to_owned(), what.to_owned(), 1));
                 drop(state);
                 if shown.is_some() {
                     said(None);
                 }
-                if !private {
-                    tracing::info!(run = caller, what, order, "install line: its turn");
-                }
-                return Some(Turn(self, caller.to_owned(), private));
+                tracing::info!(run = caller, what, order, "install line: its turn");
+                return Some(Turn(self, caller.to_owned()));
             }
             if stop.is_some_and(Stop::is_cancelled) {
                 state.waiting.remove(&key);
@@ -77,15 +73,12 @@ impl Line {
             }
             let place = ordinal(state.waiting.range(..key).count() + 1);
             let text = match &state.holder {
-                Some((_, _, _, true)) => format!("{place} in line to install, behind another install"),
-                Some((holder, doing, ..)) => format!("{place} in line to install, behind run {holder}'s {doing}"),
+                Some((holder, doing, _)) => format!("{place} in line to install, behind run {holder}'s {doing}"),
                 None => format!("{place} in line to install"),
             };
             if shown.as_ref() != Some(&text) {
                 drop(state);
-                if !private {
-                    tracing::info!(run = caller, "install line: {text}");
-                }
+                tracing::info!(run = caller, "install line: {text}");
                 said(Some(text.clone()));
                 shown = Some(text);
                 state = self.state();
@@ -99,13 +92,11 @@ impl Line {
 impl Drop for Turn {
     fn drop(&mut self) {
         let mut state = self.0.state();
-        if let Some((_, _, held, _)) = state.holder.as_mut() {
+        if let Some((_, _, held)) = state.holder.as_mut() {
             *held -= 1;
             if *held == 0 {
                 state.holder = None;
-                if !self.2 {
-                    tracing::info!(run = self.1, "install line: done");
-                }
+                tracing::info!(run = self.1, "install line: done");
             }
         }
         self.0.moved.notify_all();

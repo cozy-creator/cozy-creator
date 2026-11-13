@@ -172,8 +172,8 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
     if remove && !matches!(source, crate::runs::Source::Release { .. } | crate::runs::Source::Installation(_)) {
         return Err(Error::validation("invalid_source", "a removal names a release or an installation"));
     }
-    // A project's own local package may leave its private environments (`cozy package uninstall local/x` in it);
-    // any other private removal or warm set stays unsupported.
+    // A project's own local package may leave it (`cozy package uninstall local/x` in it); any other private removal or
+    // warm set stays unsupported.
     let own_local = matches!(&source, crate::runs::Source::Release { package, .. } if package.starts_with("local/"));
     if local_private.is_some() && ((remove && !own_local) || set.is_some() || (warm && (spec.payload.is_some() || !models.is_empty() || !spec.entrypoint.is_empty()))) {
         return Err(Error::validation("private_warm_unsupported", "private project warm sets and administrative removal are not supported; ordinary public model warming stays available"));
@@ -284,9 +284,6 @@ pub(crate) fn resume_private(runs: &Arc<Runs>, project: &str) -> std::io::Result
 }
 
 fn resume_scope(runs: &Arc<Runs>, project: Option<&str>) -> std::io::Result<()> {
-    // An unscoped saved spec may be a plain project's private input. Ordinary startup
-    // preserves it for canonical adoption and must not re-prepare from tag absence.
-    if project.is_none() {return Ok(());}
     for (run, actor, kept) in runs.service.engine.interrupted_for(project)? {
         let spec = serde_json::from_slice::<Kept>(&kept)
             .map_err(|e| refused("preparation_interrupted", format!("its kept spec is unreadable: {e}")));

@@ -61,7 +61,7 @@ ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_f
     "calcifer_replacement_birth", "calcifer_replacement_status", "worker_record_shape",
     "worker_projection_owner", "worker_projection_reference", "worker_projection_file",
     "worker_projection_blob", "worker_record_identity", "worker_record_submission",
-    "worker_record_unique", "worker_journal_complete", "worker_execution_preserved",
+    "worker_record_unique", "worker_journal_complete", "worker_execution_retired",
     "journal_file", "stop_status", "stop_controller_ended", "stop_worker_ended", "public_reset_path",
     "public_reset_empty", "public_reset_runs", "public_reset_maintenance", "public_reset_projects",
     "schema_v7", "schema_v8", "settled_terminal", "worker_endpoint", "worker_tls_pin",
@@ -72,8 +72,8 @@ ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_f
     "history_run_fields", "history_output_bytes", "history_journal_exact", "migration_pending_cleared",
     "migration_source_retired", "old_installed", "old_version", "old_project_created",
     "old_retry_prepared", "input_retained", "retry_replayed", "retry_journal_exact",
-    "retry_worker_exact", "old_client_refused", "old_client_journal_exact", "encrypted_identity",
-    "moved_identity", "moved_retry_replayed", "moved_worker_exact", "scan_process",
+    "retry_worker_retired", "old_client_refused", "old_client_journal_exact", "encrypted_identity",
+    "moved_identity", "moved_retry_replayed", "moved_worker_retired", "scan_process",
     "outside_project_canary", "scan_decoder_unavailable", "startup_schema_migrated",
     "import_blocked_in_source_transaction", "import_crash_birth_ended", "import_crash_nothing_committed",
     "import_crash_source_retained", "import_receipts_unique", "released_version", "released_status",
@@ -454,6 +454,19 @@ def worker_journal(root: Path, identifiers: list[str], origin: Path | None = Non
     check(len(matches) == 1 and set(matches[0][1]) == set(identifiers), "worker_journal_complete",
           journals=len(matches), requested=len(identifiers), found=sum(len(rows) for _, rows in matches))
     return matches[0]
+
+
+def worker_retired(identifiers: list[str]) -> bool:
+    """None of `identifiers` is in any machine journal (cl-984): once Calcifer imported a project's legacy history into
+    project.db, the machine's worker rows of those runs are retired, and nothing copies them into the project either."""
+    for path in MACHINE.rglob("executions.sqlite3"):
+        if path.is_symlink():
+            continue
+        with read_db(path) as connection:
+            for identifier in identifiers:
+                if connection.execute("SELECT count(*) FROM executions WHERE request_id=?", (identifier,)).fetchone()[0]:
+                    return False
+    return True
 
 
 def owner_signer(raw: bytes) -> Ed25519PrivateKey:
@@ -925,7 +938,7 @@ def qualify(args: argparse.Namespace, receipt: Receipt) -> None:
     crash_before_controller_receipt(native, project, bindings, receipt)
     checkpoint(receipt, "rehistory")
     complete_migration(native, reference, project)
-    check(worker_journal(project / ".vault-machine", list(results))[1] == worker_baseline, "worker_execution_preserved", runs=len(results))
+    check(worker_retired(list(results)) and not any((project / ".vault-machine").rglob("executions.sqlite3")), "worker_execution_retired", runs=len(results))
     receipt.add("legacy_worker_receipt_crash_recovery", passed=True, no_resubmission=True, runs=len(results))
     assert_history(native, reference, project, baseline, results)
     # Input closure is required after settlement too; this is not just an API
@@ -934,7 +947,7 @@ def qualify(args: argparse.Namespace, receipt: Receipt) -> None:
     replay = cast(Submitted, call(native, "POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key}))  # cast: the replayed run's JSON
     check(replay.get("replay") is True and replay["run"]["id"] == run["id"], "retry_replayed")
     check(journal(project / "project.db", list(results)) == baseline, "retry_journal_exact")
-    check(worker_journal(project / ".vault-machine", list(results))[1] == worker_baseline, "retry_worker_exact")
+    check(worker_retired(list(results)), "retry_worker_retired")
     # An actual old client cannot bypass the schema/HTTP protocol fence.
     rejected = subprocess.run([str(args.old), "--json", "run", "watch", str(run["number"]), "--once"], cwd=project,
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
@@ -982,7 +995,7 @@ def qualify(args: argparse.Namespace, receipt: Receipt) -> None:
     assert_history(native, reference, view, baseline, results)
     replay = cast(Submitted, call(native, "POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key}))  # cast: the replayed run's JSON
     check(replay.get("replay") is True and replay["run"]["id"] == run["id"], "moved_retry_replayed")
-    check(worker_journal(view / ".vault-machine", list(results), origin=origin)[1] == worker_baseline, "moved_worker_exact")
+    check(worker_retired(list(results)), "moved_worker_retired")
     locked = json.loads(command(INSTALLED, "vault", "--directory", str(moved), "lock"))
     check(locked.get("vault", {}).get("state") == "locked", "moved_locked_status_clean")
     stop(native, old=False)

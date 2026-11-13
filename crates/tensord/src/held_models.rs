@@ -123,7 +123,6 @@ pub(crate) fn listing(root: &Path) -> Listing {
             return Listing::default();
         }
     };
-    if crate::private_io::current().is_some() { return list(&store, &seen).unwrap_or_default(); }
     let stamp = Stamp { free: moved(root), changed, evicted: store.evicted_at() };
     let mut last = LAST.lock().unwrap();
     if let Some((at, was, then, listing)) = last.as_ref() {

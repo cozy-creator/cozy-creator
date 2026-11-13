@@ -173,6 +173,41 @@ was=$(output parts-default png) is=$(output parts-composed png)
 { [ -n "$was" ] && [ -n "$is" ] && ! cmp -s "$was" "$is"; } || check "parts: the composed run's stored picture is not another than the default's (${was:-none}, ${is:-none})"
 }
 
+# Paul's rule (11-13, cl-984): "1. project data is private 2. models / packages installed are machine-specific (not project
+# specific)". After component_models ran parts.py (a script package on e2e/parts, ~4 MiB) in the suite's project, a second
+# project's first run of it downloads nothing, builds no environment and adds no weights anywhere, and the first project's
+# runs, inputs and outputs are not the second's.
+second_project() {
+step "a second project's first run of a package and model this machine holds (cl-984)"
+[ -n "$LOCAL" ] || return 0
+local script=$here/script/parts.py other=$OUT/second-project before after
+envs_in() { find "$@" -maxdepth 10 \( -name 'env-*' -type d -o -path '*/generations/*/env' \) 2> /dev/null | sort; }
+cozy --json new --unencrypted "$other" > "$OUT/second-new.json" 2>&1 || { check "second project: cozy new --unencrypted: $(tail -c 300 "$OUT/second-new.json")"; return; }
+in_project "$RUN_PROJECT" --json run ls --limit 0 > "$OUT/second-first-runs.json" || check "second project: run ls in the first project failed"
+before=$(envs_in "$HOME/.cozy")
+RUN_PROJECT=$other cell second-parts "$script" || return 0
+after=$(envs_in "$HOME/.cozy")
+# Nothing downloaded or installed: no `downloading` stage moved a byte, none installed dependencies.
+grep '^{' "$OUT/second-parts.ndjson" | jq -e -s '[.[] | select(.type == "run.progress") | .progress
+    | select(((.stage | test("downloading")) and ((.stage | test("the result")) | not) and ((.bytes_done // 0) > 0))
+      or (.stage | test("installing its dependencies|installing this machine")))] | length == 0' > /dev/null \
+  || check "second project: its first run downloaded or installed: $(grep '^{' "$OUT/second-parts.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage' | sort -u | grep -E 'download|install' | head -3 | paste -sd';' -)"
+[ "$before" = "$after" ] || check "second project: the machine gained environments: $(comm -13 <(echo "$before") <(echo "$after") | sed "s#$HOME/##" | paste -sd' ' - | cut -c1-400)"
+# Its own area holds no environment, PyTorch, uv cache, Python or weights: those are the machine's.
+local held
+held=$(find "$other/.vault-machine" -maxdepth 4 \( -name 'env-*' -type d -o -name 'torch-*' -o -name uv-cache -o -name python -type d \) 2> /dev/null | head -3)
+[ -z "$held" ] || check "second project: its .vault-machine holds installs: $held"
+held=$(du -sk "$other/.vault-machine/objects" 2> /dev/null | cut -f1)
+[ "${held:-0}" -lt 2048 ] || check "second project: its store holds ${held} KiB, the model's weights among them"
+# Each project's history is its own: the second lists only its parts run, none of the first's other work.
+in_project "$other" --json run ls --limit 0 > "$OUT/second-runs.json" \
+  && J '([.runs[]?] | length) >= 1 and ([.runs[]? | select(.target | test("parts") | not)] | length) == 0' "$OUT/second-runs.json" \
+  || check "second project: run ls holds more than its own run: $(jq -c '[.runs[]? | {number, target}]' "$OUT/second-runs.json" 2> /dev/null | head -c 300)"
+J '[.runs[]? | select(.target | test("parts") | not)] | length >= 1' "$OUT/second-first-runs.json" \
+  || check "second project: the first project lists none of its other runs: $(jq -c '[.runs[]? | .target]' "$OUT/second-first-runs.json" 2> /dev/null | head -c 300)"
+echo "second project: machine environments $(echo "$before" | grep -c .) then $(echo "$after" | grep -c .); its store $(du -sh "$other/.vault-machine/objects" 2> /dev/null | cut -f1)"
+}
+
 # safetensors_file <file>: a 4×4 F16 .safetensors file.
 safetensors_file() {
 uv run -q --no-project python -I - "$1" <<'PY'
@@ -599,7 +634,7 @@ compgen -G "$fetched/*/uv" > /dev/null || check "uv at once: Calcifer never fetc
 local_edits() {
 step "local code edited between runs"
 [ -n "$LOCAL" ] || return 0
-local code=$OUT/edits/e2e-edits envs=$RUN_PROJECT/.vault-machine/editable  # a project's environments are its own
+local code=$OUT/edits/e2e-edits envs=$HOME/.cozy/machine/var/lib/cozy/tensord/editable  # environments are the machine's (cl-984)
 local module=$code/e2e_weightless/__init__.py first now
 rm -rf "$code" && mkdir -p "$OUT/edits" && cp -r "$here/weightless" "$code"
 sed -i 's/^name = "e2e-weightless"/name = "e2e-edits"/' "$code/pyproject.toml"
@@ -942,7 +977,7 @@ grep -q 'directory = "../maker"' "$dir/caller/uv.lock" 2> /dev/null \
 # What still has no lock, the caller's tree described without its uv.lock as TensorD describes in the environment its run built
 # (`ask_runtime`), is refused saying so (its exit is the refusal's), not "add it to [project].dependencies", which names it.
 local py stale=$OUT/child-latents-stale
-py=$(ls -d "$RUN_PROJECT"/.vault-machine/editable/*/e2e-latents-caller/env-*/bin/python 2> /dev/null | head -1) || true
+py=$(ls -d "$HOME"/.cozy/machine/var/lib/cozy/tensord/editable/*/e2e-latents-caller/env-*/bin/python 2> /dev/null | head -1) || true
 rm -rf "$stale" && cp -r "$dir" "$stale" && rm -f "$stale/caller/uv.lock"
 jq -n --arg project "$stale/caller" --arg python "$py" '{kind: "describe", project: $project, environment_python: $python}' \
   | "$py" -I -S -c "import pathlib,runpy,sys;root=pathlib.Path(sys.executable).absolute().parent.parent;\

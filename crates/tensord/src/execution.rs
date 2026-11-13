@@ -110,14 +110,6 @@ pub(crate) struct Engine {
     preparations: Mutex<HashMap<String, Preparation>>,
     /// Runs a GPU fault failed (`fault`): their failure, whatever their executor said after.
     faults: Mutex<HashMap<String, crate::journal::Failure>>,
-    /// Runtime-only keys into the ONE machine allocation table. Never written to any journal.
-    scheduler: Mutex<HashMap<u64, u64>>,
-    project: Option<api::machine::LocalPrivateStorage>,
-    /// Pre-existing ordinary rows have no project custody authority. This is only an
-    /// in-memory dispatch fence; canonical rows/specs remain untouched for native adoption.
-    startup_inert: HashSet<String>,
-    machine_activity: OnceLock<Weak<Engine>>,
-    runtime_namespace: String,
     /// Each running run's previews (cr-282), dropped at its end.
     previews: Mutex<HashMap<String, Previewing>>,
 }
@@ -224,7 +216,7 @@ type Settled = Box<dyn Fn(&Execution) + Send + Sync>;
 
 impl Engine {
 
-    pub(crate) fn open(root: &Path, store: Arc<crate::storage::Store>, local_project_custody: bool) -> io::Result<Arc<Self>> {
+    pub(crate) fn open(root: &Path, store: Arc<crate::storage::Store>) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
         platform::durable::set_mode(root, 0o700)?;
         for name in ["staging", "results"] {
@@ -232,7 +224,6 @@ impl Engine {
         }
         platform::durable::sync_dir(root)?;
         let mut journal = Journal::open(root)?;
-        let startup_inert=if local_project_custody && crate::private_io::current().is_none() {journal.nonterminal_ids()?} else {HashSet::new()};
         journal.interrupt_preparations()?;
         Ok(Arc::new(Self {
             root: root.to_path_buf(),
@@ -250,54 +241,10 @@ impl Engine {
             settled: OnceLock::new(),
             preparations: Mutex::new(HashMap::new()),
             faults: Mutex::new(HashMap::new()),
-            scheduler: Mutex::default(),
-            project: crate::private_io::current(),
-            startup_inert,
-            machine_activity: OnceLock::new(),
-            runtime_namespace: crate::uuid::simple(),
             previews: Mutex::new(HashMap::new()),
         }))
     }
 
-    pub(crate) fn bind_machine_activity(&self, parent: &Arc<Engine>) {
-        let _ = self.machine_activity.set(Arc::downgrade(parent));
-        parent.notify_activity();
-    }
-    pub(crate) fn scheduler_root(&self, root: u64) -> u64 {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        *self.scheduler.lock().unwrap().entry(root).or_insert_with(|| NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-    }
-    pub(crate) fn journal_root(&self, scheduler: u64) -> Option<u64> {
-        self.scheduler.lock().unwrap().iter().find_map(|(root, key)| (*key == scheduler).then_some(*root))
-    }
-    pub(crate) fn scheduler_family(&self, family: Option<&str>) -> Option<String> {
-        family.map(|family| format!("{}:{family}", self.runtime_namespace))
-    }
-    pub(crate) fn resource_id(&self, id: &str) -> String { format!("{}:{id}", self.runtime_namespace) }
-    pub(crate) fn runtime_namespace(&self) -> &str { &self.runtime_namespace }
-
-    pub(crate) fn needs_project_migration_from(&self, ordinary: &Engine, project: &str) -> io::Result<bool> {
-        let source = ordinary.journal.lock().unwrap();
-        let target = self.journal.lock().unwrap();
-        source.needs_project_migration(&target, project)
-    }
-    pub(crate) fn migrate_project_from(&self, ordinary: &Engine, scope: &api::machine::LocalPrivateStorage, logs: &Path, actor: &str, bindings: &[api::machine::ProjectExecutionMigrationBinding]) -> io::Result<()> {
-        // One writer per journal; global first is the only migration lock order.
-        let mut source = ordinary.journal.lock().unwrap();
-        let mut target = self.journal.lock().unwrap();
-        source.migrate_project_into(&mut target, scope, logs, ordinary.root.parent().unwrap_or(&ordinary.root), &ordinary.store, actor, bindings)
-    }
-    /// Only receipt-proven retired generations without any remaining authoritative source
-    /// owner may release their old idle runtime/retention caches.
-    pub(crate) fn retired_migration_generations(&self,ordinary:&Engine)->io::Result<std::collections::BTreeSet<String>>{
-        let source=ordinary.journal.lock().unwrap();
-        let target=self.journal.lock().unwrap();
-        let mut eligible=std::collections::BTreeSet::new();
-        for generation in target.retired_migration_generations()? {
-            if !source.legacy_generation_has_owner(&generation)? {eligible.insert(generation);}
-        }
-        Ok(eligible)
-    }
     /// Registers run `id`'s preparation until the answer is dropped. A cancel journaled before
     /// it registered stops it at once.
     /// A verified scope rebind may resume a queued preparation exactly once.
@@ -362,7 +309,7 @@ impl Engine {
         }
     }
     pub(crate) fn assert_private_idle(&self, project_id: &str) -> io::Result<()> {
-        if !self.owned.lock().unwrap().is_empty() || !self.preparations.lock().unwrap().is_empty() || self.journal.lock().unwrap().private_active(project_id)? {
+        if self.journal.lock().unwrap().private_active(project_id)? {
             return Err(io::Error::new(io::ErrorKind::ResourceBusy, "private executions must finish or cancel before closing their storage"));
         }
         Ok(())
@@ -417,6 +364,78 @@ impl Engine {
         self.journal.lock().unwrap().installations(actor)
     }
     /// Short journal reads and writes that need no execution state transition.
+    /// Calcifer's legacy-history lookup (`Journal::legacy_bindings`), under `scope`'s actor key too.
+    pub(crate) fn legacy_bindings(&self, actor: &str, scope: &api::machine::LocalPrivateStorage, requests: &[String])
+        -> io::Result<api::machine::ProjectExecutionLegacyLookupAnswer> {
+        let scoped = crate::private_io::within(Some(scope.clone()), || crate::private_io::resource_key(actor));
+        self.journal.lock().unwrap().legacy_bindings(actor, &scoped, scope, requests)
+    }
+    /// A project's legacy runs leave the machine once Calcifer holds their history in the project (cl-984): their journal
+    /// rows, result copies, spools, triage bundles and the objects only they named. The machine's diagnostics from before
+    /// (`logs` the daily logs, `store_logs`, start.log, each ended executor's output) may quote them and are emptied, as a
+    /// legacy migration always did.
+    pub(crate) fn retire_legacy(&self, ids: &[u64], logs: &Path, store_logs: &Path) -> io::Result<()> {
+        let retired = self.retire_rows(ids)?;
+        if !retired {
+            return Ok(());
+        }
+        let empty = |path: &Path| {
+            if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file()) {
+                let _ = fs::OpenOptions::new().write(true).open(path).and_then(|file| file.set_len(0));
+            }
+        };
+        for entry in fs::read_dir(logs).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "tensord.log" || (name.starts_with("tensord.") && name.ends_with(".log")) { empty(&entry.path()); }
+        }
+        if let Some(state) = logs.parent() { empty(&state.join("start.log")); }
+        for name in ["memory.log", "memory.log.1", "transport.log", "transport.log.1"] { empty(&store_logs.join(name)); }
+        let engine = self.root.parent().unwrap_or(&self.root);
+        for entry in fs::read_dir(engine.join("gpu")).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+                for log in ["stdout.log", "stderr.log", "codec.stderr.log"] { empty(&entry.path().join(log)); }
+            }
+        }
+        for entry in fs::read_dir(engine.join("gpu").join("peaks")).into_iter().flatten().flatten() {
+            if entry.file_name().to_string_lossy().ends_with(".json") { let _ = fs::remove_file(entry.path()); }
+        }
+        Ok(())
+    }
+
+    /// `retire_legacy`'s rows, copies and objects; whether any execution was still journaled.
+    fn retire_rows(&self, ids: &[u64]) -> io::Result<bool> {
+        if self.owned.lock().unwrap().iter().any(|id| ids.iter().any(|retired| retired.to_string() == *id)) {
+            return Err(io::Error::new(io::ErrorKind::ResourceBusy, "a legacy run is still executing"));
+        }
+        let held: Vec<u64> = ids.iter().copied().filter(|id| self.journal.lock().unwrap().holds_execution(*id).unwrap_or(false)).collect();
+        if held.is_empty() {
+            return Ok(false);
+        }
+        let ids = held.as_slice();
+        let (objects, subjects) = self.journal.lock().unwrap().retire_executions(ids)?;
+        for id in ids {
+            for dir in ["results", "staging"] {
+                let _ = fs::remove_dir_all(self.root.join(dir).join(id.to_string()));
+            }
+        }
+        // Their own logs (`<id>.<kind>`), as reclaim names them.
+        for entry in fs::read_dir(self.root.join("logs")).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if ids.iter().any(|id| name.split('.').next() == Some(id.to_string().as_str())) { let _ = fs::remove_file(entry.path()); }
+        }
+        for subject in subjects.iter().filter(|subject| subject.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
+            let _ = fs::remove_file(self.root.join("triage").join(format!("{subject}.json")));
+        }
+        if !objects.is_empty() {
+            // The machine's soft roots go too (they judge again at the next sweep): they would hold the retired objects.
+            *self.roots.lock().unwrap() = crate::storage::Roots::default();
+            // Their own uses go with them: a use naming only their objects is theirs.
+            let uses: Vec<String> = objects.iter().map(|object| object.sha256.clone()).collect();
+            self.store.retire_objects(&objects, &uses, &[]).map_err(crate::storage::io_error)?;
+        }
+        Ok(true)
+    }
     pub(crate) fn with_journal<T>(&self, f: impl FnOnce(&mut Journal) -> io::Result<T>) -> io::Result<T> {
         f(&mut self.journal.lock().unwrap())
     }
@@ -599,7 +618,6 @@ impl Engine {
         let accepted = self.journal.lock().unwrap().accept_runs(actor, runs)?;
         owned.extend(accepted.iter().flatten().filter(|(_, new)| *new).map(|(record, _)| record.id.clone()));
         drop(owned);
-        for (record, _) in accepted.iter().flatten() { self.scheduler_root(record.root_seq()); }
         self.notify_activity();
         Ok(accepted)
     }
@@ -654,7 +672,7 @@ impl Engine {
     pub(crate) fn interrupted_for(&self, project_id: Option<&str>) -> io::Result<Vec<(String, String, Vec<u8>)>> {
         let mut owned = self.owned.lock().unwrap();
         let mut runs = self.journal.lock().unwrap().interrupted_for(project_id)?;
-        runs.retain(|(id, _, _)| !owned.contains(id) && !self.startup_inert.contains(id));
+        runs.retain(|(id, _, _)| !owned.contains(id));
         owned.extend(runs.iter().map(|(id, _, _)| id.clone()));
         Ok(runs)
     }
@@ -714,10 +732,7 @@ impl Engine {
     }
     /// See `Journal::jobs`.
     pub(crate) fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
-        let (working, ended) = self.journal.lock().unwrap().jobs(since)?;
-        if self.project.is_some() { return Ok((working, ended)); }
-        let (private_working, private_ended) = crate::private_io::machine_jobs(since)?;
-        Ok((working || private_working, ended.max(private_ended)))
+        self.journal.lock().unwrap().jobs(since)
     }
     /// Whether this machine run supervises `id`.
     pub(crate) fn owns(&self, id: &str) -> bool {
@@ -734,11 +749,8 @@ impl Engine {
 
     /// Every run ready to dispatch, by its root's acceptance, then its own.
     pub(crate) fn ready(&self) -> io::Result<Vec<Execution>> {
-        let mut ready=self.journal.lock().unwrap().ready()?;
-        ready.retain(|record|!self.startup_inert.contains(&record.id));
-        Ok(ready)
+        self.journal.lock().unwrap().ready()
     }
-    pub(crate) fn awaiting_project_custody(&self,id:&str)->bool {self.startup_inert.contains(id)}
     pub(crate) fn gpu_births_after(
         &self,
         after: u64,
@@ -809,7 +821,6 @@ impl Engine {
         *epoch = epoch.saturating_add(1); // never wrap or reuse a wake cursor
         self.activity_changed.notify_all();
         drop(epoch);
-        if let Some(parent) = self.machine_activity.get().and_then(Weak::upgrade) { parent.notify_activity(); }
         crate::activity::status_changed();
     }
 
@@ -835,15 +846,14 @@ impl Engine {
         let engine = self.clone();
         let id = id.to_owned();
         let thread_id = id.clone();
-        let project = self.project.clone();
         let launched = std::thread::Builder::new()
-            .name(if project.is_some() { "project-execution".into() } else { format!("execution-{id}") })
-            .spawn(move || crate::private_io::within(project, || {
+            .name(format!("execution-{id}"))
+            .spawn(move || {
                 if let Err(error) = run(engine.clone(), thread_id.clone()) {
                     if matches!(engine.private_storage(&thread_id), Ok(None)) {
                         tracing::warn!("execution {thread_id}: {error}");
                     } else {
-                        let _ = error;
+                        tracing::warn!(execution = %thread_id, "private execution failed; diagnostic details stay in its protected journal");
                     }
                 }
                 if engine
@@ -861,7 +871,7 @@ impl Engine {
                 engine.previews.lock().unwrap().remove(&thread_id);
                 engine.owned.lock().unwrap().remove(&thread_id);
                 engine.notify_activity();
-            }));
+            });
         if let Err(error) = launched {
             owned.remove(&id);
             drop(owned);
@@ -1205,7 +1215,7 @@ impl Engine {
                 if matches!(self.private_storage(id), Ok(None)) {
                     tracing::warn!("run {id}: after its fault, {}: {}", said.code, said.message);
                 } else {
-                    // The private outcome retains the diagnostic inside this engine.
+                    tracing::warn!(run = %id, "private run ended after a device fault");
                 }
                 Outcome::Failed(fault)
             }
@@ -1224,7 +1234,7 @@ impl Engine {
                 if journal.private_descriptor(id).is_ok_and(|scope| scope.is_none()) {
                     tracing::warn!("run {id}: attention pin warning not logged: {error}");
                 } else {
-                    // Do not emit private identity into the global subscriber.
+                    tracing::warn!(run = %id, "private run attention warning could not be journaled");
                 }
             }
         }
@@ -1706,9 +1716,9 @@ pub(crate) fn open_artifact(root: &Path, path: &Path) -> io::Result<File> {
                 }
                 // Reopen this exact, retained regular inode through our descriptor, not its name.
                 #[cfg(target_os = "linux")]
-                return File::open(format!("/proc/self/fd/{}", file.as_raw_fd())).and_then(|file| { file.lock_shared()?; Ok(file) });
+                return File::open(format!("/proc/self/fd/{}", file.as_raw_fd()));
                 #[cfg(not(target_os = "linux"))]
-                return { file.lock_shared()?; Ok(file) };
+                return Ok(file);
             }
             directory = file;
         }

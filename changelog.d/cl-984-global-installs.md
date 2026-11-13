@@ -1,0 +1,1 @@
+Installed packages, models, LoRAs and PyTorch are the machine's again, shared by every project: a second project's first run of something installed downloads and builds nothing. A project keeps only its own data (its page state, run history, inputs, outputs and a run's scratch), encrypted where the project is.

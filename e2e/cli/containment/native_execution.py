@@ -179,9 +179,11 @@ def qualify(native: Native, scanner: Scanner, project: Project, receipt: Receipt
     run, result = records[-1], records[-1]["result"]
     expected = (payload_marker + "\n" + source_marker).encode()
     require(allowed.read_bytes() == expected and result["allowed_sha256"] == sha(expected), "native_project_write_failed")
-    for field in ("temporary", "cache", "home", "working_directory", "runtime_prefix", "source_path"):
+    for field in ("temporary", "cache", "home", "working_directory", "source_path"):
         path = Path(result[field]).resolve()
         require(path.is_relative_to(view.resolve()), "managed_path_outside_project")
+    # The environment it runs from is the machine's, shared by every project (cl-984): never a copy in the project.
+    require(not Path(result["runtime_prefix"]).resolve().is_relative_to(view.resolve()), "managed_environment_in_project")
     require(Path(result["temporary"]).read_bytes() == expected and (Path(result["cache"]) / "entry.txt").read_bytes() == expected, "managed_cache_contents")
     require(result["core_zero"], "managed_core_limit")
     require(isinstance(run.get("id"), str), "native_private_run_identity_missing")
@@ -190,4 +192,4 @@ def qualify(native: Native, scanner: Scanner, project: Project, receipt: Receipt
             scanner.add(item["id"])
     scanner.add(result["allowed_sha256"]); scanner.add("sha256:" + result["allowed_sha256"])
     project["native_run_id"], project["native_allowed_sha256"] = run["id"], result["allowed_sha256"]
-    receipt.add("managed_project_execution", actual_cli=True, project_write=True, temporary_private=True, cache_private=True, home_private=True, source_private=True, runtime_private=True, core_limit_zero=True, output_sha256=result["allowed_sha256"])
+    receipt.add("managed_project_execution", actual_cli=True, project_write=True, temporary_private=True, cache_private=True, home_private=True, source_private=True, runtime_machine=True, core_limit_zero=True, output_sha256=result["allowed_sha256"])
