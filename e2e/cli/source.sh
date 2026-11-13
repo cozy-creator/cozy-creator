@@ -99,9 +99,14 @@ if [ -n "${E2E_RELAY:-}" ] && cell source-account "$E2E_RELAY/relay" "text=an ac
   J '[.warnings[]? | select(.code == "from_source")] == []' "$OUT/source-account.json" || check "from source: $E2E_RELAY says it's from source"
 fi
 
-# The page's tools: the checkout's, saying its branch and commit.
-curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/source-tools.json" 2>&1 \
-  && J --arg said "$said" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said]' "$OUT/source-tools.json" \
+# The page's tools: the checkout's, saying its branch and commit. A package's first reading (its lock, its description) can outlast a
+# list, which says so and lists it once read.
+for _ in 1 2 3 4 5 6; do
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/source-tools.json" 2>&1 \
+    && J '[.tools[] | select(.id == "e2e-boxed/one_field")] != []' "$OUT/source-tools.json" && break
+  sleep 5
+done
+J --arg said "$said" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said]' "$OUT/source-tools.json" \
   || check "from source: the page's tools don't list e2e-boxed/one_field from $said: $(jq -c '[.tools[]? | {id, release, source}] | .[:8]' "$OUT/source-tools.json" 2> /dev/null || head -c 300 "$OUT/source-tools.json"), $(jq -c .note "$OUT/source-tools.json" 2> /dev/null)"
 
 # Another machine is sent the source by content.
