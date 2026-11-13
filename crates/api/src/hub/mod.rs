@@ -103,7 +103,12 @@ impl Error {
                 retry_after_s,
                 metadata,
             } => (
-                Refusal { retry_after_s, metadata, ..Refusal::new(Kind::of_http(status), code.clone(), message).cause(code) },
+                Refusal {
+                    retry_after_s,
+                    metadata,
+                    status: (status == 429).then_some(status),
+                    ..Refusal::new(Kind::of_http(status), code.clone(), message).cause(code)
+                },
                 remedy,
             ),
             Self::Call(message) => {
