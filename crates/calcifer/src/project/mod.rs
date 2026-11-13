@@ -2160,7 +2160,10 @@ fn renamed_under(project: &Arc<Project>, id: &str, asked: Rename, follows: bool)
             folder.then(move |_| film_renamed(&Folder::at(&dir), &from, &to));
         }
         history::renamed(folder, &from, &to);
-        Ok(Renamed { from, to, versions })
+        let renamed = Renamed { from, to, versions };
+        // Its answer is kept with it, in its transaction (cl-885): an undo that renames back says its own after.
+        keyed::answering(StatusCode::OK, &renamed);
+        Ok(renamed)
     });
     done.map_err(Refusal)
 }
@@ -2508,10 +2511,11 @@ async fn runs(
     // One transaction: its snapshot, the ask, and its key, so a retry however late runs nothing twice. What the project has lost is set aside,
     // and what's asked again fails no more.
     let lost = std::cell::Cell::new(false);
+    let begun = ((!joined || added > 0) && !resent).then(|| ask.id.clone());
     (project.folder.act(|| {
         project.folder.keep_snapshot(&digest, &snapshot)?;
         project.folder.update_walk(|walk| {
-            if (!joined || added > 0) && !resent {
+            if begun.is_some() {
                 walk.walk.asks.push(ask.clone());
             }
         })?;
@@ -2522,7 +2526,22 @@ async fn runs(
                     held.failed = None;
                 }
             }
-        })
+        })?;
+        // Its answer is kept with it, in its transaction (cl-885), its board as the transaction knows it: what's going, and each take it
+        // asks, next. What it queued behind, and the board the walk makes of it, its answer after says.
+        let mut board = project.jobs.board();
+        let next: Vec<Job> = (ask.takes.iter().filter(|take| !board.jobs.iter().any(|job| job.id == take.key)))
+            .map(|take| {
+                let noun = doc.find(&take.asset).map_or("version", |i| noun(&doc, &lock, i));
+                Job { id: take.key.clone(), asset: take.asset.clone(), noun: noun.into(), why: Some("next".into()), ..Job::default() }
+            })
+            .collect();
+        board.jobs.extend(next);
+        let path = project.folder.dir.clone();
+        let next = vec!["cozy status".into()];
+        let (skipped, said) = (skipped.clone(), lines.borrow().clone());
+        keyed::answering(StatusCode::ACCEPTED, &Asked { id: id.clone(), ask: begun.clone(), path, joined, added, skipped, queued: vec![], said, next, board });
+        Ok(())
     }))
     .map_err(Refusal)?;
     if lost.get() {
@@ -2534,9 +2553,8 @@ async fn runs(
     sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
     let board = project.jobs.board();
     drop(walking);
-    let ask = ((!joined || added > 0) && !resent).then_some(ask.id);
     let said = lines.into_inner();
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })))
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask: begun, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })))
 }
 
 /// A run by its number, as its record says now.
@@ -2855,17 +2873,25 @@ async fn approve(
         .or_else(|| versions.iter().copied().rev().find(|version| version.main() == Some(&chosen)));
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    folder.edit(|written| match version {
-        Some(version) => written.selected(&name, version.number, &chosen),
-        None => written.approved(&name, &chosen),
-    }).map_err(Refusal)?;
-    let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
     let files = listed(&lock, &files);
+    // Its answer is kept with it, in its transaction (cl-885): what it approved. What that put out of date, and what settling found, its
+    // answer after says.
+    let approved = folder.act(|| {
+        folder.edit(|written| match version {
+            Some(version) => written.selected(&name, version.number, &chosen),
+            None => written.approved(&name, &chosen),
+        })?;
+        let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag))?;
+        let approved = Approved { name: name.clone(), noun: noun.into(), number, files, path, stale: vec![], warnings: vec![], etag };
+        keyed::answering(StatusCode::OK, &approved);
+        Ok(approved)
+    }).map_err(Refusal)?;
+    let warnings = settle(&api, &project).await;
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
-    Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings, etag }))
+    Ok(Json(Approved { stale, warnings, etag, ..approved }))
 }
 
 /// `POST /v1/projects/{id}/unpin`: `approved` gone from its box, so the asset's state follows its inputs again. A constant,
@@ -2885,13 +2911,19 @@ async fn unpin(
     let stand = doc.stand(&lock);
     let version = stand[i].version().filter(|_| asset.pin.is_some());
     let before = stale_names(&doc, &stand);
-    if asset.pin.is_some() {
-        if asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
-            let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it");
-            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next("cozy open")));
-        }
-        folder.edit(|written| written.unapproved(&name)).map_err(Refusal)?;
+    if asset.pin.is_some() && asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
+        let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it");
+        return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next("cozy open")));
     }
+    // Its answer is kept with it, in its transaction (cl-885), as approve's is.
+    folder.act(|| {
+        if asset.pin.is_some() {
+            folder.edit(|written| written.unapproved(&name))?;
+        }
+        let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag))?;
+        keyed::answering(StatusCode::OK, &Unpinned { name: name.clone(), version, stale: vec![], warnings: vec![], etag });
+        Ok(())
+    }).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
