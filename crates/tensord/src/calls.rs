@@ -7,7 +7,7 @@
 //! its finished calls answered.
 use crate::{
     catalog::HeldGeneration,
-    device_executor::{Answer, ByteGrant, CallInterface, CallProgress, Frame, ModelPrefetch, Request},
+    device_executor::{Answer, ByteGrant, CallInterface, CallProgress, Frame, ModelNeed, ModelPrefetch, Request},
     execution::Engine,
     journal::{Execution, Failure, InputFile, State},
     runs::Runs,
@@ -519,6 +519,8 @@ impl Calls {
                 }
                 ("model_prefetch_unsupported", why)
             }),
+            // A model the call reads now: what of it isn't here comes before everything else (cl-966), answered once it has.
+            Some(Request::ModelNeed(need)) => self.model_need(parent, frame.seq, need),
             Some(Request::GpuRelease(_)) => {
                 let service = self.service.upgrade()
                     .ok_or_else(|| io::Error::other("the machine is stopping"))?;
@@ -536,6 +538,12 @@ impl Calls {
             answered.unwrap_or_else(|(code, detail)| crate::device_executor::refused(frame.seq, code, detail)),
             None,
         ))
+    }
+
+    fn model_need(&self, parent: &Parent, seq: u64, need: &ModelNeed) -> Result<Answer, (&'static str, String)> {
+        let runs = self.runs.upgrade().ok_or(("model_need_unsupported", "the machine is stopping".into()))?;
+        runs.need(&parent.id, &need.manifest, &need.components).map_err(|error| (error.code, error.message))?;
+        Ok(Answer::ok(seq))
     }
 
     fn model_prefetch(&self, parent: &Parent, seq: u64, prefetch: &ModelPrefetch) -> Result<Answer, (&'static str, String)> {

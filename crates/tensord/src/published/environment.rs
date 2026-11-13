@@ -128,6 +128,9 @@ impl Publisher {
             next("fetching its files");
             fetch()?;
         }
+        // uv's downloads come from their own index, outside the downloader, and its many requests starve them (run
+        // 43316018343: 1080 s at 100-450 KiB/s): what comes after this install waits until it is built (cl-966).
+        let _aside = self.machine.give_way(job.order);
         let carried = carried(project.wheels).map_err(io_failure)?;
         if env.exists() {
             fs::remove_dir_all(env).map_err(io_failure)?;
