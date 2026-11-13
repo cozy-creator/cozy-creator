@@ -401,33 +401,39 @@ fn installed<'f>(frame: &'f StatusFrame, code: &str, release: &str) -> (Option<&
     }
 }
 
+/// The checkpoint of `model` that `frame`'s store holds: the one the job names, else the one of its repository this machine pulled,
+/// the most of it held: the lane it chose for its card, which a run of it there reads again (cl-967: a job named one lane of its model,
+/// the machine held another, and every quote there counted the named one's whole download).
+fn held<'f>(frame: &'f StatusFrame, model: &v1::ModelRef) -> Option<&'f v1::Checkpoint> {
+    let all = || frame.models.iter().flat_map(|m| m.checkpoints.iter().map(move |c| (m, c)));
+    let named = all().find(|(_, c)| c.tree == model.checkpoint || c.manifest == model.checkpoint);
+    let pulled = || all().filter(|(m, c)| !model.model.is_empty() && m.model == model.model && c.role != "lora").max_by_key(|(_, c)| c.held_bytes);
+    named.or_else(pulled).map(|(_, c)| c)
+}
+
 /// The bytes of `model` `frame`'s store lacks: what its held checkpoint lacks of its closure, else all the catalog lists.
 fn absent(frame: &StatusFrame, model: &v1::ModelRef) -> u64 {
-    let held = frame.models.iter().flat_map(|m| &m.checkpoints).find(|c| c.tree == model.checkpoint || c.manifest == model.checkpoint);
-    match held {
+    match held(frame, model) {
         Some(checkpoint) if checkpoint.bytes > 0 => checkpoint.bytes.saturating_sub(checkpoint.held_bytes),
         _ => model.bytes,
     }
 }
 
+/// `model`'s header as an executor that loaded it names it.
+fn header(frame: &StatusFrame, model: &v1::ModelRef) -> String {
+    held(frame, model).map_or(model.checkpoint.clone(), |c| c.manifest.clone())
+}
+
 /// Whether an idle executor of `frame` holds any of `models` loaded: their function's plan compiled there, its model warm.
 fn warm_there(frame: &StatusFrame, models: &[v1::ModelRef]) -> bool {
-    let header = |model: &v1::ModelRef| {
-        let held = frame.models.iter().flat_map(|m| &m.checkpoints).find(|c| c.tree == model.checkpoint || c.manifest == model.checkpoint);
-        held.map_or(model.checkpoint.clone(), |c| c.manifest.clone())
-    };
     let loaded: HashSet<&String> = frame.resident.iter().flat_map(|r| &r.checkpoints).collect();
-    models.iter().any(|model| loaded.contains(&header(model)))
+    models.iter().any(|model| loaded.contains(&header(frame, model)))
 }
 
 /// Whether an idle executor of `frame` holds every one of `models` loaded: a job of them loads nothing.
 fn resident(frame: &StatusFrame, models: &[v1::ModelRef]) -> bool {
-    let header = |model: &v1::ModelRef| {
-        let held = frame.models.iter().flat_map(|m| &m.checkpoints).find(|c| c.tree == model.checkpoint || c.manifest == model.checkpoint);
-        held.map_or(model.checkpoint.clone(), |c| c.manifest.clone())
-    };
     let loaded: HashSet<&String> = frame.resident.iter().flat_map(|r| &r.checkpoints).collect();
-    !models.is_empty() && models.iter().all(|model| loaded.contains(&header(model)))
+    !models.is_empty() && models.iter().all(|model| loaded.contains(&header(frame, model)))
 }
 
 fn refused(code: &str, message: String) -> Option<v1::Reason> {

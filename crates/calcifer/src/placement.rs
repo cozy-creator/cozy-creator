@@ -285,15 +285,19 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![] })
 }
 
-/// An offer in a line of the log: `stand-c finishes in 480 s (Measured, warm)`, `pluto finishes in 390 s (None), ready in 210 s`,
-/// `local can't: does_not_fit`.
+/// An offer in a line of the log: `stand-c finishes in 480 s (Measured, warm)`, `pluto finishes in 390 s (None; 120 s preparing),
+/// ready in 210 s`, `local can't: does_not_fit`. Preparing: its install, download and load.
 pub(crate) fn said(offer: &Offer, now: i64) -> String {
     if !offer.fits {
         return format!("{} can't: {}", offer.machine, offer.refusal.as_ref().map_or("no reason given", |reason| reason.code.as_str()));
     }
     let ready = offer.ready_at_ms.map(|at| format!(", ready in {} s", (at - now).max(0) / 1000)).unwrap_or_default();
     let warm = if offer.warm { ", warm" } else { "" };
-    format!("{} finishes in {} s ({:?}{warm}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
+    let preparing = match offer.prepare_ms / 1000 {
+        0 => String::new(),
+        s => format!("; {s} s preparing"),
+    };
+    format!("{} finishes in {} s ({:?}{warm}{preparing}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
 }
 
 /// How soon, for people: `in under a minute`, `in about 2 min`, `in about 1.5 h`.
