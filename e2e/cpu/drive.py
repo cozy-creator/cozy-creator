@@ -381,8 +381,10 @@ class Executor:
         os.close(self.fd)
 
 
-#: A child call: (its function, its request, its input files by field path, its request id) -> its reply and spool.
-type RunChild = Callable[[str, dict[str, Json], dict[str, Path], str], tuple[Reply, Path]]
+#: A child call: (its function, its request, its input files by field path, its request id, each slot's caller LoRAs as
+#: (ref, strength)) -> its reply and spool.
+type Loras = dict[str, list[tuple[str, float]]]
+type RunChild = Callable[[str, dict[str, Json], dict[str, Path], str, Loras], tuple[Reply, Path]]
 
 
 class Broker:
@@ -424,15 +426,25 @@ class Broker:
             return self.settled[index]
         for saved in got.get("saved", []):
             self.held[saved["digest"]] = spooled(self.spool, saved["asset_ref"])
-        # Every call is a serving call (`calls.rs` serving_call): its request, and the model choices it passes (`models`),
-        # which a cell's calls leave at their defaults.
+        # Every call is a serving call (`calls.rs` serving_call): its request, and the model choices it passes (`models`):
+        # each slot's model as its default, with the LoRAs the choice stacks (`ModelChoice.lora`).
         document = cast(dict[str, Json], json.loads(got.get("payload", "{}")))
         request = document.get("payload")
         if not isinstance(request, dict):
             raise Failed("a child call has no request object")
+        export = got.get("export", "")
+        loras: Loras = {}
+        for parameter, choice in cast(dict[str, dict[str, Json] | None], document.get("models") or {}).items():
+            if not choice:
+                continue
+            if choice.get("ref") is not None:
+                raise Failed(f"a call to {export} names a model for {parameter}; this driver binds a slot's default")
+            loras[f"{export}.models.{parameter}"] = [
+                (str(lora["ref"]), float(cast(float, lora.get("strength", 1.0))))
+                for lora in cast(list[dict[str, Json]], choice.get("lora") or [])]
         files = {path: self.held[digest] for path, digest in digests(request) if digest in self.held}
         child = f"{self.request}-call-{index}"
-        reply, spool = self.run(got.get("export", ""), request, files, child)
+        reply, spool = self.run(export, request, files, child, loras)
         outcome = reply.get("outcome", {})
         verdict: Answer = {"event": "answer", "seq": 0, "ok": True, "code": "", "detail": ""}
         if not reply.get("ok") or outcome.get("terminal") != "succeeded":
@@ -519,9 +531,66 @@ def held(manifest: str, store: Path) -> list[str]:
     return list(tensorfs.open(manifest, cache_dir=store, local_files_only=True).components)
 
 
+def compose(store: Path, base: str, loras: list[tuple[str, str, float]]) -> str:
+    """A call's caller LoRAs (ref, checkpoint, strength) over its slot's model, as TensorD composes them
+    (`tensord/src/adapter.rs` compose), written whole into the store: each adapted linear's `weight` and `bias` as
+    `<path>.base_layer.*`, each LoRA's factors as `<path>.lora_{A,B}.adapter_<i>.weight`, and the graph as each adapted
+    component's `model_adapters.json`. A LoRA's factor component adapts the model's component of its name, at its
+    `lora_alpha` (else its rank)."""
+    import tensorfs
+
+    model = tensorfs.open(base, cache_dir=store, local_files_only=True)
+    renamed: dict[tuple[str, str], str] = {}
+    grafts: dict[str, list[tuple[str, tensorfs.Component, str]]] = {}
+    layers: list[Json] = []
+    adapters: list[Json] = []
+    for ref, checkpoint, strength in loras:
+        lora = tensorfs.open(checkpoint, cache_dir=store, local_files_only=True)
+        for name, factors in lora.components.items():
+            target = model.components.get(name)
+            if target is None:
+                raise Failed(f"{ref}'s {name} factors adapt no component of the model")
+            alias, alpha = f"adapter_{len(adapters)}", factors.config.get("lora_alpha")
+            for key, tensor in factors.tensors.items():
+                if key.endswith(".lora_B.weight"):
+                    continue
+                if not key.endswith(".lora_A.weight"):
+                    raise Failed(f"{ref}: {key} is not a plain LoRA factor, which this driver composes")
+                path = key.removesuffix(".lora_A.weight")
+                for suffix in ("weight", "bias"):
+                    if f"{path}.{suffix}" in target.tensors:
+                        renamed[(name, f"{path}.{suffix}")] = f"{path}.base_layer.{suffix}"
+                grafts.setdefault(name, []).extend(
+                    (f"{path}.{role}.weight", factors, f"{path}.{role}.{alias}.weight") for role in ("lora_A", "lora_B"))
+                rank = tensor.shape[0]
+                layers.append({"component": name, "target": path, "adapter": alias, "rank": rank,
+                               "alpha": float(alpha) if isinstance(alpha, (int, float)) else float(rank),
+                               "strength": strength, "dtype": tensor.dtype})
+            adapters.append({"ref": checkpoint, "scale": strength, "kind": "lora", "component": name,
+                             "source_component": name, "family": ""})
+    graph = json.dumps({"format": "cozy.model.lora/1", "layers": layers, "adapters": adapters}, sort_keys=True,
+                       separators=(",", ":")).encode()
+    writer = tensorfs.Writer(cache_dir=store)
+    if (pipeline := model.pipeline) is not None:
+        writer.pipeline(pipeline.cls, pipeline.config)
+    for name, component in model.components.items():
+        out = writer.component(name, cls=component.cls, config=component.config, config_file=component.config_file)
+        for key in component.tensors:
+            out.copy(key, component, as_key=renamed.get((name, key)))
+        for source, factors, key in grafts.get(name, []):
+            out.copy(source, factors, as_key=key)
+        for asset in component.assets:
+            out.asset(asset, component.asset(asset))
+        if name in grafts:
+            out.asset("model_adapters.json", graph)
+    writer.metadata.update({k: v for k, v in model.metadata.items() if k != "provenance"})
+    return writer.commit().id
+
+
 def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manifests: Mapping[str, str],
-             store: Path, release: str, package: str) -> list[Binding]:
-    """The entry point's constructed slots as TensorD binds them (`gpu_service.rs`, `Binding`)."""
+             store: Path, release: str, package: str, loras: Loras | None = None) -> list[Binding]:
+    """The entry point's constructed slots as TensorD binds them (`gpu_service.rs`, `Binding`), a slot with caller
+    LoRAs (`loras`, by its path) on their composition over its model (`compose`)."""
     rows: list[Binding] = []
     for slot in entry.get("models", []):
         if slot.get("weights"):
@@ -530,6 +599,13 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
         manifest = manifests.get(slot["path"]) or manifests.get(ref)
         if manifest is None:
             raise Failed(f"the fixture builds no model for {slot['path']} ({ref})")
+        stacked = (loras or {}).get(slot["path"], [])
+        if stacked:
+            missing = [lora for lora, _ in stacked if lora not in manifests]
+            if missing:
+                raise Failed(f"the fixture builds no LoRA {', '.join(missing)} for {slot['path']}")
+            manifest = compose(store, manifest, [(lora, manifests[lora], strength) for lora, strength in stacked])
+            ref = "+".join([ref, *(lora for lora, _ in stacked)])
         components = held(manifest, store)
         wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
         missing = [c for c in wanted if c not in components]
@@ -741,6 +817,38 @@ def twin_gap(mine: Files, theirs: Files, result: Json) -> tuple[str, float]:
     return where, worst
 
 
+def steered(seen: Seen, other: str, least: float, theirs: Seen | None,
+            region: tuple[float, float, float, float] | None = None) -> str:
+    """How far this output's thumbnail is from `other`'s (its run here, else its reference): at least `least` of 255
+    on average, else its adapter or its map does not steer it. With `region`, a picture's thumbnail blocks inside it;
+    outside, it keeps within a reference's tolerance (`tolerance`)."""
+    if theirs is None:
+        raise Failed(f"no output of {other} to judge steering against: run it too, or record it")
+    pairs = [(a, b) for a in seen["outputs"] for b in theirs["outputs"] if a["name"] == b["name"]]
+    if not pairs or any(len(a["signature"]) != len(b["signature"]) for a, b in pairs):
+        raise Failed(f"its outputs are not {other}'s to compare")
+    if region is None:
+        gap = min(differ(a["signature"], b["signature"])[0] for a, b in pairs)
+        if gap < least:
+            raise Failed(f"{gap:.2f}/255 from {other}, under the {least} its adapter moves it: it does not steer")
+        return f"{gap:.2f}/255 from {other}"
+    x0, y0, x1, y1 = region
+    inside: list[float] = []
+    outside: list[float] = []
+    for a, b in pairs:
+        if len(a["signature"]) != 16 * 16 * 3:
+            raise Failed(f"output {a['name']} is not a picture's thumbnail, which a region reads")
+        for index, (p, q) in enumerate(zip(a["signature"], b["signature"], strict=True)):
+            y, x = divmod(index // 3, 16)
+            (inside if x0 <= (x + 0.5) / 16 <= x1 and y0 <= (y + 0.5) / 16 <= y1 else outside).append(abs(p - q))
+    there, rest = float(np.mean(inside)), float(np.mean(outside)) if outside else 0.0
+    if there < least:
+        raise Failed(f"{there:.2f}/255 from {other} in its region, under the {least} its adapter moves it there")
+    if rest > 1.0:
+        raise Failed(f"{rest:.2f}/255 from {other} outside its region, past a reference's tolerance (1.0)")
+    return f"{there:.2f}/255 from {other} in its region, {rest:.2f} outside"
+
+
 def compare(seen: Seen, reference: Seen, tolerance: float) -> None:
     """Same outputs, each decoding to as many samples, thumbnails within `tolerance` on average (and 12 times it at
     most), and the same result document."""
@@ -917,13 +1025,14 @@ def main() -> int:
     #: a call that constructs nothing loads one binding naming only its package, as TensorD sends it
     weightless: Binding = {"application": interface["application"], "package_interface": str(interface_path)}
 
-    def run_child(export: str, request: dict[str, Json], files: dict[str, Path], child: str) -> tuple[Reply, Path]:
+    def run_child(export: str, request: dict[str, Json], files: dict[str, Path], child: str,
+                  loras: Loras) -> tuple[Reply, Path]:
         """A child call through the child executor, as TensorD runs it on its own (GPU) executor: the callee's slots
-        bound and loaded once, its input files granted where its request names them."""
+        bound (with the LoRAs the call stacks) and loaded once, its input files granted where its request names them."""
         row = entries.get(export)
         if row is None:
             raise Failed(f"a call names {export}, which the package interface does not have")
-        rows = bindings(interface, str(interface_path), row, manifests, store, f"{package}@{version}", package)
+        rows = bindings(interface, str(interface_path), row, manifests, store, f"{package}@{version}", package, loras)
         executor = children.get("child")
         if executor is None:
             executor = children["child"] = Executor(out / "executor-child", store, waive, patch)
@@ -931,7 +1040,8 @@ def main() -> int:
             executor.must({"cmd": "start", "devices": "", "application": interface["application"],
                            "package_interface": str(interface_path), "sequence_parallel_degree": 1, "model_choices": True,
                            "constructions": []})
-        construction = f"{export}@child"
+        construction = f"{export}@child" + "".join(f":{path}+{lora}@{strength}" for path, stacked in sorted(loras.items())
+                                                   for lora, strength in stacked)
         if (0, construction) not in loaded:
             load: Load = {"cmd": "load", "construction": construction, "devices": "", "sequence_parallel_degree": 1,
                           "models": rows or [weightless]}
@@ -1040,9 +1150,11 @@ def main() -> int:
                     if gap > tolerance(cell):
                         raise Failed(f"{where} differs from {same_as}'s by {gap:.2f}/255 on average "
                                      f"(tolerance {tolerance(cell)})")
+                said = [steered(seen, other, least, ran.get(other) or references.get(other), cell.get("region"))
+                        for other, least in cell.get("apart", {}).items()]
                 if record and same_as is None:
                     references[key] = seen
-                line(True, entry, name, started)
+                line(True, entry, name, started, "; ".join(said))
             except Exception as exc:
                 why = first_line(exc) if isinstance(exc, Failed) else f"{type(exc).__name__}: {first_line(exc)}"
                 line(False, entry, name, started, why)
