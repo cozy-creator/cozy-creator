@@ -4,6 +4,14 @@ Required by Paul, 2026-11-11. This is the implementation contract for the active
 
 ## Ownership
 
+Paul, 2026-11-13 (cl-984): "1. project data is private 2. models / packages installed are machine-specific (not project
+specific)". A project keeps its own data: its page state, run history, input and output files, and a run's scratch, encrypted
+where the project is; locking hides it, deleting removes it. Installed packages (one environment per package release, local
+code's by its lock), PyTorch, uv's cache and Pythons, models, LoRAs and Hub weights are the machine's, shared by every project.
+One TensorD engine serves every project: its executors take any project's runs, each run's inputs and outputs in its
+project's spool and store. TensorD's journal keeps a project run's row with its payloads in the project.
+
+
 All project data that Cozy stores automatically belongs in the project's directory. For an encrypted project, durable contents belong inside its encrypted filesystem. This includes run identities and history, inputs, outputs, logs and errors, retry records, derived caches, source, execution scratch, browser project preferences and private execution bookkeeping. An encrypted outside journal or a hash-only outside execution index is still a violation.
 
 Calcifer may retain a project reference consisting of its opaque identity, location and opaque route code. Names, last-use times, walking state, run counters and project-derived cache entries are not part of that exception. Unrelated installation, account and machine state remains independent; it must not contain project/run associations or content.
@@ -20,7 +28,7 @@ Local worker health verifies project identity, migrated journal/object storage a
 - Keep live routing and view caches in memory only. Do not persist a second run index, operation tombstone, request replay, project usage record or mixed project log globally.
 - On lock or deletion, stop admission, quiesce the project's work and readers, commit its own history, close all owned processes/mappings/database handles, retire live views and then close the encrypted filesystem. Failed cleanup is a failure or pending state, never a successful lock/deletion receipt.
 - Resume project work after restart only through its authorized project storage. A closed project contributes only its permitted reference entry. Moving/copying a project carries its complete retained history.
-- Require a verified project owner for every managed execution journal, object, cache, environment and scratch path before accepting or uploading private data. This is a storage ownership contract, not an OS sandbox for arbitrary Python code.
+- Require a verified project owner for every managed execution journal payload, input and output object and scratch path before accepting or uploading private data. This is a storage ownership contract, not an OS sandbox for arbitrary Python code.
 - Global diagnostics must contain no project/run identifiers, paths, payloads, source errors or arbitrary tool output. Retain project diagnostics through that project's storage or a transient authorized response.
 - Project HTTP responses are non-cacheable, including ordinary project media, errors, ranges and replays. Application browser state must not persist project data outside the project. Browser history/profile ownership is an explicit policy decision, not something JavaScript can silently erase.
 

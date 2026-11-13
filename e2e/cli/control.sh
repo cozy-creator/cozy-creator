@@ -180,10 +180,9 @@ kill "$index"
 broken_answers() {
 step "a machine that fails when asked about a run for 150 s (cl-810)"
 local journal said='' since=0 status
-# A project's runs are journaled in the project (.vault-machine); a cozy before project storage kept them in its home.
-journal=$RUN_PROJECT/.vault-machine/execution/executions.sqlite3
-[ -f "$journal" ] || journal=$(find ~/.cozy -name executions.sqlite3 -path '*tensord*' 2> /dev/null | head -1)
-[ -n "$journal" ] || { check "broken: no TensorD journal in the project or under ~/.cozy"; return; }
+# One TensorD journal for every project's runs (cl-984).
+journal=$(find ~/.cozy -name executions.sqlite3 -path '*tensord*' 2> /dev/null | head -1)
+[ -n "$journal" ] || { check "broken: no TensorD journal under ~/.cozy"; return; }
 journal_table() { python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1], timeout=60); c.execute(f"ALTER TABLE {sys.argv[2]} RENAME TO {sys.argv[3]}"); c.commit()' "$journal" "$1" "$2"; }
 launch broken silent seconds:=10 || return 0
 journal_table run_measurements run_measurements_away || { check "broken: the journal's table couldn't be moved"; return; }

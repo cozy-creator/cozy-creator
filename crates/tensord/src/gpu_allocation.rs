@@ -12,7 +12,7 @@
 use std::{
     collections::BTreeMap,
     ops::Range,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 /// Per GPU, the oldest request waiting for it in this dispatch pass.
@@ -23,7 +23,7 @@ pub(crate) struct Allocations {
     /// Dispatch's wake, run once the table is unlocked after every change that can let a waiting
     /// call place: a call slot, lane or root ended. A pass that found a GPU
     /// busy is always followed by one that sees it free.
-    wake: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    wake: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 struct Table {
     gpus: Vec<Gpu>,
@@ -132,13 +132,13 @@ impl Table {
 impl Allocations {
     pub(crate) fn new(width: usize) -> Arc<Self> {
         let gpus = (0..width).map(|_| Gpu::default()).collect();
-        Arc::new(Self { table: Mutex::new(Table { gpus, roots: BTreeMap::new() }), wake: Mutex::default() })
+        Arc::new(Self { table: Mutex::new(Table { gpus, roots: BTreeMap::new() }), wake: OnceLock::new() })
     }
     pub(crate) fn wake_with(&self, wake: impl Fn() + Send + Sync + 'static) {
-        *self.wake.lock().unwrap() = Some(Box::new(wake));
+        let _ = self.wake.set(Box::new(wake));
     }
     fn freed(&self) {
-        if let Some(wake) = self.wake.lock().unwrap().as_ref() { wake() }
+        if let Some(wake) = self.wake.get() { wake() }
     }
     /// `root` holds an allocation `width` GPUs wide, unbound until its first step, for as long
     /// as the hold lives.

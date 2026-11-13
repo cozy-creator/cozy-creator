@@ -104,11 +104,12 @@ def main() -> int:
         raise RuntimeError("the long project render did not start")
     report["run"] = run
 
-    # The run's own record is in project.db, which this holds: its machine's, in the project's worker area, says where it ended.
+    # The run's own record is in project.db, which this holds: its machine's journal says where it ended.
     run_id = json.loads(request(project_path(project, f"/runs/{run}")))["id"]
 
     def executed() -> str | None:
-        for path in (project / ".vault-machine").rglob("executions.sqlite3"):
+        # One TensorD journal for every project's runs (cl-984).
+        for path in (Path.home() / ".cozy").rglob("executions.sqlite3"):
             with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as worker:
                 row = worker.execute("SELECT state FROM executions WHERE request_id = ? OR request_id LIKE ? || '~%' ORDER BY id DESC",
                                      (run_id, run_id)).fetchone()

@@ -40,11 +40,6 @@ pub(crate) struct Service {
     pub engine: Arc<Engine>,
     pub catalog: Catalog,
     parallelism: usize,
-    shared_pool: bool,
-    dispatcher: Mutex<Option<std::thread::JoinHandle<()>>>,
-    reclaimer: Mutex<Option<std::thread::JoinHandle<()>>>,
-    project_scope: Option<api::machine::LocalPrivateStorage>,
-    project_admitted: std::sync::atomic::AtomicBool,
     stopped: Mutex<bool>,
     retained: Mutex<HashMap<String, Arc<File>>>,
     pool: Mutex<Option<Arc<Pool>>>,
@@ -59,7 +54,7 @@ pub(crate) struct Service {
     queue: Mutex<crate::queue::Queue>,
     /// While it holds (an update activating), no new root run starts: queued runs are journaled
     /// and start after the restart.
-    held: Arc<std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>>,
+    held: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
 const SWEEP_EVERY: std::time::Duration = crate::reclaim::IDLE;
@@ -84,22 +79,14 @@ fn left(birth: &Birth, before: u64) -> Vec<Birth> {
     left
 }
 impl Service {
-    pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>, local_project_custody: bool) -> io::Result<Arc<Self>> {
-        Self::open_in(root, generations, parallelism, store, None, None, Arc::default(), local_project_custody)
-    }
-    pub(crate) fn open_project(root: &Path, store: Arc<crate::storage::Store>, parent: &Arc<Service>, scope: api::machine::LocalPrivateStorage) -> io::Result<Arc<Self>> {
-        let service = Self::open_in(root, &root.join(api::machine::project_area::GENERATIONS), parent.parallelism, store, parent.pool(), Some(scope), parent.held.clone(), false)?;
-        service.engine.bind_machine_activity(&parent.engine);
-        Ok(service)
-    }
-    fn open_in(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>, shared: Option<Arc<Pool>>, project_scope: Option<api::machine::LocalPrivateStorage>, held: Arc<std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>>, local_project_custody: bool) -> io::Result<Arc<Self>> {
+    pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>) -> io::Result<Arc<Self>> {
         if parallelism == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "CPU parallelism must be positive",
             ));
         }
-        let engine = Engine::open(&root.join("execution"), store, local_project_custody)?;
+        let engine = Engine::open(&root.join("execution"), store)?;
         // A completed request does not prove its retained CUDA context ended. A prior
         // machine's executor cannot be adopted (nothing can reach it), so it is ended now
         // and GPU admission stays fenced until its exit is observed.
@@ -144,20 +131,15 @@ impl Service {
             engine,
             catalog: Catalog::new(generations)?,
             parallelism,
-            shared_pool: project_scope.is_some(),
-            project_scope: project_scope.clone(),
-            project_admitted: std::sync::atomic::AtomicBool::new(project_scope.is_none()),
-            dispatcher: Mutex::default(),
-            reclaimer: Mutex::default(),
             stopped: Mutex::new(false),
             retained: Mutex::new(HashMap::new()),
-            pool: Mutex::new(shared.clone()),
+            pool: Mutex::new(None),
             calls: Mutex::new(None),
             publisher: Mutex::new(None),
             startup_gpu_births: Mutex::new(startup_gpu_births),
             started_ticks,
             queue: Default::default(),
-            held,
+            held: Default::default(),
         });
         service.engine.reconcile()?;
         // Its first sweep is the reclaim thread's (`reclaim_loop`): a long one never delays serving.
@@ -178,20 +160,14 @@ impl Service {
                 service.engine.end_orphan(birth)?;
             }
         }
-        if let Some(pool) = shared { pool.wake_on_freed(&service.engine); }
         let owner = service.clone();
-        *service.dispatcher.lock().unwrap() = Some(std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("machine-dispatch".into())
-            .spawn(move || crate::private_io::within(project_scope, || owner.dispatch_loop()))?);
+            .spawn(move || owner.dispatch_loop())?;
         let weak = Arc::downgrade(&service);
-        *service.reclaimer.lock().unwrap() = Some(std::thread::Builder::new().name("machine-reclaim".into()).spawn(move || Self::reclaim_loop(weak))?);
+        std::thread::Builder::new().name("machine-reclaim".into()).spawn(move || Self::reclaim_loop(weak))?;
         Ok(service)
     }
-    pub(crate) fn admit_project(&self) {
-        self.project_admitted.store(true, std::sync::atomic::Ordering::Release);
-        self.engine.notify_activity();
-    }
-    pub(crate) fn pause_project(&self) { self.project_admitted.store(false, std::sync::atomic::Ordering::Release); }
     /// The executor pool every run runs on, once configured.
     pub(crate) fn pool(&self) -> Option<Arc<Pool>> {
         self.pool.lock().unwrap().clone()
@@ -322,9 +298,8 @@ impl Service {
     /// pages are read ahead; a shared one reads ahead its few most recently used
     /// (`Pool::import_recent`).
     pub(crate) fn import_installed(&self) -> io::Result<()> {
-        if crate::private_io::current().is_some() {return Ok(());}
         let Some(gpu) = self.gpu() else { return Ok(()) };
-        let bound = self.engine.with_journal(|journal| journal.auto_import_generations())?;
+        let bound = self.engine.with_journal(|journal| journal.bound_generations())?;
         gpu.import_recent(self.catalog.recent(bound));
         Ok(())
     }
@@ -359,20 +334,12 @@ impl Service {
             return Ok(false);
         }
         *stopped = true;
-        if !self.shared_pool { if let Some(pool) = self.pool() { pool.stop()?; } }
+        if let Some(pool) = self.pool() {
+            pool.stop()?;
+        }
         self.engine.notify_activity();
         crate::reclaim::ask();
         Ok(true)
-    }
-    /// Project close never stops the shared Pool. Join the dispatcher before releasing its DB.
-    pub(crate) fn seal_project(&self) -> io::Result<()> {
-        if !self.shared_pool || !self.stop()? { return Err(io::Error::new(io::ErrorKind::ResourceBusy, "project execution remains active")); }
-        if let Some(thread) = self.dispatcher.lock().unwrap().take() { thread.join().map_err(|_| io::Error::other("project dispatcher stopped unexpectedly"))?; }
-        if let Some(calls) = self.calls.lock().unwrap().take() { calls.seal(&self.engine)?; }
-        if let Some(thread) = self.reclaimer.lock().unwrap().take() { thread.join().map_err(|_| io::Error::other("project reclaimer stopped unexpectedly"))?; }
-        *self.publisher.lock().unwrap() = None;
-        self.retained.lock().unwrap().clear();
-        Ok(())
     }
     fn dispatch_loop(self: Arc<Self>) {
         loop {
@@ -381,7 +348,7 @@ impl Service {
                 return;
             }
             if let Err(error) = self.engine.reconcile() {
-                if self.project_scope.is_none() { tracing::warn!("executor birth observation: {error}"); }
+                tracing::warn!("executor birth observation: {error}");
             }
             self.retained.lock().unwrap().retain(|id, _| {
                 self.engine
@@ -390,7 +357,7 @@ impl Service {
                     .unwrap_or(true)
             });
             if let Err(error) = self.dispatch_ready() {
-                if self.project_scope.is_none() { tracing::warn!("dispatch observation: {error}"); }
+                tracing::warn!("dispatch observation: {error}");
             }
             // Dispatch wakes on events only: an arrival, an exit, a cancel, freed room.
             self.engine.wait_activity(epoch, None);
@@ -401,25 +368,18 @@ impl Service {
     /// Native Varena owns GPU pressure service.
     fn reclaim_loop(weak: std::sync::Weak<Self>) {
         platform::process::background_thread(); // nice 19, idle I/O: a big cleanup never crowds out work
-        let (mut swept, mut seen): (Option<std::time::Instant>, u64) = (None, crate::reclaim::asked());
+        let mut swept: Option<std::time::Instant> = None;
         loop {
-            // A project's service not yet admitted looks again shortly: nothing asks when it is.
-            let admitted = weak.upgrade().is_some_and(|service| service.project_admitted.load(std::sync::atomic::Ordering::Acquire));
-            let most = match admitted {
-                true => swept.map(|at| SWEEP_EVERY.saturating_sub(at.elapsed())),
-                false => Some(std::time::Duration::from_millis(500)),
-            };
-            let asked = crate::reclaim::wait_asked(&mut seen, most);
+            let asked = crate::reclaim::wait_asked(swept.map(|at| SWEEP_EVERY.saturating_sub(at.elapsed())));
             match weak.upgrade() {
                 Some(service) if !*service.stopped.lock().unwrap() => {
-                    if !service.project_admitted.load(std::sync::atomic::Ordering::Acquire) { continue; }
                     let due = swept.map_or_else(|| service.publisher.lock().unwrap().is_some(), |at| at.elapsed() >= SWEEP_EVERY);
                     if due {
-                        crate::private_io::within(service.project_scope.clone(), || service.reclaim());
+                        service.reclaim();
                         swept = Some(std::time::Instant::now());
                     }
                     if due || asked {
-                        crate::private_io::within(service.project_scope.clone(), || service.measure_usage());
+                        service.measure_usage();
                     }
                 }
                 _ => return,
@@ -639,7 +599,7 @@ impl Service {
     /// its place in line.
     fn dispatch_ready(&self) -> io::Result<()> {
         let stopped = self.stopped.lock().unwrap();
-        if *stopped || !self.project_admitted.load(std::sync::atomic::Ordering::Acquire) {
+        if *stopped {
             return Ok(());
         }
         let Some(pool) = self.pool() else {
@@ -701,7 +661,7 @@ impl Service {
         let choosing = pool.width() > 1 && source_ready.iter().any(crate::estimate::chooses);
         let widths = match choosing {
             true => crate::estimate::widths(self, &pool).unwrap_or_else(|error| {
-                if self.project_scope.is_none() { tracing::warn!("the queue was not packed, so its roots run at their narrowest: {error}"); }
+                tracing::warn!("the queue was not packed, so its roots run at their narrowest: {error}");
                 Default::default()
             }),
             false => Default::default(),

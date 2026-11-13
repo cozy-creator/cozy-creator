@@ -145,19 +145,6 @@ fn named(message: &str) -> String {
     message
 }
 
-// Shared only by the current diagnostic writer and authorized legacy retirement. The caller
-// must separately prove every old writer quiescent before entering the retirement closure.
-static LEGACY_DIAGNOSTICS: std::sync::RwLock<()> = std::sync::RwLock::new(());
-
-pub(crate) fn legacy_diagnostics_read() -> io::Result<std::sync::RwLockReadGuard<'static, ()>> {
-    LEGACY_DIAGNOSTICS.read().map_err(|_| io::Error::other("worker diagnostic writer lock is poisoned"))
-}
-
-pub(crate) fn with_legacy_diagnostics_quiet<T>(work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-    let _quiet = LEGACY_DIAGNOSTICS.write().map_err(|_| io::Error::other("worker diagnostic writer lock is poisoned"))?;
-    work()
-}
-
 /// Logs to stderr, and to `<dir>/tensord.<date>.log` when a directory is given: rolled daily,
 /// the newest seven kept.
 pub(crate) fn init_logs(dir: Option<&Path>) {
@@ -188,7 +175,6 @@ impl DailyLog {
     const KEPT: usize = 7;
 
     fn open(dir: &Path) -> io::Result<Self> {
-        let _writing = LEGACY_DIAGNOSTICS.read().map_err(|_| io::Error::other("worker diagnostic writer lock is poisoned"))?;
         let day = Self::day();
         let file = Self::start(dir, day)?;
         Ok(Self { dir: dir.to_owned(), today: std::sync::Mutex::new((day, file.into())) })
@@ -221,7 +207,6 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for DailyLog {
     type Writer = DayFile;
 
     fn make_writer(&'a self) -> DayFile {
-        let writing = LEGACY_DIAGNOSTICS.read().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut today = self.today.lock().unwrap_or_else(|e| e.into_inner());
         let day = Self::day();
         if day != today.0 {
@@ -230,22 +215,19 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for DailyLog {
                 Err(e) => eprintln!("tensord: no log file for {day} in {}: {e}", self.dir.display()),
             }
         }
-        DayFile { file: today.1.clone(), _writing: writing }
+        DayFile(today.1.clone())
     }
 }
 
-struct DayFile {
-    file: std::sync::Arc<std::fs::File>,
-    _writing: std::sync::RwLockReadGuard<'static, ()>,
-}
+struct DayFile(std::sync::Arc<std::fs::File>);
 
 impl io::Write for DayFile {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        (&*self.file).write(bytes)
+        (&*self.0).write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        (&*self.file).flush()
+        (&*self.0).flush()
     }
 }
 
