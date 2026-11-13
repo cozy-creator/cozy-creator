@@ -86,25 +86,21 @@ pub(crate) async fn play(
         Some((name, i)) if i.parse::<u32>().is_ok() => (name, i.parse::<u32>().ok()),
         _ => (ask.output.as_str(), None),
     };
-    let made = api
-        .calcifer
-        .record(&row)?
-        .output
-        .iter()
-        .any(|item| item.name == name && index.is_none_or(|i| item.index == i));
+    let run = api.calcifer.record(&row)?;
+    let made = run.output.iter().any(|item| item.name == name && index.is_none_or(|i| item.index == i));
     if row.state == RunState::Settled && !made {
         return Err(refuse(
             Kind::NotFound,
             "output_not_found",
-            format!("run {} has no output {:?}", row.number, ask.output),
+            format!("run {} has no output {:?}", run.name, ask.output),
         ));
     }
-    let number = row.number;
+    let number = &run.name;
     let unavailable = |message| Refusal(Error::new(Kind::Unavailable, "machine_unavailable", message).next(format!("cozy run watch {number}")));
     let name = row
         .machine
         .clone()
-        .ok_or_else(|| unavailable(format!("run {} has no machine yet", row.number)))?;
+        .ok_or_else(|| unavailable(format!("run {number} has no machine yet")))?;
     let machine = api.calcifer.maintenance_store().machine(&name)?;
     let (Some(machine), Some(frame)) = (machine, api.machines.frame(&name)) else {
         return Err(unavailable(format!("{name} has not reported its status")));

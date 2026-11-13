@@ -1197,6 +1197,16 @@ impl Folder {
         self.reading_db(|conn| db::meta(conn, "code"))
     }
 
+    /// The keys its runs were named by (cl-987), its key now last.
+    pub(crate) fn keys(&self) -> Result<Vec<String>, Error> {
+        self.reading_db(db::keys)
+    }
+
+    /// Keeps `key` as its key now (`db::set_key`): no part of the project moves.
+    pub(crate) fn set_key(&self, key: &str, fresh: bool) -> Result<(), Error> {
+        self.write_past(|conn| db::set_key(conn, &self.db(), key, fresh))
+    }
+
     /// Rare identity changes (first name or a copied project) invalidate the held native view.
     pub(crate) fn set_identity(&self, id: &str, name: &str, code: &str) -> Result<(), Error> {
         let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());

@@ -18,7 +18,7 @@ const referenceQuery = (client: Client, reference: string) => ({
 })
 
 /** Browser addresses use the short code. Older records can still be opened by their id. */
-export function projectPath(project: ProjectAddress, rest = ""): string {
+export function projectPath(project: Pick<ProjectAddress, "id" | "code">, rest = ""): string {
   const base = project.code ? `/p/${project.code}` : `/projects/${encodeURIComponent(project.id)}`
   return `${base}${rest && `/${rest.replace(/^\//, "")}`}`
 }
@@ -74,7 +74,7 @@ export function ProjectRoute({ children }: { children: ReactNode }) {
 }
 
 /** A newly created project can be navigated to before the project list refetches. */
-export function rememberProject(queries: QueryClient, project: ProjectAddress) {
+export function rememberProject(queries: QueryClient, project: Pick<ProjectAddress, "id" | "code">) {
   queries.setQueryData(referenceKey(project.id), project)
   if (project.code) queries.setQueryData(referenceKey(project.code), project)
 }

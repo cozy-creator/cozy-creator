@@ -1133,6 +1133,70 @@ cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0
 cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
 }
 
+# cl-987: a project's key names its runs, `KEY-N`, from any folder: proposed from its name, kept in its project.db (so it goes
+# with its folder), changed with `cozy key` while the key it had names them still. Calcifer's own runs are `COZY-N`.
+project_keys() {
+[ -n "$LOCAL" ] || return 0
+step "project keys: KEY-N from any folder (cl-987)"
+local root=$OUT/keys ka kb na nb ida idb n own
+local a=$root/kilo-alpha-bravo b=$root/zulu outside=$root/outside moved=$root/moved
+mkdir -p "$outside"
+cozy --json new --unencrypted "$a" > "$root-a.json" 2>&1 && cozy --json new --unencrypted "$b" > "$root-b.json" 2>&1 \
+  || { check "keys: cozy new: $(tail -c 300 "$root-a.json") $(tail -c 300 "$root-b.json")"; return 0; }
+ka=$(jq -r .key "$root-a.json") kb=$(jq -r .key "$root-b.json")
+[[ $ka == KAB* ]] || check "keys: kilo-alpha-bravo's key is '$ka', not its words' initials KAB"
+[[ $kb == ZUL* ]] || check "keys: zulu's key is '$kb', not its first letters ZUL"
+(cd "$here" && RUN_PROJECT=$a cell keys-a ./weightless/reverse "text=keys$RANDOM") || return 0
+(cd "$here" && RUN_PROJECT=$b cell keys-b ./weightless/reverse "text=keys$RANDOM") || return 0
+na=$(jq -r .name "$OUT/keys-a.json") nb=$(jq -r .name "$OUT/keys-b.json") ida=$(jq -r .id "$OUT/keys-a.json") idb=$(jq -r .id "$OUT/keys-b.json")
+[ "$na" = "$ka-$(cat "$OUT/keys-a.number")" ] && [ "$nb" = "$kb-$(cat "$OUT/keys-b.number")" ] \
+  || check "keys: the runs are named '$na' and '$nb', not $ka-N and $kb-N"
+[ "$ida" != "$idb" ] || check "keys: two projects' runs are one run, $ida"
+# From outside both, in any case, and from the other project's folder: each name is its own project's run.
+(cd "$outside" && cozy --json run watch "$na" --once) > "$root-watch-a.json" 2>&1
+J --arg id "$ida" '.id == $id' "$root-watch-a.json" || check "keys: run watch $na outside both projects: $(tail -c 300 "$root-watch-a.json")"
+(cd "$outside" && cozy --json run watch "${nb,,}" --once) > "$root-watch-b.json" 2>&1
+J --arg id "$idb" '.id == $id' "$root-watch-b.json" || check "keys: run watch ${nb,,} outside both projects: $(tail -c 300 "$root-watch-b.json")"
+(cd "$b" && cozy --json run watch "$na" --once) > "$root-watch-ab.json" 2>&1
+J --arg id "$ida" '.id == $id' "$root-watch-ab.json" || check "keys: run watch $na in $kb's folder isn't $ka's run: $(tail -c 300 "$root-watch-ab.json")"
+(cd "$outside" && cozy --json run ls --all --limit 0) > "$root-ls.json" 2>&1
+J --arg a "$na" --arg b "$nb" '[.runs[].name] | index($a) and index($b)' "$root-ls.json" \
+  || check "keys: run ls --all doesn't name $na and $nb: $(jq -c '[.runs[]?.name]' "$root-ls.json")"
+(cd "$outside" && cozy run ls --all --limit 0) > "$root-ls.txt" 2>&1
+grep -qE "(^| )$na( |$)" "$root-ls.txt" && grep -qE "(^| )$nb( |$)" "$root-ls.txt" || check "keys: run ls's table doesn't name $na and $nb: $(head -c 600 "$root-ls.txt")"
+# Calcifer's own runs (the downloads before) are COZY-N, from a project's folder too, never that project's N.
+J '[.runs[] | select(.project_id == null)] | length > 0 and all(.name | test("^COZY-[0-9]+$"))' "$root-ls.json" \
+  || check "keys: Calcifer's own runs aren't COZY-N: $(jq -c '[.runs[]? | select(.project_id == null) | .name]' "$root-ls.json")"
+own=$(jq -r '[.runs[] | select(.project_id == null)][0] | "\(.name) \(.id)"' "$root-ls.json")
+(cd "$a" && cozy --json run watch "${own% *}" --once) > "$root-watch-own.json" 2>&1
+J --arg id "${own#* }" '.id == $id' "$root-watch-own.json" || check "keys: run watch ${own% *} in $ka's folder isn't Calcifer's run: $(tail -c 300 "$root-watch-own.json")"
+# A new key names its runs; the key it had names them still.
+(cd "$a" && cozy --json key kx987) > "$root-key.json" 2>&1
+J --arg was "$ka" '.key == "KX987" and (.former | index($was))' "$root-key.json" || check "keys: cozy key kx987: $(tail -c 300 "$root-key.json")"
+n=${na##*-}
+(cd "$outside" && cozy --json run watch "$na" --once) > "$root-renamed.json" 2>&1
+J --arg id "$ida" --arg now "KX987-$n" '.id == $id and .name == $now' "$root-renamed.json" \
+  || check "keys: $na, its old name, doesn't name KX987-$n: $(tail -c 300 "$root-renamed.json")"
+# It goes with the folder: moved, the project has its keys, and both names find its run.
+mv "$a" "$moved" || check "keys: mv $a failed"
+(cd "$moved" && cozy --json key) > "$root-moved.json" 2>&1
+J --arg was "$ka" '.key == "KX987" and (.former | index($was))' "$root-moved.json" || check "keys: moved, its key isn't KX987, formerly $ka: $(tail -c 300 "$root-moved.json")"
+[ "$(python3 -c 'import sqlite3, sys; print(",".join(r[0] for r in sqlite3.connect(sys.argv[1]).execute("SELECT key FROM project_keys ORDER BY ord")))' "$moved/project.db")" = "$ka,KX987" ] \
+  || check "keys: its project.db doesn't keep $ka then KX987"
+for name in "$na" "KX987-$n"; do
+  (cd "$outside" && cozy --json run watch "$name" --once) | J --arg id "$ida" '.id == $id' || check "keys: run watch $name after the move isn't $ida"
+done
+# Another's key, Calcifer's, a misspelled one and one nobody has: refused, typed.
+(cd "$b" && cozy --json key "$ka") > "$root-taken.json" 2>&1
+J '.error.code == "project_key_taken"' "$root-taken.json" || check "keys: $kb took $ka, KX987's former key: $(tail -c 300 "$root-taken.json")"
+(cd "$b" && cozy --json key cozy) > "$root-reserved.json" 2>&1
+J '.error.code == "project_key_taken"' "$root-reserved.json" || check "keys: $kb took COZY: $(tail -c 300 "$root-reserved.json")"
+(cd "$b" && cozy --json key 9z) > "$root-invalid.json" 2>&1
+J '.error.code == "project_key_invalid"' "$root-invalid.json" || check "keys: 9z wasn't refused project_key_invalid: $(tail -c 300 "$root-invalid.json")"
+(cd "$outside" && cozy --json run watch QQ987-1 --once) > "$root-none.json" 2>&1
+J '.error.code == "run_not_found" and (.error.message | test("QQ987"))' "$root-none.json" || check "keys: QQ987-1, a key nobody has: $(tail -c 300 "$root-none.json")"
+}
+
 run_playback() {
 step "run playback API"
 # The player link hands a browser the output straight from its machine. A project's output goes only by an owned private

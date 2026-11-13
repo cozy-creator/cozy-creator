@@ -100,32 +100,17 @@ fn replayed(ctx: &Context, submitted: &Submitted) {
             ctx,
             &format!(
                 "this key names run {}, submitted before",
-                submitted.run.number
+                handle(&submitted.run)
             ),
         );
     }
 }
 
-/// Whether this command's folder is in a project, once known: there a run number is the project's.
-static IN_PROJECT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-pub(crate) fn in_folder(project: bool) {
-    let _ = IN_PROJECT.set(project);
-}
-
-/// Asks once whether this folder is in a project; unknown, it counts as one.
-pub(crate) async fn note_folder(ctx: &Context) {
-    if IN_PROJECT.get().is_none() {
-        in_folder(!matches!(crate::project::identity(ctx).await, Err(error) if error.code == "not_in_a_project"));
-    }
-}
-
-/// What names `run` to `cozy run watch` from this folder: its number, but Calcifer's own run (a download, an
-/// update) by its id inside a project, whose numbers are the project's.
+/// What names `run` to `cozy run watch` from any folder: `KEY-N` (cl-987), or its id for one another client sent.
 pub(crate) fn handle(run: &Run) -> String {
-    match run.project_id.is_none() && run.machine_number.is_none() && IN_PROJECT.get() != Some(&false) {
+    match run.name.is_empty() {
         true => run.id.to_string(),
-        false => run.name(),
+        false => run.name.clone(),
     }
 }
 
@@ -225,7 +210,7 @@ fn saved(run: Run) -> Result<Run, Error> {
         "output_not_saved",
         format!(
             "Run {} {}. Outputs not saved: {}",
-            run.number,
+            handle(&run),
             status_word(run.status),
             lost.join(", ")
         ),
@@ -250,9 +235,6 @@ async fn watch(
     stop: impl Future<Output = ()>,
 ) -> Result<(Run, bool), Error> {
     let calcifer = ctx.calcifer().await?;
-    if run.project_id.is_none() {
-        note_folder(ctx).await;
-    }
     let address = RunAddress::of(&run);
     let mut events = calcifer.events_until_landed(&address, 0);
     let mut view = View::new(ctx, &run);
@@ -636,7 +618,7 @@ struct View {
     /// Off a terminal, what was last written: the status or stage, the tenth reached, and the
     /// minutes it had made no progress.
     shown: (String, i64, i64),
-    /// What names the run (`Run::name`).
+    /// What names the run (`handle`).
     number: String,
     machine: Option<String>,
     /// The run's own word for where it is (`queued`, the machine's state), and why it waits now

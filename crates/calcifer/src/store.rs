@@ -613,6 +613,8 @@ pub(crate) enum StoreError {
     Protected(String),
     #[error("{0}")]
     ProjectCode(String),
+    #[error("{0}")]
+    ProjectKey(String),
     #[error("Calcifer's store could not flush its journal: {0}")]
     Flush(std::io::Error),
 }
@@ -3581,6 +3583,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         placed,
         id: row.id.clone(),
         number: row.number,
+        name: format!("{}-{}", api::calcifer::project::MACHINE_KEY, row.number),
         machine_number: None,
         kind: row.kind,
         target: row.target.clone(),

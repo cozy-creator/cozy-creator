@@ -71,6 +71,9 @@ pub struct Opened {
     /// Its stable, nine-character public URL code.
     #[serde(default)]
     pub code: String,
+    /// What its runs are named by: `KEY-N` (cl-987).
+    #[serde(default)]
+    pub key: String,
     /// Where it lives on Calcifer's computer.
     pub path: PathBuf,
     /// Its name, unique among the projects Calcifer knows: what `-p` takes.
@@ -89,6 +92,35 @@ pub struct Opened {
 /// How a client names a project: its id, public code or name, or its folder on Calcifer's computer by its absolute path (cl-819). The
 /// CLI project commands resolve their current directory and send its absolute path.
 pub const NAMED_BY: &str = "a project's name, id or public code, or its folder on Calcifer's computer by its absolute path";
+
+/// What Calcifer's own runs (an update, an install, a download) are named by: `COZY-12` (cl-987). No project takes it.
+pub const MACHINE_KEY: &str = "COZY";
+/// Keys no project takes: the machine's, and `RUN`, as a run's id starts `run-`.
+pub const RESERVED_KEYS: &[&str] = &[MACHINE_KEY, "RUN"];
+
+/// A project key as written, in any case (cl-987, as Jira's): A–Z and 0–9, a letter first, 2 to 10 long. Upper case.
+pub fn key(text: &str) -> Option<String> {
+    let key = text.trim().to_ascii_uppercase();
+    let spelled = key.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit());
+    ((2..=10).contains(&key.len()) && spelled && key.starts_with(|c: char| c.is_ascii_uppercase())).then_some(key)
+}
+
+/// A run's name, `KEY-N` in any case: its project's key and its number there.
+pub fn run_name(text: &str) -> Option<(String, u64)> {
+    let (key, number) = text.trim().rsplit_once('-')?;
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
+    Some((self::key(key)?, number.parse().ok().filter(|number| *number > 0)?))
+}
+
+/// `GET|PUT /v1/projects/{id}/key` (cl-987): the key its runs are named by, `KEY-N`, and the keys it had here, which name them still.
+/// `PUT`'s body is one with only `key`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectKey"))]
+pub struct Key {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub former: Vec<String>,
+}
 
 /// A request in no project, which needs one.
 pub fn unnamed() -> Error {
@@ -209,6 +241,9 @@ pub struct Known {
     /// Its stable, nine-character public URL code.
     #[serde(default)]
     pub code: String,
+    /// What its runs are named by: `KEY-N` (cl-987). Empty until it opens here.
+    #[serde(default)]
+    pub key: String,
     /// Its name: what `-p` takes.
     pub name: String,
     pub path: PathBuf,
@@ -224,6 +259,9 @@ pub struct Known {
 pub struct Address {
     pub id: String,
     pub code: String,
+    /// What its runs are named by: `KEY-N` (cl-987).
+    #[serde(default)]
+    pub key: String,
 }
 
 /// `GET /v1/projects/{id}`: its assets in order, and what reading the project said.
@@ -236,6 +274,9 @@ pub struct State {
     /// Its stable, nine-character public URL code.
     #[serde(default)]
     pub code: String,
+    /// What its runs are named by: `KEY-N` (cl-987).
+    #[serde(default)]
+    pub key: String,
     pub path: PathBuf,
     pub assets: Vec<Asset>,
     /// The project document's heads its boxes were read at: what words typed on them were typed on (`AssetPatch.typed`).

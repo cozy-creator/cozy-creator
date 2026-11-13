@@ -59,7 +59,9 @@ These hold for every resource. A route that cannot follow one says why in its se
 **Naming.** Paths are `/v1/<resources>[/{id}[/<sub-resource>]]`, plural and kebab-case (`/v1/rental-quotes`).
 An action on a resource is a POST to a sub-resource named for it (`/v1/runs/{id}/cancel`,
 `/v1/projects/{id}/approve`). JSON fields are snake_case. Ids are strings with a kind prefix (`run-…`,
-`project-…`); a run's `number` is for people and is accepted wherever its id is. Times are Unix milliseconds in
+`project-…`); a run's `number` is its project's and is accepted wherever its id is, in that project. A run's `name` is
+`KEY-N` (cl-987), its project's key and its number there, `COZY-N` for Calcifer's own runs; it is accepted wherever its id is,
+in any scope, as is a key the project had. Times are Unix milliseconds in
 fields ending `_ms`, in records and queries alike (`since_ms`); durations end `_s` or `_ms`. Request bodies
 ignore unknown fields and name them in `Cozy-Ignored-Fields`.
 
@@ -635,7 +637,11 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `GET /v1/projects?limit=&before=`: the index, last used first: `{projects: [{id, name, path, used_at_ms, busy?}], older}`. A project whose folder
   no longer holds `project.db` (deleted, moved, on a drive that's away) leaves the index and frees its name; opened again by its path
   it is back by its id, under its name, or `<name>_2` if another took it.
-- `GET /v1/projects/{id}/address`: the index's `{id, code}` for a registered project. It resolves browser links while the project is locked without opening its content.
+- `GET|PUT /v1/projects/{id}/key` (`{key}`): `{key, former}`, the key its runs are named by and the keys it had here, which still name
+  them. A key is 2 to 10 letters and digits, a letter first, unique among this computer's projects, proposed from the project's name
+  as it first opens here and kept in its `project.db`. `409 project_key_taken` (another project's, now or before, or `COZY`),
+  `400 project_key_invalid`.
+- `GET /v1/projects/{id}/address`: the index's `{id, code, key}` for a registered project. It resolves browser links while the project is locked without opening its content.
 - `GET /v1/projects/{id}` (`?assets=false`: all but its assets; `unsent`: what kept its last render from reaching a machine, each error once, until another is asked): worked out once per revision, so another read costs only its answer. `{id, path, board?, assets, queue?: [{name, running, run?}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy,
   absent, cuts: [{cut, path, fps, cut_at_ms?, frames?, retimed?, skips?, without?}], warnings: [{name?, message}], next?}`. `next` is the commands to run given what it holds and lacks. Each asset is `{name, standing, making?, kind, noun, tool?, versions, prefixes?: [{number, prefix, pickup?, latents?, execution_ms?, run?, main?, aspect_ratio?, from?, without?}],
   version?, approved?, pinned?, inputs?, files, path?, sha256?, field?, width?, height?, duration_ms?, alpha?, absent?, machine?, made_by?, status, reads?: [{name, version?, at, key?}], fields?, etag?, failure?, changed?, missing?, unseen?}`: `standing` is `current`, `out_of_date`, `missing` or `making`, for a client that shows it, `making` the runs making it now, `version` the version that is its state, `approved` is the version a pin is, `pinned` that its `approved` is its state,
@@ -772,6 +778,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy diff -f FILE` | the same, `dry_run` |
 | `cozy delete NAME…` | `GET /v1/projects/{id}`, then `DELETE /v1/projects/{id}/assets/{name}` each, under one `Cozy-Edit` |
 | `cozy render NAME… [--on M,…] [-n N] [--new] [--outdated] [--pickup '<NAME.N>@FRAME']` | `GET /v1/projects/{id}`; `--pickup`, `GET /v1/projects/{id}/assets/{name}` and `GET /v1/tools?project=` for the frames it lands on; on `local` alone, `POST /v1/projects/{id}/fit` first (off a terminal a poor fit refuses, naming `--on local` or `cozy machine rent`); `GET /v1/events` showing the project (`PUT /v1/events/{stream}`), then `POST /v1/projects/{id}/runs`, followed until the board's `ended` names its ask. Stopping it never cancels the render |
+| `cozy key [KEY]` | current directory, `GET /v1/projects/{id}/address`, `GET` (`PUT`) `/v1/projects/{id}/key` |
 <!-- each PR adds its verbs' rows -->
 | `machine use [MACHINE,...]` | current directory, `GET /v1/projects/{id}/address`, `PUT /v1/projects/{id}/machines` |
 | `machine ls` | `GET /v1/machines?refresh=true`; on a terminal, `GET /v1/events`, then `GET /v1/machines` |

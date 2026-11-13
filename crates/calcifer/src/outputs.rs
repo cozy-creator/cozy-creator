@@ -754,7 +754,7 @@ pub(crate) async fn serve(
     let row = api::find_scoped(&api, project, run).await?;
     crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
     let readable = crate::project::vault::readable_token(&row.out_dir);
-    let number = row.number;
+    let number = api.calcifer.run_name(&row);
     let (item, file, landed_folder) = {
         let _placing = lock(&api.calcifer.exports.placing);
         let item = api.calcifer.row_store(&row)?.output(row.id.as_str(), name, index)?;
@@ -773,7 +773,7 @@ pub(crate) async fn serve(
         (item, file, landed_folder)
     };
     if let Some(dir) = landed_folder {
-        return folder(&dir, member.as_deref(), number, &name, &headers).await.map(|response| protect(response, readable));
+        return folder(&dir, member.as_deref(), &number, &name, &headers).await.map(|response| protect(response, readable));
     }
     if let Some(checkpoint) = &item.checkpoint {
         let message = format!(
@@ -837,7 +837,7 @@ fn protect(mut response: Response, readable: Option<Arc<AtomicBool>>) -> Respons
 }
 
 /// A folder output: its tree document, or with `member` one of its files, each named by its content so a client caches it.
-async fn folder(dir: &Path, member: Option<&str>, number: u64, name: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
+async fn folder(dir: &Path, member: Option<&str>, number: &str, name: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
     let gone = |e: std::io::Error| {
         let message = format!("its folder {} is gone: {e}", dir.display());
         Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run watch {number}")))

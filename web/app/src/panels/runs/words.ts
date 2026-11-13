@@ -4,6 +4,9 @@ import stages from "./stages.json"
 
 export const settled = (run: Run) => run.status === "completed" || run.status === "failed" || run.status === "canceled"
 
+/** What names it anywhere (cl-987): `SE-5`, its project's key and its number there. */
+export const runName = (run: Run) => run.name || String(run.number)
+
 export const target = (run: Run) => (run.kind === "call" ? shown(run.target) : `${run.kind} ${shown(run.target)}`)
 
 /** `canceling` once a cancel is asked; a waiting run's place in its line. */

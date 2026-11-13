@@ -130,7 +130,7 @@ pub(crate) fn after_update(ctx: &Context, run: &api::calcifer::Run) -> Result<()
     }
     if run.status != api::calcifer::Status::Completed {
         let kept = run.result.as_ref().and_then(|result| serde_json::from_value::<Error>(result["error"].clone()).ok());
-        return Err(kept.unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", format!("cozy's update (run {}) didn't finish", run.number)).next("cozy update")));
+        return Err(kept.unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", format!("cozy's update (run {}) didn't finish", crate::run::handle(run))).next("cozy update")));
     }
     let binary = crate::calcifer_client::installed(&ctx.home)?;
     let said = std::process::Command::new(&binary).arg("--version").output().map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned());
