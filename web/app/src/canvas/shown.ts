@@ -64,41 +64,22 @@ export function underOf(view: ElementView): number {
   return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
 
+/** What a box placed or pushed is left of the rest (clear.ts). */
+export const GAP = 16
+
 /** How far out the canvas is, as `data-lod` draws it: 0 close, 1 far, 2 past 20%. */
 export const bandOf = (zoom: number): 0 | 1 | 2 => (zoom < 0.2 ? 2 : zoom < 0.45 ? 1 : 0)
-/** Far out, how much larger than the canvas a box's name is drawn, so it keeps its size on screen (cl-958, `--name-zoom`): the zoom's
- *  inverse in quarter steps. */
-export const nameZoomOf = (zoom: number) => 2 ** Math.max(0, Math.ceil(-Math.log2(zoom || 1) * 4) / 4)
 
-/** What a zoom draws differently: it changes only as a zoom crosses into another band or quarter step. */
-export interface ZoomStep {
-  band: 0 | 1 | 2
-  nameZoom: number
-}
-export const stepOf = (zoom: number): ZoomStep => ({ band: bandOf(zoom), nameZoom: nameZoomOf(zoom) })
-export const sameStep = (a: ZoomStep, b: ZoomStep) => a.band === b.band && a.nameZoom === b.nameZoom
+/**
+ * Far out, a box's name is one line in bold mono at the body step, on a line of 1.1, its foot 12 over its picture (app.css). It's held at
+ * the body size on screen (cl-958) only as far as it fits the room the layout keeps above every box, RISE and a gap, a foot's 12 clear of the
+ * box above (Paul, 11-13: "the text size should be limited"): 41.8px on the canvas, the body size down to 40%. Further out it shrinks with
+ * the canvas, and nothing moves: a zoom never makes room.
+ */
+const NAME_MOST = (RISE + GAP + (HEAD - 12) - 12) / 1.1
+/** Far out, how much larger than the canvas a box's name is drawn (`--name-zoom`): the zoom's inverse in quarter steps, to NAME_MOST. */
+export const nameZoomOf = (zoom: number) => Math.min(2 ** Math.max(0, Math.ceil(-Math.log2(zoom || 1) * 4) / 4), NAME_MOST / (12.5 * 1.35))
 
-// A far name as app.css draws it (cl-958): bold mono at the body step, the small step past 20%, held on screen by --name-zoom; on lines of 1.1,
-// two at most; as wide as 130% of its head (its box less 2 a side), only its box past 20%, or kept to its box (`--name-room`); after its
-// dot if it has one, 0.7 of its size and 4 of gap; its last line on the head's 12 of foot.
-const FAR_LINE = 1.1
-export const HEAD_FOOT = 12
-/** On screen, between a far name and the picture above it: twice what's between it and its own, so it reads as the lower box's. */
-const FAR_CLEAR = 8
-/** A far name kept to its box, past its dot if it has one: what `--name-room` says in app.css. */
-export const inBoxOf = (dot: boolean) => (dot ? "calc(100% - 0.7em - 4px)" : "100%")
-
-/** A far name as it's drawn at `step`, in canvas px: how far it rises over its box, how far right of its box's left it reaches, and the room
- *  it keeps above it. `dot`: a state dot before it. `inBox`: kept to its box. `measure`: its text's width at a font size, in its font. */
-export function farNameOf(text: string, width: number, step: ZoomStep, measure: (text: string, px: number) => number, dot: boolean, inBox = false) {
-  const px = (step.band === 2 ? 10.5 : 12.5) * 1.35 * step.nameZoom
-  const before = dot ? 0.7 * px + 4 : 0
-  const room = inBox ? width - 4 - before : (width - 4) * (step.band === 2 ? 1 : 1.3)
-  const drawn = measure(text, px)
-  // Within a pixel of its room, it may wrap: the room for two.
-  const lines = drawn > room - 1 ? 2 : 1
-  return { rise: lines * FAR_LINE * px - (HEAD - HEAD_FOOT), reach: 2 + before + Math.min(drawn, room), clear: FAR_CLEAR * step.nameZoom }
-}
 const ENTITY_DESC = 60
 const ENTITY_SLOTS = 72
 export const SUB_ROW = 136

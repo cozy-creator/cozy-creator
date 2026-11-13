@@ -2297,37 +2297,20 @@ video.preview.on {
   width: 18px;
   height: 18px;
 }
-/* Far out a box is its picture and its name (web-ui.md §2), the name and its dot at the body step on screen, held there by --name-zoom
-   (CanvasHost.tsx); its version and trash can, too small there to read or hit, go (cl-958). */
+/* Far out a box is its picture and its name (web-ui.md §2): the name and its dot at the body step on screen, held there by --name-zoom up to
+   what fits the room above a box (shown.ts nameZoomOf), then smaller with the canvas; its version and trash can, too small there to read or
+   hit, go (cl-958). One line, cut with an ellipsis where its box ends, its whole name on hover (Paul, 11-13: "rather than just truncating"). */
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.nm, .state-dot) {
   font-size: calc(var(--t-body) * var(--ui) * var(--name-zoom, 1));
 }
-/* A name longer than its box goes on to a second line, rising over it, rather than being cut to a few letters. */
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head .nm {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  white-space: normal;
-  overflow-wrap: break-word;
   line-height: 1.1;
-  /* A word a little wider than its box runs into the gap beside it rather than splitting (brok/en); not past 20%, where the gap is
-     too narrow and two names ran together. Where that gap isn't free, it keeps to its box (--name-room, CanvasStore's layoutAt, cl-885). */
-  flex-shrink: 0;
-  max-width: var(--name-room, 130%);
-}
-.stage[data-lod="2"] .react-flow__node .card > .head .nm {
-  max-width: var(--name-room, 100%);
-}
-/* Past 20% a box is 60px or so on screen: its name at the small step (14px), so a short word fits it whole. */
-.stage[data-lod="2"] .react-flow__node .card > .head :is(.nm, .state-dot) {
-  font-size: calc(var(--t-small) * var(--ui) * var(--name-zoom, 1));
 }
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
   display: none;
 }
-/* And what hangs under it, its tool, shape and a render's lines, drawn at the canvas's scale (7px on screen at 33%): its dot says it renders.
-   The room rows keep for them is the room its name rises into far out (CanvasStore's lifts, cl-885). */
+/* And what hangs under it, its tool, shape and a render's lines, drawn at the canvas's scale (7px on screen at 33%), set lower as a selected
+   ring grows: its dot says it renders. Its name rises into the room they keep. */
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card:not(.here) > .tile-under {
   display: none;
 }

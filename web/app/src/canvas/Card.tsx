@@ -647,8 +647,6 @@ function TileMeter({ view }: { view: ElementView }) {
   return going ? <RunMeter view={view} number={number} /> : null
 }
 
-/** A name with a chance to break after each _, so far out a long one wraps between its words; its text is the same (cl-958). */
-const breakable = (name: string) => name.split(/(?<=_)/).flatMap((part, at) => (at ? [<wbr key={at} />, part] : [part]))
 
 const CardBody = memo(function CardBody({ name, width, focused = false, snapshot }: { name: string; width: number; focused?: boolean; snapshot?: ElementView }) {
   const store = useCanvasStore()
@@ -849,7 +847,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               if (from && Math.hypot(event.clientX - from.x, event.clientY - from.y) < 5) store.openName(name)
             }}
           >
-            {view.placing ? store.shownName(store.resolveName(name)) : breakable(view.name)}
+            {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
         )}
         {view.draft === undefined && (asset ? (here ? asset.kind === "image" : asset.kind !== "text") && shown?.number !== undefined : isPicture(view)) && <span className="node-version-label">v{asset ? shown?.number : 1}</span>}
