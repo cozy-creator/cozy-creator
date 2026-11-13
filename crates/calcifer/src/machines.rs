@@ -77,9 +77,6 @@ pub(crate) struct Machines {
     /// Each Hub catalog model's public releases, as the default Hub last said, by version and by each lane's checkpoint and header:
     /// what machine views list of the models a machine holds.
     public: Mutex<HashMap<String, HashSet<String>>>,
-    /// What each unlocked project's own engine on this computer's machine holds, by its root, as its own Status last said: listed with
-    /// local's models where public, never as whose.
-    project_models: Mutex<HashMap<PathBuf, Vec<v1::Model>>>,
     /// Rentals whose boot is followed, by rental id.
     pub(crate) booting: Mutex<HashSet<String>>,
     /// Runs a rental is being asked for.
@@ -155,7 +152,6 @@ impl Machines {
             watching: Mutex::default(),
             project_activity: Mutex::default(),
             public: Mutex::default(),
-            project_models: Mutex::default(),
             booting: Mutex::default(),
             renting: Mutex::default(),
             asking: Mutex::default(),
@@ -321,42 +317,9 @@ impl Machines {
         })
     }
 
-    /// What `machine` (its frame) and, on this computer's machine, each known unlocked project's own engine hold, read now: each
-    /// project's own Status asked, and the default Hub asked once which of their models' releases are public (`public_release`).
+    /// What `machine` holds, as its frame says: the default Hub asked once which of its models' releases are public (`public_checkpoint`).
     pub(crate) async fn learn_holdings(&self, machine: &str) {
         let mut models: Vec<String> = self.frame(machine).map(|frame| frame.models.iter().map(|m| m.model.clone()).collect()).unwrap_or_default();
-        if machine == "local" && let Some(link) = self.calcifer.link("local").ok().flatten() {
-            let known = self.calcifer.store().known_projects().unwrap_or_else(|error| {
-                warn!("which projects this computer knows is unread: {error}");
-                vec![]
-            });
-            let mut held = HashMap::new();
-            for entry in known {
-                // Not a locked project, nor one whose storage is changing (locking, closing, converting): it is never opened for this,
-                // and none changes while it's read.
-                let Ok(_admitted) = crate::project::vault::try_admit_root(&entry.path) else { continue };
-                let Ok(view) = crate::project::vault::resolve_path(&entry.path) else { continue };
-                // Only a project that has run here has an engine of its own to ask: asking makes none.
-                if !view.join(".vault-machine").exists() { continue; }
-                let scope = match crate::private_io::scope_for_project(&entry.id, &entry.path) {
-                    Ok(scope) => scope,
-                    Err(error) => { warn!("a project's own engine on local is unread: {}", error.message); continue }
-                };
-                match link.with_private(scope).status().await {
-                    Ok(frame) => {
-                        models.extend(frame.models.iter().map(|m| m.model.clone()));
-                        if frame.models.is_empty() && frame.models_bytes > 0 {
-                            warn!("a project's own engine on local holds {} bytes of models but lists none", frame.models_bytes);
-                        }
-                        held.insert(entry.path, frame.models);
-                    }
-                    // Stopped: nothing of it is read now.
-                    Err(LinkError::Unreachable(_)) => break,
-                    Err(error) => warn!("what a project's own engine on local holds is unread: {error}"),
-                }
-            }
-            *lock(&self.project_models) = held;
-        }
         models.sort();
         models.dedup();
         let unknown: Vec<String> = models.into_iter().filter(|model| !model.starts_with("local/") && !lock(&self.public).contains_key(model)).collect();
@@ -390,14 +353,10 @@ impl Machines {
         self.unmatched(machine);
     }
 
-    /// Each model `machine` holds (with what unlocked projects' own engines hold there) whose Hub has public releases, none of which
+    /// Each model `machine` holds whose Hub has public releases, none of which
     /// its checkpoints are: said, as a view leaves it out.
     fn unmatched(&self, machine: &str) {
-        let mut held: Vec<v1::Model> = self.frame(machine).map(|frame| frame.models).unwrap_or_default();
-        if machine == "local" {
-            held.extend(lock(&self.project_models).values().flatten().cloned());
-        }
-        for model in held {
+        for model in self.frame(machine).map(|frame| frame.models).unwrap_or_default() {
             let known = lock(&self.public).get(&model.model).is_some_and(|public| !public.is_empty());
             if known && !model.checkpoints.iter().any(|checkpoint| self.public_checkpoint(&model.model, checkpoint)) {
                 let said: Vec<String> = model.checkpoints.iter().map(|c| format!("{} {} {}", c.release, c.tree, c.manifest)).collect();
@@ -853,38 +812,16 @@ impl Machines {
             machine.status = seen.frame.as_ref().map(|frame| {
                 let mut visible=frame.clone();
                 let rows=self.calcifer.maintenance_rows(&row.name);
-                let mut manifests=HashSet::new();
                 let mut installations=HashSet::new();
                 for run in &rows {
-                    for choice in run.spec.models.iter().chain(run.spec.set.iter().flat_map(|set|set.items.iter().flat_map(|item|&item.models))) {
-                        if !choice.model.is_empty() && !choice.manifest.is_empty() {manifests.insert((choice.model.clone(),choice.manifest.clone()));}
-                    }
-                    if run.status==Some(wire::Status::Completed) {
-                        if let Some(result)=run.outcome.as_ref().and_then(|outcome|outcome.result.as_ref()).and_then(|result|serde_json::from_str::<serde_json::Value>(result.get()).ok()) {
-                            if let Some(id)=result.get("installation").and_then(serde_json::Value::as_str) {installations.insert(id.to_owned());}
-                            for model in result.get("models").and_then(serde_json::Value::as_array).into_iter().flatten() {
-                                if let (Some(name),Some(commit))=(model.get("repository").and_then(serde_json::Value::as_str),model.get("checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
-                                // What the run made: an install's local alias, or an upload's commit, held by its destination.
-                                if let (Some(name),Some(commit))=(model.pointer("/published/destination").and_then(serde_json::Value::as_str),model.pointer("/published/checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
-                            }
-                        }
+                    if run.status==Some(wire::Status::Completed)
+                        && let Some(result)=run.outcome.as_ref().and_then(|outcome|outcome.result.as_ref()).and_then(|result|serde_json::from_str::<serde_json::Value>(result.get()).ok())
+                        && let Some(id)=result.get("installation").and_then(serde_json::Value::as_str)
+                    {
+                        installations.insert(id.to_owned());
                     }
                 }
-                let _ = manifests;
-                // Public Hub catalog models are no project's data, for whatever work they came: what a project's own engine on this
-                // computer's machine holds beside them, never as whose. A local alias, a private or an uploaded release isn't listed.
-                if row.kind == MachineKind::Local {
-                    let held = lock(&self.project_models);
-                    for model in held.iter().filter(|(root, _)| crate::project::vault::require_path(root).is_ok()).flat_map(|(_, models)| models) {
-                        match visible.models.iter_mut().find(|seen| seen.model == model.model) {
-                            Some(seen) => {
-                                let new: Vec<v1::Checkpoint> = model.checkpoints.iter().filter(|c| !seen.checkpoints.iter().any(|held| held.manifest == c.manifest)).cloned().collect();
-                                if !new.is_empty() { seen.checkpoints.extend(new); seen.total_bytes = 0; seen.unique_bytes = 0; }
-                            }
-                            None => visible.models.push(model.clone()),
-                        }
-                    }
-                }
+                // Public Hub catalog models, for whatever work they came: a local alias, a private or an uploaded release isn't listed.
                 for model in &mut visible.models {
                     let total=model.checkpoints.len();
                     let catalog = !model.model.starts_with("local/");
@@ -1013,9 +950,8 @@ impl Machines {
 
     /// Whether it listed anything.
     async fn project_frames(&self, project: &str) -> bool {
-        let (mut listed, mut warned) = (false, false);
-        // Its runs there, or its upcoming jobs prepared in its own engine (`ahead::Lists`), whose rows its own Status tells.
-        let working = || self.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0) || self.lists.listed_for("local", project);
+        let mut listed = false;
+        let working = || self.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0);
         while working() {
             let scoped = (|| {
                 let store = self.calcifer.project_store(project).ok()?;
@@ -1024,16 +960,10 @@ impl Machines {
                 Some(self.calcifer.link("local").ok()??.with_private(scope))
             })();
             let Some(link) = scoped else { return listed };
-            let watched = link.watch().await;
-            if let Err(error) = &watched && !warned {
-                warn!("{project}'s own Status on local is unread: {error}");
-                warned = true;
-            }
-            if let Ok(mut frames) = watched {
+            if let Ok(mut frames) = link.watch().await {
                 while let Some(Ok(frame)) = frames.next().await {
                     let quiet = frame.activity.is_empty();
                     listed |= !quiet;
-                    self.lists.observe_in("local", Some(project), &frame);
                     if let Some(held) = lock(&self.project_activity).get_mut(project) { *held = frame.activity; }
                     self.calcifer.machine_changed();
                     if quiet && !working() { return listed; }
@@ -1628,35 +1558,18 @@ pub(crate) async fn models(
     Ok(Json(asked(&api, &name, query).await?.0.models()))
 }
 
-#[derive(Deserialize)]
-pub(crate) struct InProject {
-    /// The project its client is in: its own copy goes, from its own engine.
-    project: Option<String>,
-}
-
-/// Removes cached releases and lanes only from this computer, never from a Hub or rental: in a project, that project's own copy;
-/// else the machine's.
+/// Removes cached releases and lanes only from this computer, never from a Hub or rental.
 pub(crate) async fn remove_model(
     State(api): State<Arc<Api>>,
     UrlPath(name): UrlPath<String>,
-    query: Result<Query<InProject>, QueryRejection>,
     body: Result<Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Json<wire::RemovedModel>, Refusal> {
-    let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
     if !name.eq_ignore_ascii_case("local") {
         return Err(Refusal(Error::new(Kind::Usage, "model_remove_local_only", "Model removal is available only on local")));
     }
     let asked: wire::RemoveModel = crate::api::parse(&body?)?;
     api.machines.local_up().await.map_err(Refusal)?;
     let (row, link) = api.machines.linked("local").map_err(Refusal)?;
-    let link = match &query.project {
-        Some(project) => {
-            let store = api.projects.store(&api, project).await.map_err(Refusal)?;
-            let (id, root) = store.execution_scope();
-            link.with_private(crate::private_io::scope_for_project(id, root).map_err(Refusal)?)
-        }
-        None => link,
-    };
     let removed = link.remove_model(&asked).await.map_err(|error| Refusal(refusal(&row.name, error)))?;
     Ok(Json(removed))
 }

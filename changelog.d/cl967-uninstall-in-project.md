@@ -1,1 +1,0 @@
-`cozy model uninstall` (and `cozy lora uninstall`) inside a project removes that project's own copy, from its own storage, where its runs downloaded it; outside a project it removes the machine's copy, as before.

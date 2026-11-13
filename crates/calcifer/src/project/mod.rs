@@ -156,6 +156,9 @@ pub(crate) struct Project {
     walking: Mutex<bool>,
     /// Tells the walker something was asked.
     asked: Notify,
+    /// Each package a plan asked described, by Hub and `with`: one description each, going on past the plan's budget, its answer
+    /// kept for the next plan (`Walk::quotable`).
+    described: Mutex<HashMap<(String, String), Arc<tokio::sync::OnceCell<Result<Package, Error>>>>>,
     /// Held while a cut is made.
     cutting: Arc<Mutex<()>>,
     /// How far each Edit being rendered here is, 0 to 1.
@@ -170,9 +173,6 @@ pub(crate) struct Project {
     unseen: Mutex<unseen::Unseen>,
     /// Its folder watched while it's open, a plain one's (`Projects::look`).
     _watch: Option<platform::watch::Watcher>,
-    /// Each package a plan asked described, by Hub and `with`: one description each, going on past the plan's budget, its answer
-    /// kept for the next plan (`Walk::quotable`).
-    described: Mutex<HashMap<(String, String), Arc<tokio::sync::OnceCell<Result<Package, Error>>>>>,
 }
 
 impl Drop for Project {
@@ -366,6 +366,7 @@ impl Projects {
                     walker: Mutex::default(),
                     walking: Mutex::new(false),
                     asked: Notify::new(),
+                    described: Mutex::default(),
                     cutting: Arc::default(),
                     rendering: Arc::default(),
                     moving: tokio::sync::Mutex::default(),
@@ -373,7 +374,6 @@ impl Projects {
                     unsent: Mutex::default(),
                     unseen: Mutex::new(unseen),
                     _watch: watch,
-                    described: Mutex::default(),
                 });
                 // What closed since the last open goes from the list.
                 open.retain(|_, held| held.strong_count() > 0);
@@ -1046,7 +1046,7 @@ struct Walker {
     /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
     starts: HashMap<String, (i64, Vec<String>)>,
     /// What each machine is told to have ready for each job, by machine and job key: its Hub, item and function; none: nothing.
-    items: HashMap<(String, String), Option<(String, v1::Ahead, String, Vec<api::calcifer::StagedInput>)>>,
+    items: HashMap<(String, String), Option<(String, v1::Ahead, String)>>,
     /// Items being made.
     making: HashSet<(String, String)>,
     /// The last turn held a job for a busy machine.
@@ -1176,16 +1176,6 @@ fn current_view(root: &FsPath) -> Result<PathBuf, Error> {
 }
 
 impl Project {
-    /// Its opaque identity and its root: what its own execution scope on this computer's machine is made from.
-    pub(crate) fn scope_of(&self) -> (&str, &FsPath) {
-        (&self.id, &self.root)
-    }
-
-    /// How the machines' lists (`ahead::Lists`) key its walk's: its folder.
-    pub(crate) fn folder_key(&self) -> String {
-        self.folder.dir.to_string_lossy().into_owned()
-    }
-
     /// Old references are bound to their original physical view, never a recycled drive.
     fn require_view(&self) -> Result<(), Error> {
         if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir {
@@ -3645,7 +3635,7 @@ impl Walk {
                     };
                     let mut walker = self.project.walker.lock().expect("walker lock");
                     walker.making.remove(&at);
-                    walker.items.insert(at, item.map(|(item, function, files)| (wanted.hub.clone(), item, function, files)));
+                    walker.items.insert(at, item.map(|(item, function)| (wanted.hub.clone(), item, function)));
                     Done::Ahead
                 }.boxed());
             }
@@ -3740,7 +3730,7 @@ impl Walk {
             let walker = self.project.walker.lock().expect("walker lock");
             for (key, asset, wanted) in jobs {
                 let On::Machine(name) = &wanted.machine else { continue };
-                let Some(Some((hub, item, function, files))) = walker.items.get(&(name.clone(), key.clone())) else { continue };
+                let Some(Some((hub, item, function))) = walker.items.get(&(name.clone(), key.clone())) else { continue };
                 let (start_at_ms, fits) = walker.starts.get(key).cloned().unwrap_or((i64::MAX, vec![]));
                 let listed = crate::ahead::Listed {
                     project: self.project.clone(),
@@ -3749,7 +3739,6 @@ impl Walk {
                     hub: hub.clone(),
                     item: item.clone(),
                     function: function.clone(),
-                    files: files.clone(),
                     fits,
                 };
                 by_machine.entry(name.clone()).or_default().push(listed);
@@ -3763,7 +3752,11 @@ impl Walk {
     /// What `wanted`'s machine has ready for job `key` (`PUT /v1/upcoming`): the function its text names, else the first of its package
     /// that makes this kind, with its model choices; and the function, as its row says it. None: its package makes nothing of the kind.
     /// Local code is installed there first, as a call's is.
-    async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String, Vec<api::calcifer::StagedInput>)>, Error> {
+    async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
+        // A machine-wide list is no project's: what a project's job will read comes with its own run, in its own storage.
+        if crate::private_io::of_path(&self.folder().dir)?.is_some() {
+            return Ok(None);
+        }
         let Wanted { machine, hub, with, kind, made } = wanted;
         let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
@@ -3777,17 +3770,18 @@ impl Walk {
         let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
         choices.take(&mut payload)?;
         let models = choices::wire(&choices.into_choices())?;
-        let (source, files) = match &renderer.local {
-            None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
+        let source = match &renderer.local {
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
             Some(path) => {
-                // Staged in its project's storage scope, as its call's code is, its files going to its machine with its list as a call's do.
-                let scope = crate::private_io::of_path(&self.folder().dir)?;
-                let prepared = crate::private_io::context(scope, self.host.ready(path, machine, hub)).await?;
-                (v1::Source::Local(prepared.source), prepared.files)
+                // A private project's code goes with the run that calls it.
+                if crate::private_io::of_path(&self.folder().dir)?.is_some() {
+                    return Ok(None);
+                }
+                v1::Source::Local(self.host.ready(path, machine, hub).await?.source)
             }
         };
         let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
-        Ok(Some((item, package.name.clone() + "/" + &renderer.function, files)))
+        Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
     }
 
     /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices; else why not. `late`: how long its package
@@ -3939,9 +3933,7 @@ impl Walk {
             }
         }
         let mut pictures = vec![];
-        // In its own storage scope: what this project holds on local, in its own engine, is in local's picture (`placement::picture`).
-        let scope = crate::private_io::of_path(&self.folder().dir).ok().flatten();
-        for (on, pictured) in machines.iter().zip(crate::private_io::context(scope, placement::pictures(&api, &machines, update, now)).await) {
+        for (on, pictured) in machines.iter().zip(placement::pictures(&api, &machines, update, now).await) {
             match pictured {
                 Ok(picture) => pictures.push(picture),
                 Err(why) => warn!("{dir}: {on} isn't planned on: {why}"),

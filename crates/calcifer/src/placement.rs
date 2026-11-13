@@ -8,7 +8,6 @@
 //! that finishes it sooner than any machine up now. A `new` run weighs a rental against them (`runs::instead_of_renting`).
 use std::sync::Arc;
 
-use tracing::warn;
 use api::{
     calcifer::{MachineEstimate, On},
     error::{Error, Kind},
@@ -293,18 +292,10 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     }
     let (row, link) = machines.linked(text).map_err(|e| e.message)?;
     // Its Status as its open stream says it; with none open (it stopped answering, or never did), what it answers now, or no quote.
-    let mut frame = match machines.live_frame(&row.name) {
+    let frame = match machines.live_frame(&row.name) {
         Some(frame) => frame,
         None => link.status().await.map_err(|e| e.to_string())?,
     };
-    // A project's work on this computer's machine runs in its own engine: what it holds, queues and has measured there is
-    // in its own Status alone.
-    if row.name == "local" && let Some(scope) = crate::private_io::current() {
-        match link.with_private(scope).status().await {
-            Ok(own) => frame = with_own(frame, own),
-            Err(error) => warn!("local is pictured without this project's own engine there: {error}"),
-        }
-    }
     let own = this_release();
     if !same_minor(&frame.version, own) && !rc_version() {
         if !update {
@@ -316,33 +307,6 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         }
     }
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![] })
-}
-
-/// `frame`, the machine's own Status, with what a project's own engine there said of itself: its store's models, its installs, warm
-/// set, queue and measured times. Its residents are the machine's pool's, listed once.
-fn with_own(mut frame: v1::StatusFrame, own: v1::StatusFrame) -> v1::StatusFrame {
-    frame.models.extend(own.models);
-    frame.environments.extend(own.environments);
-    frame.warm.extend(own.warm);
-    for resident in own.resident {
-        if !frame.resident.contains(&resident) {
-            frame.resident.push(resident);
-        }
-    }
-    if let Some(queued) = own.queue {
-        frame.queue.get_or_insert_with(Vec::new).extend(queued);
-    }
-    for timed in own.times.into_iter().flatten() {
-        let times = frame.times.get_or_insert_with(Vec::new);
-        match times.iter_mut().find(|held| held.function == timed.function) {
-            Some(held) => held.runs.extend(timed.runs),
-            None => times.push(timed),
-        }
-    }
-    if frame.link_bytes_per_s <= 0.0 {
-        frame.link_bytes_per_s = own.link_bytes_per_s;
-    }
-    frame
 }
 
 /// An offer in a line of the log: `stand-c finishes in 480 s (Measured, warm)`, `pluto finishes in 390 s (None; 120 s preparing,

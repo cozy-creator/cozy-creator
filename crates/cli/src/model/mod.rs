@@ -34,7 +34,7 @@ enum LoraVerb {
     Show(Show),
     /// Install a LoRA on a machine.
     Install(Download),
-    /// Uninstall downloaded copies from this machine; inside a project, the project's own copies.
+    /// Uninstall downloaded copies from this machine.
     Uninstall(Remove),
     /// Update a LoRA's family, tags, trigger words or recommended strength.
     Edit(LoraEdit),
@@ -89,7 +89,7 @@ enum Verb {
     Edit(Edit),
     /// Install a model on a machine.
     Install(Download),
-    /// Uninstall downloaded copies from this machine; inside a project, the project's own copies.
+    /// Uninstall downloaded copies from this machine.
     Uninstall(Remove),
     /// Upload weights as a private model checkpoint.
     #[command(hide = true)]

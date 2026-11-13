@@ -16,17 +16,16 @@ use crate::{api::auth::VerifiedActor, runs::Runs};
 pub(crate) const UPCOMING: &str = "cozy:upcoming:";
 pub(crate) const PREPARE: &str = "cozy:prepare:";
 
-/// A caller, in the execution scope it asked from (a project's own engine, or the machine's), and a list's prefix.
+/// A caller and a list's prefix.
 type List = (String, &'static str);
 
 /// Each caller's latest lists' run ids: what its Status says of them.
 static LISTED: LazyLock<Mutex<HashMap<List, Vec<String>>>> = LazyLock::new(Mutex::default);
 
-/// The run ids of `actor`'s latest lists in this request's scope: a project's own lists are its engine's alone.
+/// The run ids of `actor`'s latest lists.
 pub(crate) fn listed(actor: &str) -> Vec<String> {
-    let actor = crate::private_io::resource_key(actor);
     let listed = LISTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    listed.iter().filter(|((owner, _), _)| *owner == actor).flat_map(|(_, ids)| ids.clone()).collect()
+    listed.iter().filter(|((owner, _), _)| owner == actor).flat_map(|(_, ids)| ids.clone()).collect()
 }
 
 /// A run of a list's: never listed.
@@ -55,8 +54,7 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
         })
         .collect();
     let ids: Vec<String> = requests.iter().map(|request| request.id.clone()).collect();
-    let owner = crate::private_io::resource_key(&crate::runs::actor_id(actor));
-    LISTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((owner, prefix), ids);
+    LISTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((crate::runs::actor_id(actor), prefix), ids);
     for id in runs.live_ids(actor)?.into_iter().filter(|id| id.starts_with(prefix)) {
         if !requests.iter().any(|request| request.id == id) {
             runs.cancel(actor, &id)?;

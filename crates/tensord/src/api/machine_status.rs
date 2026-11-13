@@ -204,11 +204,7 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
             runs: runs.live(actor)?,
             environments: runs.environments(actor)?,
             warm: runs.warm(actor)?,
-            // A project's own engine lists what its own store holds, never the machine's.
-            models: match crate::private_io::current() {
-                Some(_) => crate::held_models::listing(service.engine.store.root()),
-                None => crate::held_models::listing(&store),
-            },
+            models: crate::held_models::listing(&store),
             memory: runs.memory(),
             lost: runs.lost(),
             out: runs.out_of_service(),
