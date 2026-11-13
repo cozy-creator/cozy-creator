@@ -111,6 +111,9 @@ pub(crate) struct Installation {
     /// The Hub origin a published release came from; empty for local code.
     #[serde(default)]
     pub hub: String,
+    /// Local code's manifest (`sha256:<hex>`) it was installed from; empty for a release.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub manifest: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -387,13 +390,7 @@ impl Execution {
 
 /// What one completed root took: its width, its size as its input said, its compute, and what it
 /// spent putting weights on its GPUs (`Ran`).
-#[derive(Clone, Debug)]
-pub(crate) struct RunTime {
-    pub width: u32,
-    pub size: api::machine::JobSize,
-    pub ms: f64,
-    pub load_ms: f64,
-}
+pub(crate) use api::machine::TimedRun as RunTime;
 
 /// What a completed root did with its time, by its own and its calls' records and measurements
 /// (cl-816, release owner 11-09). `compute_ms`: its time running less what it spent, while no call
@@ -1807,6 +1804,28 @@ impl Journal {
             Ok(RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64 })
         })
         .collect()
+    }
+
+    /// Each timed function's newest `limit` times here, newest first (`StatusFrame::times`).
+    pub(crate) fn all_run_times(&self, limit: usize) -> io::Result<Vec<api::machine::Timed>> {
+        let mut statement = self.connection
+            .prepare("SELECT function,width,size,ms,load_ms FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY function ORDER BY execution DESC) AS n FROM root_times) WHERE n <= ?1 ORDER BY function, execution DESC")
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map(params![limit.min(i64::MAX as usize) as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?))
+            })
+            .map_err(db_error)?;
+        let mut timed: Vec<api::machine::Timed> = vec![];
+        for row in rows {
+            let (function, width, size, ms, load_ms) = row.map_err(db_error)?;
+            if timed.last().is_none_or(|last| last.function != function) {
+                timed.push(api::machine::Timed { function, runs: vec![] });
+            }
+            let run = RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64 };
+            timed.last_mut().expect("pushed").runs.push(run);
+        }
+        Ok(timed)
     }
 
     fn selected(&self, query: &str, limit: usize) -> io::Result<Vec<Execution>> {

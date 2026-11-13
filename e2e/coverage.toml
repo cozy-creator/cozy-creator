@@ -218,6 +218,12 @@ test = "pr: run ls filters"
 "--limit" = "pr: run ls filters"
 ["run cancel"]
 test = "pr: a run followed, a snapshot, a cancel"
+["render"]
+test = "pr: agent_render, a chain from what it reads, nothing to render, -n forcing nothing, a joined render, a killed CLI rejoined, a failure stopping its readers"
+"--on" = "pr: agent_render, on local; without it, where Calcifer places it once the local-fit question says nothing"
+"--new" = "pr: agent_render, -n 2 new takes of a current shot, as --json"
+"--outdated" = "pr: agent_render, an approved shot out of date rendered again, its approval kept"
+"--pickup" = "pr: agent_render, a take kept to its seam and the rest rendered; refused for two nodes"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]

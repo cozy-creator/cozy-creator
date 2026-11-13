@@ -25,7 +25,7 @@ mod tests;
 pub(crate) const DB: &str = "project.db";
 /// This schema's `user_version`: a project's files, versions and runs in rows alone (cl-904), and its run journal beside them. A
 /// database of another isn't read; one of 2, or of 3 with either half, is migrated (`migrate`).
-const VERSION: i64 = 4;
+pub(super) const VERSION: i64 = 4;
 const SCHEMA: &str = "
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
     CREATE TABLE head (key TEXT PRIMARY KEY, ord INTEGER NOT NULL, value TEXT NOT NULL) STRICT;

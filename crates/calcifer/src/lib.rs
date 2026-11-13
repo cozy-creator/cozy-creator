@@ -34,6 +34,7 @@ mod outputs;
 mod others;
 mod page;
 mod placement;
+mod plan;
 mod previews;
 mod rc;
 pub(crate) mod private_io;

@@ -1,8 +1,9 @@
 // A shot rendered segment by segment plays all it has made so far while the next renders (cl-907), with project/segments.py, H3's
 // stand-in: three segments of 10 s, each after the first taking 30 s. Segment 1 lands: rendered from its words, the box stays on them and
-// its take's tile plays segment 1 silent; the tile picked, the box shows it with nothing over it, waiting with its controls, and it seeks
-// and plays with its sound. Segments 1-2 land as one video where it was paused. At rest it plays silent. Played as the take lands, the
-// take takes its place and plays on from there.
+// its take's tile plays segment 1 silent; the tile picked, the box shows it with nothing over it, waiting on the one transport and track a
+// finished take has (cl-965), and it seeks and plays with its sound. Segments 1-2 land as one video where it was paused. At rest it plays
+// silent. Played as the take lands, the take takes its place, the frame not moved or resized by a pixel, and plays on from there; the
+// render's lines stay, saying it's done (Paul, 11-12). Screenshots of it rendering and landed at 1440x900 and 1920x1080, paper and dark.
 //   node segments.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER. $PLAYWRIGHT, $CHROME, $COZY, $SHOT,
 //   $ALONE as nodes.js. Where this computer runs no models it renders nothing. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -40,6 +41,29 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
   });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+  /** Paper or dark, as a person turns it, from the menu: the whole page follows, its landscape too. */
+  const themed = async (dark) => {
+    if ((await page.evaluate(() => document.documentElement.dataset.theme === 'dark')) === dark) return;
+    const menu = page.locator('summary[aria-label="Menu"]');
+    await menu.click();
+    await page.locator('details[open] button.tb', { hasText: dark ? 'Dark' : 'Paper' }).first().click();
+    if (await menu.evaluate((summary) => summary.parentElement.open)) await menu.click();
+    await until('the theme turned', () => page.evaluate(() => document.documentElement.dataset.theme === 'dark'), (now) => now === dark, 5_000);
+  };
+  /** The page as it is, at 1440x900 and 1920x1080, paper and dark; then as the cell had it. */
+  const looks = async (name) => {
+    for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+      await page.setViewportSize({ width, height });
+      for (const dark of [false, true]) {
+        await themed(dark);
+        await page.waitForTimeout(300);
+        await shot(`${name}-${width}x${height}-${dark ? 'dark' : 'paper'}`);
+      }
+    }
+    await themed(false);
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.waitForTimeout(300);
+  };
 
   await signIn(page);
   await page.waitForSelector('.top');
@@ -82,7 +106,8 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   const video = box.locator('.glimpse video');
   const facts = () => video.evaluate((el) => ({
     label: el.closest('.glimpse').dataset.label, rev: Number(el.closest('.glimpse').dataset.rev), duration: el.duration, at: el.currentTime, paused: el.paused,
-    muted: el.muted, controls: el.controls, ready: el.readyState, seekable: el.seekable.length ? el.seekable.end(0) : 0, audio: el.webkitAudioDecodedByteCount ?? null,
+    // Its controls are Focus's transport, not the browser's (cl-965).
+    muted: el.muted, controls: !el.controls && Boolean(el.closest('.focus-viewport')?.querySelector('.tl-transport .tl-go:not([disabled])')), ready: el.readyState, seekable: el.seekable.length ? el.seekable.end(0) : 0, audio: el.webkitAudioDecodedByteCount ?? null,
   })).catch(() => null);
 
   // Segment 1 lands while segment 2 renders. Rendered from its words, the box stays on them, and its take's tile plays segment 1 silent.
@@ -97,7 +122,9 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   seen.segment_1 = { ...first, stage: during2.progress?.stage };
   check('segment_1_lands_while_segment_2_renders', during2.status === 'in_progress' && /Segment 2 of 3/.test(during2.progress?.stage ?? ''), during2.progress);
   check('segment_1_is_its_ten_seconds', near(first.duration, 10) && near(first.seekable, 10), first);
-  check('opened_it_waits_with_its_controls_and_sound', first.controls && !first.muted && first.paused, first);
+  // Its transport is drawn as it's read: what it has made so far is only known once its video says how long it is.
+  const transported = await until('it on the transport', facts, (now) => now?.controls, 5_000).catch(() => null);
+  check('opened_it_waits_with_its_controls_and_sound', Boolean(transported) && !first.muted && first.paused, { first, transported });
   check('nothing_hides_it', (await box.locator('.media-making').count()) === 0 && await box.locator('.glimpse video').evaluate((el) => {
     const { x, y, width, height } = el.getBoundingClientRect();
     return document.elementFromPoint(x + width / 2, y + height / 2) === el;
@@ -114,6 +141,7 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   await shot('segment-1-open');
   await video.evaluate((el) => el.pause());
   const paused = (await facts()).at;
+  await looks('rendering');
 
   // Segments 1-2 land as one video, where it was.
   const second = await until('segments 1-2 on the box', facts, (now) => now?.label === 'Segments 1-2 of 3' && now.ready >= 1 && near(now.duration, 20), 90_000);
@@ -144,18 +172,18 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   const take = await until('the take', state, (now) => now.assets.find((held) => held.name === 'shot')?.prefixes?.length === 1, RUN_MS);
   seen.take = take.assets.find((held) => held.name === 'shot').prefixes[0].main;
   const live = box.locator('video.live');
-  // First seen playing: from where the glimpse was, some seconds in, not from its start.
-  // Read once its file says how long it is: told where to start, a player reports that place before its metadata are in.
-  const after = await until('the take playing on', () => live.evaluate((el) => ({ at: el.currentTime, paused: el.paused, duration: el.duration })).catch(() => null), (now) => now && !now.paused && now.at > 0 && now.duration > 0, 30_000).catch((error) => error.message);
+  // First seen playing, its length read (a stream says it once it's loaded): from where the glimpse was, some seconds in, not from its start.
+  const after = await until('the take playing on', () => live.evaluate((el) => ({ at: el.currentTime, paused: el.paused, duration: el.duration })).catch(() => null), (now) => now && !now.paused && now.at > 0 && Number.isFinite(now.duration), 30_000).catch((error) => error.message);
   seen.take_playing = after;
   check('the_take_plays_on_from_where_it_was', typeof after === 'object' && after.at >= 4 && near(after.duration, 30, 1), after);
   check('no_glimpse_once_it_lands', (await box.locator('.glimpse').count()) === 0);
   const now = await box.locator('.media').boundingBox();
-  // Where it was: Focus may make room under a take for Pick up from here, so the same place and shape, not to the pixel.
-  const overlap = Math.max(0, Math.min(now.x + now.width, where.x + where.width) - Math.max(now.x, where.x)) * Math.max(0, Math.min(now.y + now.height, where.y + where.height) - Math.max(now.y, where.y));
-  const share = overlap / (now.width * now.height + where.width * where.height - overlap);
-  check('the_take_is_in_its_place', share > 0.85 && Math.abs(now.width / now.height - where.width / where.height) < 0.02, { where, now, share });
+  // Where it was, to the pixel: being made it had a finished take's player, transport, track and Orbit row, and its lines stay (Paul, 11-12).
+  check('the_take_is_in_its_place', ['x', 'y', 'width', 'height'].every((side) => Math.abs(now[side] - where[side]) <= 1), { where, now });
+  const said = await page.locator('.focus-viewport > .run-face.above').innerText().catch(() => '');
+  check('its_lines_stay_saying_it_is_done', /\btake 1 done\b/.test(said), said);
   await shot('take');
+  await looks('landed');
   await closeBox(page);
 
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));

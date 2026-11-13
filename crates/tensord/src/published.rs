@@ -1139,6 +1139,7 @@ impl Publisher {
                 interface: serde_json::to_vec(&held.record.interface)
                     .map_err(|e| io_failure(io::Error::other(e)))?,
                 hub: request.origin(),
+                manifest: String::new(),
             })
             .map_err(io_failure)?;
         // It replaces this release's installations by another Runtime pair or PyTorch: they go,

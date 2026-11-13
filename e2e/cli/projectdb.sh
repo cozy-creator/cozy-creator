@@ -77,6 +77,9 @@ takeids() { DB_WEB=takeids db_existing_web; }
 # it (cl-954): web/failedtakes.js.
 failedtakes() { DB_WEB=failedtakes db_existing_web; }
 
+# Undo of a delete past the real 3-hour window, the clock moved on: each box back without its files, saying so (cl-919): web/purged.js.
+purged() { DB_WEB=purged db_existing_web; }
+
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return
 [ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }

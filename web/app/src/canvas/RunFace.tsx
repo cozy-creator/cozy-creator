@@ -223,6 +223,30 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   )
 }
 
+/** In Focus, once its take has landed, its render's row stays and says so (Paul, 11-12): where it ran, then the take and how long the job
+ *  took. The same two lines in the same place, so nothing under them moves. */
+export function RunDone({ view, number }: { view: ElementView; number: number }) {
+  const { client } = useConnection()
+  const store = useCanvasStore()
+  const later = number !== view.run?.number
+  const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number), enabled: Boolean(store.projectId && later) })
+  const run = later ? data : view.run
+  const made = view.asset?.prefixes?.find((version) => version.run === number)
+  const ms = run?.settled_at_ms ? run.settled_at_ms - run.created_at_ms : made?.execution_ms
+  return (
+    <div className="prog run-face above done" data-phase="done" data-run={number}>
+      <p className="face-machine">
+        <span className="face-where">{run?.machine ?? ""}</span>
+      </p>
+      <p className="face-state">
+        <b>
+          <span className="face-words">{made ? `${view.asset?.noun ?? "take"} ${made.number} done${ms ? ` in ${short(ms / 1000)}` : ""}` : ""}</span>
+        </b>
+      </p>
+    </div>
+  )
+}
+
 /** At rest, how far the whole job is, as a thin meter along the top of its box (cl-928; Paul, 11-12: at the top): line 1's numbers, drawn
  *  only once there's an estimate. Focus has the lines alone. */
 export function RunMeter({ view, number }: { view: ElementView; number?: number }) {

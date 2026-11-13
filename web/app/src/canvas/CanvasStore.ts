@@ -230,6 +230,8 @@ const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => 
 
 /** Only this computer can take it: what it would do poorly is asked first. */
 const onlyHere = (on: string[]) => on.length === 1 && on[0] === "local"
+/** What an Undo or Redo brought back without its files, as Calcifer says it (cl-919). */
+const lostSaid = (lost: string[]) => lost.map((said) => `${said}.`).join(" ")
 const unsaid = (fit: Fit | null): fit is Fit => Boolean(fit?.tools.some((tool) => !tool.here))
 
 /** What the state says of one element: an asset, or an entity. */
@@ -2677,6 +2679,10 @@ export class CanvasStore {
       send: (once, action) => this.client[verb](id, { to: entry }, { once, action }),
       done: (answer) => {
         shown.forEach((one) => one.settle())
+        if (answer.lost?.length) {
+          dismiss(note)
+          this.stepped = say(`${back ? "Undone" : "Redone"}: ${taken.length} ${taken.length === 1 ? "edit" : "edits"}. ${lostSaid(answer.lost)}`, undefined, { ms: UNDO_MS })
+        }
         if (answer.stopped) say(`Couldn't ${verb} them all`, new ApiError(409, answer.stopped))
         this.history.read()
       },
@@ -2704,8 +2710,13 @@ export class CanvasStore {
     this.stepped = note
     this.outbox.add<HistoryStepped>({
       send: (once, action) => this.client[verb](id, target, { once, action }),
-      done: () => {
+      done: (answer) => {
         shown.settle()
+        // A box whose undo window ended comes back without its files: said, with the same Redo or Undo (cl-919).
+        if (answer.lost?.length) {
+          dismiss(note)
+          this.stepped = say(`${back ? "Undone" : "Redone"}: ${words}. ${lostSaid(answer.lost)}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) }, ms: UNDO_MS })
+        }
         this.history.read()
       },
       refused: (error) => {

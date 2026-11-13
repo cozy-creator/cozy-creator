@@ -2644,6 +2644,19 @@ impl Pool {
         self.hosting(plan).iter().any(|(_, loaded)| *loaded)
     }
 
+    /// Each idle executor's loaded models, its GPUs and the highest place it has them (`StatusFrame::resident`).
+    pub(crate) fn resident(&self) -> Vec<crate::api::v1::Resident> {
+        let held = self.serving.held.lock().unwrap().clone();
+        (self.sessions.lock().unwrap().values())
+            .filter_map(|session| {
+                let level = session.loaded.values().max()?;
+                let checkpoints = held.get(&session.serving).filter(|manifests| !manifests.is_empty())?.clone();
+                let gpus = session.lane().filter(|&device| device < self.devices.len()).map(|device| self.index(device)).collect();
+                Some(crate::api::v1::Resident { checkpoints, gpus, level: level.name().into() })
+            })
+            .collect()
+    }
+
     fn hosting(&self, plan: &Plan) -> Vec<(usize, bool)> {
         let mut lanes: BTreeMap<usize, bool> = BTreeMap::new();
         for leader in self.leaders.lock().unwrap().values().filter(|leader| leader.env == plan.executor) {

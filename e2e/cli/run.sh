@@ -32,6 +32,8 @@ parse "$@"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
 . "$(dirname "$0")/idle.sh"
+. "$(dirname "$0")/plan.sh"
+. "$(dirname "$0")/render.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -449,6 +451,7 @@ case $SHARD in
     machine_show_runs
     writes_once
     project_stream
+    agent_render
     web_serves
     page_resend
     queued_download
@@ -493,6 +496,8 @@ case $SHARD in
   idle) parts="idle_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
   ondemand) parts="ondemand_ahead logs" ;;
+  # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
+  plan) parts="estimate_line plan_picks logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints
@@ -608,16 +613,20 @@ case $SHARD in
     focusfinish
     takeids
     failedtakes
+    purged
     old_takes
     prepares
     db_migrate
     db_waits
+    agent_render
     logs
   " ;;
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
+  # cozy render alone (cl-956), with the project part's fixtures.
+  projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).

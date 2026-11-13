@@ -23,6 +23,7 @@ mod output;
 mod package;
 mod progress;
 mod project;
+mod render;
 mod run;
 mod send;
 mod tools;
@@ -66,6 +67,8 @@ enum Command {
     Open(open::Args),
     /// Run a function in the current project.
     Run(run::Args),
+    /// Render nodes of the current project and what they read, as the page's Render does.
+    Render(render::Args),
     /// Show the current project's health and warnings.
     Status(daemon::Status),
     /// Encrypt, lock or recover the current project.
@@ -172,6 +175,7 @@ fn usage_error(error: &clap::Error, arguments: &[std::ffi::OsString]) -> Error {
 async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
     match command {
         Command::Run(args) => run::exec(ctx, args).await,
+        Command::Render(args) => render::exec(ctx, args).await,
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,

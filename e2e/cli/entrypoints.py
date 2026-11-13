@@ -14,11 +14,27 @@ import time
 
 
 PUBLIC = {
-    "new", "open", "run", "status", "vault", "machine", "model", "lora", "package", "update", "restart", "doctor", "completion", "login", "logout", "whoami",
+    "new",
+    "open",
+    "run",
+    "render",
+    "status",
+    "vault",
+    "machine",
+    "model",
+    "lora",
+    "package",
+    "update",
+    "restart",
+    "doctor",
+    "completion",
+    "login",
+    "logout",
+    "whoami",
 }
 REMOVED = {
     "help",
-    "push", "pull", "org", "project", "import", "export", "add", "set", "delete", "render", "approve", "unapprove", "cancel",
+    "push", "pull", "org", "project", "import", "export", "add", "set", "delete", "approve", "unapprove", "cancel",
     "wait", "history", "undo", "redo", "rename", "reclaim",
 }
 
