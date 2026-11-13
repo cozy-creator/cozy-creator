@@ -143,11 +143,20 @@ pub(crate) fn major_refusal(needed_by: &str, cozy: &str) -> Error {
 }
 
 /// The installed `cozy`, the one Calcifer and the machine run (as the CLI records it): what an update replaces and Calcifer then
-/// starts. With none recorded, the installer's `<home>/bin/cozy`, else this binary (Homebrew's stable path).
+/// starts. With none recorded, the installer's `<home>/bin/cozy`, else where this one started from (Homebrew's stable path).
 pub(crate) fn installed(home: &Home) -> Result<PathBuf, Error> {
     if let Some(found) = home.launcher() {
         return Ok(found);
     }
-    let exe = std::env::current_exe().map_err(|e| Error::internal("installed_unrecorded", e.to_string()))?;
-    Ok(exe.canonicalize().ok().and_then(|exe| api::update::homebrew(&exe)).unwrap_or(exe))
+    let exe = platform::exe::record().map_err(|e| Error::internal("installed_unrecorded", e.to_string()))?.path.clone();
+    Ok(api::update::homebrew(&exe).unwrap_or(exe))
+}
+
+/// What this cozy says when an update replaced the binary it runs, where it can't start itself again (`platform::exe::running`):
+/// the restart that puts it on the new one.
+pub(crate) fn updated(e: platform::Error) -> Error {
+    match e {
+        platform::Error::Updated { .. } => Error::new(Kind::Unavailable, "cozy_updated", e.to_string()).next("cozy restart"),
+        other => Error::new(Kind::Unavailable, "cozy_unreadable", format!("this cozy's binary: {other}")),
+    }
 }

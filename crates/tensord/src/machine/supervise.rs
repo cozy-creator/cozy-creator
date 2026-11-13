@@ -53,7 +53,8 @@ pub(crate) fn supervise(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let program = std::env::current_exe()?;
+    // The launch path, never `current_exe()`: the next service is the binary an update put there.
+    let program = platform::exe::record()?.path.clone();
     let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let mut failures_before_ready = 0;
     loop {

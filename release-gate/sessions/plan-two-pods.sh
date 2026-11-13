@@ -44,6 +44,10 @@ say "step first: on $WARM alone, its first $TOOL call there: the cold time"
 timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$WARM" first > "$OUT/first.txt" 2>&1 || fail "the first shot: $(tail -c 400 "$OUT/first.txt")"
 say "step second: on $WARM alone again: the warm time, its model left held"
 timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$WARM" second > "$OUT/second.txt" 2>&1 || fail "the second shot: $(tail -c 400 "$OUT/second.txt")"
+# What warm holds of each model and what its function read (cl-967): what the third shot's quote counts to fetch there.
+cozy --json machine show "$WARM" > "$OUT/show-warm.json" 2>&1 || true
+jq -r '.status.models[]? | .repository as $m | .checkpoints[]? | "held: \($m) \(.lane) \(.bytes) bytes, \(.held_bytes) held"' "$OUT/show-warm.json" 2> /dev/null | tee -a "$R"
+jq -r '.status.times[]? | .function as $f | .reads[]? | "read: \($f) \(.model) \(.bytes) bytes, \(.missing) missing"' "$OUT/show-warm.json" 2> /dev/null | tee -a "$R"
 # The cold one rented only now: nothing of it is paid for while the first two render.
 rent_ok; COLD=$NAME
 step tensord machine update "$COLD" --tensord "$(command -v cozy)" -y || fail "$COLD refused the session's TensorD"

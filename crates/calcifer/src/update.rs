@@ -45,8 +45,8 @@ pub(crate) fn rc_version() -> bool {
 
 /// The command that moves `name` to this cozy: its release, or a dev build's own binary.
 pub(crate) fn update_command(name: &str) -> String {
-    let tensord = match (dev_build(), std::env::current_exe()) {
-        (true, Ok(path)) => path.display().to_string(),
+    let tensord = match (dev_build(), platform::exe::launch()) {
+        (true, Some(launch)) => launch.path.display().to_string(),
         _ => this_release().to_owned(),
     };
     format!("cozy machine update {name} --tensord {tensord}")
@@ -56,7 +56,7 @@ pub(crate) fn update_command(name: &str) -> String {
 /// this build when it has no release to fetch.
 async fn this_build() -> Result<DevBuild, Error> {
     let unreadable = |e: std::io::Error| Error::new(Kind::Unavailable, "cozy_unreadable", format!("this cozy's binary: {e}"));
-    let exe = std::env::current_exe().map_err(unreadable)?;
+    let exe = platform::exe::running().map_err(crate::cozy::updated)?;
     let digest = tokio::task::spawn_blocking(move || crate::runs::files::hold(&std::fs::read(&exe).map_err(unreadable)?))
         .await
         .map_err(|e| Error::internal("cozy_unreadable", e.to_string()))??;

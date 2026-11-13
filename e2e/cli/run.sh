@@ -628,7 +628,13 @@ case $SHARD in
   " ;;
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
-  projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
+  projectvault) parts="
+    projectvault
+    vault_leftovers
+    vault_web
+    vault_swapped
+    logs
+  " ;;
   projectdb-latency) parts="db_latency logs" ;;
   # A keyed write cut off mid-request, sent again (cl-885).
   projectdb-keyed) parts="db_keyed logs" ;;

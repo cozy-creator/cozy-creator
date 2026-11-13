@@ -495,7 +495,7 @@ pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, 
         let placed = placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param));
         let lane = placed.map(|(_, lane, _)| lane.clone()).or_else(|| slot.lane.clone());
         if let Some((checkpoint, bytes)) = checkpoint(api, hub, written, lane.as_deref()).await {
-            found.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written) });
+            found.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0 });
         }
     }
     found

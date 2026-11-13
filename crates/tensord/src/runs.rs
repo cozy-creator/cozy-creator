@@ -927,6 +927,22 @@ impl Runs {
         };
         Ok(Present { header, tree, row, folder })
     }
+    /// What run `id` reads of the models its call waits on (`selected`), as its function's (cl-967); none for a private one.
+    fn record_reads(&self, id: &str, selected: &[(String, Vec<String>)]) {
+        let Ok(record) = self.service.engine.get(id) else { return };
+        if record.invocation.local_private.is_some() {
+            return;
+        }
+        let reads = crate::access::reads(&self.service.engine.store, selected);
+        if reads.is_empty() {
+            return;
+        }
+        let function = crate::journal::function_key(&record.invocation.package, &record.invocation.entrypoint);
+        if let Err(error) = self.service.engine.record_reads(&function, &reads) {
+            tracing::warn!("run {id}: what it reads: {error}");
+        }
+    }
+
     /// The run's code and models made ready: Ok(None) once it is dispatchable, Ok(Some) for a
     /// warm run's result.
     fn prepare(self: &Arc<Self>, actor: &str, id: &str, spec: Spec, stoppable: &Stoppable) -> Result<Option<ResultRecord>, Refused> {
@@ -1026,6 +1042,10 @@ impl Runs {
         let interface: Value = serde_json::from_slice(&installation.interface)
             .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
         let generation = self.service.catalog.resolve(&installation.generation)?;
+        // What a root call reads, for its function's next quote on any machine (cl-967).
+        if let (false, true, Some(plan)) = (spec.warm, spec.parent.is_empty(), &plan) {
+            self.record_reads(id, &plan.upfront());
+        }
         // A call's weights come from here on, in the Start pass's order, until its executor
         // asks for them itself; its import-only parent starts now unless it already did. A
         // child's are a started run's, ahead of every queued run's (cl-804).
