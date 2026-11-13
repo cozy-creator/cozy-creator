@@ -498,11 +498,12 @@ impl PlanPhase {
 /// What the driver's own charge may grow by between samples under a development cap.
 const CAP_SLACK: usize = 128 << 20;
 
-/// The card's free bytes every map of ours leaves to the driver, one fixed amount per GPU. It allocates
-/// on its own (a kernel's code at its first launch, local memory, a library's handle), and its refusal
-/// fails that launch, not an allocation of ours, so no reclaim answers it: a cold H3 on a full 5090
-/// failed its first `index_select` (cr-293).
-pub(crate) const DRIVER_RESERVE: usize = 512 << 20;
+/// The card's free bytes every map of ours leaves to the driver. It allocates on its own (a kernel's code
+/// at its first launch, local memory, a library's handle), and its refusal fails that launch, not an
+/// allocation of ours, so no reclaim answers it: a cold H3 on a full 5090 failed its first `index_select`
+/// (cr-293). Measured (os-memory-patterns 10-24): 2x the largest out-of-books growth a request showed,
+/// 391 MiB in a cold H3 15 s (README: The driver's reserve), rounded up to 32 MiB.
+pub(crate) const DRIVER_RESERVE: usize = 800 << 20;
 
 thread_local! {
     /// A map short only of the reserve, with nothing idle and done left to give (`reclaim::acquire`).
