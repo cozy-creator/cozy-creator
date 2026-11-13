@@ -6,6 +6,13 @@
 # minimax-h3-tools from the Hub's index (as orbit takes minimax-h3) calls the checkout's, as cargo's [patch] does. A release
 # named (`@0.1.0`) and an account's package come from the Hub, and the page's tools list the checkout's from source. `local`
 # follows the RC (held here by hand, so the shard keeps its candidates). With `dev = false` the same name is the Hub's again.
+# said_by <name>: what run <name>'s record says of it, for the log: its number, machine, target, reply's release and its from-source line.
+said_by() {
+  echo "from source: $1: run $(cat "$OUT/$1.number" 2> /dev/null) on $(run_get "$OUT" "$1" .machine): $(run_get "$OUT" "$1" .target)," \
+    "release $(grep -o '"release": *"[^"]*"' "$OUT/$1.ndjson" | tail -1 | cut -d'"' -f4)," \
+    "$(run_get "$OUT" "$1" '[.warnings[]? | select(.code == "from_source") | .message] | first' || true)"
+}
+
 from_source() {
 step "a dev home's packages checkout: first-party packages run from source, on local and a stand-in (xs-195)"
 [ -n "$LOCAL" ] || return 0
@@ -67,34 +74,39 @@ systemctl --user restart cozy-calcifer || { check "from source: Calcifer didn't 
 machine_ready
 
 if cell source-local minimax-h3-tools/echo "text=from the checkout"; then
+  said_by source-local
   grep -q '"release": *"source"' "$OUT/source-local.ndjson" || check "from source: local's echo isn't the checkout's: $(tail -c 300 "$OUT/source-local.ndjson")"
   J --arg said "minimax-h3-tools from source: $said" '[.warnings[]? | select(.code == "from_source") | .message] == [$said]' "$OUT/source-local.json" \
     || check "from source: the record doesn't say '$said': $(jq -c '{target, warnings}' "$OUT/source-local.json")"
   J '.target == "_/minimax-h3-tools/echo"' "$OUT/source-local.json" || check "from source: its target is $(jq -c .target "$OUT/source-local.json")"
 fi
-in_project "$RUN_PROJECT" --json run minimax-h3-tools > "$OUT/source-functions.json" 2> "$OUT/source-functions.err" \
+in_project "$RUN_PROJECT" --json run e2e-boxed > "$OUT/source-functions.json" 2> "$OUT/source-functions.err" \
   && J --arg said "$said" '.release_from == "from source" and .release == $said' "$OUT/source-functions.json" \
   || check "from source: its functions don't say they're from source at $said: $(head -c 300 "$OUT/source-functions.json") $(tail -c 200 "$OUT/source-functions.err")"
 in_project "$RUN_PROJECT" run minimax-h3-tools/echo --describe > "$OUT/source-describe.txt" 2>&1 && grep -qF "from source: $said" "$OUT/source-describe.txt" \
   || check "from source: its contract doesn't say 'from source: $said': $(head -c 300 "$OUT/source-describe.txt")"
-cozy --json machine show local > "$OUT/source-machine.json" && J '.rc.state == "held"' "$OUT/source-machine.json" \
+cozy --json machine show local > "$OUT/source-machine.json" && echo "from source: local follows the RC: $(jq -c .rc "$OUT/source-machine.json")" && J '.rc.state == "held"' "$OUT/source-machine.json" \
   || check "from source: local doesn't follow the RC (held by hand): $(jq -c .rc "$OUT/source-machine.json")"
 
 # The checkout's caller calls the checkout's minimax-h3-tools, named as the package it is.
 if cell source-callee e2e-source-relay/relay "text=called from the checkout"; then
+  said_by source-callee
   grep -q '"release": *"source"' "$OUT/source-callee.ndjson" || check "from source: the caller's minimax-h3-tools isn't the checkout's: $(tail -c 300 "$OUT/source-callee.ndjson")"
   callee=$(find "$HOME/.cozy/machine" -name generation.json -path '*generations*' -exec jq -r \
     'select(.package == "e2e-source-relay") | .callees[]? | select(.distribution | ascii_downcase | gsub("[-_.]+"; "-") == "minimax-h3-tools") | .package' \
     {} + 2> /dev/null | sort -u | paste -sd, -)
+  echo "from source: e2e-source-relay's environment names its callee ${callee:-nothing}"
   [ "$callee" = _/minimax-h3-tools ] || check "from source: e2e-source-relay's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
 fi
 
 # A release named, and an account's package, are the Hub's.
 if cell source-release minimax-h3-tools/echo@0.1.0 "text=a release"; then
+  said_by source-release
   grep -q '"release": *"0.1.0"' "$OUT/source-release.ndjson" || check "from source: @0.1.0 isn't the Hub's: $(tail -c 300 "$OUT/source-release.ndjson")"
   J '[.warnings[]? | select(.code == "from_source")] == []' "$OUT/source-release.json" || check "from source: @0.1.0 says it's from source"
 fi
 if [ -n "${E2E_RELAY:-}" ] && cell source-account "$E2E_RELAY/relay" "text=an account's"; then
+  said_by source-account
   grep -q '"release": *"0.1.0"' "$OUT/source-account.ndjson" || check "from source: $E2E_RELAY's callee isn't the Hub's 0.1.0: $(tail -c 300 "$OUT/source-account.ndjson")"
   J '[.warnings[]? | select(.code == "from_source")] == []' "$OUT/source-account.json" || check "from source: $E2E_RELAY says it's from source"
 fi
@@ -106,6 +118,7 @@ for _ in 1 2 3 4 5 6; do
     && J '[.tools[] | select(.id == "e2e-boxed/one_field")] != []' "$OUT/source-tools.json" && break
   sleep 5
 done
+echo "from source: the page's tools: $(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | {id, release, source}] | .[:2]' "$OUT/source-tools.json" 2> /dev/null)"
 J --arg said "$said" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said]' "$OUT/source-tools.json" \
   || check "from source: the page's tools don't list e2e-boxed/one_field from $said: $(jq -c '[.tools[]? | {id, release, source}] | .[:8]' "$OUT/source-tools.json" 2> /dev/null || head -c 300 "$OUT/source-tools.json"), $(jq -c .note "$OUT/source-tools.json" 2> /dev/null)"
 
@@ -113,6 +126,7 @@ J --arg said "$said" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source
 cozy --json machine show local > "$OUT/set-local.json"
 if stand_in stand-s; then
   if run_cell "$OUT" source-stand minimax-h3-tools/echo "text=on a stand-in" --on stand-s; then
+    said_by source-stand
     grep -q '"release": *"source"' "$OUT/source-stand.ndjson" || check "from source: stand-s's echo isn't the checkout's: $(tail -c 300 "$OUT/source-stand.ndjson")"
     J '.machine == "stand-s"' "$OUT/source-stand.json" || check "from source: it ran on $(jq -c .machine "$OUT/source-stand.json"), not stand-s"
     J --arg said "minimax-h3-tools from source: $said" '[.warnings[]? | select(.code == "from_source") | .message] == [$said]' "$OUT/source-stand.json" \
@@ -128,6 +142,7 @@ cp "$OUT/source-config.toml" "$cfg"
 systemctl --user restart cozy-calcifer || { check "from source: Calcifer didn't restart"; return; }
 machine_ready
 if cell source-off minimax-h3-tools/echo "text=off"; then
+  said_by source-off
   grep -q '"release": *"0.1.0"' "$OUT/source-off.ndjson" || check "from source: with dev off, the echo isn't the Hub's 0.1.0: $(tail -c 300 "$OUT/source-off.ndjson")"
 fi
 }
