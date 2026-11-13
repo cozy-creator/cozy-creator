@@ -131,7 +131,12 @@ async function died(why) {
   check('one_section_open_at_a_time', empty.sections.filter((one) => one.open).length === 1, empty.sections);
   check('the_frame_is_16_9', Math.abs(empty.ratio - 16 / 9) < 0.03, empty.ratio);
   check('render_on_the_title_row_then_frame_tool_and_models_then_fields', empty.order && empty.inside === 0 && empty.in_fields === 0, empty);
-  check('with_none_written_in_all_it_mentions_is_behind', JSON.stringify([...empty.behind].sort()) === JSON.stringify(['amy', 'boat']) && empty.full_height, empty.behind);
+  // Opened, it's on its words (9907b898f: the caret in them once Focus shows), so Summary is being written and its picture is behind.
+  check('opened_on_its_summary_its_picture_is_behind', JSON.stringify(empty.behind) === JSON.stringify(['amy']) && empty.full_height, empty.behind);
+  // The words left, none is being written: all it mentions is behind (AssetEdit's frame: "with none being written, all it mentions").
+  await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+  const none = await until('all it mentions behind', async () => (await looked('scene')).behind, (now) => JSON.stringify([...now].sort()) === JSON.stringify(['amy', 'boat']), 10_000).catch(async () => (await looked('scene')).behind);
+  check('with_none_written_in_all_it_mentions_is_behind', JSON.stringify([...none].sort()) === JSON.stringify(['amy', 'boat']) && (await looked('scene')).full_height, none);
   await shot('empty-16-9');
 
   // Written in: what that section mentions, full height.
