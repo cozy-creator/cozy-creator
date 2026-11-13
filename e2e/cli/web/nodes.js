@@ -260,7 +260,8 @@ function replaceFile(at, text) {
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
     const bare = await bareFrom(x, y);
-    const fresh = await dragOut(fromTheList, bare.x, bare.y);
+    // Taken from the list as it is now: back from Focus, its open category isn't (the panel comes back as it starts), and a person opens it.
+    const fresh = await dragOut(await implementationRow(page, 'image'), bare.x, bare.y);
     // Its model is carried onto it, in view as toolOnto has it: let go near the window's foot, most of a box is under it.
     await fitCanvas(page);
     await chooseModel(page, fresh.name, tool, "image");
@@ -731,9 +732,10 @@ function replaceFile(at, text) {
     await until('its two retained previews', () => box('Sheet').locator('.image-history.here-side .take[data-take]').count(), (count) => count === 2);
 
     // Preview is local; double-click approval is the separate persistent action.
-    const beforePreview = (await of('Sheet')).version;
+    const beforePreview = await of('Sheet');
     await previewVersion(page, 'Sheet', 1);
-    check('thumbnail_preview_does_not_approve', (await of('Sheet')).version === beforePreview);
+    const afterPreview = await of('Sheet');
+    check('thumbnail_preview_does_not_approve', afterPreview.version === beforePreview.version, { before: { version: beforePreview.version, approved: beforePreview.approved, pinned: beforePreview.pinned }, after: { version: afterPreview.version, approved: afterPreview.approved, pinned: afterPreview.pinned } });
     await approveVersion(page, 'Sheet', 1);
     await until('first version selected in the project', () => of('Sheet'), (held) => held.version === 1);
     check('selected_version_is_persistent', await box('Sheet').locator('.image-history .take.on[data-take]').getAttribute('data-take') === '1');
