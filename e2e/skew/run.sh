@@ -251,7 +251,7 @@ log "cozy login ci@skew.test: the code from the Hub's log, typed on stdin"
     grep -q '"error"' login.out 2>/dev/null && break  # refused before a code: nothing to type
     sleep 1
   done
-} | cozy --json login ci@skew.test > login.out 2>&1
+} | { [ -z "$PUBLICATION_LOG" ] || { printf '%s\x1f' --json login ci@skew.test; printf '\x1e'; } >> "$PUBLICATION_LOG"; timeout 600 "$COZY_BIN" --json login ci@skew.test; } > login.out 2>&1
 login=${PIPESTATUS[1]}
 code=$(grep -h 'development device enrollment code' hub.log | grep -o '"code":"[^"]*"' | tail -1 | cut -d'"' -f4)
 if [ -n "$REFUSE" ]; then

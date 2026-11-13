@@ -192,7 +192,7 @@ function devConfig(text) {
     check('other_account_reads_the_page_files', curl('/', {}, OTHER).status === 200);
     const gate = await otherChrome(base, project);
     seen.other_chrome = gate;
-    check('other_account_chrome_sees_no_project', gate.gate === 1 && !gate.text.includes(folder) && gate.project_reads.every((status) => status === 403), gate);
+    check('other_account_chrome_sees_no_project', gate.gate === 1 && !gate.text.includes(folder) && gate.reads.length > 0 && gate.reads.every((status) => status === 403), gate);
   }
 
   // Dev mode: Vite's code and hot reload through Calcifer, which alone the browser talks to.
@@ -204,31 +204,32 @@ function devConfig(text) {
   process.exit(failures.length ? 1 : 0);
 })().catch(died);
 
-/** Another account's own headless Chrome, attached over its DevTools port: Calcifer's page as that account sees it. */
+/** Another account's own headless Chrome, launched by Playwright as that account and driven from here: Calcifer's page as that
+ *  account sees it. */
 async function otherChrome(base, project) {
-  const profile = `/tmp/${OTHER}-chrome`;
-  const port = 9333;
-  spawnSync('sudo', ['-n', '-u', OTHER, 'mkdir', '-p', profile]);
-  // As Playwright launches it: no crash reporter (its handler wants a database this fresh account lacks), no first-run work.
-  const flags = ['--headless=new', '--no-sandbox', '--disable-breakpad', '--disable-crash-reporter', '--no-first-run', '--no-default-browser-check', '--disable-gpu'];
-  const chrome = spawn('sudo', ['-n', '-u', OTHER, '-H', process.env.CHROME, ...flags, `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  // Playwright's own copy, where the other account can read it.
+  const copy = `/tmp/${OTHER}-playwright`;
+  rmSync(copy, { recursive: true, force: true });
+  execFileSync('cp', ['-r', process.env.PLAYWRIGHT, copy]);
+  execFileSync('chmod', ['-R', 'a+rX', copy]);
+  const launch = `require(${JSON.stringify(copy)}).chromium.launchServer({ executablePath: ${JSON.stringify(process.env.CHROME)}, headless: true }).then((server) => console.log(server.wsEndpoint()))`;
+  const server = spawn('sudo', ['-n', '-u', OTHER, '-H', process.execPath, '-e', launch], { cwd: '/tmp', stdio: ['ignore', 'pipe', 'pipe'] });
   let said = '';
-  chrome.stdout.on('data', (chunk) => { said += chunk; });
-  chrome.stderr.on('data', (chunk) => { said += chunk; });
+  server.stdout.on('data', (chunk) => { said += chunk; });
+  server.stderr.on('data', (chunk) => { said += chunk; });
   try {
-    const version = `http://127.0.0.1:${port}/json/version`;
-    const endpoint = await until('the other account\'s Chrome listens', () => fetch(version).then((r) => r.json()).then((v) => v.webSocketDebuggerUrl, () => null), Boolean);
-    const other = await playwright.chromium.connectOverCDP(endpoint);
-    const page = await other.contexts()[0].newPage();
+    const endpoint = await until('the other account\'s Chrome listens', async () => said.match(/(ws:\/\/\S+)/)?.[1], Boolean);
+    const other = await playwright.chromium.connect(endpoint);
+    const page = await (await other.newContext()).newPage();
     const reads = [];
-    page.on('response', (response) => { if (new URL(response.url()).pathname.startsWith('/v1/projects')) reads.push(response.status()); });
+    page.on('response', (response) => { if (new URL(response.url()).pathname.startsWith('/v1/')) reads.push(response.status()); });
     await page.goto(`${base}/p/${project.code}`);
     await page.getByRole('heading', { name: 'No project open here' }).waitFor({ timeout: STEP_MS });
-    const seenThere = { gate: await page.locator('.gate').count(), text: await page.locator('body').innerText(), project_reads: reads };
+    const seenThere = { gate: await page.locator('main.gate', { hasText: 'No project open here' }).count(), text: await page.locator('body').innerText(), reads };
     await other.close();
     return seenThere;
   } catch (error) {
-    return { gate: 0, text: String(error), project_reads: [], chrome_said: said.slice(-1500), exited: chrome.exitCode };
+    return { gate: 0, text: String(error), reads: [], said: said.slice(-1500) };
   } finally {
     spawnSync('sudo', ['-n', 'pkill', '-u', OTHER]);
   }
