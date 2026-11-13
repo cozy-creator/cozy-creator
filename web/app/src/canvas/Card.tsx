@@ -14,11 +14,12 @@ import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
-import { fieldsOf, shapesOf, shapeWords, snapped } from "./controls"
+import { fieldsOf, shapeNear } from "./controls"
 import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
+import { ratioWords } from "./ratios"
 import { bare, beingMade, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
 import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
@@ -452,18 +453,10 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
   const from = useRef<{ x: number; y: number; w: number; h: number; pixels?: { w: number; h: number }; inverse: number; owner: CanvasStore["inPlace"] } | null>(null)
   const pulled = useRef<{ w: number; h: number; shape?: string } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
-  const label = nearest ?? override ?? (dynamic ? autoWords(view) : defaultShape)
-  // Pulled, it snaps to the nearest ratio its tool makes: its own list, else the usual ones within its bounds; never an arbitrary A:B (Paul, 11-12).
-  const shapeFor = (width: number, height: number) => {
-    const allowed = ratios.length ? ratios : control ? shapesOf(control) : []
-    if (allowed.length) return snapped(width / height, allowed)
-    let w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height))
-    const ratio = Math.min(control?.max ?? Infinity, Math.max(control?.min ?? 0, w / h))
-    if (ratio !== w / h) { w = Math.round(ratio * 1_000_000); h = 1_000_000 }
-    let a = w, b = h
-    while (b) [a, b] = [b, a % b]
-    return `${w / a}:${h / a}`
-  }
+  const said = nearest ?? override
+  const label = said ? ratioWords(said) : dynamic ? autoWords(view) : ratioWords(defaultShape)
+  // Pulled, it snaps to the nearest ratio its tool makes: its own list, else a standard one near it, within its bounds (Paul, 11-12, 11-13).
+  const shapeFor = (width: number, height: number) => (control ? shapeNear(control, width / height) : ratioWords(width / height))
   const moved = (event: PointerEvent) => {
     const start = from.current
     if (!start) return
@@ -524,7 +517,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
       </span>}
       {nearest && !badge && (
         <div className="ratio-live">
-          <span>{nearest}</span>
+          <span>{ratioWords(nearest)}</span>
         </div>
       )}
       <div
@@ -557,7 +550,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
 }
 
 /** Auto, as what it makes: `Auto · 9:16 from first frame` (se-128). */
-const autoWords = (view: ElementView) => (view.auto ? `Auto · ${shapeWords(view.auto)}${view.autoFrom ? ` from ${view.autoFrom}` : ""}` : "Auto")
+const autoWords = (view: ElementView) => (view.auto ? `Auto · ${ratioWords(view.auto)}${view.autoFrom ? ` from ${view.autoFrom}` : ""}` : "Auto")
 
 /** What a shape field makes with none set, past Auto: its default, else its first ratio, else 1:1. */
 function shapeFallback(field: ToolField): string {
@@ -573,10 +566,10 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   if (!field || view.shape) return null
   const held = store.valueOf(name, field.field)
   const fallback = shapeFallback(field)
-  if (typeof held !== "string" || !ratioOf(held)) return <span className="ratio-rest">{field.auto ? autoWords(view) : fallback}</span>
+  if (typeof held !== "string" || !ratioOf(held)) return <span className="ratio-rest">{field.auto ? autoWords(view) : ratioWords(fallback)}</span>
   return (
     <span className="ratio-rest">
-      {held}
+      {ratioWords(held)}
       {view.here && (
         <button type="button" className="ratio-clear nodrag" aria-label={field.auto ? "Auto shape" : `Reset aspect ratio to ${fallback}`} title={field.auto ? "Use automatic aspect ratio" : `Reset to ${fallback}`} onClick={() => field.auto ? store.unshape(name, field.field) : void store.setField(name, field.field, fallback)}>
           <Icon name="close" />
@@ -586,18 +579,21 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
-/** The shape it makes as set, else its picture's, else what its tool makes unset (Auto): what a tile says under its picture (cl-932). */
+/** The shape it makes as set, else the one its picture was asked for, else its picture's, else what its tool makes unset (Auto): what a tile
+ *  says under its picture (cl-932), as people say it (Paul, 11-13: H3's 16:9 is 1344×768 and says 16:9). */
 function useShapeSaid(view: ElementView, name: string): string | null {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   if (!view.asset || view.shape) return null
   const field = fieldsOf(view.asset, tools).find((held) => held.type === "shape")
   const held = field ? store.valueOf(name, field.field) : undefined
-  if (typeof held === "string" && ratioOf(held)) return held
+  if (typeof held === "string" && ratioOf(held)) return ratioWords(held)
   const shown = shownOf(view)
-  if (shown?.width && shown.height) return shapeWords(shown.width / shown.height)
+  const asked = view.asset.prefixes?.find((version) => version.number === shown?.number)?.aspect_ratio
+  if (asked && ratioOf(asked)) return ratioWords(asked)
+  if (shown?.width && shown.height) return ratioWords(shown.width / shown.height)
   if (!field) return null
-  return field.auto ? autoWords(view) : shapeFallback(field)
+  return field.auto ? autoWords(view) : ratioWords(shapeFallback(field))
 }
 
 /** Under a box at rest, as Paul drew it (cl-932, 11-12): its tool and its shape; then, while it renders, cl-898's two lines with Cancel and

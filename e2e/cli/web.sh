@@ -147,6 +147,11 @@ step "web-aspect: a corner pulled to 1237:689 lands on 16:9, on the canvas and i
 web_proof aspect "$chrome" "$pw" ''
 # Its renders need this computer's machine: Linux's.
 if [ -n "$LOCAL" ]; then
+  step "web-ratios: a box says its shape as film and media do: a 16:9 take of 1344x768 16:9, a 1.37:1 take of 1024x768 1.37:1, files their pixels' snapped, a corner near 4:3 4:3"
+  web_proof ratios "$chrome" "$pw" ''
+fi
+# Its renders need this computer's machine: Linux's.
+if [ -n "$LOCAL" ]; then
   step "web-frame: H3's Shot in Focus: Summary and Beats as sections in the frame, behind it what each mentions; New a draft; Render and Cmd/Ctrl+Enter render; Render where an image's is"
   web_proof frame "$chrome" "$pw" ''
 fi
