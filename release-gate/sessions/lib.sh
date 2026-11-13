@@ -47,6 +47,14 @@ finish() {
 }
 trap finish EXIT
 trap 'RC=1; exit 1' INT TERM HUP
+# claim: what this runner's Calcifer ordered (machines.sh `own`) joins RIDS and $OUT/rental, for a session whose own work
+# orders too (a page's Rent). Only on a runner, whose Calcifer started with none.
+claim() {
+  local r
+  for r in $(own); do
+    [[ " ${RIDS[*]:-} " == *" $r "* ]] || { RIDS+=("$r"); echo "$r" >> "$OUT/rental"; say "this runner's Calcifer also holds $r"; }
+  done
+}
 # step <name> <cozy args…>: one call followed to its end (looked at each second, its output every 30 s); output that
 # stops growing for 15 min cancels it.
 # A run belongs to this session's working-directory project.
@@ -153,44 +161,40 @@ quote() {
   [ "$RENT" = true ] || { say "pre-flight only: nothing rented"; exit 0; }
 }
 
+# accepted <file>: the rental id `cozy --json machine rent` prints the moment its Hub accepts the order (`rental.accepted`).
+# An order waiting for capacity has it long before its machine has a name (cl-979).
+accepted() { grep -m1 '"type":"rental.accepted"' "$1" 2>/dev/null | jq -r '.rental_id // empty' 2>/dev/null; }
+
 # order [SKU]: one rental ($SKU by default) ordered, its boot followed in the background; `ready` waits for it. rent =
-# order + ready. The first order starts the guard (`guard`).
+# order + ready. Its rental id goes into RIDS and $OUT/rental once its Hub accepts it, so the trap, the guard (the first
+# order starts it) and the workflow's cleanup end it whether or not it was ever placed.
 order() {
-  local o first i=${#RIDS[@]} RP sku=${1:-$SKU} try=1 pause=15
-  local done  # the order's exit, when it ended before naming its machine
+  local i=${#RIDS[@]} RP sku=${1:-$SKU} try=1 pause=15 r
   # A SKU no provider has is often offered again within minutes: the order is placed again, six times over about 6 min.
   while :; do
-    o=$(date +%s%3N) first='' done=''
-    # Nothing long-lived holds a session's rent lock (fd 9): only the order does, while it names its machine.
-    cozy machine rent "$sku" --disk-gb "$DISK" $RENT_ARGS -y > "$OUT/rent$i.out" 2> "$OUT/rent$i.err" 9>&- & RP=$!
-    while [ -z "$first" ]; do
-      first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' "$OUT/rent$i.err" | cut -d: -f1)
-      [ -n "$first" ] || kill -0 "$RP" 2>/dev/null || break
-      sleep 2
-    done
-    [ -n "$first" ] || { wait "$RP"; done=$?; [ "$done" = 0 ] && first=$(awk '$1=="machine"{print $2; exit}' "$OUT/rent$i.out"); }
-    [ -z "$first" ] && [ "$try" -lt 6 ] && grep -q sku_out_of_stock "$OUT/rent$i.err" || break
+    # The rent never holds a session's rent lock (fd 9): the session does, until its Hub accepts the order.
+    cozy --json machine rent "$sku" --disk-gb "$DISK" $RENT_ARGS -y > "$OUT/rent$i.out" 2> "$OUT/rent$i.err" 9>&- & RP=$!
+    until r=$(accepted "$OUT/rent$i.out"); [ -n "$r" ] || ! kill -0 "$RP" 2>/dev/null; do sleep 1; done
+    [ -n "$r" ] || r=$(accepted "$OUT/rent$i.out")
+    [ -z "$r" ] || break
+    wait "$RP"
+    [ "$try" -lt 6 ] && grep -qs sku_out_of_stock "$OUT/rent$i.out" "$OUT/rent$i.err" ||
+      fail "the order was not accepted: $(tail -c 300 "$OUT/rent$i.out") $(tail -3 "$OUT/rent$i.err")"
     say "no provider has $sku now (attempt $try/6): ordering again in ${pause}s"
     sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
   done
-  [ -n "$first" ] || fail "the rent named no machine: $(tail -3 "$OUT/rent$i.err")"
-  cozy machine show "$first" --json > "$OUT/show-boot$i.json" 2>&1
-  RID=$(jq -r '.rental_id // empty' "$OUT/show-boot$i.json")
-  jq -e --arg s "$sku" --argjson o "$o" '.rental.sku==$s and .rental.rented_at_ms>=$o-60000' "$OUT/show-boot$i.json" >/dev/null ||
-    { RID=''; fail "$first is not this order's machine: $(head -c 300 "$OUT/show-boot$i.json")"; }
-  RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP RRC_$i=$done"
-  say "rental $RID ($first)"
+  RID=$r; RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP"
+  say "rental $RID ordered"
   guard
 }
 
 # ready [i]: the i-th order (the last by default) booted: RID and NAME are its, its record in show<i>.json/txt (the
 # first's also in show.json/txt).
 ready() {
-  local i=${1:-$((${#RIDS[@]} - 1))} p c
-  RID=${RIDS[$i]}; p=RP_$i c=RRC_$i
-  local RRC=${!c}
-  [ -n "$RRC" ] || { wait "${!p}"; RRC=$?; }
-  [ "$RRC" = 0 ] || fail "boot failed: $(tail -3 "$OUT/rent$i.err")"
+  local i=${1:-$((${#RIDS[@]} - 1))} p RRC
+  RID=${RIDS[$i]}; p=RP_$i
+  wait "${!p}"; RRC=$?
+  [ "$RRC" = 0 ] || fail "boot failed: $(tail -c 300 "$OUT/rent$i.out") $(tail -3 "$OUT/rent$i.err")"
   [ "$(state "$RID")" = ready ] || fail "$RID is $(state "$RID"), not ready"
   cozy machine show "$RID" --json > "$OUT/show$i.json" 2>&1; cozy machine show "$RID" > "$OUT/show$i.txt" 2>&1
   [ "$i" != 0 ] || { cp "$OUT/show0.json" "$OUT/show.json"; cp "$OUT/show0.txt" "$OUT/show.txt"; }

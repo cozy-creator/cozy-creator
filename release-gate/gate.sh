@@ -348,8 +348,9 @@ PY
 )
   [ -n "$v" ] && expect "acquisition replans" PASS "$v" || log "acquisition replans: this cozy names no acquisition attempt"
 }
-# rented <machine>: its rental id into RID and `rental`, which end_it and the workflow's cleanup end.
-rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
+# accepted: the rental id `--json machine rent` prints once its Hub accepts the order (`rental.accepted`), into RID and
+# `rental`, which end_it and the workflow's cleanup end. An order waiting for capacity has it long before its machine has a name (cl-979).
+accepted() { RID=$(grep -m1 '"type":"rental.accepted"' rent.out 2>/dev/null | jq -r '.rental_id // empty' 2>/dev/null); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
   # Suite tensorfs's `kill` case kills the rental's TensorD over SSH, suite tensord measures the pod's link over it, suite
   # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
@@ -362,37 +363,35 @@ if [ -z "$ON" ]; then
      { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* ]]; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
-  # Followed in the background: the order's first booting line names it, so a gate cancelled mid-boot still ends it.
+  # Followed in the background: its rental id is recorded once its Hub accepts the order, so a gate cancelled before its
+  # machine has a name still ends it.
   RENT_BEGAN=$SECONDS
   for ((order = 1; order <= REORDERS; order++)); do
     : > rent.err
-    "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${SSH:+--ssh} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
-    until first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' rent.err | cut -d: -f1); [ -n "$first" ] || ! kill -0 "$RP" 2>/dev/null; do
-      sleep 2
-    done
-    for _ in 1 2 3; do [ -z "$first" ] || [ -n "$RID" ] || rented "$first"; [ -n "$RID" ] || sleep 5; done
+    "$CLI" --json machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${SSH:+--ssh} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
+    until accepted; [ -n "$RID" ] || ! kill -0 "$RP" 2>/dev/null; do sleep 1; done
+    [ -n "$RID" ] || accepted
     [ -z "$RID" ] || { acquisition "$RID" & AQ=$!; }
     wait "$RP"; rc=$? RP=
     [ -z "$AQ" ] || { kill "$AQ" 2>/dev/null; wait "$AQ" 2>/dev/null; AQ=; }
     # A boot that never starts is released unbilled (th-358: `cpu` with SSH, often): a new order may place elsewhere.
-    if [ "$rc" != 0 ] && grep -q boot_idle rent.err && [ "$order" -lt "$REORDERS" ]; then
+    if [ "$rc" != 0 ] && grep -qs boot_idle rent.out rent.err && [ "$order" -lt "$REORDERS" ]; then
       log "order $order ended boot_idle, nothing billed: ordering again"
-      cat rent.err >> rent-orders.err
-      RID= first=; rm -f acquisition.jsonl rental
+      cat rent.out rent.err >> rent-orders.err
+      RID=; rm -f acquisition.jsonl rental
       continue
     fi
     [ -s acquisition.repriced ] || break
-    log "order $order, $(head -n 1 rent.err), is under the market: $(grep -oE 'waiting for an offer.*' acquisition.repriced)"
+    log "order $order, $(jq -r 'select(.quote?) | .quote | "\(.gpus)× \(.sku) at \(.usd_micros_per_hour) micro-USD/h"' rent.out 2>/dev/null | head -1), is under the market: $(grep -oE 'waiting for an offer.*' acquisition.repriced)"
     cat rent.err >> rent-orders.err
     if [ "$order" = "$REORDERS" ]; then
       echo "$REORDERS orders, each under the market by the time it could place" > acquisition.stuck
       break
     fi
     "$CLI" machine end "$RID" -y >end.log 2>&1 && ! listed "$RID" "$CLI" || { log "rent failed: $RID won't end: $(tail -c 300 end.log)"; exit 1; }
-    RID= first=; rm -f acquisition.repriced acquisition.jsonl rental
+    RID=; rm -f acquisition.repriced acquisition.jsonl rental
   done
   acquired
-  [ -n "$RID" ] || { first=$(awk '$1=="machine"{print $2; exit}' rent.out); [ -z "$first" ] || rented "$first"; }
   [ "$rc" != 0 ] || [ -z "$RID" ] || M=$("$CLI" --json machine show "$RID" 2>/dev/null | jq -r '.name // empty')
 fi
 [ -n "$M" ] || { log "rent failed: $(cat acquisition.stuck 2>/dev/null) $(tail -c 300 rent.err) $(tail -c 300 rent.out)"; exit 1; }

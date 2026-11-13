@@ -289,10 +289,10 @@ hub_pod_secrets() {
 # hub_pod <provider|any>: the real-pod cells on one fresh `cpu` rental with a throwaway SSH key: rented (`--provider`, a
 # dev-only option, unless `any`, the Hub's choice), a local weightless package run there by content, pod-env and pod-auth (hub_pod_secrets), ended and checked gone.
 # Synthetic package publication and model uploads run separately against the isolated fixture Hub.
-# Only a machine the rent reply names is ended (hub_cleanup ends any left); returns 2 when this cozy refuses the
-# provider option, having failed the cell.
+# Only the order the rent reply accepted is ended, by its rental id (hub_cleanup ends any left); returns 2 when this cozy
+# refuses the provider option, having failed the cell.
 hub_pod() {
-  local p=$1 m before prov=()
+  local p=$1 m r before prov=()
   [ "$p" = any ] || prov=(--provider "$p")
   before=$(hub_machines)
   [ -s "$HB/pod-ssh.pub" ] || ssh-keygen -q -t ed25519 -N '' -C ci-hub-pod -f "$HB/pod-ssh"
@@ -308,6 +308,9 @@ hub_pod() {
     log "hub rent on $p: no $sku there; trying the next"
   done
   echo "$sku" > "$HB/rent-$p.sku"
+  # Once its Hub accepted the order it is ours to end, whatever the reply says next: named or not, placed or not (cl-979).
+  r=$(grep -m1 '"type":"rental.accepted"' "$HB/rent-$p.out" | jq -r '.rental_id // empty' 2>/dev/null)
+  [ -z "$r" ] || HUB_RENTED="$HUB_RENTED $r"
   if grep -qE "unexpected argument '--provider'|dev_only" "$HB/rent-$p.out"; then
     expect "hub rent on $p" FAIL "this cozy refuses --provider with dev = true (it needs cl-844's switch): $(tail -c 200 "$HB/rent-$p.out"); $(command -v "$CLI") $("$CLI" --version 2>&1) read $HOME/.cozy/config.toml, which begins: $(head -c 120 "$HOME/.cozy/config.toml" 2>&1 | tr '\n' '|')"
     return 2
@@ -323,8 +326,7 @@ while (i := t.find("{", i)) >= 0:
   fi
   # Only the machine the reply names is ours: another session may rent at the same moment, and its pod is never ended here.
   [ -n "$m" ] || { expect "hub rent on $p" FAIL "the reply named no machine (see cozy machine ls; new since: $(comm -13 <(echo "$before") <(hub_machines) | paste -sd' ')): $(tail -c 300 "$HB/rent-$p.out")"; return; }
-  HUB_RENTED="$HUB_RENTED $m"
-  echo "$p $m $(date -u +%FT%TZ)" >>"$HB/rented.txt"
+  echo "$p $m $r $(date -u +%FT%TZ)" >>"$HB/rented.txt"
   if grep -q '"machine"' "$HB/rent-$p.out"; then
     expect "hub rent on $p" PASS "rented $m: $("$CLI" --json machine show "$m" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("rental") or {}; print(r.get("sku"), r.get("provider") or d.get("provider"), r.get("datacenter") or d.get("datacenter"))' 2>/dev/null)"
   else
@@ -335,7 +337,7 @@ while (i := t.find("{", i)) >= 0:
   hub_pod_secrets "$p" "$m"
   "$CLI" machine end "$m" -y >"$HB/end-$p.out" 2>&1
   for _ in $(seq 30); do
-    hub_machines | grep -qxF "$m" || { expect "hub end on $p" PASS "$m ended and gone"; HUB_RENTED=${HUB_RENTED/ $m/}; return; }
+    hub_machines | grep -qxF "$m" || { expect "hub end on $p" PASS "$m ended and gone"; HUB_RENTED=${HUB_RENTED/ $r/}; return; }
     sleep 10
   done
   expect "hub end on $p" FAIL "$m still listed 5 min after cozy machine end: $(tail -c 200 "$HB/end-$p.out")"
