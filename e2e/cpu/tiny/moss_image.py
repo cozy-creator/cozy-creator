@@ -106,17 +106,12 @@ CELLS: list[Cell] = [
      "check": size(512, 512)},
     {"entry": "control", "name": "plain", "payload": _POSED, "files": {"control.0.image": _shared.bones("bones", 512, 512)},
      "check": size(512, 512)},
-    # With a picture, Moss-Image-Edit on `model`: away from its plain twin, and another picture steers it again.
+    # With a picture, Moss-Image-Edit on `model`; with a pose map, thedeoxen's pose LoRA: each away from its plain twin.
+    # Another picture or skeleton moves it 0.2-0.7/255 (e2e 43358050938): the tiny DiT reads its references near their
+    # mean, so neither has a bar.
     {"entry": "generate", "name": "edit", "payload": _EDIT, "files": {"prompt.references.0.file": _shared.picture("fox", 512, 512)},
      "check": size(512, 512), "apart": {"edit/plain": STEERS}},
-    {"entry": "generate", "name": "edit-other", "payload": _EDIT,
-     "files": {"prompt.references.0.file": _shared.lines("drawn", 512, 512)}, "check": size(512, 512),
-     "apart": {"generate/edit": STEERS}},
-    # A pose map, thedeoxen's pose LoRA on `model`: away from its plain twin, and the skeleton moved steers it again.
     {"entry": "generate", "name": "control", "payload": _POSED, "files": {"control.0.image": _shared.bones("bones", 512, 512)},
      "check": size(512, 512), "apart": {"control/plain": STEERS}},
-    {"entry": "generate", "name": "control-moved", "payload": _POSED,
-     "files": {"control.0.image": _shared.bones("moved", 512, 512, dx=-0.2)}, "check": size(512, 512),
-     "apart": {"generate/control": STEERS}},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

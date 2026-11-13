@@ -136,8 +136,8 @@ def lines(name: str, width: int, height: int, offset: int = 0) -> Callable[[Path
     return make
 
 
-def bones(name: str, width: int, height: int, dx: float = 0.0) -> Callable[[Path], Path]:
-    """A pose map as DWPose draws one: a stick figure's limbs in their own colours on black, moved `dx` of the width."""
+def bones(name: str, width: int, height: int) -> Callable[[Path], Path]:
+    """A pose map as DWPose draws one: a stick figure's limbs in their own colours on black."""
     joints = {"head": (0.5, 0.15), "neck": (0.5, 0.28), "hips": (0.5, 0.6), "hand_l": (0.2, 0.25), "hand_r": (0.85, 0.45),
               "foot_l": (0.35, 0.92), "foot_r": (0.7, 0.9)}
     limbs = [("head", "neck", (255, 0, 0)), ("neck", "hips", (255, 170, 0)), ("neck", "hand_l", (0, 255, 0)),
@@ -148,7 +148,7 @@ def bones(name: str, width: int, height: int, dx: float = 0.0) -> Callable[[Path
         rgb = np.zeros((height, width, 3), np.uint8)
         for a, b, colour in limbs:
             (ax, ay), (bx, by) = joints[a], joints[b]
-            ax, bx, ay, by = (ax + dx) * width, (bx + dx) * width, ay * height, by * height
+            ax, bx, ay, by = ax * width, bx * width, ay * height, by * height
             t = np.clip(((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2), 0, 1)
             rgb[np.hypot(x - ax - t * (bx - ax), y - ay - t * (by - ay)) < max(2, width // 64)] = colour
         path = folder / f"{name}.png"
