@@ -443,9 +443,8 @@ impl Client {
         release: &str,
         publication_id: &str,
         python_version: &str,
-        yanked: bool,
     ) -> Result<PackageFinalization, Error> {
-        let body = json!({"publication_id": publication_id, "python_version": python_version, "yanked": yanked});
+        let body = json!({"publication_id": publication_id, "python_version": python_version});
         let request = self.at(
             Method::POST,
             "/v1/packages/{org}/{name}/publish/{release}/finalize",

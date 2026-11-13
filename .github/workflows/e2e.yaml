@@ -72,10 +72,6 @@ on:
         description: The Runtime to take instead of building it, an exact release version (a prerelease's too, such as 0.32.0)
         type: string
         default: ''
-      pins:
-        description: Package releases the imports and cli-release suites take instead of the latest unyanked (name@release,...)
-        type: string
-        default: ''
       published:
         description: The imports suite loads the published releases instead of the packages checkout (a release's question)
         type: boolean
@@ -129,9 +125,6 @@ on:
         type: string
         default: ''
       runtime:
-        type: string
-        default: ''
-      pins:
         type: string
         default: ''
       published:
@@ -721,7 +714,6 @@ jobs:
           path: ${{ runner.temp }}/fixture-hub
       - name: cli suite
         env:
-          PINS: ${{ inputs.pins }}
           GH_TOKEN: ${{ github.token }}
           MODEL: ${{ contains(fromJSON(needs.affected.outputs.selection).suites, 'model') && '--model' || '' }}
         # Against its own isolated Hub, which e2e/isolated.sh seeds with what the shard reads from one. BiRefNet: a pin,
@@ -737,7 +729,7 @@ jobs:
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
             ${{ (matrix.shard == 'local-code' || matrix.shard == 'web-palette') && '--software 0.45.0,0.24.1' || '' }} \
             --command .creator/e2e/isolated.sh -- cli \
-            --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+            --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       # cozy's logs (Calcifer's too) however the suite ended: one the job's timeout ends never reaches its `logs` part (cl-837).
       - if: always()
         run: mkdir -p "$RUNNER_TEMP/e2e/cozy-logs" && cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | tar -xf - -C "$RUNNER_TEMP/e2e/cozy-logs" || true
@@ -867,13 +859,12 @@ jobs:
           path: ${{ runner.temp }}/fixture-hub
       - name: cli suite
         env:
-          PINS: ${{ inputs.pins }}
           GH_TOKEN: ${{ github.token }}
         run: |
           [ "$RUNNER_OS" = Windows ] || chmod +x "$RUNNER_TEMP/fixture-hub/tensorhub" "$RUNNER_TEMP/fixture-hub/minio"
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
             --command .creator/e2e/isolated.sh -- cli \
-            --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+            --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $CANDIDATES $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       - if: always()
         uses: ./.creator/e2e/publish
         with:
@@ -993,10 +984,9 @@ jobs:
           path: ${{ runner.temp }}/fixture-hub
       - name: imports suite
         env:
-          PINS: ${{ inputs.pins }}
           PUBLISHED: ${{ inputs.published && '1' || '' }}
         # Against its own isolated Hub (e2e/isolated.sh): the packages are the change's checkout or packages master. The
-        # published releases (--published, --pins) are production's, which CI does not read: isolated.sh refuses them.
+        # published releases (--published) are production's, which CI does not read: isolated.sh refuses them.
         run: |
           chmod +x "$RUNNER_TEMP/fixture-hub/tensorhub" "$RUNNER_TEMP/fixture-hub/minio"
           sudo loginctl enable-linger "$(id -un)"
@@ -1005,7 +995,7 @@ jobs:
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
             --command .creator/e2e/isolated.sh -- imports \
-            --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }}/${{ strategy.job-total }} $CANDIDATES ${PINS:+--pins "$PINS"} ${PUBLISHED:+--published} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+            --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }}/${{ strategy.job-total }} $CANDIDATES ${PUBLISHED:+--published} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       - if: always()
         uses: ./.creator/e2e/publish
         with:

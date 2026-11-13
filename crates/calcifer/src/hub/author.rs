@@ -438,7 +438,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     let grants = client.begin_package_release(org, name, release, &declared).await.map_err(hub_error)?;
     let declaration = Declaration { hub, client: &client, org, name, release, files: &declared };
     result.uploaded_bytes = upload(&files, &grants.files, &declaration, say).await?;
-    let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full, ask.yanked).await)
+    let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full).await)
         .map_err(hub_error)?;
     // Finalization re-hashes every file on the Hub; its state ends the wait.
     while state.state != "committed" && state.state != "failed" {
@@ -457,14 +457,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
         }
         return Err(error);
     }
-    // A Hub from before finalize took `yanked` ignores it, and the release is its newest until this.
-    if ask.yanked && !state.yanked {
-        client.yank_package_release(org, name, release).await.map_err(|e| {
-            refuse("package_not_yanked", format!("{org}/{name}@{release} is published but not yanked: {}", hub_error(e)))
-                .remedy(format!("cozy package yank {org}/{name}@{release}"))
-        })?;
-    }
-    result.status = if ask.yanked { "published yanked" } else { "published" }.into();
+    result.status = "published".into();
     result.changed = true;
     result.warnings = state.warnings;
     api.releases.forget(hub, &result.package);

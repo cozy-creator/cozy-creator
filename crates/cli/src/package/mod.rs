@@ -62,9 +62,6 @@ enum Command {
         /// Use the first-party root namespace (Hub admins only).
         #[arg(long)]
         root: bool,
-        /// Publish as yanked. Only exact version pins can install it.
-        #[arg(long)]
-        yanked: bool,
     },
     /// Permanently delete your package and all its releases from the Hub.
     Delete {
@@ -102,7 +99,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             packages,
             placement,
         } => machine::uninstall(ctx, &names(&packages)?, placement.on()?).await,
-        Command::Publish { root, yanked } => author::publish(ctx, root, yanked).await,
+        Command::Publish { root } => author::publish(ctx, root).await,
         Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
         Command::Yank { release, undo } => {
             author::yank(ctx, &PackageRef::parse(&release)?, undo).await

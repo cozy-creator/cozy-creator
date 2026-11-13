@@ -25,7 +25,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     --shard) shard=${args[i + 1]} ;;
     --packages) packages=$(cd "${args[i + 1]}" && pwd) ;;
     --only) only=${args[i + 1]} ;;
-    --published | --pins) published=${args[i]} ;;
+    --published) published=${args[i]} ;;
   esac
 done
 mkdir -p "$seed"
@@ -177,7 +177,7 @@ case $suite:$shard in
   cli:) needs='packages birefnet downloads loras vaes fits parts prompts' ;;
   cli:*) needs='packages' ;;
   imports:*)
-    # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).
+    # Production's published releases are what --published asks about, and CI reads no production (xs-169).
     [ -z "$published" ] || { echo "imports $published asks about production's releases: CI runs only on an isolated Hub; the checkout's packages run without it" >&2; exit 2; }
     needs='' ;;
   cpu:*) needs='' ;;
