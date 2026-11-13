@@ -41,7 +41,7 @@ step "machine set (cl-873): a project pinned to local and stand-a, its runs only
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] \
   || { echo "machine set: its stand-in machines are other users of a fresh GitHub runner"; return; }
 local P=$OUT/machine-set echo=minimax-h3-tools/echo before a b pids
-cozy --json machine show local > "$OUT/set-local.json" || { check "machine set: machine show local"; return; }
+cozy --json machine show local > "$OUT/set-local.json" || { check "machine set: machine show local: $(head -c 300 "$OUT/set-local.json")"; return; }
 stand_in stand-a & a=$!
 stand_in stand-b & b=$!
 wait $a; a=$?
@@ -185,7 +185,7 @@ step "prepares (cl-905): only the picture's box shows its run; the video box tha
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] \
   || { echo "prepares: its stand-in machine is another user of a fresh GitHub runner"; return; }
 local pw=$OUT/playwright chrome
-cozy --json machine show local > "$OUT/set-local.json" || { check "prepares: machine show local"; return; }
+cozy --json machine show local > "$OUT/set-local.json" || { check "prepares: machine show local: $(head -c 300 "$OUT/set-local.json")"; return; }
 stand_in stand-p || return
 chrome=$(web_chrome)
 if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1; then

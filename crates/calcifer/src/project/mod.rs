@@ -2597,6 +2597,18 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str, &s
     Ok((dropped.into_iter().map(|job| job.asset).collect(), canceled))
 }
 
+/// Box `name`'s runs not yet ended, each told to stop at its machine now: what deletes it waits for the project's writer, which a
+/// run's own progress or another program may hold, and a held commit never keeps a render going.
+fn stop_at_machines(api: &Arc<Api>, project: &Project, name: &str) {
+    let (Ok(lock), Ok(store)) = (project.folder.lock(), api.calcifer.project_store(&project.id)) else { return };
+    let key = name_key(name);
+    for pending in lock.pending.values().filter(|pending| pending.run > 0 && name_key(&pending.asset) == key) {
+        if let Ok(Some(row)) = store.run_by_number(pending.run) && row.state != crate::store::State::Settled {
+            api.calcifer.stop_at_machine(&row.id);
+        }
+    }
+}
+
 /// `source` kept as a file of the project, in the lock.
 async fn keep_file(folder: &Folder, source: &str) -> Result<folder::Kept, Refusal> {
     // A file of the project's by the start of its hash, as `status` shows it: what lifting a take out of its asset names.
