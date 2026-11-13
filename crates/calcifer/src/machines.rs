@@ -332,6 +332,9 @@ impl Machines {
                 match link.with_private(scope).status().await {
                     Ok(frame) => {
                         models.extend(frame.models.iter().map(|m| m.model.clone()));
+                        if frame.models.is_empty() && frame.models_bytes > 0 {
+                            warn!("a project's own engine on local holds {} bytes of models but lists none", frame.models_bytes);
+                        }
                         held.insert(id, frame.models);
                     }
                     Err(error) => warn!("what a project's own engine on local holds is unread: {error}"),
@@ -343,6 +346,7 @@ impl Machines {
         models.dedup();
         let unknown: Vec<String> = models.into_iter().filter(|model| !model.starts_with("local/") && !lock(&self.public).contains_key(model)).collect();
         if unknown.is_empty() {
+            self.unmatched(machine);
             return;
         }
         let Ok(client) = self.hubs.client(&self.hubs.default_origin()) else { return };
@@ -359,7 +363,27 @@ impl Machines {
                 Err(::api::hub::Error::Hub { status: 404, .. }) => HashSet::new(),
                 Err(error) => { warn!("which releases of {model} are public is unread: {error}"); continue }
             };
+            if public.is_empty() {
+                warn!("{model} has no public release on the default Hub: machine views don't list it");
+            }
             lock(&self.public).insert(model, public);
+        }
+        self.unmatched(machine);
+    }
+
+    /// Each model `machine` holds (with what open projects' own engines hold there) whose Hub has public releases, none of which
+    /// its checkpoints are: said, as a view leaves it out.
+    fn unmatched(&self, machine: &str) {
+        let mut held: Vec<v1::Model> = self.frame(machine).map(|frame| frame.models).unwrap_or_default();
+        if machine == "local" {
+            held.extend(lock(&self.project_models).values().flatten().cloned());
+        }
+        for model in held {
+            let known = lock(&self.public).get(&model.model).is_some_and(|public| !public.is_empty());
+            if known && !model.checkpoints.iter().any(|checkpoint| self.public_checkpoint(&model.model, checkpoint)) {
+                let said: Vec<String> = model.checkpoints.iter().map(|c| format!("{} {} {}", c.release, c.tree, c.manifest)).collect();
+                warn!("{machine} holds {} as none of its public releases: {}", model.model, said.join("; "));
+            }
         }
     }
 

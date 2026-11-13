@@ -3103,7 +3103,7 @@ enum Reach {
 
 /// A project's one walker: gives each job of its graph its turn as what it needs ends, and follows each run until it lands.
 struct Walk {
-    host: Host,
+    host: Arc<Host>,
     project: Arc<Project>,
     began: Instant,
     /// What it landed, for its last word.
@@ -3217,7 +3217,7 @@ struct Followed {
 impl Walk {
     fn new(api: &Arc<Api>, project: &Arc<Project>) -> Self {
         Self {
-            host: Host::for_project(api, &project.id),
+            host: Arc::new(Host::for_project(api, &project.id)),
             project: project.clone(),
             began: Instant::now(),
             tally: Mutex::default(),
@@ -3735,11 +3735,15 @@ impl Walk {
             }
         };
         if fresh {
-            let (api, project, cell, on) = (self.host.api(), self.project.clone(), cell.clone(), on.to_vec());
+            // The walk's own host: its installs keyed as the walk's, so a description joins the install its calls ask for.
+            let (host, project, cell, on) = (self.host.clone(), self.project.clone(), cell.clone(), on.to_vec());
             let scope = crate::private_io::of_path(&project.folder.dir).ok().flatten();
             tokio::spawn(crate::private_io::context(scope, async move {
-                let host = Host::for_project(&api, &project.id);
+                let began = Instant::now();
                 let found = host.package(&at.0, &at.1, &project.folder.dir, &on).await;
+                if began.elapsed() > QUOTE_LATE {
+                    warn!("{}: {} took {:.1} s to describe, past a plan's budget", project.folder.dir.display(), at.1, began.elapsed().as_secs_f64());
+                }
                 let failed = found.is_err();
                 let _ = cell.set(found);
                 // Its answer is the next plan's; a failure is asked again then.
