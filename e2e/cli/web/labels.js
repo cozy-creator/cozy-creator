@@ -25,7 +25,7 @@ const FARTHEST = 0.05;
 // As close as the layout keeps a box under another, under what's drawn of it (shown.ts heightFor and underOf): a picture's row under it,
 // its tool and shape line and the rise of the name below; a word box's rise alone; then clear's gap. Side by side, the gap. One more, so
 // nothing lies on anything and the page leaves the rows as written.
-const UNDER = { image: 40 + 94 + 16 + 1, text: 61 + 16 + 1 };
+const UNDER = { image: 40 + 94 + 16 + 1, text: 61 + 16 + 1, old: 22 + 16 + 1 };
 // The page's body step on screen (tokens.css, at its --ui), which a name keeps down to 25% (Paul, 11-13); and a selected ring's least on screen
 // (cl-926), which it keeps down to 15%.
 const BODY = 12.5 * 1.35;
@@ -37,7 +37,13 @@ const COLUMNS = [
   { kind: 'image', names: ['hero_art', 'a_box_whose_name_goes_on_and_on_past_any_width', 'kyogre_art_1', 'x'] },
   { kind: 'text', names: ['notes', 'scene_one_where_the_hero_meets_the_sea', 'mid_name', 'b'] },
   { kind: 'image', names: ['sea', 'background_plate_with_a_long_name', 'c', 'boat_at_dawn'] },
+  // Word boxes as close as rows were laid before 11-13 (22 of rise and the gap): kept where they are, their names no larger than fits.
+  { kind: 'text', room: 'old', names: ['old_one', 'old_two_whose_name_is_long', 'old_three'] },
 ];
+// Each under another in that column: the first has nothing over it, and its name its full size.
+const OLD = COLUMNS.find((column) => column.room === 'old').names.slice(1);
+// What fits a name in that room, on the canvas (shown.ts nameMostIn): a foot's 12 clear of the box above, on a line of 1.25.
+const OLD_MOST = (22 + 16 + 1 - 12 + 20) / 1.25;
 const LONG = ['a_box_whose_name_goes_on_and_on_past_any_width', 'scene_one_where_the_hero_meets_the_sea', 'background_plate_with_a_long_name'];
 const ALL = COLUMNS.flatMap((column) => column.names);
 
@@ -179,7 +185,7 @@ function audit() {
       let y = 0;
       for (const name of column.names) {
         cards[name] = { x: c * BESIDE, y: Math.round(y), w: 240 };
-        y += Math.ceil(tall[name]) + UNDER[column.kind];
+        y += Math.ceil(tall[name]) + UNDER[column.room ?? column.kind];
       }
     }
     seen.heights = tall;
@@ -187,7 +193,7 @@ function audit() {
     const rows = () => Object.fromEntries(rowsOf(made.path, 'SELECT name, x, y FROM canvas').map(([name, x, y]) => [name, { x, y }]));
     await until('laid out close', () => Promise.resolve(rows()), (now) => ALL.every((name) => now[name]?.x === cards[name].x && now[name]?.y === cards[name].y));
     // Each column's long name, its second box's, on screen at 100% under the top bar.
-    const middle = { x: (3 * BESIDE - 16) / 2, y: 400 };
+    const middle = { x: (COLUMNS.length * BESIDE - 16) / 2, y: 400 };
 
     // From 100% by − to the farthest and back by +, then out and in by the wheel: where each box is never changes.
     tab = await open('paper', 1, middle);
@@ -204,7 +210,7 @@ function audit() {
         first[name] ??= at;
         if (Math.abs(first[name][0] - at[0]) > 0.5 || Math.abs(first[name][1] - at[1]) > 0.5) moved.push(`${name} from ${first[name]} to ${at}`);
       }
-      looks.push({ how, zoom: now.zoom, count: now.count, moved, lines: now.lines, on: now.on, cut: now.cut, biggest: Math.max(...Object.values(now.sizes).map((size) => size.canvas)), smallest_on_screen: Math.min(...Object.values(now.sizes).map((size) => size.screen)), rings: now.rings });
+      looks.push({ how, zoom: now.zoom, count: now.count, moved, lines: now.lines, on: now.on, cut: now.cut, biggest: Math.max(...Object.values(now.sizes).map((size) => size.canvas)), smallest_on_screen: Math.min(...Object.entries(now.sizes).filter(([name]) => !OLD.includes(name)).map(([, size]) => size.screen)), old_biggest: Math.max(0, ...Object.entries(now.sizes).filter(([name]) => OLD.includes(name)).map(([, size]) => size.canvas)), rings: now.rings });
       return now;
     };
     const press = async (label) => {
@@ -244,6 +250,8 @@ function audit() {
     // At the body size on screen down to 25%, every name.
     const held = looks.filter((one) => one.zoom >= HELD_TO - 0.001);
     check('names_at_the_body_size_down_to_25', held.length > 5 && held.every((one) => one.smallest_on_screen >= BODY - 0.05), held.map((one) => ({ zoom: one.zoom, smallest: one.smallest_on_screen })));
+    // Under a box laid as close as before, a name no larger than fits there, at every zoom.
+    check('an_old_tight_row_keeps_its_names_to_its_room', looks.some((one) => one.old_biggest > 0) && looks.every((one) => one.old_biggest <= OLD_MOST + 0.2), looks.map((one) => ({ zoom: one.zoom, old_biggest: one.old_biggest })));
 
     // Every box selected, the same way out and back: each ring outside its picture with nothing over the picture, at least 3px on screen
     // down to 15%, and still no name on anything, nor on its own ring; no box moves.

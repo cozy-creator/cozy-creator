@@ -1,4 +1,5 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
+import type { CSSProperties } from "react"
 import { flushSync } from "react-dom"
 import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, lost, type OutboxPort } from "../api/outbox"
@@ -35,7 +36,7 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo, mainText } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, onPicture, paints, ratioOf, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, nameMostIn, NARROWEST, onPicture, paints, ratioOf, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -365,6 +366,9 @@ export class CanvasStore {
   private dragging = new Set<string>()
   /** Where what's being dragged started, for a drop that isn't a move. */
   private dragFrom = new Map<string, { x: number; y: number }>()
+  /** A box's name at most, on the canvas, where the box above it is closer than the room the layout keeps now (`--name-most`, cl-885). */
+  private nameMost = new Map<string, number>()
+  private roomQueued = false
   /** On its way out, until a read begun after when its delete was answered: one from before doesn't bring it back, and one from after says, as
    * another writer may have put it back. */
   private deleting = new Map<string, number>()
@@ -819,6 +823,51 @@ export class CanvasStore {
     const drawn = bodyBox(view, pose)
     const origin: [number, number] = [(pose.x - drawn.x) / drawn.w, (pose.y - drawn.y) / drawn.h]
     this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: pose.w }, position: { x: pose.x, y: pose.y }, width: drawn.w, height: undefined, origin, measured: { width: drawn.w, height: drawn.h } }))
+    this.roomSoon()
+  }
+
+  /** Each name's room above its box measured again once this turn's changes are in: where a box is or how large changed it. */
+  private roomSoon() {
+    if (this.roomQueued) return
+    this.roomQueued = true
+    queueMicrotask(() => {
+      this.roomQueued = false
+      this.roomForNames()
+    })
+  }
+
+  /** Each box whose name has less room above it than the layout keeps now, the box above wholly over it and across it: its name no larger
+   *  than fits there. A zoom changes none of it; a move or a new size does. */
+  private roomForNames() {
+    const flow = this.flow
+    if (!flow) return
+    const boxes: { name: string; box: Box }[] = []
+    for (const name of this.ids.keys()) {
+      const view = this.views.get(name)
+      const pose = this.poseOf(name)
+      if (view && pose) boxes.push({ name, box: bodyBox(view, pose) })
+    }
+    const next = new Map<string, number>()
+    for (const { name, box } of boxes) {
+      let room = Infinity
+      for (const other of boxes) {
+        const bottom = other.box.y + other.box.h
+        if (other.name === name || bottom > box.y || other.box.x >= box.x + box.w || other.box.x + other.box.w <= box.x) continue
+        room = Math.min(room, box.y - bottom)
+      }
+      const most = nameMostIn(room)
+      if (Number.isFinite(room) && most < nameMostIn(Infinity)) next.set(name, Math.floor(most * 10) / 10)
+    }
+    const changed = new Map<string, string>()
+    for (const [name, id] of this.ids) if (this.nameMost.get(name) !== next.get(name)) changed.set(id, name)
+    this.nameMost = next
+    if (!changed.size) return
+    flow.setNodes((nodes) => nodes.map((node) => {
+      const name = changed.get(node.id)
+      if (!name) return node
+      const most = next.get(name)
+      return { ...node, style: most === undefined ? undefined : ({ ...node.style, "--name-most": `${most}px` } as CSSProperties) }
+    }))
   }
 
   // From Calcifer
@@ -1146,6 +1195,7 @@ export class CanvasStore {
     })
     this.flow?.addNodes(nodes)
     this.followAll()
+    this.roomSoon()
     // What watches a name hears it's here: one placed after its read (no row yet, `findHomes`) came after `names` last moved.
     for (const { element } of items) this.notify(element.name)
     this.names.set(this.names.get() + 1)
@@ -1166,6 +1216,7 @@ export class CanvasStore {
       id,
       type: view.entity ? "entity" : "element",
       position: { x: row.x, y: row.y },
+      ...(this.nameMost.has(name) ? { style: { "--name-most": `${this.nameMost.get(name)}px` } as CSSProperties } : {}),
       data: { name, width },
       width: drawn.w,
       origin: [(row.x - drawn.x) / drawn.w, (row.y - drawn.y) / drawn.h],
@@ -2095,6 +2146,8 @@ export class CanvasStore {
     if (this.moreOpen.delete(name)) this.onMore?.([...this.moreOpen])
     this.notify(name)
     if (id) this.flow?.setNodes((nodes) => nodes.filter((node) => node.id !== id))
+    this.nameMost.delete(name)
+    this.roomSoon()
   }
 
   /** The same node and view under a new name. `ours`: Calcifer doesn't know yet. */

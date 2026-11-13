@@ -81,6 +81,10 @@ export function underOf(view: ElementView): number {
 
 /** A far name at most: what fits that room, the body size at 25% (68px on the canvas). */
 const NAME_MOST = (NAME_ROOM + (HEAD - NAME_FOOT) - NAME_FOOT) / NAME_LINE
+/** A box's name at most where the box above it is `room` over it, closer than the room the layout keeps now (rows laid before 11-13): what
+ *  fits there, the foot's 12 clear of it, and never under the title step. Nothing moves to make room (cl-885). */
+export const nameMostIn = (room: number) => Math.max(15.5 * 1.35, Math.min(NAME_MOST, (room - NAME_FOOT + (HEAD - NAME_FOOT)) / NAME_LINE))
+
 /**
  * Far out a selected box's ring is outside its picture, as wide on screen as close in (cl-926), and its name rises clear of it, 2 over it.
  * At most as wide as leaves a far name 2 clear of the box above (`--ring-most`): 20px on the canvas, 5px on screen at 25% and 3px at 15%.

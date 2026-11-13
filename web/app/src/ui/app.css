@@ -2312,10 +2312,11 @@ video.preview.on {
   height: 18px;
 }
 /* A box's name and its dot: at the title step on the canvas, and as the canvas zooms out at the body step on screen, held there by
-   --name-zoom up to what fits the room above a box (shown.ts nameZoomOf), then smaller with the canvas. One line, cut with an ellipsis
+   --name-zoom up to what fits the room above a box (shown.ts nameZoomOf), then smaller with the canvas; where the box above is closer than
+   that (rows laid before 11-13), no larger than fits there (--name-most, CanvasStore's roomForNames). One line, cut with an ellipsis
    where its box ends, its whole name on hover (Paul, 11-13: "rather than just truncating"). */
 .react-flow__node .card:not(.here) > .head :is(.nm, .state-dot) {
-  font-size: max(calc(var(--t-title) * var(--ui)), calc(var(--t-body) * var(--ui) * var(--name-zoom, 1)));
+  font-size: min(var(--name-most, 1000px), max(calc(var(--t-title) * var(--ui)), calc(var(--t-body) * var(--ui) * var(--name-zoom, 1))));
 }
 /* Far out a box is its picture and its name (web-ui.md §2): its version and trash can, too small there to read or hit, go (cl-958). */
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
