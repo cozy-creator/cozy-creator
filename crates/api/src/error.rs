@@ -52,6 +52,10 @@ pub struct Error {
     /// The originating component's own details of its refusal, verbatim (a Hub's `metadata`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// A peer's status where the kind's would misname it: its 429 (asked too soon) is `Unavailable` but answers 429.
+    /// Never in the body.
+    #[serde(skip)]
+    pub status: Option<u16>,
 }
 
 /// Calcifer's refusal while it stops (a restart): the ask was not carried out, or goes on under its key, so it is sent
@@ -77,6 +81,7 @@ impl Error {
             cause: None,
             retry_after_s: None,
             metadata: None,
+            status: None,
         }
     }
 
@@ -111,6 +116,11 @@ impl Error {
     /// A refusal from a bug, never a user condition.
     pub fn internal(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(Kind::Internal, code, message)
+    }
+
+    /// The HTTP status it answers with: a peer's 429 as it was, else its kind's.
+    pub fn http_status(&self) -> u16 {
+        self.status.unwrap_or_else(|| self.kind.http_status())
     }
 
     /// The wait after this refusal: the stated one, else `otherwise`.

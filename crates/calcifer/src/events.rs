@@ -135,6 +135,7 @@ pub(crate) fn tell(api: Arc<Api>) {
             let stirred = std::mem::take(&mut *PROJECTS.stirred.lock().expect("stirred lock"));
             // With no one listening there is no one to tell: whoever comes next reads it whole.
             if PROJECTS.said.receiver_count() > 0 {
+                let _took = crate::took::Took::new("look_projects");
                 looking.projects.look(&stirred);
             }
         }
@@ -144,6 +145,7 @@ pub(crate) fn tell(api: Arc<Api>) {
         loop {
             PROJECTS.wake.notified().await;
             let began = Instant::now();
+            let took = crate::took::Took::new("tell_projects");
             let owed = std::mem::take(&mut *PROJECTS.owed.lock().expect("owed lock"));
             for (id, (dir, settled)) in owed {
                 if PROJECTS.said.receiver_count() == 0 {
@@ -165,6 +167,7 @@ pub(crate) fn tell(api: Arc<Api>) {
                 }
                 let _ = PROJECTS.said.send(event);
             }
+            drop(took);
             // As long again before the next: however big a project, telling of it doesn't keep a core busy.
             tokio::time::sleep(began.elapsed()).await;
         }
@@ -207,6 +210,11 @@ pub(crate) fn project_vault(id: &str, state: &str) {
 /// Tells every stream project `id`'s render, whole: more than one job of it changed.
 pub(crate) fn board_updated(id: &str, board: &api::calcifer::project::Board) {
     let _ = PROJECTS.said.send(StreamEvent::BoardUpdated { project: id.to_owned(), board: Box::new(board.clone()) });
+}
+
+/// Tells every stream showing project `id` that a thumbnail of its file `sha256` was made, or can't be.
+pub(crate) fn thumb(id: &str, sha256: &str) {
+    let _ = PROJECTS.said.send(StreamEvent::Thumb { project: id.to_owned(), sha256: sha256.to_owned() });
 }
 
 /// Tells every stream one job of project `id` changed.
@@ -352,7 +360,7 @@ pub(crate) async fn show(
                 reply.held.push(id.clone());
             }
             Err(crate::api::Refusal(error)) => {
-                reply.refused.insert(id.clone(), ProjectShowRefusal { status: error.kind.http_status(), error });
+                reply.refused.insert(id.clone(), ProjectShowRefusal { status: error.http_status(), error });
             }
         }
     }
@@ -436,7 +444,7 @@ impl Watch {
         let project_id = match event {
             StreamEvent::ProjectVault { .. } => return true,
             StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
-            StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
+            StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } | StreamEvent::Thumb { project, .. } => Some(project),
             StreamEvent::RunUpdated { run } => {
                 return self.api.calcifer.run_store(run.id.as_str()).and_then(|store| store.run(run.id.as_str())).ok().flatten().is_some_and(|row| project::vault::require_path(&row.out_dir).is_ok());
             }
@@ -527,6 +535,7 @@ impl Watch {
 
     /// Owes each machine that differs from the list as last told, and each that left it.
     async fn list_machines(&mut self) {
+        let _took = crate::took::Took::new("events_machines");
         // What a machine does for the projects this page shows, unlocked, is theirs to see: never another's.
         let projects: Vec<String> = self.showing.as_ref().map(Showing::projects).unwrap_or_default().into_iter()
             .filter(|id| self.api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| project::vault::require_path(&known.path).is_ok()))

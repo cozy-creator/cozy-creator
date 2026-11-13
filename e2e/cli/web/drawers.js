@@ -7,7 +7,7 @@
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync, spawn } = require('child_process');
 const { join } = require('path');
-const { projectFromPage, projectUrl, cozyIn, signIn, STEP_MS, noStall, until } = require('./page');
+const { projectFolder, projectFromPage, projectUrl, cozyIn, signIn, STEP_MS, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -125,7 +125,7 @@ async function runs(page, base, id, folder) {
 
   // A project of its own, by name, from the Projects drawer.
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-drawers-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-drawers-${Date.now()}`));
   await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

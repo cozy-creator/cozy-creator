@@ -52,6 +52,7 @@ mod state;
 mod store;
 mod tool_ui;
 mod toolbox;
+mod took;
 mod update;
 
 use std::{
@@ -343,9 +344,7 @@ impl Calcifer {
             batch: String::new(),
             job: Some(job),
         };
-        let (row, fresh) = journal.submit(key, digest, new)?;
-        let owner = match &journal { store::RunStore::Project(store) => Some(store.owner()), store::RunStore::Maintenance(_) => None };
-        lock(&self.run_owners).insert(row.id.to_string(), owner);
+        let (row, fresh) = self.submit_routed(&journal, key, digest, new)?;
         if fresh {
             self.publish(&row.id, self.with_run_store(row.id.as_str(), |store| store.events_after(row.id.as_str(), 0))?);
             self.start_here(row.id.clone(), work);
@@ -464,7 +463,8 @@ impl Calcifer {
         drop(routes);
         // Driver/export admission is idempotent, and a verified legacy receipt
         // can make an already-open owner's old rows ready on a later read.
-        for id in store.unsettled()? { self.drive(id); }
+        // Only what is routed: a run being recorded is driven by its submitter, one not yet owned once a later attach routes it.
+        for id in store.unsettled()? { if lock(&self.run_owners).contains_key(id.as_str()) { self.drive(id); } }
         for (id, _) in store.exports_owed()? { self.export(&id); }
         Ok(fresh)
     }
@@ -514,6 +514,26 @@ impl Calcifer {
             && store.outputs_to_export(id.as_str()).is_ok_and(|owed| owed.is_empty());
         drop(store);
         if ended { lock(&self.run_owners).remove(id.as_str()); }
+    }
+
+    /// Records `new` in `journal`, routed to its owner before it is recorded: whatever reads the journal (an attach driving what
+    /// is unsettled) never finds a recorded run without its owner, and the route holds its project open until it settles. A
+    /// replay answers the run recorded before, routed as it.
+    fn submit_routed(&self, journal: &store::RunStore<'_>, key: &str, digest: &str, new: NewRun) -> store::Result<(RunRow, bool)> {
+        let owner = match journal { store::RunStore::Project(store) => Some(store.owner()), store::RunStore::Maintenance(_) => None };
+        let minted = new.id.to_string();
+        lock(&self.run_owners).insert(minted.clone(), owner.clone());
+        let submitted = journal.submit(key, digest, new);
+        let mut routes = lock(&self.run_owners);
+        match &submitted {
+            Ok((row, _)) => {
+                if row.id.as_str() != minted { routes.remove(&minted); }
+                routes.insert(row.id.to_string(), owner);
+            }
+            Err(_) => { routes.remove(&minted); }
+        }
+        drop(routes);
+        submitted
     }
 
     /// Run `id`'s driver ended.
@@ -858,10 +878,7 @@ impl Calcifer {
                 Some(project) => store::RunStore::Project(me.project_store(project)?),
                 None => store::RunStore::Maintenance(me.maintenance_store()),
             };
-            let (row, fresh) = journal.submit(&key, &digest, NewRun { inputs, ..new })?;
-            let owner = match &journal { store::RunStore::Project(store) => Some(store.owner()), store::RunStore::Maintenance(_) => None };
-            lock(&me.run_owners).insert(row.id.to_string(), owner);
-            Ok::<_, Error>((row, fresh))
+            Ok::<_, Error>(me.submit_routed(&journal, &key, &digest, NewRun { inputs, ..new })?)
         })
         .await
         .map_err(|e| Error::Invalid(e.to_string()))??;
@@ -1161,13 +1178,13 @@ impl Calcifer {
             for prior in known { if let Some(item)=items.iter().find(|item|same_warm(prior,item)) {prior.holds.clone_from(&item.holds);prior.held_back.clear();} }
         }
     }
-    pub(crate) fn maintenance_rows(&self,machine:&str)->Vec<RunRow> {
-        self.maintenance_store().runs(&store::RunFilter {machine:Some(machine.into()),limit:u64::MAX,..Default::default()}).map(|(rows,..)|rows).unwrap_or_default()
-    }
+    /// The items of `items` Calcifer's own runs set on `machine`. `held_back` stays: TensorD's fixed reason why an item holds
+    /// less, which names nothing of a project.
     pub(crate) fn maintenance_warm(&self,machine:&str,items:Vec<v1::WarmItem>)->Vec<v1::WarmItem> {
-        let rows=self.maintenance_rows(machine);
-        // `held_back` stays: TensorD's fixed reason why an item holds less, which names nothing of a project.
-        items.into_iter().filter(|item|rows.iter().flat_map(|row|row.spec.set.iter().flat_map(|set|&set.items)).any(|known|same_warm(known,item))).collect()
+        match self.maintenance_store().holdings(machine) {
+            Ok(ours) => ours.warm(items),
+            Err(e) => { warn!("reading what this controller's runs put on a machine: {e}"); vec![] }
+        }
     }
 
     /// The machine's downloads, as its Status lists them (none: it went quiet). A run with bytes still to come, none of

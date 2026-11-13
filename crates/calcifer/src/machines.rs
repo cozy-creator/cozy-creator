@@ -59,6 +59,7 @@ use crate::{
     link::{self, Link, LinkError},
     rentals::{Hubs, Shape, Word},
     store::{AskKind, Endpoint, MachineRow, RunRow, Store},
+    took::Took,
 };
 
 pub(crate) struct Machines {
@@ -188,7 +189,19 @@ impl Machines {
             me.spawn(me.clone().follow_rcs());
         }
         let lister = me.clone();
-        me.spawn(async move { lister.list_hubs().await });
+        me.spawn(async move {
+            let _took = Took::new("list_hubs");
+            lister.list_hubs().await
+        });
+        // What Calcifer's runs put on each machine, folded now: no first picture waits for it.
+        let calcifer = me.calcifer.clone();
+        me.spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                let _took = Took::new("fold_holdings");
+                calcifer.maintenance_store().holdings("")
+            })
+            .await;
+        });
         me
     }
 
@@ -199,7 +212,11 @@ impl Machines {
         let mut last = crate::store::now_ms();
         loop {
             let mut events = self.calcifer.subscribe();
-            if !self.calcifer.notice_stalled() {
+            let noticed = {
+                let _took = Took::new("notice_stalled");
+                self.calcifer.notice_stalled()
+            };
+            if !noticed {
                 loop {
                     match events.recv().await {
                         Ok((_, Event::Created { .. })) | Err(RecvError::Lagged(_)) => break,
@@ -743,60 +760,23 @@ impl Machines {
             machine.offline = Some(reason);
         }
         let (mut held, mut activity) = (vec![], vec![]);
-        if let Some(seen) = lock(&self.seen).get(&row.name) {
+        // Copied under the lock and worked out after it: a picture never holds up what a machine's Status says.
+        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), unreachable: seen.unreachable.clone(), ..*seen });
+        if let Some(seen) = seen {
             if seen.stopped {
                 machine.state = MachineState::Stopped;
             }
-            machine.status = seen.frame.as_ref().map(|frame| {
-                let mut visible=frame.clone();
-                let rows=self.calcifer.maintenance_rows(&row.name);
-                let mut manifests=HashSet::new();
-                let mut installations=HashSet::new();
-                for run in &rows {
-                    for choice in run.spec.models.iter().chain(run.spec.set.iter().flat_map(|set|set.items.iter().flat_map(|item|&item.models))) {
-                        if !choice.model.is_empty() && !choice.manifest.is_empty() {manifests.insert((choice.model.clone(),choice.manifest.clone()));}
-                    }
-                    if run.status==Some(wire::Status::Completed) {
-                        if let Some(result)=run.outcome.as_ref().and_then(|outcome|outcome.result.as_ref()).and_then(|result|serde_json::from_str::<serde_json::Value>(result.get()).ok()) {
-                            if let Some(id)=result.get("installation").and_then(serde_json::Value::as_str) {installations.insert(id.to_owned());}
-                            for model in result.get("models").and_then(serde_json::Value::as_array).into_iter().flatten() {
-                                if let (Some(name),Some(commit))=(model.get("repository").and_then(serde_json::Value::as_str),model.get("checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
-                                // What the run made: an install's local alias, or an upload's commit, held by its destination.
-                                if let (Some(name),Some(commit))=(model.pointer("/published/destination").and_then(serde_json::Value::as_str),model.pointer("/published/checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
-                            }
-                        }
-                    }
-                }
-                for model in &mut visible.models {
-                    let total=model.checkpoints.len();
-                    model.checkpoints.retain(|checkpoint|manifests.contains(&(model.model.clone(),checkpoint.manifest.clone())));
-                    if total!=model.checkpoints.len() {model.total_bytes=0;model.unique_bytes=0;}
-                }
-                visible.models.retain(|model|!model.checkpoints.is_empty());
-                visible.models_bytes=visible.models.iter().map(|model|model.total_bytes).sum();
-                visible.environments.retain(|environment|installations.contains(&environment.installation));
-                for environment in &mut visible.environments {environment.warning.clear();}
-                visible.warm=self.calcifer.maintenance_warm(&row.name,visible.warm);
-                visible.kernels.clear();
-                for process in &mut visible.stuck {process.command.clear();}
-                visible.toolchain.detail.clear();
-                let mut status = status(&visible, &self.hubs);
-                // An update says what it waits for by this controller's run numbers.
-                status.update = (frame.update.as_ref())
-                    .map(|u| self.calcifer.machine_waiting_for(&u.waiting_for).unwrap_or_else(|| Some(&u.waiting).filter(|w| !w.is_empty()).unwrap_or(&u.state).clone()))
-                    .unwrap_or_default();
-                status
-            });
+            machine.status = seen.frame.as_ref().map(|frame| self.visible(&row.name, frame));
             held = seen.frame.as_ref().map(|f| f.runs.clone()).unwrap_or_default();
             activity = seen.frame.as_ref().map(|f| f.activity.clone()).unwrap_or_default();
             if row.kind == MachineKind::Local {
                 let followed = lock(&self.project_activity);
                 activity.extend(projects.iter().filter_map(|project| followed.get(project)).flatten().cloned());
             }
-            machine.unreachable.clone_from(&seen.unreachable);
+            machine.unreachable = seen.unreachable;
             machine.unreachable_since_ms = seen.since;
-            machine.boot.clone_from(&seen.boot);
-            machine.attempt.clone_from(&seen.attempt);
+            machine.boot = seen.boot;
+            machine.attempt = seen.attempt;
         }
         if let Some(status) = &mut machine.status {
             status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
@@ -821,6 +801,40 @@ impl Machines {
         self.hubs.describe(&mut machine, asked.as_ref());
         machine.ssh = self.ssh(&machine);
         Ok(machine)
+    }
+
+    /// `frame` as this controller's own views show it: of what the machine holds, only what Calcifer's own runs put there.
+    fn visible(&self, name: &str, frame: &v1::StatusFrame) -> MachineStatus {
+        let mut visible = frame.clone();
+        let ours = self.store().holdings(name).unwrap_or_else(|e| {
+            warn!("reading what this controller's runs put on a machine: {e}");
+            Default::default()
+        });
+        for model in &mut visible.models {
+            let total = model.checkpoints.len();
+            model.checkpoints.retain(|checkpoint| ours.manifests.contains(&(model.model.clone(), checkpoint.manifest.clone())));
+            if total != model.checkpoints.len() {
+                (model.total_bytes, model.unique_bytes) = (0, 0);
+            }
+        }
+        visible.models.retain(|model| !model.checkpoints.is_empty());
+        visible.models_bytes = visible.models.iter().map(|model| model.total_bytes).sum();
+        visible.environments.retain(|environment| ours.installations.contains(&environment.installation));
+        for environment in &mut visible.environments {
+            environment.warning.clear();
+        }
+        visible.warm = ours.warm(std::mem::take(&mut visible.warm));
+        visible.kernels.clear();
+        for process in &mut visible.stuck {
+            process.command.clear();
+        }
+        visible.toolchain.detail.clear();
+        let mut status = status(&visible, &self.hubs);
+        // An update says what it waits for by this controller's run numbers.
+        status.update = (frame.update.as_ref())
+            .map(|u| self.calcifer.machine_waiting_for(&u.waiting_for).unwrap_or_else(|| Some(&u.waiting).filter(|w| !w.is_empty()).unwrap_or(&u.state).clone()))
+            .unwrap_or_default();
+        status
     }
 
     /// The `ssh` that logs in to a rental rented with a key: its known-hosts file is its own, under this computer's home.
@@ -1238,7 +1252,10 @@ impl Machines {
     async fn place_runs(self: Arc<Self>) {
         let mut events = self.calcifer.subscribe();
         loop {
-            self.place_unplaced();
+            {
+                let _took = Took::new("place_runs");
+                self.place_unplaced();
+            }
             loop {
                 let event = tokio::select! {
                     event = events.recv() => event,

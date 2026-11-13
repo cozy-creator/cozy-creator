@@ -116,7 +116,7 @@ pub(crate) fn package_at(path: &Path) -> Option<String> {
     Some(format!("{ROOT}/{}", application(&path)?))
 }
 
-/// The checkout's commit, as git says it: its branch (`rc/0.26.0`), the commit and whether tracked files changed since.
+/// The checkout's commit, as git says it: its branch (`rc/0.26.0`), the commit and whether any file changed since or is new.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Head {
     pub branch: String,
@@ -130,7 +130,7 @@ fn head(root: &Path) -> Option<Head> {
         .arg("--no-optional-locks")
         .arg("-C")
         .arg(root)
-        .args(["status", "--porcelain=v2", "--branch", "--untracked-files=no"])
+        .args(["status", "--porcelain=v2", "--branch", "--untracked-files=normal"])
         .output()
         .ok()
         .filter(|out| out.status.success())?;
@@ -145,6 +145,39 @@ fn head(root: &Path) -> Option<Head> {
         }
     }
     (!said.commit.is_empty()).then_some(said)
+}
+
+/// How long one read of the checkout's commit stands for the packages a list reads at once.
+const HEAD_FOR: Duration = Duration::from_secs(1);
+static HEAD_READ: Mutex<Option<(Instant, Option<Head>)>> = Mutex::new(None);
+
+/// The checkout's commit now, read at most once a [`HEAD_FOR`].
+fn head_now(root: &Path) -> Option<Head> {
+    let mut read = HEAD_READ.lock().expect("head lock");
+    if let Some((_, head)) = read.as_ref().filter(|(at, _)| at.elapsed() < HEAD_FOR) {
+        return head.clone();
+    }
+    let head = head(root);
+    *read = Some((Instant::now(), head.clone()));
+    head
+}
+
+/// Each package folder's tree admitted as independent source, at the clean commit it was read at.
+static ADMITTED: LazyLock<Mutex<HashMap<PathBuf, (Head, LocalCode)>>> = LazyLock::new(Mutex::default);
+
+/// The tree admitted for `dir` when the checkout is still at that clean commit: nothing to read or hash again.
+pub(crate) fn unchanged(dir: &Path) -> Option<LocalCode> {
+    let head = head_now(root()?).filter(|head| !head.dirty)?;
+    let admitted = ADMITTED.lock().expect("admitted lock");
+    let (at, code) = admitted.get(dir)?;
+    (*at == head).then(|| code.clone())
+}
+
+/// Keeps `code` as `dir`'s admitted tree at the commit it was staged at, when that was clean.
+pub(crate) fn admitted(dir: &Path, code: &LocalCode) {
+    if let Some(head) = of(code).and_then(|from| from.head).filter(|head| !head.dirty) {
+        ADMITTED.lock().expect("admitted lock").insert(dir.to_owned(), (head, code.clone()));
+    }
 }
 
 /// Where code staged from the checkout came from: its package, the commit, and the checkout's packages it calls, by distribution.

@@ -4,9 +4,11 @@ use std::{sync::{Arc, mpsc}, time::Duration};
 fn store() -> Arc<Store> {
     Arc::new(Store {
         legacy_home: PathBuf::new(),
+        settled: Mutex::default(),
         writer: Mutex::new(Connection::open_in_memory().unwrap()),
         reader: Mutex::new(Connection::open_in_memory().unwrap()),
         durable: Durable::sqlite(),
+        holdings: Mutex::default(),
     })
 }
 

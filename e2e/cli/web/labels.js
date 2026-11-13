@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectFromPage, projectJson, projectUrl, rowsOf, settled, signIn, STEP_MS, until } = require('./page');
+const { projectFolder, addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectFromPage, projectJson, projectUrl, rowsOf, settled, signIn, STEP_MS, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -110,7 +110,7 @@ function audit() {
   const scratch = mkdtempSync(join(tmpdir(), 'web-labels-'));
   // A project as a person makes one, on the page.
   await paper.goto(`${base}/projects`);
-  await paper.fill('input[aria-label="New project\'s name"]', `web-labels-${Date.now()}`);
+  await paper.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-labels-${Date.now()}`));
   await paper.getByLabel('Create without encryption', { exact: true }).check();
   await paper.click('form button[type=submit]');
   await paper.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

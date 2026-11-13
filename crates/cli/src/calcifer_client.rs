@@ -382,9 +382,10 @@ impl Client {
             return Err(Error::new(Kind::Unavailable, "project_upload_unsupported", "Calcifer does not support protected project uploads; update it before sending private files"));
         }
         let ranges = || answer.headers().get(HELD).and_then(|v| v.to_str().ok()).and_then(parse_held).unwrap_or_default();
+        // 200: held whole; 204: none of it, or the ranges `Cozy-Held` says.
         match answer.status() {
-            status if status.is_success() => Ok(None),
-            StatusCode::NOT_FOUND => Ok(Some(ranges())),
+            StatusCode::OK => Ok(None),
+            StatusCode::NO_CONTENT => Ok(Some(ranges())),
             _ => Err(envelope(answer).await),
         }
     }

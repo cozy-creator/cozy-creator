@@ -313,9 +313,10 @@ export class Client {
   /** `true` when held whole, else the ranges held, `[first, last]` inclusive. */
   async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void, projectId?: string): Promise<true | [number, number][]> {
     const response = projectId === undefined
-      ? await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
-      : await this.send(`/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
-    if (response.ok) return true
+      ? await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { onAttempt })
+      : await this.send(`/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "HEAD", signal }, { onAttempt })
+    // 200: held whole. 204: none of it, or the ranges `Cozy-Held` says.
+    if (response.status === 200) return true
     // A pod's `Cozy-*` headers are hostile too: read as numbers, and a nonsense range is no range.
     const ranges: [number, number][] = []
     for (const part of (response.headers.get("Cozy-Held") ?? "").split(",")) {
@@ -639,9 +640,11 @@ export class Client {
     return this.write("PATCH", `${project(id)}/canvas`, { cards, ...(Object.keys(placed).length ? { placed } : {}) }, undefined, write)
   }
 
-  /** A poster, a strip of `strip` frames, a waveform (a sound's, or with `wave` a video's), or a picture, `w` wide. */
-  thumb(id: string, sha256: string, w: number, strip?: number, wave?: boolean): string {
-    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?w=${w}${strip ? `&strip=${strip}` : ""}${wave ? "&wave=true" : ""}`
+  /** A picture or a poster as the canvas and every list draw it, kept in the project as its file landed (cl-982); with `w`, a strip of
+   *  `strip` frames or a waveform (a sound's, or with `wave` a video's) that wide. */
+  thumb(id: string, sha256: string, w?: number, strip?: number, wave?: boolean): string {
+    const asked = [w ? `w=${w}` : "", strip ? `strip=${strip}` : "", wave ? "wave=true" : ""].filter(Boolean).join("&")
+    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?${asked}`
   }
 
   /** A video's preview: a few seconds of it, small and silent. */

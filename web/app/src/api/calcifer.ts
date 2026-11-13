@@ -455,7 +455,11 @@ heap_bytes: number,
 /**
  * Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
  */
-encrypted_project_creation: boolean, };
+encrypted_project_creation: boolean,
+/**
+ * This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
+ */
+home: string, };
 
 /**
  * One settled call of a run (the run's own function or a child call).
@@ -578,9 +582,13 @@ sha256?: string | null, };
 /**
  * A code on its way: `POST /v1/account/codes/{id}` with what arrived finishes it, once.
  */
-export type Code = { id: string, email: string,
+export type Code = {
 /**
- * Asked again too soon: `id` is the code already out, and the Hub sends another after this.
+ * None when asked too soon with no code out: nothing was sent, and `retry_after_s` says when the Hub will.
+ */
+id?: string | null, email: string,
+/**
+ * Asked again too soon: the Hub sends another after this; a client counts it down rather than ask into a refusal.
  */
 retry_after_s?: number | null, };
 
@@ -1846,11 +1854,11 @@ export type NoteLevel = "info" | "warning";
 export type On = string;
 
 /**
- * `POST /v1/projects`: a new project called `name`, in Calcifer's home folder (`~/<name>`, the next free name when that is
- * taken) or at `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in
- * its `project.db`: the folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.
+ * `POST /v1/projects`: a new project at `path` (absolute, on Calcifer's computer), named for its folder, with the starter film
+ * when `starter`. `cozy new` and the page's New both make one so (cl-980). A project is its id, kept in its `project.db`: the
+ * folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.
  */
-export type Open = { name?: string | null, path?: string | null, starter?: boolean,
+export type Open = { path: string, starter?: boolean,
 /**
  * Explicitly create ordinary local storage instead of the default encrypted project.
  */
@@ -3070,7 +3078,7 @@ gone?: Array<string>,
 /**
  * What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
  */
-head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "board.updated", project: string, board: Board, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "resync" };
+head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "board.updated", project: string, board: Board, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "thumb", project: string, sha256: string, } | { "type": "resync" };
 
 /**
  * A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network

@@ -6,7 +6,7 @@
 // brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
-const { projectFromPage, calcifer, signIn, STEP_MS, drop, png, noStall, until } = require('./page');
+const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, drop, png, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -48,7 +48,7 @@ async function drag(page, name, dx, dy) {
   const first = await open();
   await first.waitForSelector('.top');
   await first.goto(`${base}/projects`);
-  await first.fill('input[aria-label="New project\'s name"]', `web-reconnect-${Date.now()}`);
+  await first.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-reconnect-${Date.now()}`));
   await first.getByLabel("Create without encryption", { exact: true }).check();
   await first.click('form button[type=submit]');
   await first.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

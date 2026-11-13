@@ -83,8 +83,8 @@ jobs:
         with:
           pattern: '*-${{ github.sha }}'
           path: artifacts
-      # New files first, SHA256SUMS next (a reader sees the last build or this one, whole), stale files last. A kind not
-      # built this time keeps its file and line.
+      # New files first, SHA256SUMS next (a reader sees the last build or this one, whole), files an hour stale last. A kind
+      # not built this time keeps its file and line.
       - name: The RC's prerelease holds this build
         env:
           BUILD: ${{ needs.changed.outputs.build }}
@@ -115,10 +115,14 @@ jobs:
               --title "$BRANCH dev builds" --notes "The newest machine builds of $BRANCH, for dev homes (cl-922). Replaced by each push."
           fi
           gh api -X PATCH "repos/$REPO/git/refs/tags/$tag" -f sha="$SHA" -F force=true >/dev/null
+          # A file goes an hour after the push that replaced it, as cozy-runtime's rc-dev keeps its wheels: a SHA256SUMS a
+          # reader holds (GitHub's CDN serves the old one for minutes; Calcifer keeps a read for a minute) still names files
+          # that are there (e2e 43402947916's runtime_floor fetched a cozy replaced moments before: 404).
+          stale=$(gh release view "$tag" -R "$REPO" --json assets --jq '.assets[] | select(.updatedAt < (now - 3600 | todate)) | .name')
           gh release upload "$tag" -R "$REPO" --clobber "${files[@]}"
           gh release upload "$tag" -R "$REPO" --clobber SHA256SUMS
           listed=" $(awk '{print $2}' SHA256SUMS | tr -d '*' | tr '\n' ' ') SHA256SUMS "
-          for name in $(gh release view "$tag" -R "$REPO" --json assets --jq '.assets[].name'); do
+          for name in $stale; do
             case $listed in *" $name "*) ;; *) gh release delete-asset "$tag" "$name" -R "$REPO" -y ;; esac
           done
           gh release edit "$tag" -R "$REPO" --notes "$BRANCH at $SHA (built: $BUILD), for dev homes (cl-922). Replaced by each push."

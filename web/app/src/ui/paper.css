@@ -12,6 +12,7 @@
   --frame-primary: url("./frames/frame-primary.svg");
 
   .ptabs,
+  .ptabs-add,
   .tools,
   .main-menu nav,
   .history-list,
