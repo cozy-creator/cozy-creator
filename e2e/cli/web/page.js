@@ -1,6 +1,6 @@
 // What the web proofs share: real media made here, a timeout on every wait, and a drop as the browser delivers one.
 const { execFileSync } = require('child_process');
-const { readFileSync, rmSync, writeFileSync, readdirSync, readlinkSync, realpathSync } = require('fs');
+const { existsSync, readFileSync, rmSync, writeFileSync, readdirSync, readlinkSync, realpathSync } = require('fs');
 const { join } = require('path');
 const zlib = require('zlib');
 
@@ -140,8 +140,10 @@ function projectHeld(folder, pid) {
   const db = join(realpathSync(folder), 'project.db');
   if (process.platform === 'linux') {
     const fds = `/proc/${pid}/fd`;
-    let unread;
-    for (const fd of readdirSync(fds)) {
+    let unread, entries;
+    // A Calcifer holding protected projects is no dumpable process, its descriptors its own: an open project.db keeps its WAL.
+    try { entries = readdirSync(fds); } catch (error) { if (error.code === 'EACCES') return existsSync(`${db}-wal`); throw error; }
+    for (const fd of entries) {
       try {
         if (readlinkSync(join(fds, fd)) === db) return true;
       } catch (error) {
