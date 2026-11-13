@@ -362,10 +362,14 @@ impl Machines {
             self.unmatched(machine);
             return;
         }
-        let Ok(client) = self.hubs.client(&self.hubs.default_origin()) else { return };
+        // What the Hub tells anyone: no sign-in.
+        let client = match self.hubs.anonymous(&self.hubs.default_origin()) {
+            Ok(client) => client,
+            Err(error) => { warn!("which models' releases are public is unread: {}", error.message); return }
+        };
         for model in unknown {
             let Ok(id) = api::model_ref::ModelId::parse(&model) else { continue };
-            let public = match client.anonymous().get_model(&id.org, &id.name).await {
+            let public = match client.get_model(&id.org, &id.name).await {
                 Ok(card) => card.releases.iter().filter(|release| release.visibility == api::model_ref::ReleaseVisibility::Public)
                     .flat_map(|release| {
                         let lanes = release.lanes.values().flat_map(|lane| [lane.checkpoint.clone(), format!("sha256:{}", lane.header.sha256)]);

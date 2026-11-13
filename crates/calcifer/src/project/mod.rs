@@ -3972,6 +3972,9 @@ impl Walk {
             let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
             walker.starts.insert(unsent.key.clone(), (chosen.start_at_ms, fits));
             if !unsent.ready {
+                if walker.foreseen.get(&unsent.key) != Some(&Some(chosen.machine.clone())) {
+                    info!("{dir}: {}, waiting, goes to {} at its turn", unsent.key, chosen.machine);
+                }
                 walker.foreseen.insert(unsent.key.clone(), Some(chosen.machine.clone()));
                 continue;
             }
