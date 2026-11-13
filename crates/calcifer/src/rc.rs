@@ -26,6 +26,9 @@ const FRESH: Duration = Duration::from_secs(60);
 /// How often, while one is up, the rentals are looked over besides when one becomes ready: GitHub says nothing when the RC
 /// moves.
 const EVERY: Duration = Duration::from_secs(30);
+/// How long this computer is at rest, no run going or waiting and none ended, before `local` moves to the RC (xs-195): never during
+/// a run, nor between a render's steps.
+const AT_REST: Duration = Duration::from_secs(60);
 
 /// The open RC: the minor after this cozy's release (`0.25.0` → `0.26.0`), or a dev version's own (`0.26.0-dev` → `0.26.0`,
 /// cl-976); RCs are minor bumps.
@@ -66,11 +69,12 @@ impl Sums {
     }
 
     /// Each member of the RC a machine on `platform` running `[runtime, tensorfs, cozy]` doesn't run, with the RC's
-    /// version of it.
-    pub(crate) fn behind(&self, platform: &str, running: [&str; 3]) -> Vec<(&'static str, String)> {
+    /// version of it. `local`'s cozy is the one installed here, never the RC's build of it (xs-195).
+    pub(crate) fn behind(&self, platform: &str, running: [&str; 3], local: bool) -> Vec<(&'static str, String)> {
         ["runtime", "tensorfs", "tensord"]
             .into_iter()
             .zip(running)
+            .filter(|(member, _)| !(local && *member == "tensord"))
             .filter_map(|(member, running)| {
                 let (build, _) = self.build(member, platform)?;
                 (build.version != running).then_some((member, build.version))
@@ -78,10 +82,11 @@ impl Sums {
             .collect()
     }
 
-    /// The RC's builds for `platform`, in words: `Runtime 0.47.0.dev2260 · TensorFS 1a2b3c4d · cozy 5e6f7a8b`.
-    fn said(&self, platform: &str) -> String {
+    /// The RC's builds for `platform`, in words: `Runtime 0.47.0.dev2260 · TensorFS 1a2b3c4d · cozy 5e6f7a8b`; `local`'s, no cozy.
+    fn said(&self, platform: &str, local: bool) -> String {
         [("runtime", "Runtime"), ("tensorfs", "TensorFS"), ("tensord", "cozy")]
             .into_iter()
+            .filter(|(member, _)| !(local && *member == "tensord"))
             .filter_map(|(member, label)| Some(format!("{label} {}", prerelease::shown(&self.build(member, platform)?.0.version))))
             .collect::<Vec<_>>()
             .join(" · ")
@@ -205,10 +210,13 @@ impl Machines {
         }
     }
 
-    /// Whether `name` is a rental of this dev home that follows the RC: one this computer ordered, up.
+    /// Whether `name` follows the RC: a rental of this dev home that this computer ordered, up; or `local`, where a dev home runs
+    /// its first-party packages from a checkout of the RC's source, which the RC's Runtime runs (xs-195).
     fn follows(&self, name: &str) -> Option<crate::store::MachineRow> {
         let row = self.store().machine(name).ok()??;
-        (self.dev && row.kind == MachineKind::Rental && row.state == MachineState::Ready && self.ordered(&row)).then_some(row)
+        let rental = row.kind == MachineKind::Rental && row.state == MachineState::Ready && self.ordered(&row);
+        let local = row.kind == MachineKind::Local && crate::checkout::configured();
+        (self.dev && (rental || local)).then_some(row)
     }
 
     /// Moves `name` to the open RC's builds when it follows the RC, is behind it, isn't held by hand and has no work going (nor,
@@ -218,6 +226,11 @@ impl Machines {
         let row = self.follows(name)?;
         let frame = self.frame(name).filter(|frame| frame.phase == "ready" && frame.update.is_none())?;
         let store = self.store();
+        // `local` moves only at rest, never ahead of a run (xs-195).
+        let local = row.kind == MachineKind::Local;
+        if local && (sending || !store.at_rest(AT_REST.as_millis() as i64).unwrap_or(false)) {
+            return None;
+        }
         let queued = store.machine_load().ok()?.get(name).map_or(0, |(_, queued)| *queued);
         if store.working(name).ok()? > 0 || store.updating(name).ok()? || (!sending && queued > 0) {
             return None;
@@ -230,7 +243,7 @@ impl Machines {
             Some(sums) => sums,
             None => self.rc.now().await.inspect_err(|e| warn!(machine = name, "the open RC's builds: {}", e.message)).ok()?,
         };
-        let behind = sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()]);
+        let behind = sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()], local);
         if behind.is_empty() {
             return None;
         }
@@ -241,7 +254,8 @@ impl Machines {
             Ok((updating, fresh)) => {
                 let run = updating.run?;
                 if fresh {
-                    info!(machine = name, run = run.number, "to the open RC {}: {}", sums.rc, updating.target);
+                    let rest = if local { format!(", at rest for {} s", AT_REST.as_secs()) } else { String::new() };
+                    info!(machine = name, run = run.number, "to the open RC {}{rest}: {}", sums.rc, updating.target);
                 }
                 // One that failed isn't asked again for the same builds: its runs go on what it runs.
                 matches!(run.status, Status::Queued | Status::InProgress).then_some(run)
@@ -253,13 +267,16 @@ impl Machines {
         }
     }
 
-    /// Looks over this dev home's rentals whenever one becomes ready, and each [`EVERY`] while one is: each idle one behind
-    /// the RC moves. With none up, nothing wakes until one is.
+    /// Looks over this dev home's rentals (and `local`, when it follows the RC) whenever one becomes ready, and each [`EVERY`]
+    /// while one is: each idle one behind the RC moves. With none up, nothing wakes until one is.
     pub(crate) async fn follow_rcs(self: Arc<Self>) {
         loop {
             let up = match self.store().machines() {
                 Ok(rows) => {
-                    let ready: Vec<_> = rows.iter().filter(|row| row.kind == MachineKind::Rental && row.state == MachineState::Ready).collect();
+                    let local = |row: &&crate::store::MachineRow| {
+                        row.kind == MachineKind::Local && crate::checkout::configured() && self.frame(&row.name).is_some_and(|frame| frame.phase == "ready")
+                    };
+                    let ready: Vec<_> = rows.iter().filter(|row| (row.kind == MachineKind::Rental && row.state == MachineState::Ready) || local(row)).collect();
                     for row in &ready {
                         self.follow_rc(&row.name, false).await;
                     }
@@ -280,7 +297,7 @@ impl Machines {
     /// How `name` stands to the RC, for `machine show` and the panel: None outside a dev home or for a machine that doesn't
     /// follow it. Read from what the RC's prereleases last named, never fetched here.
     pub(crate) fn rc_follow(&self, name: &str, frame: Option<&v1::StatusFrame>) -> Option<RcFollow> {
-        self.follows(name)?;
+        let local = self.follows(name)?.kind == MachineKind::Local;
         let frame = frame?;
         let follow = |state: &str, detail: String| Some(RcFollow { rc: open(), state: state.into(), detail });
         if let Some(target) = self.held_by_hand(name) {
@@ -289,12 +306,13 @@ impl Machines {
         let Some(sums) = self.rc.last() else {
             return follow("none", "its builds haven't been read yet".into());
         };
-        let said = sums.said(&frame.platform);
+        let said = sums.said(&frame.platform, local);
         if said.is_empty() {
             return follow("none", format!("rc-{} holds no build for {}", sums.rc, frame.platform));
         }
-        match sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()]).is_empty() {
+        match sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()], local).is_empty() {
             true => follow("current", said),
+            false if local => follow("behind", format!("moves to {said} once this computer has been at rest for {} s", AT_REST.as_secs())),
             false => follow("behind", format!("moves to {said} once it has no work")),
         }
     }

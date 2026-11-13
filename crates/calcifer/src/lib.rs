@@ -13,6 +13,7 @@ mod access;
 mod ahead;
 mod api;
 mod authorized;
+mod checkout;
 mod coming;
 mod eta;
 mod events;

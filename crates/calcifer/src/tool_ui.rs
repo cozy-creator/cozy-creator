@@ -115,7 +115,11 @@ pub(crate) async fn find(State(api): State<Arc<Api>>, UrlPath(id): UrlPath<Strin
         Some((_, path)) => local(&api, &id, &path, function, access).await,
         None => {
             drop(access);
-            released(&api, &id, package, function).await
+            // A dev home's checkout's first-party package draws its box from its source (xs-195).
+            match crate::checkout::named(package) {
+                Some((dir, _)) => local(&api, &id, &dir, function, None).await,
+                None => released(&api, &id, package, function).await,
+            }
         }
     };
     let component = component.map_err(Refusal)?;

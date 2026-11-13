@@ -162,7 +162,8 @@ impl Machines {
         let mut ask = MachineUpdate { runtime: Some(Component::Version(upgrade.to.clone())), ..Default::default() };
         if prerelease::dev(&upgrade.to) {
             let sums = self.rc.now().await?;
-            for (member, version) in sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()]) {
+            let local = self.named(name).ok().flatten().is_some_and(|row| row.kind == MachineKind::Local);
+            for (member, version) in sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()], local) {
                 match member {
                     "tensorfs" => ask.tensorfs = Some(Component::Version(version)),
                     "tensord" => ask.tensord = Some(Component::Version(version)),

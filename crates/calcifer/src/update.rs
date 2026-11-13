@@ -172,10 +172,12 @@ impl Machines {
                 return Err(Error::new(Kind::Unavailable, "machine_unanswered", format!("{} has not reported the software it runs", m.name))
                     .next(format!("cozy machine show {}", m.name)));
             };
-            if self.dev && m.kind == MachineKind::Rental {
-                // A dev home's rental moves to the open RC's builds for its platform (cl-922).
+            let local = m.kind == MachineKind::Local;
+            if self.dev && (m.kind == MachineKind::Rental || (local && crate::checkout::configured())) {
+                // A dev home's rental moves to the open RC's builds for its platform (cl-922), and its `local` where its first-party
+                // packages run from the RC's source (xs-195): its Runtime and TensorFS, its TensorD the cozy installed here.
                 let sums = self.rc.now().await?;
-                for (member, version) in sums.behind(&status.platform, [status.runtime.as_str(), status.tensorfs.as_str(), status.version.as_str()]) {
+                for (member, version) in sums.behind(&status.platform, [status.runtime.as_str(), status.tensorfs.as_str(), status.version.as_str()], local) {
                     let distribution = match member { "runtime" => "cozy_runtime", "tensorfs" => "tensorfs", _ => "" };
                     asked.push((member, distribution, Component::Version(version)));
                 }

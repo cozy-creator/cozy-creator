@@ -1477,14 +1477,15 @@ fn board_of(project: &Project) -> Option<api::calcifer::project::Board> {
     Some(project.jobs.board()).filter(|board| board.seq > 0)
 }
 
-/// The local code `id`'s assets name, each once: its path as they write it, and where that is.
+/// The local code `id`'s assets name, each once: its path as they write it, and where that is. Not a checkout's first-party
+/// package, which is listed by its name (`toolbox::from_source`).
 pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, PathBuf)>, Refusal> {
     let project = api.projects.get(api, id)?;
     let folder = &project.folder;
     let doc = Doc::load(folder).map_err(Refusal)?;
     let home = &api.machines.user_home;
     let mut named = BTreeMap::new();
-    for with in (0..doc.assets.len()).map(|i| doc.target(i)).filter(|with| !with.is_empty()) {
+    for with in (0..doc.assets.len()).map(|i| doc.target(i)).filter(|with| !with.is_empty() && crate::checkout::named(with).is_none()) {
         if let Some(Ok((path, function))) = crate::local_code::target(&with, Some(&folder.dir), home) {
             let written = match function {
                 Some(function) => with.trim().trim_end_matches(['/', '\\']).strip_suffix(function.as_str()).unwrap_or(&with).trim_end_matches(['/', '\\']).to_owned(),
@@ -1532,7 +1533,9 @@ fn known_packages(api: &Arc<Api>, doc: &Doc, dir: &FsPath) -> HeardOf {
         .filter_map(|with| {
             let package = heard_of(api, &with, dir)?;
             let callable = package.named.as_deref().and_then(|function| package.callable(function));
-            let heard = HeardPackage { name: package.name.clone(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local: is_local(&with) };
+            // A checkout's first-party package is said as its release would be (xs-195).
+            let local = is_local(&with) && crate::checkout::named(&with).is_none();
+            let heard = HeardPackage { name: package.name.clone(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local };
             Some((with, heard))
         })
         .collect()
@@ -1564,7 +1567,7 @@ fn tags_now<'a>(doc: &'a Doc, known: &'a HeardOf, i: usize) -> Option<&'a [Strin
 
 /// Whether `with` names local code.
 fn is_local(with: &str) -> bool {
-    api::target::written_as_path(with) || with.ends_with(".py")
+    api::target::written_as_path(with) || with.ends_with(".py") || crate::checkout::named(with).is_some()
 }
 
 /// What was last heard of the package `with`, this moment: published, or local code from `dir` as described on this computer's machine.
@@ -4638,6 +4641,7 @@ impl Walk {
                     crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await
                 }).await.map_err(named)?;
                 staged.extend(prepared.files);
+                warnings.extend(prepared.from.map(|from| Warning { code: api::calcifer::FROM_SOURCE.into(), message: from.line() }));
                 v1::Source::Local(prepared.source)
             }
         };

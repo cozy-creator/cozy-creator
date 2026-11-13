@@ -34,6 +34,7 @@ parse "$@"
 . "$(dirname "$0")/idle.sh"
 . "$(dirname "$0")/plan.sh"
 . "$(dirname "$0")/render.sh"
+. "$(dirname "$0")/source.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
@@ -588,8 +589,8 @@ case $SHARD in
   projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
   # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a child
-  # result's Latents in another package's caller (cr-276), a host path refused; then a docker rental's end, signed out,
-  # with a revoked key and signed in (cl-875).
+  # result's Latents in another package's caller (cr-276), a host path refused, a dev home's first-party packages from its
+  # packages checkout (xs-195); then a docker rental's end, signed out, with a revoked key and signed in (cl-875).
   local-code) parts="
     uv_at_once
     unseen
@@ -600,6 +601,7 @@ case $SHARD in
     runtime_floor
     child_latents
     path_manifest
+    from_source
     rental_end
     logs
   " ;;

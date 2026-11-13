@@ -44,9 +44,9 @@ pub(crate) enum Resolved {
     },
 }
 
-/// The local code and function a target names: a client's by content (`code`, `text` its function), or a project's (`text` a
-/// path from its folder `cwd`, read into a copy as a client's is); none for a published target. A client's path is refused:
-/// Calcifer reads no client's folder.
+/// The local code and function a target names: a client's by content (`code`, `text` its function), a project's (`text` a
+/// path from its folder `cwd`, read into a copy as a client's is), or a first-party package from the dev home's checkout; none
+/// for a published target. A client's path is refused: Calcifer reads no client's folder.
 fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) -> Option<Result<(LocalCode, Option<String>), Error>> {
     if let Some(code) = code {
         let function = Some(text.trim()).filter(|text| !text.is_empty()).map(str::to_owned);
@@ -59,7 +59,8 @@ fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) ->
             Ok((crate::local_code::own(home, &path)?, function))
         }),
         None if api::target::written_as_path(text) => Some(Err(by_path(text))),
-        None => None,
+        // A first-party package the dev home's checkout holds is its source there (xs-195).
+        None => crate::checkout::named(text).map(|(path, function)| Ok((crate::local_code::own(home, &path)?, function))),
     }
 }
 
@@ -118,7 +119,11 @@ async fn describe_scoped(api: &Arc<Api>, hub: &str, text: &str, code: Option<&Lo
             Some(function) => Some(super::callable(&package, &interface, &function)?.name.clone()),
             None => None,
         };
-        return Ok(answer(package, function, "local".into(), ReleaseFrom::Local, String::new(), document, &interface));
+        let (release, from) = match crate::checkout::of(&code) {
+            Some(from) => (from.said(), ReleaseFrom::Source),
+            None => ("local".into(), ReleaseFrom::Local),
+        };
+        return Ok(answer(package, function, release, from, String::new(), document, &interface));
     }
     let Resolved::Release { package, function, card, from, .. } = published(api, hub, text, Some(on), false).await? else {
         unreachable!("a published target resolves to a release");
@@ -150,13 +155,18 @@ fn answer(
     let public = interface.public();
     let described = |name: &str| interface.callables.iter().find(|c| c.name == name).map_or("", |c| c.description.as_str());
     let functions = public.iter().map(|name| TargetFunction { function: (*name).to_owned(), description: described(name).to_owned() }).collect();
-    let published = release_from != ReleaseFrom::Local;
+    let published = !release_from.local();
     let callable = function.as_deref().and_then(|name| interface.callables.iter().find(|c| c.name == name));
     let contract = callable.map(|callable| {
         let text = api::contract::contract(&format!("{package}/{}", callable.name), interface, callable);
-        let text = match published {
-            true => text.replacen('\n', &format!("\n  release: {release} ({release_from})\n"), 1),
-            false => text,
+        let said = match release_from {
+            ReleaseFrom::Local => None,
+            ReleaseFrom::Source => Some(format!("from source: {release}")),
+            _ => Some(format!("release: {release} ({release_from})")),
+        };
+        let text = match said {
+            Some(said) => text.replacen('\n', &format!("\n  {said}\n"), 1),
+            None => text,
         };
         api::names::shown(&text)
     });
