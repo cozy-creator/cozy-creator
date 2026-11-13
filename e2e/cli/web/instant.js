@@ -124,7 +124,9 @@ async function loseAnswers(page, method, path, times) {
   const name = await page.locator('.card.landing').first().getAttribute('data-asset');
   check('box_named_before_any_answer', Boolean(name) && !hasAsset(name), { name });
   check('a_pending_tool_drop_stays_in_Wander', await page.locator('[data-focused-asset]').count() === 0);
-  check('post_is_held', posts.calls.length <= 1, posts.calls.length);
+  // Its one POST is out and held: asked once, not yet (and not twice).
+  await until('its POST asked', () => Promise.resolve(posts.calls.length), (n) => n >= 1, 5000).catch(() => {});
+  check('post_is_held', posts.calls.length === 1, posts.calls.length);
 
   // Moved and typed in while nothing is saved: each keeps its place in line, and nothing on screen says so.
   const head = await box(name).locator('.head').boundingBox();
@@ -135,7 +137,8 @@ async function loseAnswers(page, method, path, times) {
   const place = () => box(name).evaluate((card) => getComputedStyle(card.closest('.react-flow__node')).transform);
   const moved = await place();
   check('nothing_saved_yet', !hasAsset(name) && !(name in (await cards())));
-  check('no_spinner_on_it', (await box(name).locator('.status').count()) === 0, await box(name).innerText());
+  // Nothing on it says it's waiting: no status line, progress or queued/rendering dot (Card.tsx, StateDot.tsx).
+  check('no_spinner_on_it', (await box(name).locator('.status, .prog, .media-making').count()) + (await box(name).getByRole('img', { name: /^(Queued|Rendering)$/ }).count()) === 0, await box(name).innerText());
   reads.length = 0;
   await posts.release();
   await until('it landed', async () => hasAsset(name) && name in (await cards()), Boolean);

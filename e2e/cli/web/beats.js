@@ -80,7 +80,15 @@ async function died(why) {
     if ((await toggle.count()) && (await toggle.getAttribute('aria-expanded')) !== 'true') {
       await toggle.click();
       await until(`beat ${i + 1} open`, () => toggle.getAttribute('aria-expanded'), (open) => open === 'true');
-      await page.waitForTimeout(400);
+      // Measured once it has opened all the way, not part way through: its height the same two looks running. (Its animation can't be
+      // waited on: headless Chrome's compositor may hold it at its start.)
+      let was = -1;
+      await until(`beat ${i + 1} opened all the way`, async () => {
+        const now = await row.evaluate((one) => one.getBoundingClientRect().height);
+        const still = now === was;
+        was = now;
+        return still;
+      }, Boolean, 10_000).catch(() => {});
     }
     measured.push(await row.evaluate((one) => {
       const words = one.querySelector('.mention-text[data-field$=".description"]') ?? one.querySelector('.mention-text');
@@ -102,8 +110,9 @@ async function died(why) {
   check('each_beat_starts_six_lines_tall', measured.every((one) => one.lines >= 6), measured);
   check('a_long_beat_grows_to_show_it_all', measured[2].fits && measured[2].lines >= measured[0].lines, measured[2]);
   check('the_length_is_a_short_slider_beside_its_value', measured.every((one) => one.slider !== null && one.row !== null && one.slider < one.row * 0.6 && /^10\b/.test(one.value ?? '')), measured);
-  const under = await scene.locator('.beats-edit[data-field="beats"] > .beats-last').innerText();
-  check('no_running_total', (await scene.locator('.beats-edit .total').count()) === 0 && !/\b30\s*s\b/.test(under), under);
+  // Nowhere among the beats a sum of their lengths (3 × 10 s), however it would be written.
+  const all = await scene.locator('.beats-edit[data-field="beats"]').innerText();
+  check('no_running_total', !/\b30\s*(s|sec|secs|seconds)\b|\b0:30\b/i.test(all), all);
   await shot('three-beats');
 
   check('no_page_errors', errors.length === 0, errors);

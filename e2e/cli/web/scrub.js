@@ -165,13 +165,16 @@ const SEAM = 6;
   await put(2);
   seen.at_2 = await until('Redo segment 2', () => redo.innerText().catch(() => ''), (text) => text === 'Redo segment 2').catch(() => redo.innerText().catch(() => ''));
   check('in_the_last_redo_it', seen.at_2 === 'Redo segment 2' && (await marked()) === '2', { redo: seen.at_2, marked: await marked() });
-  // Chosen by its block: the player goes to its start.
+  // Chosen by its block: the player goes to its start (Segments.tsx: a block's click seeks to its first frame). From segment 2, block 1
+  // must move it back; then block 2 to the seam.
+  const playhead = () => video.evaluate((element) => element.currentTime);
   await blocks.nth(0).click();
-  await until('segment 1 chosen', marked, (text) => text === '1').catch(marked);
+  const first = { marked: await until('segment 1 chosen', marked, (text) => text === '1', 10_000).catch(marked), at: await playhead() };
   await blocks.nth(1).click();
   seen.chosen = await until('Redo segment 2', () => redo.innerText().catch(() => ''), (text) => text === 'Redo segment 2').catch(() => redo.innerText().catch(() => ''));
+  const second = { marked: await marked(), at: await playhead() };
   await video.evaluate((element) => element.pause());
-  check('a_block_chooses_its_segment', seen.chosen === 'Redo segment 2' && (await marked()) === '2', { redo: seen.chosen, marked: await marked() });
+  check('a_block_chooses_its_segment', first.marked === '1' && first.at <= 1 / fps && seen.chosen === 'Redo segment 2' && second.marked === '2' && Math.abs(second.at - SEAM / fps) <= 1 / fps, { first, redo: seen.chosen, second, seam_s: SEAM / fps });
   const player = await focus.locator('.focus-image-transform > .media').first().boundingBox();
   const transport = await focus.locator('.focus-under .tl-transport').boundingBox();
   const track = await segments.boundingBox();

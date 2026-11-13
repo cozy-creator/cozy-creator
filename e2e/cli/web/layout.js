@@ -904,11 +904,16 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
         await look(`open-${asset}-more`, true);
         await more.first().click();
       }
-      const warned = here.locator('.head .iconb.warned');
-      if (await warned.count()) {
-        await warned.click();
-        await settled(page);
-        await look(`open-${asset}-warnings`, true);
+      // Its warnings, where the project has any for it (graph.ts warningsOf): in Focus, the heading's Warnings button opens them.
+      const warned = page.locator(`[data-focused-asset="${asset}"]`).getByRole('button', { name: 'Warnings', exact: true });
+      const warns = ((await api(`/v1/projects/${id}`)).warnings ?? []).some((line) => line.name === asset || line.name?.startsWith(`${asset}.`));
+      if (warns) {
+        check(`open_${asset}_offers_its_warnings_${size.name}`, (await warned.count()) === 1, await page.locator(`[data-focused-asset="${asset}"] .focus-heading`).innerText().catch(() => null));
+        if (await warned.count()) {
+          await warned.click();
+          await settled(page);
+          await look(`open-${asset}-warnings`, true);
+        }
       }
       const next = here.locator('.take.add');
       if (await next.count()) {
@@ -921,8 +926,10 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
           await words.click();
           await page.keyboard.press('End');
           await page.keyboard.type(' <');
-          await page.locator('.name-menu').waitFor({ timeout: 3000 }).catch(() => {});
-          await look('names-list', true);
+          // Audited only once it's there: a names list that never opens is a failure, not a look at the box without it.
+          const listed = await page.getByRole('listbox').first().waitFor({ timeout: 5000 }).then(() => true, () => false);
+          check(`names_list_opens_${size.name}`, listed);
+          if (listed) await look('names-list', true);
           await page.keyboard.press('Escape');
           await page.keyboard.press('Backspace');
           await page.keyboard.press('Backspace');
@@ -1039,8 +1046,9 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     const chip = page.locator('.mtabs button, .mtabs a').first();
     if (await chip.count()) {
       await chip.click();
-      await page.waitForTimeout(200);
-      await look('machine-activity', true);
+      const doing = await page.getByRole('dialog', { name: /is doing$/ }).first().waitFor({ timeout: 5000 }).then(() => true, () => false);
+      check(`machine_activity_opens_${size.name}`, doing);
+      if (doing) await look('machine-activity', true);
       await page.keyboard.press('Escape');
       await page.mouse.click(2, size.viewport.height - 2);
     }
@@ -1054,14 +1062,15 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     const at = await named.boundingBox();
     if (at) {
       await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2, { button: 'right' });
-      await page.locator('.asset-menu').waitFor({ timeout: 3000 }).catch(() => {});
-      await look('asset-menu', true);
+      const menu = await page.getByRole('menu').first().waitFor({ timeout: 5000 }).then(() => true, () => false);
+      check(`asset_menu_opens_${size.name}`, menu);
+      if (menu) await look('asset-menu', true);
       await page.keyboard.press('Escape');
     }
     for (const drawer of ['machines', 'runs', 'account', 'projects', 'packages']) {
       await page.goto(await projectUrl(id, `/${drawer}`));
+      // Looked at once it's there; look() waits out what moves (it can't wait on an animation the GPU path holds at its start).
       await page.locator('.drawer').waitFor();
-      await page.waitForTimeout(400);
       await look(`drawer-${drawer}`, true);
     }
     await page.goto(await projectUrl(id));

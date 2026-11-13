@@ -82,7 +82,9 @@ async function died(why) {
     await page.mouse.move(from.x, from.y);
     await page.mouse.down();
     await page.mouse.move(from.x + by, from.y + (height - media.height), { steps: 20 });
-    const live = await page.locator('.ratio-live, [data-output-aspect]').first().innerText().catch(() => null);
+    // What it says while held (Card.tsx: the shape it's nearest, or its badge's label). None said is a failure, not a pass.
+    const said = () => page.locator('.ratio-live, [data-output-aspect]').first().innerText().then((text) => text.trim(), () => null);
+    const live = await until('it says its shape as it is pulled', said, (text) => text === '16:9', 5000).catch(said);
     await page.mouse.up();
     return { media, live };
   };
@@ -93,7 +95,7 @@ async function died(why) {
   const canvasFields = await until('its shape saved', () => fieldsOf('still'), (fields) => typeof fields[shape.field] === 'string').catch(() => fieldsOf('still'));
   seen.canvas = { ...onCanvas, saved: canvasFields[shape.field] };
   check('on_the_canvas_1237_689_lands_on_16_9', snapped(canvasFields), seen.canvas);
-  check('on_the_canvas_it_said_16_9_as_it_was_pulled', onCanvas.live === null || onCanvas.live.trim() === '16:9', onCanvas.live);
+  check('on_the_canvas_it_said_16_9_as_it_was_pulled', onCanvas.live === '16:9', onCanvas.live);
   await shot('canvas');
 
   // In Focus, from 1:1.
@@ -104,11 +106,11 @@ async function died(why) {
   await focus.locator('.corner').first().waitFor();
   const inFocus = await pull(focus, 160);
   const focusFields = await until('its shape saved', () => fieldsOf('still'), (fields) => fields[shape.field] !== '1:1').catch(() => fieldsOf('still'));
-  await page.waitForTimeout(300);
-  const label = await focus.locator('[data-output-aspect]').first().innerText().catch(() => null);
+  const badge = () => focus.locator('[data-output-aspect]').first().innerText().then((text) => text.trim(), () => null);
+  const label = await until('it says 16:9', badge, (text) => (text ?? '').startsWith('16:9'), 5000).catch(badge);
   seen.focus = { ...inFocus, saved: focusFields[shape.field], label };
   check('in_focus_1237_689_lands_on_16_9', snapped(focusFields), seen.focus);
-  check('in_focus_it_says_16_9', label === null || label.trim().startsWith('16:9'), label);
+  check('in_focus_it_says_16_9', (label ?? '').startsWith('16:9'), label);
   await shot('focus');
   await closeBox(page);
 

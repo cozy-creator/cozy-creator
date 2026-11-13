@@ -119,10 +119,7 @@ async function died(why) {
   const written = await until('upsampling off in the file', fieldsOf, (fields) => fields.prompt_upsampling === false);
   check('the_box_keeps_creativity', written.creativity === 'wild', written);
   await shot('dulled');
-  // A hover over it names why, and a press on it changes nothing.
-  await page.locator('.card.here fieldset.when-off:has([aria-label="Creativity"])').hover();
-  await page.locator('.card.here [aria-label="Creativity"] [role=radio]').first().click({ force: true }).catch(() => {});
-  check('a_press_changes_nothing', (await fieldsOf()).creativity === 'wild', await fieldsOf());
+  // Why is its title (`dulled.why`), and a press can't change it: it's disabled (`dulled.disabled`), both checked above.
 
   // Turned on again, it's back as it was; off again, dulled again.
   await switchOf.click();

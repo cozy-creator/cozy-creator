@@ -84,11 +84,14 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   const first = 'Saved, its answer late.';
   await typeOver(first);
   await until('its save asked', () => Promise.resolve(held.asked.length), (n) => n === 1);
+  // The page's read of its words once the stream says its save landed: what this step is about, so it must happen, before the answer.
+  const readBack = page.waitForResponse((answer) => answer.request().method() === 'GET' && new URL(answer.url()).pathname.endsWith('/assets/words'), { timeout: 20_000 }).then(() => true, () => false);
   held.land();
   // Typed on with no pause, so it's still typed when the stream says the save landed and the page reads it back.
   const on = ' Typed on, and on, and on.';
   await page.keyboard.type(on, { delay: 90 });
   check('own_save_landed', inDb() === first, inDb());
+  check('the_page_read_its_words_back_before_the_answer', await readBack);
   check('read_back_keeps_what_is_typed', (await shown()) === first + on, await shown());
   held.answer();
   await held.done();
@@ -145,12 +148,14 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   await typeOver('Mine.');
   await until('its save asked', () => Promise.resolve(held.asked.length), (n) => n >= 1);
   const theirs = 'Theirs.';
+  const theirsRead = page.waitForResponse((answer) => answer.request().method() === 'GET' && new URL(answer.url()).pathname.endsWith('/assets/words'), { timeout: 20_000 }).then(() => true, () => false);
   const wrote = await fetch(`http://${holder().address}/v1/projects/${id}/assets/words`, {
     method: 'PATCH', headers: { Authorization: `Bearer ${holder().token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: `${quick} ${theirs}` } }),
   });
   check('theirs_written', wrote.ok && inDb() === `${quick} ${theirs}`, { status: wrote.status, held: inDb() });
-  // The stream brings theirs back to the page.
-  await page.waitForTimeout(1500);
+  // The stream brings theirs back to the page, which reads it; its own unsent words stand over it.
+  check('the_page_read_theirs', await theirsRead);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   check('unsent_words_stand', (await shown()) === 'Mine.', await shown());
   held.land();
   held.answer();
@@ -159,7 +164,8 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   check('both_writers_words_merged', inDb()?.includes('Mine.') && inDb().includes(theirs), inDb());
   await until('the page shows what was merged', shown, (text) => text === inDb()).catch(() => {});
   check('merged_words_shown', (await shown()) === inDb(), { shown: await shown(), held: inDb() });
-  check('nothing_asked', (await page.locator('.card.here button:has-text("Keep mine"), .card.here button:has-text("Take the file")').count()) === 0);
+  // Nothing asked of the person (cl-904), whatever it would be called.
+  check('nothing_asked', (await page.getByRole('alertdialog').count()) + (await page.locator('.card.here').getByRole('button', { name: /keep mine|keep theirs|take the file/i }).count()) === 0);
 
   // Two pages type in the box at once, each in its own place in the words: both stand, merged by character, on both pages.
   await typeOver('Middle.');

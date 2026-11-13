@@ -113,7 +113,7 @@ async function died(why) {
   // Square, as its tool makes with nothing it mentions in view, a box can land past the edge of the view, where it isn't drawn.
   await until('fixed placed', async () => (await api(`${at}/canvas`)).body?.cards?.fixed, Boolean);
   await page.keyboard.press('f');
-  await page.waitForTimeout(400);
+  await settled(page);
   await box('fixed').waitFor();
   const fixed = await until('its reads', () => asset('fixed'), (row) => row?.reads?.length === 3);
   check('versions_are_reads', fixed.reads.map((read) => `${read.name}.${read.version ?? ''}`).sort().join() === 'Abr.,Abr.1,Abr.2', fixed.reads);
@@ -152,8 +152,6 @@ async function died(why) {
 
   // Deleting a version something reads: it stays read, a render fails clearly, and Undo brings it back.
   await box('Ada').waitFor();
-  await box('Ada').locator('.nm').click({ button: 'right' }).catch(() => {});
-  await page.keyboard.press('Escape');
   const before = (await asset('fixed')).inputs;
   const gone = await api(`${at}/assets/Ada/versions/2`, { method: 'DELETE' });
   check('delete_names_what_reads_it', JSON.stringify(gone.body.read_by) === '["fixed"]', gone.body);
@@ -168,7 +166,8 @@ async function died(why) {
   const shut = async () => {
     await page.keyboard.press('Escape');
     await page.goto(await projectUrl(id));
-    await page.waitForTimeout(300);
+    await page.locator('.react-flow__viewport').waitFor();
+    await settled(page);
   };
   const open = async (name) => {
     await page.goto(await projectUrl(id, `/assets/${name}`));
@@ -178,7 +177,8 @@ async function died(why) {
   const shaOf = (row, number) => row.prefixes?.find((version) => version.number === number)?.main?.sha256 ?? (number === 1 ? row.sha256 : undefined);
   const history = (name) => box(name).locator('.image-history.here-side');
   const previews = (name) => history(name).locator('.take[data-take]');
-  const selected = (name) => history(name).locator('.take.on[data-take]').getAttribute('data-take');
+  // The take shown. None shown is a state its check judges (null), not a minute's wait that ends the cell.
+  const selected = (name) => history(name).locator('.take[aria-pressed="true"][data-take]').first().getAttribute('data-take', { timeout: 5000 }).catch(() => null);
   const noLinearControls = (name) => box(name).getByLabel('Current version', { exact: true }).count().then(async (count) => count + await box(name).getByRole('button', { name: /^(Previous|Next) version$/ }).count());
   const noDescription = (name) => box(name).locator('.desc-field, [aria-label="Description"]').count();
   const geometry = (name) => box(name).evaluate((node) => {
@@ -479,7 +479,8 @@ async function died(why) {
     await api(`${at}/assets/clip`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/keep` }) });
     const clip = await until('video source enters its slot', () => asset('clip'), (row) => row?.fields?.video === '<self.1>');
     check('video_tool_still_reads_the_source', clip.kind === 'video' && clip.versions === 1, clip);
-  } else seen.skipped_render = 'no free tool runs here';
+  } else if (!process.env.ALONE) check('renders_on_this_computer', false, 'local is not usable, so none of the render checks ran');
+  else seen.skipped_render = 'no free tool runs here';
 
   await shut();
   check('no_page_errors', errors.length === 0, errors);

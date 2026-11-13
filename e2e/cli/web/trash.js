@@ -98,9 +98,11 @@ async function died(why) {
   check('the_players_stop_is_a_stop_square', stopIcon === 'stop' && stopTitle === 'Stop', seen.stop);
 
   // The take playing is the one deleted: by its trash can, and Undo brings it back.
-  const playing = Number(await focus.locator('.take.on[data-take]').first().getAttribute('data-take', { timeout: 5_000 }).catch(() => null)) || Math.max(...(await takes()));
-  const second = playing;
+  const playing = Number(await focus.locator('.take[aria-pressed="true"][data-take]').first().getAttribute('data-take', { timeout: 5_000 }).catch(() => null));
   seen.playing_take = { playing, paused: await focus.locator('video').first().evaluate((video) => video.paused).catch(() => null) };
+  // The take the player is on is pressed in its column; with none, the newest stands in only so the rest can still be judged.
+  check('a_take_is_the_one_playing', playing > 0, seen.playing_take);
+  const second = playing || Math.max(...(await takes()));
   const tile = focus.locator(`.take[data-take="${second}"]`).first();
   await tile.hover();
   const discard = focus.locator(`button[aria-label="Discard take ${second}"]`).first();
