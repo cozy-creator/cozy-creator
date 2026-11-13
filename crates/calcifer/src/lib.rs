@@ -490,6 +490,24 @@ impl Calcifer {
         self.with_run_store(id, |store| store.run(id)).ok().flatten()
     }
 
+    /// The runs `machine` holds (accepted there) of every open project, by each one's own journal: they run in the
+    /// project's engine, which the machine's own Status never lists. A locked project's are none.
+    pub(crate) fn project_runs_on(&self, machine: &str) -> Vec<RunRow> {
+        let owners: Vec<_> = lock(&self.project_owners).values().cloned().collect();
+        let mut rows = vec![];
+        for owner in owners {
+            let Ok(store) = owner.store() else { continue };
+            for id in store.unsettled().unwrap_or_default() {
+                if let Ok(Some(row)) = store.run(id.as_str())
+                    && row.state == State::Accepted && row.machine.as_deref() == Some(machine) && row.owner == store.project_id()
+                {
+                    rows.push(row);
+                }
+            }
+        }
+        rows
+    }
+
     fn with_run_store<T>(&self, id: &str, f: impl FnOnce(&store::RunStore<'_>) -> store::Result<T>) -> store::Result<T> {
         let store = self.run_store(id)?;
         f(&store)

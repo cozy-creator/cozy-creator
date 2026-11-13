@@ -775,6 +775,17 @@ impl Machines {
         }
         if let Some(status) = &mut machine.status {
             status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
+            // A project's runs execute in its own engine: listed from its journal, as the machine holds them (cl-811).
+            let listed: HashSet<String> = status.runs.iter().map(|run| crate::store::calcifer_id(&run.id).to_owned()).collect();
+            for project_run in self.calcifer.project_runs_on(&row.name).into_iter().filter(|run| !listed.contains(run.id.as_str())) {
+                let Ok(run) = self.calcifer.record(&project_run) else { continue };
+                status.runs.push(wire::LiveRun {
+                    id: project_run.id.to_string(),
+                    state: run.machine_state.clone().unwrap_or_else(|| "running".into()),
+                    waiting: run.waiting.clone().unwrap_or_default(),
+                    run: Some(run),
+                });
+            }
             status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
         }
         machine.rc = self.rc_follow(&row.name, self.frame(&row.name).as_ref());
@@ -1378,6 +1389,8 @@ pub(crate) struct Fresh {
     fresh: bool,
     /// The Hub whose client reads it.
     hub: Option<String>,
+    /// The project its client is in: what that project's own runs installed on this computer's machine is listed too.
+    project: Option<String>,
 }
 
 /// The machine; `?fresh=true` answers a Status it read now, or refuses.
@@ -1406,8 +1419,22 @@ pub(crate) async fn packages(
     UrlPath(name): UrlPath<String>,
     query: Result<Query<Fresh>, QueryRejection>,
 ) -> Result<Json<wire::MachinePackages>, Refusal> {
-    let (machine, hub) = asked(&api, &name, query).await?;
+    let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    let project = query.project.clone();
+    let (mut machine, hub) = asked(&api, &name, Ok(Query(query))).await?;
     let hub = crate::hub::origin(&api, hub.as_deref())?;
+    // A project's local code installs into its own worker area, which the machine's frame never lists (`project_holds`).
+    if let Some(project) = project.filter(|_| machine.kind == MachineKind::Local) {
+        let scope = {
+            let store = api.projects.store(&api, &project).await.map_err(Refusal)?;
+            let (id, root) = store.execution_scope();
+            crate::private_io::scope_for_project(id, root).map_err(Refusal)?
+        };
+        let held = api.machines.project_holds(scope).await;
+        if let Some(status) = &mut machine.status {
+            status.environments.extend(held.iter().map(|env| environment(env, &api.machines.hubs)));
+        }
+    }
     Ok(Json(machine.packages(&hub.to_string())))
 }
 
@@ -1843,6 +1870,19 @@ pub(crate) fn merge_warm(current: &mut Vec<v1::WarmItem>, spec: &mut v1::RunSpec
     *current = set.items.clone();
 }
 
+/// An installed environment as a machine's Status lists it, its Hub by this controller's name for it.
+fn environment(env: &v1::Environment, hubs: &Hubs) -> wire::Environment {
+    wire::Environment {
+        installation: env.installation.clone(),
+        package: env.package.clone(),
+        release: env.release.clone(),
+        hub: hubs.named(&env.hub),
+        runtime: env.runtime.clone(),
+        level: env.level.clone(),
+        warning: env.warning.clone(),
+    }
+}
+
 fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
     let level = |level: v1::WarmLevel| match level {
         v1::WarmLevel::Off => "",
@@ -1918,19 +1958,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
             })
             .collect(),
         models_bytes: frame.models_bytes,
-        environments: frame
-            .environments
-            .iter()
-            .map(|env| wire::Environment {
-                installation: env.installation.clone(),
-                package: env.package.clone(),
-                release: env.release.clone(),
-                hub: hubs.named(&env.hub),
-                runtime: env.runtime.clone(),
-                level: env.level.clone(),
-                warning: env.warning.clone(),
-            })
-            .collect(),
+        environments: frame.environments.iter().map(|env| environment(env, hubs)).collect(),
         warm: frame
             .warm
             .iter()
