@@ -593,9 +593,16 @@ impl Calcifer {
     pub(crate) fn each_store<T>(&self, mut read: impl FnMut(&store::RunStore<'_>) -> store::Result<T>) -> store::Result<Vec<T>> {
         let mut values = vec![read(&store::RunStore::Maintenance(self.maintenance_store()))?];
         for owner in self.owners() {
+            // A project deleted while this reads has no journal: nothing of it counts, and it fails no one else's.
+            let gone = || !crate::project::vault::logical(owner.root()).exists();
             match owner.store() {
-                Ok(store) => values.push(read(&store::RunStore::Project(store))?),
+                Ok(store) => match read(&store::RunStore::Project(store)) {
+                    Ok(value) => values.push(value),
+                    Err(_) if gone() => {},
+                    Err(error) => return Err(error),
+                },
                 Err(StoreError::Locked(_)) => {},
+                Err(_) if gone() => {},
                 Err(error) => return Err(error),
             }
         }

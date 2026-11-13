@@ -394,8 +394,10 @@ pub(super) fn private_browser_pipe(command: &mut Command) -> io::Result<(File, F
         let mut fds = [-1; 2];
         // SAFETY: pipe fills the two slots; each successful descriptor gets exactly one File owner.
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 { return Err(io::Error::last_os_error()); }
+        // SAFETY: pipe2 succeeded, so both slots are fresh descriptors owned by nothing else.
         let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
         for file in [&read, &write] {
+            // SAFETY: fcntl only sets a flag on a descriptor this File owns and keeps open.
             if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 { return Err(io::Error::last_os_error()); }
         }
         Ok((read, write))
@@ -404,6 +406,7 @@ pub(super) fn private_browser_pipe(command: &mut Command) -> io::Result<(File, F
         // SAFETY: fcntl duplicates this owned descriptor; the returned descriptor gets one owner.
         let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 5) };
         if fd == -1 { return Err(io::Error::last_os_error()); }
+        // SAFETY: F_DUPFD_CLOEXEC succeeded, so `fd` is a new descriptor with no other owner.
         Ok(unsafe { File::from_raw_fd(fd) })
     }
     let (child_read, parent_write) = pipe()?;

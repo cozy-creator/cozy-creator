@@ -36,24 +36,6 @@ const cozyHere = (args, options) => new Promise((done, fail) => {
 });
 const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
 
-/** The folder at `root` held by Calcifer as a tree (`api::tree`): each file PUT by its sha256, then the document. Its digest. */
-async function sentTree(base, token, root) {
-  const walk = (dir) => readdirSync(join(root, dir), { withFileTypes: true }).flatMap((entry) =>
-    entry.isDirectory() ? (entry.name === '__pycache__' ? [] : walk(join(dir, entry.name))) : [join(dir, entry.name)]);
-  const put = async (bytes) => {
-    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-    const answer = await fetch(`${base}/v1/files/${digest}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/octet-stream' }, body: bytes });
-    if (!answer.ok) throw new Error(`PUT ${digest}: ${answer.status} ${await answer.text()}`);
-    return digest;
-  };
-  const entries = [];
-  for (const path of walk('').sort()) {
-    const bytes = readFileSync(join(root, path));
-    entries.push({ blob: { length: bytes.length, sha256: (await put(bytes)).slice(7) }, kind: 'file', path: path.split(/[\\/]/).join('/') });
-  }
-  return put(Buffer.from(JSON.stringify({ entries })));
-}
-
 /** A GET as a browser's script loader sends one: no credential, the path as it's written. */
 function raw(base, path, headers = {}) {
   const { hostname, port } = new URL(base);
@@ -302,7 +284,8 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     check('served_with_no_session', served.status === 200 && served.body.includes('data-boxed'), served.status);
     check('served_as_javascript', served.headers['content-type'] === 'application/javascript', served.headers);
     check('served_under_the_page_csp', served.headers['content-security-policy'] === pagePolicy, served.headers);
-    check('served_immutable', /immutable/.test(served.headers['cache-control'] ?? ''), served.headers);
+    // A project's code, as every project response, is never kept by the browser.
+    check('served_never_stored', /no-store/.test(served.headers['cache-control'] ?? ''), served.headers);
     check('served_nosniff', served.headers['x-content-type-options'] === 'nosniff', served.headers);
     check('sibling_served', (await raw(base, module_.replace('shade.js', 'steps.js'))).status === 200);
     const nothing = async (what, path, headers) => {
@@ -349,13 +332,15 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   if (seen.release_checked) {
     const name = 'e2e-boxed';
     const package_ = `e2e/${name}`;
-    // Described by content, as any client sends local code (cl-819): its files, then its tree, each PUT by its digest.
-    const described = (await api(`/v1/targets?tree=${encodeURIComponent(await sentTree(base, token, join(folder, 'boxed')))}`)).body?.interface;
-    check('interface_names_its_ui', described?.entrypoints?.some((entry) => entry.tool?.ui === 'ui/shade.js'), described?.entrypoints?.map((entry) => entry.tool?.ui));
     // Locked and built beside the local code, not in it: what a publish does, with a real wheel's real layout.
     const dist = mkdtempSync(join(tmpdir(), 'package-ui-'));
     const dir = join(dist, 'src');
     cpSync(join(__dirname, '..', 'project', 'boxed'), dir, { recursive: true });
+    // Code of no project, captured by Calcifer's holder as the CLI captures it (POST /v1/maintenance/source), then described by content.
+    const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+    const captured = await (await fetch(`${base}/v1/maintenance/source`, { method: 'POST', headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' }, body: JSON.stringify({ path: dir }) })).json();
+    const described = (await api(`/v1/targets?tree=${encodeURIComponent(captured.tree)}${captured.at ? `&at=${encodeURIComponent(captured.at)}` : ''}`)).body?.interface;
+    check('interface_names_its_ui', described?.entrypoints?.some((entry) => entry.tool?.ui === 'ui/shade.js'), { captured, ui: described?.entrypoints?.map((entry) => entry.tool?.ui) });
     const uvs = join(homedir(), '.cozy', 'tools', 'uv');
     const uvAt = join(uvs, readdirSync(uvs)[0], 'uv');
     execFileSync('python3', [join(__dirname, '..', '..', 'package-lock.py'), '--cozy', COZY, dir], quiet);
