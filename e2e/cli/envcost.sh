@@ -48,10 +48,12 @@ weights_run "project b: BiRefNet on a's warm executor" b "$(picture dog2.jpg)"
 local pair=$OUT/envcost-pair astronaut
 mkdir -p "$pair"
 astronaut=$(picture astronaut.jpg)
+local pids=()
 for p in a b; do
-  (cd "$ENVCOST_ROOT/$p" && timeout 900 "$COZY" --json run "$(birefnet)" --file "image=$astronaut" --on local > "$pair/$p.ndjson" 2> "$pair/$p.err"; echo $? > "$pair/$p.code") &
+  (cd "$ENVCOST_ROOT/$p" && timeout 900 "$COZY" --json run "$(birefnet)" --file "image=$astronaut" --on local > "$pair/$p.ndjson" 2> "$pair/$p.err"; echo $? > "$pair/$p.code") & pids+=($!)
 done
-wait
+# Only these two: a bare `wait` also waits for the suite's hubcheck, which never ends.
+wait "${pids[@]}" || true
 for p in a b; do
   [ "$(cat "$pair/$p.code")" = 0 ] || check "env-cost: project $p's concurrent BiRefNet run exited $(cat "$pair/$p.code"): $(tail -c 300 "$pair/$p.err")"
   echo "concurrent $p: $(grep '^{' "$pair/$p.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage' | uniq | paste -sd';' - | cut -c1-400)"
