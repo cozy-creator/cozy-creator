@@ -74,7 +74,8 @@ pub(crate) struct Machines {
     /// What this computer's machine does for each open project's own runs, read in that project's scope (`follow_project`): the
     /// machine's own status never lists it.
     project_activity: Mutex<HashMap<String, Vec<v1::Operation>>>,
-    /// Each Hub catalog model's public releases, as the default Hub last said: what machine views list of the models a machine holds.
+    /// Each Hub catalog model's public releases, as the default Hub last said, by version and by each lane's checkpoint and header:
+    /// what machine views list of the models a machine holds.
     public: Mutex<HashMap<String, HashSet<String>>>,
     /// What each open project's own engine on this computer's machine holds, as its own Status last said: listed with local's models
     /// where public, never as whose.
@@ -308,9 +309,14 @@ impl Machines {
 
     /// One machine by its name, former name or rental id (`named`), with its Status read now:
     /// `local` starts for it.
-    /// Whether `release` of `model` is public on the default Hub, as it last said; one not asked yet isn't.
-    fn public_release(&self, model: &str, release: &str) -> bool {
-        lock(&self.public).get(model).is_some_and(|public| public.contains(release.trim_start_matches('v')))
+    /// Whether `checkpoint` of `model` is one of its public releases on the default Hub, as it last said, by its release or (a
+    /// checkpoint a package pins by hash) its tree or header; one not asked yet isn't.
+    fn public_checkpoint(&self, model: &str, checkpoint: &v1::Checkpoint) -> bool {
+        lock(&self.public).get(model).is_some_and(|public| {
+            (!checkpoint.release.is_empty() && public.contains(checkpoint.release.trim_start_matches('v')))
+                || (!checkpoint.manifest.is_empty() && public.contains(&checkpoint.manifest))
+                || (!checkpoint.tree.is_empty() && public.contains(&checkpoint.tree))
+        })
     }
 
     /// What `machine` (its frame) and, on this computer's machine, each open project's own engine hold, read now: each project's own
@@ -342,7 +348,12 @@ impl Machines {
             let Ok(id) = api::model_ref::ModelId::parse(&model) else { continue };
             let public = match client.anonymous().get_model(&id.org, &id.name).await {
                 Ok(card) => card.releases.iter().filter(|release| release.visibility == api::model_ref::ReleaseVisibility::Public)
-                    .map(|release| release.version.trim_start_matches('v').to_owned()).collect(),
+                    .flat_map(|release| {
+                        let lanes = release.lanes.values().flat_map(|lane| [lane.checkpoint.clone(), format!("sha256:{}", lane.header.sha256)]);
+                        std::iter::once(release.version.trim_start_matches('v').to_owned()).chain(lanes)
+                    })
+                    .filter(|said| !said.is_empty() && said != "sha256:")
+                    .collect(),
                 Err(::api::hub::Error::Hub { status: 404, .. }) => HashSet::new(),
                 Err(_) => continue,
             };
@@ -834,7 +845,7 @@ impl Machines {
                 for model in &mut visible.models {
                     let total=model.checkpoints.len();
                     let catalog = !model.model.starts_with("local/");
-                    model.checkpoints.retain(|checkpoint| catalog && !checkpoint.release.is_empty() && self.public_release(&model.model, &checkpoint.release));
+                    model.checkpoints.retain(|checkpoint| catalog && self.public_checkpoint(&model.model, checkpoint));
                     if total!=model.checkpoints.len() {model.total_bytes=0;model.unique_bytes=0;}
                 }
                 visible.models.retain(|model|!model.checkpoints.is_empty());

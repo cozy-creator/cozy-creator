@@ -3700,8 +3700,14 @@ impl Walk {
         let api = self.host.api();
         let late = late.unwrap_or(std::time::Duration::MAX);
         let found = tokio::time::timeout(late, self.host.package(hub, with, &self.folder().dir, &on)).await;
-        let package = found.ok()?.ok()?;
-        let renderer = package.maker().ok()??;
+        // Why a job isn't placed, said: it goes to the first of its machines, and nothing is fetched ahead for it.
+        let dir = self.folder().dir.display().to_string();
+        let package = match found {
+            Ok(Ok(package)) => package,
+            Ok(Err(error)) => { warn!("{dir}: {key} isn't planned: its package: {}", error.message); return None; }
+            Err(_) => { warn!("{dir}: {key} isn't planned: its package said nothing in {late:?}"); return None; }
+        };
+        let Some(renderer) = package.maker().ok().flatten() else { warn!("{dir}: {key} isn't planned: its package makes nothing it can quote"); return None };
         let models = tokio::time::timeout(late, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
         let size = v1::JobSize::of(&Value::Object(made));
         let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
