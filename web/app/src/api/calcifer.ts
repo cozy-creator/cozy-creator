@@ -3613,6 +3613,10 @@ run?: number | null,
  */
 main?: MainFile | null,
 /**
+ * The shape its render asked for, `16:9`, whatever size its model made: what its box says of it. None: Auto, or no render's.
+ */
+aspect_ratio?: string | null,
+/**
  * A cut's: what it was cut from, `<asset> <version>` each.
  */
 from?: Array<string>,

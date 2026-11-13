@@ -1972,6 +1972,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.run,
                     main: main_file(lock, version),
+                    aspect_ratio: version.fields.as_ref().and_then(|fields| fields.get("aspect_ratio")?.as_str()).map(str::to_owned),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
                     timeline: (!version.clips.is_empty()).then(|| {
