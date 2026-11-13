@@ -29,6 +29,7 @@ mod legacy_cleanup;
 mod lanes;
 mod link;
 mod local;
+mod loopback;
 mod local_code;
 mod tools;
 mod machines;

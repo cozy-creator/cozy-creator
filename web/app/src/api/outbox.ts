@@ -1,5 +1,5 @@
 import { signal } from "../ui/signal"
-import { ApiError, sessionLost } from "./client"
+import { ApiError, notAnswered } from "./client"
 
 /** One thing a person did. The page already shows it; this is its way to Calcifer. */
 export interface Action<T = unknown> {
@@ -37,7 +37,7 @@ const HELD = "file_held"
 
 /** A try that didn't reach Calcifer, or whose answer never came back: the same ask goes again. */
 export function lost(error: unknown): boolean {
-  return (error instanceof ApiError && (LOST.has(error.status) || sessionLost(error))) || (error instanceof DOMException && error.name === "AbortError")
+  return (error instanceof ApiError && (LOST.has(error.status) || notAnswered(error))) || (error instanceof DOMException && error.name === "AbortError")
 }
 
 /**

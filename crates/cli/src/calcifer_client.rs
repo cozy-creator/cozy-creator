@@ -1081,7 +1081,7 @@ impl Client {
     }
 
     /// A header alone is insufficient: old controllers ignore unknown headers. This response is
-    /// bound to both this exact process birth and its current bearer before any project bytes go.
+    /// bound to both this exact process birth and this OS account before any project bytes go.
     /// A Calcifer that is stopping or starting is `Restarting`; only one that answers without the
     /// protocol is `Unsupported`.
     async fn project_storage(&self, holder: &Holder) -> Result<process::Birth, Probe> {
@@ -1097,7 +1097,9 @@ impl Client {
         if !status.is_success() { return Err(Probe::Unsupported); }
         let body = answer.bytes().await.map_err(|error| Probe::Restarting(format!("its answer broke: {error}")))?;
         let capability: Capability = serde_json::from_slice(&body).map_err(|_| Probe::Unsupported)?;
-        if capability.version != 3 || capability.principal != hex::encode(Sha256::digest(&holder.token)) {
+        // The account Calcifer verified for this connection: this process's own.
+        let own = platform::net::User::current().map(|user| format!("user:{user}"));
+        if capability.version != 3 || Some(capability.principal) != own {
             return Err(Probe::Unsupported);
         }
         // Another process answers at the record's address: the record is being replaced.

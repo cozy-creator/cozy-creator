@@ -69,7 +69,8 @@ pub struct CalciferConfig {
     /// record says which.
     #[serde(deserialize_with = "calcifer_port")]
     pub port: Option<u16>,
-    /// Explicit local Vite backend. Its assets/HMR are served through Calcifer's owned origin.
+    /// Dev mode's local Vite, read only with `dev = true`: Calcifer serves its page code and hot reload as its own page, and the
+    /// browser talks to Calcifer alone.
     #[serde(deserialize_with = "development_web")]
     pub development_web: Option<std::net::SocketAddr>,
     /// Tests only: a shorter window than the fixed 3 hours in which Undo can bring a deleted box back, after which its files leave

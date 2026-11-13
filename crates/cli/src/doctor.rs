@@ -2,8 +2,8 @@
 //! lock record, whether it answers, whether it runs the installed cozy, and its service. A Calcifer
 //! that does not start, answers nothing while its process makes no progress, or runs another cozy
 //! than the installed one is restarted, which never stops work (machines run what they accepted).
-//! Then this computer's tools, and a machine's driver, GPUs, toolchain and kernels as its Status
-//! reports them. Exit 1 while a problem remains.
+//! Then project folders other accounts may open, this computer's tools, and a machine's driver, GPUs,
+//! toolchain and kernels as its Status reports them. Exit 1 while a problem remains.
 use std::{
     path::Path,
     process::{Command, ExitCode, Stdio},
@@ -67,6 +67,9 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let mut checks = calcifer(ctx).await;
     let up = checks.iter().all(|c| c.ok);
     checks.push(service(ctx));
+    if up {
+        checks.extend(folders(ctx).await);
+    }
     let tools = crate::tools::rows(ctx, Side::Computer);
     // Without --on, this computer's machine, where this OS runs models itself.
     let on = match args.on {
@@ -146,6 +149,18 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         output::next(ctx, &logs[..if crate::machine::local_note().is_none() { 2 } else { 1 }]);
     }
     Ok(code)
+}
+
+/// Each project folder other accounts on this computer may open, a line each: Calcifer makes them its account's alone.
+async fn folders(ctx: &Context) -> Vec<Check> {
+    let Ok(client) = ctx.calcifer().await else { return vec![] };
+    let Ok(listed) = client.get::<api::calcifer::project::Projects>("/v1/projects?limit=1000").await else { return vec![] };
+    let loosened = listed.projects.into_iter().filter(|project| platform::durable::others_may_open(&project.path).unwrap_or(false));
+    loosened.map(|project| {
+        let path = project.path.display();
+        let fix = if cfg!(windows) { "give only your account access to it".to_owned() } else { format!("chmod 700 {path}") };
+        Check::bad("project folder", format!("other accounts on this computer can open {path}: {fix}"))
+    }).collect()
 }
 
 /// Calcifer's lock record and whether it answers, running the installed cozy: each problem found,

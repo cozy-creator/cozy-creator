@@ -17,7 +17,7 @@ pid, version, started_at_ms}`. A client reads the record for the address and the
 answers, and restarts it when it runs another cozy than the installed one.
 
 Calcifer's own state is one SQLite file, `~/.cozy/calcifer/state.db` (WAL, owner-only), each change one transaction: runs,
-machines and asks, and beside them the projects it opened, browser sessions' digests, your tool list, Render here, what model
+machines and asks, and beside them the projects it opened, your tool list, Render here, what model
 headers said, an ask's step after its run (cl-818) and the takes you haven't looked at (cl-928). The JSON files an earlier Calcifer kept these in (`projects.json`,
 `sessions.json`, `tools.json`, `here.json`, `checkpoints.json`, `after/`) are imported at its first start and deleted. Blobs stay
 files: `files/`, `inputs/`, `machine-logs/`.
@@ -37,20 +37,27 @@ reads an answer that shows this as a version skew and never shows it as a bare 4
 
 ## Security
 
-Every request passes, in order:
+Who may talk to Calcifer, and why: `tracker/design/calcifer-access.md`. There are no sessions, sign-in links or page tokens;
+each request is judged alone (`crates/calcifer/src/loopback.rs`). Every request passes, in order:
 1. **Loopback peer** (`not_loopback`).
-2. **`Host`** is `127.0.0.1`, `localhost` or `[::1]`, on any port, so an SSH `-L` to another port works
-   (`host_not_allowed`): a DNS-rebinding page's `Host` is its own name, and it's turned away before anything else.
-3. **`Origin`**, when present, is `http://<Host>` (`origin_not_allowed`). No CORS header is ever sent.
-4. **A credential** (`unauthenticated`), on every route but the page and `POST /v1/session`:
-   - `Authorization: Bearer <token>`, either the lock record's token (the CLI) or a session's (a browser);
-   - `?media=<media>`, a session's second secret, on `GET` and `HEAD` of a file route only (`/v1/runs/{id}/outputs/{name}`,
-     `/v1/projects/{id}/files/{file}`, `cuts/{cut}`, `thumbs/{sha256}`), as `<img>` and `<video>` can't send a header.
+2. **`Host`** is exactly the listener it reached: `127.0.0.1:<port>` or `localhost:<port>` (`host_not_allowed`). A
+   DNS-rebinding page's `Host` is its own name, and it's turned away before anything else.
+3. **`Origin`**, when present, is `http://<Host>` (`origin_not_allowed`); a WebSocket upgrade must send it. No CORS header is
+   ever sent.
+4. On `/v1` (media, streams and the dev page's hot reload too): **the peer's OS account** is Calcifer's (`other_user`), by the
+   kernel's word for its socket (Linux `/proc/net/tcp{,6}`, macOS libproc, Windows `GetExtendedTcpTable` and the owning
+   process's token). Then **who sent it**:
+   - a browser on Calcifer's own page: `Sec-Fetch-Site: same-origin`, or `none` on a `GET` navigation (a URL a person or another
+     app opened). `same-site` (another port), `cross-site` and an extension's `none` fetch are refused (`not_own_page`);
+   - anything that isn't a browser sends no `Sec-Fetch-Site`, and must send the lock record's `Authorization: Bearer <token>`
+     (`unauthenticated`). The token is new at every start, lives only in the 0600 lock record, never in argv or the
+     environment, and no file route serves it.
 5. **Admission**: a stopping Calcifer refuses new mutations (`503 calcifer_stopping`); `POST /v1/down` and reads
    pass.
 
-There are no cookies: a cookie reaches every port of a host, and a page's `localStorage` only its own. The lock
-record's token is minted at every start; a session outlives restarts.
+A `GET` changes nothing a person would undo, so a navigation can only read; describing an asset's call (`?call=true`), which may
+install its package, is skipped for one. There are no cookies, and nothing of Calcifer's is kept in the browser: a tab outlives a
+restart. Project storage's principal is the verified account (`GET /v1/project-storage`: `principal: user:<uid or SID>`).
 
 ## Conventions
 
@@ -150,8 +157,10 @@ coordination cohort during an upgrade, so it cannot strand a new page waiting fo
 coordination protocol boundary, not a build/version pin; tab liveness, media/log locks and ordinary browser storage remain shared.
 
 ### The page
-The web UI, embedded when cozy is built (`crates/calcifer/build.rs`, from `web/app/dist`). It holds no secret, so these
-two routes need no credential; the guard's first three checks still apply.
+The web UI, embedded when cozy is built (`crates/calcifer/build.rs`, from `web/app/dist`). It holds no secret, so its files need
+only the guard's first three checks, and a link from another app opens it. With `dev = true` and `[calcifer] development_web`,
+Calcifer fetches the page's code and hot reload from that local Vite and serves them as its own, for its own account only; the
+browser talks to Calcifer alone.
 - `GET /`: its `index.html`.
 - `GET /assets/{file}`: a file named by its hash, `immutable`; `404 asset_not_found` for any other.
 
@@ -163,16 +172,6 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 - `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, encrypted_project_creation, home}`. `home` is this person's home folder, where the page suggests a first project's folder. Clients must require `encrypted_project_creation: true` before sending encrypted-creation credentials or requests; older controllers omit it. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
   without asking the Hub (`GET /v1/account` does).
-
-### Session
-A page opens from a link with a single-use code. `cozy open` launches the browser through a private
-redirect file and prints the project name and the link as a fallback; with `--json` it prints them and launches nothing. The browser exchanges it for a session; the code expires after 15 minutes and survives Calcifer restarts. The
-fragment carries `code=<one-use-code>` while the path identifies the project as `/p/<public-code>`. Older `&to=<route>` links are accepted for compatibility. `state.db` holds sessions' digests; 30 days unused ends one.
-- `POST /v1/session-codes` (the lock record's bearer only, else `403 session_code_needs_bearer`):
-  `{code, url, expires_ms}`, 32 random bytes in hex, good for 15 minutes. `url` is `http://<Host>/#code=<code>`.
-- `POST /v1/session` `{code}`, needing no credential: `{token, media}`, new for each code. `400 session_code_invalid`
-  when it's unknown, used or expired.
-- `DELETE /v1/session`: `204`, the session whose token this carries has ended.
 
 ### Runs
 A run is asked for unbound (`RunRequest`); Calcifer resolves its target, binds it against the function's
@@ -222,7 +221,7 @@ a spec.
 - `POST /v1/tools/list` `{add?: "<package>", remove?: ["<tool id>"]}`: `{packages, without?}`, your list, in `state.db`, the same in every project: Qwen Image 2 and Minimax H3 until it's changed. Local code is a project's, named by its boxes: a path is `400 tool_list_local`. `add` puts a package's media functions on it, all of them again if some were taken off. Neither installs or deletes anything, and a box of a tool taken off goes on as it was.
 - `GET /v1/tools/browse?q=&limit=&hub=` (1–200, 50): `{packages: [{package, summary?, tools}], older}`: the Hub's packages that make media, for adding to your list. `older` is how many more a bigger `limit` reads.
 - `GET /v1/tools/{id}/ui?project=`: `{module}`: where to `import()` that tool's component from, its bytes in hand. `{id}` is one percent-encoded segment. A release's come from the Hub, for the newest any machine you hold has installed, its wheel held to the Hub's digest; local code's from the files `project` names, as they are now. `404 tool_ui_none`: it ships none. `404 tool_ui_not_installed`: no machine you hold has it, or `project` names no such local code. `404 tool_ui_missing`: its package doesn't hold what it names. `503 tool_ui_hash_mismatch`: the wheel isn't what the Hub says. `400 tool_ui_too_big`.
-- `GET /v1/tools/{id}/ui/{hash}/{*file}`: a module of a component as `{module}` named it, `application/javascript`, under the page's CSP, `immutable`, needing no session: `import()` can't send one, and the hash is what `GET /v1/tools/{id}/ui` said. Calcifer holds what it read in memory, so after a restart a page asks again. `404 tool_ui_file_not_found`.
+- `GET /v1/tools/{id}/ui/{hash}/{*file}`: a module of a component as `{module}` named it, `application/javascript`, under the page's CSP, `immutable`, by `/v1`'s rule (the page's `import()` is same-origin); the hash is what `GET /v1/tools/{id}/ui` said. Calcifer holds what it read in memory, so after a restart a page asks again. `404 tool_ui_file_not_found`.
 - `GET /v1/targets?target=&hub=&on=&tree=&at=`: what a run of `target` on that machine calls, resolved as `POST /v1/runs` resolves it; with `tree` and `at`, local code's `code`, `target` its function:
   `{package, function?, release, release_from: asked|installed|latest|local, summary, interface, functions, contract?, request?, next?}`:
   `interface` is the package's interface document. Local code's is what its machine's Runtime said installing this very source, else read from its source by the Runtime release its uv.lock holds, the newest within its unconditional `cozy-runtime` version bounds, or PyPI's newest when neither is specified. No package code runs: `400 describe_failed` when that Runtime can't read it, with `next` the run that reads it with the machine's own; `functions` `[{function, description}]` is what a
@@ -732,7 +731,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | Verb | Calls |
 |---|---|
 | `cozy new [directory]` | `POST /v1/projects` with the selected absolute path |
-| `cozy open [--port PORT]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; then `GET /`, `POST /v1/session-codes` |
+| `cozy open [--port PORT]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; then `POST /v1/browser/open`, else prints the page's URL |
 | `cozy status` | project health, warnings and suggested actions from `GET /v1/projects/{id}` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}`; `--previews DIR`, `GET /v1/runs/{id}/preview` each second while it runs |

@@ -1,8 +1,8 @@
 //! A package's own UI (`docs/PACKAGE-UI.md`): the ES modules a function's `ui` names, as real modules in the page. Installing a package
 //! is the trust decision, so its component loads once a machine you hold has it, with no prompt. What a pod has never decides the bytes:
 //! a release's come from the Hub, held to its wheel's digest, and local code's from the folder the project names, and no code of it runs.
-//! `import()` can carry no credential, so the modules sit below the session, at a URL only `find` says: named by the hash of what they
-//! came from, which reaches those bytes and nothing else.
+//! The page's `import()` is same-origin, so they're `/v1` like the rest, at a URL only `find` says: named by the hash of what they came
+//! from, which reaches those bytes and nothing else.
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},

@@ -15,7 +15,7 @@ use axum::{Json, extract::State, http::HeaderMap};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tokio::{io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader}, sync::{Mutex, OwnedMutexGuard}};
-use crate::api::{self, Api, Principal, Refusal};
+use crate::{api::{self, Api, Refusal}, loopback::Principal};
 use profile::{BrowserRetired, VolatileProfileLease};
 
 pub(crate) fn daemon_birth() -> Result<String, Refusal> {
@@ -23,12 +23,12 @@ pub(crate) fn daemon_birth() -> Result<String, Refusal> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(&birth).map_err(|_| unavailable())?)))
 }
 
-/// The project storage protocol this Calcifer speaks, and who's asking: the user `admit` verified (cl-980), whom project storage binds to.
+/// The project storage protocol this Calcifer speaks, and who's asking: the account `admit` verified, whom project storage binds to.
 pub(crate) async fn project_storage(principal: Option<axum::Extension<Principal>>) -> Result<Json<Value>, Refusal> {
-    let Some(axum::Extension(Principal::User(uid))) = principal else {
+    let Some(axum::Extension(principal)) = principal else {
         return Err(api::refuse(Kind::Forbidden, "private_browser_required", "Open project data in Calcifer's page or the native CLI"));
     };
-    Ok(Json(json!({ "version": 3, "daemon_birth": daemon_birth()?, "principal": format!("user:{uid}") })))
+    Ok(Json(json!({ "version": 3, "daemon_birth": daemon_birth()?, "principal": principal.to_string() })))
 }
 
 fn unavailable() -> Refusal { api::refuse(Kind::Unavailable, "private_browser_unavailable", "Cozy could not establish its owned private browser; no default browser was opened") }

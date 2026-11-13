@@ -310,7 +310,9 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let address = listener
         .local_addr()
         .map_err(|e| failed(Error::new(Kind::Internal, "calcifer_port", e.to_string())))?;
-    if loaded.config.calcifer.development_web.is_some_and(|development| development.port() == address.port()) {
+    // Dev mode: the page's code from this local Vite, served as Calcifer's own (page/development.rs).
+    let development_web = loaded.config.calcifer.development_web.filter(|_| loaded.config.dev);
+    if development_web.is_some_and(|development| development.port() == address.port()) {
         calcifer.close();
         return Err(failed(Error::new(Kind::Usage, "calcifer_development_web", "Vite and Calcifer must use different ports")));
     }
@@ -324,7 +326,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     tokio::spawn(drop_old_measurements(calcifer.clone()));
     let api = Api::new(calcifer.clone(), machines.clone(), &token);
     api.browser_address.set(address).expect("listener address set once");
-    if let Some(development) = loaded.config.calcifer.development_web {
+    if let Some(development) = development_web {
         api.development_web.set(development).expect("development web address set once");
     }
     // A service manager's stop (SIGTERM) is `down`, as graceful: the machine runs on.
@@ -360,7 +362,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     let _ = std::fs::remove_file(home.calcifer().join(REFUSED));
     steps.done("record");
-    let app = api::router(api.clone()).into_make_service_with_connect_info::<api::Peer>();
+    let app = api::router(api.clone()).into_make_service_with_connect_info::<crate::loopback::Peer>();
     let server = tokio::spawn(
         axum::serve(listener, app)
             .with_graceful_shutdown(api.stopped())

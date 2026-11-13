@@ -1,12 +1,11 @@
 //! Calcifer's loopback API (`docs/CALCIFER-API.md`): HTTP/1.1, JSON and SSE for the CLI and a
-//! browser. Every request passes the guard chain in order: a loopback peer, this listener's own `Host`,
-//! an `Origin`, if any, that matches it, then (on the routes Calcifer serves) the peer's user, which must
-//! be Calcifer's own, and a browser's word that it's Calcifer's own page (cl-980: no session, no token),
-//! and the admission gate a stopping Calcifer closes. Refusals are `api::error::Envelope`s. No CORS header is ever sent.
+//! browser. Every request passes the guard chain in order: a loopback peer, this listener's own `Host`
+//! and an `Origin`, if any, that matches it; then, on `/v1`, Calcifer's own OS account and its own page
+//! or the lock record's bearer (`loopback.rs`, no sessions); then the admission gate a stopping Calcifer
+//! closes. Refusals are `api::error::Envelope`s. No CORS header is ever sent.
 use std::{
     collections::{HashMap, VecDeque},
     convert::Infallible,
-    net::SocketAddr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU32, Ordering},
@@ -40,6 +39,7 @@ use tokio::sync::{RwLock, broadcast, watch};
 use tracing::{info, warn};
 
 use crate::{
+    loopback::Peer,
     Calcifer,
     machines::{self, Machines},
     store::{RunFilter, RunRow, State as RunState, StoreError},
@@ -277,6 +277,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/tools/list", post(crate::toolbox::change))
         .route("/v1/tools/browse", get(crate::toolbox::browse))
         .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
+        .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
         .route(
             "/v1/project-files/{name}",
             axum::routing::put(crate::runs::files::project_put)
@@ -293,7 +294,6 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
-        .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
         .merge(crate::page::routes())
         .fallback(crate::page::fallback)
         .method_not_allowed_fallback(unknown_route)
@@ -388,37 +388,13 @@ impl From<BytesRejection> for Refusal {
     }
 }
 
-/// Who's at the other end of a connection: its address, the listener it reached, and its user, read once as it's accepted
-/// (cl-980). The user is the kernel's word for the socket (`platform::net::tcp_peer_uid`): none where it can't be read.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Peer {
-    pub(crate) addr: SocketAddr,
-    pub(crate) local: Option<SocketAddr>,
-    pub(crate) uid: Option<u32>,
-}
-
-impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>> for Peer {
-    fn connect_info(stream: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Self {
-        let addr = *stream.remote_addr();
-        let local = stream.io().local_addr().ok();
-        Peer { addr, local, uid: local.and_then(|local| platform::net::tcp_peer_uid(addr, local)) }
-    }
-}
-
-/// Who a request acts as: this computer's user Calcifer runs as, by its uid (cl-980). A public key's, for remote access, later.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Principal {
-    User(u32),
-}
-
-/// Loopback peer, `Host`, then `Origin`, on every request. A rebinding page is turned away before
-/// anything asks whether it holds a credential.
+/// Loopback peer, `Host`, then `Origin`, on every request (`loopback::refusal`).
 async fn guard(
     ConnectInfo(peer): ConnectInfo<Peer>,
     request: Request,
     next: Next,
 ) -> Response {
-    let refused = refusal(&peer, &request);
+    let refused = crate::loopback::refusal(&peer, request.headers());
     let mut response = match refused {
         Some(refusal) => {
             warn!(
@@ -448,51 +424,6 @@ async fn guard(
     response
 }
 
-/// This listener's own names, `127.0.0.1:<port>` and `localhost:<port>` (and `[::1]:<port>` on IPv6): the only `Host` a request may
-/// name (cl-980). A rebinding page's `Host` is its own name, and a page that reached another port isn't this Calcifer's.
-fn own_host(host: &str, local: Option<SocketAddr>) -> bool {
-    let Some(local) = local else { return false };
-    let port = local.port();
-    let names: &[&str] = if local.is_ipv6() { &["[::1]", "localhost"] } else { &["127.0.0.1", "localhost"] };
-    names.iter().any(|name| host == format!("{name}:{port}"))
-}
-
-fn refusal(peer: &Peer, request: &Request) -> Option<Refusal> {
-    let header = |name| {
-        request
-            .headers()
-            .get(name)
-            .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
-    };
-    if !peer.addr.ip().is_loopback() {
-        Some(refuse(
-            Kind::Forbidden,
-            "not_loopback",
-            "Calcifer serves the loopback interface only",
-        ))
-    } else if !header(header::HOST).is_some_and(|host| own_host(&host, peer.local)) {
-        Some(
-            refuse(
-                Kind::Forbidden,
-                "host_not_allowed",
-                format!("Host {:?} is not this Calcifer", header(header::HOST)),
-            )
-            .remedy("reach it at its own address, as `cozy open` gives it"),
-        )
-    // Checked on every request, mutations and stream opens included; an absent Origin passes.
-    } else if let Some(origin) = header(header::ORIGIN)
-        && origin.strip_prefix("http://") != header(header::HOST).as_deref()
-    {
-        Some(refuse(
-            Kind::Forbidden,
-            "origin_not_allowed",
-            format!("Origin {origin:?} may not reach Calcifer"),
-        ))
-    } else {
-        None
-    }
-}
-
 /// The secret of `Authorization: Bearer`.
 pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
@@ -508,48 +439,22 @@ fn file_read(request: &Request) -> bool {
     )
 }
 
-/// Whether a browser sent this from Calcifer's own page, or a person opened its URL directly (cl-980): `Sec-Fetch-Site` says where
-/// a browser's request came from, and no other site's page can say `same-origin`. Another port of this computer is `same-site`,
-/// refused. With no `Sec-Fetch-Site`, it's no browser of today: None.
-fn own_page(method: &Method, headers: &axum::http::HeaderMap) -> Option<bool> {
-    let text = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
-    Some(match text("sec-fetch-site")? {
-        "same-origin" => true,
-        // A URL a person opened. Chromium also says `none` for an extension's fetches, which aren't navigations.
-        "none" => *method == Method::GET && text("sec-fetch-mode") == Some("navigate"),
-        _ => false,
-    })
-}
-
-/// This computer's own user, then a client of its: Calcifer's own page, or this computer's cozy. Then the admission gate for every
-/// mutation but `down`, held while it runs. Detached request work retains this existing admission lease until its mutation is finished.
+/// Calcifer's own page or this computer's cozy, as its own account; then the admission gate for every mutation but `down`, held
+/// while it runs. Detached request work retains this existing admission lease until its mutation is finished.
 pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
 
 async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>, mut request: Request, next: Next) -> Response {
-    // Only the user Calcifer runs as (cl-980): another account on this computer reads no project through it, an unlocked encrypted
-    // one included. The kernel says whose socket the peer is; where it can't, nothing is let in.
-    let own = rustix::process::geteuid().as_raw();
-    if peer.uid != Some(own) {
-        let said = "Calcifer answers only the user it runs as on this computer";
-        return Refusal(Error::new(Kind::Forbidden, "other_user", said)).into_response();
-    }
-    // A browser's request is let in when it comes from Calcifer's own page (or its URL, opened directly); anything else of the same
-    // user that isn't a browser, this computer's cozy among them, by the user alone. A bearer it sends must be Calcifer's.
-    // Anything that isn't a browser must show the bearer, so a request Calcifer is tricked into making for another (blind SSRF)
-    // isn't let in by the user alone.
-    let page = own_page(request.method(), request.headers());
-    let refused = match (page, bearer(request.headers())) {
-        (Some(false), _) => Some(("not_own_page", "Calcifer answers its own page only, not another site's or another port's")),
-        (_, Some(token)) if !api.admits(token) => Some(("unauthenticated", "this isn't the bearer in Calcifer's lock record")),
-        (None, None) => Some(("unauthenticated", "Calcifer answers its own page, and this computer's cozy with the bearer in its lock record")),
-        _ => None,
+    // Calcifer's own account, then its own page or this computer's cozy (`loopback::admitted`).
+    let (principal, client) = match crate::loopback::admitted(&api, &peer, request.method(), request.headers()).await {
+        Ok(admitted) => admitted,
+        Err(refusal) => {
+            warn!(code = refusal.0.code, "refused {} {}", request.method(), request.uri().path());
+            return refusal.into_response();
+        }
     };
-    if let Some((code, said)) = refused {
-        let kind = if code == "unauthenticated" { Kind::Credential } else { Kind::Forbidden };
-        return Refusal(Error::new(kind, code, said).next("cozy open")).into_response();
-    }
-    let page = page == Some(true);
-    request.extensions_mut().insert(Principal::User(own));
+    let page = client != crate::loopback::Client::Native;
+    request.extensions_mut().insert(principal);
+    request.extensions_mut().insert(client);
     let path=request.uri().path();
     // The capability probe is how a client learns protocol 3 before opting in; it is no project request.
     let project_protocol=path != "/v1/project-storage" && (path.starts_with("/v1/projects") || path.starts_with("/v1/project-")

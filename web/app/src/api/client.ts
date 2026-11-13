@@ -109,9 +109,9 @@ const failureStatus: Record<ErrorBody["kind"], number> = {
 const unreachable = () =>
   new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy open"] })
 
-/** Calcifer won't answer this page (cl-980): it isn't Calcifer's own page, or not its user's. Any other 401 or 403 is a Hub's word on
- *  a code or a key, which belongs where it happened. */
-export const sessionLost = (error: ApiError) => error.status === 403 && ["not_own_page", "other_user"].includes(error.body.code)
+/** Calcifer won't answer this page: it isn't Calcifer's own page, or not its account's (design/calcifer-access.md). Any other 401
+ *  or 403 is a Hub's word on a code or a key, which belongs where it happened. */
+export const notAnswered = (error: ApiError) => error.status === 403 && ["not_own_page", "other_user"].includes(error.body.code)
 
 async function refusal(response: Response): Promise<ApiError> {
   const body = await response.json().catch(() => null)
@@ -239,7 +239,7 @@ export class Client {
           return response
         }
         failure = await refusal(response)
-        if (sessionLost(failure)) this.hooks.signedOut()
+        if (notAnswered(failure)) this.hooks.signedOut()
         if (response.status !== 503 || options.once) {
           if (attempt > 1) say(0)
           throw failure
@@ -269,7 +269,7 @@ export class Client {
     const response = await this.transport.fetch(path, { signal, headers: { Accept: "text/event-stream" } })
     if (response.ok) return response
     const failure = await refusal(response)
-    if (sessionLost(failure)) this.hooks.signedOut()
+    if (notAnswered(failure)) this.hooks.signedOut()
     throw failure
   }
 

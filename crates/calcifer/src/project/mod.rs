@@ -1308,8 +1308,8 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
         }
         let made = !path.exists();
         std::fs::create_dir_all(&path).map_err(|e| Refusal(unmakeable(&path, e)))?;
-        // A folder Calcifer makes is its user's alone (cl-980): a plain project is otherwise open to other accounts straight from disk.
-        if made { private_folder(&path).map_err(|e| Refusal(unmakeable(&path, e)))?; }
+        // A folder Calcifer makes is its account's alone: a plain project is otherwise open to other accounts straight from disk.
+        if made { platform::durable::make_private_dir(&path).map_err(|e| Refusal(Error::new(Kind::Internal, "project_folder_private", e.to_string())))?; }
         let name = folder_name(&path);
         tokio::task::block_in_place(|| create_new(&api, &path, &name, open.starter, open.passphrase.take(), engine.as_ref())).map_err(Refusal)?
     };
@@ -1338,24 +1338,12 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     Ok(if open.unencrypted { response } else { vault::private(response) })
 }
 
-/// Only this user may read or enter `dir`: 0700 on Unix. Windows keeps the folder's inherited ACL for now.
-fn private_folder(dir: &FsPath) -> std::io::Result<()> {
-    #[cfg(unix)]
-    { use std::os::unix::fs::PermissionsExt as _; std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) }
-    #[cfg(not(unix))]
-    { let _ = dir; Ok(()) }
-}
-
-/// What's said of a project folder others may read: one line, and what to run (cl-980).
-fn loosened(dir: &FsPath) -> Option<String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let mode = std::fs::metadata(dir).ok()?.permissions().mode();
-        (mode & 0o077 != 0).then(|| format!("other accounts on this computer can open this project's folder: chmod 700 {}", dir.display()))
-    }
-    #[cfg(not(unix))]
-    { let _ = dir; None }
+/// What's said of a project folder other accounts on this computer may open: one line, and what to do.
+pub(crate) fn loosened(dir: &FsPath) -> Option<String> {
+    platform::durable::others_may_open(dir).ok()?.then(|| {
+        let fix = if cfg!(windows) { "give only your account access to it".to_owned() } else { format!("chmod 700 {}", dir.display()) };
+        format!("other accounts on this computer can open {}: {fix}", dir.display())
+    })
 }
 
 /// A folder that can't be made, in a person's words: no permission there, or why not.
@@ -1538,8 +1526,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
     state.covered = covered;
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_project));
-    // A plain project's files are its folder's: an encrypted one's are ciphertext there.
-    if !vault::encrypted(&project.root) { state.warnings.extend(loosened(&project.root).map(ProjectWarning::of_project)); }
+    state.warnings.extend(loosened(&project.root).map(ProjectWarning::of_project));
     copy_told(&project.root);
     Ok(Json(state))
 }

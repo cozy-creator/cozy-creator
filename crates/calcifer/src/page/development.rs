@@ -1,9 +1,11 @@
-//! One explicitly configured local Vite backend, reached only through Calcifer's owned origin.
-//! API bodies, credentials, project client-route paths/queries and browser Referer never go there.
+//! Dev mode (`dev = true` and `[calcifer] development_web`): the page's code and its hot reload come from a local Vite, fetched by
+//! Calcifer and served as its own page, so a browser only ever talks to Calcifer and Vite forwards nothing. Only Calcifer's own OS
+//! account is answered here (the code is this checkout's), and API bodies, credentials, project client-route paths/queries and the
+//! browser's Referer never go to Vite.
 use std::{net::SocketAddr, sync::Arc};
-use axum::{body::Body, extract::{Request, State}, http::{HeaderMap, HeaderValue, Method, StatusCode, header}, response::Response};
+use axum::{body::Body, extract::{ConnectInfo, Request, State}, http::{HeaderMap, HeaderValue, Method, StatusCode, header}, response::Response};
 use hyper_util::rt::TokioIo;
-use crate::api::{self, Api, Refusal};
+use crate::{api::{self, Api, Refusal}, loopback::Peer};
 
 pub(super) const HMR_PATH: &str = "/__cozy_hmr";
 const NONCE: &str = "__COZY_DEVELOPMENT_NONCE__";
@@ -35,6 +37,8 @@ fn query(query: Option<&str>) -> String {
 }
 
 pub(super) async fn http(api: &Arc<Api>, address: SocketAddr, request: Request, client_route: bool) -> Result<Response, Refusal> {
+    let peer = request.extensions().get::<ConnectInfo<Peer>>().map(|info| info.0.clone()).ok_or_else(unavailable)?;
+    crate::loopback::own_user(&peer).await?;
     if request.uri().path().starts_with("/v1") || !matches!(*request.method(), Method::GET | Method::HEAD) || !client_route && !resource(request.uri().path()) {
         return Err(api::refuse(::api::error::Kind::NotFound, "unknown_route", "Calcifer does not serve this development resource"));
     }
@@ -72,14 +76,9 @@ pub(super) async fn http(api: &Arc<Api>, address: SocketAddr, request: Request, 
     Ok(response)
 }
 
-pub(super) async fn upgrade(State(api): State<Arc<Api>>, axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<crate::api::Peer>, mut request: Request) -> Result<Response, Refusal> {
-    // A WebSocket is let in only from Calcifer's own page, as its user (cl-980): an `Origin` that is there and is this `Host`, and the
-    // peer's uid Calcifer's. A browser always sends `Origin` on an upgrade; a missing one is no page of Calcifer's.
-    let text = |name: header::HeaderName| request.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_owned);
-    let own_origin = text(header::HOST).map(|host| format!("http://{host}"));
-    if own_origin.is_none() || text(header::ORIGIN) != own_origin || peer.uid != Some(rustix::process::geteuid().as_raw()) {
-        return Err(api::refuse(::api::error::Kind::Forbidden, "not_own_page", "Calcifer's hot reload answers its own page only, as its user"));
-    }
+/// The hot reload socket, by `/v1`'s rule: Calcifer's account and its own page, whose exact `Origin` the guard required.
+pub(super) async fn upgrade(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>, mut request: Request) -> Result<Response, Refusal> {
+    crate::loopback::admitted(&api, &peer, request.method(), request.headers()).await?;
     let address = api.development_web.get().ok_or_else(unavailable)?;
     let protocol = request.headers().get(header::SEC_WEBSOCKET_PROTOCOL).and_then(|value| value.to_str().ok()).filter(|value| matches!(*value, "vite-hmr" | "vite-ping")).ok_or_else(unavailable)?;
     if request.headers().get(header::UPGRADE).and_then(|value| value.to_str().ok()).is_none_or(|value| !value.eq_ignore_ascii_case("websocket")) { return Err(unavailable()); }
