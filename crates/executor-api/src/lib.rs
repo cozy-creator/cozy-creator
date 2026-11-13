@@ -689,6 +689,9 @@ pub enum Request {
     GpuRelease(GpuRelease),
     /// A hint about a future call: TensorD may prepare its weights.
     ModelPrefetch(ModelPrefetch),
+    /// A model this call reads now: TensorD fetches what of it isn't here before every other download, and answers once
+    /// it has, so the executor reads it from disk.
+    ModelNeed(ModelNeed),
     /// Show one asset to the run's owner now, as a product of a declared output.
     Publish(Publish),
     /// A weights output's TensorFS reference, which the Runtime committed or uploaded.
@@ -765,6 +768,16 @@ pub struct ModelPrefetch {
     /// The canonical `{slot: ModelChoice | None}` document.
     #[serde(default)]
     pub payload: String,
+}
+
+/// A checkpoint the call's own function reads now (an on-demand model it builds) and the components it reads (all,
+/// when none): what isn't here comes first, with the machine's whole downloader (cl-966).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+pub struct ModelNeed {
+    pub manifest: String,
+    #[serde(default)]
+    pub components: Vec<String>,
 }
 
 /// One product to show now: the result file field it belongs to, its spool file or `parts`, its kind.
@@ -848,6 +861,7 @@ impl Request {
             "child_forget" => Request::ChildForget(one(fields)?),
             "gpu_release" => Request::GpuRelease(one(fields)?),
             "model_prefetch" => Request::ModelPrefetch(one(fields)?),
+            "model_need" => Request::ModelNeed(one(fields)?),
             "publish" => Request::Publish(one(fields)?),
             "checkpoint_item" => Request::CheckpointItem(one(fields)?),
             "stage_memo_lookup" => Request::StageMemoLookup(one(fields)?),
@@ -1220,7 +1234,7 @@ mod python {
         )*};
     }
     request_methods!(
-        ChildEvents, ChildCall, ChildPoll, ChildCancel, ChildForget, GpuRelease, ModelPrefetch, Publish,
+        ChildEvents, ChildCall, ChildPoll, ChildCancel, ChildForget, GpuRelease, ModelPrefetch, ModelNeed, Publish,
         CheckpointItem, StageMemoLookup, StageMemoStore
     );
 

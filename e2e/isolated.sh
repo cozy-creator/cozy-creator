@@ -197,7 +197,7 @@ case $suite:$shard in
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
-  cli:ondemand) needs='packages birefnet' ;;
+  cli:ondemand) needs='packages birefnet downloads' ;;
   cli:plan) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras vaes prompts' ;;
