@@ -20,7 +20,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use zeroize::Zeroizing;
 
@@ -73,6 +73,8 @@ const NOTICES: &[(&str, &str)] = &[
     ),
 ];
 const STARTUP: Duration = Duration::from_secs(60);
+/// How often a supervisor with no mount event looks whether its view is mounted, until it is.
+const STARTUP_SAMPLE: Duration = Duration::from_millis(100);
 const CONTROL_ACK: Duration = Duration::from_secs(10);
 type TransitionMap = std::collections::BTreeMap<PathBuf, std::sync::Weak<std::sync::Mutex<()>>>;
 fn transition(view: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
@@ -408,8 +410,8 @@ impl Provider {
         }
         let guard = ViewGuard::prepare(view)?;
         let parent = platform::process::Birth::own()?;
-        let executable = std::env::current_exe().map_err(io_error("find cozy executable"))?;
-        let mut command = clean_command(&executable);
+        // This very build, which an update can't take away (cl-981): `current_exe()` then names `<path> (deleted)`.
+        let mut command = clean_command(&platform::exe::running()?);
         command
             .arg(ROLE)
             .arg(&self.executable)
@@ -431,6 +433,9 @@ impl Provider {
             // launchd kills a finished job's remaining process group. This owned guardian
             // must survive that cleanup long enough to close its exact mount/image.
             command.process_group(0);
+            if let Some(launch) = platform::exe::launch() {
+                command.arg0(&launch.path);
+            }
         }
         let mut child = command
             .stdin(Stdio::piped())
@@ -487,28 +492,30 @@ impl Provider {
             let result = output.read_exact(&mut marker).map(|()| marker == *READY);
             let _ = ready.send(result);
         });
-        let mut acknowledged = false;
-        let deadline = Instant::now() + STARTUP;
-        loop {
-            if let Some(status) = mounted
-                .child
-                .try_wait()
-                .map_err(io_error("read filesystem supervisor status"))?
-            {
-                return Err(self.failure("mount", status));
+        // The supervisor acknowledges once the view is mounted; an exit closes the pipe first.
+        match readiness.recv_timeout(STARTUP) {
+            Ok(Ok(true)) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                #[cfg(all(debug_assertions, target_os = "macos"))]
+                debug_readiness(view, mounted.child.id());
+                return Err(Error::NotReady);
             }
-            if !acknowledged {
-                match readiness.try_recv() {
-                    Ok(Ok(true)) => acknowledged = true,
-                    Ok(_) | Err(mpsc::TryRecvError::Disconnected) => {
-                        return Err(Error::Invalid(
-                            "provider failed to acknowledge its owned mount",
-                        ));
-                    }
-                    Err(mpsc::TryRecvError::Empty) => {}
+            Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if mounted.owner.wait_for(CONTROL_ACK)?
+                    && let Some(status) = mounted
+                        .child
+                        .try_wait()
+                        .map_err(io_error("read filesystem supervisor status"))?
+                {
+                    return Err(self.failure("mount", status));
                 }
+                return Err(Error::Invalid(
+                    "provider failed to acknowledge its owned mount",
+                ));
             }
-            if acknowledged && self.is_mounted(view)? {
+        }
+        {
+            if self.is_mounted(view)? {
                 mounted.guard.seal()?;
                 #[cfg(target_os = "macos")]
                 if self.native {
@@ -519,6 +526,12 @@ impl Provider {
                     mounted.identity = self.identity(view)?;
                     for process in platform::process::tree(mounted.child.id()) {
                         if process.birth().pid == mounted.child.id() {
+                            continue;
+                        }
+                        // The provider is the supervisor's own child. Read at its acknowledgment, the tree can
+                        // still hold the fusermount that mounted the view, exiting: its exit is no unmount.
+                        #[cfg(not(windows))]
+                        if platform::process::parent_of(process.birth().pid).ok() != Some(mounted.child.id()) {
                             continue;
                         }
                         #[cfg(windows)]
@@ -541,12 +554,7 @@ impl Provider {
                 }
                 return Ok(mounted);
             }
-            if Instant::now() >= deadline {
-                #[cfg(all(debug_assertions, target_os = "macos"))]
-                debug_readiness(view, mounted.child.id());
-                return Err(Error::NotReady);
-            }
-            thread::sleep(Duration::from_millis(100));
+            Err(Error::NotReady)
         }
     }
 
@@ -695,6 +703,10 @@ impl Mounted {
     pub fn provider_pid(&self) -> u32 {
         self.child.id()
     }
+    /// The supervisor, whose exit is the mount's end: a lock, its provider dying, an unmount from outside.
+    pub fn supervisor(&self) -> Result<platform::process::Exact> {
+        Ok(self.owner.try_clone()?)
+    }
     pub fn is_mounted(&self) -> Result<bool> {
         if self.retired { return Ok(false); }
         if self.owner.wait_for(Duration::ZERO)? {
@@ -778,18 +790,12 @@ impl Mounted {
         };
         #[cfg(not(target_os = "macos"))]
         let acknowledgement = CONTROL_ACK;
-        let deadline = Instant::now() + acknowledgement;
-        while self
-            .child
-            .try_wait()
-            .map_err(io_error("wait for filesystem shutdown"))?
-            .is_none()
-        {
-            if Instant::now() >= deadline {
-                return Err(Error::StillRunning);
-            }
-            thread::sleep(Duration::from_millis(20));
+        if !self.owner.wait_for(acknowledgement)? {
+            return Err(Error::StillRunning);
         }
+        self.child
+            .try_wait()
+            .map_err(io_error("wait for filesystem shutdown"))?;
         self.reconcile()?;
         self.guard.seal()?;
         Ok(())
@@ -803,8 +809,14 @@ impl Drop for Mounted {
         // A failed startup cannot return while its delayed helper could still expose a view.
         // EOF makes the supervisor stop its owned provider before this process releases it.
         let _ = self.child.wait();
-        while self.reconcile().is_err() {
-            thread::sleep(Duration::from_millis(100));
+        if self.reconcile().is_err() {
+            for helper in &self.helpers {
+                let _ = helper.wait();
+            }
+            // Past the helpers' exits, only a kernel or disk-image cleanup still settling.
+            while self.reconcile().is_err() {
+                thread::sleep(Duration::from_millis(100));
+            }
         }
         let _ = self.guard.seal();
     }
@@ -940,12 +952,7 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
         .map_err(io_error("unlock securefs"))?;
     drop(provider_input);
     drop(secret);
-    let (ended, stop) = mpsc::channel();
-    thread::spawn(move || {
-        let mut byte = [0];
-        let _ = input.read(&mut byte);
-        let _ = ended.send(());
-    });
+    let (heard, mounts) = listen(input, parent, Some(child.child.id()))?;
     let mut sealed = false;
     loop {
         if let Some(status) = child
@@ -967,7 +974,12 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
             sealed = true;
             acknowledge()?;
         }
-        if stop.try_recv().is_ok() || parent.wait_for(Duration::from_millis(100))? {
+        // Where no mount event comes (Windows), the view is sampled until it's mounted.
+        let next = match sealed || mounts {
+            true => heard.recv().map_err(|_| false),
+            false => heard.recv_timeout(STARTUP_SAMPLE).map_err(|e| e == mpsc::RecvTimeoutError::Timeout),
+        };
+        if matches!(next, Ok(Heard::Stop) | Err(false)) {
             #[cfg(not(target_os = "macos"))]
             if child.identity.is_some() && provider.identity(&view)? == child.identity {
                 let _ = provider.unmount_with_budget(&view, Duration::from_secs(2));
@@ -980,6 +992,49 @@ fn supervise(arguments: &[OsString]) -> Result<()> {
             return Ok(());
         }
     }
+}
+
+/// What a supervisor waits on: its parent's stdin closing or its exit (`Stop`), its provider's exit, a mount coming or going.
+enum Heard {
+    Stop,
+    Child,
+    Mounts,
+}
+
+/// Each on a thread of its own, blocked with no timeout. Whether mounts are heard (not on Windows).
+fn listen(
+    mut input: io::Stdin,
+    parent: platform::process::Exact,
+    child: Option<u32>,
+) -> Result<(mpsc::Receiver<Heard>, bool)> {
+    let (tell, heard) = mpsc::channel();
+    let told = tell.clone();
+    thread::spawn(move || {
+        let _ = input.read(&mut [0]);
+        let _ = told.send(Heard::Stop);
+    });
+    let told = tell.clone();
+    thread::spawn(move || {
+        let _ = parent.wait();
+        let _ = told.send(Heard::Stop);
+    });
+    if let Some(pid) = child {
+        let exact = platform::process::Birth::of(pid).and_then(|birth| platform::process::Exact::open(&birth))?;
+        let told = tell.clone();
+        thread::spawn(move || {
+            if let Some(exact) = exact {
+                let _ = exact.wait();
+            }
+            let _ = told.send(Heard::Child);
+        });
+    }
+    let Ok(changes) = platform::mounts::Changes::new() else {
+        return Ok((heard, false));
+    };
+    thread::spawn(move || {
+        while changes.wait().is_ok() && tell.send(Heard::Mounts).is_ok() {}
+    });
+    Ok((heard, true))
 }
 
 fn acknowledge() -> Result<()> {
@@ -1054,25 +1109,21 @@ fn control_process(
     operation: &'static str,
     budget: Duration,
 ) -> Result<(ExitStatus, Child)> {
-    let deadline = Instant::now() + budget;
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(io_error("read filesystem control acknowledgment"))?
-        {
-            return Ok((status, child));
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            // No key is passed to a control process. Reap separately so a wedged driver does
-            // not hold Calcifer's session mutex; the actual provider is separately owned.
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
-            return Err(Error::ControlTimeout(operation));
-        }
-        thread::sleep(Duration::from_millis(20));
+    let exact = platform::process::Birth::of(child.id())
+        .and_then(|birth| platform::process::Exact::open(&birth))?;
+    if exact.map_or(Ok(true), |exact| exact.wait_for(budget))? {
+        let status = child
+            .wait()
+            .map_err(io_error("read filesystem control acknowledgment"))?;
+        return Ok((status, child));
     }
+    let _ = child.kill();
+    // No key is passed to a control process. Reap separately so a wedged driver does
+    // not hold Calcifer's session mutex; the actual provider is separately owned.
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Err(Error::ControlTimeout(operation))
 }
 
 #[cfg(target_os = "macos")]

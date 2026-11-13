@@ -44,6 +44,26 @@ the streamed regions. A plan phase that
 ran through last time with no region coming back is a single pass: its used regions rank with the
 unplanned, and other phases' loops go after every single pass's.
 
+## The driver's reserve
+
+The driver allocates on its own: a kernel's code at its first launch, local memory, a library's handle.
+Its refusal fails that launch, not an allocation of ours, so no reclaim can answer it. Every map tries
+to leave 800 MiB of the card free for it, read from the driver at the map: pages that fit, but not beside
+the reserve, take only what is idle and done for it (no wait, no owner, no peer), and short of that take
+the reserve. The reserve never makes a demand wait or fail.
+
+The amount is measured: 2x the largest out-of-books growth (driver used less varena's books) a request
+showed, rounded up to 32 MiB. The cold H3 15 s runs of cr-293:
+
+| run | card | growth |
+|---|---|---|
+| release-gate 43226249169, kazune (failed beside a 128 MiB slack) | 5090 | 365 MiB: peak less books less what was on the card before |
+| pod-session 43341776458, reserve cell | 4090 | 391 MiB: peak less books less the executor's 552 MiB start (context and kernel checks) |
+| pod-session 43344781014, kazune's room | 5090 | 377 MiB: of the 512 MiB reserve then, 135 MiB was left free |
+| release-gate 43233812383, roxas, three cold runs on a fresh card | 5090 | 385-387 MiB: 937-939 MiB peak less books, less a 552 MiB start |
+
+A warm request grows nothing. 2 x 391 = 782, rounded up: 800 MiB.
+
 ## Fills
 
 A Region has a `Source`, and only the core calls it. `use` on an absent Region runs it on the caller's

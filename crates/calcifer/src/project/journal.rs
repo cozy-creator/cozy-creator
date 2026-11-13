@@ -28,7 +28,24 @@ pub(crate) struct RunOwner {
     project: Arc<Project>,
     controller: Weak<crate::Calcifer>,
 }
+/// A project as Calcifer's registry holds it, never what keeps it open: an unended run's route, a request or a view does.
+#[derive(Clone)]
+pub(crate) struct OpenProject {
+    project: Weak<Project>,
+    controller: Weak<crate::Calcifer>,
+    /// This open's attach (`Calcifer::attach_project`): its unended runs routed, driven and exported.
+    pub(crate) attached: bool,
+    /// Attached once in this Calcifer's life (its legacy history checked): it may open again by itself once it closed.
+    pub(crate) known: bool,
+}
+impl OpenProject {
+    pub(crate) fn owner(&self) -> Option<RunOwner> { Some(RunOwner { project: self.project.upgrade()?, controller: self.controller.clone() }) }
+    pub(crate) fn is(&self, owner: &RunOwner) -> bool { std::ptr::eq(self.project.as_ptr(), Arc::as_ptr(&owner.project)) }
+}
+
 impl RunOwner {
+    pub(super) fn of(project: &Arc<Project>, calcifer: &Arc<crate::Calcifer>) -> Self { Self { project: project.clone(), controller: Arc::downgrade(calcifer) } }
+    pub(crate) fn open(&self, attached: bool, known: bool) -> OpenProject { OpenProject { project: Arc::downgrade(&self.project), controller: self.controller.clone(), attached, known } }
     pub(crate) fn same_view(&self, other:&Self)->bool { Arc::ptr_eq(&self.project,&other.project) }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn root(&self) -> &std::path::Path { &self.project.root }
@@ -231,6 +248,9 @@ impl ProjectStore {
         self.project.folder.journal_write(write)
     }
 
+    /// Whether this thread is inside one of the project's own edits, which holds its writer until it commits.
+    pub(crate) fn acting(&self) -> bool { self.project.folder.acting_here() }
+
     pub(crate) fn answer(&self, key: &str) -> store::Result<Option<Answer>> {
         self.read(|conn| {
             Ok(conn.query_row("SELECT digest, status, content_type, body FROM request_keys WHERE key = ?1 AND status IS NOT NULL", [key], |row| {
@@ -286,6 +306,9 @@ fn keep_worker_receipt(tx:&Transaction<'_>,project:&str,machine:&str,receipt:&ap
     }
     Ok(covered)
 }
+
+/// Where the plan sent each run, and its offer there (cl-967): beside `runs`, so a journal of any version takes it.
+pub(crate) const PLACEMENTS: &str = "CREATE TABLE IF NOT EXISTS run_placements (run TEXT PRIMARY KEY, placed TEXT NOT NULL) STRICT, WITHOUT ROWID;";
 
 pub(super) const UNSEEN_SCHEMA:&str="CREATE TABLE IF NOT EXISTS project_unseen (
     project TEXT NOT NULL, box TEXT NOT NULL, number INTEGER NOT NULL,

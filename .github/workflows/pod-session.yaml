@@ -76,6 +76,7 @@ jobs:
           sparse-checkout: |
             release-gate/sessions
             release-gate/ref
+            release-gate/suites/bench/vram.py
             release-gate/suites/tensord
             release-gate/suites/disk
             e2e/candidates
@@ -145,8 +146,8 @@ jobs:
           repository: cozy-creator/cozy-runtime
           ref: ${{ steps.runtime.outputs.ref }}
           path: runtime.src
+      # uv: a Runtime wheel built here, and the Triton sets a package from a packages_refs checkout carries (sessions/lib.sh `kernels`).
       - uses: astral-sh/setup-uv@v7
-        if: steps.runtime.outputs.ref != ''
       - if: steps.runtime.outputs.ref != ''
         run: echo "RUNTIME_WHEEL=$(bash creator/e2e/candidates/build.sh runtime runtime.src "$RUNNER_TEMP/candidates")" >> "$GITHUB_ENV"
       # ffmpeg and ffprobe from the tool cache: `sudo apt-get install ffmpeg` hung three times on GitHub's runners.
@@ -190,21 +191,21 @@ jobs:
             { echo "::error::no session $SCRIPT: $(ls $s | grep -vx lib.sh | sed 's/\.sh$//' | paste -sd,)"; exit 1; }
           jq -e 'type=="object"' <<<"$PARAMS" >/dev/null || { echo "::error::params is not a JSON object"; exit 1; }
           bash "$s/$SCRIPT.sh" 2>&1 | node creator/e2e/publish/scrub.js
-      # The script's trap ends its rentals; a cancelled job can skip it, so end them here too and say so.
+      # The script's trap ends its rentals; a cancelled job can skip it, so end them here too and say so: each order the
+      # session recorded once its Hub accepted it, placed or not, and anything else this runner's Calcifer ordered (cl-979).
       - if: always()
         run: |
-          [ -f "$OUT/rental" ] || exit 0
           . creator/e2e/test-hub.sh
           require_ci_rental_hub "$HUB" || exit 2
           . creator/release-gate/machines.sh
           left=0
-          while read -r rid; do
+          for rid in $({ cat "$OUT/rental" 2> /dev/null; own; } | sort -u); do
             for _ in $(seq 1 30); do
               listed "$rid" || { echo "$rid is gone"; continue 2; }
               cozy machine end "$rid" -y < /dev/null || true; sleep 10
             done
             echo "::error::$rid is still listed, or no machine listing answered: end it by hand (cozy machine end $rid)"; left=1
-          done < "$OUT/rental"
+          done
           exit $left
       - if: always()
         uses: ./creator/e2e/publish

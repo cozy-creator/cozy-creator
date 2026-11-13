@@ -126,6 +126,28 @@ impl Stage {
         Ok(Self { _dir: dir, root, src, uv })
     }
 
+    /// A floor only the open RC meets (`cozy-runtime>=0.47.0.dev0`) takes the RC's newest build, its wheel by URL in this copy
+    /// alone (`floor::rc_runtime`, xs-194): the build every machine of the RC runs, never a wheel the package names, which each
+    /// Runtime merge replaces.
+    async fn rc_runtime(&self, say: Say<'_>) -> Result<(), Error> {
+        let Some(rc) = crate::floor::rc_runtime(&self.src).await? else { return Ok(()) };
+        let path = self.src.join("pyproject.toml");
+        let authored = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
+        let mut doc: toml_edit::DocumentMut = authored.parse().map_err(|e| refuse("project_invalid", e))?;
+        let sources = (doc["tool"]["uv"]["sources"].or_insert(toml_edit::table()))
+            .as_table_like_mut()
+            .ok_or_else(|| refuse("project_invalid", "tool.uv.sources is not a table"))?;
+        if sources.contains_key("cozy-runtime") {
+            return Ok(());
+        }
+        let mut source = toml_edit::InlineTable::new();
+        source.insert("url", rc.url.as_str().into());
+        sources.insert("cozy-runtime", toml_edit::value(source));
+        fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
+        say(&format!("cozy-runtime {}: the open RC's newest build, which its machines run (no release meets its floor)", api::prerelease::shown(&rc.version)));
+        Ok(())
+    }
+
     /// Points each of the copy's `tensorhub` sources at the index `bound` names for its distribution: one uv index per
     /// namespace, named `tensorhub` itself when every source takes the same one.
     fn bind(&self, bound: &Bound) -> Result<(), Error> {
@@ -341,6 +363,7 @@ pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within:
     -> Result<Locked, Error> {
     let uv_path = tools(hubs.home(), project, say).await?;
     let stage = blocking(|| Stage::new(project, within, uv_path, say))?;
+    stage.rc_runtime(say).await?;
     let own = blocking(|| fs::read_to_string(project.root.join("uv.lock")).ok());
     let bound = match project.hub_sources.is_empty() {
         true => Bound::new(),
@@ -416,6 +439,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     }
     let uv_path = tools(api.machines.hubs.home(), &project, say).await?;
     let stage = blocking(|| Stage::new(&project, &within, uv_path, say))?;
+    stage.rc_runtime(say).await?;
     fs::write(stage.src.join("uv.lock"), &committed).map_err(|e| refuse("stage_unavailable", e))?;
     // Locking the copy is a no-op for a lock made for this Hub. For another, it moves each Hub
     // package to this Hub's index for its namespace, pinned to the versions the lock holds: a pin
@@ -444,7 +468,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     let grants = client.begin_package_release(org, name, release, &declared).await.map_err(hub_error)?;
     let declaration = Declaration { hub, client: &client, org, name, release, files: &declared };
     result.uploaded_bytes = upload(&files, &grants.files, &declaration, say).await?;
-    let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full, ask.yanked).await)
+    let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full).await)
         .map_err(hub_error)?;
     // Finalization re-hashes every file on the Hub; its state ends the wait.
     while state.state != "committed" && state.state != "failed" {
@@ -463,14 +487,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
         }
         return Err(error);
     }
-    // A Hub from before finalize took `yanked` ignores it, and the release is its newest until this.
-    if ask.yanked && !state.yanked {
-        client.yank_package_release(org, name, release).await.map_err(|e| {
-            refuse("package_not_yanked", format!("{org}/{name}@{release} is published but not yanked: {}", hub_error(e)))
-                .remedy(format!("cozy package yank {org}/{name}@{release}"))
-        })?;
-    }
-    result.status = if ask.yanked { "published yanked" } else { "published" }.into();
+    result.status = "published".into();
     result.changed = true;
     result.warnings = state.warnings;
     api.releases.forget(hub, &result.package);
@@ -484,8 +501,8 @@ async fn rc_reader(api: &Api, version: &str) -> Result<Option<String>, Error> {
     if !(api.machines.dev || crate::update::dev_build()) || !prerelease {
         return Ok(None);
     }
-    // Its pure wheel, which the RC's prerelease keeps for every build (cl-952): a SHA256SUMS read a moment before the RC moved
-    // still names one that's there, where the native one it names is gone (404, e2e 43206615800).
+    // Its pure wheel, which any platform reads; the RC's prerelease keeps a wheel an hour after the push that replaced it, so a
+    // SHA256SUMS read a moment before the RC moved still names one that's there (e2e 43206615800 read a 404).
     let sums = api.machines.rc.now().await?;
     let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
     Ok(sums.pure_runtime().or_else(|| sums.build("runtime", &platform)).map(|(_, url)| url))

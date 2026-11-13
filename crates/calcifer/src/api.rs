@@ -51,6 +51,17 @@ tokio::task_local! {
     static IGNORED: Arc<std::sync::Mutex<Vec<String>>>;
 }
 
+/// `work`, spawned by a request, hearing what it ignores as the request does (`Cozy-Ignored-Fields`).
+pub(crate) fn carry_ignored<F: std::future::Future>(work: F) -> impl std::future::Future<Output = F::Output> {
+    let held = IGNORED.try_with(Arc::clone).ok();
+    async move {
+        match held {
+            Some(held) => IGNORED.scope(held, work).await,
+            None => work.await,
+        }
+    }
+}
+
 /// The header a client reads to learn which of its request's fields this Calcifer did not read.
 pub(crate) const IGNORED_FIELDS: &str = "cozy-ignored-fields";
 
@@ -81,6 +92,10 @@ pub(crate) struct Api {
     /// never land between a submission's check and its commit.
     stopping: Arc<RwLock<bool>>,
     stop: watch::Sender<bool>,
+    /// Set once cozy updated itself (cl-978): this Calcifer stops to start the installed binary in its place.
+    updated: std::sync::atomic::AtomicBool,
+    /// When this Calcifer started: its own updates are keyed by it.
+    pub(crate) started_ms: i64,
 }
 
 async fn no_store(request: Request, next: Next) -> Response {
@@ -112,7 +127,10 @@ impl Api {
             bearer: Sha256::digest(token).into(),
             stopping: Arc::new(RwLock::new(false)),
             stop: watch::channel(false).0,
+            updated: std::sync::atomic::AtomicBool::new(false),
+            started_ms: crate::store::now_ms(),
         });
+        api.calcifer.serve_api(&api);
         crate::project::vault::start(&api);
         api
     }
@@ -145,6 +163,49 @@ impl Api {
         info!(owed = owed.len(), "down: stopping");
         self.stop();
         Ok(owed)
+    }
+
+    /// What keeps this Calcifer from restarting now but `own`, its update's run (cl-978): runs going (its machines', its own),
+    /// and requests being served. None: it's idle; a page with a stream open reconnects.
+    pub(crate) fn busy_but(&self, own: &str) -> Result<Option<String>, Error> {
+        let internal = |e: StoreError| Error::internal("store_unreadable", e.to_string());
+        let runs: usize = self.calcifer.each_store(|store| store.unsettled().map(|ids| ids.len())).map_err(internal)?.into_iter().sum();
+        let here: usize = self.calcifer.each_store(|store| Ok(store.unsettled_here()?.into_iter().filter(|id| id.as_str() != own).count())).map_err(internal)?.into_iter().sum();
+        let requests = self.activity.requests.load(Ordering::Relaxed);
+        let mut busy = vec![];
+        match runs + here {
+            0 => {}
+            1 => busy.push("a run is going".to_owned()),
+            n => busy.push(format!("{n} runs are going")),
+        }
+        if requests > 0 {
+            busy.push(format!("{requests} request(s) in flight"));
+        }
+        Ok((!busy.is_empty()).then(|| busy.join(", ")))
+    }
+
+    /// Stops this Calcifer for the cozy it updated to, which starts in its place (`serve::main`): as `down` does, admission closed
+    /// once mutations in flight are done, again while an encrypted view is still closing.
+    pub(crate) async fn restart_updated(self: &Arc<Self>) {
+        self.updated.store(true, Ordering::Relaxed);
+        loop {
+            let mut closed = std::pin::pin!(crate::project::vault::CLOSED.notified());
+            closed.as_mut().enable();
+            match self.down().await {
+                Ok(_) => return,
+                Err(e) => warn!(code = %e.code, "restarting on the updated cozy: {}; again once a view closes", e.message),
+            }
+            tokio::select! {
+                () = self.stopped() => return,
+                () = closed => {}
+                () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+            }
+        }
+    }
+
+    /// Whether this Calcifer stopped for the cozy it updated to.
+    pub(crate) fn updated(&self) -> bool {
+        self.updated.load(Ordering::Relaxed)
     }
 
     /// Ends every stream and the server.
@@ -449,7 +510,7 @@ async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) ->
     };
     if !admitted {
         let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
-        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
+        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a page opens from the link `cozy open` gives").next("cozy open");
         return Refusal(error).into_response();
     }
     let path=request.uri().path();
@@ -565,8 +626,13 @@ pub(crate) async fn find_scoped(api: &Arc<Api>, project: Option<&str>, key: &str
     let row = match journal.run(key)? {
         Some(row) => Some(row),
         None => match key.parse() { Ok(number) => journal.run_by_number(number)?, Err(_) => None },
+    };
+    // cozy's own update (cl-978) is no project's: a project's client that asked for it follows it from Calcifer's journal.
+    let row = match row {
+        None if project.is_some() => api.calcifer.maintenance_store().run(key)?.filter(|row| row.target == ::api::calcifer::hub::job::COZY_UPDATE),
+        row => row,
     }.ok_or_else(|| refuse(Kind::NotFound, "run_not_found", "this scope knows no such run"))?;
-    if project.is_none() { api.calcifer.remember_maintenance_run(row.id.as_str()); }
+    if project.is_none() || row.target == ::api::calcifer::hub::job::COZY_UPDATE { api.calcifer.remember_maintenance_run(row.id.as_str()); }
     Ok(row)
 }
 
@@ -689,7 +755,7 @@ async fn down(State(api): State<Arc<Api>>) -> Result<Json<Down>, Refusal> {
 async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Refusal> {
     let hub = crate::hub::origin(&api, None)?;
     Ok(Json(CalciferStatus {
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         os: std::env::consts::OS.into(),
         local_usable: platform::Os::CURRENT.local_inference(),
         signed_in: hub.device_key(api.machines.hubs.home()).exists(),
@@ -706,7 +772,7 @@ async fn activity(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap) -
     let runs = counts.iter().map(|(runs, _)| runs).sum::<usize>() + here;
     let asker = headers.get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
     Ok(Json(CalciferActivity {
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         pages: api.activity.pages.load(Ordering::Relaxed),
         runs: u32::try_from(runs).unwrap_or(u32::MAX),
         here: u32::try_from(here).unwrap_or(u32::MAX),
@@ -823,6 +889,7 @@ pub(crate) async fn events(
         owner,
         inert,
         vault_token: crate::project::vault::readable_token(&row.out_dir),
+        _following: (row.state != RunState::Settled).then(|| crate::project::vault::following(&row.out_dir)).flatten(),
         id: row.id,
         pending,
         last: starting_after,
@@ -840,6 +907,8 @@ struct Follow {
     owner:Option<crate::project::RunOwner>,
     inert:bool,
     vault_token: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// A run still going, followed: its encrypted project stays unlocked meanwhile.
+    _following: Option<crate::project::vault::Following>,
     id: RunId,
     pending: VecDeque<Event>,
     /// The highest sequence number sent; a durable event at or below it is already known.

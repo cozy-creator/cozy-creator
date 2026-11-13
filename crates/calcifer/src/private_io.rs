@@ -14,6 +14,8 @@ use std::{
 };
 
 static SCOPES: LazyLock<Mutex<HashMap<PathBuf, Scope>>> = LazyLock::new(Mutex::default);
+/// Each project proof a local worker proved it protects, by project, proof token and worker (`execution_link`).
+static PROVED: LazyLock<Mutex<std::collections::HashSet<(String, String, String)>>> = LazyLock::new(Mutex::default);
 
 tokio::task_local! { static PROJECT: Option<Scope>; }
 
@@ -110,7 +112,11 @@ pub(crate) async fn execution_link(
     // Never send this computer's mounted path or proof token to a remote worker.
     // Canonical inputs, history and downloaded results remain in this project.
     if machine != "local" { return Ok(base.clone()); }
+    // Proved once for this worker and this proof, not before each call: every protected request is checked there anyway, and an export
+    // that waited on two more round trips landed after its take was listed.
+    let proved = (project_id.to_owned(), scope.token.clone(), base.worker());
     let selected = base.with_private(scope);
+    if PROVED.lock().unwrap().contains(&proved) { return Ok(selected); }
     selected.probe_private().await.map_err(|failure| match failure {
         crate::link::LinkError::Refused { code, message, remedy, next } => Error {
             remedy, next, ..Error::new(Kind::Conflict, code, message)
@@ -120,6 +126,7 @@ pub(crate) async fn execution_link(
         _ => Error::new(Kind::Unavailable, "project_worker_unavailable",
             "The local worker could not verify protected execution. Project files were not sent.").next("cozy doctor"),
     })?;
+    PROVED.lock().unwrap().insert(proved);
     Ok(selected)
 }
 

@@ -73,6 +73,8 @@ pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Seriali
             // Following stopped: the install goes on, and nothing more is asked.
             return Ok(install);
         }
+        // cozy updated itself for it (cl-978): the job goes on as the new cozy.
+        crate::update::after_update(ctx, &install)?;
     }
 }
 
@@ -181,6 +183,23 @@ async fn interrupt() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
+/// `run` as `event` moves it: its record anew, or one of its outputs.
+fn absorb(run: &mut Run, event: &Event) {
+    match event {
+        Event::Created { run: now, .. } | Event::Queued { run: now, .. } | Event::InProgress { run: now, .. }
+        | Event::Completed { run: now, .. } | Event::Failed { run: now, .. } | Event::Canceled { run: now, .. } => *run = now.clone(),
+        Event::OutputAdded { output_index, item, .. } | Event::OutputDone { output_index, item, .. } | Event::OutputLanded { output_index, item, .. } => {
+            let at = *output_index as usize;
+            if at < run.output.len() {
+                run.output[at] = item.clone();
+            } else if at == run.output.len() {
+                run.output.push(item.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
 /// An output still owed to Calcifer.
 fn owed(run: &Run) -> bool {
     run.output.iter().any(OutputItem::owed)
@@ -239,6 +258,8 @@ async fn watch(
     let mut view = View::new(ctx, &run);
     let mut interrupt = std::pin::pin!(stop);
     let mut terminal = None;
+    // The run as its stream says it, so an end needs no read: a vault locks as its work ends.
+    let mut latest = run.clone();
     // The rental the run was placed on, followed until it is known whether its Hub placed it far
     // away: the Hub decides after it accepts the order.
     let mut placing: Option<Following> = None;
@@ -274,9 +295,15 @@ async fn watch(
                 }
             }
         };
+        if let Some(Ok(event)) = &event {
+            absorb(&mut latest, event);
+        }
         match event {
             None => {
-                let run = calcifer.run(&address).await?;
+                let run = match settled(&latest) && !owed(&latest) {
+                    true => latest.clone(),
+                    false => calcifer.run(&address).await?,
+                };
                 // Its Calcifer stopped with an output still owed: wait on the next one.
                 if settled(&run) && owed(&run) {
                     events.again();
@@ -422,6 +449,22 @@ pub(super) fn keyed(basis: &str) -> &'static str {
     }
 }
 
+/// Where the plan sent it and what it quoted there: `enishi, to finish in 20 s (measured, warm; 9 s preparing, 0.3 GiB to fetch)`.
+fn placed_words(placed: &api::calcifer::Placed) -> String {
+    let basis = serde_json::to_value(placed.basis).ok().and_then(|basis| basis.as_str().map(str::to_owned)).unwrap_or_default();
+    let warm = if placed.warm { ", warm" } else { "" };
+    let fetch = match placed.fetch_bytes {
+        0 => String::new(),
+        bytes => format!(", {:.1} GiB to fetch", bytes as f64 / (1u64 << 30) as f64),
+    };
+    let preparing = match placed.prepare_ms / 1000 {
+        0 => String::new(),
+        s => format!("; {s} s preparing{fetch}"),
+    };
+    let finish = (placed.finish_at_ms - placed.quoted_at_ms).max(0) / 1000;
+    format!("{}, to finish in {finish} s ({basis}{warm}{preparing})", placed.machine)
+}
+
 /// The record's fields, for a person.
 pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     let mut record = output::Record::new()
@@ -429,6 +472,9 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
         .field("target", &run.target)
         .field("status", status(run))
         .field("machine", run.machine.as_deref().unwrap_or("—"));
+    if let Some(placed) = &run.placed {
+        record = record.field("placed", placed_words(placed));
+    }
     if let Some(gpu) = &run.gpu {
         record = record.field("gpu", gpu);
     }

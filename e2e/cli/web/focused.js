@@ -8,7 +8,10 @@ const { join } = require('path');
 const { boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const NAME = 'focus_image';
-const STANDARD_ASPECTS = ['21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16'];
+// web/app/src/canvas/ratios.ts's: a pull within about 2% of one is it, and past that free (Paul, 11-13).
+const STANDARD_ASPECTS = ['16:9', '9:16', '1:1', '4:3', '3:4', '4:5', '5:4', '3:2', '2:3', '21:9', '9:21', '2:1', '1:2', '2.39:1', '1.85:1', '1.90:1', '1.43:1', '1.37:1', '1.66:1'];
+const ratioOf = (shape) => shape.split(':').map(Number).reduce((w, h) => w / h);
+const snapsAsSaid = (shape) => STANDARD_ASPECTS.includes(shape) || (/^\d+(\.\d+)?:\d+(\.\d+)?$/.test(shape) && !STANDARD_ASPECTS.some((standard) => Math.abs(Math.log(ratioOf(shape) / ratioOf(standard))) <= 0.02));
 const failures = [];
 const seen = {};
 let during = 'setup';
@@ -231,7 +234,7 @@ async function died(error) {
   check('right_hand_original_previews_are_available', await history.isVisible() && await history.locator('.take[data-take]').count() === 10);
   check('focus_has_no_linear_counter_or_arrow_controls', await focus.locator('.count:visible').count() === 0 && await focus.getByRole('button', { name: /^(Previous version|Next version)$/ }).count() === 0);
   const title = focus.getByRole('button', { name: 'Rename node', exact: true });
-  check('focus_title_is_large_and_version_is_separate', await title.innerText() === NAME && await title.evaluate((element) => parseFloat(getComputedStyle(element).fontSize) >= 24) && await focus.getByLabel('Image version', { exact: true }).innerText() === 'v1');
+  check('focus_title_is_large_and_version_is_separate', await title.innerText() === NAME && await title.evaluate((element) => parseFloat(getComputedStyle(element).fontSize) >= 24) && await focus.getByLabel('Take', { exact: true }).innerText() === 'v1');
   await title.click();
   const titleInput = focus.locator('.focus-heading input[aria-label="Name"]');
   await titleInput.fill(NAME);
@@ -279,7 +282,7 @@ async function died(error) {
   const tall = await expectFit(0.25);
   check('wide_and_tall_states_fit_the_same_viewport_room', sameRect(wide.viewer, tall.viewer) && fits(wide, 4) && fits(tall, 0.25), { wide, tall });
   check('tool_controls_stay_pinned_when_state_ratio_changes', sameRect(wide.controls, tall.controls), { wide: wide.controls, tall: tall.controls });
-  check('thumbnail_click_previews_without_approving', (await asset()).version === 1 && (await asset()).approved === 1 && await focus.getByLabel('Image version', { exact: true }).innerText() === 'v2');
+  check('thumbnail_click_previews_without_approving', (await asset()).version === 1 && (await asset()).approved === 1 && await focus.getByLabel('Take', { exact: true }).innerText() === 'v2');
   check('state_preview_does_not_change_the_focused_canvas_camera', sameCamera(focusedCanvas, await camera()));
   await approve(2);
   check('double_click_approves_the_preview_separately', (await asset()).version === 2 && (await asset()).approved === 2);
@@ -370,7 +373,7 @@ async function died(error) {
     await expectFit(0.25);
     check('old_tall_state_stays_previewable_after_generation', await history.locator('.take.on[data-take]').getAttribute('data-take') === '2' && (await asset()).versions === 11);
 
-    // A bounded AspectRatio snaps to the standard supported ratios while its frame stays free until release.
+    // A bounded AspectRatio snaps to a standard ratio near it, else stays as pulled, while its frame stays free until release.
     await newImage.click();
     const aspectBadge = card.locator('.focus-viewer .media > [data-output-aspect]');
     await aspectBadge.waitFor();
@@ -389,7 +392,7 @@ async function died(error) {
     const requestedShape = await aspectBadge.getAttribute('data-output-aspect');
     const [ratioWidth, ratioHeight] = requestedShape.split(':').map(Number);
     const requestedRatio = ratioWidth / ratioHeight;
-    check('aspect_drag_holds_free_bounds_until_release', STANDARD_ASPECTS.includes(requestedShape) && sameRect(beforeResize.viewer, heldResize.viewer) && sameRect(heldResize.media, stableResize.media)
+    check('aspect_drag_holds_free_bounds_until_release', snapsAsSaid(requestedShape) && sameRect(beforeResize.viewer, heldResize.viewer) && sameRect(heldResize.media, stableResize.media)
       && Math.abs(heldResize.media.x - beforeResize.media.x) < 2 && Math.abs(heldResize.media.y - beforeResize.media.y) < 2
       && Math.abs(heldResize.media.width - (beforeResize.media.width - 150)) < 4 && Math.abs(heldResize.media.height - heldResize.media.width / requestedRatio) < 4
       && !frameFits(heldResize, requestedRatio), { beforeResize, heldResize, stableResize, requestedShape });
@@ -590,30 +593,27 @@ async function died(error) {
   await videoFocus.waitFor();
   await page.locator(`[data-focused-asset="${VIDEO}"]:not([data-entering])`).waitFor();
   const videoFocusedCanvas = await camera();
-  // Empty, it has no New: its form is what's open (cl-925).
+  // Empty, it has no New: what it's written in is open (cl-925). Its frame holds it (cl-938): Summary, then its Beats, each a section opened by
+  // its head; under it its tool, Render and its other fields.
   check('empty_video_has_no_new', await videoFocus.getByRole('button', { name: 'New video', exact: true }).count() === 0);
-  const videoForm = videoFocus.locator('.focus-parameter-tool > .here-under');
-  await videoForm.waitFor();
-  const beatPrompt = videoForm.locator('[data-field="beats"] .beat .mention-text').first();
+  const videoFrame = videoFocus.locator('.card.here .in-frame .frame-sections').first();
+  await videoFrame.waitFor();
+  const heads = await videoFrame.locator('.beat-toggle b').allInnerTexts();
+  await videoFrame.locator('.beat-toggle', { hasText: 'Beat 1' }).click();
+  const beatPrompt = videoFrame.locator('.mention-text[data-field="beats.0.description"]');
   await beatPrompt.waitFor();
-  const summaryPrompt = videoForm.locator('.mention-text[data-field="summary"]');
-  await summaryPrompt.waitFor();
-  const formGeometry = await videoForm.boundingBox();
+  const summaryPrompt = videoFrame.locator('.mention-text[data-field="summary"]');
+  await summaryPrompt.waitFor({ state: 'attached' });
+  const formGeometry = await videoFocus.locator('.card.here .media').first().boundingBox();
   const videoRoom = await videoFocus.locator('.focus-body').boundingBox();
-  const summaryGeometry = await summaryPrompt.boundingBox();
   const beatGeometry = await beatPrompt.boundingBox();
-  check('video_summary_precedes_the_prominent_editable_Beats', summaryGeometry.y + summaryGeometry.height <= beatGeometry.y && await videoForm.locator('.focus-parameter-group h3').first().innerText() === 'Beats' && formGeometry.width > videoRoom.width * 0.5 && formGeometry.height > videoRoom.height * 0.6 && await beatPrompt.evaluate((element) => parseFloat(getComputedStyle(element).fontSize) >= 18) && beatGeometry.height >= 100, { formGeometry, videoRoom, summaryGeometry, beatGeometry });
+  check('video_summary_precedes_the_prominent_editable_Beats', heads[0] === 'Summary' && heads.slice(1).length === 2 && heads.slice(1).every((head) => /^Beat \d/.test(head)) && formGeometry.width > videoRoom.width * 0.5 && await beatPrompt.evaluate((element) => parseFloat(getComputedStyle(element).fontSize) >= 18) && beatGeometry.height >= 100, { heads, formGeometry, videoRoom, beatGeometry });
   await beatPrompt.fill('<focus_image.2> Edited in the large video Beats form.');
   await videoFocus.getByRole('button', { name: 'Rename node', exact: true }).focus();
   await until('video Beats edits are saved', () => state(), (value) => value.assets.find((item) => item.name === VIDEO)?.fields?.beats?.[0]?.description === '<focus_image.2> Edited in the large video Beats form.');
-  check('video_seed_and_advanced_fold_controls_are_absent', await videoForm.locator('[data-field="seed"], .seed, .advanced-toggle').count() === 0 && await videoForm.getByRole('button', { name: 'Advanced', exact: true }).count() === 0);
-  const videoMore = videoForm.locator('.more-toggle');
-  if (await videoMore.count()) {
-    await videoMore.click();
-    await videoForm.locator('.edit-more').waitFor();
-  }
-  check('H3_quality_steps_and_turbo_controls_are_hidden', await videoForm.locator('[aria-label="Quality"], [aria-label="Steps"], [aria-label="Turbo"]').count() === 0);
-  if (await videoMore.count()) await videoMore.click();
+  // In Focus every field is out, none under More or Advanced (cl-934); H3 has no seed, quality, steps or turbo to set (controls.ts).
+  check('video_seed_and_advanced_fold_controls_are_absent', await videoFocus.locator('[data-field="seed"], .seed, .advanced-toggle, .more-toggle').count() === 0 && await videoFocus.getByRole('button', { name: 'Advanced', exact: true }).count() === 0);
+  check('H3_quality_steps_and_turbo_controls_are_hidden', await videoFocus.locator('[aria-label="Quality"], [aria-label="Steps"], [aria-label="Turbo"]').count() === 0);
   check('video_workspace_hides_the_stored_asset_description', await page.locator('.desc-field:visible').count() === 0 && (await state()).assets.find((item) => item.name === VIDEO).fields.description === 'Stored asset description stays out of the UI.');
 
   const clip = join(images, 'completed.mp4');
@@ -623,7 +623,8 @@ async function died(error) {
   const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
   await completedVideo.waitFor();
   await completedVideo.click();
-  await videoFocus.locator('.focus-viewer').getByRole('button', { name: 'Play', exact: true }).click();
+  // It plays from the transport under it (cl-965).
+  await videoFocus.locator('.tl-transport button[aria-label="Play"]').click();
   const completedPlayer = videoFocus.locator('.focus-viewer video').first();
   await completedPlayer.waitFor({ state: 'visible' });
   // Hold the one-second fixture on a decoded frame while its view controls are checked.
@@ -642,8 +643,12 @@ async function died(error) {
   check('video_has_a_new_state_tile', await newVideo.isVisible());
   await newVideo.click();
   check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1);
-  check('new_video_hides_the_main_player_and_keeps_the_prompt_workspace', !await videoFocus.locator('.focus-viewer').isVisible() && await summaryPrompt.isVisible() && await beatPrompt.isVisible());
-  const beatRows = videoForm.locator('.beats-edit[data-field="beats"] > .beat');
+  // New keeps the frame's sections as they were, the one open still open. The frame its takes play in is where its words are written
+  // (cl-938, aeddbfe14: one editing view for a picture and a video): the player goes from it, and the frame stays.
+  const afterNew = { players: await videoFocus.locator('.focus-viewer video:visible').count(), frame: await videoFrame.isVisible(), open: await videoFrame.locator('.beat-toggle[aria-expanded="true"]').count() };
+  check('new_video_hides_the_main_player_and_keeps_the_prompt_workspace', afterNew.players === 0 && afterNew.frame && afterNew.open === 1, afterNew);
+  const beatRows = videoFrame.locator('.beats-edit[data-field="beats"] > .beat');
+  const summaryOpen = () => videoFrame.locator('.frame-first .beat-toggle').getAttribute('aria-expanded');
   // Closed panels clip their still-laid-out text; descendant isVisible() does not measure that clipping.
   const readBeatPanels = () => beatRows.evaluateAll((rows) => rows.map((row) => {
     const panel = row.querySelector('.beat-panel');
@@ -656,23 +661,27 @@ async function died(error) {
   const beatPanelMatches = (panel, open) => panel.expanded === String(open) && panel.hidden === String(!open) && panel.inert === !open
     && !panel.animating && panel.promptHeight > 100 && (open ? panel.height > 100 && panel.height >= panel.contentHeight - 2 : panel.height <= 1);
   const firstBeatOpen = (panels) => panels.length === 2 && beatPanelMatches(panels[0], true) && beatPanelMatches(panels[1], false);
-  const firstBeatPanels = await until('the first Beat is open and the second is fully clipped', readBeatPanels, firstBeatOpen);
-  check('video_editor_expands_the_first_beat_and_collapses_the_rest', firstBeatOpen(firstBeatPanels), firstBeatPanels);
   const firstBeatToggle = beatRows.first().getByRole('button', { name: 'Beat 1', exact: true });
   const secondBeatToggle = beatRows.nth(1).getByRole('button', { name: 'Beat 2', exact: true });
+  // One section open at a time (cl-938): a beat opened shuts Summary and the other beats.
+  if ((await firstBeatToggle.getAttribute('aria-expanded')) !== 'true') await firstBeatToggle.click();
+  const firstBeatPanels = await until('the first Beat is open and the second is fully clipped', readBeatPanels, firstBeatOpen);
+  check('video_editor_expands_the_first_beat_and_collapses_the_rest', firstBeatOpen(firstBeatPanels) && (await summaryOpen()) === 'false', firstBeatPanels);
   await secondBeatToggle.click();
   const secondBeatOpen = (panels) => panels.length === 2 && beatPanelMatches(panels[0], false) && beatPanelMatches(panels[1], true);
   const secondBeatPanels = await until('the second Beat finishes opening and the first finishes clipping', readBeatPanels, secondBeatOpen);
-  check('expanding_another_beat_closes_the_previous_one', secondBeatOpen(secondBeatPanels), secondBeatPanels);
-  await firstBeatToggle.click();
-  await until('the first Beat finishes reopening for its reference backdrop', readBeatPanels, firstBeatOpen);
-  for (const [place, ratio] of [['summary', 4], ['beats.0.description', 0.25]]) {
-    const backdrop = videoForm.locator(`[data-video-reference="${place}"] .ghosts img`);
-    const painted = await until(`the ${place} field displays its own referenced image`, () => backdrop.evaluate((image) => {
+  check('expanding_another_beat_closes_the_previous_one', secondBeatOpen(secondBeatPanels) && (await summaryOpen()) === 'false', secondBeatPanels);
+  // Behind the section being written, faded, the picture it mentions, as large as it can be (cl-949: full-bleed).
+  for (const [place, head, ratio] of [['summary', 'Summary', 4], ['beats.0.description', 'Beat 1', 0.25]]) {
+    const toggle = videoFrame.locator('.beat-toggle').filter({ hasText: head }).first();
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+    await videoFrame.locator(`.mention-text[data-field="${place}"]`).focus();
+    const behind = videoFocus.locator('.card.here .in-frame > .backdrop .spread-picture img');
+    const painted = await until(`the ${place} field displays its own referenced image`, async () => (await behind.count()) === 1 && behind.evaluate((image) => {
       const bounds = image.getBoundingClientRect();
-      return { loaded: image.complete && image.naturalWidth > 0, aspect: image.naturalWidth / image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity: Number(getComputedStyle(image.closest('.ghosts')).opacity), width: bounds.width, height: bounds.height };
-    }), (image) => image.loaded && Math.abs(image.aspect / ratio - 1) < 0.03 && image.width > 20 && image.height > 20);
-    check(`${place}_references_are_faded_and_fit_without_cropping`, painted.fit === 'contain' && painted.opacity > 0 && painted.opacity < 0.6, painted);
+      return { loaded: image.complete && image.naturalWidth > 0, aspect: image.naturalWidth / image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity: Number(getComputedStyle(image.closest('.backdrop')).opacity), width: bounds.width, height: bounds.height };
+    }), (image) => image && image.loaded && Math.abs(image.aspect / ratio - 1) < 0.03 && image.width > 20 && image.height > 20 && image.opacity > 0);
+    check(`${place}_references_are_faded_and_full_bleed`, painted.fit === 'cover' && painted.opacity > 0 && painted.opacity < 0.6, painted);
   }
   await shot('new-video');
   check('video_parameters_do_not_move_the_focused_canvas_camera', sameCamera(videoFocusedCanvas, await camera()));

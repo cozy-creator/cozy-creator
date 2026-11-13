@@ -18,6 +18,7 @@ import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
 import { BufferedImage } from "./BufferedImage"
 import type { VideoPlayback } from "./timeline/Player"
+import { FPS } from "./ranges"
 import { useArriving } from "./RunFace"
 import { bodyText, CopyError } from "../ui/CopyError"
 
@@ -932,7 +933,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           <Icon name={glyph} />
         </span>
       )}
-      {glimpsed && glimpse && <Glimpse glimpse={glimpse} failed={!making} open={Boolean(view.here)} playhead={playhead} />}
+      {glimpsed && glimpse && <Glimpse glimpse={glimpse} failed={!making} open={Boolean(view.here)} playhead={playhead} controller={focused && glimpse.media === "video" ? store.playbackOf(name, FPS) : undefined} />}
       {full && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {makingMedia && <Making view={view} name={name} run={run} cardWidth={cardWidth} />}
@@ -992,7 +993,7 @@ interface Playhead {
 /** Where each run's glimpse last was, by its run and the revision it played: a newer revision of it starts there, however its box redrew. */
 const glimpsedAt = new Map<string, { rev: number; at: number; playing: boolean }>()
 
-function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean; open: boolean; playhead: { current: Playhead | null } }) {
+function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean; open: boolean; playhead: { current: Playhead | null }; controller?: VideoPlayback }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
@@ -1030,6 +1031,15 @@ function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<Ele
     if (open) el.pause()
     else void el.play().catch(() => {})
   }, [open])
+  // In Focus it plays on the one transport and track a finished take has (cl-965; Paul, 11-12), not the browser's controls.
+  const drawn = Boolean(src)
+  useEffect(() => {
+    if (!controller || !drawn) return
+    controller.attach(element.current)
+    return () => {
+      controller.attach(null)
+    }
+  }, [controller, drawn])
   const heard = (el: HTMLVideoElement) => {
     playhead.current = open && !el.paused ? { run: glimpse.number, at: el.currentTime } : null
     if (el.readyState >= 1 && !resume.current) glimpsedAt.set(key, { rev: playing.current, at: el.currentTime, playing: !el.paused })
@@ -1045,7 +1055,7 @@ function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<Ele
             muted={!open}
             loop={!open}
             autoPlay={!open}
-            controls={open}
+            controls={open && !controller}
             playsInline
             preload="auto"
             onLoadedMetadata={(event) => {

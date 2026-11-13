@@ -317,11 +317,13 @@ impl Publisher {
     /// it the lock's or a later patch of it (before 1.0 a minor may change what a package calls, a
     /// patch doesn't), so a release runs what its lock resolved, with a Runtime's fixes; or a pair
     /// that can't speak this machine's executor protocol (`speaks`), which only this machine's can.
-    /// A member the lock doesn't name is this machine's.
+    /// A member the lock doesn't name is this machine's. An RC build stands in for any RC build of its
+    /// series a lock took (xs-194): an RC package runs on its machine's Runtime, never the wheel its lock
+    /// named, which the next Runtime merge replaces.
     pub(crate) fn stands_in(&self, locked: &Locked) -> bool {
         let ours = self.machine_pair();
         !ours.is_empty() && (!self.speaks(&locked.packages) || SDK.iter().all(|name| match (ours.get(*name), locked.packages.get(*name)) {
-            (Some(ours), Some(locked)) => patch_of(ours, locked),
+            (Some(ours), Some(locked)) => patch_of(ours, locked) || (rc_build(ours) && rc_build(locked) && same_series(ours, locked)),
             (ours, _) => ours.is_some(),
         }))
     }
@@ -331,7 +333,7 @@ impl Publisher {
     /// built with (a Runtime of another series requires another TensorFS).
     fn protocol(&self) -> BTreeMap<String, String> {
         match self.machine_pair() {
-            ours if ours.is_empty() => BTreeMap::from([("tensorfs".to_string(), env!("CARGO_PKG_VERSION").to_string())]),
+            ours if ours.is_empty() => BTreeMap::from([("tensorfs".to_string(), tensorfs::VERSION.to_string())]),
             ours => ours,
         }
     }

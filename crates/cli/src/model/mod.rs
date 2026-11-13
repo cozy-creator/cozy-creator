@@ -50,6 +50,11 @@ enum LoraVerb {
     Delete(Delete),
 }
 
+/// `--trigger`s given, each kept whole, the empty ones dropped: none given leaves them as they are; only empty ones clear them.
+fn given(triggers: Vec<String>) -> Option<Vec<String>> {
+    (!triggers.is_empty()).then(|| triggers.into_iter().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect())
+}
+
 pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode, Error> {
     match args.verb {
         LoraVerb::Ls(args) => list(ctx, args, "lora").await,
@@ -57,13 +62,13 @@ pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode,
         LoraVerb::Install(args) => machine::download(ctx, args).await,
         LoraVerb::Uninstall(args) => machine::remove(ctx, &args.model).await,
         LoraVerb::Edit(mut args) => {
-            args.edit.trigger = args.trigger;
+            args.edit.triggers = given(args.trigger);
             args.edit.strength = args.strength;
             catalog::edit(ctx, args.edit).await
         }
         LoraVerb::Upload(mut args) => {
             args.upload.trained_on = args.trained_on;
-            args.upload.trigger = args.trigger;
+            args.upload.triggers = given(args.trigger);
             args.upload.strength = args.strength;
             machine::upload(ctx, args.upload).await
         }
@@ -150,7 +155,7 @@ pub(crate) struct Edit {
     #[arg(long = "untag", value_name = "TAG")]
     untag: Vec<String>,
     #[arg(skip)]
-    trigger: Option<String>,
+    triggers: Option<Vec<String>>,
     #[arg(skip)]
     strength: Option<Strength>,
 }
@@ -159,9 +164,9 @@ pub(crate) struct Edit {
 struct LoraEdit {
     #[command(flatten)]
     edit: Edit,
-    /// Set trigger words. An empty value clears them.
-    #[arg(long)]
-    trigger: Option<String>,
+    /// Set a trigger, kept whole (a word, words or a prompt). Repeat for several; an empty value clears them.
+    #[arg(long = "trigger", value_name = "TRIGGER")]
+    trigger: Vec<String>,
     /// Set recommended strength, or none to clear.
     #[arg(long, value_parser = strength)]
     strength: Option<Strength>,
@@ -216,8 +221,9 @@ fn local_alias(text: &str) -> Result<String, String> {
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Upload {
-    /// Weights file, CozyTensors folder, local alias, model source, or run:N[#output].
-    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
+    /// Weights file, CozyTensors folder, local alias, model source, or run:N[#output]. Add :component,… to upload only those
+    /// components; a source of one takes the name (file.safetensors:vae).
+    #[arg(value_name = "SOURCE[:COMPONENT,…]", add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
     source: String,
     /// Destination model, org/name.
     #[arg(value_name = "MODEL")]
@@ -234,7 +240,7 @@ pub(crate) struct Upload {
     #[arg(skip)]
     trained_on: Option<String>,
     #[arg(skip)]
-    trigger: Option<String>,
+    triggers: Option<Vec<String>>,
     #[arg(skip)]
     strength: Option<f64>,
     /// Base model or checkpoint. A Hub checkpoint takes only what it lacks from it (a LoRA, the adapter record its factors fit); a converted source's parts replace the base's. Add :component,… to place them.
@@ -268,9 +274,9 @@ struct LoraUpload {
     /// Base model or checkpoint this LoRA was trained on.
     #[arg(long)]
     trained_on: Option<String>,
-    /// Override the LoRA's trigger words.
-    #[arg(long)]
-    trigger: Option<String>,
+    /// Override the LoRA's triggers, each kept whole. Repeat for several.
+    #[arg(long = "trigger", value_name = "TRIGGER")]
+    trigger: Vec<String>,
     /// Recommended LoRA strength.
     #[arg(long, allow_hyphen_values = true)]
     strength: Option<f64>,

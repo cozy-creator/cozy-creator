@@ -57,7 +57,7 @@ done
 cozy machine logs "$NAME" --lines 0 --since 2h > "$OUT/tensord.log" 2>&1 || say "the pod's TensorD log wasn't read"
 cozy machine logs "$NAME" tensorfs --lines 0 --since 2h > "$OUT/tensorfs.log" 2>&1 || true
 cozy machine show "$NAME" --json > "$OUT/show-after.json" 2>&1
-tail -n 20000 "$HOME/.cozy/calcifer/calcifer.log" > "$OUT/calcifer.log" 2> /dev/null || true
+cozy machine logs local calcifer --lines 20000 > "$OUT/calcifer.log" 2>&1 || true
 for a in pier walk; do run_page asset "$a" > "$OUT/asset-$a.json" 2>&1; done
 python3 "$(dirname "$0")/prepare-ahead.py" "$OUT" "$ASK" "${PICTURE%%/*}" "${VIDEO%%/*}" > "$OUT/timeline.json" 2> "$OUT/timeline.failed"
 cat "$OUT/timeline.json" >> "$R"

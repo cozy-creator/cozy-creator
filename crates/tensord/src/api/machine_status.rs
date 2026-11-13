@@ -72,8 +72,18 @@ pub(super) fn watch(
             match look(&watching).await {
                 Ok(next) if watching.last.as_ref().is_some_and(|last| !changed(last, &next)) => {}
                 Ok(next) => {
-                    watching.last = Some(next.clone());
-                    return Some((Ok(next), watching));
+                    // The queue and the times go again only when they changed: absent, they stand as last sent.
+                    let mut sent = next.clone();
+                    if let Some(last) = &watching.last {
+                        if last.queue == next.queue {
+                            sent.queue = None;
+                        }
+                        if last.times == next.times {
+                            sent.times = None;
+                        }
+                    }
+                    watching.last = Some(next);
+                    return Some((Ok(sent), watching));
                 }
                 Err(error) => return Some((Err(error), watching)),
             }
@@ -124,7 +134,7 @@ pub(super) fn identity_frame(identity: &MachineIdentity) -> v1::StatusFrame {
     v1::StatusFrame {
         worker_id: identity.authority.worker_id.clone(),
         boot_id: identity.authority.boot_id.clone(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         commit: api::COMMIT.into(),
         dev: identity.updates.dev(),
         workload_key: crate::hub::workload_key().thumbprint().into(),
@@ -146,12 +156,51 @@ struct Held {
     lost: std::collections::BTreeMap<u32, crate::gpu_service::Lost>,
     /// Why each GPU out of service is, by UUID.
     out: std::collections::BTreeMap<String, String>,
+    /// Every root not ended, as the caller reads it, and each function's times (cl-967).
+    queue: Vec<v1::Queued>,
+    times: Vec<v1::Timed>,
+    link: f64,
+    serving: u32,
+    nvlink: bool,
+    /// The caller's lists' runs (`ahead`), never among `runs`: their states, and their downloads in its activity.
+    ahead: Vec<v1::RunState>,
 }
 
 async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: VerifiedActor) -> Result<Held, Error> {
     let store = identity.store.clone();
     blocking(runs, move |runs| {
+        let service = &runs.service;
+        let problem = |error: std::io::Error| Error::internal("status_unreadable", error.to_string());
+        let reader = crate::runs::actor_id(actor);
+        let queue = (crate::estimate::roots(service).map_err(problem)?.into_iter())
+            .map(|root| v1::Queued {
+                run: match actor.owner || root.actor == reader {
+                    true => root.caller_id,
+                    false => String::new(),
+                },
+                ..root.queued
+            })
+            .collect();
+        let mut times = service.engine.all_run_times(api::estimate::HISTORY).map_err(problem)?;
+        // What each function's newest run here read, and of it what isn't here now (cl-967).
+        for (function, read) in service.engine.function_reads().map_err(problem)? {
+            let missing = crate::access::missing(&service.engine.store, &read);
+            let at = match times.iter().position(|timed| timed.function == function) {
+                Some(at) => at,
+                None => {
+                    times.push(v1::Timed { function, ..Default::default() });
+                    times.len() - 1
+                }
+            };
+            times[at].reads.push(v1::Read { model: read.model, checkpoint: read.checkpoint, bytes: read.bytes, missing });
+        }
         Ok(Held {
+            queue,
+            times,
+            link: crate::estimate::link(service),
+            serving: service.pool().map_or(0, |pool| pool.serving_width() as u32),
+            nvlink: service.pool().is_some_and(|pool| pool.hardware_class().1),
+            ahead: crate::ahead::listed(&reader).iter().filter_map(|id| runs.state(actor, id).ok()).collect(),
             runs: runs.live(actor)?,
             environments: runs.environments(actor)?,
             warm: runs.warm(actor)?,
@@ -171,7 +220,11 @@ pub(super) async fn frame(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, act
 /// `picture` on the blocking pool: it reads the disk (the store's space, the installed software,
 /// the kernels' verdicts) and `/proc`.
 async fn pictured(identity: Arc<MachineIdentity>, runs: &Arc<Runs>, held: Held) -> Result<v1::StatusFrame, Error> {
-    blocking(runs, move |_| Ok(picture(&identity, held))).await
+    blocking(runs, move |runs| {
+        let resident = runs.service.pool().map(|pool| pool.resident()).unwrap_or_default();
+        Ok(picture(&identity, held, resident))
+    })
+    .await
 }
 
 /// Whether a GPU drives a display, read from the driver at most every 10 s: a monitor is plugged in rarely, and each read opens NVML.
@@ -186,11 +239,11 @@ fn drives_display(uuid: &str) -> bool {
     display
 }
 
-fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
-    let Held { runs, environments, warm, models, mut memory, lost, mut out } = held;
+fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) -> v1::StatusFrame {
+    let Held { runs, environments, warm, models, mut memory, lost, mut out, queue, times, link, serving, nvlink, ahead } = held;
     let (updates, lifecycle) = (&identity.updates, &identity.lifecycle);
     let software = updates.software();
-    let activity = crate::activity::listed(|id| runs.iter().any(|run| run.id == id));
+    let activity = crate::activity::listed(|id| runs.iter().any(|run| run.id == id) || ahead.iter().any(|own| own.id == id));
     v1::StatusFrame {
         idle_deadline_unix_ms: lifecycle.deadline_ms(),
         runs,
@@ -265,6 +318,13 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
             .collect(),
         heat: crate::slowed::heat(),
         runtime_kernels: crate::slowed::runtime_kernels(),
+        queue: Some(queue),
+        times: Some(times),
+        resident,
+        link_bytes_per_s: link,
+        serving_gpus: serving,
+        nvlink,
+        ahead,
         ..identity_frame(identity)
     }
 }

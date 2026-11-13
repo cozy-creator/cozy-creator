@@ -1,7 +1,6 @@
 """Check the small public CLI surface against the installed binary, without running models."""
 
 import argparse
-import html
 import json
 import os
 from pathlib import Path
@@ -14,11 +13,32 @@ import time
 
 
 PUBLIC = {
-    "new", "open", "run", "status", "vault", "machine", "model", "lora", "package", "update", "restart", "doctor", "completion", "login", "logout", "whoami",
+    "new",
+    "open",
+    "run",
+    "get",
+    "apply",
+    "diff",
+    "delete",
+    "explain",
+    "render",
+    "status",
+    "vault",
+    "machine",
+    "model",
+    "lora",
+    "package",
+    "update",
+    "restart",
+    "doctor",
+    "completion",
+    "login",
+    "logout",
+    "whoami",
 }
 REMOVED = {
     "help",
-    "push", "pull", "org", "project", "import", "export", "add", "set", "delete", "render", "approve", "unapprove", "cancel",
+    "push", "pull", "org", "project", "import", "export", "add", "set", "approve", "unapprove", "cancel",
     "wait", "history", "undo", "redo", "rename", "reclaim",
 }
 
@@ -206,36 +226,23 @@ def main() -> None:
         nested = json.loads(run("containing project", ["--json", "status"], child).stdout)
         assert Path(nested["project"]["path"]).resolve() == project
         opened = json.loads(run("project URL", ["--json", "open"], project).stdout)
-        assert set(opened) == {"project", "url"}, "open should show the project name and URL"
-        assert opened["project"] == project.name
         url = urlsplit(opened["url"])
         assert url.hostname in {"127.0.0.1", "localhost", "::1"}, "open did not print a local URL"
-        assert url.path == f"/p/{created['code']}" and url.fragment.startswith("code=")
-        plain_url = run("default project URL", ["open"], project).stdout
-        assert not plain_url.lstrip().startswith("{") and "url" in plain_url and project.name in plain_url
-        assert "expires_ms" not in plain_url
-        if os.name == "posix":
-            until = time.monotonic() + 5
-            opened_files: list[str]  # the loop runs at least once: its deadline is ahead
-            while time.monotonic() < until:
-                opened_files = browser_log.read_text().splitlines() if browser_log.exists() else []
-                if len(opened_files) >= 2:
-                    break
-                time.sleep(0.05)
-            assert len(opened_files) >= 2, "open did not launch the default browser"
-            first = Path(opened_files[0])
-            assert opened["url"] in html.unescape(first.read_text()), "browser received a different URL"
-            assert first.stat().st_mode & 0o777 == 0o600, "browser redirect exposes its sign-in code"
-            saved_path = environment["PATH"]
-            empty_path = case / "empty-path"
-            empty_path.mkdir()
-            environment["PATH"] = str(empty_path)
-            try:
-                fallback = run("browser unavailable fallback", ["--json", "open"], project)
-            finally:
-                environment["PATH"] = saved_path
-            assert json.loads(fallback.stdout)["project"] == project.name
-            assert "could not open the browser" in fallback.stderr
+        assert url.path == f"/projects/{created['id']}", f"open printed another project's URL: {url.path}"
+        # cl-980: a --json caller is a program: it gets a one-use sign-in link, said not to be private, and no browser starts.
+        assert set(opened) == {"url", "private"} and opened["private"] is False, f"--json open: {opened}"
+        assert url.fragment.startswith("code="), "the --json link carries no sign-in code"
+        plain_open = run("default project URL", ["open"], project)
+        assert not plain_open.stdout.lstrip().startswith("{") and "url" in plain_open.stdout
+        private = "private: true" in plain_open.stdout
+        if private:
+            # Cozy's private browser opened it: the URL is a reference, its credential went through the browser's pipe.
+            assert "code=" not in plain_open.stdout, "a private open printed a credential"
+        else:
+            # No display here, no Chrome, or its launch failed: a one-use sign-in link any browser redeems, said not to be private.
+            assert "isn't private" in plain_open.stderr and project.name in plain_open.stderr, "the fallback didn't say it isn't private"
+        assert "expires_ms" not in plain_open.stdout
+        assert not browser_log.exists(), "open launched the default browser"
         for flag in ("--no-open", "--print-url"):
             run(f"removed open flag {flag}", ["open", flag], project, code=2)
         run("removed run selector", ["run", "-p", str(project), "example/generate", "prompt=test"], project, code=2)

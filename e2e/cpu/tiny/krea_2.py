@@ -7,28 +7,30 @@ Its five community adapters (0.9.0, se-126) are laid out as their mirrors are (T
 `transformer` component of PEFT factors under Diffusers' names, `adapter_config.json` stating `r`, `lora_alpha` and
 `target_modules`; Identity Edit's own alphas as F32 scalars, Patil's depth factors and its widened `img_in` (kept
 whole as `img_in.modules_to_save`) in F32. `adapters.AdapterGraph` finds its linears on `Krea2Transformer2DModel()`
-at the class defaults, Krea 2's geometry: the executor's defaults are the tiny DiT's (PATCH)."""
+at the class defaults, Krea 2's geometry: the executor's defaults are the tiny DiT's (PATCH). Parts of the same checkpoint,
+each a model of its own (xs-192): its transformer with its scheduler, its text encoder with its tokenizer, its VAE."""
 
 from __future__ import annotations
 
 import inspect
 import json
+import shutil
 from pathlib import Path
 
-import numpy as np
 import tensorfs
 import torch
 from diffusers import AutoencoderKLQwenImage, FlowMatchEulerDiscreteScheduler, Krea2Transformer2DModel
-from PIL import Image
 from transformers import Qwen3VLModel
 
-from cell import NARROW, Cell, Json, Source, module, qwen_tokenizer, save, size
+from cell import NARROW, STEERS, Cell, Json, module, qwen_tokenizer, save, size
 from tiny import _shared
 
 RAW, TURBO = "krea/krea-2@0.1.0", "krea/krea-2-turbo@0.1.0"
 EDIT, DEPTH, POSE = "conradlocke/identity-edit@0.1.0", "patil/depth-control@0.1.0", "thedeoxen/pose-control@0.1.0"
 LINEART, INPAINT = "cierpliwy/lineart-edit@0.1.0", "cierpliwy/inpaint-edit@0.1.0"
 TEXT_WIDTH, Z = 32, 16
+#: The checkpoint's parts, each a model of that part alone (xs-192).
+DIT, ENCODER, VAE = "aimeasop/redcraft-krea@0.2.0", "quiho/qwen3-vl-4b-abliterated@0.2.0", "e2e/krea-2-vae@0.1.0"
 GEOMETRY: dict[str, object] = {
     "in_channels": 4 * Z, "num_layers": 2, "attention_head_dim": 16, "num_attention_heads": 2, "num_key_value_heads": 1,
     "intermediate_size": 64, "timestep_embed_dim": 32, "text_hidden_dim": TEXT_WIDTH, "num_text_layers": 12,
@@ -57,12 +59,24 @@ _TEXT = tuple(f"text_fusion.{kind}_blocks.{i}" for kind in ("layerwise", "refine
 _FACTOR, _PROJECTION = 1.0, 0.1
 
 
+#: The q/k norms' gain. Krea2RMSNorm scales by `1 + weight`, 1 at its init: a 16-wide head's logits are then about
+#: N(0, 1) over some 2000 keys, near-uniform, so a map's tokens reached the picture only as their mean (a moved lineart
+#: map moved it 0.45/255, a moved skeleton 0.03, CFG at 5 against 0 0.01). At 3 attention selects, as trained Krea's
+#: does (a moved map moves it 1.2-1.9/255), and a zeroed adapter still moves it 0.05 at most (e2e 43352463205).
+_QK_GAIN = 3.0
+
+
 def _transformer() -> torch.nn.Module:
     transformer = module(Krea2Transformer2DModel(**GEOMETRY)).to(torch.bfloat16)
     kept = {"norm", "norm1", "norm2", "norm_q", "norm_k"}
     for name, child in transformer.named_modules():
-        if name.rsplit(".", 1)[-1] in kept:
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf in kept:
             child.to(torch.float32)
+        weight = getattr(child, "weight", None)
+        if leaf in ("norm_q", "norm_k") and isinstance(weight, torch.Tensor):
+            with torch.no_grad():
+                weight.fill_(_QK_GAIN - 1)
     return transformer
 
 
@@ -103,6 +117,14 @@ def _adapter(store: Path, seed: int, rank: int, blocks: tuple[str, ...], dtype: 
     return writer.commit().id
 
 
+def _part(pipeline: Path, out: Path, names: tuple[str, ...]) -> None:
+    """Some of `pipeline`'s components, as a pipeline of only those: the same files, so the same weights."""
+    index = json.loads((pipeline / "model_index.json").read_text())
+    for name in names:
+        shutil.copytree(pipeline / name, out / name)
+    (out / "model_index.json").write_text(json.dumps({key: index[key] for key in ("_class_name", "_diffusers_version", *names)}))
+
+
 def models(root: Path, store: Path) -> dict[str, Path | str]:
     out = root / "krea-2"
     torch.manual_seed(0)
@@ -117,7 +139,11 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         "text_encoder": ["transformers", "Qwen3VLModel"], "tokenizer": ["transformers", "Qwen2TokenizerFast"],
         "transformer": ["diffusers", "Krea2Transformer2DModel"], "vae": ["diffusers", "AutoencoderKLQwenImage"]}))
     # Each mirror's rank over 32 (256, 64, 32, 64, 64).
-    return {RAW: out, TURBO: out, EDIT: _adapter(store, 1, 8, _TEXT + _DIT, alphas=True),
+    _part(out, root / "dit", ("transformer", "scheduler"))
+    _part(out, root / "text-encoder", ("text_encoder", "tokenizer"))
+    _part(out, root / "vae", ("vae",))
+    return {RAW: out, TURBO: out, DIT: root / "dit", ENCODER: root / "text-encoder", VAE: root / "vae",
+            EDIT: _adapter(store, 1, 8, _TEXT + _DIT, alphas=True),
             DEPTH: _adapter(store, 2, 2, _DIT, torch.float32, projection=True), POSE: _adapter(store, 3, 1, _TEXT + _DIT),
             LINEART: _adapter(store, 4, 2, _TEXT + _DIT), INPAINT: _adapter(store, 5, 2, _TEXT + _DIT)}
 
@@ -126,21 +152,9 @@ def _prompt(text: str, *keys: str) -> dict[str, Json]:
     return {"text": text, "references": [{"key": key, "type": "image"} for key in keys]}
 
 
-def _lines(name: str, width: int, height: int) -> Source:
-    """White lines on black, as a lineart map is drawn."""
-
-    def make(folder: Path) -> Path:
-        y, x = np.mgrid[0:height, 0:width].astype(np.float32)
-        ring = np.abs(np.hypot(x - width * 0.6, y - height * 0.45) - min(width, height) * 0.25) < 2
-        lines = ((x + y) % 96 < 3) | ring
-        path = folder / f"{name}.png"
-        Image.fromarray(np.repeat(np.where(lines, 255, 0).astype(np.uint8)[..., None], 3, axis=-1)).save(path)
-        return path
-
-    return make
-
-
 _FOX = _shared.picture("fox", 640, 512)
+#: Square, so the box's edit makes the 1 MP canvas its text-only twin (image/turbo) makes.
+_SQUARE = _shared.picture("square", 512, 512)
 #: 512², Krea's smallest canvas (0.25 MP).
 _SMALL: dict[str, Json] = {"prompt": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 0.25, "steps": 2}
 
@@ -154,15 +168,40 @@ CELLS: list[Cell] = [
      "check": size(1024, 1024)},
     {"entry": "image", "name": "raw", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1,
                                                   "turbo": False}, "check": size(1024, 1024)},
+    # Each slot bound to a model of its part alone: the same weights as `image/turbo`'s, composed at run time (xs-192).
+    {"entry": "image", "name": "parts", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
+     "models": {"image.models.model": DIT, "image.models.text_encoder": ENCODER, "image.models.vae": VAE},
+     "check": size(1024, 1024)},
     # Identity Edit on Raw with CFG: the picture's tokens before the target on both branches, Qwen3-VL reading it.
     {"entry": "generate", "name": "edit", "payload": {**_SMALL, "prompt": _prompt("the fox in <fox> wears a hat", "fox")},
      "files": {"prompt.references.0.file": _FOX}, "check": size(576, 464)},
     # Patil's depth on Turbo: generate_turbo/text's request with the map read beside each image token.
     {"entry": "generate_turbo", "name": "depth", "payload": {**_SMALL, "control": [{"kind": "depth"}]},
      "files": {"control.0.image": _shared.picture("depth", 512, 512)}, "check": size(512, 512)},
-    # Cierpliwy's lineart on Raw: generate/text's request with the map after the target at time 0, attending to itself.
-    # The tiny DiT's near-uniform attention leaves the map's own tokens 0.06/255 of the picture; its LoRA, 3.6.
+    # Each control on Raw, generate/text's request with its map after the target at time 0, attending to itself and read
+    # by Qwen3-VL as `Picture 1:`: it steers away from generate/text, and another map steers it again (`apart`), but for
+    # the pose's: a skeleton moved a fifth of the width moves it 0.82/255, its thin limbs being few tokens.
     {"entry": "generate", "name": "lineart", "payload": {**_SMALL, "control": [{"kind": "lineart", "strength": 0.8}]},
-     "files": {"control.0.image": _lines("lines", 512, 512)}, "check": size(512, 512)},
+     "files": {"control.0.image": _shared.lines("lines", 512, 512)}, "check": size(512, 512),
+     "apart": {"generate/text": STEERS}},
+    {"entry": "generate", "name": "lineart-moved", "payload": {**_SMALL, "control": [{"kind": "lineart", "strength": 0.8}]},
+     "files": {"control.0.image": _shared.lines("lines-moved", 512, 512, offset=48)}, "check": size(512, 512),
+     "apart": {"generate/lineart": STEERS}},
+    {"entry": "generate", "name": "pose", "payload": {**_SMALL, "control": [{"kind": "pose"}]},
+     "files": {"control.0.image": _shared.bones("bones", 512, 512)}, "check": size(512, 512),
+     "apart": {"generate/text": STEERS}},
+    # The inpaint map's transparent area as black, the LoRA redrawing it.
+    {"entry": "generate", "name": "inpaint", "payload": {**_SMALL, "control": [{"kind": "inpaint"}]},
+     "files": {"control.0.image": _shared.holed("hole", 512, 512)}, "check": size(512, 512),
+     "apart": {"generate/text": STEERS}},
+    {"entry": "generate", "name": "inpaint-moved", "payload": {**_SMALL, "control": [{"kind": "inpaint"}]},
+     "files": {"control.0.image": _shared.holed("hole-moved", 512, 512, centre=(0.3, 0.7))}, "check": size(512, 512),
+     "apart": {"generate/inpaint": STEERS}},
+    # The box's edit on Turbo: image/turbo's request with the picture it mentions (its words read the same). Another
+    # picture moves it only 0.24/255 (e2e 43352463205), so it is judged against its twin alone.
+    {"entry": "image", "name": "edit", "payload": {"instructions": _prompt("a red <fox> in fresh snow", "fox"), "seed": 7,
+                                                   "megapixels": 1},
+     "files": {"instructions.references.0.file": _SQUARE}, "check": size(1024, 1024), "apart": {"image/turbo": STEERS}},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]
+

@@ -654,6 +654,9 @@ pub(crate) struct Ask {
     /// Asked of `all`, with or without `--missing`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub whole: bool,
+    /// Not of `all`, with `outdated`: the pins it judges, by name key, those its names read and themselves.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub judges: BTreeSet<String>,
     /// What it sent or tried, made or failed, by name key: each is tried once.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub sent: BTreeSet<String>,
@@ -707,6 +710,9 @@ pub(crate) struct Take {
     /// Pick up from here: the take its new part goes on from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickup: Option<api::calcifer::project::Pickup>,
+    /// What it reads with no state renders first, a cut's too (`cozy render`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub covers: bool,
 }
 
 impl Lock {
@@ -1034,6 +1040,8 @@ fn ms(since: Instant) -> f64 {
 struct Acting {
     id: usize,
     base: Stored,
+    /// Its base's document, decoded in it (`act_document`) when what's held hadn't been.
+    document: RefCell<Option<Arc<super::crdt::Document>>>,
     written: RefCell<Option<Written>>,
     canvas: RefCell<Option<BTreeMap<String, CardRow>>>,
     lock: RefCell<Option<Lock>>,
@@ -1176,11 +1184,12 @@ impl Folder {
         Ok((folder, inspected))
     }
 
-    /// Identity from the same native document used by this open, never a query projection
-    /// or another independent decode of its Automerge snapshot.
+    /// Its identity: the document's, as its rows keep it beside it (`db::identity`).
     pub(crate) fn canonical_identity(&self) -> Result<Option<(String, String)>, Error> {
-        let held = self.held()?;
-        Ok(held.as_ref().and_then(|held| held.stored.crdt.as_ref()).and_then(|doc| doc.identity()))
+        if let Some(found) = self.held()?.as_ref().and_then(|held| held.stored.crdt.as_ref()).and_then(|doc| doc.identity()) {
+            return Ok(Some(found));
+        }
+        self.reading_db(db::identity)
     }
 
     /// The public route code is local metadata, separate from the native project id.
@@ -1217,9 +1226,13 @@ impl Folder {
         kept.and_then(|kept| serde_json::from_str(&kept).ok()).unwrap_or_default()
     }
 
+    /// The machines its runs go to, in one transaction (or the act it's in).
     pub(crate) fn set_machines(&self, machines: &[String]) -> Result<(), Error> {
         let kept = (!machines.is_empty()).then(|| serde_json::to_string(machines).expect("names serialize"));
-        self.write_past(|conn| db::set_meta(conn, &self.db(), MACHINES, kept.as_deref()))
+        self.act(|| {
+            acting(self.id()).expect("in its act").extra.borrow_mut().meta.push((MACHINES, kept));
+            Ok(())
+        })
     }
 
     /// Whether another program holds project.db's write lock, asked this moment with no wait. None while a write of Calcifer's has the
@@ -1278,10 +1291,9 @@ impl Folder {
         Ok(held)
     }
 
-    /// Native CRDT conflicts are kept visible even though an ordinary value read chooses one.
+    /// Native CRDT conflicts are kept visible even though an ordinary value read chooses one: as the last commit found them.
     pub(crate) fn crdt_conflicts(&self) -> Result<Vec<String>, Error> {
-        let held = self.held()?;
-        Ok(held.as_ref().and_then(|held| held.stored.crdt.as_ref()).map_or_else(Vec::new, |doc| doc.conflicts()))
+        Ok(self.held()?.as_ref().map(|held| (*held.stored.conflicts).clone()).unwrap_or_default())
     }
 
     /// The revision: one more with each commit.
@@ -1313,6 +1325,7 @@ impl Folder {
         let act = Rc::new(Acting {
             id,
             base,
+            document: RefCell::default(),
             written: RefCell::default(),
             canvas: RefCell::default(),
             lock: RefCell::default(),
@@ -1326,8 +1339,10 @@ impl Folder {
             let _in = In::enter(act.clone());
             change()
         };
+        // What it said it answers, taken whether it commits or not: a failed act's words go with it.
+        let said = super::keyed::answer_now();
         let answer = done?;
-        let act = Rc::try_unwrap(act).unwrap_or_else(|_| panic!("an act outlives its turn"));
+        let mut act = Rc::try_unwrap(act).unwrap_or_else(|_| panic!("an act outlives its turn"));
         let mut after = act.base.clone();
         let changed = [act.written.borrow().is_some(), act.canvas.borrow().is_some(), act.lock.borrow().is_some(), act.walk.borrow().is_some(), act.measured.borrow().is_some()];
         if let Some(written) = act.written.into_inner() {
@@ -1352,8 +1367,13 @@ impl Folder {
         if let Some(key) = super::keyed::claimed() {
             extra.key = Some(key);
         }
-        if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.key.is_none() {
+        extra.answer = said;
+        if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.meta.is_empty() && extra.key.is_none() && extra.answer.is_none() {
             return Ok(answer);
+        }
+        // A document decoded in it, or by its history since, at the heads it began from: the commit needn't decode it again.
+        if act.base.crdt.is_none() {
+            act.base.crdt = act.document.take().or_else(|| self.decoded(&act.base.heads));
         }
         // SQLite's wait on another program's write lock holds the turn alone: every read goes on meanwhile (cl-837).
         let conn = self.writer(&mut turn)?;
@@ -1474,9 +1494,59 @@ impl Folder {
 
     /// Every history row, oldest first.
     pub(super) fn ops(&self) -> Result<Vec<db::OpRow>, Error> {
-        let held = self.held()?;
-        held.as_ref().and_then(|held| held.stored.crdt.as_ref())
-            .ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?.ops()
+        self.loaded()?.ops()
+    }
+
+    /// Its document as what's held stands, decoded now if nothing has since it was read: its rows serve every read, so only a write, a
+    /// merge or history waits on this, and no reader waits on it.
+    fn loaded(&self) -> Result<Arc<super::crdt::Document>, Error> {
+        for _ in 0..3 {
+            let heads = {
+                let held = self.held()?;
+                let held = held.as_ref().expect("held");
+                if let Some(doc) = &held.stored.crdt {
+                    return Ok(doc.clone());
+                }
+                held.stored.heads.clone()
+            };
+            let doc = Arc::new(db::document(&db::connect(&self.db(), true)?, &self.db())?);
+            if !same_heads(&doc.heads(), &heads) {
+                continue;
+            }
+            let mut held = self.held()?;
+            let held = held.as_mut().expect("held");
+            if same_heads(&held.stored.heads, &heads) {
+                if held.stored.crdt.is_none() {
+                    held.stored.crdt = Some(doc.clone());
+                }
+                return Ok(doc);
+            }
+        }
+        Err(Error::new(Kind::Conflict, "project_changed", "the project kept changing while its document was read; read it again and retry"))
+    }
+
+    /// The document an act began from, decoded once in it if what's held hadn't been: at its heads.
+    fn act_document(&self, act: &Acting) -> Result<Arc<super::crdt::Document>, Error> {
+        if let Some(doc) = act.base.crdt.clone().or_else(|| act.document.borrow().clone()).or_else(|| self.decoded(&act.base.heads)) {
+            return Ok(doc);
+        }
+        let doc = Arc::new(db::document(&db::connect(&self.db(), true)?, &self.db())?);
+        if !same_heads(&doc.heads(), &act.base.heads) {
+            return Err(Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being made; read it again and retry"));
+        }
+        *act.document.borrow_mut() = Some(doc.clone());
+        Ok(doc)
+    }
+
+    /// Where the rows a read takes differ from the document they were written with (`db::integrity`): read past what's held.
+    pub(crate) fn integrity(&self) -> Result<Vec<String>, Error> {
+        db::integrity(&db::connect(&self.db(), true)?, &self.db())
+    }
+
+    /// What's held of the document at `heads`, if something here decoded it.
+    fn decoded(&self, heads: &[String]) -> Option<Arc<super::crdt::Document>> {
+        let held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
+        held.as_ref()?.stored.crdt.clone().filter(|doc| same_heads(&doc.heads(), heads))
     }
 
     /// What the request under `key` asked and answered here, if it was kept.
@@ -1493,7 +1563,14 @@ impl Folder {
         self.reading_db(read).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?
     }
 
+    /// Whether this thread is inside one of this project's acts: its writer is this thread's until the act commits.
+    pub(crate) fn acting_here(&self) -> bool {
+        acting(self.id()).is_some()
+    }
+
     pub(crate) fn journal_write<T>(&self, write: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::Result<T>) -> crate::store::Result<T> {
+        // The act holds the writer on this thread: taking it again would never return.
+        if self.acting_here() { return Err(crate::store::StoreError::Locked("project_acting".into())); }
         let mut turn = self.shared.writing.lock().unwrap_or_else(|error| error.into_inner());
         let conn = self.writer(&mut turn).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -1527,24 +1604,22 @@ impl Folder {
     pub(crate) fn reading_document<R>(&self, seen: impl FnOnce(&Written, Vec<String>) -> R) -> Result<R, Error> {
         if let Some(act) = acting(self.id()) {
             let written = act.written.borrow();
-            let heads = act.base.crdt.as_ref().map(|doc| doc.heads()).unwrap_or_default();
-            return Ok(seen(written.as_ref().unwrap_or(&*act.base.written), heads));
+            return Ok(seen(written.as_ref().unwrap_or(&*act.base.written), (*act.base.heads).clone()));
         }
         let (written, heads) = {
             let held = self.held()?;
             let held = held.as_ref().expect("held");
-            (held.stored.written.clone(), held.stored.crdt.as_ref().map(|doc| doc.heads()).unwrap_or_default())
+            (held.stored.written.clone(), held.stored.heads.clone())
         };
-        Ok(seen(&written, heads))
+        Ok(seen(&written, (*heads).clone()))
     }
 
     /// The project document an act began from: what words typed on an older one merge into (`crdt::Document::typed`).
     pub(super) fn document(&self) -> Result<Option<Arc<super::crdt::Document>>, Error> {
-        if let Some(act) = acting(self.id()) {
-            return Ok(act.base.crdt.clone());
+        match acting(self.id()) {
+            Some(act) => self.act_document(&act).map(Some),
+            None => self.loaded().map(Some),
         }
-        let held = self.held()?;
-        Ok(held.as_ref().and_then(|held| held.stored.crdt.clone()))
     }
 
     /// One change to its boxes. The history hears what it was and is.
@@ -1868,6 +1943,13 @@ impl Folder {
         (file.stays() || self.path(&file.path).is_file()).then(|| Kept { field: file.field(), file, already: true })
     }
 
+    /// What the file at `at` is, by its bytes: the field that names one of its kind.
+    pub(crate) fn field_of(at: &Path) -> Result<&'static str, String> {
+        let mut head = Vec::new();
+        std::fs::File::open(at).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| e.to_string())?;
+        media(infer::get(&head)).map(|(_, field)| field)
+    }
+
     /// The held file at `at`, of `sha256`, in `files/` and recorded in the lock: a hard link to the store's object, which stays
     /// the store's, else a copy. Err: why not.
     pub(crate) fn take_held(&self, at: &Path, sha256: &str) -> Result<Kept, String> {
@@ -2015,7 +2097,12 @@ impl Folder {
     /// record may be all that's left of a take, so it's said and it stays. What a run left in `.runs/` goes only if what stays in `files/`
     /// holds every byte of it, by sha256: else it may be an output's only copy (one `files/` couldn't take, or a folder), and stays, unheld.
     pub(crate) fn sweep(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64, Vec<Unheld>), Error> {
-        let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = self.collecting();
+        self.swept(named, recorded, delete)
+    }
+
+    /// `sweep`, `collecting` held by the caller: in an act it is part of, its answer with it.
+    pub(crate) fn swept(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64, Vec<Unheld>), Error> {
         let lock = self.lock()?;
         let (mut files, mut bytes, mut unrecorded) = (0, 0, 0);
         // What stays in `files/`, by the sha256 its name says, which its bytes must say too before anything goes for it.
@@ -2222,4 +2309,9 @@ fn io(error: platform::Error) -> Error {
 
 fn io_at(path: &Path, error: std::io::Error) -> Error {
     Error::new(Kind::Unavailable, "project_io", format!("{}: {error}", path.display()))
+}
+
+/// Whether two lists of a document's heads name the same ones.
+fn same_heads(a: &[String], b: &[String]) -> bool {
+    a.iter().collect::<std::collections::BTreeSet<_>>() == b.iter().collect::<std::collections::BTreeSet<_>>()
 }

@@ -215,9 +215,8 @@ const newPage = async () => {
     } catch { /* Failed/offline replies carry no readable evidence. Never retain secret bodies. */ }
   });
   await signIn(page);
-  // Code redemption finishes after the document loads. The Home page may then
-  // open the latest project asynchronously, so close that document explicitly
-  // before tracking the vault page's current content requests.
+  // Code redemption finishes after the document loads, so close that document
+  // explicitly before tracking the vault page's current content requests.
   await page.locator('.top').waitFor();
   const authenticated = page;
   page = await newPage();
@@ -560,6 +559,9 @@ const newPage = async () => {
   };
   const covered = () => page.evaluate(() => Boolean(document.querySelector('.gate')) && !document.querySelector('.react-flow') && !/private_vault_picture|private_after_encryption/.test(document.body.innerText));
   await page.route(statusPath, statusRoute);
+  // Nothing polls the status (xs-189): the drawer opened again reads it, as a person coming back to it does, and that read is the old one.
+  await navigate(href);
+  await navigate(`${href}/vault`);
   await until('actual old unlocked status held', () => {
     if (statusTransportError) throw statusTransportError;
     return oldStatus?.state;
@@ -673,8 +675,8 @@ const newPage = async () => {
   check('new_creation_credentials_are_not_browser_storage', !persisted.includes(newRecovery) && !persisted.includes('synthetic new project passphrase'));
 
   stage = 'implicit canvas creation waits for secure setup';
-  // Home intentionally reopens the latest project. This global route keeps an
-  // unowned canvas behind its drawer, so this actually exercises first-drop setup.
+  // A global route keeps an unowned canvas behind its drawer, so this actually
+  // exercises first-drop setup.
   await goto(page, `${origin}/runs`);
   await page.locator('.empty-canvas').waitFor();
   const uploadsBeforeSetup = fileWrites.length;

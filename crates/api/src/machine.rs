@@ -180,8 +180,10 @@ pub mod path {
     pub const OBJECT: &str = "/v1/objects/{digest}";
     /// `POST` a [`super::HeldRequest`]: what the machine holds of many objects, in one request.
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
-    /// `POST` an [`super::EstimateRequest`]: when each job would finish here; a quote, not a reservation.
-    pub const ESTIMATE: &str = "/v1/estimate";
+    /// `PUT` an [`super::Upcoming`]: the jobs the caller expects to send here, nearest first (cl-967).
+    pub const UPCOMING: &str = "/v1/upcoming";
+    /// `PUT` a [`super::Prepare`]: what the caller expects demand for here, with no job yet (cl-967).
+    pub const PREPARE: &str = "/v1/prepare";
     /// Remove one repository's locally cached model copies; never changes its origin.
     pub const MODELS_REMOVE: &str = "/v1/models/remove";
 }
@@ -924,18 +926,52 @@ pub struct Call {
     pub memo_basis: String,
 }
 
-// ---- Estimate -------------------------------------------------------------------------------
+// ---- Ahead ----------------------------------------------------------------------------------
 
-/// `POST /v1/estimate` (cl-816): jobs a caller may send here, packed with this machine's queue as
-/// if all of them were sent now, by the model its scheduler gives each run its width by. A quote:
-/// nothing is reserved, and the queue settles two callers that pick the same machine.
+/// `PUT /v1/upcoming` (cl-967, Paul 11-12): the jobs the caller expects to send here, nearest first, its whole list, replacing its
+/// last. Each prepares behind every run, in its order, as a function's warm run does: its code installed, what its call reads up
+/// front, then its guesses, while they fit; one the list drops stops. A run later sent for it finds what it fetched.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct EstimateRequest {
-    /// In the order they would be sent.
-    pub jobs: Vec<EstimateJob>,
+pub struct Upcoming {
+    pub jobs: Vec<Ahead>,
 }
 
+/// `PUT /v1/prepare` (cl-967): what the caller expects demand for here with no job yet (many shots of one function queued
+/// elsewhere, and this machine new), its whole set, replacing its last; each behind every upcoming job.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prepare {
+    pub items: Vec<Ahead>,
+}
+
+/// One function to have ready: its code, its models in their lanes. Its downloads show in `StatusFrame::activity` with its id among
+/// their `runs`: `cozy:upcoming:<key>`, or `cozy:prepare:<key>`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ahead {
+    /// The caller's name for it: an upcoming job's key, the one its run is sent under.
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+    /// Empty: its code installed only.
+    pub entrypoint: String,
+    pub models: Vec<ModelChoice>,
+    pub lane: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hub: Option<HubAccess>,
+}
+
+/// What a list came to: each item as a run would be admitted, in its order.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AheadAnswer {
+    pub items: Vec<Admitted>,
+}
+
+// ---- Estimate -------------------------------------------------------------------------------
+
+/// A job the estimator quotes a machine for (`api::estimate::quote`, cl-967): Calcifer's, from what the machine pushes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EstimateJob {
@@ -954,6 +990,13 @@ pub struct EstimateJob {
     /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
     /// this machine has measured none of the function.
     pub prior_ms: u64,
+    /// The soonest it can start, ms from now: when what it reads is made.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_ms: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A checkpoint a job reads, as the catalog resolved it.
@@ -965,6 +1008,13 @@ pub struct ModelRef {
     pub checkpoint: String,
     /// Its weights' bytes as the catalog lists them: what a machine that holds none of it fetches.
     pub bytes: u64,
+    /// Its repository (`org/name`): a queued run fetching it (`Queued::models`) brings it for this job too.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// What a run of the job's function read of it on another machine (`Read::bytes`): what one that holds none of it fetches. Zero:
+    /// unknown.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub reads: u64,
 }
 
 /// What a job makes, in the units a function's time scales with; each unknown one is absent.
@@ -1007,13 +1057,6 @@ impl JobSize {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EstimateAnswer {
-    /// One per job asked, in its order.
-    pub jobs: Vec<Quote>,
-}
-
 /// When one job would run here. Times are milliseconds from the answer, so machines' clocks never
 /// enter a comparison of them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1034,10 +1077,17 @@ pub struct Quote {
     /// How many runs and jobs start here before it.
     pub queue_position: u32,
     pub basis: Basis,
+    /// Its time is the function's warm one there: the model held, its plan compiled.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub warm: bool,
+    /// Its weights' bytes it downloads there first (cl-967).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub fetch_bytes: u64,
 }
 
 /// What a quote's run time stands on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Basis {
     /// Runs of the function on this machine.
@@ -1141,6 +1191,104 @@ pub struct StatusFrame {
     /// (the pure wheel)`), as its latest executor said; empty: it does, or none has started.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub runtime_kernels: String,
+    /// Every root here not ended, every caller's, in acceptance order: what a job sent now waits behind (cl-967). On a stream,
+    /// absent: as its last frame said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue: Option<Vec<Queued>>,
+    /// Each function's newest runs here, newest first: what its time here stands on (cl-967). On a stream, absent: as its
+    /// last frame said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub times: Option<Vec<Timed>>,
+    /// Idle executors' loaded models: a job of them loads nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resident: Vec<Resident>,
+    /// Weights' arrival, bytes a second, once 1 GiB came; 0 before.
+    pub link_bytes_per_s: f64,
+    /// The most GPUs side by side in service: the widest a root runs at.
+    pub serving_gpus: u32,
+    /// Its GPUs talk over NVLink.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub nvlink: bool,
+    /// The caller's lists' items (`PUT /v1/upcoming`, `/v1/prepare`), each as its run stands: ready once it succeeded.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ahead: Vec<RunState>,
+}
+
+/// A root not ended (`StatusFrame::queue`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Queued {
+    /// The caller's id for it; empty: another caller's.
+    pub run: String,
+    /// `<package>/<function>`, as `Timed::function` names it; empty: a private run's.
+    pub function: String,
+    pub size: JobSize,
+    /// The widths it may run at, smallest first; none: no GPU.
+    pub widths: Vec<u32>,
+    /// It gives the machine its width: no count asked, and more than one width.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub chooses: bool,
+    /// It left its queue: its executor starts or it runs.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
+    /// The GPUs it holds, running.
+    pub width: u32,
+    /// When it began executing, this machine's clock; 0 before.
+    pub started_at_unix_ms: i64,
+    /// The repositories it waits to download.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    /// Its weights' bytes still to come.
+    pub bytes_left: u64,
+}
+
+/// A function's newest runs here (`StatusFrame::times`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Timed {
+    /// `<package>/<function>`, any release.
+    pub function: String,
+    pub runs: Vec<TimedRun>,
+    /// What its newest run here read of each model (cl-967): what a job of it fetches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<Read>,
+}
+
+/// Of one model, the components a function's run read: their bytes, and of them those this machine lacks now.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Read {
+    /// Its repository (`org/name`).
+    pub model: String,
+    /// `sha256:<hex>` of the header read.
+    pub checkpoint: String,
+    pub bytes: u64,
+    pub missing: u64,
+}
+
+/// What one completed root took: its width, its size as its input said, its compute, and what it spent putting weights on its
+/// GPUs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimedRun {
+    pub width: u32,
+    pub size: JobSize,
+    pub ms: f64,
+    pub load_ms: f64,
+    /// The function's first call on the machine: its plan compiled as it ran (its cold time).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cold: bool,
+}
+
+/// An idle executor's loaded models (`StatusFrame::resident`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Resident {
+    /// Their headers, `sha256:<hex>`.
+    pub checkpoints: Vec<String>,
+    pub gpus: Vec<u32>,
+    /// `host` or `gpu`.
+    pub level: String,
 }
 
 /// A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
@@ -1300,6 +1448,12 @@ pub struct Checkpoint {
     /// Whether every object in the header's closure is cached. None from older machines.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complete: Option<bool>,
+    /// `sha256:<hex>` of its tree, as a Hub card names the checkpoint.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tree: String,
+    /// Its closure's bytes, and of them those held.
+    pub bytes: u64,
+    pub held_bytes: u64,
 }
 
 /// One GPU, as measured at boot: identity, memory, driver and family.
@@ -1382,6 +1536,23 @@ pub struct Environment {
     pub warning: String,
     /// The Hub origin a published installation came from; empty for local code.
     pub hub: String,
+    /// Local code's manifest (`sha256:<hex>`) it was installed from; empty for a release.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub manifest: String,
+    /// Each of its functions as the machine times and packs it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<HeldFunction>,
+}
+
+/// One function of an installation (`Environment::functions`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeldFunction {
+    pub entrypoint: String,
+    /// Its runs' key in `StatusFrame::times`.
+    pub timed_as: String,
+    /// Its widths with no GPU count asked, smallest first; none: it holds no GPU.
+    pub widths: Vec<u32>,
 }
 
 /// The filesystem holding the store: its size, free bytes and what fills it.

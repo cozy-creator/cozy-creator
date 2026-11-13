@@ -1,13 +1,13 @@
 //! A machine on its way (cl-915, Paul 11-12: "the planner … should take into account what machines are coming online"): a rental
 //! booting or ordered, quoted as its machine will quote once it serves. It should serve when its Hub's word says
-//! (`Hubs::on_its_way`); then each job prepares as on a machine that holds nothing (`estimate::prepare_ms`), and the runs already sent
-//! to it and the jobs asked are packed on its GPUs as its machine packs them (`estimate::pack`), each timed by this computer's runs on
-//! its card, else its Hub's runs of that card, else not at all (a minute, as a machine assumes).
+//! (`Hubs::on_its_way`); then it is quoted as a machine that holds nothing (`placement::Picture`, `api::estimate::quote`), the runs
+//! already sent to it ahead of the jobs asked, each timed by this computer's runs on its card, else its Hub's runs of that card, else not
+//! at all (a minute, as a machine assumes).
 use std::sync::Arc;
 
 use api::{
     calcifer::{Kind, MachineKind, MachineState, On, Status},
-    estimate::{self, INSTALL_MS, LINK, Scaling, UNKNOWN_MS},
+    estimate::{Scaling, UNKNOWN_MS},
     machine::{self as v1, Basis, JobSize},
 };
 
@@ -15,7 +15,7 @@ use crate::{
     api::Api,
     eta::same_card,
     machines::Machines,
-    placement::{Job, Offer},
+    placement::Picture,
     rentals::OnItsWay,
     store::RunFilter,
 };
@@ -47,63 +47,22 @@ impl Machines {
     }
 }
 
-/// When `coming` would run each of `jobs` were they all sent now, after the runs already sent to it, which wait for it here.
-pub(crate) async fn quotes(api: &Arc<Api>, coming: &Coming, jobs: &[&Job], now: i64) -> Vec<Offer> {
+/// `coming` as it will picture itself once it serves (`placement::Picture`): its Hub's GPUs, nothing held, nothing timed; the runs
+/// already sent to it, which wait for it here, ahead of anything asked, each timed by its card (`card_time`).
+pub(crate) async fn picture(api: &Arc<Api>, coming: &Coming) -> Picture {
     let way = &coming.way;
-    let gpus = way.gpus as usize;
-    let ready_in = (way.ready_at_ms - now).max(0) as f64;
-    let mut queue = vec![];
+    let gpus = (0..way.gpus).map(|index| v1::Gpu { index, name: way.card.clone(), ..Default::default() }).collect();
+    let frame = v1::StatusFrame { gpus, serving_gpus: way.gpus, ..Default::default() };
     let filter = RunFilter { status: Some(Status::Queued), machine: Some(coming.name.clone()), limit: QUEUED, ..RunFilter::default() };
     let sent = api.calcifer.each_store(|store| store.runs(&filter).map(|(rows, ..)| rows)).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()).unwrap_or_default();
+    let mut ahead = vec![];
     for row in sent.iter().filter(|row| row.kind == Kind::Call && !row.custody_pending) {
         let payload: serde_json::Value = row.spec.payload.as_ref().and_then(|p| serde_json::from_str(p.get()).ok()).unwrap_or_default();
-        let (one_ms, _) = card_time(api, &coming.hub, way, &row.target, &JobSize::of(&payload)).await;
-        let widths = estimate::unheld_widths(gpus, row.spec.gpus);
-        queue.push(estimate::Job { widths, one_ms, scaling: Scaling::PRIOR, ready_ms: ready_in + INSTALL_MS, running: None });
+        let size = JobSize::of(&payload);
+        let (one_ms, _) = card_time(api, &coming.hub, way, &row.target, &size).await;
+        ahead.push(v1::EstimateJob { key: row.id.to_string(), function: row.target.clone(), size, gpus: row.spec.gpus, prior_ms: one_ms as u64, ..Default::default() });
     }
-    let mut asked = vec![];
-    for job in jobs {
-        let (one_ms, basis) = card_time(api, &coming.hub, way, &job.target, &job.size).await;
-        let prepare_ms = estimate::prepare_ms(false, job.models.iter().map(|model| model.bytes).sum(), LINK, 0.0);
-        let mut offer = Offer {
-            machine: On::Machine(coming.name.clone()),
-            fits: true,
-            refusal: None,
-            width: 0,
-            start_at_ms: 0,
-            finish_at_ms: 0,
-            prepare_ms: prepare_ms as u64,
-            queue_position: 0,
-            basis,
-            ready_at_ms: Some(way.ready_at_ms),
-        };
-        if job.gpu && gpus == 0 {
-            offer.fits = false;
-            offer.refusal = Some(v1::Reason {
-                code: "no_gpu".into(),
-                message: format!("{} has no GPU, and it builds a model on one", coming.name),
-                origin: "machine".into(),
-                ..Default::default()
-            });
-            asked.push((None, offer));
-            continue;
-        }
-        let widths = estimate::unheld_widths(gpus, job.gpus);
-        queue.push(estimate::Job { widths, one_ms, scaling: Scaling::PRIOR, ready_ms: ready_in + prepare_ms, running: None });
-        asked.push((Some(queue.len() - 1), offer));
-    }
-    let placed = estimate::pack(gpus, &queue);
-    (asked.into_iter())
-        .map(|(at, mut offer)| {
-            if let Some(place) = at.map(|at| placed[at]) {
-                offer.width = place.width;
-                offer.start_at_ms = now + place.start_ms as i64;
-                offer.finish_at_ms = now + place.finish_ms as i64;
-                offer.queue_position = place.position as u32;
-            }
-            offer
-        })
-        .collect()
+    Picture { on: On::Machine(coming.name.clone()), name: coming.name.clone(), frame, ready_at_ms: Some(way.ready_at_ms), ahead }
 }
 
 /// What a run of `target` (`org/pkg/fn@release`, `local/pkg/fn`) of `size` takes on one GPU of `way`'s card, and what that stands on:

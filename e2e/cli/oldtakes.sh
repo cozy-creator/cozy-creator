@@ -38,7 +38,7 @@ old_rows "$Q" > "$OUT/old-takes-before.json" || { check "old takes: its project.
 J 'length == 2 and all(.id | test("^project-[0-9a-f]{32}$"))' "$OUT/old-takes-before.json" || { check "old takes: 0.24.0 kept $(cat "$OUT/old-takes-before.json")"; return; }
 
 # This cozy: every take, as it was, and its file here.
-project_api "$Q" "" > "$OUT/old-takes-open.json" 2> "$OUT/old-takes-open.err" || { check "old takes: open: $(tail -c 300 "$OUT/old-takes-open.err")"; return; }
+project_api "$Q" "" > "$OUT/old-takes-open.json" 2> "$OUT/old-takes-open.err" || { check "old takes: open: $(head -c 300 "$OUT/old-takes-open.json") $(tail -c 300 "$OUT/old-takes-open.err")"; return; }
 jq -c '[.assets[] | select(.name == "card") | .prefixes[] | {number, id, sha256: .main.sha256, absent: (.main.absent // false)}]' "$OUT/old-takes-open.json" > "$OUT/old-takes-after.json"
 jq -e --slurpfile before "$OUT/old-takes-before.json" '[.[] | {number, id, sha256}] == ($before[0] | map({number, id, sha256})) and all(.absent | not)' "$OUT/old-takes-after.json" > /dev/null \
   || check "old takes: this cozy lists $(cat "$OUT/old-takes-after.json"), 0.24.0 kept $(cat "$OUT/old-takes-before.json")"

@@ -185,7 +185,8 @@
   --heading: 24px;
   --title: 28px;
 }
-.focus-card .image-tool-name {
+.focus-card .image-tool-name,
+.focus-card .image-tool-source {
   font-size: 20px;
 }
 /* Its trash can a control of its own: 36 square, the can readable (cl-963). */

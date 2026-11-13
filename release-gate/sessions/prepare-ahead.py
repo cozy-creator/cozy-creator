@@ -104,13 +104,17 @@ turns: dict[str, Turn] = {}
 emergencies: list[Row] = []
 urgent: list[tuple[int, str, int]] = []
 log = out / "tensord.log"
+# The headers and trees resolutions pulled (`pull … header= tree=`, the store's transport log): a job's order since #3115, but
+# no job's download.
+transport = out / "tensorfs.log"
+index = set(re.findall(r"(?:header|tree)=sha256:([0-9a-f]{64})", transport.read_text(errors="replace"))) if transport.exists() else set()
 for line in log.read_text(errors="replace").splitlines() if log.exists() else []:
     if found := LOGGED.match(line):
         at, fields = ms(found[1]), dict(re.findall(r"(\w+)=(\S+)", found[3]))
         order = int(fields.get("priority", "0"))
         if order == 0 and at >= ask:
             urgent.append((at, found[2], int(fields.get("bytes", "0"))))
-        if at < ask - EARLY or order == 0 or order == (1 << 64) - 1:
+        if at < ask - EARLY or order == 0 or order == (1 << 64) - 1 or fields.get("object") in index:
             continue
         kind, job = CLASSES[min((order - 1) >> 62, 2)], ((order - 1) >> 32) & ((1 << 30) - 1)
         seen = objects.setdefault(("call", 0) if (kind, job) == ("run", 0) else (kind, job), Objects())

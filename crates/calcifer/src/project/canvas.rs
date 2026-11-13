@@ -7,6 +7,7 @@ use axum::{
     Json,
     body::Bytes,
     extract::{Path, State, rejection::BytesRejection},
+    http::StatusCode,
 };
 use api::{
     error::Error,
@@ -107,8 +108,15 @@ pub(super) async fn patch(
     }
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
-    let kept = set_from(&project.folder, &id, asked.cards, &asked.placed).map_err(Refusal)?;
-    Ok(Json(CanvasPatched { seq: project.folder.seq(), kept }))
+    let folder = &project.folder;
+    // Its answer is kept with it, in its transaction, at the revision it commits (cl-885).
+    let kept = folder.act(|| {
+        let kept = set_from(folder, &id, asked.cards, &asked.placed)?;
+        let said = kept.clone();
+        super::keyed::answering_at(StatusCode::OK, move |seq, _| CanvasPatched { seq, kept: said.clone() });
+        Ok(kept)
+    }).map_err(Refusal)?;
+    Ok(Json(CanvasPatched { seq: folder.seq(), kept }))
 }
 
 /// Rows a request makes beside its box, as one transaction with it: the push-aside of a drop (`moves`, each worked out from its revision in

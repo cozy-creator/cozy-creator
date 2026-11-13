@@ -1,5 +1,7 @@
 # Every Rust file that writes `unsafe` (xs-067). scripts/memory-safety.sh fails when a file outside this list gains
 # one, or a listed file no longer has any: an addition is reviewed as a new FFI boundary.
+crates/platform/src/alarm/macos.rs
+crates/platform/src/alarm/windows.rs
 crates/platform/src/contain/host_memory_macos.rs
 crates/platform/src/contain/host_memory_windows.rs
 crates/platform/src/contain/scope_windows.rs
@@ -13,8 +15,10 @@ crates/platform/src/handles/windows.rs
 crates/platform/src/heap.rs
 crates/platform/src/ipc/windows.rs
 crates/platform/src/lock.rs
+crates/platform/src/mounts/macos.rs
 crates/platform/src/net.rs
 crates/platform/src/paths.rs
+crates/platform/src/private_exec.rs
 crates/platform/src/process/linux.rs
 crates/platform/src/process/macos.rs
 crates/platform/src/process/mod.rs
@@ -66,8 +70,8 @@ crates/varena/src/abi/sizing.rs
 crates/varena/src/abi/source.rs
 crates/varena/src/abi/tensor_export.rs
 crates/varena/src/async_fill.rs
-crates/varena/src/cuda.rs
 crates/varena/src/consumer_streams.rs
+crates/varena/src/cuda.rs
 crates/varena/src/fork_guard.rs
 crates/varena/src/lib.rs
 crates/varena/src/tensor_consumers.rs

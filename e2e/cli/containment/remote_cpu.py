@@ -15,9 +15,10 @@ import re
 import secrets
 import sqlite3
 import subprocess
+from typing import TypedDict, cast
 from urllib.parse import quote, urlsplit
 
-from common import Failure, Native, Receipt, project_run_ids, require, sha, until, project_route
+from common import Failure, Native, Project, Ready, Receipt, RunDetail, project_run_ids, require, sha, until, project_route
 from native_execution import _documents, _observation
 
 TEXT = "Cozy public remote CPU fixture v1"
@@ -142,7 +143,7 @@ class Worker:
         if not self.first_failed:
             self.receipt.add("remote_cpu_stage", **{"stage_" + stage: True})
 
-    def failure(self, error: BaseException, *, completed: subprocess.CompletedProcess | None = None, cleanup: bool = False) -> None:
+    def failure(self, error: BaseException, *, completed: subprocess.CompletedProcess[bytes] | None = None, cleanup: bool = False) -> None:
         if not cleanup and self.first_failed:
             return
         facts: dict[str, object] = {"stage_" + ("retire" if cleanup else self.current_stage): True}
@@ -186,12 +187,12 @@ class Worker:
             self.failure(error, cleanup=cleanup)
             raise
         if completed.returncode:
-            error = Failure("fixture_failure")
-            self.failure(error, completed=completed, cleanup=cleanup)
-            raise error
+            failed = Failure("fixture_failure")
+            self.failure(failed, completed=completed, cleanup=cleanup)
+            raise failed
         return completed.stdout
 
-    def start(self, ready: dict) -> None:
+    def start(self, ready: Ready) -> None:
         try:
             pwd.getpwnam(self.user)
             require(False, "fixture_failure")
@@ -205,7 +206,8 @@ class Worker:
         primary = self.native.document("machine", "show", "local")
         remote = json.loads(self.call("identity", [str(self.binary), "--json", "machine", "show", "local"], user=True))
         key, fingerprint = primary.get("controller_key"), remote.get("fingerprint")
-        require(isinstance(key, str) and isinstance(fingerprint, str), "fixture_failure")
+        if not (isinstance(key, str) and isinstance(fingerprint, str)):
+            raise Failure("fixture_failure")
         authorized = json.loads(self.call("authorize", [str(self.binary), "--json", "machine", "authorize", key], user=True))
         # `reach` is where other computers add it, none on loopback (tensord serve.rs `reach`); this
         # loopback stand-in is added at its pinned `address`, `host:port` as `reach` would be.
@@ -213,9 +215,9 @@ class Worker:
         require(isinstance(reach, str) and urlsplit("//" + reach).hostname in {"127.0.0.1", "::1", "localhost"}, "fixture_failure")
         self.stage("add")
         self.native.document("machine", "add", self.name, reach, "--fingerprint", fingerprint)
-        updates = []
-        for flag in ("runtime", "tensorfs"):
-            if ready.get(flag): updates += ["--" + flag, ready[flag]]
+        updates: list[str] = []
+        for flag, version in (("runtime", ready.get("runtime")), ("tensorfs", ready.get("tensorfs"))):
+            if version: updates += ["--" + flag, version]
         if updates:
             self.stage("update")
             self.native.command("machine", "update", self.name, *updates, "-y")
@@ -244,8 +246,15 @@ class Worker:
 SEALED = "cozy:vault:journal:2:"
 
 
+class History(TypedDict):
+    row: tuple[object, ...]
+    logs: list[tuple[object, ...]]
+    outputs: list[tuple[object, ...]]
+
+
 def opened(view: Path, value: object) -> str:
-    require(isinstance(value, str), "remote_history_text")
+    if not isinstance(value, str):
+        raise Failure("remote_history_text")
     if not value.startswith(SEALED):
         return value
     reference = json.loads(value.removeprefix(SEALED))
@@ -258,7 +267,7 @@ def opened(view: Path, value: object) -> str:
     return base64.b64decode(record["data"], validate=True).decode()
 
 
-def history(view: Path, identifier: str) -> dict:
+def history(view: Path, identifier: str) -> History:
     path = view / "project.db"
     require(path.is_file() and not path.is_symlink(), "fixture_failure")
     # sqlite3's context manager never closes; a lingering handle would keep the project view busy.
@@ -271,7 +280,7 @@ def history(view: Path, identifier: str) -> dict:
     return {"row": row, "logs": logs, "outputs": outputs}
 
 
-def qualify(native: Native, project: dict, receipt: Receipt, ready: dict) -> None:
+def qualify(native: Native, project: Project, receipt: Receipt, ready: Ready) -> None:
     require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "hosted_linux_only")
     worker = Worker(native, receipt)
     primary_failed = False
@@ -300,7 +309,7 @@ def qualify(native: Native, project: dict, receipt: Receipt, ready: dict) -> Non
         identifier = run["id"]
         worker.stage("detail")
         detail_path = project_route(project["id"], "/runs/" + quote(identifier, safe="") + "?detail=full")
-        detail = until(lambda: native.call("GET", detail_path),
+        detail = until(lambda: cast(RunDetail, native.call("GET", detail_path)),  # cast: the run's JSON
                        lambda value: value.get("status") == "completed" and any(item.get("url") for item in value.get("output", [])), "fixture_failure", 1200)
         expected = SOURCE + b"\n" + TEXT.encode()
         items = [item for item in detail.get("output", []) if item.get("url") and not item.get("stays")]

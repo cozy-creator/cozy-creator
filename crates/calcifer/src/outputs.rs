@@ -58,6 +58,8 @@ const RANGE: u64 = 8 << 20;
 const RANGES_PER_LANE: usize = 4;
 /// How many whole reads of one revision may fail its digest before it is given up.
 const WRONG_READS: u32 = 3;
+/// An output landing this long after its run ended is said (`calcifer.diagnostics`).
+const LATE_LANDING_MS: i64 = 500;
 
 /// An output Calcifer still owes this computer: its run's number, its name and index, its length
 /// and the bytes of it in place.
@@ -194,6 +196,11 @@ impl Calcifer {
         tasks.spawn(task);
     }
 
+    /// Whether the run's exporter goes on.
+    pub(super) fn exporting(&self, id: &RunId) -> bool {
+        lock(&self.exports.runs).contains_key(id)
+    }
+
     /// Starts the run's exporter, or wakes it.
     pub(super) fn export(self: &Arc<Self>, id: &RunId) {
         let wake = {
@@ -267,10 +274,7 @@ impl Calcifer {
         let mut exporting = false;
         while (self.row_store(&run).and_then(|store|store.outputs_to_export(run.id.as_str())).map_err(|e| e.to_string())?.iter()).any(|owed| owed.name == item.name && owed.index == item.index) {
             exporting = true;
-            tokio::select! {
-                _ = events.recv() => {}
-                () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
-            }
+            Calcifer::moved(&mut events, &run.id).await;
         }
         if exporting {
             let now = self.row_store(&run).and_then(|store|store.output(run.id.as_str(), &item.name, item.index)).map_err(|e| e.to_string())?;
@@ -312,7 +316,7 @@ impl Calcifer {
         loop {
             let (run, items) = match self.next_exports(id) {
                 Ok(Some(next)) => next,
-                Ok(None) => return,
+                Ok(None) => return self.release_run(id),
                 Err(StoreError::Locked(code)) if code!="project_busy" => return,
                 Err(e) => {
                     warn!(run = %id, "{e}");
@@ -330,7 +334,12 @@ impl Calcifer {
                 continue;
             }
             let mut changed = None;
-            let exported = match self.reach(&run, &mut changed).await {
+            let reaching = Instant::now();
+            let reached = self.reach(&run, &mut changed).await;
+            if reaching.elapsed() > std::time::Duration::from_millis(200) {
+                warn!(run = %id, "its machine took {} ms to reach for its outputs", reaching.elapsed().as_millis());
+            }
+            let exported = match reached {
                 Ok(link) => {
                     let exports = (items.iter())
                         .map(|item| self.export_item(&run, item, &link, changed.clone()));
@@ -410,7 +419,10 @@ impl Calcifer {
                 lock(&self.exports.appended).retain(|(run, ..), _| run != id);
             }
             // Its project closed: the exporter ends, and the project's next opening starts another.
-            Err(StoreError::Locked(code)) if code != "project_busy" => drop(runs.remove(id)),
+            Err(StoreError::Locked(code)) if code != "project_busy" => {
+                warn!(run = %id, "its exporter ends with its outputs owed: {code}");
+                drop(runs.remove(id));
+            }
             _ => {}
         }
         next
@@ -552,6 +564,13 @@ impl Calcifer {
         if !private_run(run) { info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
             bytes = moved.load(Ordering::Relaxed), phase = "output_export", state = "end",
             ok = done.is_ok(), elapsed_ms = began.elapsed().as_secs_f64() * 1000.0); }
+        // A take is listed as its run ends and is here once this lands: one that lands late is said, with where its time went.
+        let settled = self.row_store(run).and_then(|store| store.run(run.id.as_str())).ok().flatten().and_then(|now| now.settled_at_ms);
+        let export_ms = began.elapsed().as_millis() as i64;
+        if done.is_ok() && !private_run(run) && let Some(settled) = settled && crate::store::now_ms() - settled > LATE_LANDING_MS {
+            warn!(run = %run.id, output = %item.name, "landed {} ms after its run ended: its export began {} ms after, and took {export_ms} ms",
+                crate::store::now_ms() - settled, crate::store::now_ms() - export_ms - settled);
+        }
         done
     }
 
@@ -807,7 +826,7 @@ fn protect(mut response: Response, readable: Option<Arc<AtomicBool>>) -> Respons
     let Some(readable) = readable else { return response };
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
-    let body = std::mem::replace(response.body_mut(), Body::empty());
+    let body = crate::project::vault::revocable(std::mem::replace(response.body_mut(), Body::empty()), readable.clone());
     let chunks = body.into_data_stream().map(move |chunk| {
         if !readable.load(Ordering::Acquire) {
             Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the project is locked"))

@@ -99,23 +99,29 @@ pub(crate) async fn find(State(api): State<Arc<Api>>, UrlPath(id): UrlPath<Strin
     let Some((package, function)) = id.rsplit_once('/') else {
         return Err(Refusal(none(&id)));
     };
-    let (named, encrypted, access) = match &asked.project {
+    let (named, encrypted, access, scope) = match &asked.project {
         Some(project) => {
             let root = crate::project::named(&api, project).map_err(Refusal)?;
             let access = crate::project::vault::admit_root(&root).await.map_err(Refusal)?;
             let named = crate::project::local_code_named(&api, project)?;
-            (named, crate::project::vault::encrypted(&root), Some(access))
+            // Its local code is read in its project's storage scope, as `GET /v1/tools?project=` reads it.
+            let scope = crate::private_io::of_output(&crate::project::landing(&root)).map_err(Refusal)?;
+            (named, crate::project::vault::encrypted(&root), Some(access), scope)
         }
-        None => (vec![], false, None),
+        None => (vec![], false, None, None),
     };
     let component = match named.into_iter().find(|(written, _)| written == package) {
         // Local modules are served at immutable URLs. An encrypted project uses
         // the tool's declared controls instead of publishing its code there.
         Some(_) if encrypted => Err(none(&id)),
-        Some((_, path)) => local(&api, &id, &path, function, access).await,
+        Some((_, path)) => crate::private_io::context(scope, local(&api, &id, &path, function, access)).await,
         None => {
             drop(access);
-            released(&api, &id, package, function).await
+            // A dev home's checkout's first-party package draws its box from its source (xs-195).
+            match crate::checkout::named(package) {
+                Some((dir, _)) => local(&api, &id, &dir, function, None).await,
+                None => released(&api, &id, package, function).await,
+            }
         }
     };
     let component = component.map_err(Refusal)?;

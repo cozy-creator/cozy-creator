@@ -113,7 +113,7 @@ async function died(why) {
   // Square, as its tool makes with nothing it mentions in view, a box can land past the edge of the view, where it isn't drawn.
   await until('fixed placed', async () => (await api(`${at}/canvas`)).body?.cards?.fixed, Boolean);
   await page.keyboard.press('f');
-  await page.waitForTimeout(400);
+  await settled(page);
   await box('fixed').waitFor();
   const fixed = await until('its reads', () => asset('fixed'), (row) => row?.reads?.length === 3);
   check('versions_are_reads', fixed.reads.map((read) => `${read.name}.${read.version ?? ''}`).sort().join() === 'Abr.,Abr.1,Abr.2', fixed.reads);
@@ -152,8 +152,6 @@ async function died(why) {
 
   // Deleting a version something reads: it stays read, a render fails clearly, and Undo brings it back.
   await box('Ada').waitFor();
-  await box('Ada').locator('.nm').click({ button: 'right' }).catch(() => {});
-  await page.keyboard.press('Escape');
   const before = (await asset('fixed')).inputs;
   const gone = await api(`${at}/assets/Ada/versions/2`, { method: 'DELETE' });
   check('delete_names_what_reads_it', JSON.stringify(gone.body.read_by) === '["fixed"]', gone.body);
@@ -168,7 +166,8 @@ async function died(why) {
   const shut = async () => {
     await page.keyboard.press('Escape');
     await page.goto(await projectUrl(id));
-    await page.waitForTimeout(300);
+    await page.locator('.react-flow__viewport').waitFor();
+    await settled(page);
   };
   const open = async (name) => {
     await page.goto(await projectUrl(id, `/assets/${name}`));
@@ -178,7 +177,8 @@ async function died(why) {
   const shaOf = (row, number) => row.prefixes?.find((version) => version.number === number)?.main?.sha256 ?? (number === 1 ? row.sha256 : undefined);
   const history = (name) => box(name).locator('.image-history.here-side');
   const previews = (name) => history(name).locator('.take[data-take]');
-  const selected = (name) => history(name).locator('.take.on[data-take]').getAttribute('data-take');
+  // The take shown. None shown is a state its check judges (null), not a minute's wait that ends the cell.
+  const selected = (name) => history(name).locator('.take[aria-pressed="true"][data-take]').first().getAttribute('data-take', { timeout: 5000 }).catch(() => null);
   const noLinearControls = (name) => box(name).getByLabel('Current version', { exact: true }).count().then(async (count) => count + await box(name).getByRole('button', { name: /^(Previous|Next) version$/ }).count());
   const noDescription = (name) => box(name).locator('.desc-field, [aria-label="Description"]').count();
   const geometry = (name) => box(name).evaluate((node) => {
@@ -260,6 +260,23 @@ async function died(why) {
   }
   check('decoded_state_switching_has_no_empty_flash', flips.every((look) => look.first !== null && look.first < 400 && look.emptyFrames === 0), flips);
   check('warm_thumbnail_clicks_do_not_change_approval', await current('Ada') === 1);
+  // A column with nothing to scroll carries a take whichever way it's dragged; let go back on the column, it's put back: Focus stays, the
+  // take shown and what's approved stay, nothing is copied (cl-885, Paul 11-12: a drag begun inside never leaves). It was copied onto the
+  // canvas, and Focus left.
+  const shortSide = history('Ada');
+  const shortRoom = await shortSide.evaluate((element) => element.scrollHeight - element.clientHeight);
+  const lowest = await previews('Ada').last().boundingBox();
+  const namesBeforeDrag = (await state()).assets.map((row) => row.name).sort();
+  const shownBeforeDrag = await selected('Ada');
+  const pressAt = { x: lowest.x + lowest.width / 2, y: lowest.y + lowest.height / 2 };
+  await page.mouse.move(pressAt.x, pressAt.y);
+  await page.mouse.down();
+  for (let step = 1; step <= 8; step++) await page.mouse.move(pressAt.x, pressAt.y - step * 18);
+  const carriedUp = await page.locator('.carry-ghost').count();
+  await page.mouse.up();
+  await settled(page);
+  const putBack = { room: shortRoom, carried: carriedUp, focused: await page.locator('[data-focused-asset="Ada"]').count(), path: new URL(page.url()).pathname, shown: [shownBeforeDrag, await selected('Ada')], approved: await current('Ada'), names: (await state()).assets.map((row) => row.name).sort() };
+  check('a_take_let_go_on_its_column_stays_in_focus', shortRoom < 1 && putBack.focused === 1 && putBack.path.endsWith('/assets/Ada') && putBack.shown[1] === shownBeforeDrag && putBack.approved === 1 && JSON.stringify(putBack.names) === JSON.stringify(namesBeforeDrag), putBack);
 
   // A longer state history keeps the original scrollable previews, with both mouse and touch scrolling. Sixteen 100px previews are
   // longer than Focus's full-height column at this window, so there's always something to scroll (at nine they can just fit).
@@ -297,6 +314,11 @@ async function died(why) {
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await cdp.detach();
   check('right_previews_scroll_with_a_finger', byFinger > beforeFinger + 40, { beforeFinger, byFinger });
+  // And with the wheel, as ever (Paul): back up the column.
+  await page.mouse.move(across, sideBox.y + sideBox.height / 2);
+  await page.mouse.wheel(0, -240);
+  const byWheel = await until('the wheel scrolled it', scrolled, (top) => top < byFinger - 100, 5000).catch(() => scrolled());
+  check('right_previews_scroll_with_the_wheel', byWheel < byFinger - 100, { byFinger, byWheel });
   const unmarked = await until('scroll marker gone', () => page.locator('.scroll-marker.on').count(), (count) => count === 0, 4000).then(() => true, (why) => String(why));
   check('scroll_marker_does_not_carry_or_remove_a_state', scrolling.marked === 1 && scrolling.ghosts === 0 && unmarked === true && (await asset('many')).versions === MANY, { scrolling, unmarked });
   await approveVersion(page, 'many', 5);
@@ -396,7 +418,7 @@ async function died(why) {
     const second = await until('first modification is v2', () => asset('other'), (row) => row.versions === 2 && !row.making?.length, 5 * STEP_MS);
     check('first_modification_is_v2_beside_the_approved', second.version === 1 && second.approved === 1 && second.pinned && shaOf(second, 1) === originalSha && shaOf(second, 2) !== originalSha, second);
     const made = second.prefixes.find((row) => row.number === 2).main;
-    check('new_output_has_requested_ratio', Math.abs(made.width / made.height - 1) < 0.02, { width: made.width, height: made.height, shapeSaid, aspect_ratio: second.fields?.aspect_ratio });
+    check('new_output_has_requested_ratio', Math.abs(made.width / made.height - 1) < 0.02, { width: made.width, height: made.height, shapeSaid, aspect_ratio: second.fields?.aspect_ratio, main: made });
     await open('other');
     await until('the new take has a retained preview', () => previews('other').count(), (count) => count === 2);
     check('new_output_adds_a_retained_preview', await selected('other') === '1');
@@ -474,7 +496,8 @@ async function died(why) {
     await api(`${at}/assets/clip`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/keep` }) });
     const clip = await until('video source enters its slot', () => asset('clip'), (row) => row?.fields?.video === '<self.1>');
     check('video_tool_still_reads_the_source', clip.kind === 'video' && clip.versions === 1, clip);
-  } else seen.skipped_render = 'no free tool runs here';
+  } else if (!process.env.ALONE) check('renders_on_this_computer', false, 'local is not usable, so none of the render checks ran');
+  else seen.skipped_render = 'no free tool runs here';
 
   await shut();
   check('no_page_errors', errors.length === 0, errors);

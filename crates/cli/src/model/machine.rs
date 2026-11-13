@@ -111,15 +111,21 @@ fn print_removed(ctx: &Context, removed: &api::calcifer::RemovedModel) {
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
     let on = args.placement.on()?;
     let from_run = args.source.starts_with("run:");
+    // A file here named with a `:` is that file.
+    let (source, components) = match std::path::Path::new(&args.source).exists() {
+        true => (args.source.as_str(), vec![]),
+        false => api::model_ref::components(&args.source),
+    };
     let mut ask = ModelUpload {
-        source: args.source.clone(),
+        source: source.to_owned(),
+        components,
         name: None,
         destination: args.destination,
         lane: args.lane,
         source_format: args.format,
         mirror: args.mirror,
         trained_on: args.trained_on,
-        trigger: args.trigger,
+        triggers: args.triggers,
         strength: args.strength,
         base: args.base,
         add: Default::default(),
@@ -159,15 +165,15 @@ fn after(run: &Run) -> api::calcifer::hub::AfterRun {
     (run.result.as_ref()).and_then(|r| serde_json::from_value(r["after"].clone()).ok()).unwrap_or_default()
 }
 
-/// Says the trigger and strength the Hub took, or warns that it did not: the upload stands.
+/// Says the triggers and strength the Hub took, or warns that it did not: the upload stands.
 fn display(ctx: &Context, shown: &Displayed) {
     if let Some(error) = &shown.error {
-        output::warn(&format!("{}: the Hub did not take the trigger and strength: {error}", shown.model));
+        output::warn(&format!("{}: the Hub did not take the triggers and strength: {error}", shown.model));
         return;
     }
     let mut said = vec![];
-    if let Some(trigger) = &shown.trigger {
-        said.push(format!("trigger {trigger:?}"));
+    if !shown.triggers.is_empty() {
+        said.push(format!("triggers {:?}", shown.triggers));
     }
     if let Some(strength) = shown.strength {
         said.push(format!("recommended strength {strength}"));

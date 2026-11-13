@@ -26,7 +26,7 @@ use url::Url;
 use api::{
     error::{Envelope, Kind},
     machine::{
-        EstimateAnswer, EstimateRequest, Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
+        Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
         PREVIEW_STEP, RunBatch, RunBatchAnswer, RunEvent, RunList, RunRequest, RunState, SERVER_NAME, StatusFrame, capability, parse_held,
         path,
     },
@@ -140,6 +140,11 @@ impl Machine {
 
     pub(crate) fn with_private(&self, scope: crate::private_io::Scope) -> Self {
         Self { private: Some(scope), ..self.clone() }
+    }
+
+    /// Which worker this is: its address and certificate pin.
+    pub(crate) fn identity(&self) -> String {
+        format!("{}#{}", self.origin, hex::encode(self.pin))
     }
 
     /// Feature/authentication probe before any private file bytes cross the wire.
@@ -258,9 +263,14 @@ impl Machine {
             .collect())
     }
 
-    /// When each of `jobs` would finish here, packed with the machine's queue.
-    pub(crate) async fn estimate(&self, jobs: &EstimateRequest) -> Result<EstimateAnswer, Error> {
-        json(send(self.request(Method::POST, path::ESTIMATE, &[]).json(jobs)).await?).await
+    /// This key's upcoming jobs here, nearest first, replacing its last list (cl-967).
+    pub(crate) async fn upcoming(&self, list: &api::machine::Upcoming) -> Result<api::machine::AheadAnswer, Error> {
+        json(send(self.request(Method::PUT, path::UPCOMING, &[]).json(list)).await?).await
+    }
+
+    /// What this key expects demand for here with no job yet, replacing its last set (cl-967).
+    pub(crate) async fn prepare(&self, list: &api::machine::Prepare) -> Result<api::machine::AheadAnswer, Error> {
+        json(send(self.request(Method::PUT, path::PREPARE, &[]).json(list)).await?).await
     }
 
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).

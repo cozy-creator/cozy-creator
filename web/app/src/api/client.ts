@@ -169,7 +169,7 @@ const project = (id: string) => `/v1/projects/${encodeURIComponent(id)}`
 const vaultOperation = (id: string, operation: string) => `/v1/projects/${encodeURIComponent(id)}/vault/operations/${operation}`
 const maintenanceRun = (id: string | number) => `/v1/runs/${encodeURIComponent(id)}`
 export type ProjectRun = { project: string; run: string | number }
-const run = (address: ProjectRun) => `${project(address.project)}/runs/${encodeURIComponent(address.run)}`
+const run = (address: ProjectRun) => `/v1/projects/${encodeURIComponent(address.project)}/runs/${encodeURIComponent(address.run)}`
 const machine = (name: string) => `/v1/machines/${encodeURIComponent(name)}`
 // `org/name` on the wire; a first-party name has no owner, and its org is `_`.
 const orgOf = (name: string) => encodeURIComponent(name.includes("/") ? name.slice(0, name.indexOf("/")) : "_")
@@ -198,13 +198,17 @@ export class Client {
   allowProject(id: string) { this.transport.allowProject(id) }
   freezeWrites() { this.frozen = true }
   resumeWrites() { this.frozen = false }
+  /** Writes sent and not yet answered. */
+  unsentWrites() { return this.writes }
   async savedWrites() {
     while (this.writes) await new Promise<void>((done) => this.settledWrites.add(done))
   }
 
   private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
-    const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && path !== "/v1/down"
-    if (writing && this.frozen && !options.action && !path.startsWith("/v1/events/")) {
+    // By segment, not route literal: scripts/web-routes.sh reads every `/v1/` string here as a call.
+    const [, , root] = path.split("?")[0].split("/")
+    const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && !(root === "down" && path.split("/").length === 3)
+    if (writing && this.frozen && !options.action && root !== "events") {
       throw new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving its edits before closing" })
     }
     if (writing) this.writes++
@@ -391,15 +395,17 @@ export class Client {
         const stop = new AbortController()
         const cancel = () => stop.abort(signal?.reason)
         signal?.addEventListener("abort", cancel, { once: true })
-        let heard = performance.now()
         let silent = false
+        let quiet: ReturnType<typeof setTimeout> | undefined
         // Same 45-second silence rule as the shared event stream. Comments are health, not progress.
-        const health = setInterval(() => {
-          if (performance.now() - heard >= 45_000) {
+        const heard = () => {
+          clearTimeout(quiet)
+          quiet = setTimeout(() => {
             silent = true
             stop.abort()
-          }
-        }, 1000)
+          }, 45_000)
+        }
+        heard()
         try {
           const init: RequestInit = {
             headers: { "Content-Type": "application/json", Accept: "text/event-stream", "Cache-Control": "no-store" },
@@ -407,7 +413,7 @@ export class Client {
           }
           const response = await this.send(vaultOperation(id, operation), { ...init, method: "PUT" }, { once: stop.signal })
           this.hooks.attempt(0)
-          heard = performance.now()
+          heard()
           if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("text/event-stream")) throw invalid()
           {
             if (!response.body) throw incomplete()
@@ -445,7 +451,7 @@ export class Client {
                     break
                   default: throw invalid()
                 }
-              }, () => { heard = performance.now() })
+              }, heard)
             } catch (error) {
               if (!terminal.changed && !terminal.failure) throw error
             }
@@ -459,7 +465,7 @@ export class Client {
           const lost = silent || error instanceof TypeError || (error instanceof ApiError && error.status === 0)
           if (!lost) throw error
         } finally {
-          if (health !== undefined) clearInterval(health)
+          clearTimeout(quiet)
           signal?.removeEventListener("abort", cancel)
           stop.abort()
         }

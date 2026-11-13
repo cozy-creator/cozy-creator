@@ -63,6 +63,23 @@ export function underOf(view: ElementView): number {
   const line = asset && (asset.tool || asset.kind !== "text") ? RING + BODY_LINE + 2 : 0
   return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
+
+/** What a box placed or pushed is left of the rest (clear.ts). */
+export const GAP = 16
+
+/** How far out the canvas is, as `data-lod` draws it: 0 close, 1 far, 2 past 20%. */
+export const bandOf = (zoom: number): 0 | 1 | 2 => (zoom < 0.2 ? 2 : zoom < 0.45 ? 1 : 0)
+
+/**
+ * A box's name is one line in bold mono on a line of 1.25, its foot 12 over its picture (app.css). As the canvas zooms out it's held at the
+ * body size on screen (cl-958) only as far as it fits the room the layout keeps above every box, RISE and a gap, a foot's 12 clear of the
+ * box above (Paul, 11-13: "the text size should be limited"): 36.8px on the canvas, the body size down to 46%. Further out it shrinks with
+ * the canvas, and nothing moves: a zoom never makes room.
+ */
+const NAME_MOST = (RISE + GAP + (HEAD - 12) - 12) / 1.25
+/** How much larger than the canvas a box's name is drawn, at least (`--name-zoom`): the zoom's inverse in quarter steps, to NAME_MOST. */
+export const nameZoomOf = (zoom: number) => Math.min(2 ** Math.max(0, Math.ceil(-Math.log2(zoom || 1) * 4) / 4), NAME_MOST / (12.5 * 1.35))
+
 const ENTITY_DESC = 60
 const ENTITY_SLOTS = 72
 export const SUB_ROW = 136

@@ -15,7 +15,7 @@ use axum::{
     Json,
     body::Bytes,
     extract::{Path, Query, Request, State, rejection::BytesRejection},
-    http::{HeaderMap, Method},
+    http::{HeaderMap, Method, StatusCode},
     middleware::Next,
     response::Response,
 };
@@ -119,6 +119,17 @@ impl Entry {
         HistoryEntry { id: self.id, at_ms: self.at_ms, by: self.by.clone(), words: self.words.clone(), names, edits: self.edits.clone(), undone: self.undone.clone() }
     }
 
+    /// `back` is what its change of that box brings back going `way`.
+    fn holds(&mut self, way: Way, back: &Boxed) {
+        for change in &mut self.changes {
+            if let Change::Asset { name, before, after } = change
+                && name_key(name.as_str()) == name_key(&back.name)
+            {
+                *(if way == Way::Back { before } else { after }) = Some(back.clone());
+            }
+        }
+    }
+
     fn row(&self) -> db::OpRow {
         db::OpRow { uid: self.uid.clone(), id: self.id, at_ms: self.at_ms, by: json(&self.by), words: self.words.clone(), edits: json(&self.edits), changes: json(&self.changes), undone: self.undone.as_ref().map(json) }
     }
@@ -158,6 +169,20 @@ fn book(folder: &Folder) -> Arc<Book> {
         };
         Book { entries: Mutex::new(entries), stepping: tokio::sync::Mutex::default() }
     })
+}
+
+/// Who last changed `field` of box `name` (any of its fields with none): by an edit, or by undoing one, whichever came last. What a
+/// conflict names.
+pub(super) fn last_by(folder: &Folder, name: &str, field: Option<&str>) -> Option<By> {
+    let entries = book(folder).entries.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let key = name_key(name);
+    let touched = |change: &Change| match change {
+        Change::Fields { name, fields } => name_key(name) == key && field.is_none_or(|field| fields.contains_key(field)),
+        Change::Asset { name, .. } => name_key(name) == key,
+        _ => false,
+    };
+    let when = |entry: &Entry| entry.undone.as_ref().map_or_else(|| (entry.at_ms, entry.by.clone()), |undone| (undone.at_ms, undone.by.clone()));
+    entries.iter().filter(|entry| entry.changes.iter().any(touched)).map(when).max_by_key(|(at, _)| *at).map(|(_, by)| by)
 }
 
 /// When the oldest edit the history keeps was made: no Undo reaches past it.
@@ -476,7 +501,7 @@ fn kept(method: &Method, path: &str) -> bool {
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     let ["v1", "projects", _, rest @ ..] = parts.as_slice() else { return false };
     match (method.as_str(), rest) {
-        ("POST", ["imports" | "assets" | "copies" | "approve" | "unpin" | "rename"]) => true,
+        ("POST", ["imports" | "assets" | "copies" | "approve" | "unpin" | "rename" | "apply"]) => true,
         ("POST", ["assets", _, "versions"]) => true,
         ("PATCH" | "DELETE", ["assets", _]) => true,
         ("PATCH" | "DELETE", ["assets", _, "versions", _]) => true,
@@ -596,10 +621,11 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
     let now = |book: &Book| told(&book.entries.lock().unwrap_or_else(|e| e.into_inner()));
     let Some(chosen) = chosen else {
         let now = now(&book);
-        return Ok(Json(HistoryStepped { entries: vec![], already: true, stopped: None, undo: now.undo, redo: now.redo }));
+        return Ok(Json(HistoryStepped { entries: vec![], already: true, stopped: None, lost: vec![], undo: now.undo, redo: now.redo }));
     };
     let by = by_of(&headers);
-    let mut done = vec![];
+    let mut done: Vec<HistoryEntry> = vec![];
+    let mut lost: Vec<String> = vec![];
     let mut stopped = None;
     // `walking` before any transaction, as every writer takes them: a rename put back follows a walk going.
     let walking = project.walking.lock().expect("walking lock");
@@ -610,14 +636,28 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
             if let Some(what) = moved(&project, &entry, way) {
                 return Err(conflict(&book, &entry, &what.0, way, &what.1).0);
             }
-            taken(&api, &project, &id, &entry, way, follows).map_err(|Refusal(why)| why)?;
+            let bare = taken(&api, &project, &id, &entry, way, follows).map_err(|Refusal(why)| why)?;
             let mut marked = entry.clone();
+            // A box back without its files is what the entry holds from now: a step the other way finds it as it is.
+            for held in &bare {
+                marked.holds(way, &held.back);
+            }
             marked.undone = (way == Way::Back).then(|| Undone { at_ms: now_ms(), by: by.clone() });
             project.folder.write_ops(vec![marked.row()], vec![])?;
-            Ok(marked)
+            // Its answer is kept with it, in its transaction (cl-885): what the step has done with this entry, as if it were its last.
+            let mut entries = book.entries.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(held) = entries.iter_mut().find(|held| held.uid == marked.uid) {
+                *held = marked.clone();
+            }
+            let now = told(&entries);
+            let lost = lost.iter().cloned().chain(bare.iter().map(|held| held.said.clone())).collect();
+            let entries = done.iter().cloned().chain([marked.listed()]).collect();
+            super::keyed::answering(StatusCode::OK, &HistoryStepped { entries, already: false, stopped: None, lost, undo: now.undo, redo: now.redo });
+            Ok((marked, bare))
         });
         match stepped {
-            Ok(marked) => {
+            Ok((marked, bare)) => {
+                lost.extend(bare.into_iter().map(|held| held.said));
                 let mut entries = book.entries.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(held) = entries.iter_mut().find(|held| held.uid == marked.uid) {
                     *held = marked.clone();
@@ -641,7 +681,7 @@ async fn step(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: Head
         (Some(why), true) => Err(why),
         (stopped, _) => {
             let now = now(&book);
-            Ok(Json(HistoryStepped { entries: done, already: false, stopped: stopped.map(|Refusal(why)| why), undo: now.undo, redo: now.redo }))
+            Ok(Json(HistoryStepped { entries: done, already: false, stopped: stopped.map(|Refusal(why)| why), lost, undo: now.undo, redo: now.redo }))
         }
     }
 }
@@ -689,13 +729,57 @@ fn chosen(entries: &[Entry], asked: &HistoryStep, way: Way) -> Result<Option<Vec
     }
 }
 
-/// `entry` taken back or done again, each of its changes in turn, inside the act its step is.
-fn taken(api: &Arc<Api>, project: &Arc<Project>, id: &str, entry: &Entry, way: Way, follows: bool) -> Result<(), Refusal> {
+/// `entry` taken back or done again, each of its changes in turn, inside the act its step is. A box it brings back whose files the purge
+/// removed comes back without them (cl-919): its fields, words and place, and none of its takes. Those boxes.
+fn taken(api: &Arc<Api>, project: &Arc<Project>, id: &str, entry: &Entry, way: Way, follows: bool) -> Result<Vec<Bare>, Refusal> {
+    let bare = purged_boxes(&project.folder, entry, way).map_err(Refusal)?;
     let order: Vec<&Change> = match way {
         Way::Back => entry.changes.iter().rev().collect(),
         Way::Forth => entry.changes.iter().collect(),
     };
-    order.into_iter().try_for_each(|change| put(api, project, id, change, way, follows))
+    for change in order {
+        let of = bare.iter().find(|held| name_key(&held.back.name) == name_key(change.name()));
+        match (change, of) {
+            (Change::Take { .. } | Change::Metadata { .. }, Some(_)) => {}
+            (Change::Asset { .. }, Some(held)) => {
+                super::assets::put_back_box(project, id, held.back.clone(), None)?;
+            }
+            _ => put(api, project, id, change, way, follows)?,
+        }
+    }
+    Ok(bare)
+}
+
+/// A box a step brings back without its files, as it comes back, and what the step says of it.
+struct Bare {
+    back: Boxed,
+    said: String,
+}
+
+/// Each box `entry` brings back going `way` whose files the purge removed: its fields less what named them (`approved`, a version picked).
+fn purged_boxes(folder: &Folder, entry: &Entry, way: Way) -> Result<Vec<Bare>, Error> {
+    let backs: Vec<&Boxed> = (entry.changes.iter())
+        .filter_map(|change| match change {
+            Change::Asset { before, after, .. } => wanted(way, before, after).as_ref(),
+            _ => None,
+        })
+        .collect();
+    if backs.is_empty() {
+        return Ok(vec![]);
+    }
+    let gone: Vec<&Boxed> = folder.reading_boxes(|written| backs.into_iter().filter(|back| written.get(&back.name).is_none()).collect())?;
+    let purged: Vec<&Boxed> = folder.reading_lock(|lock| gone.into_iter().filter(|back| lapsed(folder, lock, back)).collect())?;
+    let window = super::purge::window_said();
+    Ok(purged
+        .into_iter()
+        .map(|back| {
+            let mut back = back.clone();
+            back.set("approved", Value::Null);
+            back.set(super::format::SELECTED_VERSION, Value::Null);
+            let said = format!("{}'s files were removed (deleted more than {window} ago), so it came back without them", back.name);
+            Bare { back, said }
+        })
+        .collect())
 }
 
 fn conflict(book: &Book, entry: &Entry, change: &Change, way: Way, what: &str) -> Refusal {
@@ -703,11 +787,6 @@ fn conflict(book: &Book, entry: &Entry, change: &Change, way: Way, what: &str) -
     if let Some(what) = what.strip_suffix(CLEARED) {
         let said = format!("can't {} \"{}\": {what}: reclaiming unused files cleared it, so it can't come back", way.verb(), entry.words);
         return Refusal(Error::new(Kind::Conflict, "history_conflict", said).next("cozy open"));
-    }
-    // A box whose undo window ended: its files are gone, and none of it comes back (cl-919).
-    if let Some(what) = what.strip_suffix(LAPSED) {
-        let said = format!("can't {} \"{}\": {what}, so it can no longer be restored", way.verb(), entry.words);
-        return Refusal(Error::new(Kind::Conflict, "history_lapsed", said));
     }
     let entries = book.entries.lock().unwrap_or_else(|e| e.into_inner());
     let later = entries.iter().rev().find(|other| other.id > entry.id && other.undone.is_none() && other.changes.iter().any(|held| held.touches(change.name())));
@@ -733,8 +812,6 @@ fn said_by(by: &By) -> String {
 
 /// How `moved_one` ends what it says of a take `reclaim` cleared, which `conflict` reads.
 const CLEARED: &str = ": cleared";
-/// How it ends what it says of a box deleted longer ago than the undo window.
-const LAPSED: &str = ": lapsed";
 
 /// The first change of `entry` that isn't as it should be before going `way`, and what it finds instead.
 fn moved<'a>(project: &Project, entry: &'a Entry, way: Way) -> Option<(&'a Change, String)> {
@@ -762,12 +839,6 @@ fn moved_one(project: &Project, change: &Change, way: Way) -> Option<String> {
     match change {
         Change::Asset { name, before, after } => {
             let now = written.get(name);
-            if let (Some(back), None) = (wanted(way, before, after), now)
-                && let Some(lock) = folder.lock().ok()
-                && lapsed(folder, &lock, back)
-            {
-                return Some(format!("{name} was deleted more than {} ago, and its files are gone{LAPSED}", super::purge::window_said()));
-            }
             match (found(way, before, after), now) {
                 (None, Some(_)) => Some(format!("{name} is in the project again")),
                 (Some(_), None) => Some(format!("{name} is gone")),
@@ -819,8 +890,8 @@ fn wanted<T>(way: Way, before: T, after: T) -> T {
     if way == Way::Back { before } else { after }
 }
 
-/// Whether box `back`, deleted, is past bringing back: what it held was set aside longer ago than the undo window, or is gone, or its own
-/// file has left the project.
+/// Whether box `back`, deleted, lost its files: what it held was set aside longer ago than the undo window, or is gone, or its own file
+/// has left the project.
 fn lapsed(folder: &Folder, lock: &Lock, back: &Boxed) -> bool {
     let now = now_ms();
     if lock.deleted_box(&back.name, &back.id).is_some_and(|held| held.lapsed(now) || held.files().next().is_none()) {

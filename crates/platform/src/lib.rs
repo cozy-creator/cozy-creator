@@ -12,9 +12,13 @@
 use std::{fmt, io, path::PathBuf};
 
 #[cfg(feature = "seams")]
+pub mod alarm;
+#[cfg(feature = "seams")]
 pub mod contain;
 #[cfg(feature = "seams")]
 pub mod durable;
+#[cfg(feature = "seams")]
+pub mod exe;
 #[cfg(feature = "seams")]
 pub mod gpu;
 #[cfg(feature = "seams")]
@@ -27,6 +31,8 @@ pub mod ipc;
 pub mod lock;
 #[cfg(all(unix, feature = "seams"))]
 pub mod net;
+#[cfg(feature = "seams")]
+pub mod mounts;
 #[cfg(feature = "seams")]
 pub mod paths;
 #[cfg(feature = "seams")]
@@ -43,7 +49,7 @@ pub mod tail;
 #[cfg(feature = "seams")]
 pub mod tools;
 #[cfg(feature = "seams")]
-mod watch;
+pub mod watch;
 
 /// A seam's failure: unsupported on this OS, an I/O or OS call, a service manager, or NVML.
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +77,9 @@ pub enum Error {
     },
     #[error("NVML {op}: {detail}")]
     Gpu { op: &'static str, detail: String },
+    /// An update replaced this running program's file, and this OS starts no other copy of it (`exe::running`).
+    #[error("cozy was updated while it ran ({} is another build now); restart it with `cozy restart`", path.display())]
+    Updated { path: PathBuf },
 }
 
 /// `Result` with this crate's [`Error`].
@@ -137,6 +146,7 @@ pub enum Seam {
     Paths,
     FileWatch,
     PrivateExecution,
+    MountWatch,
 }
 
 impl fmt::Display for Seam {
@@ -155,6 +165,7 @@ impl fmt::Display for Seam {
             Self::Paths => "paths",
             Self::FileWatch => "file watching",
             Self::PrivateExecution => "protected project execution",
+            Self::MountWatch => "mount watching",
         })
     }
 }

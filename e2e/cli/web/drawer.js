@@ -46,11 +46,13 @@ async function died(why) {
 
   const drawer = page.locator('aside.drawer');
   const isOpen = async () => (await drawer.count()) > 0 && (await drawer.isVisible());
-  /** A drawer opened from the main menu by its link's words. */
+  /** A drawer opened from the main menu by its link's words, and slid in to where it stays (drawer-in: 14 px in 140 ms): measured mid-slide,
+   *  a point just left of it is on the drawer once it's in. */
   const openFromMenu = async (words) => {
     await page.locator('details.main-menu > summary').click();
     await page.locator('details.main-menu nav').getByText(words, { exact: true }).first().click();
     await until(`${words} open`, isOpen, Boolean);
+    await drawer.evaluate((aside) => Promise.all(aside.getAnimations().map((one) => one.finished.catch(() => {}))));
   };
 
   // Its title's words selected, let go on the canvas.

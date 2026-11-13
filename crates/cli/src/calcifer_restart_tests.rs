@@ -73,7 +73,7 @@ impl Fixture {
         std::fs::create_dir_all(paths.calcifer()).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
-        let holder = Holder { address: listener.local_addr().unwrap(), token: "first-token".into(), pid: std::process::id(), version: env!("CARGO_PKG_VERSION").into(), started_at_ms: 1 };
+        let holder = Holder { address: listener.local_addr().unwrap(), token: "first-token".into(), pid: std::process::id(), version: ::api::VERSION.into(), started_at_ms: 1 };
         let claim = Arc::new(LockFile::new(paths.calcifer_lock()).lock(LockKind::Exclusive).unwrap());
         claim.publish(&serde_json::to_vec(&holder).unwrap()).unwrap();
         let client = Client(Arc::new(Inner {

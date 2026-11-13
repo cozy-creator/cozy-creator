@@ -180,7 +180,9 @@ async function died(why) {
   check('f_deleted_at_once_never_back', gone !== null && after.length > 0 && after.every((n, i) => i === 0 || n <= after[i - 1]) && after.at(-1) === 0, { gone: gone?.takes, after: after.slice(-6) });
   await page.reload();
   await page.locator(column).waitFor();
-  await page.waitForTimeout(1500);
+  // Its takes listed again, by the same read that would list the failed one: only then does its absence mean something.
+  const made = (await asset()).versions;
+  await until('its takes listed again', () => page.locator(`${column} .take[data-take]`).count(), (n) => n === made, 15_000).catch(() => {});
   check('f_deleted_through_a_reload', (await stateOf(failed)) === null && !(await asset()).takes?.some((take) => take.id === failed));
 
   check('no_page_errors', errors.length === 0, errors);

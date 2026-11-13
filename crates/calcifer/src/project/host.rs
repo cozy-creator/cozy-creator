@@ -263,9 +263,25 @@ impl Host {
         }
         // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, function, card, mut moved, upgrade, .. } = target::published(&self.api, &hub, with, on, true).await? else {
+        let Resolved::Release { package, function, card, mut moved, upgrade, cozy, .. } = target::published(&self.api, &hub, with, on, true).await? else {
             unreachable!("a published target resolves to a release");
         };
+        // cozy updates itself first for a release only a newer cozy's line runs (cl-978): the render waits behind it, and Calcifer
+        // restarts on the new cozy, whose walk takes it up again.
+        if let Some(wanted) = &cozy {
+            let (run, note) = match crate::cozy::update(&self.api, wanted).await {
+                // Installed already: this Calcifer restarts on it.
+                Err(e) if e.code == api::error::STOPPING => return std::future::pending().await,
+                updating => updating?,
+            };
+            tracing::info!("{}: the render waits for run {}", note.message, run.number);
+            let ended = self.own_ended(&run.id).await?;
+            if ended.status != RunStatus::Completed {
+                return Err(crate::cozy::update(&self.api, wanted).await.err().unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", note.message)));
+            }
+            // Its walk ends with this Calcifer, which restarts on the updated cozy; the next takes the render up where it stands.
+            return std::future::pending().await;
+        }
         // Its machine's Runtime moves first to one that runs the release (cl-952): the render waits behind that update.
         if let Some(upgrade) = &upgrade
             && self.api.machines.upgrade(upgrade).await?.is_some()
@@ -283,11 +299,6 @@ impl Host {
         let filter = crate::store::RunFilter { status: Some(RunStatus::Completed), target: Some(target.to_owned()), machine: Some(machine.to_owned()), out_dir: None, before: None, limit: 20 };
         let (rows, ..) = store.runs(&filter).ok()?;
         rows.iter().find_map(|row| took_s(&store.detail(row).ok()?))
-    }
-
-    /// Stops a run fetching ahead, however far it got. Nothing depends on it.
-    pub(crate) fn cancel_ahead(&self, run: &RunId) {
-        let _ = self.api.calcifer.cancel(run);
     }
 
     /// Sends `run` under `key`: one key is one run, however often it is sent.
@@ -323,6 +334,21 @@ impl Host {
         self.until(id, |_| true).await
     }
 
+    /// Calcifer's own run `id` once it ended: cozy's update (cl-978), kept in no project's journal.
+    async fn own_ended(&self, id: &RunId) -> Result<Run, Error> {
+        let calcifer = &self.api.calcifer;
+        let mut tail = calcifer.subscribe();
+        loop {
+            let row = calcifer.maintenance_store().run(id.as_str()).map_err(|e| refused(e.into()))?;
+            let row = row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
+            let run = calcifer.record(&row).map_err(refused)?;
+            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) {
+                return Ok(run);
+            }
+            crate::Calcifer::moved(&mut tail, id).await;
+        }
+    }
+
     async fn until(&self, id: &RunId, and: impl Fn(&Run) -> bool) -> Result<Run, Error> {
         let calcifer = &self.api.calcifer;
         let mut tail = calcifer.subscribe();
@@ -334,10 +360,7 @@ impl Host {
             if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && and(&run) {
                 return Ok(run);
             }
-            tokio::select! {
-                _ = tail.recv() => {}
-                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
-            }
+            crate::Calcifer::moved(&mut tail, id).await;
         }
     }
 
@@ -396,6 +419,11 @@ impl Host {
     }
 
     /// What run `id`'s machine quoted as it was sent: its time left waits at least until then.
+    /// Where the plan sent project `project`'s run `id`, and its offer there, on its record (cl-967).
+    pub(crate) fn placed(&self, project: &str, id: &RunId, placed: &api::calcifer::Placed) {
+        self.api.calcifer.placed(project, id, placed);
+    }
+
     pub(crate) fn quoted(&self, id: &RunId, quoted: crate::eta::Quoted) {
         self.api.calcifer.quoted(id, quoted);
     }

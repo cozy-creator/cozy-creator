@@ -32,7 +32,7 @@ import { carriedFile } from "./carry"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import type { ReadableProjection } from "./readableSurface"
-import { fieldsOf, fullRows, heldTo } from "./controls"
+import { fieldsOf, fullRows, heldTo, mainText } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
 import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
@@ -230,6 +230,8 @@ const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => 
 
 /** Only this computer can take it: what it would do poorly is asked first. */
 const onlyHere = (on: string[]) => on.length === 1 && on[0] === "local"
+/** What an Undo or Redo brought back without its files, as Calcifer says it (cl-919). */
+const lostSaid = (lost: string[]) => lost.map((said) => `${said}.`).join(" ")
 const unsaid = (fit: Fit | null): fit is Fit => Boolean(fit?.tools.some((tool) => !tool.here))
 
 /** What the state says of one element: an asset, or an entity. */
@@ -579,9 +581,9 @@ export class CanvasStore {
     return now
   }
 
-  /** The shape a box makes with none set, and what sets it. A picture tool's, as Cozy's image packages take it: the first picture it mentions, held
-   *  to what its tool makes, else its tool's own. A video tool's: the first picture or video in its slots (H3's first or last frame), never a
-   *  mention, as a portrait of who's in it makes no vertical shot; else 16:9 (se-128). */
+  /** The shape a box makes with none set, and what sets it. A picture tool's, as Cozy's image packages take it: the first picture it mentions and can
+   *  use (one crossed out sets nothing), held to what its tool makes, else its tool's own. A video tool's: the first picture or video in its slots
+   *  (H3's first or last frame), never a mention, as a portrait of who's in it makes no vertical shot; else 16:9 (se-128). */
   private autoOf(view: ElementView): { ratio?: number; from?: string } {
     const asset = view.asset
     const tools = this.tools.get()
@@ -605,6 +607,7 @@ export class CanvasStore {
       return { ratio: heldTo(control, ratioOf(control.default) ?? 16 / 9) }
     }
     for (const mention of this.mentionsOf(view)) {
+      if (asset.unused?.some((one) => one.mention === mention)) continue
       const ratio = shapeOf(mention, [kind])
       if (ratio) return { ratio: heldTo(control, ratio), from: `<${mention}>` }
     }
@@ -665,9 +668,9 @@ export class CanvasStore {
     return view.asset?.tool ? fieldsOf(view.asset, this.tools.get()).flatMap((field) => textsIn(valueIn(view, field.field))).flatMap(mentionsIn) : []
   }
 
-  /** The field a tool's next take is written in: its first prompt. */
+  /** The field a tool's next take is written in: its main text. */
   private promptOf(tool: string): string {
-    return this.tools.get().get(tool)?.fields.find((field) => field.type === "prompt")?.field ?? "instructions"
+    return mainText(this.tools.get().get(tool)?.fields ?? [])?.field ?? "instructions"
   }
 
   /** The boxes whose fields mention `key`. */
@@ -996,8 +999,10 @@ export class CanvasStore {
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: open, it's the one looked at. At rest a box goes on
           // showing what it showed (cl-936), what's approved staying and what lands beside it unseen (cl-928): its watch goes once nothing is on its way.
-          const seen = watched({ ...view, asset })
-          const still = (id: string) => listed.has(id) || Boolean(taking?.some((take) => take.id === id))
+          // What Calcifer makes itself (a frame, a cut) has no run to watch: its take landing is the one it was rendered to look at.
+          const watching = watched({ ...view, asset })
+          const seen = watching && madeHere(asset.tool) && (newest ?? 0) > (view.asset?.prefixes?.at(-1)?.number ?? 0) ? { ...watching, number: newest } : watching
+          const still =(id: string) => listed.has(id) || Boolean(taking?.some((take) => take.id === id))
           if (!view.here && view.watch !== undefined && !asset.takes?.some((take) => !take.failure) && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
           else if (seen?.number !== undefined) Object.assign(change, { watch: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Ended with no version (failed, canceled): nothing of it to look at.
@@ -1141,6 +1146,9 @@ export class CanvasStore {
     })
     this.flow?.addNodes(nodes)
     this.followAll()
+    // What watches a name hears it's here: one placed after its read (no row yet, `findHomes`) came after `names` last moved.
+    for (const { element } of items) this.notify(element.name)
+    this.names.set(this.names.get() + 1)
   }
 
   private node(name: string, row: Card, selected = false, id = `e${++this.nextId}`): ElementNode {
@@ -1247,12 +1255,13 @@ export class CanvasStore {
     return field
   }
 
-  /** Its height at a width, stack and all, when what it shows keeps its shape as it narrows: a box that may shrink to fit. */
+  /** Its height at a width as drawn, stack and all, when what it shows keeps its shape as it narrows: a box that may shrink to fit. A picture
+   *  showing another take is drawn at that take's width (`bodyWidth`): its height is its row's at the width that draws it that wide. */
   private tallOf(name: string): ((w: number) => number) | undefined {
     const view = this.views.get(name)
     if (!view) return undefined
-    if (view.asset?.kind === "image" && !view.hereWords && shownOf(view)) return undefined
-    const tall = (w: number) => this.laid(name, { x: 0, y: 0, w, h: heightFor(view, w) }).h
+    const per = bodyWidth(view, 1)
+    const tall = (w: number) => this.laid(name, { x: 0, y: 0, w: w / per, h: heightFor(view, w / per) }).h
     return tall(NARROWEST) < tall(NARROWEST * 2) ? tall : undefined
   }
 
@@ -1298,9 +1307,13 @@ export class CanvasStore {
     }
   }
 
-  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. */
-  private giveWay(name: string, field: Field, box: Box, give: Give): Box {
-    const { pushed, ...fitted } = fit(box, field, give)
+  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. With `bare`, the boxes
+   *  themselves without the room each keeps: where nowhere near has its room but the box itself lies on none of them, it stays, closer than
+   *  its room, as a project laid out closer stays when it's opened (`separate`), not sent beside everything, off past a crowd's edge. */
+  private giveWay(name: string, field: Field, box: Box, give: Give, bare?: Field): Box {
+    const { pushed, beside, ...fitted } = fit(box, field, give)
+    const itself = beside && bare ? this.boxOf(name, true) : null
+    if (itself && !bare!.under(itself).size) return box
     this.push(field, pushed)
     if (fitted.x === box.x && fitted.y === box.y && fitted.w === box.w) return box
     this.slide(name, fitted)
@@ -1322,10 +1335,14 @@ export class CanvasStore {
     this.unsettled.clear()
     if (!batch.length) return
     const names = new Set(batch.map(([name]) => name))
-    const field = this.field(names)
+    const [field, bare] = [this.field(names), this.field(names, true)]
     for (const [name, sized] of batch) {
       const box = this.boxOf(name)
-      if (box) field.add(name, this.giveWay(name, field, box, sized ? { pushes: this.pushable(names) } : { tall: this.tallOf(name) }))
+      if (!box) continue
+      const placed = this.giveWay(name, field, box, sized ? { pushes: this.pushable(names) } : { tall: this.tallOf(name) }, bare)
+      field.add(name, placed)
+      const itself = placed === box ? this.boxOf(name, true) : null
+      if (itself) bare.add(name, itself)
     }
   }
 
@@ -2677,6 +2694,10 @@ export class CanvasStore {
       send: (once, action) => this.client[verb](id, { to: entry }, { once, action }),
       done: (answer) => {
         shown.forEach((one) => one.settle())
+        if (answer.lost?.length) {
+          dismiss(note)
+          this.stepped = say(`${back ? "Undone" : "Redone"}: ${taken.length} ${taken.length === 1 ? "edit" : "edits"}. ${lostSaid(answer.lost)}`, undefined, { ms: UNDO_MS })
+        }
         if (answer.stopped) say(`Couldn't ${verb} them all`, new ApiError(409, answer.stopped))
         this.history.read()
       },
@@ -2704,8 +2725,13 @@ export class CanvasStore {
     this.stepped = note
     this.outbox.add<HistoryStepped>({
       send: (once, action) => this.client[verb](id, target, { once, action }),
-      done: () => {
+      done: (answer) => {
         shown.settle()
+        // A box whose undo window ended comes back without its files: said, with the same Redo or Undo (cl-919).
+        if (answer.lost?.length) {
+          dismiss(note)
+          this.stepped = say(`${back ? "Undone" : "Redone"}: ${words}. ${lostSaid(answer.lost)}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) }, ms: UNDO_MS })
+        }
         this.history.read()
       },
       refused: (error) => {
@@ -3087,7 +3113,7 @@ export class CanvasStore {
     dropped: Card,
     ask: (at: Card, write: Write, pushes: Pushes) => Promise<T>,
     refused: (error: unknown) => void,
-    done?: (name: string, answer: T, edit: string) => void,
+    done?: (name: string, answer: Partial<T>, edit: string) => void,
     edit?: string,
   ): string {
     const one = async ([at]: Card[], write: Write, pushes: Pushes) => {
@@ -3102,7 +3128,7 @@ export class CanvasStore {
     boxes: { wanted: string; view: Omit<ElementView, "name">; dropped: Card }[],
     ask: (at: Card[], write: Write, pushes: Pushes) => Promise<{ made: T[]; kept?: Record<string, Card | null> }>,
     refused: (error: unknown) => void,
-    done?: (name: string, answer: T, edit: string) => void,
+    done?: (name: string, answer: Partial<T>, edit: string) => void,
     edit?: string,
   ): string[] {
     const by = edit ?? this.step(`Added ${this.nameFor(boxes[0].wanted)}`, [])
@@ -3133,11 +3159,15 @@ export class CanvasStore {
       done: (answer) => {
         if (pushes) this.pushesSent(pushes, answer.kept)
         placed.forEach(({ name, at, node }, i) => {
-          const made = answer.made[i]
+          // Sent again after Calcifer stopped between doing it and answering, it's answered only that it was done (`{}`): the box keeps
+          // the name it asked for, and the read after it says the rest.
+          const made: Partial<T> | undefined = answer.made ? answer.made[i] : {}
           if (!made) return
-          this.served.set(node.id, made.name)
-          // Another writer took the name, unless a rename has moved it on since.
-          if (made.name !== name && this.namesById.get(node.id) === name) this.moveName(name, made.name)
+          if (made.name) {
+            this.served.set(node.id, made.name)
+            // Another writer took the name, unless a rename has moved it on since.
+            if (made.name !== name && this.namesById.get(node.id) === name) this.moveName(name, made.name)
+          }
           const now = this.namesById.get(node.id)
           if (!now) return
           const row = this.views.get(now)?.asset

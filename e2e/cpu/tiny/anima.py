@@ -2,10 +2,11 @@
 encoder, Anima's text conditioner and the Qwen-Image VAE, as the release's modular Diffusers folder in bfloat16.
 
 Its adapters (se-127) are laid out as their 0.1.0 releases are, each its author's file uploaded as it is, at the tiny
-DiT's geometry (which the executor takes: PATCH): google/siglip2-base-patch16-512 as its repo holds it (upstream's
+DiT's geometry (which the package reads off each file, and the plan off the DiT's config): google/siglip2-base-patch16-512 as its repo holds it (upstream's
 `config.json` with the towers shrunk, SiglipModel's f32 tensors, `preprocessor_config.json`; the Gemma tokenizer, which
-nothing reads, left out), and LuciferTC's IP-Adapter and kohya's four ControlNet-LLLite files as one `model` component
-of their tensors, configured by their files' `__metadata__` (the header's `safetensors_metadata`)."""
+nothing reads, left out), and LuciferTC's IP-Adapter, Claquasse's pose control-LoRA and kohya's ControlNet-LLLite files
+as one `model` component of their tensors, configured by their files' `__metadata__` (the header's
+`safetensors_metadata`)."""
 
 from __future__ import annotations
 
@@ -21,14 +22,17 @@ from PIL import Image
 from safetensors.torch import save_file
 from transformers import Qwen3Config, Qwen3Model, SiglipConfig, SiglipModel
 
-from cell import Cell, Json, module, packages, quantize, save, size
+from cell import STEERS, Cell, Json, module, packages, quantize, save, size
 from tiny import _shared
 
 WIDTH = 64
-#: The tiny DiT: 2 blocks of 2 heads of 16 (Anima Base: 28 of 16 of 128, `anima.adapters`).
+#: The tiny DiT: 2 blocks of 2 heads of 16 (Anima Base: 28 of 16 of 128).
 BLOCKS, HEADS, HEAD = 2, 2, 16
 DIT = HEADS * HEAD
-PATCH: dict[str, object] = {"anima.adapters:BLOCKS": BLOCKS, "anima.adapters:WIDTH": DIT, "anima.adapters:HEADS": HEADS}
+#: The tiny text conditioner's one block of WIDTH (Anima Base: 6 of 1024).
+ADAPTER_BLOCKS = 1
+#: The DiT's AdaLN-LoRA width (`adaln_lora_dim`).
+ADALN = 32
 #: SigLIP2's towers, each one layer of 32: a picture is 1024 tokens of 32.
 TOKEN = 32
 _TOWER: dict[str, Json] = {"hidden_size": TOKEN, "intermediate_size": 64, "num_hidden_layers": 1, "num_attention_heads": 2}
@@ -43,10 +47,6 @@ _LLLITE: dict[str, dict[str, str]] = {
         "lllite.cond_dim": "32", "lllite.cond_emb_dim": "32", "lllite.cond_resblocks": "3", "lllite.mlp_dim": "32",
         "lllite.target_atomics": "self_attn_q_pre", "lllite.target_layers": "self_attn_q_pre", "lllite.use_aspp": "false",
         "lllite.version": "2", "modelspec.title": "anima-lllite-depth-1"},
-    "kohya-ss/lllite-pose@0.1.0": {
-        "lllite.cond_dim": "32", "lllite.cond_emb_dim": "32", "lllite.cond_resblocks": "3", "lllite.mlp_dim": "32",
-        "lllite.target_atomics": "self_attn_q_pre,self_attn_kv_pre", "lllite.target_layers": "self_attn_q_pre,self_attn_kv_pre",
-        "lllite.use_aspp": "false", "lllite.version": "2", "modelspec.title": "anima-lllite-pose-3r"},
     "kohya-ss/lllite-any-test-like@0.1.0": {
         "lllite.cond_dim": "64", "lllite.cond_emb_dim": "32", "lllite.cond_in_channels": "3", "lllite.cond_resblocks": "6",
         "lllite.inpaint_masked_input": "false", "lllite.mlp_dim": "64", "lllite.target_atomics": "self_attn_q_pre",
@@ -87,23 +87,31 @@ def _siglip(out: Path) -> None:
         "resample": 2, "rescale_factor": 1 / 255, "size": {"height": 512, "width": 512}}, indent=2))
 
 
+#: An adapter's weights' spread (its norms' 0.1 around 1): at 0.1 the adapters moved the tiny picture 0.03-0.6/255,
+#: at 0.3 a pose and two maps move it 1.7 (e2e 43352463205).
+_SPREAD = 0.3
+#: The inpaint LLLite's: it moves only its area, which it moves 1.5/255 at 1 (1.0 at 0.3).
+_LOUD = {"kohya-ss/lllite-inpainting@0.1.0": 1.0}
+
+
 class _File:
     """An author's single file as uploaded: one `model` component, no class or config, its `__metadata__` kept."""
 
-    def __init__(self, seed: int) -> None:
+    def __init__(self, seed: int, spread: float = _SPREAD) -> None:
         self.generator = torch.Generator().manual_seed(seed)
         self.tensors: dict[str, torch.Tensor] = {}
+        self.spread = spread
 
-    def put(self, key: str, *shape: int, around: float = 0.0) -> None:
-        self.tensors[key] = around + torch.randn(shape, generator=self.generator) * 0.1
+    def put(self, key: str, *shape: int, around: float = 0.0, spread: float | None = None) -> None:
+        self.tensors[key] = around + torch.randn(shape, generator=self.generator) * (self.spread if spread is None else spread)
 
     def linear(self, key: str, outputs: int, inputs: int, *kernel: int) -> None:
         self.put(f"{key}.weight", outputs, inputs, *kernel)
         self.put(f"{key}.bias", outputs)
 
     def norm(self, key: str, channels: int) -> None:
-        self.put(f"{key}.weight", channels, around=1.0)
-        self.put(f"{key}.bias", channels)
+        self.put(f"{key}.weight", channels, around=1.0, spread=0.1)
+        self.put(f"{key}.bias", channels, spread=0.1)
 
     def commit(self, store: Path, metadata: dict[str, str]) -> str:
         writer = tensorfs.Writer(cache_dir=store)
@@ -135,13 +143,34 @@ def _ip_adapter(store: Path) -> str:
                                "lora_alpha": str(RANK), "lora_rank": str(RANK)})
 
 
-def _lllite(store: Path, metadata: dict[str, str], seed: int) -> str:
+def _control_pose(store: Path) -> str:
+    """Claquasse's anima_pose_preview2: the control embedder (a 16-channel latent's 2×2 patches to the DiT's width) and
+    a rank-16 LoRA, without alphas, on every DiT block's linear and the LLM adapter's, under ComfyUI's names."""
+    dit = {"self_attn.q_proj": (DIT, DIT), "self_attn.k_proj": (DIT, DIT), "self_attn.v_proj": (DIT, DIT),
+           "self_attn.output_proj": (DIT, DIT), "cross_attn.q_proj": (DIT, DIT), "cross_attn.k_proj": (WIDTH, DIT),
+           "cross_attn.v_proj": (WIDTH, DIT), "cross_attn.output_proj": (DIT, DIT), "mlp.layer1": (DIT, 4 * DIT),
+           "mlp.layer2": (4 * DIT, DIT),
+           **{f"adaln_modulation_{part}.{i}": io for part in ("self_attn", "cross_attn", "mlp")
+              for i, io in ((1, (DIT, ADALN)), (2, (ADALN, 3 * DIT)))}}
+    adapter = {**{f"{attn}.{p}_proj": (WIDTH, WIDTH) for attn in ("self_attn", "cross_attn") for p in "qkvo"},
+               "mlp.0": (WIDTH, 4 * WIDTH), "mlp.2": (4 * WIDTH, WIDTH)}
+    file = _File(9)
+    file.linear("diffusion_model.control_embedder.proj", DIT, 16 * 2 * 2)
+    sites = [(f"blocks.{b}.{site}", io) for b in range(BLOCKS) for site, io in dit.items()]
+    sites += [(f"llm_adapter.blocks.{b}.{site}", io) for b in range(ADAPTER_BLOCKS) for site, io in adapter.items()]
+    for site, (inputs, outputs) in sites:
+        file.put(f"diffusion_model.{site}.lora_A.weight", RANK, inputs)
+        file.put(f"diffusion_model.{site}.lora_B.weight", outputs, RANK)
+    return file.commit(store, {"format": "pt"})
+
+
+def _lllite(store: Path, metadata: dict[str, str], seed: int, spread: float = _SPREAD) -> str:
     """A kohya ControlNet-LLLite v2 file: the map's trunk (`lllite_conditioning1`) and each target linear's shift, as
     its metadata states them."""
     said = {k.removeprefix("lllite."): v for k, v in metadata.items()}
     channels = int(said.get("cond_in_channels", "3"))
     width, emb, mlp = (int(said[k]) for k in ("cond_dim", "cond_emb_dim", "mlp_dim"))
-    file, trunk, half = _File(seed), "lllite_conditioning1", width // 2
+    file, trunk, half = _File(seed, spread), "lllite_conditioning1", width // 2
     file.linear(f"{trunk}.conv1", half, channels, 4, 4)
     file.norm(f"{trunk}.norm1", half)
     file.linear(f"{trunk}.conv2", half, half, 3, 3)
@@ -191,8 +220,12 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         shutil.copytree(source / name, out / name)
     _siglip(root / "siglip2")
     return {"circlestone-labs/anima@1.0.0": out, "google/siglip2-base-patch16-512@0.1.0": root / "siglip2",
-            "lucifertc/ip-adapter@0.1.0": _ip_adapter(store),
-            **{ref: _lllite(store, metadata, 11 + index) for index, (ref, metadata) in enumerate(_LLLITE.items())}}
+            "lucifertc/ip-adapter@0.1.0": _ip_adapter(store), "claquasse/control-pose@0.1.0": _control_pose(store),
+            **{ref: _lllite(store, metadata, 11 + index, _LOUD.get(ref, _SPREAD)) for index, (ref, metadata) in enumerate(_LLLITE.items())}}
+
+
+#: The square inside `_hole`'s disc, of the picture (0-1).
+_HOLE = (0.35, 0.27, 0.74, 0.66)
 
 
 def _hole(folder: Path) -> Path:
@@ -215,9 +248,6 @@ def _prompt(text: str, *keys: str) -> dict[str, Json]:
 
 _SMALL: dict[str, Json] = {"prompt": _prompt("masterpiece, a red fox in the snow"), "steps": 2, "seed": 7, "megapixels": 1}
 _BOX: dict[str, Json] = {"instructions": _prompt("a red fox in the snow"), "megapixels": "1", "seed": 7}
-#: Why a request with pictures or control maps does not run on the tiny DiT.
-_PLANNED = ("mentioned pictures and control maps run through the plan's block forward, which installs only on Anima "
-            "Base's 28 blocks of 2048 (optimization._install_transformer_plan): the tiny DiT refuses adapters_unplanned")
 
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": _SMALL, "check": size(1024, 1024)},
@@ -232,15 +262,22 @@ CELLS: list[Cell] = [
     # The inpaint map's area redrawn from noise, the rest put back each step; its adapter off.
     {"entry": "generate", "name": "inpaint-area", "payload": {**_SMALL, "control": [{"kind": "inpaint", "strength": 0.0}]},
      "files": {"control.0.image": _hole}, "check": size(1024, 1024)},
-    # Each builds its adapters (SigLIP2 and the IP-Adapter, or the LLLites), then refuses in the denoise.
+    # Through the plan's block forward on the tiny DiT: a mentioned picture through SigLIP2 and the IP-Adapter, a depth
+    # map, a pose, lineart and sketch map together (the pose control-LoRA and two LLLites), the inpaint LLLite. The maps
+    # steer away from the request without them (generate/text), the inpaint's in its area alone (inpaint-area, its
+    # adapter at 0). Depth's LLLite shifts only the self-attention's queries, which the tiny DiT's near-uniform attention
+    # reads as their mean: it moves the picture 0.03-0.3/255 at any spread, so it has no bar.
     {"entry": "generate", "name": "reference", "payload": {**_SMALL, "prompt": _prompt("masterpiece, <fox> in the snow", "fox")},
-     "files": {"prompt.references.0.file": _FOX}, "check": size(1024, 1024), "skip": _PLANNED},
+     "files": {"prompt.references.0.file": _FOX}, "check": size(1024, 1024)},
     {"entry": "generate", "name": "depth", "payload": {**_SMALL, "control": [{"kind": "depth"}]},
-     "files": {"control.0.image": _DEPTH}, "check": size(1024, 1024), "skip": _PLANNED},
+     "files": {"control.0.image": _DEPTH}, "check": size(1024, 1024)},
     {"entry": "generate", "name": "controls",
      "payload": {**_SMALL, "control": [{"kind": "pose"}, {"kind": "lineart"}, {"kind": "sketch", "strength": 0.5}]},
-     "files": {f"control.{index}.image": _DEPTH for index in range(3)}, "check": size(1024, 1024), "skip": _PLANNED},
+     "files": {f"control.{index}.image": _DEPTH for index in range(3)}, "check": size(1024, 1024),
+     "apart": {"generate/text": STEERS}},
     {"entry": "generate", "name": "inpaint", "payload": {**_SMALL, "control": [{"kind": "inpaint"}]},
-     "files": {"control.0.image": _hole}, "check": size(1024, 1024), "skip": _PLANNED},
+     "files": {"control.0.image": _hole}, "check": size(1024, 1024), "apart": {"generate/inpaint-area": STEERS},
+     "region": _HOLE},
     quantize("circlestone-labs/anima@1.0.0", "fp8", "anima", "anima@0.6.1"),
 ]
+

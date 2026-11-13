@@ -15,7 +15,7 @@ use axum::{
     response::Response,
 };
 use api::{
-    calcifer::{Kind as RunKind, MachineEstimate, MachineKind, MachineState, Note, NoteLevel, On, RunEstimate, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted},
+    calcifer::{Kind as RunKind, MachineEstimate, MachineKind, MachineState, Note, NoteLevel, On, RunEstimate, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted, Warning},
     code::LocalCode,
     error::{Error, Kind},
     interface::{Callable, Interface},
@@ -25,7 +25,7 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::OwnedRwLockReadGuard;
 
-use crate::{api::{Api, IdempotencyKey, Refusal, parse}, project::vault};
+use crate::{api::{Api, IdempotencyKey, Refusal, parse}, hub::jobs::Job, project::vault};
 
 pub(crate) mod bind;
 pub(crate) mod clip;
@@ -54,7 +54,7 @@ pub(crate) async fn submit(
     }
     let project = ask.project.clone();
     vault::project_reply(&api, project.as_deref(), async {
-        let submitted = request(&api, &key, ask).await.map_err(Refusal)?;
+        let submitted = Box::pin(request(&api, &key, ask)).await.map_err(Refusal)?;
         let status = if submitted.replay { StatusCode::OK } else { StatusCode::ACCEPTED };
         Ok((status, Json(submitted)))
     }).await
@@ -105,12 +105,19 @@ pub(crate) async fn quote(
     let ask: RunRequest = parse(&body)?;
     let project = ask.project.clone();
     vault::project_reply(&api, project.as_deref(), async {
-        Ok(Json(priced(&api, ask).await.map_err(Refusal)?))
+        Ok(Json(Box::pin(priced(&api, ask)).await.map_err(Refusal)?))
     }).await
 }
 
 /// What `ask` would rent.
 pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
+    let ask = match crate::hub::jobs::is(&ask.target) {
+        true => match Box::pin(crate::hub::jobs::quote(api, ask)).await? {
+            Job::Done(quote) => return Ok(quote),
+            Job::Call(call) => *call,
+        },
+        false => ask,
+    };
     drop(project_access(api, ask.project.as_deref()).await?);
     let scope = match ask.project.as_deref() {
         Some(project) => {
@@ -123,15 +130,17 @@ pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<Run
 }
 
 async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
-    if crate::hub::jobs::is(&ask.target) {
-        return crate::hub::jobs::quote(api, ask).await;
-    }
-    let bound = match &ask.code {
+    let home = api.machines.hubs.home();
+    // A dev home's checkout's first-party package is local code too (xs-195).
+    let code = match &ask.code {
+        Some(code) => Some(code.clone()),
+        None => crate::checkout::named(&ask.target).map(|(path, _)| crate::local_code::own(home, &path)).transpose()?,
+    };
+    let bound = match &code {
         // Local code rents with its install, which the call then follows to its machine.
         Some(code) => {
             let on = ask.on.first().cloned().unwrap_or_else(|| default_on(api));
             let hub = hub(api, &ask.hub);
-            let home = api.machines.hubs.home();
             let origin = api::config::Origin::parse(&hub)?;
             let source = crate::local_code::source(home, code, &api.machines.hubs, &origin).await?;
             crate::maintenance_source::keep_derived(api,code,&source)?;
@@ -139,7 +148,7 @@ async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuot
         }
         None => match prepare(api, "quote", &ask, For::Quote).await? {
             Prepared::Run { submit, .. } => submit,
-            Prepared::Install(_) => unreachable!("a published target installs nothing first"),
+            Prepared::Install(_) | Prepared::Cozy(..) => unreachable!("a published target installs nothing first"),
         },
     };
     // A `new` run that a machine up or on its way finishes sooner goes there, and rents nothing (cl-915).
@@ -172,6 +181,7 @@ async fn estimate_asked(api: &Arc<Api>, key: &str, ask: &RunRequest, copies: Cop
             let notes = updating(&run).into_iter().collect();
             return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes, ..RunEstimate::default() }));
         }
+        Prepared::Cozy(run, note) => return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes: vec![note], ..RunEstimate::default() })),
         Prepared::Run { submit, notes, offers } => (submit, notes, offers),
     };
     if copies.count.is_some_and(|asked| asked != count) {
@@ -263,7 +273,7 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
     if shape.get("spec").is_none() {
         return Ok(());
     }
-    let version = env!("CARGO_PKG_VERSION");
+    let version = ::api::VERSION;
     Err(Refusal(
         Error::new(
             Kind::Usage,
@@ -279,10 +289,15 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
 /// answers the run that makes it ready (`preparing`): its client follows that, then asks again.
 /// The files it's given join its project, so asking it again still finds them once what held them is gone.
 pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
+    // A job that plans a call (a quantization) goes on as that call, here.
+    let ask = match crate::hub::jobs::is(&ask.target) {
+        true => match Box::pin(crate::hub::jobs::request(api, key, &digest(&ask), ask)).await? {
+            Job::Done(submitted) => return Ok(submitted),
+            Job::Call(call) => *call,
+        },
+        false => ask,
+    };
     let digest = digest(&ask);
-    if crate::hub::jobs::is(&ask.target) {
-        return crate::hub::jobs::request(api, key, &digest, ask).await;
-    }
     let calcifer = &api.calcifer;
     let recorded = match ask.project.as_deref() {
         Some(project) => api.projects.store(api, project).await?.recorded(key).map_err(store)?,
@@ -309,6 +324,8 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
             let notes = updating(&run).into_iter().collect();
             Ok(Submitted { run, replay: false, notes, preparing: true, lock })
         }
+        // The run waits behind cozy's own update: its client follows it, then asks again (cl-978).
+        Prepared::Cozy(run, note) => Ok(Submitted { run, replay: false, notes: vec![note], preparing: true, lock }),
         Prepared::Run { submit, mut notes, offers } => {
             let given = given(&submit);
             let project = submit.out.as_deref().and_then(crate::project::of_landing).map(Path::to_owned);
@@ -396,7 +413,7 @@ pub(crate) fn asked(row: &crate::store::RunRow) -> Option<api::calcifer::RunAske
 }
 
 /// The ask's identity: what it asks, whatever price it was quoted since.
-fn digest(ask: &RunRequest) -> String {
+pub(crate) fn digest(ask: &RunRequest) -> String {
     let asked = RunRequest { agreed: None, ..ask.clone() };
     format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&asked).expect("serializes"))))
 }
@@ -421,6 +438,8 @@ enum Prepared {
     Run { submit: SubmitRun, notes: Vec<Note>, offers: Vec<Vec<crate::placement::Offer>> },
     /// Local code's install, still running.
     Install(api::calcifer::Run),
+    /// cozy's own update for the release the run takes (cl-978), and the line it says.
+    Cozy(api::calcifer::Run, Note),
 }
 
 /// What a client following `run` before its ask goes again is told, when it is its machine's update to this cozy's minor.
@@ -456,7 +475,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
         },
         None => None,
     };
-    crate::private_io::context(scope, prepare_scoped(api, key, ask, purpose)).await
+    crate::private_io::context(scope, Box::pin(prepare_scoped(api, key, ask, purpose))).await
 }
 
 async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> Result<Prepared, Error> {
@@ -484,7 +503,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     }
     // Local code installs as it resolves. A package answers for itself first: one named without a
     // function lists its functions on an OS that runs no models here.
-    if ask.code.is_some() {
+    if ask.code.is_some() || crate::checkout::named(&ask.target).is_some() {
         api::calcifer::local_usable(&on.to_string())?;
         // Refused before that install, not after it.
         project_of(api, ask)?;
@@ -493,7 +512,16 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let agreed = ask.agreed.clone();
     // Given something to run with, a package of one function runs it; given nothing, it is listed.
     let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
-    let resolved = target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed).await?;
+    let resolved = Box::pin(target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed)).await?;
+    // cozy updates itself first for a release only a newer cozy's line runs (cl-978); a quote or an estimate says so.
+    let cozy = match &resolved {
+        Resolved::Release { cozy: Some(wanted), .. } if purpose == For::Run => {
+            let (run, note) = crate::cozy::update(api, wanted).await?;
+            return Ok(Prepared::Cozy(run, note));
+        }
+        Resolved::Release { cozy: Some(wanted), .. } => Some(Note { level: NoteLevel::Warning, message: wanted.said() }),
+        _ => None,
+    };
     let (package, function, code) = match &resolved {
         Resolved::Release { package, function, card, .. } => {
             let code = Code {
@@ -540,7 +568,12 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let (gpu, needs_gpu) = (code.interface.gpu(callable), code.interface.needs_gpu(callable));
     let named = format!("{package}/{}", callable.name);
     let (interface, release) = (code.interface, code.release);
-    let (mut submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
+    let (mut submit, mut notes) = Box::pin(call(api, code, callable, ask, key, &hub)).await?;
+    if let Resolved::Local { local, .. } = &resolved
+        && let Some(from) = &local.from
+    {
+        submit.warnings.push(Warning { code: api::calcifer::FROM_SOURCE.into(), message: from.line() });
+    }
     // Placed by its machines' quotes, the payload bound: a published release among several, and every machine when asked for them.
     let size = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).map(|input| v1::JobSize::of(&input)).unwrap_or_default();
     let gpus = ask.gpus.unwrap_or(0);
@@ -614,6 +647,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     if let Resolved::Release { moved: Some(moved), .. } = &resolved {
         notes.push(moved.clone());
     }
+    notes.extend(cozy);
     // Its machine's Runtime moves first to one that runs the release (cl-952): the run waits behind that update.
     if let (Resolved::Release { upgrade: Some(upgrade), .. }, For::Run) = (&resolved, purpose)
         && matches!(&submit.on, On::Machine(name) if *name == upgrade.machine)

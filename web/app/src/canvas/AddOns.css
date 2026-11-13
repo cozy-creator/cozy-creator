@@ -127,6 +127,15 @@
   overflow-wrap: anywhere;
   cursor: pointer;
 }
+/* A trigger that is a whole prompt shows its first two lines; its title holds all of it (cl-971). */
+.lora-trigger {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  max-width: 100%;
+  overflow: hidden;
+  text-align: start;
+}
 .lora-trigger:hover,
 .lora-trigger-more:hover {
   background: color-mix(in srgb, var(--mak) 28%, transparent);

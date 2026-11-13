@@ -5,6 +5,7 @@
 //! `project.db` (cl-803), which holds all a project says and has made, one transaction per action. The reserved package `cozy` runs
 //! here, free. One walker per project takes every render asked of it, and what it owes is kept in `project.db` too, so a restarted
 //! Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
+mod apply;
 mod assets;
 mod canvas;
 pub(crate) mod code;
@@ -25,11 +26,12 @@ mod web_seed_tests;
 pub(crate) mod host;
 mod jobs;
 pub(crate) mod journal;
-pub(crate) use journal::{ProjectRef, ProjectStore, RunOwner};
+pub(crate) use journal::{OpenProject, ProjectRef, ProjectStore, RunOwner};
 mod keyed;
 pub(crate) mod legacy_worker;
 mod view;
 pub(crate) mod model;
+mod nodes;
 mod remote;
 mod thumbs;
 mod binder;
@@ -82,6 +84,7 @@ use tracing::{info, warn};
 use crate::{
     api::{Api, Refusal, parse},
     placement::{self, Offer},
+    plan,
 };
 use folder::{Ask, Coming, Failed, Files, Folder, Lock, Pending, Take, Target, Tried, Version};
 use format::{ALL, Doc, Standing, State as Stand, Tool};
@@ -133,7 +136,7 @@ struct Heard {
     package: Option<Arc<Package>>,
 }
 
-struct Project {
+pub(crate) struct Project {
     id: String,
     code: String,
     /// Immutable owner. A recycled physical mount path must never choose another project's root.
@@ -146,7 +149,7 @@ struct Project {
     /// What streams were last told of it.
     told: Mutex<Option<model::Told>>,
     /// What its render is doing, asset by asset.
-    jobs: Jobs,
+    pub(crate) jobs: Jobs,
     /// What its walker needn't read again: the jobs, and each text.
     walker: Mutex<Walker>,
     /// Whether its one walker is going. Admission and the terminal board share this lock.
@@ -165,6 +168,8 @@ struct Project {
     unsent: Mutex<Vec<Error>>,
     /// The versions this person hasn't looked at, by box id (cl-928): `state.db`'s, held here.
     unseen: Mutex<unseen::Unseen>,
+    /// Its folder watched while it's open, a plain one's (`Projects::look`).
+    _watch: Option<platform::watch::Watcher>,
 }
 
 impl Drop for Project {
@@ -226,6 +231,9 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/assets/{name}/versions/{number}/seen", post(unseen::seen))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
+        .route("/v1/projects/{id}/nodes", get(nodes::read))
+        .route("/v1/projects/{id}/apply", post(apply::apply))
+        .route("/v1/projects/{id}/integrity", get(integrity))
         .route("/v1/projects/{id}/history", get(history::list))
         .route("/v1/projects/{id}/history/undo", post(history::undo))
         .route("/v1/projects/{id}/history/redo", post(history::redo))
@@ -238,16 +246,34 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/address", get(address))
 }
 
+/// Watches the plain project `id`'s folder `dir`, for what changes with no write of Calcifer's: a file into or out of `files/` (one
+/// leaving is on another computer), another program's commit to project.db.
+fn watch(id: &str, dir: &FsPath) -> Option<platform::watch::Watcher> {
+    use platform::watch::{Watcher, Writes};
+    let (stirred, files) = (id.to_owned(), dir.join(folder::FILES));
+    let dirs = [(dir, Writes::Named(&[db::DB, db::WAL])), (files.as_path(), Writes::None)];
+    Watcher::new("project-watch", &dirs, move || crate::events::project_stirred(&stirred))
+        .inspect_err(|error| warn!("{}: what other programs change in it isn't seen: {error}", dir.display()))
+        .ok()
+}
+
 impl Projects {
-    /// Each open project told to the streams if it changed with no write of Calcifer's: a file into or out of `files/` (one leaving is on
-    /// another computer), another program's commit to project.db (`revision`). Only what moved is told. Its revision is read through its
-    /// own folder, and told only while it's still open: a forget takes it out under `open` before letting go of what Calcifer kept of it
-    /// (cl-822), which a look mustn't make again.
-    pub(crate) fn look(&self) {
-        for project in self.now_open() {
+    /// Each of the `stirred` open projects told to the streams if its folder's change moved its revision (`revision`). Its revision is read
+    /// through its own folder, and told only while it's still open: a forget takes it out under `open` before letting go of what Calcifer
+    /// kept of it (cl-822), which a look mustn't make again.
+    pub(crate) fn look(&self, stirred: &std::collections::BTreeSet<String>) {
+        for project in self.now_open().into_iter().filter(|project| stirred.contains(&project.id)) {
             let id = &project.id;
             let dir = &project.folder.dir;
-            if vault::encrypted(&project.root) || project.require_view().is_err() { continue; }
+            if vault::encrypted(&project.root) { continue; }
+            if project.require_view().is_err() {
+                // Its folder went: a page showing it reads it again, and says so where it stands (cl-980). Held while it's told, as below.
+                let still = self.open.lock().expect("projects lock");
+                if !dir.exists() && still.get(id).is_some_and(|open| open.strong_count() > 0) {
+                    crate::events::project_looked(dir, "gone".to_owned());
+                }
+                continue;
+            }
             let rev = format!("{}.{}", project.folder.stamp(), stamp(&dir.join(folder::FILES)));
             // Held while it's told: a forget waits for it.
             let still = self.open.lock().expect("projects lock");
@@ -324,6 +350,7 @@ impl Projects {
             Some(project) => project,
             None => {
                 let unseen=unseen::read(&folder,&id)?;
+                let watch = (!vault::encrypted(&root)).then(|| watch(&id, dir)).flatten();
                 let project = Arc::new(Project {
                     id: id.clone(),
                     code,
@@ -342,6 +369,7 @@ impl Projects {
                     said: Mutex::default(),
                     unsent: Mutex::default(),
                     unseen: Mutex::new(unseen),
+                    _watch: watch,
                 });
                 // What closed since the last open goes from the list.
                 open.retain(|_, held| held.strong_count() > 0);
@@ -353,9 +381,15 @@ impl Projects {
             }
         };
         drop(open);
+        // Calcifer finds its journal while anything holds it open.
+        api.calcifer.note_open(RunOwner::of(&project, &api.calcifer));
         // Its deleted boxes looked at as it opens: one set aside before cl-919 counts from now.
         purge::due(&project.id, now_ms());
-        if let Some(said) = copy_told(&project.root) { project.said.lock().expect("said lock").push(said); }
+        // Told until a reader hears it: a project closes when nothing holds it, so this open may not be the one read.
+        if let Some(said) = copy_note(&project.root) {
+            let mut told = project.said.lock().expect("said lock");
+            if !told.contains(&said) { told.push(said); }
+        }
         project.require_view()?;
         Ok(project)
     }
@@ -370,6 +404,11 @@ const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// Where a run of the project in `dir` lands its outputs.
 pub(crate) fn landing(dir: &FsPath) -> PathBuf {
     vault::logical(dir).join(folder::RUNS)
+}
+
+/// Project `id` opened again for Calcifer's work on it, as any request opens it: none for a locked or unknown one.
+pub(crate) fn reopen(api: &Arc<Api>, id: &str) -> Option<RunOwner> {
+    api.projects.get(api, id).ok().map(|project| RunOwner::of(&project, &api.calcifer))
 }
 
 /// The project a run's landing folder is in, if it's one.
@@ -451,7 +490,16 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     }
     let mut named: Vec<_> = indexed.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
     match named.len() {
-        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy open")),
+        0 => {
+            let code = code::parse(text).unwrap_or_default();
+            let gone = api.calcifer.store().project_gone(text, &code).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+            Err(match gone {
+                Some(path) => Error::new(Kind::NotFound, "project_folder_gone", format!("this project's folder is gone: {}", path.display()))
+                    .remedy("move the folder back, or open another project")
+                    .next("cozy new <folder>"),
+                None => Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy open"),
+            })
+        }
         1 => Ok(named.remove(0)),
         _ => {
             let ids: Vec<String> = named.iter().map(|entry| format!("{} ({})", entry.id, entry.path.display())).collect();
@@ -755,6 +803,11 @@ fn copy_told(dir: &FsPath) -> Option<String> {
     COPIES.lock().expect("copies lock").remove(&vault::logical(dir))
 }
 
+/// What a copy has to tell, still untold.
+fn copy_note(dir: &FsPath) -> Option<String> {
+    COPIES.lock().expect("copies lock").get(&vault::logical(dir)).cloned()
+}
+
 /// Calcifer's own folders beside a project, a conversion's stage and the original it moves aside, are never projects.
 pub(crate) fn own_folder(dir: &FsPath) -> bool {
     dir.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".cozy-"))
@@ -839,6 +892,7 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
                 *walking = false;
                 drop(walking);
                 remember(&api);
+                vault::stir();
                 return;
             }
         };
@@ -860,6 +914,8 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
         let _ = following.await;
         remember(&api);
         crate::events::project_settled(&walk.project.folder.dir);
+        // Its work ended: its vault's clocks go on.
+        vault::stir();
     });
 }
 
@@ -940,7 +996,19 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
     Ok(())
 }
 
-/// Where a job whose turn is next would go: what each of its machines quoted, and the soonest finish of them.
+/// A job not sent yet, as a plan reads it: its id, key, render, target, function and choices, the jobs it reads, and whether it's ready.
+struct Unsent {
+    id: usize,
+    key: String,
+    ask: String,
+    target: Target,
+    with: String,
+    made: Map<String, Value>,
+    needs: Vec<usize>,
+    ready: bool,
+}
+
+/// Where a job whose turn is next goes: what each of its machines would do with it, and where the plan placed it.
 #[derive(Clone)]
 struct Placed {
     offers: Vec<Offer>,
@@ -963,15 +1031,20 @@ struct Walker {
     again: HashSet<String>,
     /// The assets the project names now, as of its stamp.
     names: Option<(String, Arc<HashSet<String>>)>,
-    /// What machines were asked to fetch ahead, by machine, function and its model choices (`ahead_key`): when the machine's
-    /// software last started, so a restart (an update) prepares again.
-    asked_ahead: HashMap<String, Option<i64>>,
-    /// Where each job not ready yet, of several machines, will most likely go, by its key, once its quote said; none while it's
-    /// asked, or when none could take it.
+    /// Where each job not ready yet will most likely go, by its key, as the last plan placed it (cl-967).
     foreseen: HashMap<String, Option<On>>,
-    /// Where each job whose turn is next would finish soonest, by its key, as its machines last quoted (cl-816), and when they did.
+    /// Where each job whose turn is next goes, by its key, as the last plan placed it (cl-967), with its other machines' offers.
     placed: HashMap<String, Placed>,
-    quoted_at: Option<Instant>,
+    /// Why the last plan placed no machine for each job whose turn is next, by its key, as its line said.
+    unplanned: HashMap<String, String>,
+    /// What each job not sent asks of a machine, by its key, once its package and its models' cards said.
+    quotables: HashMap<String, placement::Job>,
+    /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
+    starts: HashMap<String, (i64, Vec<String>)>,
+    /// What each machine is told to have ready for each job, by machine and job key: its Hub, item and function; none: nothing.
+    items: HashMap<(String, String), Option<(String, v1::Ahead, String)>>,
+    /// Items being made.
+    making: HashSet<(String, String)>,
     /// The last turn held a job for a busy machine.
     held: bool,
     /// What the machine each job went to quoted, by its key.
@@ -1084,7 +1157,8 @@ impl Frozen for Now<'_> {
     }
 
     fn judged(&mut self, i: usize) -> bool {
-        if !self.ask.outdated {
+        // Of `all`, every pin; else only those its names read.
+        if !self.ask.outdated || (!self.ask.whole && !self.ask.judges.contains(&name_key(&self.reading.doc.assets[i].name))) {
             return false;
         }
         self.reading.ensure(i, self.lock);
@@ -1179,7 +1253,7 @@ impl Project {
             let asked = walker::Asked {
                 all: ask.all,
                 tried: ask.sent.clone(),
-                takes: ask.takes.iter().map(|take| Named { key: take.key.clone(), asset: take.asset.clone(), approve: take.approve }).collect(),
+                takes: ask.takes.iter().map(|take| Named { key: take.key.clone(), asset: take.asset.clone(), approve: take.approve, covers: take.covers }).collect(),
             };
             graph.add(&ask.id, &mut Now { reading, lock, ask }, &asked);
         }
@@ -1270,6 +1344,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
+            copy_told(&project.root);
             (project.id.clone(), project.code.clone(), said)
         }
     };
@@ -1355,16 +1430,23 @@ fn refuse_encrypted_parent(dir: &FsPath) -> Result<(), Error> {
     Ok(())
 }
 
-/// The project folder holding `path`: the nearest, up from it, that is one.
+/// The project folder holding a source staged by path: the nearest, up from it, that is one. A retired or incomplete project's
+/// files there are never global maintenance data either.
 pub(crate) fn source_project(path: &FsPath) -> Result<Option<PathBuf>, Error> {
-    match holding(path) {
+    match owning(path, true) {
         Ok(project) => Ok(Some(project)),
         Err(error) if error.code == "project_not_found" => Ok(None),
         Err(error) => Err(error),
     }
 }
 
+/// The project folder a request names by a path: the nearest, up from it, that is one. A folder of old files (a
+/// `project.canvas.yaml`) or an interrupted creation's `project.db.new` is no project (cl-930).
 fn holding(path: &FsPath) -> Result<PathBuf, Error> {
+    owning(path, false)
+}
+
+fn owning(path: &FsPath, source: bool) -> Result<PathBuf, Error> {
     let unavailable = || Error::new(Kind::Unavailable, "project_ownership_unavailable", "the source's project ownership cannot be verified");
     // A client can name a path only it sees (its own copy under a project's folder here): the nearest
     // ancestor that exists here decides the owner, as for any path.
@@ -1378,13 +1460,17 @@ fn holding(path: &FsPath) -> Result<PathBuf, Error> {
         for marker in [project_vault::KEYBAG_FILE, db::DB, "project.canvas.yaml", "project.db.new"] {
             match std::fs::symlink_metadata(dir.join(marker)) {
                 Ok(_) if marker == project_vault::KEYBAG_FILE || marker == db::DB => return Ok(dir.to_owned()),
-                Ok(_) => return Err(Error::new(Kind::Validation, "project_format_unsupported", "the source belongs to a retired or incomplete project; do not treat it as global maintenance")),
+                Ok(_) if source => return Err(Error::new(Kind::Validation, "project_format_unsupported", "the source belongs to a retired or incomplete project; do not treat it as global maintenance")),
+                Ok(_) => {},
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
                 Err(_) => return Err(unavailable()),
             }
         }
     }
-    Err(Error::new(Kind::NotFound, "project_not_found", "the verified source is outside a project").next("cozy new"))
+    if source { return Err(Error::new(Kind::NotFound, "project_not_found", "the verified source is outside a project").next("cozy new")); }
+    Err(Error::new(Kind::NotFound, "project_not_found", format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB))
+        .remedy("run from an existing project directory, or create one with cozy new")
+        .next("cozy new"))
 }
 
 fn now_ms() -> i64 {
@@ -1431,6 +1517,13 @@ async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> 
     Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code }))
 }
 
+/// Where its rows differ from its document (cl-885): nowhere, always. What e2e checks after each write.
+async fn integrity(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, Refusal> {
+    let project = api.projects.get(&api, &id)?;
+    let differences = project.folder.integrity().map_err(Refusal)?;
+    Ok(Json(serde_json::json!({ "differences": differences })))
+}
+
 /// Its assets as they stand.
 async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked): Query<Read>) -> Result<Json<ProjectState>, Refusal> {
     let covered = asked.assets.then(crate::events::snapshot_cursor).flatten();
@@ -1458,6 +1551,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
     state.covered = covered;
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_project));
+    copy_told(&project.root);
     Ok(Json(state))
 }
 
@@ -1483,14 +1577,15 @@ fn board_of(project: &Project) -> Option<api::calcifer::project::Board> {
     Some(project.jobs.board()).filter(|board| board.seq > 0)
 }
 
-/// The local code `id`'s assets name, each once: its path as they write it, and where that is.
+/// The local code `id`'s assets name, each once: its path as they write it, and where that is. Not a checkout's first-party
+/// package, which is listed by its name (`toolbox::from_source`).
 pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, PathBuf)>, Refusal> {
     let project = api.projects.get(api, id)?;
     let folder = &project.folder;
     let doc = Doc::load(folder).map_err(Refusal)?;
     let home = &api.machines.user_home;
     let mut named = BTreeMap::new();
-    for with in (0..doc.assets.len()).map(|i| doc.target(i)).filter(|with| !with.is_empty()) {
+    for with in (0..doc.assets.len()).map(|i| doc.target(i)).filter(|with| !with.is_empty() && crate::checkout::named(with).is_none()) {
         if let Some(Ok((path, function))) = crate::local_code::target(&with, Some(&folder.dir), home) {
             let written = match function {
                 Some(function) => with.trim().trim_end_matches(['/', '\\']).strip_suffix(function.as_str()).unwrap_or(&with).trim_end_matches(['/', '\\']).to_owned(),
@@ -1538,7 +1633,9 @@ fn known_packages(api: &Arc<Api>, doc: &Doc, dir: &FsPath) -> HeardOf {
         .filter_map(|with| {
             let package = heard_of(api, &with, dir)?;
             let callable = package.named.as_deref().and_then(|function| package.callable(function));
-            let heard = HeardPackage { name: package.name.clone(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local: is_local(&with) };
+            // A checkout's first-party package is said as its release would be (xs-195).
+            let local = is_local(&with) && crate::checkout::named(&with).is_none();
+            let heard = HeardPackage { name: package.name.clone(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local };
             Some((with, heard))
         })
         .collect()
@@ -1570,7 +1667,7 @@ fn tags_now<'a>(doc: &'a Doc, known: &'a HeardOf, i: usize) -> Option<&'a [Strin
 
 /// Whether `with` names local code.
 fn is_local(with: &str) -> bool {
-    api::target::written_as_path(with) || with.ends_with(".py")
+    api::target::written_as_path(with) || with.ends_with(".py") || crate::checkout::named(with).is_some()
 }
 
 /// What was last heard of the package `with`, this moment: published, or local code from `dir` as described on this computer's machine.
@@ -1861,6 +1958,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.run,
                     main: main_file(lock, version),
+                    aspect_ratio: version.fields.as_ref().and_then(|fields| fields.get("aspect_ratio")?.as_str()).map(str::to_owned),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
                     timeline: (!version.clips.is_empty()).then(|| {
@@ -1997,27 +2095,36 @@ async fn reclaim(
                 let _ = std::fs::remove_file(folder.dir.join(FsPath::new(&name).with_extension("otio")));
             }
         }
-        // What a text names by number stays, on any row.
-        let named = doc.versions_named();
-        let row_named: BTreeMap<String, BTreeSet<u32>> = named.iter().flat_map(|(key, numbers)| lock.rows_of(key).map(move |(row, _)| (row.clone(), numbers.clone()))).collect();
-        folder
-            .update_lock(|lock| {
-                lock.assets.retain(|key, _| doc.find(key).is_some() || row_named.contains_key(key));
-                for (key, held) in &mut lock.assets {
-                    match row_named.get(key).filter(|_| doc.find(key).is_none()) {
-                        Some(numbers) => held.keep_only(numbers),
-                        None => held.clear_discarded(row_named.get(key)),
-                    }
+    }
+    if !asked.yes {
+        let (files, bytes, unrecorded, unheld) = folder.sweep(&kept, &recorded, false).map_err(Refusal)?;
+        let next = (lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy open".to_owned()).into_iter().collect();
+        return Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: false, next, lost, unheld }));
+    }
+    // What a text names by number stays, on any row.
+    let named = doc.versions_named();
+    let row_named: BTreeMap<String, BTreeSet<u32>> = named.iter().flat_map(|(key, numbers)| lock.rows_of(key).map(move |(row, _)| (row.clone(), numbers.clone()))).collect();
+    // One transaction: the lock and the canvas without what goes, and its answer with its key (cl-885). Its files go inside it, before it
+    // commits, with what's kept as files arrive held off (`collecting`, taken before the transaction as every keeper takes it): a resend
+    // of one that never committed finds them gone, and says so.
+    let _collecting = folder.collecting();
+    let reclaimed = folder.act(|| {
+        folder.update_lock(|lock| {
+            lock.assets.retain(|key, _| doc.find(key).is_some() || row_named.contains_key(key));
+            for (key, held) in &mut lock.assets {
+                match row_named.get(key).filter(|_| doc.find(key).is_none()) {
+                    Some(numbers) => held.keep_only(numbers),
+                    None => held.clear_discarded(row_named.get(key)),
                 }
-            })
-            .map_err(Refusal)?;
-    }
-    let (files, bytes, unrecorded, unheld) = folder.sweep(&kept, &recorded, asked.yes).map_err(Refusal)?;
-    if asked.yes {
-        canvas::prune(folder, &id, |name| doc.find(name).is_some()).map_err(Refusal)?;
-    }
-    let next = (!asked.yes && lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy open".to_owned()).into_iter().collect();
-    Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: asked.yes, next, lost, unheld }))
+            }
+        })?;
+        let (files, bytes, unrecorded, unheld) = folder.swept(&kept, &recorded, true)?;
+        canvas::prune(folder, &id, |name| doc.find(name).is_some())?;
+        let reclaimed = Reclaimed { orphans, files, bytes, unrecorded, deleted: true, next: vec![], lost, unheld };
+        keyed::answering(StatusCode::OK, &reclaimed);
+        Ok(reclaimed)
+    });
+    Ok(Json(reclaimed.map_err(Refusal)?))
 }
 
 /// Renames asset `from` to `to`, at once, whatever is going, and nothing else about it changes: the lock's row and all it keeps, its pin and what is pending or owed of
@@ -2061,7 +2168,12 @@ async fn machines(
             kept.push(name);
         }
     }
-    project.folder.set_machines(&kept).map_err(Refusal)?;
+    // Its answer is kept with it, in its transaction (cl-885).
+    project.folder.act(|| {
+        project.folder.set_machines(&kept)?;
+        keyed::answering(StatusCode::OK, &ProjectMachines { machines: kept.clone() });
+        Ok(())
+    }).map_err(Refusal)?;
     crate::events::project_settled(&project.folder.dir);
     Ok(Json(ProjectMachines { machines: kept }))
 }
@@ -2144,7 +2256,10 @@ fn renamed_under(project: &Arc<Project>, id: &str, asked: Rename, follows: bool)
             folder.then(move |_| film_renamed(&Folder::at(&dir), &from, &to));
         }
         history::renamed(folder, &from, &to);
-        Ok(Renamed { from, to, versions })
+        let renamed = Renamed { from, to, versions };
+        // Its answer is kept with it, in its transaction (cl-885): an undo that renames back says its own after.
+        keyed::answering(StatusCode::OK, &renamed);
+        Ok(renamed)
     });
     done.map_err(Refusal)
 }
@@ -2293,15 +2408,10 @@ async fn runs(
     if all && asked.n > 1 {
         say(format!("-n is for an asset you name: `all` makes one of each, not {}", asked.n));
     }
-    // Every render makes new versions, unless it asks only for what has no state.
+    // Every render makes new versions, unless it asks only to bring what it names up to date (`cozy render`): then what has its state
+    // stands, and `-n` is how many takes of each named node that renders.
     let missing = asked.missing;
-    if missing && n > 1 {
-        say("-n makes new versions, and --missing only what has no state: it is ignored".into());
-    }
-    let outdated = all && asked.outdated;
-    if asked.outdated && !all {
-        say("--outdated goes with all: naming a pin already makes a new version of it: it is ignored".into());
-    }
+    let outdated = asked.outdated;
     let picking = asked.pickup.is_some();
     if picking && (all || asked.names.len() != 1) {
         say(format!("a pickup is for one box: with {} it's ignored", if all { "all" } else { "several names" }));
@@ -2359,6 +2469,59 @@ async fn runs(
         }
         !seen.is_disjoint(&asked_of)
     };
+    // Already on its way: a run of it with these inputs, or a job of a render of the project as its text says now, which reads what
+    // stands when its turn comes.
+    let now: HashSet<&str> = lock.walk.asks.iter().filter(|ask| ask.digest == digest).map(|ask| ask.id.as_str()).collect();
+    let open: Vec<String> = {
+        let walker = project.walker.lock().expect("walker lock");
+        walker.graph.open_jobs().into_iter().map(|id| &walker.graph.jobs[id]).filter(|job| now.contains(job.ask.as_str())).map(|job| name_key(&job.asset)).collect()
+    };
+    let being_made = |i: usize| {
+        let key = name_key(&doc.assets[i].name);
+        lock.pending.values().any(|pending| name_key(&pending.asset) == key && Some(&pending.version.inputs) == stand[i].inputs.as_ref())
+            || lock.walk.asks.iter().any(|ask| ask.digest == digest && ask.takes.iter().any(|take| name_key(&take.asset) == key))
+            || open.contains(&key)
+    };
+    // Everything `i` reads, all the way up.
+    let above = |i: usize| {
+        let (mut up, mut seen) = (doc.upstream[i].clone(), HashSet::new());
+        while let Some(j) = up.pop() {
+            if seen.insert(j) {
+                up.extend(&doc.upstream[j]);
+            }
+        }
+        seen
+    };
+    // `--outdated` of names: each approved node out of date among them and what they read, re-run at its turn.
+    let judges: BTreeSet<String> = match outdated && !all {
+        false => BTreeSet::new(),
+        true => (named.iter().flat_map(|&i| above(i).into_iter().chain([i])))
+            .filter(|&j| doc.makes(j) && doc.tool(j).is_none() && matches!(stand[j].state, Stand::Pinned { version: Some(_), .. }) && pin_changed(&stand, j) && !being_made(j))
+            .map(|j| name_key(&doc.assets[j].name))
+            .collect(),
+    };
+    let judged = |j: usize| judges.contains(&name_key(&doc.assets[j].name));
+    // A node named that reads, all the way up, something out of date or with no take isn't brought up to date by standing: a cut reads
+    // an out-of-date clip's newest take, so it can stand on one its words no longer make. What it reads renders first, then it. A read
+    // of one take (`<shot_2.1>`) is that take, whatever its box's words say now.
+    let behind = |i: usize| {
+        if all || !matches!(stand[i].state, Stand::Current(_)) {
+            return false;
+        }
+        let (mut up, mut seen) = (vec![i], HashSet::new());
+        while let Some(k) = up.pop() {
+            for j in doc.assets[k].reads.iter().filter(|read| read.number.is_none()).map(|read| read.asset) {
+                if !seen.insert(j) {
+                    continue;
+                }
+                if doc.makes(j) && matches!(stand[j].state, Stand::Stale(_) | Stand::Missing) {
+                    return true;
+                }
+                up.push(j);
+            }
+        }
+        false
+    };
     for i in named {
         let asset = &doc.assets[i];
         let name = asset.name.clone();
@@ -2366,8 +2529,35 @@ async fn runs(
             said(&name, format!("{name} is a constant, one file: nothing is made of it"));
             continue;
         }
+        // Brought up to date: what is on its way is joined, and what has its state stands, unless something it reads is re-run.
+        if missing && !(one && asked.pickup.is_some()) && !(asset.hollow && stand[i].files.is_none()) {
+            if judged(i) {
+                said(&name, format!("{name} is approved and out of date: it renders again"));
+                continue;
+            }
+            if being_made(i) {
+                said(&name, format!("{name} is rendering: joined"));
+                continue;
+            }
+            if stand[i].files.is_some() && !above(i).into_iter().any(judged) && !behind(i) {
+                said(&name, match &stand[i].state {
+                    Stand::Pinned { version: Some(version), changed } if !changed.is_empty() => {
+                        format!("{name} take {version} is approved, though {} changed (--outdated renders it again)", changed.join(", "))
+                    }
+                    Stand::Pinned { version: Some(version), .. } => format!("{name} take {version} is approved (--new renders it again)"),
+                    Stand::Current(version) => format!("{name} take {version} is current (--new renders it again)"),
+                    _ => format!("{name} is current (--new renders it again)"),
+                });
+                continue;
+            }
+            // A cut is cut once; what it and the rest read with no state renders first.
+            let count = if doc.tool(i).is_some() { 1 } else { n };
+            let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: count > 1, pickup: None, covers: true };
+            takes.extend((0..count).map(take));
+            continue;
+        }
         // A cut that stands on what it reads now would only be cut the same again: answered now, with nothing queued (cl-910).
-        if doc.tool(i) == Some(Tool::Cut) && !missing && !reads_asked(i)
+        if doc.tool(i) == Some(Tool::Cut) && !reads_asked(i)
             && let Some(version) = stand[i].inputs.as_deref().and_then(|inputs| same_cut(&project.folder, &lock, asset, &stand[i].reads, inputs))
         {
             said(&name, format!("{name} is current, version {}: what it cuts hasn't changed, so cutting it again makes the same film", version.number));
@@ -2376,9 +2566,7 @@ async fn runs(
         if doc.tool(i).is_some() {
             said(&name, format!("{name} is made here, free, when what it reads settles"));
             // Named, it is made again, as anything named is.
-            if !missing {
-                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: true, pickup: None });
-            }
+            takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: true, pickup: None, covers: false });
             continue;
         }
         if asset.hollow {
@@ -2386,26 +2574,8 @@ async fn runs(
             continue;
         }
         let pickup = asked.pickup.clone().filter(|_| one);
-        let noun = noun(&doc, &lock, i);
-        // Already on its way, the same inputs: another's version answers this.
-        let making = lock.pending.values().any(|pending| name_key(&pending.asset) == name_key(&name) && Some(&pending.version.inputs) == stand[i].inputs.as_ref());
-        let asked_of = lock.walk.asks.iter().any(|ask| ask.digest == digest && ask.takes.iter().any(|take| name_key(&take.asset) == name_key(&name)));
-        if missing && pickup.is_none() && (making || asked_of) {
-            said(&name, format!("{name} is being made"));
-            continue;
-        }
-        if missing && pickup.is_none() && stand[i].files.is_some() {
-            said(&name, match &stand[i].state {
-                Stand::Pinned { changed, .. } if !changed.is_empty() => format!("{name} is pinned, though {} changed: unpin to make it again", changed.join(", ")),
-                Stand::Pinned { .. } => format!("{name} is approved: without --missing, naming it makes another {noun} to look at"),
-                Stand::Current(version) => format!("{name} is current, {noun} {version}; without --missing it makes another"),
-                _ => format!("{name} has its state; without --missing it makes another {noun}"),
-            });
-            continue;
-        }
-        let makes_new = !missing || pickup.is_some();
-        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: makes_new, pickup: pickup.clone() };
-        takes.extend((0..if makes_new { n } else { 1 }).map(take));
+        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: true, pickup: pickup.clone(), covers: missing };
+        takes.extend((0..n).map(take));
     }
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
         return Err(Refusal(error));
@@ -2429,16 +2599,21 @@ async fn runs(
     let mut walking = project.walking.lock().expect("walking lock");
     let joined = *walking;
     let new_all = all && missing && !lock.walk.asks.iter().any(|ask| ask.all && ask.digest == digest);
-    let new_outdated = outdated && !lock.walk.asks.iter().any(|ask| ask.outdated && ask.digest == digest);
+    let new_outdated = match all {
+        true => outdated && !lock.walk.asks.iter().any(|ask| ask.outdated && ask.digest == digest),
+        false => !judges.is_empty(),
+    };
     let added = if resent { 0 } else { takes.len() as u32 + u32::from(new_all) + u32::from(new_outdated) };
-    let ask = Ask { id: new_key(), digest: digest.clone(), target: target.clone(), all: all && missing, outdated, whole: all, sent: BTreeSet::new(), takes };
+    let outdated = outdated && (all || !judges.is_empty());
+    let ask = Ask { id: new_key(), digest: digest.clone(), target: target.clone(), all: all && missing, outdated, whole: all, judges, sent: BTreeSet::new(), takes };
     // One transaction: its snapshot, the ask, and its key, so a retry however late runs nothing twice. What the project has lost is set aside,
     // and what's asked again fails no more.
     let lost = std::cell::Cell::new(false);
+    let begun = ((!joined || added > 0) && !resent).then(|| ask.id.clone());
     (project.folder.act(|| {
         project.folder.keep_snapshot(&digest, &snapshot)?;
         project.folder.update_walk(|walk| {
-            if (!joined || added > 0) && !resent {
+            if begun.is_some() {
                 walk.walk.asks.push(ask.clone());
             }
         })?;
@@ -2449,7 +2624,22 @@ async fn runs(
                     held.failed = None;
                 }
             }
-        })
+        })?;
+        // Its answer is kept with it, in its transaction (cl-885), its board as the transaction knows it: what's going, and each take it
+        // asks, next. What it queued behind, and the board the walk makes of it, its answer after says.
+        let mut board = project.jobs.board();
+        let next: Vec<Job> = (ask.takes.iter().filter(|take| !board.jobs.iter().any(|job| job.id == take.key)))
+            .map(|take| {
+                let noun = doc.find(&take.asset).map_or("version", |i| noun(&doc, &lock, i));
+                Job { id: take.key.clone(), asset: take.asset.clone(), noun: noun.into(), why: Some("next".into()), ..Job::default() }
+            })
+            .collect();
+        board.jobs.extend(next);
+        let path = project.folder.dir.clone();
+        let next = vec!["cozy status".into()];
+        let (skipped, said) = (skipped.clone(), lines.borrow().clone());
+        keyed::answering(StatusCode::ACCEPTED, &Asked { id: id.clone(), ask: begun.clone(), path, joined, added, skipped, queued: vec![], said, next, board });
+        Ok(())
     }))
     .map_err(Refusal)?;
     if lost.get() {
@@ -2461,9 +2651,8 @@ async fn runs(
     sync_jobs(&project, numbered(&api, &project.id)).map_err(Refusal)?;
     let board = project.jobs.board();
     drop(walking);
-    let ask = ((!joined || added > 0) && !resent).then_some(ask.id);
     let said = lines.into_inner();
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })))
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask: begun, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })))
 }
 
 /// A run by its number, as its record says now.
@@ -2517,7 +2706,14 @@ async fn cancel(
 ) -> Result<Json<Cancelled>, Refusal> {
     let asked: Cancel = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    Ok(Json(cancelled(&api, &project, &asked.names, &asked.takes, &|_| "canceled".to_owned())?))
+    // One transaction: what the walk owes dropped, and its answer with its key (cl-885). Its runs are asked to end inside it, before it
+    // commits: a resend of one that never committed asks them again, which ends nothing twice.
+    let done = project.folder.act(|| {
+        let done = cancelled(&api, &project, &asked.names, &asked.takes, &|_| "canceled".to_owned()).map_err(|Refusal(why)| why)?;
+        keyed::answering(StatusCode::OK, &done);
+        Ok(done)
+    });
+    Ok(Json(done.map_err(Refusal)?))
 }
 
 /// `names`' queued work dropped, its rows saying `why`, and their runs canceled, or with `all` everything's.
@@ -2536,11 +2732,9 @@ fn cancelled(api: &Arc<Api>, project: &Arc<Project>, names: &[String], takes: &[
     }
     project.asked.notify_one();
     sync_jobs(project, numbered(api, &project.id)).map_err(Refusal)?;
-    // `all` stops what is fetched ahead too; the walker stops what fewer leave unneeded.
+    // `all` stops what its machines have ready ahead for it too; the walker drops what fewer leave unneeded from their lists.
     if all {
-        for (_, _, run) in project.jobs.ahead_going() {
-            let _ = api.calcifer.cancel(&run);
-        }
+        api.machines.lists.set(&api.machines, &folder.dir.to_string_lossy(), HashMap::new());
     }
     Ok(Cancelled { dropped, canceled })
 }
@@ -2579,11 +2773,24 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str, &s
     for pending in lock.pending.iter().filter(|(key, pending)| pending.run > 0 && wanted(&pending.asset, pending.job_of(key))).map(|(_, pending)| pending) {
         let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
         if row.state != crate::store::State::Settled {
+            // Inside a delete's act, `cancel` tells the machine now and keeps the request once the act lets the writer go.
             api.calcifer.cancel(&row.id).map_err(|e| Error::new(Kind::Internal, "run_cancel", e.to_string()))?;
             canceled.push(pending.run);
         }
     }
     Ok((dropped.into_iter().map(|job| job.asset).collect(), canceled))
+}
+
+/// Box `name`'s runs not yet ended, each told to stop at its machine now: what deletes it waits for the project's writer, which a
+/// run's own progress or another program may hold, and a held commit never keeps a render going.
+fn stop_at_machines(api: &Arc<Api>, project: &Project, name: &str) {
+    let (Ok(lock), Ok(store)) = (project.folder.lock(), api.calcifer.project_store(&project.id)) else { return };
+    let key = name_key(name);
+    for pending in lock.pending.values().filter(|pending| pending.run > 0 && name_key(&pending.asset) == key) {
+        if let Ok(Some(row)) = store.run_by_number(pending.run) && row.state != crate::store::State::Settled {
+            api.calcifer.stop_at_machine(&row.id);
+        }
+    }
 }
 
 /// `source` kept as a file of the project, in the lock.
@@ -2615,7 +2822,7 @@ fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
 fn import_failed(source: &str, why: String) -> Refusal {
     // A hash is no one's to read: a person dropped a file, and is told of it by its name.
     let said = if source.starts_with("sha256:") { why } else { format!("{source}: {why}") };
-    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("import a picture, video or sound in the browser opened by cozy open"))
+    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("import a picture, video or sound"))
 }
 
 fn not_held(source: &str) -> Refusal {
@@ -2729,7 +2936,12 @@ async fn import(
         }
     }
     let kept = keep_file(folder, &asked.source).await?;
-    let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, &asked.placed)?;
+    // Its answer is kept with it, in its transaction (cl-885).
+    let answer = folder.act(|| {
+        let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, &asked.placed).map_err(|Refusal(why)| why)?;
+        keyed::answering(StatusCode::OK, &answer);
+        Ok(answer)
+    }).map_err(Refusal)?;
     measure_soon(&api, &project);
     Ok(Json(answer))
 }
@@ -2779,17 +2991,25 @@ async fn approve(
         .or_else(|| versions.iter().copied().rev().find(|version| version.main() == Some(&chosen)));
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    folder.edit(|written| match version {
-        Some(version) => written.selected(&name, version.number, &chosen),
-        None => written.approved(&name, &chosen),
-    }).map_err(Refusal)?;
-    let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
     let files = listed(&lock, &files);
+    // Its answer is kept with it, in its transaction (cl-885): what it approved. What that put out of date, and what settling found, its
+    // answer after says.
+    let approved = folder.act(|| {
+        folder.edit(|written| match version {
+            Some(version) => written.selected(&name, version.number, &chosen),
+            None => written.approved(&name, &chosen),
+        })?;
+        let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag))?;
+        let approved = Approved { name: name.clone(), noun: noun.into(), number, files, path, stale: vec![], warnings: vec![], etag };
+        keyed::answering(StatusCode::OK, &approved);
+        Ok(approved)
+    }).map_err(Refusal)?;
+    let warnings = settle(&api, &project).await;
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
-    Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings, etag }))
+    Ok(Json(Approved { stale, warnings, etag, ..approved }))
 }
 
 /// `POST /v1/projects/{id}/unpin`: `approved` gone from its box, so the asset's state follows its inputs again. A constant,
@@ -2809,13 +3029,19 @@ async fn unpin(
     let stand = doc.stand(&lock);
     let version = stand[i].version().filter(|_| asset.pin.is_some());
     let before = stale_names(&doc, &stand);
-    if asset.pin.is_some() {
-        if asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
-            let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it");
-            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next("cozy open")));
-        }
-        folder.edit(|written| written.unapproved(&name)).map_err(Refusal)?;
+    if asset.pin.is_some() && asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
+        let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it");
+        return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next("cozy open")));
     }
+    // Its answer is kept with it, in its transaction (cl-885), as approve's is.
+    folder.act(|| {
+        if asset.pin.is_some() {
+            folder.edit(|written| written.unapproved(&name))?;
+        }
+        let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag))?;
+        keyed::answering(StatusCode::OK, &Unpinned { name: name.clone(), version, stale: vec![], warnings: vec![], etag });
+        Ok(())
+    }).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
@@ -2973,19 +3199,21 @@ struct Walk {
     ended: Mutex<Vec<String>>,
 }
 
-/// How many jobs go at once, per machine they may go to: being sent, in its line or running. What's beyond waits here, so a pod's queue stays short and what is asked later or canceled costs nothing there.
-const WINDOW: usize = 32;
 /// How often what's landing tries a project that won't take it.
 const HELD_UP: std::time::Duration = std::time::Duration::from_secs(1);
-/// With several machines, a job a machine would start after this long waits here, so it commits to no queue early (cl-816).
-const HOLD_MS: i64 = 1000;
 /// What a send refused for a machine that went meanwhile says (`Machines::reach`): the job is placed again (cl-920), this many times.
 pub(crate) const GONE: [&str; 3] = ["machine_ended", "machine_offline", "machine_ending"];
 const PLACED_AGAIN: u32 = 3;
-/// How often jobs held for a busy machine are quoted again.
-const HELD_LOOK: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long a job's package may take to say what it calls, and its models' cards what they weigh, before its machines are asked without.
 const QUOTE_LATE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
+fn unplanned(walker: &mut Walker, dir: &str, key: &str, why: String) {
+    if walker.unplanned.get(key) != Some(&why) {
+        warn!("{dir}: {key} isn't planned: {why}; it goes to the first of its machines that takes it");
+        walker.unplanned.insert(key.to_owned(), why);
+    }
+}
 
 /// Something a walker started came to its end.
 enum Done {
@@ -2997,25 +3225,16 @@ enum Done {
     Ahead,
 }
 
-/// What a queued job's machine can fetch before its turn: a function as its text names it, on the machine it will most likely go
-/// to; none yet: of its several machines, a quote of its own says which first.
+/// What a queued job's machine can fetch before its turn: a function as its text names it, on the machine the plan placed it on.
+#[derive(Clone)]
 struct Wanted {
-    job: String,
-    machine: Option<On>,
-    on: Vec<On>,
+    machine: On,
     hub: String,
     with: String,
     kind: String,
     made: Map<String, Value>,
-    /// The keys of the jobs it waits for: it begins no sooner than they end.
-    after: Vec<String>,
 }
 
-/// What one fetch ahead is, as `asked_ahead` and the board know it: machine, function and its model choices.
-fn ahead_key(machine: &str, with: &str, made: &Map<String, Value>) -> String {
-    let chosen = serde_json::to_string(&(made.get("models"), made.get("lora"))).unwrap_or_default();
-    format!("{machine}\n{with}\n{chosen}")
-}
 
 /// A run being sent, until it has gone or hasn't.
 struct OnTheWay<'a>(&'a Mutex<HashSet<String>>, String);
@@ -3198,9 +3417,8 @@ impl Walk {
         if gone.is_empty() || gone.len() < on.len() {
             return on.iter().filter(|on| !matches!(on, On::Machine(name) if api.machines.gone(name).is_some())).cloned().collect();
         }
-        // Placement retries retain this project's storage policy before any
-        // pricing or upload; a departed machine never opens a global fallback.
-        let automatic = crate::private_io::check_project_placement(&self.project.id,&self.project.root,&[On::Any]).unwrap_or_default();
+        // The set a render naming none takes, under this project's storage policy. `any` alone is a rental, which never comes uninvited.
+        let automatic = crate::private_io::check_project_placement(&self.project.id, &self.project.root, &api.machines.automatic()).unwrap_or_default();
         if self.fell_back.lock().expect("fell back lock").insert(ask.to_owned()) {
             let set = automatic.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
             self.say(Told::Warning { message: format!("{}: it goes where it finishes soonest of {set}", gone.join("; ")), name: None });
@@ -3358,9 +3576,12 @@ impl Walk {
     async fn go(&self, following: &tokio::task::JoinHandle<()>) -> Result<(), Error> {
         let (mut first, mut followed) = (None, HashSet::new());
         let mut work: FuturesUnordered<BoxFuture<'_, Done>> = FuturesUnordered::new();
-        // Another program's commit to project.db says nothing, so its revision is looked at. One read a second, and nothing more if it's the same.
-        let mut edits = tokio::time::interval(std::time::Duration::from_secs(1));
-        edits.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // A project's revision moved (this Calcifer's commit, or another program's its folder watch saw): what was deleted stops.
+        let mut edits = crate::events::edits();
+        // A machine's Status moved (a run started or ended, bytes came, a machine came or went): a job held for a machine is placed again.
+        let mut machines = self.host.api().calcifer.machines_changed();
+        // A machine became ready or ended: what isn't sent yet is placed again.
+        let mut arrivals = self.host.api().machines.arrivals.subscribe();
         // A walk before this one's versions whose files are on their way: it isn't over until they're here, or never come.
         let walk = self.folder().walk_now()?;
         for (number, coming) in walk.walk.runs {
@@ -3381,22 +3602,39 @@ impl Walk {
                     work.push(async move { Done::Landed { job, landed: self.follow(key).await } }.boxed());
                 }
             }
-            for wanted in self.wanted_ahead() {
-                work.push(async move {
-                    match wanted.machine {
-                        Some(_) => {
-                            if let Err(error) = self.ask_ahead(wanted).await {
-                                warn!("fetching ahead in {}: {}", self.folder().dir.display(), error.message);
-                            }
-                        }
-                        None => self.foresee(wanted).await,
+            // What waits for another's output is placed too, so its machine fetches ahead for it.
+            if !self.project.walker.lock().expect("walker lock").graph.has_ready() {
+                self.plan(false).await;
+            }
+            // What the jobs not sent will run with goes to the machines they're planned on, as each one's upcoming list (cl-967).
+            let ahead = self.ahead_jobs();
+            for (key, _, wanted) in &ahead {
+                let On::Machine(name) = &wanted.machine else { continue };
+                let at = (name.clone(), key.clone());
+                {
+                    let mut walker = self.project.walker.lock().expect("walker lock");
+                    if walker.items.contains_key(&at) || !walker.making.insert(at.clone()) {
+                        continue;
                     }
+                }
+                let (key, wanted) = (key.clone(), wanted.clone());
+                work.push(async move {
+                    let item = match self.item(&key, &wanted).await {
+                        Ok(item) => item,
+                        Err(error) => {
+                            warn!("{}: what {key} needs ahead on {}: {}", self.folder().dir.display(), wanted.machine, error.message);
+                            None
+                        }
+                    };
+                    let mut walker = self.project.walker.lock().expect("walker lock");
+                    walker.making.remove(&at);
+                    walker.items.insert(at, item.map(|(item, function)| (wanted.hub.clone(), item, function)));
                     Done::Ahead
                 }.boxed());
             }
+            self.list_ahead(&ahead);
             self.finish_asks().await?;
             self.sync();
-            self.ahead_unneeded();
             if work.is_empty() {
                 // What is going with nothing following it has ended. What this walker took in is done; an ask that came since is
                 // the next turn's, so `over` finds it and the walk goes on.
@@ -3430,8 +3668,14 @@ impl Walk {
                         break;
                     }
                     () = self.project.asked.notified() => break,
-                    _ = edits.tick() => {
-                        if self.deletions()? || self.requote() {
+                    Ok(()) = machines.changed() => {
+                        if self.project.walker.lock().expect("walker lock").held {
+                            break;
+                        }
+                    }
+                    Ok(()) = arrivals.changed() => break,
+                    Ok(()) = edits.changed() => {
+                        if self.deletions()? {
                             break;
                         }
                     }
@@ -3443,93 +3687,72 @@ impl Walk {
         }
     }
 
-    /// What jobs waiting for their turn will need that no machine was asked for, on the machine each will most likely go to: its
-    /// one, else the soonest its machines quoted, else, not ready yet, a quote of its own first (`foresee`). A machine whose software
-    /// started again since (an update) is asked again. Each box waiting is named on what's fetched for it.
-    fn wanted_ahead(&self) -> Vec<Wanted> {
+    /// Each job not sent, with the machine it will most likely go to: its one, else where the last plan placed it; by its key and box.
+    fn ahead_jobs(&self) -> Vec<(String, String, Wanted)> {
         let Ok(walk) = self.folder().walk_now() else { return vec![] };
+        let walker = self.project.walker.lock().expect("walker lock");
+        let Walker { graph, readings, placed, foreseen, .. } = &*walker;
+        let mut jobs = vec![];
+        for id in graph.open_jobs() {
+            let job = &graph.jobs[id];
+            if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) {
+                continue;
+            }
+            let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
+            let Some(reading) = readings.get(&ask.digest) else { continue };
+            let target = ask.takes.iter().find(|take| take.key == job.key).map_or(&ask.target, |take| &take.target);
+            let asset = &reading.doc.assets[job.node];
+            let machine = match target.on.as_slice() {
+                [only] => Some(only.clone()),
+                _ => placed.get(&job.key).map(|placed| placed.soonest.machine.clone()).or_else(|| foreseen.get(&job.key).cloned().flatten()),
+            };
+            // With `any`, or none placed yet, where isn't known.
+            let Some(machine @ On::Machine(_)) = machine else { continue };
+            let wanted = Wanted { machine, hub: target.hub.clone(), with: reading.doc.target(job.node), kind: asset.kind.clone(), made: asset.made.clone() };
+            jobs.push((job.key.clone(), job.asset.clone(), wanted));
+        }
+        jobs
+    }
+
+    /// Each machine's upcoming jobs of this walk, as far as their items are made, in the order they start (`ahead::Lists`); their rows
+    /// on the board, and only theirs.
+    fn list_ahead(&self, jobs: &[(String, String, Wanted)]) {
         let api = self.host.api();
-        let going = self.project.jobs.ahead_keys_going();
-        let mut named = vec![];
-        let mut wanted = vec![];
+        let mut by_machine: HashMap<String, Vec<crate::ahead::Listed>> = HashMap::new();
         {
-            let mut walker = self.project.walker.lock().expect("walker lock");
-            let Walker { graph, readings, asked_ahead, placed, foreseen, .. } = &mut *walker;
-            for id in graph.open_jobs() {
-                let job = &graph.jobs[id];
-                if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) {
-                    continue;
-                }
-                let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
-                let Some(reading) = readings.get(&ask.digest) else { continue };
-                let target = ask.takes.iter().find(|take| take.key == job.key).map_or(&ask.target, |take| &take.target);
-                let asset = &reading.doc.assets[job.node];
-                let (with, kind, made) = (reading.doc.target(job.node), asset.kind.clone(), asset.made.clone());
-                let machine = match target.on.as_slice() {
-                    [only] => Some(only.clone()),
-                    _ => placed.get(&job.key).map(|placed| placed.soonest.machine.clone()).or_else(|| foreseen.get(&job.key).cloned().flatten()),
+            let walker = self.project.walker.lock().expect("walker lock");
+            for (key, asset, wanted) in jobs {
+                let On::Machine(name) = &wanted.machine else { continue };
+                let Some(Some((hub, item, function))) = walker.items.get(&(name.clone(), key.clone())) else { continue };
+                let (start_at_ms, fits) = walker.starts.get(key).cloned().unwrap_or((i64::MAX, vec![]));
+                let listed = crate::ahead::Listed {
+                    project: self.project.clone(),
+                    asset: asset.clone(),
+                    start_at_ms,
+                    hub: hub.clone(),
+                    item: item.clone(),
+                    function: function.clone(),
+                    fits,
                 };
-                let Some(machine) = machine else {
-                    // With `any` or a rental yet to come, where isn't known.
-                    if target.on.iter().all(|on| matches!(on, On::Machine(_))) && !foreseen.contains_key(&job.key) {
-                        foreseen.insert(job.key.clone(), None);
-                        let after = job.needs.iter().map(|&need| graph.jobs[need].key.clone()).collect();
-                        wanted.push(Wanted { job: job.key.clone(), machine: None, on: target.on.clone(), hub: target.hub.clone(), with, kind, made, after });
-                    }
-                    continue;
-                };
-                let On::Machine(name) = &machine else { continue };
-                let key = ahead_key(name, &with, &made);
-                named.push((key.clone(), job.asset.clone()));
-                let boot = api.machines.frame(name).map(|frame| frame.started_at_unix_ms);
-                if asked_ahead.get(&key).is_some_and(|asked| *asked == boot || going.contains(&key)) {
-                    continue;
-                }
-                asked_ahead.insert(key, boot);
-                wanted.push(Wanted { job: job.key.clone(), machine: Some(machine), on: target.on.clone(), hub: target.hub.clone(), with, kind, made, after: vec![] });
+                by_machine.entry(name.clone()).or_default().push(listed);
             }
         }
-        for (key, name) in named {
-            self.project.jobs.wants_ahead(&key, &name);
+        let keys: HashSet<String> = by_machine.values().flatten().map(|listed| listed.item.key.clone()).collect();
+        api.machines.lists.set(&api.machines, &self.folder().dir.to_string_lossy(), by_machine);
+        self.project.jobs.upcoming_kept(&keys);
+    }
+
+    /// What `wanted`'s machine has ready for job `key` (`PUT /v1/upcoming`): the function its text names, else the first of its package
+    /// that makes this kind, with its model choices; and the function, as its row says it. None: its package makes nothing of the kind.
+    /// Local code is installed there first, as a call's is.
+    async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
+        // A machine-wide list is no project's: what a project's job will read comes with its own run, in its own storage.
+        if crate::private_io::of_path(&self.folder().dir)?.is_some() {
+            return Ok(None);
         }
-        wanted
-    }
-
-    /// Where job `wanted`, not ready yet, will most likely go of its several machines, kept for what it fetches ahead: the soonest finish
-    /// its machines quote, none beginning before what it waits for ends; quoted by none, where an unquoted job goes (`takes`). Its own
-    /// task, so its package takes as long as it takes to say what it calls.
-    async fn foresee(&self, wanted: Wanted) {
-        let Wanted { job, on, hub, with, made, after, .. } = wanted;
-        let api = self.host.api();
-        let offers = match self.quotable(job.clone(), on.clone(), &hub, &with, made, None).await {
-            Some(quotable) => placement::offers(&api, &[quotable], false).await.0.into_iter().next().unwrap_or_default(),
-            None => vec![],
-        };
-        let soonest = {
-            let walker = self.project.walker.lock().expect("walker lock");
-            let ends = |key: &String| walker.sent.get(key).map(|offer| offer.finish_at_ms).or_else(|| walker.placed.get(key).map(|placed| placed.soonest.finish_at_ms));
-            let begins = after.iter().filter_map(ends).max();
-            let offers: Vec<Offer> = offers.iter().map(|offer| begins.map_or_else(|| offer.clone(), |at| offer.from(at))).collect();
-            placement::soonest(&offers, now_ms()).map(|offer| offer.machine.clone())
-        };
-        let machine = match soonest {
-            Some(machine) => Some(machine),
-            None => placement::takes(&api, &on, &offers).await.ok(),
-        };
-        info!("{}: {job} will most likely go to {}: its look-ahead goes there", self.folder().dir.display(), machine.as_ref().map_or("none".into(), ToString::to_string));
-        self.project.walker.lock().expect("walker lock").foreseen.insert(job, machine);
-    }
-
-    /// Asks a machine for a function's code and weights, in the background: a warm run, which holds no GPU and starts no executor. The
-    /// function is what the text names, else the first of its package that makes this kind. Nothing here can fail a render.
-    async fn ask_ahead(&self, wanted: Wanted) -> Result<(), Error> {
-        let Wanted { machine, hub, with, kind, made, .. } = wanted;
-        let Some(machine) = machine else { return Ok(()) };
-        let key = ahead_key(&machine.to_string(), &with, &made);
-        let on = [machine.clone()];
-        let package = self.host.package(&hub, &with, &self.folder().dir, &on).await?;
-        let Some(renderer) = package.first_making(&kind) else { return Ok(()) };
-        let placed = machine;
+        let Wanted { machine, hub, with, kind, made } = wanted;
+        let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine)).await?;
+        let Some(renderer) = package.first_making(kind) else { return Ok(None) };
         let mut payload = Map::new();
         for field in ["models", "lora"] {
             if let Some(value) = made.get(field).filter(|value| !value.is_null()) {
@@ -3540,51 +3763,59 @@ impl Walk {
         let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
         choices.take(&mut payload)?;
         let models = choices::wire(&choices.into_choices())?;
-        let (source, inputs) = match &renderer.local {
-            None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
+        let source = match &renderer.local {
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
             Some(path) => {
-                // A fetch-ahead run stages its files outside any project: a private project's code waits for the run that calls it.
-                if crate::private_io::of_path(&self.folder().dir)?.is_some() { return Ok(()); }
-                let prepared = self.host.ready(path, &placed, &hub).await?;
-                (v1::Source::Local(prepared.source), prepared.files)
+                // A private project's code goes with the run that calls it.
+                if crate::private_io::of_path(&self.folder().dir)?.is_some() {
+                    return Ok(None);
+                }
+                v1::Source::Local(self.host.ready(path, machine, hub).await?.source)
             }
         };
-        let spec = v1::RunSpec { kind: v1::RunKind::Warm, source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
-        let target = format!("{}{called}", api::calcifer::project::AHEAD);
-        let shown = package.name.clone() + "/" + &renderer.function;
-        let submit = SubmitRun { project: Some(self.project.id.clone()), on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None, stays: vec![] };
-        let run = self.send_run(&format!("project-ahead-{}", new_key()), submit).await?;
-        info!("{}: fetching {shown} ahead on {placed}: run {}", self.folder().dir.display(), run.number);
-        self.project.jobs.ahead(run.id.clone(), key, with, shown, placed.to_string(), run.number);
-        Ok(())
+        let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
+        Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
     }
 
-    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices. None when its package doesn't say in
-    /// time what it calls.
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Option<placement::Job> {
+    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices; else why not. `late`: how long its package
+    /// may take to say what it calls, and its models' cards what they weigh (none: as long as they take).
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Result<placement::Job, String> {
         let api = self.host.api();
-        let late = late.unwrap_or(std::time::Duration::MAX);
-        let found = tokio::time::timeout(late, self.host.package(hub, with, &self.folder().dir, &on)).await;
-        let package = found.ok()?.ok()?;
-        let renderer = package.maker().ok()??;
-        let models = tokio::time::timeout(late, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
+        let limit = late.unwrap_or(std::time::Duration::MAX);
+        let package = match tokio::time::timeout(limit, self.host.package(hub, with, &self.folder().dir, &on)).await {
+            Err(_) => return Err(format!("{with} didn't say within {} s what it calls", limit.as_secs())),
+            Ok(Err(e)) => return Err(format!("{with}: {}", e.message)),
+            Ok(Ok(package)) => package,
+        };
+        let renderer = match package.maker() {
+            Ok(Some(renderer)) => renderer,
+            Ok(None) => return Err(format!("{with} names no function")),
+            Err(e) => return Err(format!("{with}: {}", e.message)),
+        };
+        let models = tokio::time::timeout(limit, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
         let size = v1::JobSize::of(&Value::Object(made));
         let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
             interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
         });
-        Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
+        Ok(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
     }
 
-    /// The jobs whose turn is next, each quoted by the machines it may go to, each machine asked once for all of them (cl-816): where
-    /// each would finish soonest. A job whose package doesn't say in time what it calls goes unquoted, to the first of its machines.
-    async fn quote(&self) {
+    /// Places the jobs not sent yet, the nearest `plan::PLANNED` of them (cl-967): every machine pictured from the Status it pushed, each
+    /// job beginning once what it reads ends, ahead of it on each machine the runs sent there that it hasn't accepted yet. A ready job's
+    /// place is where it goes at its turn; one waiting for another's output, where its weights are fetched ahead. A ready job waits for its
+    /// package to say what it calls (its send would anyway); one waiting, `QUOTE_LATE` at most. Each ready job's line says where it goes
+    /// and why, or why no machine was planned: then it goes to the first of its machines that takes it. `update`: as `placement::pictures`.
+    async fn plan(&self, update: bool) {
         let Ok(walk) = self.folder().walk_now() else { return };
-        let ready: Vec<(String, String, Target, String, Map<String, Value>)> = {
+        let dir = self.folder().dir.display().to_string();
+        let (unsent, ends, foreseen) = {
             let walker = self.project.walker.lock().expect("walker lock");
-            let room = WINDOW.saturating_sub(walker.graph.going());
-            (walker.graph.ready(room).into_iter())
+            let graph = &walker.graph;
+            let ready: HashSet<usize> = graph.ready(usize::MAX).into_iter().collect();
+            let unsent: Vec<Unsent> = (graph.open_jobs().into_iter())
+                .filter(|&id| graph.jobs[id].state == walker::State::Waiting)
                 .filter_map(|id| {
-                    let job = &walker.graph.jobs[id];
+                    let job = &graph.jobs[id];
                     if job.node == usize::MAX || matches!(job.kind, JobKind::Free { .. }) {
                         return None;
                     }
@@ -3592,71 +3823,152 @@ impl Walk {
                     let target = ask.takes.iter().find(|take| take.key == job.key).map_or(&ask.target, |take| &take.target);
                     let reading = walker.readings.get(&ask.digest)?;
                     let asset = reading.doc.assets.get(job.node)?;
-                    Some((job.key.clone(), ask.id.clone(), target.clone(), reading.doc.target(job.node), asset.made.clone()))
+                    let (with, made) = (reading.doc.target(job.node), asset.made.clone());
+                    Some(Unsent { id, key: job.key.clone(), ask: ask.id.clone(), target: target.clone(), with, made, needs: job.needs.clone(), ready: ready.contains(&id) })
                 })
-                .collect()
+                .take(plan::PLANNED)
+                .collect();
+            // When the jobs they read that went already end, as their machines were quoted.
+            let ends: HashMap<usize, i64> = (unsent.iter().flat_map(|unsent| unsent.needs.iter().copied()))
+                .filter_map(|need| Some((need, walker.sent.get(&graph.jobs[need].key)?.finish_at_ms)))
+                .collect();
+            (unsent, ends, walker.foreseen.clone())
         };
-        if ready.is_empty() {
+        if unsent.is_empty() {
             return;
         }
-        let api = self.host.api();
-        let called = ready.into_iter().map(|(key, ask, target, with, made)| async move {
-            self.quotable(key, self.sending(&ask, &target.on), &target.hub, &with, made, Some(QUOTE_LATE)).await
+        // What each asks of a machine, read once.
+        let known: HashSet<String> = self.project.walker.lock().expect("walker lock").quotables.keys().cloned().collect();
+        let read = unsent.iter().filter(|unsent| !known.contains(&unsent.key)).map(|unsent| async move {
+            let late = (!unsent.ready).then_some(QUOTE_LATE);
+            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), late).await)
         });
-        let jobs: Vec<placement::Job> = futures_util::future::join_all(called).await.into_iter().flatten().collect();
-        let (offers, said) = placement::offers(&api, &jobs, true).await;
-        said.into_iter().for_each(|line| warn!("{}: {line}", self.folder().dir.display()));
-        let now = now_ms();
-        let mut walker = self.project.walker.lock().expect("walker lock");
-        let placed: HashMap<String, Placed> = (jobs.into_iter().zip(offers))
-            .filter_map(|(job, offers)| {
-                let soonest = placement::soonest(&offers, now)?.clone();
-                Some((job.key, Placed { offers, soonest }))
+        let mut unread: HashMap<String, String> = HashMap::new();
+        let quotables = {
+            let read = futures_util::future::join_all(read).await;
+            let mut walker = self.project.walker.lock().expect("walker lock");
+            for (key, quotable) in read {
+                match quotable {
+                    Ok(job) => drop(walker.quotables.insert(key, job)),
+                    Err(why) => drop(unread.insert(key, why)),
+                }
+            }
+            let pending: HashSet<&str> = walk.pending.iter().map(|(key, pending)| pending.job_of(key)).collect();
+            walker.quotables.retain(|key, _| pending.contains(key.as_str()) || unsent.iter().any(|unsent| unsent.key == *key));
+            walker.quotables.clone()
+        };
+        let jobs: Vec<(usize, placement::Job)> = (unsent.iter().enumerate())
+            .filter_map(|(at, unsent)| {
+                let job = quotables.get(&unsent.key)?;
+                Some((at, placement::Job { on: self.sending(&unsent.ask, &unsent.target.on), ..job.clone() }))
             })
             .collect();
-        // Where each job goes, said when that changes: what placement weighed, for anyone asking why a job went where it did.
-        for (key, now_placed) in &placed {
-            if walker.placed.get(key).is_none_or(|was| was.soonest.machine != now_placed.soonest.machine) {
-                let quoted: Vec<String> = now_placed.offers.iter().map(|offer| placement::said(offer, now)).collect();
-                info!("{}: {key} goes to {}: {}", self.folder().dir.display(), now_placed.soonest.machine, quoted.join("; "));
+        // Runs sent that their machines haven't accepted yet wait there ahead of these.
+        let ahead: Vec<(On, placement::Job)> = (walk.pending.iter())
+            .filter(|(_, pending)| pending.run > 0)
+            .filter_map(|(key, pending)| {
+                let run = self.host.numbered(pending.run)?;
+                if run.accepted_at_ms.is_some() || run.settled_at_ms.is_some() {
+                    return None;
+                }
+                Some((On::Machine(run.machine?), quotables.get(pending.job_of(key))?.clone()))
+            })
+            .collect();
+        let api = self.host.api();
+        let now = now_ms();
+        let only: Vec<placement::Job> = jobs.iter().map(|(_, job)| job.clone()).collect();
+        let mut machines = placement::machines_of(&only);
+        for (on, _) in &ahead {
+            if !machines.contains(on) {
+                machines.push(on.clone());
             }
         }
-        walker.placed = placed;
-        walker.quoted_at = Some(Instant::now());
+        let mut pictures = vec![];
+        for (on, pictured) in machines.iter().zip(placement::pictures(&api, &machines, update, now).await) {
+            match pictured {
+                Ok(picture) => pictures.push(picture),
+                Err(why) => warn!("{dir}: {on} isn't planned on: {why}"),
+            }
+        }
+        for (on, job) in &ahead {
+            if let Some(m) = plan::index(&pictures, on) {
+                let prior = placement::prior(&api, &pictures[m], job).await;
+                pictures[m].ahead.push(placement::asked(job, prior));
+            }
+        }
+        let position: HashMap<usize, usize> = jobs.iter().enumerate().map(|(at, (unsent_at, _))| (unsent[*unsent_at].id, at)).collect();
+        let mut planned = vec![];
+        for (at, job) in &jobs {
+            let unsent = &unsent[*at];
+            let machines: Vec<usize> = job.on.iter().filter_map(|on| plan::index(&pictures, on)).collect();
+            let mut priors = vec![];
+            for &m in &machines {
+                priors.push(placement::prior(&api, &pictures[m], job).await);
+            }
+            planned.push(plan::Job {
+                ask: placement::asked(job, 0),
+                priors,
+                machines,
+                needs: unsent.needs.iter().filter_map(|need| position.get(need).copied()).collect(),
+                after_at_ms: unsent.needs.iter().filter_map(|need| ends.get(need).copied()).max(),
+                stay: foreseen.get(&unsent.key).cloned().flatten().and_then(|on| plan::index(&pictures, &on)),
+            });
+        }
+        // What each job's function read of its models on any machine: what it fetches on one that holds none of them (cl-967).
+        let frames: Vec<&api::machine::StatusFrame> = pictures.iter().map(|picture| &picture.frame).collect();
+        for job in &mut planned {
+            api::estimate::learn_reads(&frames, &mut job.ask);
+        }
+        let placed = plan::plan(&pictures, &planned, now);
+        let mut walker = self.project.walker.lock().expect("walker lock");
+        for ((at, _), placement) in jobs.iter().zip(placed) {
+            let unsent = &unsent[*at];
+            let Some((_, chosen)) = placement.chosen else {
+                walker.placed.remove(&unsent.key);
+                walker.foreseen.remove(&unsent.key);
+                walker.starts.remove(&unsent.key);
+                if unsent.ready {
+                    let why = match placement.offers.is_empty() {
+                        true => "none of its machines answered".to_owned(),
+                        false => placement.offers.iter().map(|offer| placement::said(offer, now)).collect::<Vec<_>>().join("; "),
+                    };
+                    unplanned(&mut walker, &dir, &unsent.key, why);
+                }
+                continue;
+            };
+            let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
+            walker.starts.insert(unsent.key.clone(), (chosen.start_at_ms, fits));
+            if !unsent.ready {
+                walker.foreseen.insert(unsent.key.clone(), Some(chosen.machine.clone()));
+                continue;
+            }
+            // Where each job goes, said when that changes: what placement weighed, for anyone asking why a job went where it did.
+            if walker.placed.get(&unsent.key).is_none_or(|was| was.soonest.machine != chosen.machine) {
+                let quoted: Vec<String> = placement.offers.iter().map(|offer| placement::said(offer, now)).collect();
+                info!("{dir}: {} goes to {}: {}", unsent.key, chosen.machine, quoted.join("; "));
+            }
+            walker.unplanned.remove(&unsent.key);
+            walker.placed.insert(unsent.key.clone(), Placed { offers: placement.offers, soonest: chosen });
+        }
+        for unsent in unsent.iter().filter(|unsent| unsent.ready) {
+            if let Some(why) = unread.remove(&unsent.key) {
+                walker.placed.remove(&unsent.key);
+                unplanned(&mut walker, &dir, &unsent.key, why);
+            }
+        }
+        walker.placed.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.unplanned.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.foreseen.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.starts.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.items.retain(|(_, key), _| unsent.iter().any(|unsent| unsent.key == *key));
     }
 
-    /// Whether jobs held for a busy machine should be quoted again: nothing this walk does may free one, as other clients' runs can.
-    fn requote(&self) -> bool {
-        let walker = self.project.walker.lock().expect("walker lock");
-        walker.held && walker.quoted_at.is_some_and(|at| at.elapsed() >= HELD_LOOK)
-    }
-
-    /// Of `on`, where job `job` goes, by what its machines quoted last (`pick`).
+    /// Of `on`, where job `job` goes, as the last plan placed it (`pick`).
     async fn chosen(&self, job: &str, on: &[On], hub: &str, package: &Package, renderer: &Renderer, asset: &format::Asset) -> Result<(On, Option<Offer>), Error> {
         let placed = self.project.walker.lock().expect("walker lock").placed.get(job).cloned();
+        let planned = placed.as_ref().map(|placed| placed.soonest.clone()).filter(|offer| on.contains(&offer.machine));
         let offers: Vec<Offer> = placed.map(|placed| placed.offers).unwrap_or_default().into_iter().filter(|offer| on.contains(&offer.machine)).collect();
-        pick(&self.host.api(), on, &offers, hub, Some(package), &renderer.function, &asset.made).await
-    }
-
-    /// What it fetches ahead for jobs that all went or ended: it needn't go on.
-    fn ahead_unneeded(&self) {
-        let needed: HashSet<String> = {
-            let walk = self.folder().walk_now().unwrap_or_default();
-            let walker = self.project.walker.lock().expect("walker lock");
-            let graph = &walker.graph;
-            (graph.open_jobs().into_iter().filter(|&id| graph.jobs[id].state == walker::State::Waiting))
-                .filter_map(|id| {
-                    let job = &graph.jobs[id];
-                    let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
-                    Some(walker.readings.get(&ask.digest)?.doc.target(job.node))
-                })
-                .collect()
-        };
-        for (with, _, run) in self.project.jobs.ahead_going() {
-            if !needed.contains(&with) {
-                self.host.cancel_ahead(&run);
-            }
-        }
+        pick(&self.host.api(), on, &offers, planned.as_ref(), hub, Some(package), &renderer.function, &asset.made).await
     }
 
     /// Takes in what was asked since: said once, and what can't be read ends there.
@@ -3758,17 +4070,10 @@ impl Walk {
 
     /// The ready jobs, as many as there is room for, each given its turn; whether there were any.
     async fn turns<'a>(&'a self, work: &mut FuturesUnordered<BoxFuture<'a, Done>>, first: &mut Option<Error>) -> Result<bool, Error> {
-        let room = {
-            let walker = self.project.walker.lock().expect("walker lock");
-            if !walker.graph.has_ready() {
-                return Ok(false);
-            }
-            WINDOW.saturating_sub(walker.graph.going())
-        };
-        if room == 0 {
+        if !self.project.walker.lock().expect("walker lock").graph.has_ready() {
             return Ok(false);
         }
-        self.quote().await;
+        self.plan(true).await;
         let held = self.folder().lock()?;
         self.measuring(&held);
         self.measure()?;
@@ -3779,7 +4084,7 @@ impl Walk {
             let mut walker = self.project.walker.lock().expect("walker lock");
             let Walker { graph, readings, names, placed, .. } = &mut *walker;
             let names = self.names_now(names);
-            for id in graph.take_ready(room) {
+            for id in graph.take_ready(usize::MAX) {
                 let (key, ask_id, node, kind, asset) = {
                     let job = &graph.jobs[id];
                     (job.key.clone(), job.ask.clone(), job.node, job.kind, job.asset.clone())
@@ -3807,8 +4112,9 @@ impl Walk {
                     graph.read_again(|job_ask| lock.walk.asks.iter().any(|other| other.id == job_ask && other.digest == ask.digest), &reading.nodes);
                 }
                 let gone = |name: &str| names.as_ref().is_some_and(|names| !names.contains(&name_key(name)));
-                // With several machines it stays here until one is free for it, so nothing commits early to the wrong queue.
-                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free { .. }) && placed.get(&key).is_some_and(|placed| placed.soonest.waits_ms(now_ms()) > HOLD_MS) {
+                // With several machines it stays here while its planned machine has no GPU for it, so nothing commits early to the wrong
+                // queue; it is placed again as their Status moves.
+                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free { .. }) && placed.get(&key).is_some_and(|placed| placed.soonest.waits_ms(now_ms()) > 0) {
                     acts.push(Act::Held { id });
                     continue;
                 }
@@ -4559,6 +4865,7 @@ impl Walk {
                     crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await
                 }).await.map_err(named)?;
                 staged.extend(prepared.files);
+                warnings.extend(prepared.from.map(|from| Warning { code: api::calcifer::FROM_SOURCE.into(), message: from.line() }));
                 v1::Source::Local(prepared.source)
             }
         };
@@ -4615,6 +4922,7 @@ impl Walk {
             walk.walk.runs.insert(run.number, None);
         })?;
         if let Some(offer) = offer {
+            self.host.placed(&self.project.id, &run.id, &offer.placed());
             self.host.quoted(&run.id, offer.quoted());
             self.project.walker.lock().expect("walker lock").sent.insert(job, offer);
         }
@@ -5378,9 +5686,10 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
 /// this computer when it would run `function` poorly (`fit`) and no quote of its own runs says it ends it first (Paul, 11-05: a rented
 /// GPU is for using), nor when its GPU draws the screen, which a render makes lag (cl-897). With no quote that fits, the first of `on`
 /// that can take it (`placement::takes`).
-async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>), Error> {
+#[allow(clippy::too_many_arguments)]
+async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offer>, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>), Error> {
     let now = now_ms();
-    let Some(soonest) = placement::soonest(offers, now) else {
+    let Some(soonest) = planned.filter(|offer| offer.fits).or_else(|| placement::soonest(offers, now)) else {
         return Ok((placement::takes(api, on, offers).await?, None));
     };
     let poorly = soonest.machine.is_local()
@@ -5408,7 +5717,7 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
         .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec() })
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
-    let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), hub, read.as_ref(), function, &Map::new()).await;
+    let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, hub, read.as_ref(), function, &Map::new()).await;
     (chosen.map(|(chosen, _)| chosen), offers, said)
 }
 

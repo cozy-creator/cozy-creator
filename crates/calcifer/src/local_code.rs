@@ -100,12 +100,15 @@ fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBu
 
 pub(crate) use api::target::local;
 
-/// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path): a folder of
-/// Calcifer's own computer, as the project is, and the function it names. None: `text` is not written as a path (a published
-/// name). A client's own code comes by content instead (`copied`).
+/// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path), or a
+/// first-party package a dev home's checkout holds (`qwen-image-2/generate`, `checkout::named`): a folder of Calcifer's own
+/// computer, as the project is, and the function it names. None: a published name. A client's own code comes by content instead
+/// (`copied`).
 pub(crate) fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Result<(PathBuf, Option<String>), Error>> {
     let raw = text.trim();
-    let path = local(raw, cwd.unwrap_or(Path::new("")), home)?;
+    let Some(path) = local(raw, cwd.unwrap_or(Path::new("")), home) else {
+        return crate::checkout::named(raw).map(Ok);
+    };
     if !path.is_absolute() {
         let said = format!("{raw} is relative, and names no folder of the project's");
         return Some(Err(Error::new(Kind::Usage, "target_relative", said).remedy("name local code by its path from the project's folder")));
@@ -161,7 +164,14 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
 /// client's is, so the one path from here on is the copy's.
 pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
     if crate::private_io::current().is_none() { return Err(refuse("source_scope_required","use native independent source capture before staging project-independent code")); }
-    let staged = shared::stage(path, Some(&crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?))?;
+    let memo = crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?;
+    let staged = match crate::checkout::package_at(path) {
+        Some(_) => {
+            let patched = crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("patched"), "patched")?;
+            crate::checkout::stage(path, Some(&memo), &patched)?
+        }
+        None => shared::stage(path, Some(&memo))?,
+    };
     if !staged.left.is_empty() && crate::private_io::current().is_none() {
         tracing::info!("left out of {}: {}", path.display(), staged.left.join(", "));
     }
@@ -473,7 +483,8 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         files,
         project: relative(&project_dir),
         locals: locals.iter().map(|l| relative(l)).collect(),
-        callees: callees(&project_dir)?,
+        // The checkout's packages it calls are its path dependencies here, named as the packages they are (xs-195).
+        callees: callees(&project_dir)?.into_iter().chain(crate::checkout::of(code).into_iter().flat_map(|from| from.callees)).collect(),
         wheels,
     };
     let own = match manifest.project.is_empty() {
@@ -547,6 +558,15 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     let done = lock_dir(home, code, hub)?;
     let turn = LOCKING.lock().expect("locking lock").entry(done.clone()).or_default().clone();
     let _turn = turn.lock().await;
+    // A lock that took the open RC's build by URL (its floor no release meets, xs-194) names a wheel the next Runtime merge
+    // removes: one that isn't the RC's newest is made again.
+    if let Some(rc) = crate::floor::rc_runtime(&sent).await? {
+        let made = fs::read_to_string(done.join("lock")).ok().filter(|made| !made.is_empty());
+        let held = made.or_else(|| fs::read_to_string(sent.join("uv.lock")).ok());
+        if done.is_dir() && !held.is_some_and(|lock| lock.contains(&rc.url)) {
+            let _ = fs::remove_dir_all(&done);
+        }
+    }
     if !done.is_dir() {
         let project = Project::read(sent.clone())?;
         let say = |line: &str| tracing::info!("{}: {line}", project.name);
@@ -851,7 +871,10 @@ pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
 /// interface (kept for this source and Runtime, or what its install answered). While an install
 /// it asked for is going, `install` is that run and `interface` is None: follow it, then ask again.
 pub(crate) struct Prepared {
+    /// `local/<name>`, or the first-party name of a package from the dev home's checkout (`_/qwen-image-2`).
     pub package: String,
+    /// The checkout and commit it came from, when it did (xs-195).
+    pub from: Option<crate::checkout::From>,
     pub source: v1::LocalSource,
     pub files: Vec<StagedInput>,
     pub interface: Option<Value>,
@@ -881,8 +904,10 @@ pub(crate) async fn prepare(
     let code = source(&home, local, hubs, &origin).await?;
     crate::maintenance_source::keep_derived(api,local,&code)?;
     let runtime = runtime(api, on).await;
+    let from = crate::checkout::of(local);
     let prepared = |interface, installation, machine, install| Prepared {
-        package: code.package.clone(),
+        package: from.as_ref().map_or_else(|| code.package.clone(), |from| from.package.clone()),
+        from: from.clone(),
         source: code.source.clone(),
         files: code.inputs.clone(),
         interface,
@@ -1145,7 +1170,7 @@ pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
     let locked = lock.package.into_iter().find(|p| p.name == "cozy-runtime")?;
-    // The open RC's Runtime is no index's: a lock takes its pure wheel by URL (cl-952).
+    // The open RC's Runtime is no index's: a lock takes its newest pure wheel by URL (`floor::rc_runtime`).
     Some(match locked.source.get("url").and_then(toml::Value::as_str) {
         Some(url) => format!("cozy-runtime @ {url}"),
         None => format!("cozy-runtime=={}", locked.version),
@@ -1241,11 +1266,16 @@ fn last_runtime(api: &Api, on: &On) -> Option<String> {
     Some(status.runtime).filter(|runtime| !runtime.is_empty())
 }
 
-/// `code` as a run `on` its machine reads it: `local/<name>` and its interface. What that machine's Runtime said installing this
+/// `code` as a run `on` its machine reads it: `local/<name>` (a checkout's first-party name, xs-195) and its interface. What that machine's Runtime said installing this
 /// very source, else Runtime's static describer, using its lock, plain version bounds or PyPI's newest. That can
 /// be older than the machine's, and refuse what the machine runs. No package code runs and no machine is asked.
 pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
     if crate::private_io::current().is_none() { crate::maintenance_source::require_home(api.machines.hubs.home(),code)?; }
+    let (package, document) = described(api, code, on, hub).await?;
+    Ok((crate::checkout::of(code).map_or(package, |from| from.package), document))
+}
+
+async fn described(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
     let runtime = last_runtime(api, on);
     let held = if crate::private_io::current().is_some() {
         copied(api.machines.hubs.home(), code)?;
@@ -1270,9 +1300,57 @@ pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &st
         *held = Some((found.clone(), true));
         return Ok(found);
     }
-    let known = read_interface(api, code, on, hub, runtime).await?;
+    let home = api.machines.hubs.home();
+    let private = crate::private_io::current().is_some();
+    if let Some(known) = Some(()).filter(|()| !private).and_then(|()| static_kept(home, code, hub, runtime.as_deref())) {
+        *held = Some((known.clone(), false));
+        return Ok(known);
+    }
+    let known = read_interface(api, code, on, hub, runtime.clone()).await?;
+    if !private {
+        keep_static(home, code, hub, runtime.as_deref(), &known);
+    }
     *held = Some((known.clone(), false));
     Ok(known)
+}
+
+/// Where the static describer's reading of a tree is kept across Calcifer's restarts (xs-195): by the tree's content, its package's
+/// place in it, the Hub its lock is for and the Runtime that read it. A restart reads again only what changed.
+fn static_file(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> PathBuf {
+    let key = Digest::of(format!("{}\n{}\n{hub}\n{}", code.tree, code.at, runtime.unwrap_or_default()).as_bytes());
+    home.calcifer().join("described").join(format!("{}.json", &hex(&key)[..32]))
+}
+
+/// The static reading kept for this tree, said used now.
+fn static_kept(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
+    let path = static_file(home, code, hub, runtime);
+    let mut kept: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+    let package = kept["package"].as_str()?.to_owned();
+    let document = kept["interface"].take();
+    let _ = fs::File::options().append(true).open(&path).and_then(|file| file.set_modified(SystemTime::now()));
+    interface(&document).then_some((package, document))
+}
+
+/// Keeps a static reading, and only the newest 512.
+fn keep_static(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>, (package, document): &(String, Value)) {
+    const KEPT: usize = 512;
+    if !interface(document) {
+        return;
+    }
+    let path = static_file(home, code, hub, runtime);
+    let Some(dir) = path.parent() else { return };
+    let kept = serde_json::json!({ "package": package, "interface": document });
+    // A reading that can't be kept is read again after the next restart.
+    let _ = durable::private_dir(dir).and_then(|()| durable::replace(&path, kept.to_string().as_bytes(), 0o600));
+    let mut files: Vec<(SystemTime, PathBuf)> = (fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    if files.len() > KEPT {
+        files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+        for (_, old) in files.into_iter().skip(KEPT) {
+            let _ = fs::remove_file(old);
+        }
+    }
 }
 
 /// What the machine's Runtime said installing this very source, if it's kept here.

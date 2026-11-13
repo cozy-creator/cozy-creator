@@ -22,6 +22,7 @@ pub mod hub;
 pub mod project;
 pub use crate::machine::{RemoveModel, RemovedModel};
 pub mod report;
+pub mod node;
 pub mod tool;
 
 /// What a run does on its machine (`RunSpec.kind`), or that Calcifer carries it out itself, on no machine.
@@ -126,6 +127,10 @@ pub struct Warning {
 
 /// A run's `Warning` code for a mention its function can't use, left out (cl-944): a note, nothing to act on.
 pub const MENTION_UNUSED: &str = "mention_unused";
+
+/// A run's `Warning` code for a first-party package run from a dev home's packages checkout (xs-195): its branch and commit, a
+/// note.
+pub const FROM_SOURCE: &str = "from_source";
 
 /// A run that has not moved: since when, on which machine, and what that machine costs an hour
 /// (none: not a rental, or its Hub has not said).
@@ -331,6 +336,15 @@ pub enum ReleaseFrom {
     Latest,
     /// Local code: its source as it is now.
     Local,
+    /// A first-party package from a dev home's packages checkout (xs-195): its source at the checkout's commit.
+    Source,
+}
+
+impl ReleaseFrom {
+    /// Whether it runs code from this computer, not a release.
+    pub fn local(self) -> bool {
+        matches!(self, ReleaseFrom::Local | ReleaseFrom::Source)
+    }
 }
 
 impl fmt::Display for ReleaseFrom {
@@ -340,6 +354,7 @@ impl fmt::Display for ReleaseFrom {
             ReleaseFrom::Installed => "installed",
             ReleaseFrom::Latest => "the Hub's latest",
             ReleaseFrom::Local => "local",
+            ReleaseFrom::Source => "from source",
         })
     }
 }
@@ -392,6 +407,26 @@ pub enum Status {
     Completed,
     Failed,
     Canceled,
+}
+
+/// Where the plan sent a run, and what that machine's offer quoted when it went (cl-967): `cozy run show`'s `placed`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Placed {
+    pub machine: String,
+    /// When it was quoted, and the finish the quote said, on this computer's clock.
+    pub quoted_at_ms: i64,
+    pub finish_at_ms: i64,
+    pub basis: crate::machine::Basis,
+    /// Its time is the function's warm one there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warm: bool,
+    /// Its install, download and load there, part of its finish.
+    #[serde(default)]
+    pub prepare_ms: u64,
+    /// Its weights' bytes it downloads there first.
+    #[serde(default)]
+    pub fetch_bytes: u64,
 }
 
 /// One run as Calcifer holds it.
@@ -483,6 +518,9 @@ pub struct Run {
     /// The GPU it ran on, by name, once settled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu: Option<String>,
+    /// Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placed: Option<Placed>,
 }
 
 impl Run {

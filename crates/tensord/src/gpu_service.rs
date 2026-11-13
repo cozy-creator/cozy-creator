@@ -889,6 +889,9 @@ pub(crate) struct Pool {
     lost: Mutex<BTreeMap<u32, Lost>>,
     /// GPUs out of service, by envelope index: in use at this run's start by processes it doesn't own (cl-935).
     foreign: Mutex<BTreeMap<usize, Foreign>>,
+    /// The host's ledger, supervised: an executor's exit is told to it, as to each GPU's.
+    #[cfg(target_os = "linux")]
+    host_ledger: std::sync::OnceLock<Arc<varena_ledger::Table>>,
     // Drop session/resource custody before ending the actual spawning thread.
     launcher: crate::child_launcher::ChildLauncher,
 }
@@ -974,6 +977,14 @@ fn waitable(file: &std::fs::File) -> platform::signal::Waitable<'_> {
 #[cfg(windows)]
 fn waitable(file: &std::fs::File) -> platform::signal::Waitable<'_> {
     std::os::windows::io::AsHandle::as_handle(file)
+}
+#[cfg(unix)]
+fn exit_waitable(exact: &Exact) -> platform::signal::Waitable<'_> {
+    std::os::fd::AsFd::as_fd(exact)
+}
+#[cfg(windows)]
+fn exit_waitable(exact: &Exact) -> platform::signal::Waitable<'_> {
+    std::os::windows::io::AsHandle::as_handle(exact)
 }
 
 struct Device {
@@ -1129,6 +1140,8 @@ impl Pool {
                 unreported: Mutex::default(),
                 lost: Mutex::default(),
                 foreign: Mutex::default(),
+                #[cfg(target_os = "linux")]
+                host_ledger: Default::default(),
             }
         });
         // Started once the pool is built: inside `new_cyclic` its first upgrade found no pool and it
@@ -1155,6 +1168,7 @@ impl Pool {
         }
         match varena_ledger::Table::open_host() {
             Ok(table) => {
+                let table = self.host_ledger.get_or_init(|| Arc::new(table)).clone();
                 let pool = Arc::downgrade(self);
                 let watching = std::thread::Builder::new().name("host-ledger".into())
                     .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_for_host(askers))));
@@ -1365,7 +1379,7 @@ impl Pool {
         let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
         let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
         let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min();
-        tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
+        tensorfs::fetch::Hardware { gpus, free_vram, ..Default::default() }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
         self.config.inventory.iter().find(|g| g.device_index.to_string() == entry || g.device_uuid == entry)
@@ -1429,8 +1443,12 @@ impl Pool {
         self.tenants.lock().unwrap().retain(|_, t|
             !(t.plan == env && t.start == start && gone.contains(t.exact.birth())));
         // Only now is what it held free: an asker waits on this, not on its lock dropping.
+        self.ledgers_exited();
+    }
+    /// Processes with rows in the ledgers exited: each ledger reaps their rows, and what they held is the driver's again.
+    pub(crate) fn ledgers_exited(&self) {
         #[cfg(target_os = "linux")]
-        for ledger in self.devices.iter().filter_map(|device| device.ledger.as_ref()) {
+        for ledger in self.devices.iter().filter_map(|device| device.ledger.as_ref()).chain(self.host_ledger.get()) {
             ledger.exited();
         }
     }
@@ -1612,6 +1630,8 @@ impl Pool {
     pub(crate) fn foreign_at_start(self: &Arc<Self>) {
         let dedicated = matches!(self.config.host.mode, HostMode::Dedicated);
         let mut found = BTreeMap::new();
+        // The executors it ended, by GPU: their exits are what it waits for.
+        let mut holders: Vec<(usize, Exact)> = vec![];
         for (d, device) in self.devices.iter().enumerate() {
             let Ok(reading) = platform::gpu::Device::open(&device.entry).and_then(|gpu| gpu.read()) else { continue };
             let used = reading.total.saturating_sub(reading.free);
@@ -1619,9 +1639,14 @@ impl Pool {
                 continue;
             }
             let pids: Vec<u32> = reading.processes.as_ref().map(|p| p.keys().copied().collect()).unwrap_or_default();
-            let ended: Vec<u32> = pids.iter().copied().filter(|pid| earlier_executor(*pid)).filter(|pid| {
-                Birth::of(*pid).ok().and_then(|birth| Exact::open(&birth).ok().flatten()).is_some_and(|exact| exact.kill().is_ok())
-            }).collect();
+            let mut ended = vec![];
+            for pid in pids.iter().copied().filter(|pid| earlier_executor(*pid)) {
+                let exact = Birth::of(pid).ok().and_then(|birth| Exact::open(&birth).ok().flatten());
+                if let Some(exact) = exact.filter(|exact| exact.kill().is_ok()) {
+                    ended.push(pid);
+                    holders.push((d, exact));
+                }
+            }
             if ended.is_empty() && !dedicated {
                 continue;
             }
@@ -1639,7 +1664,22 @@ impl Pool {
         let pool = Arc::downgrade(self);
         let mut told = std::collections::BTreeSet::new();
         let watching = std::thread::Builder::new().name("gpu-foreign".into()).spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            // Its ended executors' exits wake it, and a hold's stall once. It samples each 2 s only
+            // a GPU it holds none of: memory others hold (a container's pids aren't its own) or not back yet.
+            holders.retain(|(_, exact)| !exact.ended());
+            let (sample, stall) = {
+                let Some(pool) = pool.upgrade() else { return };
+                let foreign = pool.foreign.lock().unwrap();
+                let sample = foreign.iter().any(|(d, f)| f.pids.len() > f.ended.len() || !holders.iter().any(|(held, _)| held == d));
+                let stall = foreign.iter().filter(|(d, _)| !told.contains(*d))
+                    .map(|(_, f)| (f.at + platform::contain::STALL).saturating_duration_since(std::time::Instant::now())).min();
+                (sample, stall)
+            };
+            let timeout = [sample.then_some(std::time::Duration::from_secs(2)), stall].into_iter().flatten().min();
+            let exits: Vec<_> = holders.iter().map(|(_, exact)| exit_waitable(exact)).collect();
+            if let Err(error) = platform::signal::wait_any_for(&exits, timeout) {
+                return tracing::warn!("GPUs held at start: {error}");
+            }
             let Some(pool) = pool.upgrade() else { return };
             let held: Vec<usize> = pool.foreign.lock().unwrap().keys().copied().collect();
             // Read off the lock: a wedged driver blocks a read.
@@ -2642,6 +2682,19 @@ impl Pool {
     /// Whether an executor holds `plan`'s construction loaded: its call reads no weights.
     pub(crate) fn loaded(&self, plan: &Plan) -> bool {
         self.hosting(plan).iter().any(|(_, loaded)| *loaded)
+    }
+
+    /// Each idle executor's loaded models, its GPUs and the highest place it has them (`StatusFrame::resident`).
+    pub(crate) fn resident(&self) -> Vec<crate::api::v1::Resident> {
+        let held = self.serving.held.lock().unwrap().clone();
+        (self.sessions.lock().unwrap().values())
+            .filter_map(|session| {
+                let level = session.loaded.values().max()?;
+                let checkpoints = held.get(&session.serving).filter(|manifests| !manifests.is_empty())?.clone();
+                let gpus = session.lane().filter(|&device| device < self.devices.len()).map(|device| self.index(device)).collect();
+                Some(crate::api::v1::Resident { checkpoints, gpus, level: level.name().into() })
+            })
+            .collect()
     }
 
     fn hosting(&self, plan: &Plan) -> Vec<(usize, bool)> {

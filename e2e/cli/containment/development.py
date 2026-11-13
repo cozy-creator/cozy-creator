@@ -10,11 +10,11 @@ import tomllib
 import urllib.error
 import urllib.request
 
-from common import Failure, birth, alive, require
+from common import Birth, Failure, birth, alive, require
 
 
 class Development:
-    def __init__(self):
+    def __init__(self) -> None:
         require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "development_hosted_only")
         self.repo = Path(__file__).resolve().parents[3]
         self.config = Path.home() / ".cozy/config.toml"
@@ -23,8 +23,8 @@ class Development:
         self.original = self.config.read_bytes() if self.config.exists() else None
         self.written: bytes | None = None
         self.identity: tuple[int, int] | None = None
-        self.process: subprocess.Popen | None = None
-        self.birth: dict | None = None
+        self.process: subprocess.Popen[bytes] | None = None
+        self.birth: Birth | None = None
 
     def start(self) -> None:
         require(shutil.which("pnpm"), "development_pnpm_missing")

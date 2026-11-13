@@ -431,32 +431,31 @@ impl Document {
         Ok(lock)
     }
 
-    pub(super) fn into_stored(self) -> Result<Stored, Error> {
-        let head = ordered(
-            root_value(&self.projection, "head_order"),
-            root_value(&self.projection, "head").and_then(Value::as_object),
-        )
-        .into_iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-        let mut boxes = Vec::new();
-        for (id, record) in record_entries(&self.projection, "boxes").filter(|(_, record)| present(record)) {
-            let ordered = ordered(record.get("field_order"), object(record, "fields"))
-                .into_iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect();
-            boxes.push((
-                record["order"].as_u64().unwrap_or_default(),
-                Boxed {
-                    id: id.clone(),
-                    name: text(record, "name"),
-                    fields: ordered,
-                    at: None,
-                },
-            ));
+    /// The heads `rev` (`api::calcifer::node::rev_of`) stands for: these, or those right after one change of its history.
+    pub(super) fn heads_of(&self, rev: &str) -> Option<Vec<String>> {
+        let now = self.heads();
+        if api::calcifer::node::rev_of(&now) == rev {
+            return Some(now);
         }
-        boxes.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
-        let written = Written { head, boxes: boxes.into_iter().map(|(_, held)| held).collect() };
+        let mut doc = self.doc.clone();
+        let found: Vec<String> = doc.get_changes_meta(&[]).into_iter().map(|change| change.hash.to_string())
+            .filter(|hash| api::calcifer::node::rev_of(std::slice::from_ref(hash)) == rev).collect();
+        match found.as_slice() {
+            [one] => Some(vec![one.clone()]),
+            _ => None,
+        }
+    }
+
+    /// The project's boxes as they stood at `heads`.
+    pub(super) fn written_at(&self, heads: &[String]) -> Result<Written, Error> {
+        let heads = heads.iter().map(|head| head.parse::<ChangeHash>().map_err(invalid)).collect::<Result<Vec<_>, _>>()?;
+        let then = self.doc.clone().fork_at(&heads).map_err(invalid)?;
+        let mut found = Vec::new();
+        Ok(written_of(&project(&then, &mut found)?))
+    }
+
+    pub(super) fn into_stored(self) -> Result<Stored, Error> {
+        let written = written_of(&self.projection);
         let mut canvas = BTreeMap::new();
         for (_, record) in record_entries(&self.projection, "canvas").filter(|(_, record)| present(record)) {
             let row: CardRow = decode(&record["record"])?;
@@ -469,6 +468,21 @@ impl Document {
             ..Default::default()
         })
     }
+}
+
+/// The boxes and head sections `projection` holds, in their order.
+fn written_of(projection: &Projection) -> Written {
+    let head = ordered(root_value(projection, "head_order"), root_value(projection, "head").and_then(Value::as_object))
+        .into_iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let mut boxes = Vec::new();
+    for (id, record) in record_entries(projection, "boxes").filter(|(_, record)| present(record)) {
+        let fields = ordered(record.get("field_order"), object(record, "fields")).into_iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+        boxes.push((record["order"].as_u64().unwrap_or_default(), Boxed { id: id.clone(), name: text(record, "name"), fields, at: None }));
+    }
+    boxes.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
+    Written { head, boxes: boxes.into_iter().map(|(_, held)| held).collect() }
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T, Error> {

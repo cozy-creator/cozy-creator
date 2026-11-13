@@ -209,9 +209,10 @@ pub struct ModelSummary {
     pub source: Option<String>,
     /// The org it credits (a root model) or is in (a mirror).
     pub author: Option<ModelAuthor>,
-    /// Words a LoRA's prompt uses, and its recommended strength (on a card): what Calcifer runs a
-    /// LoRA given without a strength at.
-    pub trigger: Option<String>,
+    /// What a LoRA's prompt uses, each entry one trigger kept whole (cl-971), and its recommended
+    /// strength (on a card): what Calcifer runs a LoRA given without a strength at.
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub triggers: Vec<String>,
     pub strength: Option<f64>,
     /// Its labels, sorted: filled once from its source, then its owner's. `nsfw` marks one that makes sexual or nude images.
     #[serde(deserialize_with = "null_is_empty")]
@@ -562,8 +563,6 @@ pub struct PackageFinalization {
     pub error: Option<Value>,
     #[serde(deserialize_with = "null_is_empty")]
     pub warnings: Vec<String>,
-    /// The committed release is yanked. A Hub from before finalize took `yanked` never says so.
-    pub yanked: bool,
 }
 
 /// A yank or un-yank: `changed` false when the release already was.

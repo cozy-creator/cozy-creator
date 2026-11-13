@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 import fcntl
+from functools import partial
 import hashlib
 import json
 import os
@@ -22,11 +24,16 @@ import subprocess
 import tempfile
 import threading
 import time
+from typing import TYPE_CHECKING, Literal, NoReturn, TypeAlias, TypedDict, TypeVar, Unpack, cast, overload
 from urllib.parse import quote
 
-from common import Failure, Native, Receipt, alive, birth, kill_exact, project_run_ids, require, sha, until, project_route
+from common import (Birth, Failure, Native, RawOptions, Receipt, RunDetail, VaultStatus, alive, birth, kill_exact,
+                    project_run_ids, require, sha, until, project_route)
 from legacy_seed import publish_old
 from scan import Scanner, places
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 HOME = Path.home()
 COZY = HOME / ".cozy"
@@ -46,7 +53,7 @@ PHASES = frozenset({
 ERROR_KINDS = frozenset({"usage", "validation", "not_found", "credential", "forbidden",
                          "conflict", "capacity", "unavailable", "internal"})
 # Attached to the receipt in main; command bodies and exception messages never enter it.
-CONTEXT: dict = {}
+CONTEXT: dict[str, object] = {}
 ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_failed",
     "settled_http_status", "journal_run_present", "output_http_status", "output_digest_present",
     "output_digest_matches", "old_subject_output_marker", "old_subject_log_marker", "old_subject_numbers",
@@ -77,6 +84,33 @@ ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_f
 # A released client without project storage protocol 3 gets this typed refusal for project work.
 PROTOCOL_REFUSAL = "project_storage_protocol_required"
 
+Rows: TypeAlias = list[tuple[object, ...]]
+T = TypeVar("T")
+
+
+class Journaled(TypedDict):
+    """A run's journal rows, as `journal` selects them."""
+    row: tuple[int, str, str, object, object, object, object]  # number,idempotency_key,digest,cursor,seq,state_seq,inputs
+    logs: list[tuple[int, int, str, str]]  # seq,at_ms,level,text
+    outputs: list[tuple[str, int, int, str, int, int | None]]  # name,idx,rev,digest,length,exported_rev
+
+
+class Submission(TypedDict, total=False):
+    request_id: str
+    invocation_digest: str
+
+
+class WorkerRecord(TypedDict, total=False):
+    """A worker execution record (the fields read here)."""
+    id: str
+    submission: Submission
+
+
+class Submitted(TypedDict, total=False):
+    preparing: bool
+    replay: bool
+    run: RunDetail
+
 
 class Failed(Failure):
     """A failed named check; its case is a fixed ASSERTIONS string."""
@@ -85,6 +119,10 @@ class Failed(Failure):
         self.case = case
 
 
+@overload
+def check(ok: Literal[False], case: str, **counts: int | bool) -> NoReturn: ...
+@overload
+def check(ok: object, case: str, **counts: int | bool) -> None: ...
 def check(ok: object, case: str, **counts: int | bool) -> None:
     require(case in ASSERTIONS and all(type(value) in {int, bool} for value in counts.values()), "receipt_schema")
     CONTEXT["assertion"] = {"case": case, "passed": bool(ok), **counts}
@@ -92,7 +130,7 @@ def check(ok: object, case: str, **counts: int | bool) -> None:
         raise Failed(case)
 
 
-def wait(read, wanted, case: str, seconds: float):
+def wait(read: Callable[[], T], wanted: Callable[[T], object], case: str, seconds: float) -> T:
     try:
         return until(read, wanted, "fixture_failure", seconds)
     except Failed:
@@ -103,12 +141,12 @@ def wait(read, wanted, case: str, seconds: float):
     check(False, case, deadline=True)
 
 
-def call(native: Native, method: str, path: str, body: dict | None = None, **options) -> dict:
+def call(native: Native, method: str, path: str, body: dict[str, object] | None = None, **options: Unpack[RawOptions]) -> dict[str, object]:
     reply = native.raw(method, path, body, **options)
     if 200 <= reply.status < 300:
         CONTEXT.pop("http", None)
         return reply.json() if reply.body else {}
-    failure = {"status": reply.status, "kind": None, "code_sha256": None, "cause_sha256": None}
+    failure: dict[str, int | str | None] = {"status": reply.status, "kind": None, "code_sha256": None, "cause_sha256": None}
     try:
         error = json.loads(reply.body).get("error")
     except (ValueError, AttributeError):
@@ -123,7 +161,7 @@ def call(native: Native, method: str, path: str, body: dict | None = None, **opt
     raise Failure("native_http_status")
 
 
-def run_shape(run: dict) -> dict:
+def run_shape(run: Mapping[str, object]) -> dict[str, bool | int]:
     items = run.get("output", [])
     return {"has_id": bool(run.get("id")), "has_number": isinstance(run.get("number"), int),
             "completed": run.get("status") == "completed", "failed": run.get("status") == "failed",
@@ -140,8 +178,8 @@ def checkpoint(receipt: Receipt, phase: str) -> None:
     receipt.save()
 
 
-def command_failure(result: subprocess.CompletedProcess, expected: bool) -> dict:
-    failure = {"class": "signal" if result.returncode < 0 else "exit", "returncode": result.returncode,
+def command_failure(result: subprocess.CompletedProcess[bytes], expected: bool) -> dict[str, object]:
+    failure: dict[str, object] = {"class": "signal" if result.returncode < 0 else "exit", "returncode": result.returncode,
                "expected": expected, "kind": None, "code_sha256": None, "cause_sha256": None}
     try:
         documents = [json.loads(result.stdout)]
@@ -164,7 +202,7 @@ def command_failure(result: subprocess.CompletedProcess, expected: bool) -> dict
     return failure
 
 
-def exception_failure(error: BaseException) -> dict:
+def exception_failure(error: BaseException) -> dict[str, object]:
     # Closed classes only: even a custom exception's class name may contain user data.
     classes = ((Failure, "fixture_assertion"), (subprocess.TimeoutExpired, "timeout"),
                (subprocess.CalledProcessError, "process"), (FileNotFoundError, "not_found"),
@@ -184,7 +222,7 @@ def digest(path: Path) -> str:
 
 
 @contextmanager
-def read_db(path: Path):
+def read_db(path: Path) -> Iterator[sqlite3.Connection]:
     check(path.is_file() and not path.is_symlink(), "journal_file")
     connection = sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True)
     connection.execute("PRAGMA query_only=ON")
@@ -194,9 +232,14 @@ def read_db(path: Path):
         connection.close()
 
 
+# project.db's current schema (db.rs VERSION): what Calcifer migrates a released project to.
+PROJECT_SCHEMA = 5
+
+
 def read_schema(path: Path) -> int:
     with read_db(path) as connection:
-        return connection.execute("PRAGMA user_version").fetchone()[0]
+        version: int = connection.execute("PRAGMA user_version").fetchone()[0]
+        return version
 
 
 def schema() -> int:
@@ -238,7 +281,7 @@ def exclusive_free(path: Path) -> None:
         fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def descendants(root: dict) -> dict[int, dict]:
+def descendants(root: Birth) -> dict[int, Birth]:
     found = {int(root["pid"]): root}
     changed = True
     while changed:
@@ -269,20 +312,20 @@ def stop(native: Native, *, old: bool) -> None:
     for member in reversed(list(tree.values())):
         kill_exact(member)
     for member in tree.values():
-        wait(lambda member=member: alive(member), lambda value: not value, "stop_worker_ended", 90)
+        wait(partial(alive, member), lambda value: not value, "stop_worker_ended", 90)
     exclusive_free(CALCIFER / "calcifer.lock")
     exclusive_free(MACHINE / "var/lib/cozy/machine/agent.lock")
 
 
-def maintenance_rows(ids: list[str]) -> tuple[dict, dict]:
+def maintenance_rows(ids: list[str]) -> tuple[dict[str, list[str]], dict[str, dict[str, Rows]]]:
     """The released subject's maintenance runs (publish, lock, machine update), row for row with their outputs and logs."""
     with read_db(CALCIFER / "state.db") as connection:
         columns = {table: [row[1] for row in connection.execute("PRAGMA table_info(" + table + ")")] for table in ("runs", "outputs", "run_logs")}
     return columns, maintenance_read(columns, ids)
 
 
-def maintenance_read(columns: dict, ids: list[str]) -> dict:
-    rows = {}
+def maintenance_read(columns: dict[str, list[str]], ids: list[str]) -> dict[str, dict[str, Rows]]:
+    rows: dict[str, dict[str, Rows]] = {}
     with read_db(CALCIFER / "state.db") as connection:
         for identifier in ids:
             rows[identifier] = {table: sorted(connection.execute("SELECT " + ",".join(names) + " FROM " + table + " WHERE " + ("id" if table == "runs" else "run") + "=?", (identifier,)).fetchall())
@@ -290,8 +333,8 @@ def maintenance_read(columns: dict, ids: list[str]) -> dict:
     return rows
 
 
-def terminal(stdout: bytes, status: str) -> dict:
-    values = []
+def terminal(stdout: bytes, status: str) -> RunDetail:
+    values: list[RunDetail] = []
     shape = {"lines": 0, "invalid_json": 0, "objects": 0, "nested_runs": 0, "root_runs": 0,
              "has_id": 0, "completed": 0, "failed": 0, "canceled": 0, "matching": 0,
              "expect_failed": status == "failed"}
@@ -311,7 +354,7 @@ def terminal(stdout: bytes, status: str) -> dict:
                 for name in ("completed", "failed", "canceled"):
                     shape[name] += run.get("status") == name
                 if run.get("status") == status and run.get("id"):
-                    values.append(run)
+                    values.append(cast(RunDetail, run))  # cast: a run's JSON
     shape["matching"] = len(values)
     CONTEXT["terminal"] = shape
     check(shape["invalid_json"] == 0, "terminal_json_lines", invalid=shape["invalid_json"])
@@ -319,20 +362,20 @@ def terminal(stdout: bytes, status: str) -> dict:
     return values[-1]
 
 
-def settled(native: Native, identifier: str, *, old: bool, reference: str) -> dict:
+def settled(native: Native, identifier: str, *, old: bool, reference: str) -> RunDetail:
     path = "/v1/runs/" + quote(identifier, safe="") if old else project_route(reference, "/runs/" + quote(identifier, safe=""))
-    def read():
+    def read() -> RunDetail:
         response = native.raw("GET", path + "?detail=full", preflight=not old)
         check(200 <= response.status < 300, "settled_http_status", status=response.status)
-        run = response.json()
+        run = cast(RunDetail, response.json())  # cast: the run's JSON
         CONTEXT["settled"] = run_shape(run)
         return run
     return wait(read, lambda run: run.get("status") in {"completed", "failed", "canceled"}
                 and all(item.get("url") or item.get("export_error") or item.get("stays") or item.get("checkpoint") for item in run.get("output", [])), "settled_terminal", 1200)
 
 
-def journal(path: Path, identifiers: list[str]) -> dict:
-    answer = {}
+def journal(path: Path, identifiers: list[str]) -> dict[str, Journaled]:
+    answer: dict[str, Journaled] = {}
     with read_db(path) as connection:
         for identifier in identifiers:
             row = connection.execute("SELECT number,idempotency_key,digest,cursor,seq,state_seq,inputs FROM runs WHERE id=?", (identifier,)).fetchone()
@@ -343,7 +386,7 @@ def journal(path: Path, identifiers: list[str]) -> dict:
     return answer
 
 
-def worker_execution(root: Path, number: int, encoded: str, origin: Path | None) -> dict:
+def worker_execution(root: Path, number: int, encoded: str, origin: Path | None) -> WorkerRecord:
     record = json.loads(encoded)
     check(isinstance(record, dict), "worker_record_shape")
     if "_private_payload" in record:
@@ -387,15 +430,15 @@ def worker_execution(root: Path, number: int, encoded: str, origin: Path | None)
               and decoded.get("invocation", {}).get("local_private") == scope, "worker_projection_blob")
         record = decoded
     check(record.get("id") == str(number), "worker_record_identity")
-    return record
+    return cast(WorkerRecord, record)  # cast: the worker's JSON record
 
 
-def worker_journal(root: Path, identifiers: list[str], origin: Path | None = None) -> tuple[Path, dict]:
-    matches = []
+def worker_journal(root: Path, identifiers: list[str], origin: Path | None = None) -> tuple[Path, dict[str, dict[str, object]]]:
+    matches: list[tuple[Path, dict[str, dict[str, object]]]] = []
     for path in root.rglob("executions.sqlite3"):
         if path.is_symlink():
             continue
-        rows = {}
+        rows: dict[str, dict[str, object]] = {}
         with read_db(path) as connection:
             for identifier in identifiers:
                 found = connection.execute("SELECT id,record FROM executions WHERE request_id=?", (identifier,)).fetchall()
@@ -413,7 +456,7 @@ def worker_journal(root: Path, identifiers: list[str], origin: Path | None = Non
     return matches[0]
 
 
-def owner_signer(raw: bytes):
+def owner_signer(raw: bytes) -> Ed25519PrivateKey:
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -434,10 +477,10 @@ def owner_signer(raw: bytes):
         public = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
         check(public == der[51:], "worker_owner_public_key")
     check(isinstance(private, Ed25519PrivateKey), "worker_owner_algorithm")
-    return private
+    return cast(Ed25519PrivateKey, private)  # cast: the decoded key, checked above
 
 
-def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple[int, bytes]:
+def worker_request(project: Path, method: str, suffix: str, body: dict[str, object]) -> tuple[int, bytes]:
     """Existing TLS-pinned native API, real owner key, no qualification server seam."""
     from cryptography.hazmat.primitives import serialization
     import h2.config
@@ -456,7 +499,8 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
     private = owner_signer(Path(key_path).read_bytes())
     CONTEXT["worker_stage"] = "capability_sign"
     public = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    b64 = lambda value: base64.urlsafe_b64encode(value).rstrip(b"=").decode()
+    def b64(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
     payload = json.dumps({"m": worker_id, "a": "machine", "e": int(time.time()) + 300,
                           "k": b64(hashlib.sha256(public).digest()[:16])}, separators=(",", ":")).encode()
     capability = b64(payload) + "." + b64(private.sign(b"cozy-capability/1\0" + payload))
@@ -472,7 +516,8 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
         with context.wrap_socket(tcp, server_hostname=parsed.hostname) as tls:
             # Authentication/private proof is transmitted only after the actual
             # registered native leaf pin is verified on this connection.
-            check(hashlib.sha256(tls.getpeercert(binary_form=True)).digest() == pin
+            peer = tls.getpeercert(binary_form=True)
+            check(peer is not None and hashlib.sha256(peer).digest() == pin
                   and tls.selected_alpn_protocol() == "h2", "worker_tls_pin")
             CONTEXT["worker_stage"] = "worker_h2_request"
             protocol = h2.connection.H2Connection(config=h2.config.H2Configuration(client_side=True, header_encoding="utf-8"))
@@ -490,7 +535,8 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
                 check(incoming, "worker_response_closed")
                 for event in protocol.receive_data(incoming):
                     if isinstance(event, h2.events.ResponseReceived):
-                        status = int(dict(event.headers)[":status"])
+                        # cast: header_encoding="utf-8" makes h2 hand back str headers
+                        status = int(dict(cast(list[tuple[str, str]], event.headers))[":status"])
                         CONTEXT["worker_http_status"] = status
                     elif isinstance(event, h2.events.DataReceived):
                         answer.extend(event.data)
@@ -505,7 +551,7 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
                     tls.sendall(pending)
 
 
-def wrong_binding_stays_pending(native: Native, reference: str, project: Path, original_worker: Path, identifiers: list[str], receipt: Receipt) -> list[dict]:
+def wrong_binding_stays_pending(native: Native, reference: str, project: Path, original_worker: Path, identifiers: list[str], receipt: Receipt) -> list[dict[str, object]]:
     # Real source contention prevents the automatic bridge from retiring legacy
     # rows on this first read. No fabricated row or test-only barrier is used.
     CONTEXT["worker_stage"] = "source_contention"
@@ -537,7 +583,7 @@ def wrong_binding_stays_pending(native: Native, reference: str, project: Path, o
     return [value["binding"] for value in lookup]
 
 
-def crash_before_controller_receipt(native: Native, project: Path, bindings: list[dict], receipt: Receipt) -> None:
+def crash_before_controller_receipt(native: Native, project: Path, bindings: list[dict[str, object]], receipt: Receipt) -> None:
     # An actual worker completes its durable copy/retirement, then the exact Caf
     # dies before any controller history read can keep that receipt. The next
     # holder must recover real bindings from the inside receipt, not resubmit.
@@ -575,7 +621,7 @@ def crash_before_controller_receipt(native: Native, project: Path, bindings: lis
     check(response.status == 200, "calcifer_replacement_status", status=response.status)
 
 
-def output_bytes(native: Native, run: dict, *, old: bool) -> list[bytes]:
+def output_bytes(native: Native, run: RunDetail, *, old: bool) -> list[bytes]:
     bodies = []
     for item in run.get("output", []):
         if item.get("url") and not item.get("stays"):
@@ -591,7 +637,7 @@ def output_bytes(native: Native, run: dict, *, old: bool) -> list[bytes]:
     return bodies
 
 
-def assert_history(native: Native, reference: str, project: Path, baseline: dict, results: dict) -> None:
+def assert_history(native: Native, reference: str, project: Path, baseline: dict[str, Journaled], results: dict[str, RunDetail]) -> None:
     listed, unreadable = project_run_ids(lambda path: call(native, "GET", path), reference)
     check(not unreadable, "history_readable", unreadable=unreadable)
     check(set(baseline).issubset(listed), "history_listed", listed=len(listed), expected=len(baseline),
@@ -603,18 +649,19 @@ def assert_history(native: Native, reference: str, project: Path, baseline: dict
               result=current.get("result") == expected.get("result"))
         bodies = output_bytes(native, current, old=False)
         check(bodies == expected["bodies"], "history_output_bytes", outputs=len(bodies), expected=len(expected["bodies"]))
-    current = journal(project / "project.db", list(baseline))
-    check(current == baseline, "history_journal_exact",
-          rows=sum(current[key]["row"] == value["row"] for key, value in baseline.items()),
-          logs=sum(current[key]["logs"] == value["logs"] for key, value in baseline.items()),
-          outputs=sum(current[key]["outputs"] == value["outputs"] for key, value in baseline.items()))
+    journaled = journal(project / "project.db", list(baseline))
+    check(journaled == baseline, "history_journal_exact",
+          rows=sum(journaled[key]["row"] == value["row"] for key, value in baseline.items()),
+          logs=sum(journaled[key]["logs"] == value["logs"] for key, value in baseline.items()),
+          outputs=sum(journaled[key]["outputs"] == value["outputs"] for key, value in baseline.items()))
 
 
 def complete_migration(native: Native, reference: str, project: Path) -> None:
-    def read():
+    def read() -> int:
         call(native, "GET", project_route(reference, "/runs?limit=1"))
         with read_db(project / "project.db") as connection:
-            return connection.execute("SELECT count(*) FROM runs WHERE custody='legacy_pending'").fetchone()[0]
+            pending: int = connection.execute("SELECT count(*) FROM runs WHERE custody='legacy_pending'").fetchone()[0]
+            return pending
     wait(read, lambda count: count == 0, "migration_pending_cleared", 180)
     with read_db(CALCIFER / "state.db") as connection:
         for table in ("legacy_project_runs", "legacy_project_outputs", "legacy_project_run_logs"):
@@ -643,19 +690,20 @@ def project_state(project: Path) -> dict[str, str]:
     return state
 
 
-def interrupted_import(native: Native, project: Path, reference: str, identifiers: list[str]) -> dict:
+def interrupted_import(native: Native, project: Path, reference: str, identifiers: list[str]) -> dict[str, int]:
     """SIGKILL the exact Calcifer inside a legacy import pass: its source transaction is open and its
     first project write waits on the project database, which this fixture holds. Real contention only."""
     state = CALCIFER / "state.db"
     # Calcifer's startup scan moves project.db to the current schema without any project request.
-    wait(lambda: read_schema(project / "project.db"), lambda version: version == 4, "startup_schema_migrated", 120)
+    wait(lambda: read_schema(project / "project.db"), lambda version: version == PROJECT_SCHEMA, "startup_schema_migrated", 120)
     exact = birth(native.holder()["pid"])
     blocker = sqlite3.connect(project / "project.db", timeout=0)
     try:
         blocker.execute("BEGIN IMMEDIATE")
         marks = ",".join("?" * len(identifiers))
-        counts = lambda: (blocker.execute("SELECT count(*) FROM runs WHERE id IN (" + marks + ")", identifiers).fetchone()[0],
-                          blocker.execute("SELECT count(*) FROM journal_migrations WHERE source LIKE 'controller-v7:run:%'").fetchone()[0])
+        def counts() -> tuple[int, int]:
+            return (blocker.execute("SELECT count(*) FROM runs WHERE id IN (" + marks + ")", identifiers).fetchone()[0],
+                    blocker.execute("SELECT count(*) FROM journal_migrations WHERE source LIKE 'controller-v7:run:%'").fetchone()[0])
         before = counts()
         def read() -> None:
             try:
@@ -674,8 +722,11 @@ def interrupted_import(native: Native, project: Path, reference: str, identifier
                 return True
             finally:
                 probe.close()
+        def paused(seconds: float) -> bool:
+            time.sleep(seconds)
+            return True
         # Held continuously for a second: the import's source transaction, not a brief index write.
-        held = lambda: reader.is_alive() and all(source_held() and not time.sleep(0.25) for _ in range(4))
+        held = lambda: reader.is_alive() and all(source_held() and paused(0.25) for _ in range(4))
         wait(held, lambda value: value, "import_blocked_in_source_transaction", 60)
         kill_exact(exact)
         wait(lambda: alive(exact), lambda value: not value, "import_crash_birth_ended", 90)
@@ -691,7 +742,7 @@ def interrupted_import(native: Native, project: Path, reference: str, identifier
     return {"runs_before": before[0], "receipts_before": before[1]}
 
 
-def released_client_refused(released: Path, project: Path, run: dict, target: str, receipt: Receipt) -> None:
+def released_client_refused(released: Path, project: Path, run: RunDetail, target: str, receipt: Receipt) -> None:
     """A released 0.25.0 cozy talking to this Calcifer: a typed refusal naming `cozy update` for every
     project command, never an internal error, and nothing in the project changes."""
     check(subprocess.check_output([str(released), "--version"]).strip() == b"cozy 0.25.0", "released_version")
@@ -735,7 +786,7 @@ def released_client_refused(released: Path, project: Path, run: dict, target: st
     receipt.add("released_025_client_refused", passed=True, commands=len(asks), refused=refused, internal_errors=0, project_unchanged=True)
 
 
-def outside_scan(markers: list[bytes], allowed: list[Path], receipt: Receipt, project: Path) -> dict:
+def outside_scan(markers: list[bytes], allowed: list[Path], receipt: Receipt, project: Path) -> dict[str, int]:
     scanner = Scanner()
     for marker in markers:
         scanner.add(marker)
@@ -743,7 +794,7 @@ def outside_scan(markers: list[bytes], allowed: list[Path], receipt: Receipt, pr
     result = scanner.scan_privileged([HOME, Path("/tmp"), Path("/var/tmp"), Path("/dev/shm"), temp], allowed,
                                      receipt.path, places(HOME, temp, project=project))
     check(result is not None, "scan_process")
-    counts = {key: value for key, value in result.items() if type(value) is int}
+    counts = {key: value for key, value in cast(dict[str, object], result).items() if type(value) is int}  # cast: check() refused None
     CONTEXT["scan"] = counts
     check(not counts.get("matches"), "outside_project_canary")
     check(not any(counts.get(key) for key in ("unreadable", "sqlite_unreadable", "archive_unreadable", "archive_oversize", "leveldb_unreadable", "images_unreadable")), "scan_decoder_unavailable")
@@ -752,7 +803,7 @@ def outside_scan(markers: list[bytes], allowed: list[Path], receipt: Receipt, pr
     return counts
 
 
-def qualify(args, receipt: Receipt) -> None:
+def qualify(args: argparse.Namespace, receipt: Receipt) -> None:
     checkpoint(receipt, "startup")
     require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_OS") == "Linux"
             and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "hosted_linux_only")
@@ -789,7 +840,7 @@ def qualify(args, receipt: Receipt) -> None:
     source.write_bytes(marker + b"-input")
     source_bytes = source.read_bytes()
     source_sha = sha(source_bytes)
-    results = {}
+    results: dict[str, RunDetail] = {}
     for fail in (False, True):
         checkpoint(receipt, "old_subject_failure" if fail else "old_subject_success")
         request = project / ("failure.json" if fail else "success.json")
@@ -816,9 +867,9 @@ def qualify(args, receipt: Receipt) -> None:
     # move can establish old digest compatibility without reconstructing a CLI ask.
     checkpoint(receipt, "old_subject_retry")
     retry_key = "legacy-retry-" + os.urandom(16).hex()
-    retry_ask = {"target": provenance["target"], "on": "local", "project": str(project),
+    retry_ask: dict[str, object] = {"target": provenance["target"], "on": "local", "project": str(project),
                  "input": {"source": "sha256:" + source_sha, "text": marker.decode() + "-retry"}}
-    response = call(old, "POST", "/v1/runs", retry_ask, preflight=False, extra={"Idempotency-Key": retry_key})
+    response = cast(Submitted, call(old, "POST", "/v1/runs", retry_ask, preflight=False, extra={"Idempotency-Key": retry_key}))  # cast: the submitted run's JSON
     check(not response.get("preparing"), "old_retry_prepared")
     run = settled(old, response["run"]["id"], old=True, reference=reference)
     run["bodies"] = output_bytes(old, run, old=True)
@@ -880,7 +931,7 @@ def qualify(args, receipt: Receipt) -> None:
     # Input closure is required after settlement too; this is not just an API
     # view over a retained outside journal or a currently warm worker.
     check(any(path.is_file() and path.read_bytes() == source_bytes for path in (project / ".vault-inputs").rglob("*") if not path.is_symlink()), "input_retained")
-    replay = call(native, "POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key})
+    replay = cast(Submitted, call(native, "POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key}))  # cast: the replayed run's JSON
     check(replay.get("replay") is True and replay["run"]["id"] == run["id"], "retry_replayed")
     check(journal(project / "project.db", list(results)) == baseline, "retry_journal_exact")
     check(worker_journal(project / ".vault-machine", list(results))[1] == worker_baseline, "retry_worker_exact")
@@ -913,7 +964,7 @@ def qualify(args, receipt: Receipt) -> None:
                *(identifier.encode() for identifier in baseline),
                *(value["row"][1].encode() for value in baseline.values()),
                *(value["row"][2].encode() for value in baseline.values()),
-               *(value["submission"]["invocation_digest"].encode() for value in worker_baseline.values())]
+               *(cast(Submission, value["submission"])["invocation_digest"].encode() for value in worker_baseline.values())]  # cast: the worker record's JSON
     # A locked encrypted folder is not a plaintext allowance. Scan its backing,
     # keybag and any leftover conversion files along with every outside root.
     scan = outside_scan(markers, [], receipt, project)
@@ -924,12 +975,12 @@ def qualify(args, receipt: Receipt) -> None:
     project.rename(moved)
     # Cold holder and real unlock after moving the opaque encrypted folder.
     command(INSTALLED, "vault", "--directory", str(moved), "unlock", "--passphrase-file", "-", stdin=secret)
-    status = call(native, "GET", project_route(str(moved), "/vault"))
+    status = cast(VaultStatus, call(native, "GET", project_route(str(moved), "/vault")))  # cast: the vault's JSON
     view = Path(status["view"])
     identity = call(native, "GET", project_route(str(moved), "/address"))
     check(identity["id"] == reference, "moved_identity")
     assert_history(native, reference, view, baseline, results)
-    replay = call(native, "POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key})
+    replay = cast(Submitted, call(native, "POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key}))  # cast: the replayed run's JSON
     check(replay.get("replay") is True and replay["run"]["id"] == run["id"], "moved_retry_replayed")
     check(worker_journal(view / ".vault-machine", list(results), origin=origin)[1] == worker_baseline, "moved_worker_exact")
     locked = json.loads(command(INSTALLED, "vault", "--directory", str(moved), "lock"))

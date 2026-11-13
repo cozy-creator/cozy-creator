@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, storedOf, watchBoxes } = require('./page');
+const { projectFromPage, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, implementationRow, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, storedOf, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -35,24 +35,6 @@ const cozyHere = (args, options) => new Promise((done, fail) => {
   execFile(COZY, args, options, (error, stdout, stderr) => (error ? fail(Object.assign(error, { said: `${stdout}${stderr}` })) : done(stdout)));
 });
 const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
-
-/** The folder at `root` held by Calcifer as a tree (`api::tree`): each file PUT by its sha256, then the document. Its digest. */
-async function sentTree(base, token, root) {
-  const walk = (dir) => readdirSync(join(root, dir), { withFileTypes: true }).flatMap((entry) =>
-    entry.isDirectory() ? (entry.name === '__pycache__' ? [] : walk(join(dir, entry.name))) : [join(dir, entry.name)]);
-  const put = async (bytes) => {
-    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-    const answer = await fetch(`${base}/v1/files/${digest}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/octet-stream' }, body: bytes });
-    if (!answer.ok) throw new Error(`PUT ${digest}: ${answer.status} ${await answer.text()}`);
-    return digest;
-  };
-  const entries = [];
-  for (const path of walk('').sort()) {
-    const bytes = readFileSync(join(root, path));
-    entries.push({ blob: { length: bytes.length, sha256: (await put(bytes)).slice(7) }, kind: 'file', path: path.split(/[\\/]/).join('/') });
-  }
-  return put(Buffer.from(JSON.stringify({ entries })));
-}
 
 /** A GET as a browser's script loader sends one: no credential, the path as it's written. */
 function raw(base, path, headers = {}) {
@@ -302,7 +284,8 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     check('served_with_no_session', served.status === 200 && served.body.includes('data-boxed'), served.status);
     check('served_as_javascript', served.headers['content-type'] === 'application/javascript', served.headers);
     check('served_under_the_page_csp', served.headers['content-security-policy'] === pagePolicy, served.headers);
-    check('served_immutable', /immutable/.test(served.headers['cache-control'] ?? ''), served.headers);
+    // A project's code, as every project response, is never kept by the browser.
+    check('served_never_stored', /no-store/.test(served.headers['cache-control'] ?? ''), served.headers);
     check('served_nosniff', served.headers['x-content-type-options'] === 'nosniff', served.headers);
     check('sibling_served', (await raw(base, module_.replace('shade.js', 'steps.js'))).status === 200);
     const nothing = async (what, path, headers) => {
@@ -349,13 +332,15 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   if (seen.release_checked) {
     const name = 'e2e-boxed';
     const package_ = `e2e/${name}`;
-    // Described by content, as any client sends local code (cl-819): its files, then its tree, each PUT by its digest.
-    const described = (await api(`/v1/targets?tree=${encodeURIComponent(await sentTree(base, token, join(folder, 'boxed')))}`)).body?.interface;
-    check('interface_names_its_ui', described?.entrypoints?.some((entry) => entry.tool?.ui === 'ui/shade.js'), described?.entrypoints?.map((entry) => entry.tool?.ui));
     // Locked and built beside the local code, not in it: what a publish does, with a real wheel's real layout.
     const dist = mkdtempSync(join(tmpdir(), 'package-ui-'));
     const dir = join(dist, 'src');
     cpSync(join(__dirname, '..', 'project', 'boxed'), dir, { recursive: true });
+    // Code of no project, captured by Calcifer's holder as the CLI captures it (POST /v1/maintenance/source), then described by content.
+    const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+    const captured = await (await fetch(`${base}/v1/maintenance/source`, { method: 'POST', headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' }, body: JSON.stringify({ path: dir }) })).json();
+    const described = (await api(`/v1/targets?tree=${encodeURIComponent(captured.tree)}${captured.at ? `&at=${encodeURIComponent(captured.at)}` : ''}`)).body?.interface;
+    check('interface_names_its_ui', described?.entrypoints?.some((entry) => entry.tool?.ui === 'ui/shade.js'), { captured, ui: described?.entrypoints?.map((entry) => entry.tool?.ui) });
     const uvs = join(homedir(), '.cozy', 'tools', 'uv');
     const uvAt = join(uvs, readdirSync(uvs)[0], 'uv');
     execFileSync('python3', [join(__dirname, '..', '..', 'package-lock.py'), '--cozy', COZY, dir], quiet);
@@ -389,7 +374,8 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       const before = await toolUi(released);
       check('not_installed_does_not_load', before.status === 404 && before.body.error.code === 'tool_ui_not_installed', before);
       // The catalog remains an API; sidebar discovery is retired. Add the real published package through that API, without installing it.
-      const operationRows = page.locator('.tools [data-palette="tools"] li.tool');
+      // The palette's eight operations, Video Timeline one of them (46a7f52bc): a package adds tools under them, never a row of its own.
+      const operationRows = page.locator('.tools [data-palette="tools"] .tool-category');
       await away();
       seen.retired_sidebar_ui = ['Browse button', 'package pagination and search controls'];
       const firstPage = await api('/v1/tools/browse?limit=50');
@@ -402,10 +388,13 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       const selected = await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ add: package_ }) });
       check('catalog_package_selected_without_install', selected.status === 200 && selected.body.packages.includes(package_), selected);
       await page.reload();
+      await page.waitForSelector('.react-flow__node');
+      // A box's model is a tool of its operation dragged onto it from the palette (46a7f52bc; d1dc6354d took the box's Model list): the
+      // selected package's is one, under Image, and the box holding it names it under its frame (cl-934, e5669be61).
+      await implementationRow(page, 'image', released);
+      check('adding_package_keeps_eight_operations', await operationRows.count() === 8);
       await more('from_the_hub');
-      await until('selected package available in node configuration', () => box('from_the_hub').locator('select[aria-label="Model"] option').evaluateAll((options) => options.map((option) => option.value)), (ids) => ids.includes(released));
-      check('added_model_is_in_node_configuration_after_reload', await box('from_the_hub').locator('select[aria-label="Model"]').inputValue() === released);
-      check('adding_package_keeps_seven_operations', await operationRows.count() === 7);
+      check('added_model_is_in_node_configuration_after_reload', await box('from_the_hub').locator(`.image-tool[title="${released}"] .image-tool-name`).innerText() === 'E2e Boxed · One field', await box('from_the_hub').innerText());
       const unheldStill = await toolUi(released);
       check('adding_installs_nothing', unheldStill.status === 404 && unheldStill.body.error.code === 'tool_ui_not_installed' && !hub.asked.some((line) => line.includes('/download') || line.includes('/wheels/')), { unheldStill, asked: hub.asked });
       await shot('your-list');
@@ -415,7 +404,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       await until('off the list on the wire', async () => (await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === released), (held) => !held);
       await page.reload();
       await page.waitForSelector('.tools .tool');
-      check('legacy_custom_tool_remains_off_after_reload', !(await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === released) && await operationRows.count() === 7);
+      check('legacy_custom_tool_remains_off_after_reload', !(await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === released) && await operationRows.count() === 8);
       const offWire = (await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ remove: ['minimax-h3/one_field'] }) })).body;
       check('another_comes_off', offWire.without?.includes('minimax-h3/one_field'), offWire);
       await api('/v1/tools?on=local');

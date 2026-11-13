@@ -33,8 +33,8 @@ const FRAME: usize = 256 << 10;
 /// A silent connection is probed this often, six times, after six of these with nothing on it.
 const PROBE: Duration = Duration::from_secs(5);
 
-/// How every outbound client starts, so no caller picks a name, a connect timeout or TLS: `cozy/<version>` as
-/// its User-Agent, 5 s to connect, a peer that went away found by TCP keepalive (a minute at most), and rustls
+/// How every outbound client starts, so no caller picks a name, a connect timeout or TLS: `tensorfs/<version>` as
+/// its User-Agent (cozy's Hub client says `cozy/<cozy's version>`, which a Hub keys old clients on, cl-978), 5 s to connect, a peer that went away found by TCP keepalive (a minute at most), and rustls
 /// trusting the webpki roots and each DER certificate in `extra`. A caller adds only what is its own: its
 /// redirects, [`STALL`] where an answer is one exchange, a pinned verifier.
 pub fn http(extra: &[&[u8]]) -> Result<reqwest::ClientBuilder> {
@@ -49,7 +49,7 @@ pub fn http(extra: &[&[u8]]) -> Result<reqwest::ClientBuilder> {
         .with_root_certificates(roots)
         .with_no_client_auth();
     Ok(reqwest::Client::builder()
-        .user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("tensorfs/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT)
         .tcp_keepalive(PROBE * 6)
         .tcp_keepalive_interval(PROBE)

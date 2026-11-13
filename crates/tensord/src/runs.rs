@@ -354,6 +354,9 @@ impl Runs {
         use crate::origin::priority;
         match self.service.engine.get(id) {
             Ok(record) if !record.invocation.parent.is_empty() => priority::next(priority::STARTED, rank),
+            Ok(record) if fetches_ahead(spec) && self.service.engine.caller_id(id).starts_with(crate::ahead::PREPARE) => {
+                priority::prepare(record.root_seq(), rank)
+            }
             Ok(record) if fetches_ahead(spec) => priority::ahead(record.root_seq(), rank),
             Ok(record) => priority::next(record.root_seq(), rank),
             Err(_) => priority::BEHIND,
@@ -661,9 +664,34 @@ impl Runs {
         let hub = spec.hub.clone().or_else(|| self.own_hub.clone());
         let mut models = vec![];
         for choice in choices {
-            // On a base, a Hub checkpoint is referenced too: its header and tree are enough.
-            let Present { mut header, mut tree, mut row, folder } = self.present(actor, id, spec, choice, base.is_some() || !adds.is_empty(), observe, stoppable)?;
+            // An upload of some of its components: choice `model:<component>,…`.
+            let (parameter, kept) = match choice.parameter.split_once(':') {
+                Some((parameter, names)) => (parameter, names.split(',').map(str::to_owned).collect::<Vec<_>>()),
+                None => (choice.parameter.as_str(), vec![]),
+            };
+            if kept.iter().any(|name| !tensorfs::format::segment(name)) || (!kept.is_empty() && base.is_some()) {
+                return Err(refused("invalid_request", format!("{}: name components as model:<component>[,<component>…], on no base", choice.parameter)));
+            }
+            let choice = &stored::ModelChoice { parameter: parameter.to_owned(), ..choice.clone() };
+            // On a base, cut to components, or with files added, a Hub checkpoint is referenced too: its header and tree are enough.
+            let structure = base.is_some() || !adds.is_empty() || !kept.is_empty();
+            let Present { mut header, mut tree, mut row, folder } = self.present(actor, id, spec, choice, structure, observe, stoppable)?;
             let upload_store = folder.as_ref().map_or(publisher.store().as_ref(), |folder| &folder.store);
+            if !kept.is_empty() {
+                if folder.is_some() {
+                    return Err(refused("invalid_request", "a CozyTensors folder uploads as it is; cut a model to components"));
+                }
+                let read = publisher.store().read(&header).map_err(|e| e.to_string())
+                    .and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).map_err(|e| e.to_string()))
+                    .map_err(|e| refused("model_resolution_failed", format!("{}: {e}", header.id())))?;
+                let cut = tensorfs::import::base::only(&read, &kept).map_err(|e| refused("model_components_refused", e.to_string()))?;
+                let bytes = cut.to_cbor().map_err(|e| refused("model_components_refused", e.to_string()))?;
+                header = publisher.store().put_bytes(&bytes).map_err(|e| refused("model_components_refused", e.to_string()))?;
+                let from = if choice.source.is_empty() { choice.model.clone() } else { choice.source.clone() };
+                row["source_checkpoint"] = row["checkpoint"].take();
+                row["checkpoint"] = json!(header.id());
+                row["components"] = json!(kept.iter().map(|name| (name.clone(), from.clone())).collect::<std::collections::BTreeMap<_, _>>());
+            }
             if let Some((base, names)) = &base {
                 if folder.is_some() {
                     return Err(refused("invalid_request", "a CozyTensors folder uploads as it is; compose from a model"));
@@ -831,7 +859,7 @@ impl Runs {
             drop(import);
             let row = json!({"parameter": choice.parameter, "source": choice.source,
                 "resolved": made.resolved, "profiles": made.profiles, "format": made.format,
-                "trigger": made.trigger.join(", "), "repository": made.model, "checkpoint": made.header.id()});
+                "triggers": made.trigger, "repository": made.model, "checkpoint": made.header.id()});
             let tree = crate::storage::local(publisher.store(), &made.model)?.map(|local| local.tree);
             (made.header, tree, row)
         } else if let (Some(name), None) = (choice.model.strip_prefix("local/"), &choice.manifest) {
@@ -899,6 +927,22 @@ impl Runs {
         };
         Ok(Present { header, tree, row, folder })
     }
+    /// What run `id` reads of the models its call waits on (`selected`), as its function's (cl-967); none for a private one.
+    fn record_reads(&self, id: &str, selected: &[(String, Vec<String>)]) {
+        let Ok(record) = self.service.engine.get(id) else { return };
+        if record.invocation.local_private.is_some() {
+            return;
+        }
+        let reads = crate::access::reads(&self.service.engine.store, selected);
+        if reads.is_empty() {
+            return;
+        }
+        let function = crate::journal::function_key(&record.invocation.package, &record.invocation.entrypoint);
+        if let Err(error) = self.service.engine.record_reads(&function, &reads) {
+            tracing::warn!("run {id}: what it reads: {error}");
+        }
+    }
+
     /// The run's code and models made ready: Ok(None) once it is dispatchable, Ok(Some) for a
     /// warm run's result.
     fn prepare(self: &Arc<Self>, actor: &str, id: &str, spec: Spec, stoppable: &Stoppable) -> Result<Option<ResultRecord>, Refused> {
@@ -998,6 +1042,10 @@ impl Runs {
         let interface: Value = serde_json::from_slice(&installation.interface)
             .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
         let generation = self.service.catalog.resolve(&installation.generation)?;
+        // What a root call reads, for its function's next quote on any machine (cl-967).
+        if let (false, true, Some(plan)) = (spec.warm, spec.parent.is_empty(), &plan) {
+            self.record_reads(id, &plan.upfront());
+        }
         // A call's weights come from here on, in the Start pass's order, until its executor
         // asks for them itself; its import-only parent starts now unless it already did. A
         // child's are a started run's, ahead of every queued run's (cl-804).

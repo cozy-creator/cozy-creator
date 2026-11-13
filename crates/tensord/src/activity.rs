@@ -177,6 +177,17 @@ impl Import {
 }
 
 /// What the runs `mine` admits wait on, each with only those runs. One that ended unlisted is listed this once.
+/// The repositories each run (by its caller's id) waits to download now.
+pub(crate) fn downloading() -> std::collections::HashMap<String, Vec<String>> {
+    let mut waits: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for operation in operations().values().filter(|operation| operation.kind == Kind::Download && operation.ended.is_none()) {
+        for run in operation.runs.keys() {
+            waits.entry(run.clone()).or_default().push(operation.subject.clone());
+        }
+    }
+    waits
+}
+
 pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
     let mut operations = operations();
     let listed = operations

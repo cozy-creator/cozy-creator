@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ci-quantize-fp8"
+version = "0.1.0"
+description = "The tensorfs suite's quantize-fp8 cell: Ideogram 4's int8 recipe, without its model code"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.46"]
+
+[project.entry-points."cozy.application"]
+default = "ci_quantize_fp8:app"
+
+[tool.uv.build-backend]
+module-name = "ci_quantize_fp8"
+module-root = ""

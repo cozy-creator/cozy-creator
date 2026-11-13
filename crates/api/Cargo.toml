@@ -35,10 +35,13 @@ percent-encoding = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync", "time"], optional = true }
 tracing = { workspace = true, optional = true }
+semver = { workspace = true, optional = true }
 
 [features]
 # The Hub's client (`hub`), which Calcifer and TensorD share: the only HTTP here.
 hub = ["dep:aws-lc-rs", "dep:httpdate", "dep:percent-encoding", "dep:reqwest", "dep:tokio", "dep:tracing", "tensorfs/net"]
+# cozy's own update (`update`), which `cozy update` and Calcifer share (cl-978): releases fetched and verified.
+update = ["hub", "platform/fetch", "dep:semver", "tokio/rt"]
 # TypeScript declarations of the API's records, for the page (examples/ts.rs).
 ts = ["dep:ts-rs"]
 

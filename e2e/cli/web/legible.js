@@ -115,10 +115,10 @@ async function died(why) {
   }
   await page.evaluate(() => delete document.documentElement.dataset.theme);
 
-  // A prompt anywhere else is bold too: More's words, or what's under the frame.
-  const others = await here.locator('.mention-text').evaluateAll((all) => all.filter((one) => !one.closest('.in-frame')).map((one) => ({ field: one.dataset.field, weight: Number(getComputedStyle(one).fontWeight) })));
-  seen.others = others;
-  check('every_prompt_is_bold', others.every((one) => one.weight >= 700), others);
+  // Every prompt the box has is bold, the one over the picture and any other (an empty list is a failure, not a pass).
+  const prompts = await here.locator('.mention-text').evaluateAll((all) => all.map((one) => ({ field: one.dataset.field, framed: Boolean(one.closest('.in-frame')), weight: Number(getComputedStyle(one).fontWeight) })));
+  seen.prompts = prompts;
+  check('every_prompt_is_bold', prompts.length > 0 && prompts.every((one) => one.weight >= 700), prompts);
 
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();

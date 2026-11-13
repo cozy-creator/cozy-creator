@@ -47,7 +47,7 @@ pub mod fork_guard;
 
 use fence::{Fences, Waits};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use working::State;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -87,6 +87,9 @@ pub enum Error {
 /// Private admission cause: another process cannot repair a local cap or VA refusal.
 pub(crate) enum AllocationFailure {
     DriverOutOfMemory(usize),
+    /// The pages fit, not beside the driver's reserve: `reclaim::acquire` gives what is idle and
+    /// done for it, never a wait, and short of that takes the reserve.
+    ReserveShort(usize),
     Other(Error),
 }
 
@@ -95,13 +98,13 @@ pub(crate) type AllocationResult<T> = std::result::Result<T, AllocationFailure>;
 impl AllocationFailure {
     fn physical_bytes(&self) -> Option<usize> {
         match self {
-            Self::DriverOutOfMemory(bytes) => Some(*bytes),
+            Self::DriverOutOfMemory(bytes) | Self::ReserveShort(bytes) => Some(*bytes),
             Self::Other(_) => None,
         }
     }
 
     fn is_oom(&self) -> bool {
-        matches!(self, Self::DriverOutOfMemory(_)
+        matches!(self, Self::DriverOutOfMemory(_) | Self::ReserveShort(_)
             | Self::Other(Error::OutOfMemory { .. } | Error::Exhausted { .. }))
     }
 }
@@ -113,7 +116,9 @@ impl From<Error> for AllocationFailure {
 impl From<AllocationFailure> for Error {
     fn from(failure: AllocationFailure) -> Self {
         match failure {
-            AllocationFailure::DriverOutOfMemory(requested_bytes) => Self::OutOfMemory { requested_bytes },
+            AllocationFailure::DriverOutOfMemory(requested_bytes) | AllocationFailure::ReserveShort(requested_bytes) => {
+                Self::OutOfMemory { requested_bytes }
+            }
             AllocationFailure::Other(error) => error,
         }
     }
@@ -262,14 +267,12 @@ impl Region {
     }
 }
 
-fn decrement(counter: &AtomicUsize) {
-    assert!(
-        counter
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| value
-                .checked_sub(1))
-            .is_ok(),
-        "native owner count underflow"
-    );
+/// The count left.
+fn decrement(counter: &AtomicUsize) -> usize {
+    counter
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_sub(1))
+        .expect("native owner count underflow")
+        - 1
 }
 
 struct Entry {
@@ -493,6 +496,29 @@ impl PlanPhase {
 /// What the driver's own charge may grow by between samples under a development cap.
 const CAP_SLACK: usize = 128 << 20;
 
+/// The card's free bytes every map of ours leaves to the driver. It allocates on its own (a kernel's code
+/// at its first launch, local memory, a library's handle), and its refusal fails that launch, not an
+/// allocation of ours, so no reclaim answers it: a cold H3 on a full 5090 failed its first `index_select`
+/// (cr-293). Measured (os-memory-patterns 10-24): 2x the largest out-of-books growth a request showed,
+/// 391 MiB in a cold H3 15 s (README: The driver's reserve), rounded up to 32 MiB.
+pub(crate) const DRIVER_RESERVE: usize = 800 << 20;
+
+thread_local! {
+    /// A map short only of the reserve, with nothing idle and done left to give (`reclaim::acquire`).
+    static RESERVE_WAIVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `f` with the driver's reserve open to this thread's maps.
+pub(crate) fn waived<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) { RESERVE_WAIVED.set(false); }
+    }
+    RESERVE_WAIVED.set(true);
+    let _restore = Restore;
+    f()
+}
+
 // One process/core-wide namespace for reservation and Plan lifetimes. Never use
 // addresses or these identities in compute fingerprints or reusable measurements.
 static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
@@ -520,6 +546,10 @@ pub struct Device {
     replays: AtomicUsize,
     producers: AtomicUsize,
     retirements: AtomicUsize,
+    /// Captures waiting to enter, and what wakes them: the last producer, replay or retirement ending.
+    entering: AtomicUsize,
+    drains: Mutex<u64>,
+    drained: Condvar,
     /// `set_limit`: the card as a smaller card would be, the driver's own charge included.
     ceiling: AtomicUsize,
     /// The card itself, once sampled: its driver's refusal is never how we learn it is full.
@@ -572,6 +602,9 @@ impl Device {
             replays: AtomicUsize::new(0),
             producers: AtomicUsize::new(0),
             retirements: AtomicUsize::new(0),
+            entering: AtomicUsize::new(0),
+            drains: Mutex::new(0),
+            drained: Condvar::new(),
             ceiling: AtomicUsize::new(usize::MAX),
             total: AtomicUsize::new(usize::MAX),
             reservation: OnceLock::new(),
@@ -653,7 +686,26 @@ impl Device {
     fn guard(&'static self, count: &'static AtomicUsize) -> Result<GlobalCaptureGuard> {
         count.try_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
             .map_err(|_| Error::Invalid("device activity count overflow"))?;
-        Ok(GlobalCaptureGuard { count, pid: std::process::id() })
+        Ok(GlobalCaptureGuard { count, device: self, pid: std::process::id() })
+    }
+
+    /// The last holder of `count` let go: a capture's end is what deferred cache work waits for,
+    /// the others' what a capture entering waits for.
+    fn let_go(&self, count: &AtomicUsize) {
+        if std::ptr::eq(count, &self.captures) {
+            cache_owner::stir(self.ordinal);
+        } else if !std::ptr::eq(count, &self.external_callbacks) {
+            // Paired with `enter_capture`'s: either it sees this count, or this sees it entering.
+            std::sync::atomic::fence(Ordering::SeqCst);
+            if self.entering.load(Ordering::Relaxed) != 0 {
+                *self.drains.lock().unwrap_or_else(|error| error.into_inner()) += 1;
+                self.drained.notify_all();
+            }
+        }
+    }
+
+    fn drains(&self) -> u64 {
+        *self.drains.lock().unwrap_or_else(|error| error.into_inner())
     }
 
     fn owned(&self) -> usize {
@@ -685,7 +737,8 @@ impl Device {
 
     /// What this process has no say over moves as contexts and kernels load and peers come and
     /// go. A slow path calls this before it reads the room; outside capture, in the context.
-    fn sample(&self) -> Result<()> {
+    /// Returns the driver's free bytes.
+    fn sample(&self) -> Result<usize> {
         let (free, total) = self.driver().memory_info()?;
         self.total.store(total, Ordering::Release);
         if self.ceiling.load(Ordering::Acquire) != usize::MAX {
@@ -697,6 +750,25 @@ impl Device {
         if outside > self.outside.swap(outside, Ordering::AcqRel) {
             self.room_outside.fetch_add(1, Ordering::Relaxed);
             self.room_shrank();
+        }
+        Ok(free)
+    }
+
+    /// Of the driver's `free` bytes, what a map of ours may take: all but its reserve.
+    fn spare(&self, free: usize) -> usize {
+        if RESERVE_WAIVED.get() { free } else { free.saturating_sub(DRIVER_RESERVE) }
+    }
+
+    /// Room for `bytes` of new pages: within our limit, and beside the driver's reserve of what the
+    /// card has free now. More than the card has free is the driver's to refuse; less, but not
+    /// beside the reserve, is `ReserveShort`.
+    fn admit(&self, bytes: usize) -> AllocationResult<()> {
+        let free = self.sample()?;
+        if self.over(bytes) != 0 {
+            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
+        }
+        if bytes <= free && bytes > self.spare(free) {
+            return Err(AllocationFailure::ReserveShort(bytes));
         }
         Ok(())
     }
@@ -730,10 +802,7 @@ impl Device {
     /// Physical pages for one region, inside this process's room: over the room reads as the
     /// driver's out of memory, so each admission treats a smaller room as a smaller card.
     fn create(&self, bytes: usize) -> AllocationResult<u64> {
-        self.sample()?;
-        if self.over(bytes) != 0 {
-            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
-        }
+        self.admit(bytes)?;
         let handle = self.driver().create(bytes)?;
         self.pages.fetch_add(bytes, Ordering::AcqRel);
         Ok(handle)
@@ -1028,8 +1097,13 @@ pub(crate) fn gate(ordinal: i32) -> Result<Gate> {
 /// thread, with no signal to tell. A refused capture falls back to eager.
 pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
     let deadline = std::time::Instant::now() + reclaim::RECOVERY_BUDGET;
-    loop {
+    let gpu = gpu(device)?;
+    gpu.entering.fetch_add(1, Ordering::Relaxed);
+    std::sync::atomic::fence(Ordering::SeqCst);
+    let entered = (|| loop {
         source::stop(device)?;
+        // Read before the counts: a holder letting go after them moves it.
+        let seen = gpu.drains();
         {
             let gate = gate(device)?;
             let state = gate.device;
@@ -1049,8 +1123,12 @@ pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
                 });
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+        let drains = gpu.drains.lock().unwrap_or_else(|error| error.into_inner());
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        drop(gpu.drained.wait_timeout_while(drains, left, |drains| *drains == seen));
+    })();
+    gpu.entering.fetch_sub(1, Ordering::Relaxed);
+    entered
 }
 
 /// Bound a user callback's host interval. Only actual working alloc/free invalidates a
@@ -1083,13 +1161,14 @@ fn enter_retirement(device: i32) -> Result<GlobalCaptureGuard> {
 
 pub struct GlobalCaptureGuard {
     count: &'static AtomicUsize,
+    device: &'static Device,
     pid: u32,
 }
 
 impl Drop for GlobalCaptureGuard {
     fn drop(&mut self) {
-        if self.pid == std::process::id() {
-            decrement(self.count);
+        if self.pid == std::process::id() && decrement(self.count) == 0 {
+            self.device.let_go(self.count);
         }
     }
 }

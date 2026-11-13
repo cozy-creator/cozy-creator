@@ -91,15 +91,23 @@ pub(crate) struct Machines {
     tasks: Mutex<JoinSet<()>>,
     /// The config's `dev = true`: its rentals follow the open RC (`rc`, cl-922).
     pub(crate) dev: bool,
+    /// The config's `download_url` (`COZY_DOWNLOAD_URL`): where cozy's own update reads its release in place of GitHub (cl-978).
+    pub(crate) download_url: Option<String>,
     pub(crate) rc: crate::rc::Rc,
     /// Told when a rental becomes ready: a dev home's moves to the RC before its first run.
     pub(crate) rc_ready: Notify,
+    /// What each machine is told to have ready (cl-967).
+    pub(crate) lists: crate::ahead::Lists,
+    /// Moves when a machine becomes ready or ends: what plans re-plan on (cl-967).
+    pub(crate) arrivals: tokio::sync::watch::Sender<u64>,
 }
 
 /// What Calcifer last heard of a machine, never stored.
 #[derive(Default)]
 pub(crate) struct Seen {
     frame: Option<v1::StatusFrame>,
+    /// Its Status stream is open: `frame` is what it is now, not what it was when the stream broke.
+    streaming: bool,
     unreachable: Option<String>,
     /// Since when it has not answered (unix ms).
     since: Option<i64>,
@@ -149,8 +157,11 @@ impl Machines {
             local,
             tasks: Mutex::default(),
             dev: config.dev,
+            download_url: config.download_url.as_ref().map(|url| url.as_str().to_owned()),
             rc: crate::rc::Rc::default(),
             rc_ready: Notify::new(),
+            lists: crate::ahead::Lists::default(),
+            arrivals: tokio::sync::watch::channel(0).0,
             calcifer,
         });
         me.calcifer.serve_with(&me);
@@ -219,6 +230,20 @@ impl Machines {
         lock(&self.seen)
             .get(name)
             .and_then(|seen| seen.frame.clone())
+    }
+
+    /// The machine's Status while its stream is open: none once the stream broke, until it says it again (cl-967: a machine that stopped
+    /// answering is never quoted from what it said before).
+    pub(crate) fn live_frame(&self, name: &str) -> Option<v1::StatusFrame> {
+        lock(&self.seen).get(name).filter(|seen| seen.streaming && seen.unreachable.is_none()).and_then(|seen| seen.frame.clone())
+    }
+
+    /// Its Status stream ended or broke.
+    fn stream_closed(&self, name: &str) {
+        if let Some(seen) = lock(&self.seen).get_mut(name) {
+            seen.streaming = false;
+        }
+        self.calcifer.machine_changed();
     }
 
     /// Its first GPU's name, as it last said: a run's record reads it, without its whole frame.
@@ -775,6 +800,17 @@ impl Machines {
         }
         if let Some(status) = &mut machine.status {
             status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
+            // A project's runs execute in its own engine: listed from its journal, as the machine holds them (cl-811).
+            let listed: HashSet<String> = status.runs.iter().map(|run| crate::store::calcifer_id(&run.id).to_owned()).collect();
+            for project_run in self.calcifer.project_runs_on(&row.name).into_iter().filter(|run| !listed.contains(run.id.as_str())) {
+                let Ok(run) = self.calcifer.record(&project_run) else { continue };
+                status.runs.push(wire::LiveRun {
+                    id: project_run.id.to_string(),
+                    state: run.machine_state.clone().unwrap_or_else(|| "running".into()),
+                    waiting: run.waiting.clone().unwrap_or_default(),
+                    run: Some(run),
+                });
+            }
             status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
         }
         machine.rc = self.rc_follow(&row.name, self.frame(&row.name).as_ref());
@@ -922,6 +958,7 @@ impl Machines {
         if let Some(seen) = lock(&self.seen).get_mut(name) {
             (seen.boot, seen.attempt) = (None, None);
         }
+        self.arrivals.send_modify(|n| *n += 1);
         self.calcifer.machine_changed();
     }
 
@@ -941,7 +978,9 @@ impl Machines {
             let offline = self.offline(&name).is_some();
             let mut unreachable = false;
             if !offline {
-                let error = match self.status_frames(&name, &mut pause).await {
+                let streamed = self.status_frames(&name, &mut pause).await;
+                self.stream_closed(&name);
+                let error = match streamed {
                     Ok(()) if kind == MachineKind::Local => return self.local_exited(),
                     // A rental's word that it released itself is not its end: its Hub's is, as for
                     // any end. Until the Hub affirms it gone it is `ending`, and if this computer
@@ -1012,17 +1051,32 @@ impl Machines {
         }
     }
 
-    fn observe(&self, name: &str, frame: v1::StatusFrame) {
+    fn observe(&self, name: &str, mut frame: v1::StatusFrame) {
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
+        self.lists.observe(name, &frame);
         let back = {
             let mut seen = lock(&self.seen);
             let seen = seen.entry(name.to_owned()).or_default();
+            // A stream sends its queue and times only when they change: absent, they stand as its last frame said.
+            if let Some(last) = &seen.frame {
+                if frame.queue.is_none() {
+                    frame.queue = last.queue.clone();
+                }
+                if frame.times.is_none() {
+                    frame.times = last.times.clone();
+                }
+            }
             if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready") {
                 self.placing.notify_one();
                 self.rc_ready.notify_one();
             }
+            // Ready on a boot not seen ready before (it came up, or started again on new software): plans count it now.
+            if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready" || f.boot_id != frame.boot_id) {
+                self.arrivals.send_modify(|n| *n += 1);
+            }
             seen.stopped &= frame.phase == "releasing";
+            seen.streaming = true;
             seen.frame = Some(frame);
             seen.since = None;
             seen.unreachable.take().is_some()
@@ -1030,6 +1084,10 @@ impl Machines {
         // Its runs and exports that wait on it try again now.
         if back {
             self.calcifer.touch(name);
+        }
+        // Its lists, unless this boot of it was sent them: it came up since they were set, or started again.
+        if let Some(machines) = self.calcifer.machines() {
+            self.lists.seen(&machines, name);
         }
         self.calcifer.machine_changed();
     }
@@ -1378,6 +1436,8 @@ pub(crate) struct Fresh {
     fresh: bool,
     /// The Hub whose client reads it.
     hub: Option<String>,
+    /// The project its client is in: what that project's own runs installed on this computer's machine is listed too.
+    project: Option<String>,
 }
 
 /// The machine; `?fresh=true` answers a Status it read now, or refuses.
@@ -1406,8 +1466,22 @@ pub(crate) async fn packages(
     UrlPath(name): UrlPath<String>,
     query: Result<Query<Fresh>, QueryRejection>,
 ) -> Result<Json<wire::MachinePackages>, Refusal> {
-    let (machine, hub) = asked(&api, &name, query).await?;
+    let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    let project = query.project.clone();
+    let (mut machine, hub) = asked(&api, &name, Ok(Query(query))).await?;
     let hub = crate::hub::origin(&api, hub.as_deref())?;
+    // A project's local code installs into its own worker area, which the machine's frame never lists (`project_holds`).
+    if let Some(project) = project.filter(|_| machine.kind == MachineKind::Local) {
+        let scope = {
+            let store = api.projects.store(&api, &project).await.map_err(Refusal)?;
+            let (id, root) = store.execution_scope();
+            crate::private_io::scope_for_project(id, root).map_err(Refusal)?
+        };
+        let held = api.machines.project_holds(scope).await;
+        if let Some(status) = &mut machine.status {
+            status.environments.extend(held.iter().map(|env| environment(env, &api.machines.hubs)));
+        }
+    }
     Ok(Json(machine.packages(&hub.to_string())))
 }
 
@@ -1843,6 +1917,19 @@ pub(crate) fn merge_warm(current: &mut Vec<v1::WarmItem>, spec: &mut v1::RunSpec
     *current = set.items.clone();
 }
 
+/// An installed environment as a machine's Status lists it, its Hub by this controller's name for it.
+fn environment(env: &v1::Environment, hubs: &Hubs) -> wire::Environment {
+    wire::Environment {
+        installation: env.installation.clone(),
+        package: env.package.clone(),
+        release: env.release.clone(),
+        hub: hubs.named(&env.hub),
+        runtime: env.runtime.clone(),
+        level: env.level.clone(),
+        warning: env.warning.clone(),
+    }
+}
+
 fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
     let level = |level: v1::WarmLevel| match level {
         v1::WarmLevel::Off => "",
@@ -1918,19 +2005,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
             })
             .collect(),
         models_bytes: frame.models_bytes,
-        environments: frame
-            .environments
-            .iter()
-            .map(|env| wire::Environment {
-                installation: env.installation.clone(),
-                package: env.package.clone(),
-                release: env.release.clone(),
-                hub: hubs.named(&env.hub),
-                runtime: env.runtime.clone(),
-                level: env.level.clone(),
-                warning: env.warning.clone(),
-            })
-            .collect(),
+        environments: frame.environments.iter().map(|env| environment(env, hubs)).collect(),
         warm: frame
             .warm
             .iter()

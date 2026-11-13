@@ -10,11 +10,14 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 mod access;
+mod ahead;
 mod browser;
 mod maintenance_source;
 mod api;
 mod authorized;
+mod checkout;
 mod coming;
+mod cozy;
 mod eta;
 mod events;
 mod files;
@@ -34,6 +37,7 @@ mod outputs;
 mod others;
 mod page;
 mod placement;
+mod plan;
 mod previews;
 mod rc;
 pub(crate) mod private_io;
@@ -94,12 +98,15 @@ pub(crate) struct Calcifer {
     store: Store,
     /// Active owner routing only. Never serialized or used for public numeric lookup.
     run_owners: Mutex<HashMap<String, Option<project::RunOwner>>>,
-    project_owners: Mutex<HashMap<String, project::RunOwner>>,
+    /// Open projects by id, held weakly: a project closes once nothing of it is active (`release_run`).
+    project_owners: Mutex<HashMap<String, project::OpenProject>>,
     inputs: PathBuf,
     outputs: PathBuf,
     events: broadcast::Sender<(RunId, Event)>,
     live: Mutex<HashMap<RunId, Live>>,
     drivers: Mutex<HashMap<RunId, Arc<Notify>>>,
+    /// Runs told to cancel whose request is still to be kept: a project's edit held its writer when it asked.
+    canceling: Mutex<HashSet<String>>,
     machines: Mutex<HashMap<String, Machine>>,
     tasks: Mutex<JoinSet<()>>,
     /// Orders staging a run's inputs against deleting a settled run's.
@@ -115,6 +122,8 @@ pub(crate) struct Calcifer {
     behind: Mutex<HashMap<String, HashMap<String, String>>>,
     /// The machines and their Hubs, which mint what a send carries to its Hub.
     granting: OnceLock<Weak<machines::Machines>>,
+    /// The API that opens a closed project again when its journal is asked for.
+    api: OnceLock<Weak<api::Api>>,
     /// When this Calcifer opened its store (Unix ms).
     /// Since when it can have heard from a machine: its start, or this computer's waking.
     opened_ms: std::sync::atomic::AtomicI64,
@@ -263,6 +272,7 @@ impl Calcifer {
             events: broadcast::channel(4096).0,
             live: Mutex::default(),
             drivers: Mutex::default(),
+            canceling: Mutex::default(),
             machines: Mutex::default(),
             tasks: Mutex::default(),
             staging: Mutex::default(),
@@ -272,6 +282,7 @@ impl Calcifer {
             warm: Mutex::default(),
             behind: Mutex::default(),
             granting: OnceLock::new(),
+            api: OnceLock::new(),
             opened_ms: std::sync::atomic::AtomicI64::new(store::now_ms()),
         });
         let maintenance: Vec<String> = calcifer.store.read(|conn| {
@@ -364,10 +375,10 @@ impl Calcifer {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
-            let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); lock(&me.drivers).remove(&id); return; } };
+            let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); me.driver_done(&id); return; } };
             if let Ok(Some(row))=me.with_run_store(id.as_str(),|store|store.run(id.as_str())) {
-                if row.state==State::Settled {lock(&me.drivers).remove(&id);return;}
-                if row.cancel_requested {me.ended_here(&id,Err(::api::error::Error::new(::api::error::Kind::Conflict,"canceled","canceled")));lock(&me.drivers).remove(&id);return;}
+                if row.state==State::Settled {me.driver_done(&id);return;}
+                if row.cancel_requested {me.ended_here(&id,Err(::api::error::Error::new(::api::error::Kind::Conflict,"canceled","canceled")));me.driver_done(&id);return;}
             }
             let canceled = async {
                 loop {
@@ -382,7 +393,7 @@ impl Calcifer {
                 () = canceled => Err(::api::error::Error::new(::api::error::Kind::Conflict, "canceled", "canceled")),
             };
             me.ended_here(&id, end);
-            lock(&me.drivers).remove(&id);
+            me.driver_done(&id);
         });
     }
 
@@ -443,7 +454,12 @@ impl Calcifer {
         })?;
         let mut routes=lock(&self.run_owners);
         if ids.iter().any(|id|routes.get(id).is_some_and(|prior|match prior {Some(prior)=>!prior.same_view(&owner),None=>true})) { return Err(StoreError::Protected("active_run_owner_ambiguous".into())); }
-        let fresh=lock(&self.project_owners).insert(owner.project_id().into(),owner.clone()).is_none();
+        let fresh={
+            let mut owners=lock(&self.project_owners);
+            let fresh=!owners.get(owner.project_id()).is_some_and(|open|open.attached&&open.is(&owner));
+            owners.insert(owner.project_id().into(),owner.open(true,true));
+            fresh
+        };
         routes.extend(ids.into_iter().map(|id|(id,Some(owner.clone()))));
         drop(routes);
         // Driver/export admission is idempotent, and a verified legacy receipt
@@ -454,20 +470,79 @@ impl Calcifer {
     }
 
     pub(crate) fn project_store(&self, id: &str) -> store::Result<project::ProjectStore> {
-        lock(&self.project_owners).get(id).cloned().ok_or_else(|| StoreError::Locked("project_not_open".into()))?.store()
+        self.opened(id).ok_or_else(|| StoreError::Locked("project_not_open".into()))?.store()
+    }
+
+    /// Project `id` open now, or, attached before and closed since (nothing of it was active), opened again as a request
+    /// opens it; none locked.
+    fn opened(&self, id: &str) -> Option<project::RunOwner> {
+        if let Some(owner) = self.owner_of(id) { return Some(owner); }
+        let known = lock(&self.project_owners).get(id).is_some_and(|open| open.known);
+        known.then(|| self.api.get().and_then(Weak::upgrade)).flatten().and_then(|api| project::reopen(&api, id))
+    }
+
+    /// A project something holds open, registered as `Projects` opens it.
+    pub(crate) fn note_open(&self, owner: project::RunOwner) {
+        let mut owners = lock(&self.project_owners);
+        let known = owners.get(owner.project_id()).is_some_and(|open| open.known);
+        if !owners.get(owner.project_id()).is_some_and(|open| open.is(&owner)) { owners.insert(owner.project_id().into(), owner.open(false, known)); }
+    }
+
+    fn owner_of(&self, id: &str) -> Option<project::RunOwner> {
+        lock(&self.project_owners).get(id).and_then(project::OpenProject::owner)
+    }
+
+    /// The projects open now.
+    fn live_owners(&self) -> Vec<project::RunOwner> {
+        lock(&self.project_owners).values().filter_map(project::OpenProject::owner).collect()
+    }
+
+    /// The projects open now for a machine-wide view: one whose folder is gone (deleted, moved away) is let go, as a lock lets it go.
+    fn owners(&self) -> Vec<project::RunOwner> {
+        let (live, gone): (Vec<_>, Vec<_>) = self.live_owners().into_iter().partition(|owner| owner.root().exists());
+        for owner in gone { self.retire_project(owner.project_id()); }
+        live
+    }
+
+    /// A project run that settled and owes no output stops holding its project open: its route goes, and the project closes
+    /// once nothing else holds it (a later run, request or view opens it again).
+    pub(crate) fn release_run(&self, id: &RunId) {
+        if lock(&self.drivers).contains_key(id) || self.exporting(id) { return; }
+        let Some(Some(owner)) = lock(&self.run_owners).get(id.as_str()).cloned() else { return };
+        let Ok(store) = owner.store() else { return };
+        let ended = store.run(id.as_str()).ok().flatten().is_some_and(|row| row.state == State::Settled)
+            && store.outputs_to_export(id.as_str()).is_ok_and(|owed| owed.is_empty());
+        drop(store);
+        if ended { lock(&self.run_owners).remove(id.as_str()); }
+    }
+
+    /// Run `id`'s driver ended.
+    fn driver_done(&self, id: &RunId) {
+        lock(&self.drivers).remove(id);
+        self.release_run(id);
     }
 
     pub(crate) fn run_store(&self, id: &str) -> store::Result<store::RunStore<'_>> {
         match lock(&self.run_owners).get(id).cloned() {
             Some(Some(owner)) => owner.store().map(store::RunStore::Project),
             Some(None) => Ok(store::RunStore::Maintenance(&self.store)),
-            None => Err(StoreError::Locked("run_owner_required".into())),
+            // An ended run's route went with its project's release: its journal is an open project's, else Calcifer's own.
+            None => {
+                for owner in self.live_owners() {
+                    if let Ok(store) = owner.store() && store.run(id).ok().flatten().is_some() { return Ok(store::RunStore::Project(store)); }
+                }
+                match self.store.run(id)? {
+                    Some(_) => Ok(store::RunStore::Maintenance(&self.store)),
+                    None => Err(StoreError::Locked("run_owner_required".into())),
+                }
+            }
         }
     }
 
     pub(crate) fn row_owner(&self,row:&RunRow)->store::Result<Option<project::RunOwner>> {
         let Some(root)=&row.project_root else { return Ok(None); };
-        lock(&self.project_owners).values().find(|owner|owner.root()==root).cloned().map(Some).ok_or_else(||StoreError::Locked("project_not_open".into()))
+        let open=self.live_owners().into_iter().find(|owner|owner.root()==root);
+        open.or_else(||self.opened(&row.owner).filter(|owner|owner.root()==root)).map(Some).ok_or_else(||StoreError::Locked("project_not_open".into()))
     }
     pub(crate) fn row_store(&self,row:&RunRow)->store::Result<store::RunStore<'_>> {
         match self.row_owner(row)? { Some(owner)=>owner.store().map(store::RunStore::Project),None=>Ok(store::RunStore::Maintenance(self.maintenance_store())) }
@@ -490,6 +565,24 @@ impl Calcifer {
         self.with_run_store(id, |store| store.run(id)).ok().flatten()
     }
 
+    /// The runs `machine` holds (accepted there) of every open project, by each one's own journal: they run in the
+    /// project's engine, which the machine's own Status never lists. A locked project's are none.
+    pub(crate) fn project_runs_on(&self, machine: &str) -> Vec<RunRow> {
+        let owners = self.owners();
+        let mut rows = vec![];
+        for owner in owners {
+            let Ok(store) = owner.store() else { continue };
+            for id in store.unsettled().unwrap_or_default() {
+                if let Ok(Some(row)) = store.run(id.as_str())
+                    && row.state == State::Accepted && row.machine.as_deref() == Some(machine) && row.owner == store.project_id()
+                {
+                    rows.push(row);
+                }
+            }
+        }
+        rows
+    }
+
     fn with_run_store<T>(&self, id: &str, f: impl FnOnce(&store::RunStore<'_>) -> store::Result<T>) -> store::Result<T> {
         let store = self.run_store(id)?;
         f(&store)
@@ -499,11 +592,17 @@ impl Calcifer {
 
     pub(crate) fn each_store<T>(&self, mut read: impl FnMut(&store::RunStore<'_>) -> store::Result<T>) -> store::Result<Vec<T>> {
         let mut values = vec![read(&store::RunStore::Maintenance(self.maintenance_store()))?];
-        let owners: Vec<_> = lock(&self.project_owners).values().cloned().collect();
-        for owner in owners {
+        for owner in self.owners() {
+            // A project deleted while this reads has no journal: nothing of it counts, and it fails no one else's.
+            let gone = || !crate::project::vault::logical(owner.root()).exists();
             match owner.store() {
-                Ok(store) => values.push(read(&store::RunStore::Project(store))?),
+                Ok(store) => match read(&store::RunStore::Project(store)) {
+                    Ok(value) => values.push(value),
+                    Err(_) if gone() => {},
+                    Err(error) => return Err(error),
+                },
                 Err(StoreError::Locked(_)) => {},
+                Err(_) if gone() => {},
                 Err(error) => return Err(error),
             }
         }
@@ -527,6 +626,11 @@ impl Calcifer {
         Ok(self.each_store(|store| store.working(machine))?.into_iter().sum())
     }
 
+    /// Whether every journal is at rest (`Store::at_rest`).
+    pub(crate) fn at_rest(&self, quiet_ms: i64) -> store::Result<bool> {
+        Ok(self.each_store(|store| store.at_rest(quiet_ms))?.into_iter().all(|rest| rest))
+    }
+
 
     pub(crate) fn retire_project(&self, project: &str) {
         let ids:HashSet<_>=lock(&self.run_owners).iter().filter_map(|(id,owner)|owner.as_ref().filter(|owner|owner.project_id()==project).map(|_|id.clone())).collect();
@@ -542,8 +646,7 @@ impl Calcifer {
     /// Existing accepted work can settle after viewing closes. This never
     /// constructs a public run response or admits another execution.
     pub(crate) fn cancel_for_lock(&self,project:&str)->Result<Vec<u64>,Error> {
-        let owner=lock(&self.project_owners).get(project).cloned();
-        let Some(owner)=owner else {return Ok(vec![]);};
+        let Some(owner)=self.owner_of(project) else {return Ok(vec![]);};
         let store=owner.store()?;
         let ids=store.unsettled()?.into_iter().chain(store.unsettled_here()?).collect::<Vec<_>>();
         let mut canceled=vec![];
@@ -579,9 +682,28 @@ impl Calcifer {
         self.events.subscribe()
     }
 
+    /// Waits for an event of run `id` that moves its record (its state, an output landing or failing), not its logs or progress; a
+    /// stream that fell behind may have missed one, so it answers at once.
+    pub(crate) async fn moved(tail: &mut broadcast::Receiver<(RunId, Event)>, id: &RunId) {
+        loop {
+            match tail.recv().await {
+                Ok((run, event)) if run == *id && !matches!(event,
+                    Event::Log { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } | Event::OutputDelta { .. } | Event::Call { .. }) => return,
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => return,
+                Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+            }
+        }
+    }
+
     /// Told each time a machine's row, Status, boot or Hub listing may have changed.
     pub(crate) fn machines_changed(&self) -> watch::Receiver<()> {
         self.machines_changed.subscribe()
+    }
+
+    /// Told when what's known of machine `name` changes (`touch`); with no connection of it held here, when any machine's does.
+    pub(crate) fn machine_watch(&self, name: &str) -> watch::Receiver<()> {
+        lock(&self.machines).get(name).map_or_else(|| self.machines_changed(), |entry| entry.changed.subscribe())
     }
 
     /// Says a machine may have changed, to whoever watches the machines.
@@ -766,7 +888,22 @@ impl Calcifer {
     }
 
     /// Asks for the run's cancellation: unsent, it ends here; sent, its machine ends it.
-    pub(crate) fn cancel(&self, id: &RunId) -> Result<Option<Run>, Error> {
+    pub(crate) fn cancel(self: &Arc<Self>, id: &RunId) -> Result<Option<Run>, Error> {
+        if let store::RunStore::Project(store) = self.run_store(id.as_str())? && store.acting() {
+            // Asked from inside the project's own edit (a delete of what the run makes), which holds its writer until it commits:
+            // its machine is told now, and the request is kept once the edit lets the writer go.
+            lock(&self.canceling).insert(id.as_str().to_owned());
+            self.wake(id);
+            // Straight to its machine: the run's driver may itself be waiting on that writer to keep the run's progress.
+            self.stop_at_machine(id);
+            let (me, id) = (self.clone(), id.clone());
+            std::thread::spawn(move || {
+                if let Ok(events) = me.with_run_store(id.as_str(), |store| store.request_cancel(id.as_str())) { me.publish(&id, events); }
+                lock(&me.canceling).remove(id.as_str());
+                me.wake(&id);
+            });
+            return Ok(None);
+        }
         let events = self.with_run_store(id.as_str(), |store| store.request_cancel(id.as_str()))?;
         self.publish(id, events);
         self.wake(id);
@@ -774,6 +911,33 @@ impl Calcifer {
             Some(row) => Some(self.record(&row)?),
             None => None,
         })
+    }
+
+    /// Tells run `id`'s machine to cancel it now, on its own: `cancel` keeps the request.
+    pub(crate) fn stop_at_machine(self: &Arc<Self>, id: &RunId) {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let (me, id) = (self.clone(), id.clone());
+            runtime.spawn(async move { me.tell_cancel(&id).await });
+        }
+    }
+
+    /// Asks run `id`'s machine to cancel it, by the link its driver uses; what it answers is the driver's to record.
+    async fn tell_cancel(self: &Arc<Self>, id: &RunId) {
+        let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return };
+        let (Some(machine), true) = (row.machine.clone(), matches!(row.state, State::Sent | State::Accepted)) else { return };
+        let Ok(Some(link)) = self.link(&machine) else { return };
+        let scope = match self.run_store(id.as_str()) {
+            Ok(store::RunStore::Project(store)) => Some((store.project_id().to_owned(), store.execution_scope().1.to_owned())),
+            _ => None,
+        };
+        let link = match scope {
+            Some((project, root)) => match private_io::execution_link(&project, &root, &machine, &link).await {
+                Ok(link) => link,
+                Err(_) => return,
+            },
+            None => link,
+        };
+        let _ = link.cancel(&row.sent_id()).await;
     }
 
     /// The run as the API answers it, with what it is doing now.
@@ -899,7 +1063,7 @@ impl Calcifer {
     }
 
     /// The machines and their Hubs, once they serve this core.
-    fn machines(&self) -> Option<Arc<machines::Machines>> {
+    pub(crate) fn machines(&self) -> Option<Arc<machines::Machines>> {
         self.granting.get().and_then(Weak::upgrade)
     }
 
@@ -913,8 +1077,7 @@ impl Calcifer {
     pub(crate) fn machine_ended(&self, name: &str, reason: &str) -> Result<(), Error> {
         let mut events = self.store.machine_ended(name, reason)?;
         let served = self.store.machine(name)?.is_some_and(|machine| machine.served);
-        let owners: Vec<_> = lock(&self.project_owners).values().cloned().collect();
-        for owner in owners { if let Ok(store) = owner.store() { events.extend(store.runs_on_ended_machine(name, served, reason)?); } }
+        for owner in self.owners() { if let Ok(store) = owner.store() { events.extend(store.runs_on_ended_machine(name, served, reason)?); } }
         let mut woken = HashSet::new();
         for (id, event) in events {
             self.publish(&id, vec![event]);
@@ -952,6 +1115,10 @@ impl Calcifer {
         let events = self.with_run_store(id.as_str(), |store| store.warn(id.as_str(), warning))?;
         self.publish(id, events);
         Ok(())
+    }
+
+    pub(crate) fn serve_api(&self, api: &Arc<api::Api>) {
+        let _ = self.api.set(Arc::downgrade(api));
     }
 
     /// Lets `machines` mint what each send carries to its Hub.
@@ -1070,6 +1237,13 @@ impl Calcifer {
             .get(id)
             .map_or((None, None), |live| (live.waiting.clone(), live.progress.clone()));
         for mut event in events {
+            // An update settling frees the runs held behind it.
+            if let Event::Completed { run, .. } | Event::Failed { run, .. } | Event::Canceled { run, .. } = &event
+                && run.kind == ::api::calcifer::Kind::Update
+                && let Some(machine) = &run.machine
+            {
+                self.touch(machine);
+            }
             if let Event::Created { run, .. }
             | Event::Queued { run, .. }
             | Event::InProgress { run, .. } = &mut event
@@ -1243,6 +1417,13 @@ impl Calcifer {
     }
 
     /// What `id`'s machine quoted as it was sent (cl-816): its clock waits at least until its finish.
+    /// Where the plan sent project `project`'s run `id`, and its offer there, on its record (cl-967).
+    pub(crate) fn placed(&self, project: &str, id: &RunId, placed: &::api::calcifer::Placed) {
+        if let Err(error) = self.project_store(project).and_then(|store| store.record_placement(id, placed)) {
+            tracing::warn!("run {id}: where it was placed isn't kept: {error}");
+        }
+    }
+
     pub(crate) fn quoted(&self, id: &RunId, quoted: eta::Quoted) {
         if !lock(&self.drivers).contains_key(id) {
             return;
@@ -1356,10 +1537,10 @@ impl Calcifer {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
-            let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); lock(&me.drivers).remove(&id); return; } };
+            let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); me.driver_done(&id); return; } };
             private_io::context(scope,me.follow_to_end(&id,&wake)).await;
-            lock(&me.drivers).remove(&id);
             lock(&me.live).remove(&id);
+            me.driver_done(&id);
         });
     }
 
@@ -1393,10 +1574,16 @@ impl Calcifer {
             };
             // Sent now, it would run on what the machine is leaving, or go as it restarts. An update already with the machine
             // finishes what it has first, and what's held here goes to what it became.
-            if run.state == State::Queued && run.kind != ::api::calcifer::Kind::Update && self.store.updating(&name).unwrap_or_default() {
-                self.waiting(id, format!("getting {name} ready"));
-                pause.wait(wake, None).await;
-                continue;
+            if run.state == State::Queued && run.kind != ::api::calcifer::Kind::Update {
+                let mut settled = self.machine_watch(&name);
+                if self.store.updating(&name).unwrap_or_default() {
+                    self.waiting(id, format!("getting {name} ready"));
+                    tokio::select! {
+                        _ = settled.changed() => {}
+                        _ = wake.notified() => {}
+                    }
+                    continue;
+                }
             }
             // This computer's machine starts when a run needs it; a run it was never sent fails
             // when it cannot start, saying why.
@@ -1478,11 +1665,15 @@ impl Calcifer {
                 && run.kind != ::api::calcifer::Kind::Update
                 && let Some(machines) = self.machines()
             {
+                let mut settled = self.machine_watch(&name);
                 match machines.current(&name).await {
                     Ok(None) => {}
                     Ok(Some(update)) => {
                         self.waiting(id, format!("updating {name} first (run {}: {})", update.number, update.target));
-                        pause.wait(wake, None).await;
+                        tokio::select! {
+                            _ = settled.changed() => {}
+                            _ = wake.notified() => {}
+                        }
                         continue;
                     }
                     Err(e) if e.code == crate::update::OTHER_MINOR => {
@@ -1880,7 +2071,7 @@ impl Calcifer {
                         if run.state == State::Settled {
                             return Ok(()); // ended here: its machine was lost
                         }
-                        if run.cancel_requested && !canceled {
+                        if (run.cancel_requested || lock(&self.canceling).contains(id.as_str())) && !canceled {
                             link.cancel(&run.sent_id()).await?;
                             canceled = true;
                         }

@@ -33,15 +33,43 @@ paths:
       summary: Upload object bytes only into verified local project storage.
       description: Uses the existing object Content-Range and held-byte protocol. Public model weights remain separate; private bytes never fall back to global storage.
       responses: {'200': {description: Object held}, '201': {description: Object committed}, '204': {description: Part accepted}, '403': {description: Scope or proof refused}}
-  /v1/local-private/{project_id}/close:
+  /v1/project-execution/{project_id}/{rest}:
+    parameters:
+      - {name: project_id, in: path, required: true, schema: {type: string}}
+      - {name: rest, in: path, required: true, schema: {type: string}, description: Existing v1 data route suffix including its path parameters}
+      - {name: cozy-local-private-storage, in: header, required: true, schema: {type: string}, description: Base64url descriptor of the project's execution scope}
+      - {name: cozy-local-private-token, in: header, required: true, schema: {type: string}, description: Secret live-view proof; never log or retain}
+    get:
+      summary: Read within one project's execution scope (its own journal, store and status).
+      responses: {'200': {description: Existing data response}, '403': {description: Scope or proof refused}, '404': {description: Route or feature unavailable}}
     post:
-      summary: Release this project's idle execution handles before normal unmount.
-      description: Requires machine authentication plus the same descriptor and live-view token as other private routes. Active work or held handles return busy; no other project is closed.
+      summary: Submit, prepare or cancel within one project's execution scope.
+      responses: {'200': {description: Existing data response}, '403': {description: Scope or operation refused}, '404': {description: Route or feature unavailable}}
+    put:
+      summary: Upload object bytes into the project's own store.
+      responses: {'200': {description: Object held}, '201': {description: Object committed}, '204': {description: Part accepted}, '403': {description: Scope or proof refused}}
+  /v1/project-execution/{project_id}/close:
+    post:
+      summary: Release this project's idle execution handles before unmount or lock.
+      description: Same scope headers as other project-execution routes. Active work or held handles return busy; no other project is closed.
       parameters:
         - {name: project_id, in: path, required: true, schema: {type: string}}
-        - {name: cozy-local-private-storage, in: header, required: true, schema: {type: string}}
-        - {name: cozy-local-private-token, in: header, required: true, schema: {type: string}}
-      responses: {'204': {description: Private namespace closed}, '403': {description: Scope or proof refused}, '409': {description: Private work or custody remains active}}
+      responses: {'204': {description: Project execution closed}, '403': {description: Scope or proof refused}, '409': {description: Work or custody remains active}}
+  /v1/project-execution/{project_id}/migrate:
+    parameters:
+      - {name: project_id, in: path, required: true, schema: {type: string}}
+    get:
+      summary: Whether this machine's global journal still holds runs of this project to move into it.
+      responses: {'200': {description: Pending migration, if any}, '403': {description: Scope or proof refused}}
+    post:
+      summary: Move this project's legacy global runs into its own journal, verified and receipted. Empty body.
+      responses: {'200': {description: Migrated}, '403': {description: Scope or proof refused}, '409': {description: Migration pending or busy}}
+  /v1/project-execution/{project_id}/migration-bindings:
+    post:
+      summary: Look up legacy acceptances this project's receipts cover; never adopts or retires them.
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {type: string}}
+      responses: {'200': {description: Bindings}, '403': {description: Scope or proof refused}}
   /v1/health:
     get:
       summary: >-
@@ -264,7 +292,7 @@ paths:
     post:
       summary: >-
         Work, admitted as one (cl-816). Each new run is accepted with the others before any prepares, so the
-        machine packs them together as `POST /v1/estimate` quoted them. Each is idempotent on its id per
+        machine packs them together as Calcifer quoted them. Each is idempotent on its id per
         signer: the same id with the same spec answers its state; with another spec, `run_id_conflict`. An
         update's activation and a rental's idle release wait for them.
       operationId: submit
@@ -281,22 +309,33 @@ paths:
         '503':
           description: '`machine_updating` or `machine_released`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-  /v1/estimate:
-    post:
+  /v1/upcoming:
+    put:
       summary: >-
-        When each job would run here were the caller to send them all now, packed with the
-        machine's queue by the model its scheduler gives each root its width by. A quote: nothing is reserved.
-      operationId: estimate
+        The jobs the caller expects to send here, nearest first, its whole list, replacing its last (cl-967). Each prepares behind
+        every run, in its order, as a function's warm run: its code installed, what its call reads up front, then its guesses,
+        while they fit; one the list drops stops. Its downloads show in Status under `cozy:upcoming:<key>`.
+      operationId: upcoming
       requestBody:
-        content: {application/json: {schema: {$ref: '#/components/schemas/EstimateRequest'}}}
+        content: {application/json: {schema: {$ref: '#/components/schemas/Upcoming'}}}
         required: true
       responses:
         '200':
-          description: One quote per job, in its order
-          content: {application/json: {schema: {$ref: '#/components/schemas/EstimateAnswer'}}}
-        '400':
-          description: '`invalid_function`'
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+          description: Each job as a run would be admitted, in its order
+          content: {application/json: {schema: {$ref: '#/components/schemas/AheadAnswer'}}}
+  /v1/prepare:
+    put:
+      summary: >-
+        What the caller expects demand for here with no job yet, its whole set, replacing its last; each behind every upcoming
+        job (cl-967). Its downloads show in Status under `cozy:prepare:<key>`.
+      operationId: prepare
+      requestBody:
+        content: {application/json: {schema: {$ref: '#/components/schemas/Prepare'}}}
+        required: true
+      responses:
+        '200':
+          description: Each item as a run would be admitted, in its order
+          content: {application/json: {schema: {$ref: '#/components/schemas/AheadAnswer'}}}
   /v1/runs/{id}/cancel:
     post:
       summary: >-
@@ -492,6 +531,9 @@ components:
         manifest: {type: string, description: '`sha256:<hex>` of its header.'}
         precision: {type: string, description: 'Its header''s precision family (`int8`, `bf16`, …).'}
         release: {type: string, description: Empty for a local alias or a commit by hash.}
+        tree: {type: string, description: '`sha256:<hex>` of its tree, as a Hub card names the checkpoint.'}
+        bytes: {type: integer, format: int64, minimum: 0, description: Its closure's bytes.}
+        held_bytes: {type: integer, format: int64, minimum: 0, description: Of them, those held.}
     CheckpointRef:
       type: object
       description: 'A weights output''s commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.'
@@ -531,6 +573,20 @@ components:
         warning:
           type: string
           description: Why it does not run the machine's own Runtime; empty when it does.
+        manifest: {type: string, description: 'Local code''s manifest it was installed from; empty for a release.'}
+        functions:
+          type: array
+          items: {$ref: '#/components/schemas/HeldFunction'}
+          description: Each of its functions as the machine times and packs it.
+    HeldFunction:
+      type: object
+      properties:
+        entrypoint: {type: string}
+        timed_as: {type: string, description: Its runs' key in `StatusFrame.times`.}
+        widths:
+          type: array
+          items: {type: integer, format: int32, minimum: 0}
+          description: 'Its widths with no GPU count asked, smallest first; none: it holds no GPU.'
     Error:
       type: object
       required: [kind, code, message]
@@ -980,10 +1036,6 @@ components:
       type: string
       enum: [measured, prior, none]
       description: 'What a quote''s time stands on: runs here, the caller''s `prior_ms`, or nothing (a minute).'
-    EstimateAnswer:
-      type: object
-      properties:
-        jobs: {type: array, items: {$ref: '#/components/schemas/Quote'}, description: One per job asked, in its order.}
     EstimateJob:
       type: object
       properties:
@@ -1001,10 +1053,11 @@ components:
           format: int64
           minimum: 0
           description: 'The caller''s time for it on one GPU of this kind; 0: none. Used when no run of it here is timed.'
-    EstimateRequest:
-      type: object
-      properties:
-        jobs: {type: array, items: {$ref: '#/components/schemas/EstimateJob'}, description: In the order they would be sent.}
+        after_ms:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 'The soonest it can start, ms from now: when what it reads is made.'
     JobSize:
       type: object
       description: What a job makes, in the units its time scales with; each unknown one absent.
@@ -1018,6 +1071,7 @@ components:
       properties:
         commit: {type: string, description: '`sha256:<hex>`: a commit or header.'}
         bytes: {type: integer, format: int64, minimum: 0, description: Its weights' bytes as the catalog lists them.}
+        model: {type: string, description: 'Its repository (`org/name`), as a queued run downloading it names it.'}
     Quote:
       type: object
       description: When one job would run here, in ms from the answer.
@@ -1031,6 +1085,7 @@ components:
         prepare_ms: {type: integer, format: int64, minimum: 0, description: 'Its install and weights'' fetch, part of `start_ms`.'}
         queue_position: {type: integer, format: int32, minimum: 0}
         basis: {$ref: '#/components/schemas/Basis'}
+        warm: {type: boolean, description: "Its time is the function's warm one there: the model held, its plan compiled."}
     RunBatch:
       type: object
       properties:
@@ -1150,6 +1205,58 @@ components:
           required: [local]
           properties: {local: {$ref: '#/components/schemas/LocalSource'}}
       description: What a run runs.
+    Upcoming:
+      type: object
+      properties: {jobs: {type: array, items: {$ref: '#/components/schemas/Ahead'}, description: Nearest first.}}
+    Prepare:
+      type: object
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Ahead'}}}
+    Ahead:
+      type: object
+      description: One function to have ready, its code and its models in their lanes.
+      properties:
+        key: {type: string, description: "The caller's name for it: an upcoming job's key, the one its run is sent under."}
+        source: {$ref: '#/components/schemas/Source'}
+        entrypoint: {type: string, description: 'Empty: its code installed only.'}
+        models: {type: array, items: {$ref: '#/components/schemas/ModelChoice'}}
+        lane: {type: string}
+        hub: {$ref: '#/components/schemas/HubAccess'}
+    AheadAnswer:
+      type: object
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Admitted'}}}
+    Queued:
+      type: object
+      properties:
+        run: {type: string, description: "The caller's id for it; empty: another caller's."}
+        function: {type: string, description: "`<package>/<function>`, as `Timed.function` names it; empty: a private run's."}
+        size: {$ref: '#/components/schemas/JobSize'}
+        widths: {type: array, items: {type: integer, format: int32, minimum: 0}}
+        chooses: {type: boolean, description: "It gives the machine its width: no count asked, more than one width."}
+        running: {type: boolean, description: "It left its queue: its executor starts or it runs."}
+        width: {type: integer, format: int32, minimum: 0, description: The GPUs it holds, running.}
+        started_at_unix_ms: {type: integer, format: int64}
+        models: {type: array, items: {type: string}, description: The repositories it waits to download.}
+        bytes_left: {type: integer, format: int64, minimum: 0, description: "Its weights' bytes still to come."}
+    Timed:
+      type: object
+      properties:
+        function: {type: string, description: '`<package>/<function>`, any release.'}
+        runs: {type: array, items: {$ref: '#/components/schemas/TimedRun'}}
+    TimedRun:
+      type: object
+      description: "What one completed root took: its width, size, compute, and its load onto the GPUs."
+      properties:
+        width: {type: integer, format: int32, minimum: 0}
+        size: {$ref: '#/components/schemas/JobSize'}
+        ms: {type: number}
+        load_ms: {type: number}
+        cold: {type: boolean, description: "The function's first call on the machine: its plan compiled as it ran (its cold time)."}
+    Resident:
+      type: object
+      properties:
+        checkpoints: {type: array, items: {type: string}, description: 'Their headers, `sha256:<hex>`.'}
+        gpus: {type: array, items: {type: integer, format: int32, minimum: 0}}
+        level: {type: string, description: '`host` or `gpu`.'}
     StatusFrame:
       type: object
       description: >-
@@ -1222,6 +1329,27 @@ components:
           description: >-
             Why the executors' Runtime serves its GPUs none of its native kernels (`this cozy-runtime wheel carries no
             kernels (the pure wheel)`), as its latest executor said; empty: it does, or none has started.
+        queue:
+          type: array
+          items: {$ref: '#/components/schemas/Queued'}
+          description: >-
+            Every root not ended, every caller's, in acceptance order (cl-967). On a stream, absent: as its last frame
+            said.
+        times:
+          type: array
+          items: {$ref: '#/components/schemas/Timed'}
+          description: "Each function's newest 40 runs here, newest first. On a stream, absent: as its last frame said."
+        resident:
+          type: array
+          items: {$ref: '#/components/schemas/Resident'}
+          description: "Idle executors' loaded models: a job of them loads nothing."
+        link_bytes_per_s: {type: number, description: "Weights' arrival, bytes a second, once 1 GiB came; 0 before."}
+        serving_gpus: {type: integer, format: int32, minimum: 0, description: The most GPUs side by side in service.}
+        nvlink: {type: boolean, description: Its GPUs talk over NVLink.}
+        ahead:
+          type: array
+          items: {$ref: '#/components/schemas/RunState'}
+          description: "The caller's lists' items (PUT /v1/upcoming, /v1/prepare), each as its run stands: ready once it succeeded."
         started_at_unix_ms: {type: integer, format: int64}
         stuck:
           type: array

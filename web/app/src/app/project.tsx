@@ -1,8 +1,10 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query"
 import { createContext, type ReactNode, useCallback, useContext, useLayoutEffect } from "react"
-import { Link, useLocation, useMatch, useNavigate } from "react-router-dom"
-import type { Client } from "../api/client"
+import { useLocation, useMatch, useNavigate } from "react-router-dom"
+import { ApiError, type Client } from "../api/client"
 import type { ProjectAddress } from "../api/calcifer"
+import { noHash } from "../canvas/text"
+import { Copyable } from "../ui/Copyable"
 import { useConnection } from "./Connection"
 
 const CurrentProject = createContext<ProjectAddress | null>(null)
@@ -60,7 +62,7 @@ export function ProjectRoute({ children }: { children: ReactNode }) {
     if (`${location.pathname}${location.search}` !== canonical) navigate(canonical, { replace: true })
   }, [data, reference, location.pathname, location.search, navigate, queries])
 
-  if (reference && error && !data) return <main className="gate">Couldn't open this project. <Link to="/projects">Projects</Link></main>
+  if (reference && error && !data) return <main className="gate"><Unopened error={error} /></main>
   if (reference && !data) return <main className="gate">Opening project…</main>
   return <CurrentProject.Provider value={reference ? data ?? null : null}>{children}</CurrentProject.Provider>
 }
@@ -69,4 +71,22 @@ export function ProjectRoute({ children }: { children: ReactNode }) {
 export function rememberProject(queries: QueryClient, project: ProjectAddress) {
   queries.setQueryData(referenceKey(project.id), project)
   if (project.code) queries.setQueryData(referenceKey(project.code), project)
+}
+
+const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+
+/** Why a project can't be opened, and what to do, in its words: in place of it, wherever the page is (cl-980). */
+export function Unopened({ error }: { error: unknown }) {
+  const body = error instanceof ApiError ? error.body : undefined
+  const message = error instanceof Error ? error.message : String(error)
+  // Its folder gone, that's the whole story: "This project's folder is gone: <path>".
+  const gone = body?.code === "project_folder_gone"
+  return (
+    <div>
+      <h2>{gone ? sentence(message) : "This project can't be opened yet"}</h2>
+      {!gone && <p>{noHash(sentence(message))}</p>}
+      {body?.remedy && <p>{noHash(sentence(body.remedy))}</p>}
+      {body?.next?.map((line) => <Copyable key={line} text={line} />)}
+    </div>
+  )
 }

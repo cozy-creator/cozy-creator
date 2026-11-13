@@ -11,9 +11,28 @@ in_project() { local directory=$1; shift; (cd "$directory" && cozy "$@"); }
 project_api() {
   local directory=$1 suffix=$2; shift 2
   cozy --json machine ls > /dev/null || return
-  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded arg wrote=
   encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
-  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix" || return
+  for arg in "$@"; do case $arg in POST|PATCH|PUT|DELETE|-d|--data*) wrote=1 ;; esac; done
+  [ -z "$wrote" ] || project_integrity "$directory" "$suffix"
+}
+# The rows a read takes against the document they were written with (cl-885): after any write, nowhere different. A Calcifer from
+# before the check (0.24.0's, in the cells that make a project with it) serves no such route, and is no Calcifer under test.
+project_integrity() {
+  local directory=$1 after=${2:-a write} holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded found code
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
+  found=$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$holder")/v1/projects/$encoded/integrity") \
+    || { check "rows_equal_document after $after in $directory: the integrity read failed: $found"; return 0; }
+  code=${found##*$'\n'} found=${found%$'\n'*}
+  if [ "$code" = 404 ] && [ "$(jq -r '.error.code? // empty' <<< "$found" 2> /dev/null)" = unknown_route ]; then
+    return 0
+  elif [ "$code" != 200 ]; then
+    check "rows_equal_document after $after in $directory: the integrity read answered $code: $found"
+  elif [ "$(jq '.differences | length' <<< "$found")" != 0 ]; then
+    check "rows_equal_document after $after in $directory: $(jq -c .differences <<< "$found")"
+  fi
+  return 0
 }
 # project_upload <folder> <file>: the file into that project's own content store, as the page sends it; its sha256:.
 project_upload() {
@@ -276,8 +295,8 @@ api -f -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: walking-
   -d '{"names":["all"],"on":["local"]}' "http://$ADDR/v1/projects/$id/runs" > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
 J '[.board.jobs[].asset] as $a | (["running_gone", "reads_gone", "slow", "beside", "one", "two", "last", "gone_soon"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
 J '.board.jobs[] | select(.asset == "last") | .needs | contains(["one", "two"])' <<< "$(status "$W")" || check "walking: last doesn't say what it waits for: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "last")')"
-for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run watch "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
-[ "$(cozy --json run watch "$run" --once | jq -r .status)" = in_progress ] || check "walking: running_gone isn't running: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "running_gone")')"
+for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(in_project "$W" --json run watch "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ "$(in_project "$W" --json run watch "$run" --once | jq -r .status)" = in_progress ] || check "walking: running_gone isn't running: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "running_gone")')"
 # On one machine they queue there: each went as soon as it could, not after the long job.
 for _ in $(seq 120); do J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" && break; sleep 0.25; done
 J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" || check "walking: what reads nothing waited for the long job: $(status "$W" | jq -c '[.board.jobs[] | {asset, run}]')"
@@ -286,8 +305,8 @@ project_api "$W" /assets/gone_soon -X DELETE > /dev/null || check "walking: dele
 for _ in $(seq 20); do J '.board.jobs[] | select(.asset == "gone_soon") | .state == "canceled"' <<< "$(status "$W")" && break; sleep 0.25; done
 api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$id/assets/running_gone"
 back=$(api "http://$ADDR/v1/projects/$id/history" | jq -r '[.entries[] | select(.undone == null and (.names | index("running_gone")))][0].id')
-for _ in $(seq 60); do [ "$(cozy --json run watch "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
-[ "$(cozy --json run watch "$run" --once | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(cozy --json run watch "$run" --once | jq -c '{status, progress}')"
+for _ in $(seq 60); do [ "$(in_project "$W" --json run watch "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
+[ "$(in_project "$W" --json run watch "$run" --once | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(in_project "$W" --json run watch "$run" --once | jq -c '{status, progress}')"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$W")" && break; sleep 0.5; done
 soon told "$stream" ".type == \"board.updated\" and .project == \"$id\" and .board.ended != null" || check "walking: terminal board not delivered"
 kill "$tail" 2> /dev/null
@@ -362,6 +381,16 @@ soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told noth
 soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$id\"" \
   || check "stream: no run.updated says run $n completed in $id: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
 soon told "$other" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\"" || check "stream: a connection with no projects missed the global run"
+# Another program's change (xs-189: Calcifer watches the folder, it no longer looks): a file leaving files/, as a sync tool's would,
+# and coming back.
+local kept aside=$OUT/stream-aside
+kept=$(find "$R/files" -type f | head -1)
+seen=$(revs "$log" "$id" | wc -l)
+{ [ -n "$kept" ] && mv "$kept" "$aside"; } || check "stream: the landing left nothing in files/"
+soon told_more "$log" "$id" "$seen" || check "stream: a file leaving files/ told nothing"
+seen=$(revs "$log" "$id" | wc -l)
+[ -z "$kept" ] || mv "$aside" "$kept"
+soon told_more "$log" "$id" "$seen" || check "stream: a file back in files/ told nothing"
 [ -z "$(revs "$other" "$id")" ] || check "stream: project changes reached a connection with no interest"
 soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
 [ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"

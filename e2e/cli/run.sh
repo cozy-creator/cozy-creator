@@ -31,7 +31,11 @@ parse "$@"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
+. "$(dirname "$0")/selfupdate.sh"
 . "$(dirname "$0")/idle.sh"
+. "$(dirname "$0")/plan.sh"
+. "$(dirname "$0")/render.sh"
+. "$(dirname "$0")/source.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -63,6 +67,19 @@ step status; fixture_calcifer | tee "$OUT/status.json"
 step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
+case $SHARD in projectvault | plan | web-core) calcifer_diagnostics ;; esac
+}
+
+# A vault failure, or a web-core cell's, names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings
+# in calcifer/diagnostics.log, which the job collects with the other logs.
+calcifer_diagnostics() {
+  local config=$HOME/.cozy/config.toml pid
+  awk '/^diagnostics *=/ { next } { print } /^\[calcifer\]/ { print "diagnostics = true"; put = 1 } END { if (!put) printf "\n[calcifer]\ndiagnostics = true\n" }' "$config" > "$config.next" && mv "$config.next" "$config"
+  pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
+  kill -TERM "$pid" 2> /dev/null || true
+  while kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
+  cozy --json machine ls > /dev/null || fail "Calcifer did not start again with its diagnostics"
+  [ -f "$HOME/.cozy/calcifer/diagnostics.log" ] || fail "Calcifer kept no diagnostics log"
 }
 
 # The candidate set end to end: a request through TensorD, the Runtime and TensorFS to the reply, no model.
@@ -300,7 +317,8 @@ for slow in yes no; do
   for _ in $(seq 120); do [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] && [ -s "$holder" ] && break; sleep 0.5; done
   [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] || check "watch restart: no new Calcifer's record 60 s after a restart"
 done
-slowed=$(grep -a 'started step="record"' "$HOME/.cozy/calcifer/calcifer.log" | tail -2 | head -1 | grep -oE 'ms=[0-9]+' | cut -d= -f2)
+# Calcifer's start steps are in its closed health log.
+slowed=$(grep -a 'started step="record"' "$HOME/.cozy/calcifer/health.log" 2> /dev/null | tail -2 | head -1 | grep -oE 'ms=[0-9]+' | cut -d= -f2) || slowed=
 [ "${slowed:-0}" -ge 4000 ] || check "watch restart: the first restart's record wasn't slowed (record step ${slowed:-?} ms): the cell proves nothing"
 wait "$watcher" || code=$?
 [ "$code" = 0 ] && J -s 'any(.[]; .type == "run.completed" and .run.status == "completed")' "$OUT/watch.ndjson" \
@@ -469,6 +487,7 @@ case $SHARD in
     kept_preparing
     catalog
     basics
+    component_models
     yaml_requests
     run_flags
     run_follow
@@ -480,6 +499,7 @@ case $SHARD in
     lock_refresh
     bound_runs
     own_references
+    lane_fit
     no_descriptions
     orbit_angles
     old_runtime
@@ -491,6 +511,7 @@ case $SHARD in
     machine_show_runs
     writes_once
     project_stream
+    agent_render
     web_serves
     page_resend
     queued_download
@@ -535,15 +556,19 @@ case $SHARD in
   idle) parts="idle_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
   ondemand) parts="ondemand_ahead logs" ;;
+  # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
+  plan) parts="estimate_line plan_picks plan_published prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints
     catalog
     basics
+    component_models
     yaml_requests
     run_filters
     bound_runs
     own_references
+    lane_fit
     no_descriptions
     orbit_angles
     old_runtime
@@ -585,8 +610,6 @@ case $SHARD in
   web-trash) export DB_WEB=trash; parts="tools_read db_existing_web logs" ;;
   # The tool beside a box's name (cl-927).
   web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
-  # A box's models and LoRAs, open (web/addons.js; at rest it has no chips, cl-932).
-  web-addons) export DB_WEB=addons; parts="tools_read db_existing_web logs" ;;
   # The right-side panel closed by a click off it (cl-929).
   web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;
   # No New on an empty box (cl-925).
@@ -599,15 +622,12 @@ case $SHARD in
   web-beats) export DB_WEB=beats; parts="tools_read db_existing_web logs" ;;
   # Pasted mentions (cl-902).
   web-paste) export DB_WEB=paste; parts="tools_read db_existing_web logs" ;;
-  # A toast when a render finishes, with View (cl-937).
-  web-donetoast) export DB_WEB=donetoast; parts="tools_read db_existing_web logs" ;;
   # A run says one thing at most: no note of a completed run's warnings, one note of a failure that stays (cl-921).
   web-toasts) export DB_WEB=toasts; parts="tools_read db_existing_web logs" ;;
   # A rendering box at rest, and new takes not looked at (cl-928).
   web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
-  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it; an
-  # edit's backdrop with every picture it uses (cl-949).
-  web-tiles) export DB_WEB="tiles newtakes backdrop"; parts="tools_read db_existing_web logs" ;;
+  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it.
+  web-tiles) export DB_WEB="tiles newtakes"; parts="tools_read db_existing_web logs" ;;
   # The take looked at in Focus is the one drawn when it finishes (cl-942).
   web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
   # A take is one id from Render to its version, listed at once and never off, through a slow Calcifer and a reload (cl-945), with cl-942's.
@@ -656,20 +676,40 @@ case $SHARD in
     focusfinish
     takeids
     failedtakes
+    purged
+    toasts
     old_takes
     prepares
     db_migrate
+    db_opens
+    db_migrate_large
     db_waits
+    db_keyed
+    agent_render
     logs
   " ;;
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
-  projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
+  projectvault) parts="
+    projectvault
+    vault_leftovers
+    vault_web
+    vault_swapped
+    logs
+  " ;;
   projectdb-latency) parts="db_latency logs" ;;
+  # A keyed write cut off mid-request, sent again (cl-885).
+  projectdb-keyed) parts="db_keyed logs" ;;
+  # cozy render alone (cl-956), with the project part's fixtures.
+  projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
+  # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
+  projectdb-migrate-large) parts="db_migrate_large logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).
   projectdb-waits) parts="db_waits logs" ;;
+  # A project opened and read again, across Calcifer's restart, with nothing in it changed (cl-885).
+  projectdb-opens) parts="db_opens logs" ;;
   # A run watched across Calcifer restarts, one whose lock record lands late (cl-885).
   follow-watch) parts="watch_restart logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
@@ -688,23 +728,27 @@ case $SHARD in
   projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
   # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a child
-  # result's Latents in another package's caller (cr-276), a host path refused; then a docker rental's end, signed out,
-  # with a revoked key and signed in (cl-875).
+  # result's Latents in another package's caller (cr-276), a host path refused, a dev home's first-party packages from its
+  # packages checkout (xs-195); then a docker rental's end, signed out, with a revoked key and signed in (cl-875).
   local-code) parts="
     uv_at_once
     unseen
     local_edits
     hub_dependency
     hub_published
+    rc_floor
     held_prerelease
     runtime_floor
     child_latents
     path_manifest
+    from_source
     rental_end
     logs
   " ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
+  # cozy updates itself for a package that needs a newer cozy (cl-978): its own runner, as it replaces this computer's cozy.
+  selfupdate) parts="self_update logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="
     machine_show_runs

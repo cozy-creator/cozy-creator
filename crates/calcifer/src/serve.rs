@@ -25,7 +25,7 @@ use ::api::{
     error::{Envelope, Error, Kind},
 };
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     Calcifer,
@@ -90,6 +90,8 @@ pub(crate) enum Stopped {
     AnotherHolds,
     /// `POST /v1/down`.
     Down,
+    /// cozy updated itself (cl-978): the installed binary starts in its place.
+    Updated,
 }
 
 /// `cozy calcifer`: exits 0 unless Calcifer could not start, which `refused.json` then says.
@@ -112,7 +114,7 @@ pub fn main() -> ExitCode {
         warn!("{e}");
     }
     let served = match configuration() {
-        Ok(loaded) => match crate::health::install(&loaded.home).and_then(|()| runtime(&loaded)) {
+        Ok(loaded) => match crate::health::install(&loaded.home, loaded.config.calcifer.diagnostics).and_then(|()| runtime(&loaded)) {
             // Stopped, Calcifer exits now: nothing left on the runtime holds the process (or its
             // service) past `down`.
             Ok(runtime) => {
@@ -128,8 +130,37 @@ pub fn main() -> ExitCode {
         },
     };
     match served {
+        Ok(Stopped::Updated) => successor(),
         Ok(_) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// The installed cozy's Calcifer in this one's place, once it let go of the home (cl-978): on Unix this process becomes it, so its
+/// service manager (or none) holds the same process; on Windows it starts detached, as the CLI starts one, and this one exits.
+fn successor() -> ExitCode {
+    let binary = match configuration().map(|loaded| crate::cozy::installed(&loaded.home)) {
+        Ok(Ok(binary)) => binary,
+        Ok(Err(e)) | Err(e) => {
+            error!("the updated cozy: {e}; the next cozy command starts it");
+            return ExitCode::SUCCESS;
+        }
+    };
+    info!(binary = %binary.display(), "Calcifer starts on the updated cozy");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let e = std::process::Command::new(&binary).arg("calcifer").exec();
+        error!("starting {}: {e}; the next cozy command starts it", binary.display());
+        ExitCode::SUCCESS
+    }
+    #[cfg(not(unix))]
+    {
+        let log = configuration().ok().map(|loaded| loaded.home.calcifer_log());
+        if let Err(e) = process::detach(&binary, &["calcifer".into()], log.as_deref()) {
+            error!("starting {}: {e}; the next cozy command starts it", binary.display());
+        }
+        ExitCode::SUCCESS
     }
 }
 
@@ -287,6 +318,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let mut token = [0; 32];
     getrandom::fill(&mut token).expect("the OS provides randomness");
     let token = hex::encode(token);
+    crate::checkout::start(&loaded.config);
     let machines = Machines::start(calcifer.clone(), home.clone(), &loaded.user_home, &loaded.config);
     steps.done("machines");
     tokio::spawn(drop_old_measurements(calcifer.clone()));
@@ -311,7 +343,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         address,
         token,
         pid: std::process::id(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         started_at_ms: crate::store::now_ms(),
     };
     let mut record = serde_json::to_vec(&holder).expect("serializes");
@@ -338,7 +370,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");
     match calcifer.resume() {
-        Ok(runs) => steps.done(&format!("resume ({runs} runs)")),
+        Ok(_) => steps.done("resume"),
         Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
     }
     tokio::spawn(crate::hub::jobs::resume(api.clone()));
@@ -357,15 +389,16 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     calcifer.close();
     drop(held);
     crate::health::service_health(crate::health::HealthEvent::Stopped);
-    Ok(Stopped::Down)
+    Ok(if api.updated() { Stopped::Updated } else { Stopped::Down })
 }
 
 /// Logs each startup step with the time it took.
 struct Steps(Instant);
 
 impl Steps {
-    fn done(&mut self, step: &str) {
-        info!(step, ms = self.0.elapsed().as_millis() as u64, "started");
+    /// A start's step and how long it took, in the closed health log: a slow start names its slow step.
+    fn done(&mut self, step: &'static str) {
+        info!(target: "cozy.service_health", step, ms = self.0.elapsed().as_millis() as u64, "started");
         self.0 = Instant::now();
     }
 }
@@ -381,6 +414,9 @@ async fn shutdown_after_signal(api: Arc<Api>) {
     let began = Instant::now();
     let mut reported: Option<(String, Instant)> = None;
     loop {
+        // Listening before it asks: a view that closes meanwhile isn't missed. The vault clock tries each close again.
+        let mut closed = std::pin::pin!(crate::project::vault::CLOSED.notified());
+        closed.as_mut().enable();
         let error = match api.shutdown().await {
             Ok(_) => return,
             Err(error) => error,
@@ -396,7 +432,7 @@ async fn shutdown_after_signal(api: Arc<Api>) {
         }
         tokio::select! {
             () = api.stopped() => return,
-            () = tokio::time::sleep(Duration::from_millis(250)) => {},
+            () = closed => {},
         }
     }
 }
