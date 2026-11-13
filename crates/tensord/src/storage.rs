@@ -30,13 +30,17 @@ pub(crate) fn open(root: &Path) -> io::Result<Arc<Store>> {
 /// The machine's claim on its store: `owner.lock` at the store's real path, held exclusively
 /// (without waiting) for as long as the returned file lives; the OS releases it when the machine
 /// exits. A second machine on the same store, by any path, is refused. Readers (`tfs`, the
-/// library) never take it.
-pub(crate) fn claim(root: &Path) -> io::Result<std::fs::File> {
+/// library) never take it. Held by `over`, an earlier machine that can't exit (cl-977), it is taken over unclaimed.
+pub(crate) fn claim(root: &Path, over: Option<&str>) -> io::Result<std::fs::File> {
     let real = std::fs::canonicalize(root)?;
     let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(real.join(OWNER_LOCK))?;
-    match platform::lock::try_claim(&file)? {
-        true => Ok(file),
-        false => Err(io::Error::new(
+    match (platform::lock::try_claim(&file)?, over) {
+        (true, _) => Ok(file),
+        (false, Some(holder)) => {
+            tracing::warn!("the store {} is held by {holder}; this machine takes it over", real.display());
+            Ok(file)
+        }
+        (false, None) => Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("STORE_BUSY: this TensorFS store already has an owner ({})", real.display()),
         )),

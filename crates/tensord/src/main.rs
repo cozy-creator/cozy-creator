@@ -24,6 +24,13 @@ enum Mode {
         #[arg(long)]
         json: bool,
     },
+    /// The machine's own process opening its GPUs.
+    #[command(hide = true)]
+    ProbeGpus {
+        ids: String,
+        #[arg(long)]
+        contexts: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -32,6 +39,10 @@ fn main() -> ExitCode {
         None => return serve::machine(tensord.flags.lifetime()),
         Some(Mode::Run(flags)) => return serve::machine(flags.lifetime()),
         Some(Mode::Version { .. }) => serve::version(),
+        Some(Mode::ProbeGpus { ids, contexts }) => {
+            let contexts = contexts.then(|| "--contexts".into());
+            return serve::probe_gpus(std::iter::once(ids.into()).chain(contexts));
+        }
     };
     match done {
         Ok(()) => ExitCode::SUCCESS,
