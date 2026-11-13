@@ -137,17 +137,23 @@ quote() {
 # order [SKU]: one rental ($SKU by default) ordered, its boot followed in the background; `ready` waits for it. rent =
 # order + ready. The first order starts the guard (`guard`).
 order() {
-  local o first='' i=${#RIDS[@]} RP sku=${1:-$SKU}
-  o=$(date +%s%3N)
-  # Nothing long-lived holds a session's rent lock (fd 9): only the order does, while it names its machine.
-  cozy machine rent "$sku" --disk-gb "$DISK" $RENT_ARGS -y > "$OUT/rent$i.out" 2> "$OUT/rent$i.err" 9>&- & RP=$!
-  while [ -z "$first" ]; do
-    first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' "$OUT/rent$i.err" | cut -d: -f1)
-    [ -n "$first" ] || kill -0 "$RP" 2>/dev/null || break
-    sleep 2
+  local o first i=${#RIDS[@]} RP sku=${1:-$SKU} try=1 pause=15
+  local done  # the order's exit, when it ended before naming its machine
+  # A SKU no provider has is often offered again within minutes: the order is placed again, six times over about 6 min.
+  while :; do
+    o=$(date +%s%3N) first='' done=''
+    # Nothing long-lived holds a session's rent lock (fd 9): only the order does, while it names its machine.
+    cozy machine rent "$sku" --disk-gb "$DISK" $RENT_ARGS -y > "$OUT/rent$i.out" 2> "$OUT/rent$i.err" 9>&- & RP=$!
+    while [ -z "$first" ]; do
+      first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' "$OUT/rent$i.err" | cut -d: -f1)
+      [ -n "$first" ] || kill -0 "$RP" 2>/dev/null || break
+      sleep 2
+    done
+    [ -n "$first" ] || { wait "$RP"; done=$?; [ "$done" = 0 ] && first=$(awk '$1=="machine"{print $2; exit}' "$OUT/rent$i.out"); }
+    [ -z "$first" ] && [ "$try" -lt 6 ] && grep -q sku_out_of_stock "$OUT/rent$i.err" || break
+    say "no provider has $sku now (attempt $try/6): ordering again in ${pause}s"
+    sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
   done
-  local done=''  # the order's exit, when it ended before naming its machine
-  [ -n "$first" ] || { wait "$RP"; done=$?; [ "$done" = 0 ] && first=$(awk '$1=="machine"{print $2; exit}' "$OUT/rent$i.out"); }
   [ -n "$first" ] || fail "the rent named no machine: $(tail -3 "$OUT/rent$i.err")"
   cozy machine show "$first" --json > "$OUT/show-boot$i.json" 2>&1
   RID=$(jq -r '.rental_id // empty' "$OUT/show-boot$i.json")
