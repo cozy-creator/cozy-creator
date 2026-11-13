@@ -4,10 +4,17 @@ const { execFile } = require('child_process');
 const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 
-/** Each local fixture tool a cell renders, with inputs it runs on: warmed on local two at a time. A cell's tool goes here. Only Linux runs
- *  models on its own machine (lib.sh's LOCAL): macOS and Windows warm nothing. */
+/** Each tool a cell renders, with inputs it runs on: warmed on local two at a time. A cell's tool goes here: a fixture file's
+ *  (`<file>.py/<function>`, under e2e/cli/project/), or a release the isolated Hub holds (`<package>/<function>`), which its run installs.
+ *  Only Linux runs models on its own machine (lib.sh's LOCAL): macOS and Windows warm nothing. */
 const WARM = process.platform === 'linux' ? [
   ['draw.py/draw', 'instructions=warm'],
+  ['tool.py/still', 'instructions=warm'],
+  ['boxes.py/still', 'instructions=warm'],
+  ['when.py/image', 'instructions=warm'],
+  ['segments.py/segments', 'segments=1', 'seconds=1', 'wait=0'],
+  // package-ui's component loads from a release a machine you hold has installed.
+  ['e2e-boxed/plain', 'instructions=warm'],
 ] : [];
 /** What isolated.sh publishes at the root for every web job. */
 const SEED = ['qwen-image-2', 'minimax-h3', 'sdxl', 'birefnet', 'moss-image', 'e2e-boxed'];
@@ -57,7 +64,7 @@ module.exports = async () => {
   await Promise.all([0, 1].map(async () => {
     for (let next; (next = left.shift()); ) {
       const [tool, ...inputs] = next;
-      warmed[tool] = await cozy(['run', join(__dirname, '..', 'project', tool), ...inputs, '--on', 'local']);
+      warmed[tool] = await cozy(['run', tool.includes('.py/') ? join(__dirname, '..', 'project', tool) : tool, ...inputs, '--on', 'local']);
     }
   }));
   const cold = Object.entries(warmed).filter(([, run]) => run.code !== 0);

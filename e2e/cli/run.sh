@@ -417,24 +417,24 @@ code=0; (cd "$OUT/outside-projects" && cozy --json package uninstall local/one_s
 # The web suite's lanes (cl-973), each a job of its own with its own Calcifer: their cells at once (web.sh's web_suite), balanced by
 # measured time, longest first, one cell a line. A cell is web/<cell>.spec.js; its line is uncommented once it's written.
 WEB_1=(
-  # video
+  video
   # render
-  # upload
-  # mention
+  upload
+  mention
   # box-actions
-  # timeline
+  timeline
   open
 )
 WEB_2=(
-  # fields
+  fields
   # layout
-  # type
+  type
   # live
   # delete-undo
   # canvas-nav
 )
 WEB_3=(
-  # package-ui
+  package-ui
   # focus
   # create
   # takes
@@ -445,8 +445,8 @@ WEB_3=(
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(
-  # upload
-  # type
+  upload
+  type
   # create
   # move
   open
@@ -461,8 +461,8 @@ WEB_SOLO=(
 WEB_NATIVE=(
   # layout
   # offline
-  # upload
-  # type
+  upload
+  type
   # create
   # move
   open

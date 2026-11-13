@@ -204,8 +204,9 @@ case $key in
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
   cli:ondemand) needs='packages birefnet' ;;
-  # Models & LoRAs, the VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
-  cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
+  # Models & LoRAs, the VAE slot, the triggers of SDXL's, Ideogram 4's and Krea 2's LoRAs (`prompts`) and heavy.py's BiRefNet; macOS and
+  # Windows run no models.
+  cli:web-suite) needs='packages birefnet loras vaes prompts'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
   cli:plan) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras vaes prompts' ;;
