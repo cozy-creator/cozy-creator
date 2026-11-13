@@ -2,7 +2,7 @@
 # SCALE_MAINTENANCE project-less runs on `local` (calls, warms, updates outside any project) with ~100 KB outcomes and
 # SCALE_PROJECT runs landing in SCALE_DIRS projects' .runs, each with its logs, and SCALE_UNCODED projects in its index from
 # before public codes whose project.db can't be read. 0.24.0's own Calcifer makes the store (another user's home); the rows
-# are added to it; this cozy's first start then fences it (v7 -> v8). Timed: that start, `cozy doctor` answering after it;
+# are added to it; this cozy's first start then fences it (v7 -> v8). Timed: that start, `cozy doctor` answering after it (under 2 s);
 # with `local` running and an events stream open as a page holds one, `machine show local`, `machine ls` and
 # `model ls --on local` 5 times each, under 2 s each (#3270: each read every run on `local`, twice, and the stream again on
 # every Status); and 100 reads each of a plain project, a locked encrypted project's vault status and the projects list, whose
@@ -85,6 +85,8 @@ took_start=$(python3 -c "print(round($EPOCHREALTIME - $began, 2))")
 began=$EPOCHREALTIME
 timeout 120 cozy --json doctor > "$S/doctor.json" 2> "$S/doctor.err" || true
 doctor=$(python3 -c "print(round($EPOCHREALTIME - $began, 2))")
+# Nothing a first command asks waits on a pass over the history (#3270 made it wait for one: 5.7 s here).
+python3 -c "import sys; sys.exit($doctor >= 2)" || check "containment scale: cozy doctor after the first start took ${doctor}s, 2 s or more"
 local after
 after=$(python3 - "$HOME/.cozy/calcifer/state.db" <<'PY' || echo '{}'
 import json, os, sqlite3, sys
