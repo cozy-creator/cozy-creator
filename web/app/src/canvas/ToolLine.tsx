@@ -18,7 +18,7 @@ function ToolName({ name }: { name: string }) {
   return (
     <span className="image-tool" title={tool?.source ? `${asset.tool}, from source: ${tool.source}` : asset.tool}>
       <span className="image-tool-name">{tool ? toolName(tool) : asset.tool}</span>
-      {tool?.source && <span className="image-tool-source">from source · {tool.source}</span>}
+      {tool?.source && <span className="image-tool-source" title={`From source: ${tool.source}`}>from source</span>}
       <button type="button" title={`Take ${tool ? toolName(tool) : asset.tool} off`} aria-label={`Remove ${asset.kind} tool`} onClick={() => store.takeToolOff(name)}><Icon name="trash" /></button>
     </span>
   )

@@ -3488,11 +3488,6 @@ a.tab:hover {
   color: var(--mute);
   white-space: nowrap;
 }
-.image-tool-source {
-  max-width: 50%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .tool-off {
   flex: none;
   padding: 2px;
