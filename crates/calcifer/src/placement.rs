@@ -8,6 +8,7 @@
 //! that finishes it sooner than any machine up now. A `new` run weighs a rental against them (`runs::instead_of_renting`).
 use std::sync::Arc;
 
+use tracing::warn;
 use api::{
     calcifer::{MachineEstimate, On},
     error::{Error, Kind},
@@ -282,11 +283,11 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     };
     // A project's work on this computer's machine runs in its own engine: what it holds, queues and has measured there is
     // in its own Status alone.
-    if row.name == "local"
-        && let Some(scope) = crate::private_io::current()
-        && let Ok(own) = link.with_private(scope).status().await
-    {
-        frame = with_own(frame, own);
+    if row.name == "local" && let Some(scope) = crate::private_io::current() {
+        match link.with_private(scope).status().await {
+            Ok(own) => frame = with_own(frame, own),
+            Err(error) => warn!("local is pictured without this project's own engine there: {error}"),
+        }
     }
     let own = this_release();
     if !same_minor(&frame.version, own) && !rc_version() {

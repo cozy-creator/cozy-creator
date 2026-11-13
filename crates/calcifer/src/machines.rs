@@ -348,6 +348,8 @@ impl Machines {
                         }
                         held.insert(entry.path, frame.models);
                     }
+                    // Stopped: nothing of it is read now.
+                    Err(LinkError::Unreachable(_)) => break,
                     Err(error) => warn!("what a project's own engine on local holds is unread: {error}"),
                 }
             }
@@ -1005,7 +1007,7 @@ impl Machines {
 
     /// Whether it listed anything.
     async fn project_frames(&self, project: &str) -> bool {
-        let mut listed = false;
+        let (mut listed, mut warned) = (false, false);
         // Its runs there, or its upcoming jobs prepared in its own engine (`ahead::Lists`), whose rows its own Status tells.
         let working = || self.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0) || self.lists.listed_for("local", project);
         while working() {
@@ -1016,7 +1018,12 @@ impl Machines {
                 Some(self.calcifer.link("local").ok()??.with_private(scope))
             })();
             let Some(link) = scoped else { return listed };
-            if let Ok(mut frames) = link.watch().await {
+            let watched = link.watch().await;
+            if let Err(error) = &watched && !warned {
+                warn!("{project}'s own Status on local is unread: {error}");
+                warned = true;
+            }
+            if let Ok(mut frames) = watched {
                 while let Some(Ok(frame)) = frames.next().await {
                     let quiet = frame.activity.is_empty();
                     listed |= !quiet;
