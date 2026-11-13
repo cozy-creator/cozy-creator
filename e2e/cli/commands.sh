@@ -750,24 +750,31 @@ machine_ready
 jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "runtime floor: off its hold, local runs $(jq -r .status.runtime "$OUT/machine.json"), not its Hub's pinned 0.45.0"
 # xs-191: an RC build named by hand is a pin too. se-131's aishela, given the RC's TensorFS and cozy by version (each said
 # `(RC)`), was moved off them as the RC moved; held, local refuses e2e-floor 0.2.0 as above, and nothing named lets it go.
-local rc tfs
-rc=$(cozy --version | awk '{split($2, v, "."); print v[1] "." v[2] + 1 ".0"}')
-tfs=$(curl -fsSL "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
-  | sed -n 's/.*  tensorfs-\(.*\)-cp311-abi3-manylinux_2_28_x86_64\.whl$/\1/p' | head -1) || tfs=
-if [ -n "$tfs" ]; then
-  cozy --json machine update local --tensorfs "$tfs" -y > "$OUT/floor-rc-pin.json" 2>&1 \
-    || { check "runtime floor: local refused the RC's TensorFS $tfs: $(tail -c 300 "$OUT/floor-rc-pin.json")"; return; }
+# The RC's cozy is named: its TensorFS is 0.25's since 0.25.0's merge-back and doesn't install beside the held Runtime 0.45.0.
+# The RC is the one this cozy's version names: a dev build's (0.26.0-dev) its own minor, a release's the next (as rc.rs reads).
+local rc td was=$OUT/cozy-before-rc-pin
+rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] + ($2 ~ /-/ ? 0 : 1) ".0"}')
+td=$(curl -fsSL "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
+  | sed -n 's/.*  cozy-\(.*\)-linux-x86_64$/\1/p' | head -1) || td=
+if [ -n "$td" ]; then
+  cp "$COZY" "$was"
+  cozy --json machine update local --tensord "$td" -y > "$OUT/floor-rc-pin.json" 2>&1 \
+    || { check "runtime floor: local refused the RC's cozy $td: $(tail -c 300 "$OUT/floor-rc-pin.json")"; return; }
   machine_ready
   code=0
   in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=rc-pin --on local > "$OUT/floor-rc-pin.ndjson" 2> "$OUT/floor-rc-pin.err" || code=$?
   [ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-rc-pin.ndjson" "$OUT/floor-rc-pin.err" \
-    || check "runtime floor: given the RC's TensorFS $tfs by hand, local wasn't held: exit $code $(tail -c 300 "$OUT/floor-rc-pin.ndjson") $(tail -c 300 "$OUT/floor-rc-pin.err")"
+    || check "runtime floor: given the RC's cozy $td by hand, local wasn't held: exit $code $(tail -c 300 "$OUT/floor-rc-pin.ndjson") $(tail -c 300 "$OUT/floor-rc-pin.err")"
+  # This computer's cozy back as it was, then let go (an update naming nothing; the Hub's target names no cozy).
+  cozy --json machine update local --tensord "$was" -y > "$OUT/floor-rc-back.json" 2>&1 \
+    || { check "runtime floor: local refused its own cozy back after the RC pin: $(tail -c 300 "$OUT/floor-rc-back.json")"; return; }
   cozy --json machine update local -y > "$OUT/floor-rc-unpin.json" 2>&1 \
     || { check "runtime floor: cozy machine update local failed after the RC pin: $(tail -c 300 "$OUT/floor-rc-unpin.json")"; return; }
   machine_ready
+  [ "$(cozy --version)" = "$("$was" --version)" ] || check "runtime floor: after the RC pin this computer's cozy is $(cozy --version), not $("$was" --version)"
   jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "runtime floor: after the RC pin, local runs $(jq -r .status.runtime "$OUT/machine.json"), not 0.45.0"
 else
-  echo "runtime floor: rc-$rc holds no TensorFS for linux x86_64: an RC pin isn't asked here"
+  echo "runtime floor: rc-$rc holds no cozy for linux x86_64: an RC pin isn't asked here"
 fi
 in_project "$RUN_PROJECT" run "$E2E_FLOOR/relay" text=upgrade --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
   || check "runtime floor: the unversioned e2e-floor run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
