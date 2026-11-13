@@ -674,6 +674,7 @@ case $SHARD in
     local_edits
     hub_dependency
     hub_published
+    rc_floor
     held_prerelease
     runtime_floor
     child_latents

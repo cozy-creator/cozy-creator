@@ -122,6 +122,29 @@ impl Rc {
     }
 }
 
+/// How long a read of the RC's newest Runtime build stands for a lock or a floor check: each Runtime merge replaces the RC's
+/// prerelease, its older wheels gone with it.
+const RUNTIME_FRESH: Duration = Duration::from_secs(20);
+
+/// The open RC's newest Runtime build: its pure wheel and that wheel's URL (cl-952), read at most once a [`RUNTIME_FRESH`]. What
+/// a package whose floor only the RC meets locks and is checked against (`floor::rc_runtime`, xs-194). None: the RC has no build.
+pub(crate) async fn runtime_now() -> Result<Option<(Build, String)>, Error> {
+    static READ: Mutex<Option<(Instant, Option<(Build, String)>)>> = Mutex::new(None);
+    if let Some((at, read)) = READ.lock().expect("rc lock").clone() {
+        if at.elapsed() < RUNTIME_FRESH {
+            return Ok(read);
+        }
+    }
+    let base = prerelease::rc("cozy-runtime", &open());
+    let sums = text(&base).await?;
+    let read = prerelease::rc_pure(&sums, "cozy_runtime").map(|build| {
+        let url = format!("{base}/{}", build.file);
+        (build, url)
+    });
+    *READ.lock().expect("rc lock") = Some((Instant::now(), read.clone()));
+    Ok(read)
+}
+
 fn client(timeout: Duration) -> Result<reqwest::Client, Error> {
     let failed = |e: String| Error::new(Kind::Unavailable, "rc_unreadable", e);
     let builder = tensorfs::fetch::http(&[]).map_err(|e| failed(e.to_string()))?;

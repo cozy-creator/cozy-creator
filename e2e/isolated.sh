@@ -89,6 +89,19 @@ held() {
   else log "publishing e2e-lies was refused: $(tail -c 300 "$E2E_LIES" | tr '\n' ' ')"; fi
 }
 
+# rc_floor (rc_floor, xs-194): e2e-relay's code as `e2e-rcfloor` 0.1.0, whose floor only the open RC meets
+# (cozy-runtime>=0.47.0.dev0,<0.48) and which names no Runtime wheel: publishing it locks the RC's newest build. What it said
+# is exported, a refusal too, for the cell to judge.
+rc_floor() {
+  local copy=$seed/packages/e2e-rcfloor account
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
+  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.47.0.dev0,<0.48"/' "$copy/pyproject.toml"
+  export E2E_RCFLOOR_PUBLISHED=$seed/publish-e2e-rcfloor.json E2E_RCFLOOR=$account/e2e-rcfloor
+  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.47.0.dev0)"
+  else log "publishing e2e-rcfloor was refused: $(tail -c 300 "$E2E_RCFLOOR_PUBLISHED" | tr '\n' ' ')"; fi
+}
+
 # next (self_update, cl-978): the hub suite's weightless echo as the admin's account's `e2e-next` 0.1.0, needing cozy-runtime>=0.46.0,
 # which only a cozy of the Latest's line runs.
 next() {
@@ -328,7 +341,8 @@ if [ -n "$needs" ]; then
       systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
       systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
       relay
-      held ;;
+      held
+      rc_floor ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* ]]; then
     update=()
