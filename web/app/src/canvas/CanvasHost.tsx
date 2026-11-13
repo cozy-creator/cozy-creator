@@ -148,7 +148,8 @@ function ProjectSync({ id }: { id: string }) {
   }, [stream, store, id])
   useEffect(() => bridge.onRun((run) => store.applyRun(run)), [bridge, store])
   useEffect(() => {
-    store.readAgain = (names) => bridge.changed(id, { assets: names, head: true })
+    store.readAgain = (names) => bridge.readAgain(id, names)
+    store.forget = (names) => bridge.forget(id, names)
   }, [bridge, store, id])
   return null
 }

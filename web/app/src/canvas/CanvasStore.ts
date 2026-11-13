@@ -312,6 +312,8 @@ export class CanvasStore {
   private carets = new Map<string, (name: string) => void>()
   /** Has these assets, and what's said of the project, read. */
   readAgain: (names: string[]) => void = () => {}
+  /** These boxes are off this page: no read asks for them. */
+  forget: (names: string[]) => void = () => {}
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
   /** Opens Rent, with a GPU that holds it chosen when one is known. */
@@ -376,7 +378,7 @@ export class CanvasStore {
   private masks = new Map<string, Card>()
   private gliding = new Map<string, ReturnType<typeof setTimeout>>()
   /** Boxes to clear of what they lie on, as soon as this turn's changes are in: true for one whose size is its own, which doesn't shrink. */
-  private unsettled = new Map<string, boolean>()
+  private unsettled = new Set<string>()
   /** When each of this page's moves was answered, by name. */
   private movedAt = new Map<string, number>()
   /** Rows to write, by node id. */
@@ -1204,7 +1206,7 @@ export class CanvasStore {
     // as any box's: a picture placed before it was measured (16:9 until then) pushes aside what it now lies on (cl-885).
     const picture = view.asset?.kind === "image" && !view.hereWords && shownOf(view)
     const resized = before?.slice(before.indexOf(":")) !== shape.slice(shape.indexOf(":"))
-    if (!picture || resized) this.unsettle(key, true)
+    if (!picture || resized) this.unsettle(key)
   }
 
   // Keeping clear: no box lies on another
@@ -1307,42 +1309,40 @@ export class CanvasStore {
     }
   }
 
-  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. With `bare`, the boxes
-   *  themselves without the room each keeps: where nowhere near has its room but the box itself lies on none of them, it stays, closer than
-   *  its room, as a project laid out closer stays when it's opened (`separate`), not sent beside everything, off past a crowd's edge. */
-  private giveWay(name: string, field: Field, box: Box, give: Give, bare?: Field): Box {
-    const { pushed, beside, ...fitted } = fit(box, field, give)
-    const itself = beside && bare ? this.boxOf(name, true) : null
-    if (itself && !bare!.under(itself).size) return box
+  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. */
+  private giveWay(name: string, field: Field, box: Box, give: Give): Box {
+    const { pushed, ...fitted } = fit(box, field, give)
     this.push(field, pushed)
     if (fitted.x === box.x && fitted.y === box.y && fitted.w === box.w) return box
     this.slide(name, fitted)
     return fitted
   }
 
-  private unsettle(name: string, sized = false) {
+  private unsettle(name: string) {
     if (!this.seen) return
     if (!this.unsettled.size) queueMicrotask(() => this.settle())
-    this.unsettled.set(name, sized || Boolean(this.unsettled.get(name)))
+    this.unsettled.add(name)
   }
 
   /**
-   * What arrived lying on something gives way, by name order, so every tab does the same: it moves or shrinks. What changed its size
-   * keeps it and stays, and pushes aside what it lies on. What's held in a drag, or by its corner, waits to be let go.
+   * What arrived lying on something, put there by another writer or grown there, keeps where it was put (Paul, 11-06: "the placement
+   * position of the new object should be primary, and then other objects should move around it"; cl-800: a placement never overwrites an
+   * `at`), and what it lies on is pushed aside, by name order, so every tab does the same. What arrived with it is never pushed by it, and
+   * where what it lies on can't be pushed (held in a drag, open, still being made), it stays all the same. What's held in a drag, or by its
+   * corner, waits to be let go.
    */
   private settle() {
-    const batch = [...this.unsettled].filter(([name]) => this.ids.has(name) && !this.dragging.has(name) && name !== this.pulling?.name).sort(([a], [b]) => (a < b ? -1 : 1))
+    const batch = [...this.unsettled].filter((name) => this.ids.has(name) && !this.dragging.has(name) && name !== this.pulling?.name).sort()
     this.unsettled.clear()
     if (!batch.length) return
-    const names = new Set(batch.map(([name]) => name))
-    const [field, bare] = [this.field(names), this.field(names, true)]
-    for (const [name, sized] of batch) {
+    const names = new Set(batch)
+    const field = this.field(names)
+    const may = this.pushable(names)
+    for (const name of batch) {
       const box = this.boxOf(name)
       if (!box) continue
-      const placed = this.giveWay(name, field, box, sized ? { pushes: this.pushable(names) } : { tall: this.tallOf(name) }, bare)
-      field.add(name, placed)
-      const itself = placed === box ? this.boxOf(name, true) : null
-      if (itself) bare.add(name, itself)
+      if (field.under(box).size) this.push(field, pushAside(box, field, may))
+      field.add(name, box)
     }
   }
 
@@ -1694,7 +1694,8 @@ export class CanvasStore {
    * other. One read of these, whatever else is said.
    */
   private readAfter(boxes: (string | undefined)[]) {
-    const names = boxes.flatMap((id) => this.served.get(id ?? "") ?? [])
+    // Not one this page has deleted: it's gone, and a read could only 404.
+    const names = boxes.flatMap((id) => this.served.get(id ?? "") ?? []).filter((name) => !this.deleting.has(name))
     if (names.length) this.readAgain(names)
   }
 
@@ -2077,6 +2078,7 @@ export class CanvasStore {
   }
 
   private removeNode(name: string) {
+    this.forget([name])
     const id = this.ids.get(name)
     if (this.surface?.id === id) this.surface = null
     this.unsettled.delete(name)
@@ -3040,7 +3042,7 @@ export class CanvasStore {
     }
     this.gesture = null
     this.reshape(key)
-    this.unsettle(key, true)
+    this.unsettle(key)
   }
 
   /** What the pull pushed aside and no longer does goes back where it is. */
