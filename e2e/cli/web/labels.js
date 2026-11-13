@@ -25,7 +25,13 @@ const FARTHEST = 0.05;
 // As close as the layout keeps a box under another, under what's drawn of it (shown.ts heightFor and underOf): a picture's row under it,
 // its tool and shape line and the rise of the name below; a word box's rise alone; then clear's gap. Side by side, the gap. One more, so
 // nothing lies on anything and the page leaves the rows as written.
-const UNDER = { image: 40 + 55 + 16 + 1, text: 22 + 16 + 1 };
+const UNDER = { image: 40 + 94 + 16 + 1, text: 61 + 16 + 1 };
+// The page's body step on screen (tokens.css, at its --ui), which a name keeps down to 25% (Paul, 11-13); and a selected ring's least on screen
+// (cl-926), which it keeps down to 15%.
+const BODY = 12.5 * 1.35;
+const HELD_TO = 0.25;
+const RING_LEAST = 3;
+const RING_TO = 0.15;
 const BESIDE = 240 + 16 + 1;
 const COLUMNS = [
   { kind: 'image', names: ['hero_art', 'a_box_whose_name_goes_on_and_on_past_any_width', 'kyogre_art_1', 'x'] },
@@ -51,6 +57,12 @@ function audit() {
       labels: [...node.querySelectorAll(':scope .card > .head > *')].filter((el) => !el.matches('.sp') && shown(el)),
       nm: node.querySelector(':scope .card > .head .nm'),
     };
+  }).map((box) => {
+    // A selected box's ring as drawn: its outline, outside the picture when its offset isn't negative, and nothing drawn over the picture.
+    if (!box.node.classList.contains('selected') || !box.media) return box;
+    const style = getComputedStyle(box.media);
+    const after = getComputedStyle(box.media, '::after').content;
+    return { ...box, ring: { width: parseFloat(style.outlineWidth), offset: parseFloat(style.outlineOffset), out: parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset), over: after !== 'none' && after !== 'normal' } };
   });
   const lines = [];
   const on = [];
@@ -71,6 +83,8 @@ function audit() {
       const r = R(label);
       const what = `${box.name}'s ${label.className.split(' ')[0]}`;
       if (box.media && shown(box.media) && meet(r, R(box.media))) on.push(`${what} on its picture`);
+      // Selected, clear of its ring too, as web-layout's on-picture: the ring is outside the picture, the name over it.
+      if (box.ring && r.bottom > R(box.media).top - box.ring.out * zoom + 0.5 && r.right > R(box.media).left && r.left < R(box.media).right) on.push(`${what} on its ring`);
       for (const other of boxes) {
         if (other === box) continue;
         if (meet(r, R(other.node))) on.push(`${what} on ${other.name}`);
@@ -78,7 +92,8 @@ function audit() {
       }
     }
   }
-  return { zoom, count: boxes.length, at: Object.fromEntries(boxes.map((box) => [box.name, box.at])), lines, on, cut, sizes };
+  const rings = boxes.filter((box) => box.ring).map((box) => ({ name: box.name, ...box.ring, on_screen: Math.round(box.ring.width * zoom * 100) / 100 }));
+  return { zoom, count: boxes.length, at: Object.fromEntries(boxes.map((box) => [box.name, box.at])), lines, on, cut, sizes, rings };
 }
 
 (async () => {
@@ -189,7 +204,7 @@ function audit() {
         first[name] ??= at;
         if (Math.abs(first[name][0] - at[0]) > 0.5 || Math.abs(first[name][1] - at[1]) > 0.5) moved.push(`${name} from ${first[name]} to ${at}`);
       }
-      looks.push({ how, zoom: now.zoom, count: now.count, moved, lines: now.lines, on: now.on, cut: now.cut, biggest: Math.max(...Object.values(now.sizes).map((size) => size.canvas)), smallest_on_screen: Math.min(...Object.values(now.sizes).map((size) => size.screen)) });
+      looks.push({ how, zoom: now.zoom, count: now.count, moved, lines: now.lines, on: now.on, cut: now.cut, biggest: Math.max(...Object.values(now.sizes).map((size) => size.canvas)), smallest_on_screen: Math.min(...Object.values(now.sizes).map((size) => size.screen)), rings: now.rings });
       return now;
     };
     const press = async (label) => {
@@ -226,6 +241,26 @@ function audit() {
     check('every_name_one_line', looks.every((one) => !one.lines.length), looks.filter((one) => one.lines.length));
     check('no_name_on_anything', looks.every((one) => !one.on.length), looks.filter((one) => one.on.length).map((one) => ({ zoom: one.zoom, on: one.on })));
     check('a_cut_name_ends_in_an_ellipsis_and_says_itself', looks.every((one) => !one.cut.length), looks.filter((one) => one.cut.length));
+    // At the body size on screen down to 25%, every name.
+    const held = looks.filter((one) => one.zoom >= HELD_TO - 0.001);
+    check('names_at_the_body_size_down_to_25', held.length > 5 && held.every((one) => one.smallest_on_screen >= BODY - 0.05), held.map((one) => ({ zoom: one.zoom, smallest: one.smallest_on_screen })));
+
+    // Every box selected, the same way out and back: each ring outside its picture with nothing over the picture, at least 3px on screen
+    // down to 15%, and still no name on anything, nor on its own ring; no box moves.
+    await tab.mouse.click(pane.x + 4, pane.y + pane.height - 4);
+    await tab.keyboard.press('ControlOrMeta+a');
+    await until('every box selected', () => tab.evaluate(() => document.querySelectorAll('.react-flow__node.selected').length), (n) => n >= 1);
+    const selectedFrom = looks.length;
+    at = await look('selected 100%');
+    for (let i = 0; i < 20 && at.zoom > FARTHEST + 0.001; i++) at = await press('Zoom out');
+    for (let i = 0; i < 20 && at.zoom < 1 - 0.001; i++) at = await press('Zoom in');
+    const selectedLooks = looks.slice(selectedFrom);
+    seen.selected_looks = selectedLooks.map((one) => ({ zoom: one.zoom, rings: one.rings?.slice(0, 2), on: one.on }));
+    check('selected_every_ring_outside_its_picture', selectedLooks.every((one) => one.rings.length && one.rings.every((ring) => ring.offset >= 0 && !ring.over)), selectedLooks.map((one) => ({ zoom: one.zoom, rings: one.rings.filter((ring) => ring.offset < 0 || ring.over) })).filter((one) => one.rings.length));
+    check('selected_rings_3px_down_to_15', selectedLooks.filter((one) => one.zoom >= RING_TO - 0.001).every((one) => one.rings.every((ring) => ring.on_screen >= RING_LEAST - 0.05)), selectedLooks.map((one) => ({ zoom: one.zoom, least: Math.min(...one.rings.map((ring) => ring.on_screen)) })));
+    check('selected_no_name_on_anything', selectedLooks.every((one) => !one.on.length), selectedLooks.filter((one) => one.on.length).map((one) => ({ zoom: one.zoom, on: one.on })));
+    check('selected_a_zoom_moves_no_box', selectedLooks.every((one) => !one.moved.length), selectedLooks.filter((one) => one.moved.length));
+    await tab.keyboard.press('Escape');
 
     await tab.close();
 

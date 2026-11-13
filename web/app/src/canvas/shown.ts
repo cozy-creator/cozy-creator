@@ -38,6 +38,12 @@ export const selectedOf = (view: ElementView): Shown | null => shownOf(view, tru
 /** A card's size, unmeasured, so a card culled away still counts in a fit. */
 export const HEAD = 32
 
+/** What a box placed or pushed is left of the rest (clear.ts). */
+export const GAP = 16
+
+/** How far out the canvas is, as `data-lod` draws it: 0 close, 1 far, 2 past 20%. */
+export const bandOf = (zoom: number): 0 | 1 | 2 => (zoom < 0.2 ? 2 : zoom < 0.45 ? 1 : 0)
+
 /**
  * What hangs off a box at rest, its name over it and its tool, shape and render's lines under it (cl-932), is drawn at the canvas's scale
  * like the rest of it. A box keeps that room clear, once: its name never lies on the box above, nor what hangs under one on the box below,
@@ -45,14 +51,23 @@ export const HEAD = 32
  * and bottoms").
  */
 const HANG = 1
-// As app.css draws them: tokens.css's title and body steps at the frame's --ui, on lines of 1.25, and its × 30 square.
-const TITLE_LINE = 15.5 * 1.35 * 1.25
-const BODY_LINE = 12.5 * 1.35 * 1.25
-const CLOSE = 30
+// As app.css draws them: tokens.css's body step at the frame's --ui, on lines of 1.25.
+const BODY = 12.5 * 1.35
+const BODY_LINE = BODY * 1.25
 /** A selected box's ring, outside its picture, that the line under it starts past. */
 const RING = 9
-/** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
-const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
+/**
+ * A box's name is one line in bold mono on a line of 1.25, its foot 12 over its picture (HEAD tall, 12 of it under the name). As the canvas
+ * zooms out it's held at the body size on screen (cl-958) down to 25% (Paul, 11-13: room "so names stay at body size out to 25% zoom"),
+ * and there the room above every box is what it takes, a foot's 12 clear of the box above: 77px with clear's gap. Further out it stays
+ * that size on the canvas, smaller on screen, and nothing moves: a zoom never makes room.
+ */
+const NAME_HELD_TO = 0.25
+const NAME_LINE = 1.25
+const NAME_FOOT = 12
+const NAME_ROOM = Math.ceil((NAME_LINE * BODY) / NAME_HELD_TO - (HEAD - NAME_FOOT) + NAME_FOOT)
+/** How far its head rises over its box: the room a far name takes, less the gap that's there anyway. */
+const RISE = NAME_ROOM - GAP
 /** A render's two lines (RunFace) at the body step on lines of 1.35, the second as tall as its 28px Cancel, with the gaps over them. */
 const RUN = 12.5 * 1.35 * 1.35 + 28 + 6
 
@@ -64,19 +79,16 @@ export function underOf(view: ElementView): number {
   return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
 
-/** What a box placed or pushed is left of the rest (clear.ts). */
-export const GAP = 16
-
-/** How far out the canvas is, as `data-lod` draws it: 0 close, 1 far, 2 past 20%. */
-export const bandOf = (zoom: number): 0 | 1 | 2 => (zoom < 0.2 ? 2 : zoom < 0.45 ? 1 : 0)
-
+/** A far name at most: what fits that room, the body size at 25% (68px on the canvas). */
+const NAME_MOST = (NAME_ROOM + (HEAD - NAME_FOOT) - NAME_FOOT) / NAME_LINE
 /**
- * A box's name is one line in bold mono on a line of 1.25, its foot 12 over its picture (app.css). As the canvas zooms out it's held at the
- * body size on screen (cl-958) only as far as it fits the room the layout keeps above every box, RISE and a gap, a foot's 12 clear of the
- * box above (Paul, 11-13: "the text size should be limited"): 36.8px on the canvas, the body size down to 46%. Further out it shrinks with
- * the canvas, and nothing moves: a zoom never makes room.
+ * Far out a selected box's ring is outside its picture, as wide on screen as close in (cl-926), and its name rises clear of it, 2 over it.
+ * At most as wide as leaves a far name 2 clear of the box above (`--ring-most`): 20px on the canvas, 5px on screen at 25% and 3px at 15%.
  */
-const NAME_MOST = (RISE + GAP + (HEAD - 12) - 12) / 1.25
+export const RING_MOST = NAME_ROOM - (NAME_LINE * NAME_MOST - (HEAD - NAME_FOOT)) - 2 - 2 + NAME_FOOT
+/** On a box's picture (a timeline's for an Edit), not its name nor what hangs under it: all of a box at rest that takes a drop. */
+export const onPicture = (el: Element) => Boolean(el.closest(".card > .media, .card > .tl"))
+
 /** How much larger than the canvas a box's name is drawn, at least (`--name-zoom`): the zoom's inverse in quarter steps, to NAME_MOST. */
 export const nameZoomOf = (zoom: number) => Math.min(2 ** Math.max(0, Math.ceil(-Math.log2(zoom || 1) * 4) / 4), NAME_MOST / (12.5 * 1.35))
 
