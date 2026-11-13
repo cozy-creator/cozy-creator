@@ -11,6 +11,7 @@ This deliberately does not use e2e's argv/body/log capture wrappers.
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import io
 import json
 import os
@@ -24,9 +25,11 @@ import stat
 import subprocess
 import sys
 import time
+from typing import NotRequired, TypedDict, cast
 from urllib.parse import quote
 
-from common import Failure, Native, Proof, Receipt, alive, birth, kill_exact, project_route, require, sha, until
+from common import (Birth, Failure, Native, Observed, Project, Proof, Receipt, RunDetail, VaultStatus, alive, birth,
+                    kill_exact, project_route, require, sha, until)
 from scan import Scanner, places, tmpfs
 from native_execution import qualify as qualify_native
 from development import Development
@@ -36,12 +39,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from test_hub import require_test_hub
 
 
+class Created(TypedDict):
+    id: str
+    recovery_secret: NotRequired[str]
+
+
+
+class Imported(TypedDict):
+    path: str
+
+
+class Asset(TypedDict):
+    fields: dict[str, object]
+
+
+class AssetAnswer(TypedDict):
+    asset: Asset
+
+
 def new_png(scanner: Scanner, marker: str) -> bytes:
     from PIL import Image, PngImagePlugin
     bits = bytes(secrets.randbits(1) for _ in range(256))
     scanner.images.add(bits)
     image = Image.new("RGB", (256, 256))
     pixels = image.load()
+    if pixels is None:  # Image.new allocates its pixels
+        raise Failure("fixture_failure")
     for y in range(256):
         for x in range(256):
             shade = 255 if bits[y // 16 * 16 + x // 16] else 0
@@ -55,10 +78,11 @@ def new_png(scanner: Scanner, marker: str) -> bytes:
 
 class ForeignBrowsers:
     """Only new fixture-owned, data-free processes; never attach to an existing browser."""
-    def __init__(self):
-        self.held: list[tuple[subprocess.Popen, dict, Path]] = []
+    def __init__(self) -> None:
+        self.held: list[tuple[subprocess.Popen[bytes], Birth, Path]] = []
         program = next((shutil.which(name) for name in ("google-chrome", "chromium", "chromium-browser") if shutil.which(name)), None)
-        require(program, "chrome_missing")
+        if not program:
+            raise Failure("chrome_missing")
         parent = Path("/dev/shm")
         require(tmpfs(parent), "foreign_profile_tmpfs")
         for incognito in (False, True):
@@ -105,10 +129,10 @@ PAGE_FACTS = frozenset({
 REDIRECTS = (b"HOME", b"TMPDIR", b"TEMP", b"TMP", b"XDG_CACHE_HOME", b"XDG_CONFIG_HOME", b"XDG_STATE_HOME", b"XDG_DATA_HOME", b"XDG_RUNTIME_DIR")
 
 
-def launch_environments(processes: list[dict]) -> list[dict[bytes, bytes]]:
+def launch_environments(processes: list[Birth]) -> list[dict[bytes, bytes]]:
     # Chrome's setproctitle zeroes its own environ block; its launcher's stdio relays in the
     # owned tree keep the exact launch environment. PATH marks an intact block, never a title tail.
-    found = []
+    found: list[dict[bytes, bytes]] = []
     for exact in processes:
         try:
             raw = Path(f"/proc/{exact['pid']}/environ").read_bytes() if alive(exact) else b""
@@ -140,9 +164,10 @@ BUSY_MESSAGES = {
 }
 
 
-def busy_facts(document: dict) -> dict[str, bool]:
+def busy_facts(document: dict[str, object]) -> dict[str, bool]:
     # Fixed product sentences become closed booleans; the message itself never enters the receipt.
-    message = document.get("error", {}).get("message", "") if isinstance(document.get("error"), dict) else ""
+    error = document.get("error")
+    message = error.get("message", "") if isinstance(error, dict) else ""
     message = message if isinstance(message, str) else ""
     return {key: text in message for key, text in BUSY_MESSAGES.items()}
 
@@ -150,7 +175,8 @@ def busy_facts(document: dict) -> dict[str, bool]:
 def view_holders(view: Path, calcifer: int, chrome: set[int]) -> dict[str, int]:
     # Counts only: which kinds of same-user process hold the project view open (fd, mapping, cwd).
     roots = {os.fsencode(str(view)), os.fsencode(str(view.resolve()))}
-    inside = lambda path: any(path == root or path.startswith(root + b"/") for root in roots)
+    def inside(path: bytes) -> bool:
+        return any(path == root or path.startswith(root + b"/") for root in roots)
     def ancestry(pid: int) -> bool:
         for _ in range(64):
             if pid == calcifer: return True
@@ -180,7 +206,7 @@ def view_holders(view: Path, calcifer: int, chrome: set[int]) -> dict[str, int]:
     return counts
 
 
-def observe_ready(proof: Proof, project: str, seen: dict) -> dict:
+def observe_ready(proof: Proof, project: str, seen: dict[str, int]) -> Observed:
     # Keeps only closed readiness facts for a sanitized failure receipt.
     try:
         value = proof.exercise(project, "ready")
@@ -194,7 +220,8 @@ def observe_ready(proof: Proof, project: str, seen: dict) -> dict:
 
 def scan_case(scanner: Scanner, receipt: Receipt, case: str, roots: list[Path], exclusions: list[Path], located: dict[str, Path]) -> None:
     result = scanner.scan_privileged(roots, exclusions, receipt.path, located)
-    require(result is not None, "scan_process")
+    if result is None:
+        raise Failure("scan_process")
     receipt.add(case, **result)
     require(result["matches"] == 0, "outside_project_canary")
     require(not any(result.get(key, 0) for key in ("unreadable", "sqlite_unreadable", "archive_unreadable", "archive_oversize", "leveldb_unreadable", "images_unreadable")), "scan_decoder_unavailable")
@@ -231,7 +258,7 @@ def main() -> int:
     proof: Proof | None = None
     foreign: ForeignBrowsers | None = None
     development: Development | None = None
-    projects: list[dict] = []
+    projects: list[Project] = []
     readiness = {"slot": -1, "ready_errors": 0, "last_page_ready": False, "last_cards": -1}
     editing: dict[str, bool | int] = {}
     phase = "start"
@@ -241,18 +268,19 @@ def main() -> int:
             development = Development()
             development.start()
         proof = Proof(cli)
-        until(lambda: native.holder(), lambda holder: holder.get("pid") == proof.process.pid, "holder_ready")
+        caf_pid = proof.process.pid
+        until(lambda: native.holder(), lambda holder: holder.get("pid") == caf_pid, "holder_ready")
         receipt.add("native_capability", accepted=native.call("GET", "/v1/project-storage").get("version") == 3)
         for slot in ("a", "b"):
             phase = "create_" + slot
             credential = "proof-" + secrets.token_hex(32)
             scanner.add(credential)
             folder = root / slot
-            opened = native.document("new", str(folder), "--passphrase-file", "-", stdin=(credential + "\n").encode())
+            opened = cast(Created, native.document("new", str(folder), "--passphrase-file", "-", stdin=(credential + "\n").encode()))  # cast: new's JSON
             require(isinstance(opened.get("id"), str), "encrypted_create_identity")
             if opened.get("recovery_secret"):
                 scanner.add(opened["recovery_secret"])
-            vault = native.document("vault", "status", cwd=folder)
+            vault = cast(VaultStatus, native.document("vault", "status", cwd=folder))  # cast: vault status's JSON
             require(vault.get("encrypted") is True and vault.get("state") == "unlocked", "born_encrypted")
             view = Path(vault["view"]).resolve()
             vaults = Path.home() / ".cozy/calcifer/vaults"
@@ -275,7 +303,7 @@ def main() -> int:
             base = project_route(opened["id"])
             native.call("POST", base + "/assets", {"name": asset, "exact": True, "fields": {"text": marker}, "at": {"x": 0, "y": 0, "w": 320}})
             native.call("PUT", "/v1/project-files/" + digest + "?project=" + quote(opened["id"], safe=""), image)
-            imported = native.call("POST", base + "/imports", {"source": digest, "name": picture_asset, "exact": True, "at": {"x": 400, "y": 0, "w": 320}})
+            imported = cast(Imported, native.call("POST", base + "/imports", {"source": digest, "name": picture_asset, "exact": True, "at": {"x": 400, "y": 0, "w": 320}}))  # cast: the import's JSON
             projects.append({"folder": folder, "view": view, "id": opened["id"], "credential": credential, "marker": marker, "edit": edited, "asset": asset, "path": imported["path"], "digest": digest, "text_file": text_file})
         a, b = projects
         if ready.get("native_execution") is True:
@@ -283,10 +311,10 @@ def main() -> int:
             qualify_native(native, scanner, a, receipt)
         phase = "browser_open"
         foreign = ForeignBrowsers()
-        for slot, project in enumerate(projects):
+        for index, project in enumerate(projects):
             native.document("open", cwd=project["folder"])
-            readiness.update(slot=slot, ready_errors=0, last_page_ready=False, last_cards=-1)
-            until(lambda: observe_ready(proof, project["id"], readiness), lambda value: value.get("page_ready") and value.get("cards", 0) >= 2, "owned_page_ready")
+            readiness.update(slot=index, ready_errors=0, last_page_ready=False, last_cards=-1)
+            until(partial(observe_ready, proof, project["id"], readiness), lambda value: value.get("page_ready") and value.get("cards", 0) >= 2, "owned_page_ready")
         snapshot = proof.ask("snapshot")
         require(snapshot["present"] and snapshot["pages"] == 2 and len(snapshot.get("processes", [])) >= 2 and snapshot["birth"] in snapshot["processes"], "shared_owned_browser")
         browser_birth, profile = snapshot["birth"], Path(snapshot["profile"])
@@ -339,7 +367,7 @@ def main() -> int:
             policy = headers.get("content-security-policy", "")
             require("'nonce-" in policy and "'unsafe-inline'" not in policy and "ws://" + native.holder()["address"] in policy and "no-store" in headers.get("cache-control", ""), "owned_hmr_csp_header")
             development.update()
-            updated = until(lambda: proof.exercise(b["id"], "hmr_observe"), lambda value: value.get("value") == 2, "owned_hmr_update")
+            updated = until(partial(proof.exercise, b["id"], "hmr_observe"), lambda value: value.get("value") == 2, "owned_hmr_update")
             require(updated.get("document_sha256") == initial["document_sha256"], "owned_hmr_reloaded_document")
             refused_dev = native.raw("GET", "/files/" + a["marker"])
             require(refused_dev.status == 404, "development_private_path_forwarded")
@@ -349,10 +377,10 @@ def main() -> int:
         held.execute("BEGIN IMMEDIATE")
         locking = None
         try:
-            def edit_b() -> dict:
+            def edit_b(proof: Proof = proof) -> Observed:
                 value = proof.exercise(b["id"], "edit", asset=b["asset"], field="text", value=b["edit"])
                 editing.clear()
-                editing.update({key: item for key, item in value.items() if key in EDIT_FACTS and type(item) in (bool, int)})
+                editing.update({key: item for key, item in value.items() if key in EDIT_FACTS and (type(item) is bool or type(item) is int)})
                 return value
             until(edit_b, lambda value: value.get("typed"), "real_browser_edit")
             require(proof.exercise(b["id"], "observe", needle=b["edit"]).get("visible"), "browser_edit_not_visible")
@@ -365,7 +393,8 @@ def main() -> int:
             require(before.get("state") == "unlocked", "lock_closed_admission_before_browser_drain")
         finally:
             held.rollback(); held.close()
-        require(locking is not None, "lock_not_started")
+        if locking is None:
+            raise Failure("lock_not_started")
         stdout, stderr = locking.communicate(timeout=90)
         busy = locking.returncode != 0
         if busy:
@@ -376,11 +405,11 @@ def main() -> int:
             require(refusal.get("error", {}).get("code") == "project_busy", "a_lock_unexpected_refusal")
             require(proof.exercise(b["id"], "observe", needle=b["edit"]).get("visible"), "busy_lock_lost_b_draft")
             # An orderly busy refusal is valid. Finish the same real UI edit, then retry A's lock.
-            until(lambda: proof.exercise(b["id"], "edit", asset=b["asset"], field="text", value=b["edit"]), lambda value: value.get("typed"), "busy_edit_resume")
-            until(lambda: native.call("GET", project_route(b["id"], "/assets/" + quote(b["asset"], safe="")))["asset"]["fields"]["text"], lambda value: value == b["edit"], "b_edit_not_persisted")
+            until(partial(proof.exercise, b["id"], "edit", asset=b["asset"], field="text", value=b["edit"]), lambda value: value.get("typed"), "busy_edit_resume")
+            until(lambda: cast(AssetAnswer, native.call("GET", project_route(b["id"], "/assets/" + quote(b["asset"], safe=""))))["asset"]["fields"]["text"], lambda value: value == b["edit"], "b_edit_not_persisted")  # cast: the asset's JSON
             stdout = native.command("vault", "lock", cwd=a["folder"])
         require(json.loads(stdout)["vault"]["state"] == "locked", "a_lock_after_b_saved")
-        saved = native.call("GET", project_route(b["id"], "/assets/" + quote(b["asset"], safe="")))
+        saved = cast(AssetAnswer, native.call("GET", project_route(b["id"], "/assets/" + quote(b["asset"], safe=""))))  # cast: the asset's JSON
         require(saved["asset"]["fields"]["text"] == b["edit"], "b_edit_not_persisted")
         until(lambda: [alive(process) for process in snapshot["processes"]], lambda live: not any(live), "owned_browser_tree_not_retired")
         require(not profile.exists() and foreign.preserved() and not (a["view"] / "root-data.txt").exists(), "whole_browser_retirement")
@@ -388,7 +417,7 @@ def main() -> int:
         scan_case(scanner, receipt, "a_locked_outside_scan", roots, [b["view"]], located)
         phase = "last_window_close"
         native.document("open", cwd=b["folder"])
-        until(lambda: proof.exercise(b["id"], "ready"), lambda value: value.get("page_ready"), "reopened_page_ready")
+        until(partial(proof.exercise, b["id"], "ready"), lambda value: value.get("page_ready"), "reopened_page_ready")
         last = proof.ask("snapshot")
         try:
             proof.ask("close_owned")
@@ -400,7 +429,7 @@ def main() -> int:
         receipt.add("last_window_close", process_gone=True, profile_removed=True, unrelated_preserved=True)
         phase = "browser_crash"
         native.document("open", cwd=b["folder"])
-        until(lambda: proof.exercise(b["id"], "ready"), lambda value: value.get("page_ready"), "crash_page_ready")
+        until(partial(proof.exercise, b["id"], "ready"), lambda value: value.get("page_ready"), "crash_page_ready")
         crashed = proof.ask("snapshot")
         kill_exact(crashed["birth"])
         until(lambda: [alive(process) for process in crashed["processes"]], lambda live: not any(live), "crashed_browser_tree_not_retired")
@@ -409,7 +438,7 @@ def main() -> int:
         receipt.add("browser_crash", process_gone=not alive(crashed["birth"]), profile_removed=True, unrelated_preserved=True)
         phase = "caf_crash"
         native.document("open", cwd=b["folder"])
-        until(lambda: proof.exercise(b["id"], "ready"), lambda value: value.get("page_ready"), "caf_crash_page_ready")
+        until(partial(proof.exercise, b["id"], "ready"), lambda value: value.get("page_ready"), "caf_crash_page_ready")
         orphaned = proof.ask("snapshot")
         previous = native.holder()
         # SIGKILL cannot run Caf's Drop, vault close, or the live browser watcher.
@@ -417,7 +446,8 @@ def main() -> int:
         kill_exact(proof.birth)
         proof.process.wait(timeout=90); proof.close_channel(); proof = None
         proof = Proof(cli)
-        until(lambda: native.holder(), lambda value: value.get("pid") == proof.process.pid, "restart_holder_ready")
+        caf_pid = proof.process.pid
+        until(lambda: native.holder(), lambda value: value.get("pid") == caf_pid, "restart_holder_ready")
         rejected = native.raw("GET", "/v1/project-storage", extra={"Authorization": "Bearer " + previous["token"]}, preflight=False)
         require(rejected.status == 401, "old_holder_authority_survived")
         until(lambda: [alive(process) for process in orphaned["processes"]], lambda live: not any(live), "caf_crash_browser_tree_not_retired")
@@ -440,9 +470,9 @@ def main() -> int:
         require(fresh["birth"] not in (browser_birth, last["birth"], crashed["birth"]), "browser_birth_reused")
         if a.get("native_run_id"):
             native.document("vault", "unlock", "--passphrase-file", "-", "--idle", "0", cwd=a["folder"], stdin=(a["credential"] + "\n").encode())
-            reopened = native.document("vault", "status", cwd=a["folder"])
+            reopened = cast(VaultStatus, native.document("vault", "status", cwd=a["folder"]))  # cast: vault status's JSON
             require(sha((Path(reopened["view"]) / "native-allowed.txt").read_bytes()) == a["native_allowed_sha256"], "native_file_not_retained_after_restart")
-            retained = native.call("GET", project_route(a["id"], "/runs/" + quote(a["native_run_id"], safe="")))
+            retained = cast(RunDetail, native.call("GET", project_route(a["id"], "/runs/" + quote(a["native_run_id"], safe=""))))  # cast: the run's JSON
             require(retained.get("status") == "completed" and retained.get("result", {}).get("allowed_sha256") == a["native_allowed_sha256"], "native_history_not_retained_after_restart")
             native.document("vault", "lock", cwd=a["folder"])
             receipt.add("native_lock_restart_retention", file_retained=True, history_retained=True, output_sha256=a["native_allowed_sha256"])

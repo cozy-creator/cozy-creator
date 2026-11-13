@@ -117,7 +117,8 @@ def main() -> None:
     state = home / "calcifer/state.db"
     def global_runs() -> int:
         with closing(sqlite3.connect(f"file:{state}?mode=ro", uri=True)) as db:
-            return db.execute(f"SELECT COUNT(*) FROM runs WHERE id IN ({','.join('?' * len(proof['ids']))})", proof["ids"]).fetchone()[0]
+            count: int = db.execute(f"SELECT COUNT(*) FROM runs WHERE id IN ({','.join('?' * len(proof['ids']))})", proof["ids"]).fetchone()[0]
+            return count
     assert global_runs() == 0, "private project runs reached Calcifer's global store"
 
     locked = json.loads(command(args.cli, args.out, "lock", "vault", "lock", cwd=args.project))

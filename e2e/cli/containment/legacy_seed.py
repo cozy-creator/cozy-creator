@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from typing import TypedDict
 from urllib.parse import quote
 import urllib.request
 
@@ -27,6 +28,17 @@ TARGET = PACKAGE + "/echo@" + RELEASE
 FILES = ("pyproject.toml", "package.toml", "containment_legacy_probe/__init__.py")
 
 
+class Provenance(TypedDict):
+    target: str
+    package: str
+    release: str
+    old_binary_sha256: str
+    source_sha256: str
+    schema_version: int
+    package_interface_sha256: str
+    public_maintenance_run_ids: list[str]
+
+
 def _call(old_cli: Path, *words: str, cwd: Path | None = None) -> bytes:
     completed = subprocess.run([str(old_cli), "--json", *words], cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     require(completed.returncode == 0, "legacy_public_bootstrap_cli")
@@ -38,18 +50,19 @@ def _version() -> int:
     require(database.is_file() and not database.is_symlink(), "legacy_public_bootstrap_database")
     connection = sqlite3.connect("file:" + quote(str(database), safe="/") + "?mode=ro", uri=True)
     try:
-        return connection.execute("PRAGMA user_version").fetchone()[0]
+        version: int = connection.execute("PRAGMA user_version").fetchone()[0]
+        return version
     finally:
         connection.close()
 
 
-def _runs(old_cli: Path) -> dict[str, dict]:
+def _runs(old_cli: Path) -> dict[str, dict[str, object]]:
     listed = json.loads(_call(old_cli, "run", "ls", "--all", "--limit", "0"))
     require(isinstance(listed, dict) and isinstance(listed.get("runs"), list), "legacy_public_bootstrap_run_list")
     return {run["id"]: run for run in listed["runs"] if isinstance(run, dict) and isinstance(run.get("id"), str)}
 
 
-def publish_old(old_cli: Path, work: Path) -> dict:
+def publish_old(old_cli: Path, work: Path) -> Provenance:
     """Return public publication provenance; run only before generating private canaries.
 
     The old CLI must already be the installed default-home cohort, signed in as the owned

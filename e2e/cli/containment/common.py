@@ -1,6 +1,7 @@
 """Hosted proof transport. Private request/CLI bodies remain in RAM, never evidence files."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 from http.client import HTTPConnection
@@ -12,9 +13,135 @@ import signal
 import socket
 import subprocess
 import time
+from typing import NotRequired, TypedDict, TypeVar, Unpack, cast
 from urllib.parse import quote, urlsplit
 
 DOMAIN = "cozy.project-containment.proof.v1"
+T = TypeVar("T")  # not PEP 695 syntax: legacy.sh's `uv run` may pick a Python before 3.12
+
+
+class Birth(TypedDict):
+    """A process's exact identity: its pid within this boot, and its start time."""
+    pid: int
+    boot_id: str
+    start_ticks: int
+
+
+class Holder(TypedDict):
+    """Calcifer's lock holder record (the fields these fixtures read)."""
+    pid: int
+    address: str
+    token: str
+
+
+class Ready(TypedDict, total=False):
+    """The coordinator's ready file."""
+    ready: bool
+    sha256: str
+    development_web: bool
+    native_execution: bool
+    remote_cpu: bool
+    runtime: str
+    tensorfs: str
+
+
+class Project(TypedDict):
+    """A fixture project, in RAM only."""
+    folder: Path
+    view: Path
+    id: str
+    credential: str
+    marker: str
+    edit: str
+    asset: str
+    path: str
+    digest: str
+    text_file: str
+    native_run_id: NotRequired[str]
+    native_allowed_sha256: NotRequired[str]
+
+
+class Observed(TypedDict, total=False):
+    """The proof channel's observation of an action (the fields these fixtures read)."""
+    present: bool
+    pages: int
+    processes: list[Birth]
+    birth: Birth
+    profile: str
+    retirement_incomplete: bool
+    page_ready: bool
+    cards: int
+    typed: bool
+    visible: bool
+    authenticated: bool
+    status: int
+    no_store: bool
+    range: bool
+    body_sha256: str
+    development: bool
+    value: int
+    csp_nonce: str
+    refresh_nonce: str
+    style_nonce: str
+    document_sha256: str
+
+
+class RunRow(TypedDict):
+    id: str
+    number: int
+
+
+class VaultStatus(TypedDict, total=False):
+    encrypted: bool
+    state: str
+    view: str
+
+
+class OutputItem(TypedDict, total=False):
+    name: str
+    index: int
+    url: str
+    stays: bool
+    sha256: str
+    status: str
+    export_error: object
+    checkpoint: object
+
+
+class RunDetail(TypedDict, total=False):
+    """A run's JSON (`?detail=full`), the fields these fixtures read."""
+    id: str
+    number: int
+    status: str
+    output: list[OutputItem]
+    result: dict[str, object]
+    bodies: list[bytes]
+
+
+class RunPage(TypedDict, total=False):
+    runs: list[RunRow]
+    unreadable: list[object]
+    older: bool
+
+
+class ReceiptValue(TypedDict, total=False):
+    candidate_sha256: str
+    cases: dict[str, dict[str, object]]
+    complete: bool
+    phase: str
+    context: dict[str, object]
+    failed_case: str
+    error_class: str
+    failed_check: str
+    diagnostic_rejected: bool
+    cleanup_incomplete: bool
+    development_restore_failed: bool
+
+
+class RawOptions(TypedDict, total=False):
+    auth: bool
+    extra: dict[str, str] | None
+    preflight: bool
 
 
 # Closed fixture case codes only; never serialize a free-form exception message.
@@ -78,12 +205,12 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def birth(pid: int) -> dict[str, object]:
+def birth(pid: int) -> Birth:
     fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
     return {"pid": pid, "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(), "start_ticks": int(fields[19])}
 
 
-def alive(expected: dict[str, object]) -> bool:
+def alive(expected: Birth) -> bool:
     try:
         fields = Path(f"/proc/{expected['pid']}/stat").read_text().rsplit(") ", 1)[1].split()
         return fields[0] not in {"Z", "X"} and birth(int(expected["pid"])) == expected
@@ -91,7 +218,7 @@ def alive(expected: dict[str, object]) -> bool:
         return False
 
 
-def until(read, wanted, code: str, seconds: float = 60):
+def until(read: Callable[[], T], wanted: Callable[[T], object], code: str, seconds: float = 60) -> T:
     # An explicit qualification deadline, not a production failure heuristic.
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -113,7 +240,8 @@ def until(read, wanted, code: str, seconds: float = 60):
 
 class Receipt:
     def __init__(self, path: Path, candidate: str):
-        self.path, self.value = path, {"candidate_sha256": candidate, "cases": {}, "complete": False}
+        self.path = path
+        self.value: ReceiptValue = {"candidate_sha256": candidate, "cases": {}, "complete": False}
 
     def add(self, case: str, **facts: object) -> None:
         def safe(value: object) -> bool:
@@ -141,10 +269,10 @@ class Reply:
     headers: dict[str, str]
     body: bytes
 
-    def json(self) -> dict:
+    def json(self) -> dict[str, object]:
         value = json.loads(self.body)
         require(isinstance(value, dict), "response_object")
-        return value
+        return cast(dict[str, object], value)  # cast: the response's JSON object, checked above
 
 
 class Native:
@@ -153,7 +281,7 @@ class Native:
         self.failure: dict[str, object] | None = None
 
     @staticmethod
-    def failure_facts(completed: subprocess.CompletedProcess, words: tuple[str, ...]) -> dict[str, object]:
+    def failure_facts(completed: subprocess.CompletedProcess[bytes], words: tuple[str, ...]) -> dict[str, object]:
         # Closed classifications or hashes only. Never return messages, metadata, argv,
         # response bodies, stderr text, project references or credentials to a receipt.
         facts: dict[str, object] = {
@@ -241,16 +369,17 @@ class Native:
                 raise Failure("cli_exit")
             return completed.stdout
 
-    def document(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None) -> dict:
-        return json.loads(self.command(*words, cwd=cwd, stdin=stdin))
+    def document(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None) -> dict[str, object]:
+        return cast(dict[str, object], json.loads(self.command(*words, cwd=cwd, stdin=stdin)))  # cast: the CLI's --json document
 
-    def holder(self) -> dict:
-        return json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_bytes())
+    def holder(self) -> Holder:
+        return cast(Holder, json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_bytes()))  # cast: the holder record's JSON
 
-    def raw(self, method: str, path: str, body: bytes | dict | None = None, *, auth: bool = True, extra: dict[str, str] | None = None, preflight: bool = True) -> Reply:
+    def raw(self, method: str, path: str, body: bytes | dict[str, object] | None = None, *, auth: bool = True, extra: dict[str, str] | None = None, preflight: bool = True) -> Reply:
         holder = self.holder()
         endpoint = urlsplit("http://" + holder["address"])
-        require(endpoint.hostname in {"127.0.0.1", "::1", "localhost"}, "holder_loopback")
+        if endpoint.hostname not in {"127.0.0.1", "::1", "localhost"}:
+            raise Failure("holder_loopback")
         if preflight and path != "/v1/project-storage":
             cap = self.raw("GET", "/v1/project-storage", preflight=False).json()
             expected = sha(json.dumps(birth(holder["pid"]), separators=(",", ":")).encode())
@@ -274,7 +403,7 @@ class Native:
         finally:
             connection.close()
 
-    def call(self, method: str, path: str, body: bytes | dict | None = None, **options) -> dict:
+    def call(self, method: str, path: str, body: bytes | dict[str, object] | None = None, **options: Unpack[RawOptions]) -> dict[str, object]:
         response = self.raw(method, path, body, **options)
         require(200 <= response.status < 300, "native_http_status")
         return response.json() if response.body else {}
@@ -284,12 +413,13 @@ def project_route(reference: str, suffix: str = "") -> str:
     return "/v1/projects/" + quote(reference, safe="") + suffix
 
 
-def project_run_ids(get, reference: str) -> tuple[set[str], int]:
+def project_run_ids(get: Callable[[str], dict[str, object]], reference: str) -> tuple[set[str], int]:
     """Every listed run id and how many were unreadable. The API clamps `limit` to 1..1000,
     newest first (so `limit=0` is one run); page by `before` as `cozy run ls` does."""
-    found, unreadable, before = set(), 0, ""
+    found: set[str] = set()
+    unreadable, before = 0, ""
     while True:
-        page = get(project_route(reference, "/runs?limit=1000" + before))
+        page = cast(RunPage, get(project_route(reference, "/runs?limit=1000" + before)))  # cast: the run list's JSON
         found.update(run.get("id") for run in page["runs"])
         unreadable += len(page.get("unreadable") or [])
         if not page.get("older") or not page["runs"]:
@@ -330,22 +460,22 @@ class Proof:
         except OSError:
             return False
 
-    def _write(self, value: dict) -> None:
+    def _write(self, value: dict[str, object]) -> None:
         self.socket.sendall(json.dumps(value, separators=(",", ":")).encode() + b"\n")
 
-    def _read(self) -> dict:
+    def _read(self) -> dict[str, object]:
         line = self.reader.readline((2 << 20) + 1)
         require(0 < len(line) <= 2 << 20, "proof_frame")
-        return json.loads(line)
+        return cast(dict[str, object], json.loads(line))  # cast: the proof channel's JSON frame
 
-    def ask(self, request: str, **fields) -> dict:
+    def ask(self, request: str, **fields: object) -> Observed:
         require(alive(self.birth), "proof_process_birth")
         self._write({"request": request, **fields})
         response = self._read()
         require(response.get("ok") is True, "proof_action")
-        return response["observed"]
+        return cast(Observed, response["observed"])  # cast: the proof channel's JSON observation
 
-    def exercise(self, project: str, action: str, **payload) -> dict:
+    def exercise(self, project: str, action: str, **payload: object) -> Observed:
         return self.ask("exercise_fixed", project=project, action={"action": action, **payload})
 
     def close_channel(self) -> None:
@@ -353,7 +483,7 @@ class Proof:
         self.socket.close()
 
 
-def kill_exact(expected: dict[str, object]) -> None:
+def kill_exact(expected: Birth) -> None:
     if not alive(expected):
         return
     descriptor = os.pidfd_open(int(expected["pid"]))

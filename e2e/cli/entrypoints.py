@@ -232,16 +232,16 @@ def main() -> None:
         # cl-980: a --json caller is a program: it gets a one-use sign-in link, said not to be private, and no browser starts.
         assert set(opened) == {"url", "private"} and opened["private"] is False, f"--json open: {opened}"
         assert url.fragment.startswith("code="), "the --json link carries no sign-in code"
-        plain = run("default project URL", ["open"], project)
-        assert not plain.stdout.lstrip().startswith("{") and "url" in plain.stdout
-        private = "private: true" in plain.stdout
+        plain_open = run("default project URL", ["open"], project)
+        assert not plain_open.stdout.lstrip().startswith("{") and "url" in plain_open.stdout
+        private = "private: true" in plain_open.stdout
         if private:
             # Cozy's private browser opened it: the URL is a reference, its credential went through the browser's pipe.
-            assert "code=" not in plain.stdout, "a private open printed a credential"
+            assert "code=" not in plain_open.stdout, "a private open printed a credential"
         else:
             # No display here, no Chrome, or its launch failed: a one-use sign-in link any browser redeems, said not to be private.
-            assert "isn't private" in plain.stderr and project.name in plain.stderr, "the fallback didn't say it isn't private"
-        assert "expires_ms" not in plain.stdout
+            assert "isn't private" in plain_open.stderr and project.name in plain_open.stderr, "the fallback didn't say it isn't private"
+        assert "expires_ms" not in plain_open.stdout
         assert not browser_log.exists(), "open launched the default browser"
         for flag in ("--no-open", "--print-url"):
             run(f"removed open flag {flag}", ["open", flag], project, code=2)
