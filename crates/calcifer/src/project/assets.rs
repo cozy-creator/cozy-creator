@@ -212,9 +212,7 @@ pub(super) async fn copy(
 }
 
 /// `GET /v1/projects/{id}/assets/{name}`: the asset and each of its versions.
-pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>, Query(asked): Query<Asked>, client: Option<axum::Extension<crate::loopback::Client>>) -> Result<Json<AssetVersions>, Refusal> {
-    // Describing the call may install its package: a URL someone opened only reads (calcifer-access.md).
-    let asked = Asked { call: asked.call && !matches!(client, Some(axum::Extension(crate::loopback::Client::Navigation))) };
+pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>, Query(asked): Query<Asked>) -> Result<Json<AssetVersions>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let model = model::of(&api, &project).await.map_err(Refusal)?;
     let (doc, lock) = (&model.doc, &model.lock);

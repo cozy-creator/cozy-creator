@@ -166,6 +166,17 @@ function devConfig(text) {
   }
   await rebound.close();
 
+  // A URL opened in the browser (Playwright's goto and CDP's navigate say `none`, as a typed URL does): the page opens, /v1 doesn't,
+  // so an agent's browser told to go there reads nothing.
+  const typed = await context.newPage();
+  for (const [name, path] of [['page', `/p/${project.code}`], ['data', `/v1/projects/${project.id}?assets=false`], ['file', `/v1/projects/${project.id}/files/${file}`], ['output', '/v1/runs/run-0/outputs/image']]) {
+    const answer = await typed.goto(`${base}${path}`);
+    const site = (await answer.request().allHeaders())['sec-fetch-site'];
+    const ok = name === 'page' ? answer.status() === 200 : answer.status() === 403 && (await answer.text()).includes('not_own_page');
+    check(`url_opened_${name}_${name === 'page' ? 'opens' : 'refused'}`, ok && site === 'none', { status: answer.status(), site });
+  }
+  await typed.close();
+
   // A kill -9 and back: both tabs go on with nothing to open again.
   restart();
   for (const [at, tab] of tabs.entries()) {

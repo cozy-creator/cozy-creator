@@ -67,9 +67,9 @@ export function sameOrigin(): Transport {
   // written as the page goes leaves at once (`keepalive`). An unreachable Calcifer is asked again.
   let proven = false
   const unproven = () => !proven
-  // The Calcifer this page first proved: its account and its process. Another account answering is refused; another process (a
-  // restart, or a program that took the port while Calcifer was down) keeps the tab working, but gets no passphrase until the page
-  // is reloaded (design/calcifer-access.md).
+  // The restart guard: the Calcifer this page first proved, its account and its process. Another account answering is refused;
+  // another process (Calcifer restarted) keeps the tab working, but is sent no passphrase or recovery secret until the page is
+  // reloaded (design/calcifer-access.md).
   let pinned: { principal: string; birth: string } | null = null
   let restarted = false
   const storage = async (signal?: AbortSignal | null) => {
@@ -105,8 +105,11 @@ export function sameOrigin(): Transport {
       if (needsStorage(path) && unproven()) {
         try { await storage(signal) } catch (error) { if (error instanceof Refused) return error.response; throw error }
       }
-      if (restarted && secret(init.body)) {
-        return refusal(409, "conflict", "calcifer_restarted", "Calcifer restarted since this page opened: reload the page before entering a passphrase")
+      if (secret(init.body)) {
+        // Proven again right before a secret leaves: the Calcifer it goes to is the one this page opened on.
+        proven = false
+        try { await storage(signal) } catch (error) { if (error instanceof Refused) return error.response; throw error }
+        if (restarted) return refusal(409, "conflict", "calcifer_restarted", "Calcifer restarted since this page opened: reload the page before entering a passphrase")
       }
       project?.check()
       const headers = new Headers(init.headers)

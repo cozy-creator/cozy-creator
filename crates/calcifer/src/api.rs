@@ -466,7 +466,7 @@ async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>
             return refusal.into_response();
         }
     };
-    let page = client != crate::loopback::Client::Native;
+    let page = client == crate::loopback::Client::Page;
     request.extensions_mut().insert(principal);
     request.extensions_mut().insert(client);
     let path=request.uri().path();

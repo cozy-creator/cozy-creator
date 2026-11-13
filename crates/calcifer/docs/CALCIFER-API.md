@@ -48,8 +48,9 @@ each request is judged alone (`crates/calcifer/src/loopback.rs`). Every request 
 4. On `/v1` (media, streams and the dev page's hot reload too): **the peer's OS account** is Calcifer's (`other_user`), by the
    kernel's word for its established socket, read as the connection is accepted (Linux `/proc/net/tcp{,6}`, macOS libproc,
    Windows `GetExtendedTcpTable` and the owning process's token). Then **who sent it**:
-   - a browser on Calcifer's own page: `Sec-Fetch-Site: same-origin`, or `none` on a `GET` navigation (a URL a person or another
-     app opened). `same-site` (another port), `cross-site` and an extension's `none` fetch are refused (`not_own_page`);
+   - a browser on Calcifer's own page: `Sec-Fetch-Site: same-origin`. `same-site` (another port), `cross-site` and `none` (a
+     URL typed or opened by another program, an agent's browser told to go there, an extension) are refused (`not_own_page`):
+     such a URL opens the page's own files, never `/v1`;
    - the hot reload socket (`GET /__cozy_hmr`, dev mode) with its exact `Origin`, for a browser that labels no upgrade;
    - anything that isn't a browser sends no `Sec-Fetch-Site`, and must send the lock record's `Authorization: Bearer <token>`
      (`unauthenticated`). The token is new at every start, lives only in the 0600 lock record, never in argv or the
@@ -57,12 +58,12 @@ each request is judged alone (`crates/calcifer/src/loopback.rs`). Every request 
 5. **Admission**: a stopping Calcifer refuses new mutations (`503 calcifer_stopping`); `POST /v1/down` and reads
    pass.
 
-A `GET` changes nothing a person would undo, so a navigation can only read; describing an asset's call (`?call=true`), which may
-install its package, is skipped for one. Every `/v1` answer carries `Content-Security-Policy: sandbox`, so nothing under it (a
+Every `/v1` answer carries `Content-Security-Policy: sandbox`, so nothing under it (a
 package's preview, a project's file) runs script on Calcifer's origin; a run's preview is a picture or nothing. There are no
 cookies, and nothing of Calcifer's is kept in the browser: a tab outlives a restart. Project storage's principal is the verified
-account (`GET /v1/project-storage`: `principal: user:<uid or SID>`); the page pins the first one and that Calcifer's
-`daemon_birth`, and after a change sends no passphrase until it's reloaded. Calcifer runs with umask 077: what it makes is its
+account (`GET /v1/project-storage`: `principal: user:<uid or SID>`). The page's restart guard pins the first one and that
+Calcifer's `daemon_birth`, proves them again right before sending a passphrase or recovery secret, and after a restart sends
+neither until it's reloaded. Calcifer runs with umask 077: what it makes is its
 account's alone.
 
 ## Conventions

@@ -73,7 +73,7 @@ async fn typed_nodes_fixture() {
 
     for kind in ["image", "video", "audio"] {
         let name = make(&api, &id, json!({"name":kind,"exact":true,"kind":kind,"fields":{}})).await;
-        let Json(read) = read(State(api.clone()), Path((id.clone(), name.clone())), Query(Asked { call: false }), None).await.unwrap();
+        let Json(read) = read(State(api.clone()), Path((id.clone(), name.clone())), Query(Asked { call: false })).await.unwrap();
         assert_eq!(read.asset.kind, kind);
         assert_eq!(read.asset.fields.get(format::NODE_KIND), Some(&json!(kind)));
         assert!(!read.asset.fields.contains_key(format::TEXT));
@@ -264,7 +264,7 @@ async fn typed_nodes_fixture() {
     // A current image remains renderable, while a reader's completed selected
     // input is independent of another generation of that image.
     edit(&api, &series.id, &original.name, json!({"tool":"fixture/image","fields":{"instructions":"edit the current image"}})).await;
-    let Json(history) = read(State(api.clone()), Path((series.id.clone(), original.name.clone())), Query(Asked { call: false }), None).await.unwrap();
+    let Json(history) = read(State(api.clone()), Path((series.id.clone(), original.name.clone())), Query(Asked { call: false })).await.unwrap();
     let original_request = history.versions.iter().find(|version| version.number == 2).unwrap().fields.as_ref().unwrap();
     assert_eq!(original_request.get("summary"), Some(&json!("The original summary")));
     assert_eq!(original_request.get("beats"), Some(&json!([{"description":"The original beat","duration":12}])));
@@ -298,7 +298,7 @@ async fn typed_nodes_fixture() {
     }, "version", false, |_| {}).unwrap();
     let snapshot_number = series.folder.lock().unwrap().asset(&original.name).unwrap().versions.last().unwrap().number;
     super::super::rename_now(&series, &series.id, api::calcifer::project::Rename { from: hint, to: "renamed_hint".into() }).unwrap();
-    let Json(history) = read(State(api.clone()), Path((series.id.clone(), original.name.clone())), Query(Asked { call: false }), None).await.unwrap();
+    let Json(history) = read(State(api.clone()), Path((series.id.clone(), original.name.clone())), Query(Asked { call: false })).await.unwrap();
     let renamed_fields = history.versions.iter().find(|version| version.number == snapshot_number).unwrap().fields.as_ref().unwrap();
     assert_eq!(renamed_fields["summary"], json!("Use <renamed_hint>"));
     assert_eq!(renamed_fields["beats"][0]["description"], json!("Keep <renamed_hint>"), "a history-only reference follows a node with no versions of its own");

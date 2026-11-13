@@ -224,6 +224,8 @@ REFUSALS: dict[str, tuple[dict[str, str], bool, int, str, str]] = {
     "cross_site": ({"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"}, True, 403, "not_own_page", "not_own_page_refusal"),
     "same_site": ({"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "no-cors"}, True, 403, "not_own_page", "not_own_page_refusal"),
     "none_not_navigation": ({"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "cors"}, True, 403, "not_own_page", "not_own_page_refusal"),
+    # A URL typed or opened by another program, an agent's browser among them: the page opens, /v1 doesn't.
+    "none_navigation": ({"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}, False, 403, "not_own_page", "not_own_page_refusal"),
     "foreign_origin": ({"Origin": "http://cozy-foreign.invalid"}, True, 403, "origin_not_allowed", "csrf_no_store_refusal"),
     "no_credential": ({}, False, 401, "unauthenticated", "native_auth_required"),
 }

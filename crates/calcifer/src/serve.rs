@@ -374,7 +374,15 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
             .with_graceful_shutdown(api.stopped())
             .into_future(),
     );
-    let server6 = listener6.map(|listener| tokio::spawn(axum::serve(listener, app).with_graceful_shutdown(api.stopped()).into_future()));
+    // `localhost` stops being Calcifer's the moment ::1's server ends.
+    let server6 = listener6.map(|listener| {
+        let serving = axum::serve(listener, app).with_graceful_shutdown(api.stopped()).into_future();
+        tokio::spawn(async move {
+            let ended = serving.await;
+            crate::loopback::LOCALHOST.store(false, std::sync::atomic::Ordering::Relaxed);
+            ended
+        })
+    });
     crate::browser::hosted_proof(api.clone());
     crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");

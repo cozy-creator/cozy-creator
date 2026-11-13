@@ -355,7 +355,7 @@ if [ "${RUNNER_OS:-}" = Windows ]; then
 else
   J --arg p "user:$(id -u)" '.storage.version == 3 and .storage.principal == $p' "$OUT/web.json" || check "web-serves: project storage isn't this account's: $(jq -c .storage "$OUT/web.json")"
 fi
-J '.typed.status == 200 and .typed.site == "none"' "$OUT/web.json" || check "web-serves: a /v1 URL opened in the address bar: $(jq -c .typed "$OUT/web.json")"
+J '.typed.status == 403 and .typed.site == "none" and .typed.page == 200' "$OUT/web.json" || check "web-serves: a /v1 URL opened in the address bar isn't refused, or the page's is: $(jq -c .typed "$OUT/web.json")"
 
 # What isn't Calcifer's own page, or this computer's cozy with its bearer, is refused in one line.
 local B=(-H "Authorization: Bearer $token") page=(-H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors') ws=(-H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==')
@@ -372,8 +372,11 @@ answers "another site's request" 403 not_own_page -H 'Sec-Fetch-Site: cross-site
 answers "another site's request, with the bearer" 403 not_own_page "${B[@]}" -H 'Sec-Fetch-Site: cross-site' -H 'Sec-Fetch-Mode: cors' "$base/v1/status"
 answers "another port's page (same-site)" 403 not_own_page -H 'Sec-Fetch-Site: same-site' -H 'Sec-Fetch-Mode: cors' "$base/v1/status"
 answers "an extension's fetch (none, not a navigation)" 403 not_own_page -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: cors' "$base/v1/status"
-answers "a URL opened (none, a navigation)" 200 - -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: navigate' "$base/v1/status"
-answers "a navigation that writes" 403 not_own_page -X POST -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: navigate' -H 'Content-Type: application/json' -d '{}' "$base/v1/run-estimates"
+# A URL typed or opened by another program (an agent's browser told to go there too) opens the page, never /v1.
+answers "a URL opened: the page" 200 - -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document' "$base/"
+answers "a URL opened: /v1 data" 403 not_own_page -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document' "$base/v1/projects/$id?assets=false"
+answers "a URL opened: a run's output" 403 not_own_page -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document' "$base/v1/runs/run-0/outputs/image"
+answers "a URL opened that writes" 403 not_own_page -X POST -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: navigate' -H 'Content-Type: application/json' -d '{}' "$base/v1/run-estimates"
 answers "neither a label nor the bearer" 401 unauthenticated "$base/v1/machines"
 answers "a wrong bearer" 401 unauthenticated -H 'Authorization: Bearer 00' "$base/v1/machines"
 answers "a wrong bearer from the page" 401 unauthenticated "${page[@]}" -H 'Authorization: Bearer 00' "$base/v1/machines"

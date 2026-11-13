@@ -1,7 +1,7 @@
 // The web-serves cell's browser (e2e/cli/web.sh): Calcifer's page opened in a real Chrome, as any browser of this account opens it.
 // Nothing is minted or kept (design/calcifer-access.md): the page renders under its CSP, opens GET /v1/events with no Authorization,
 // and a stream here then sees `hello` and the `project.changed` of an import the CLI makes. A URL opened in the address bar
-// (`Sec-Fetch-Site: none`, a navigation) reads /v1. Prints what it saw as JSON, and web.sh judges it.
+// (`Sec-Fetch-Site: none`) opens the page, and never /v1. Prints what it saw as JSON, and web.sh judges it.
 //   node serves.js <project id> <project folder> <file to import>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome; $COZY: the CLI; $HOLDER: Calcifer's lock record. Every browser step is bounded.
 const { chromium } = require(process.env.PLAYWRIGHT);
@@ -108,10 +108,10 @@ let mine = false;
   out.violations.push(...await page.evaluate(() => window.__violations));
   // The project storage the page proved: bound to this OS account, not a token.
   out.storage = await page.evaluate(async () => (await fetch('/v1/project-storage', { headers: { 'cozy-project-storage': '3' } })).json());
-  // The address bar: a person's own navigation to a /v1 URL reads it.
+  // The address bar (and an agent's browser told to go there): the page opens, /v1 doesn't.
   const typed = await context.newPage();
   const status = await typed.goto(`${origin}/v1/status`);
-  out.typed = { status: status.status(), site: (await status.request().allHeaders())['sec-fetch-site'] || null };
+  out.typed = { status: status.status(), site: (await status.request().allHeaders())['sec-fetch-site'] || null, page: (await typed.goto(`${origin}/`)).status() };
   out.cookies = await context.cookies();
   out.stored = await page.evaluate(() => [...Object.keys(localStorage), ...Object.keys(sessionStorage)].filter((key) => /session|token|code/i.test(key)));
   await browser.close();

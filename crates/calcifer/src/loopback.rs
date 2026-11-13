@@ -1,9 +1,10 @@
 //! Who may talk to Calcifer on this computer (design/calcifer-access.md, cl-985). There are no sessions: each request is judged
 //! alone. Every one needs a loopback peer and a `Host` naming the listener it reached; an `Origin`, if sent, must be that Host's,
 //! and a WebSocket must send one. `/v1` (media and streams too) and the dev page also need the peer's OS account to be Calcifer's.
-//! `/v1` then needs a browser's word that the request is Calcifer's own page's (`Sec-Fetch-Site: same-origin`, or `none` on a
-//! navigation) or, from anything that isn't a browser, the bearer in the 0600 lock record. GETs change nothing, so a navigation can
-//! only read. The page's own files need only the Host: they hold no secret, and go out with `frame-ancestors 'none'`.
+//! `/v1` then needs a browser's word that the request is Calcifer's own page's (`Sec-Fetch-Site: same-origin`) or, from anything that
+//! isn't a browser, the bearer in the 0600 lock record. A URL typed or opened by another program (`none`) opens the page's own files,
+//! never `/v1`: an agent's browser told to go there reads nothing. The page's own files need only the Host: they hold no secret,
+//! and go out with `frame-ancestors 'none'`.
 use std::{
     fmt,
     net::SocketAddr,
@@ -21,8 +22,8 @@ use tokio::{net::TcpListener, sync::OnceCell};
 
 use crate::api::{Api, Refusal, bearer, refuse};
 
-/// Who's at the other end of a connection: its address, the listener it reached, and its OS account, asked of the kernel as the
-/// connection is accepted (off the accept loop) and kept for its life.
+/// Who's at the other end of a connection: its address, the listener it reached, and its OS account, asked of the kernel when a
+/// request first needs it and kept for the connection's life.
 #[derive(Clone, Debug)]
 pub(crate) struct Peer {
     pub(crate) addr: SocketAddr,
@@ -32,12 +33,7 @@ pub(crate) struct Peer {
 
 impl Connected<IncomingStream<'_, TcpListener>> for Peer {
     fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
-        let peer = Peer { addr: *stream.remote_addr(), local: stream.io().local_addr().ok(), user: Arc::default() };
-        let asking = peer.clone();
-        tokio::spawn(async move {
-            let _ = asking.user().await;
-        });
-        peer
+        Peer { addr: *stream.remote_addr(), local: stream.io().local_addr().ok(), user: Arc::default() }
     }
 }
 
@@ -46,11 +42,16 @@ impl Peer {
         let (peer, local) = (self.addr, self.local);
         let found = self.user.get_or_init(|| async move {
             let local = local.ok_or("no_listener")?;
+            // A few at a time: macOS's lookup reads every socket of this account's processes.
+            let _turn = LOOKUPS.acquire().await.map_err(|_| "lookup_failed")?;
             tokio::task::spawn_blocking(move || platform::net::tcp_peer_user(peer, local)).await.map_err(|_| "lookup_failed")?
         });
         found.await.as_ref().map_err(|why| *why)
     }
 }
+
+/// How many connections' peers are looked up at once.
+static LOOKUPS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 /// Whether `localhost` is Calcifer's: it holds `[::1]` on its port as well as 127.0.0.1, so no other account can take ::1 there
 /// and answer `localhost` (browsers try ::1 first). Where ::1 can't be had, only `127.0.0.1` names Calcifer.
@@ -70,12 +71,10 @@ impl fmt::Display for Principal {
     }
 }
 
-/// What sent a `/v1` request: Calcifer's own page, a URL a person or another app opened (a GET navigation, which only reads), or a
-/// program with the lock record's bearer (this computer's cozy).
+/// What sent a `/v1` request: Calcifer's own page, or a program with the lock record's bearer (this computer's cozy).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Client {
     Page,
-    Navigation,
     Native,
 }
 
@@ -136,24 +135,23 @@ pub(crate) async fn own_user(peer: &Peer) -> Result<Principal, Refusal> {
 }
 
 /// What a browser says of where its request came from (`Sec-Fetch-Site`): no other site's page can say `same-origin`. Another port
-/// of this computer is `same-site`, refused; `none` counts only on a GET navigation, as extensions say it too. With no
-/// `Sec-Fetch-Site`, it's no browser: None. The hot reload socket's exact `Origin` (`refusal`) is a browser's word too, for one that
+/// of this computer is `same-site`, and `none` (a URL typed or opened by another program, or an extension) isn't the page: both
+/// refused. With no `Sec-Fetch-Site`, it's no browser: None. The hot reload socket's exact `Origin` (`refusal`) is a browser's word too, for one that
 /// sends no `Sec-Fetch-Site` on an upgrade: a GET of that one path alone.
 fn browser(method: &Method, path: &str, headers: &HeaderMap) -> Option<Option<Client>> {
     let hot_reload = *method == Method::GET && path == crate::page::HMR_PATH && websocket(headers);
     let Some(site) = text(headers, "sec-fetch-site") else { return hot_reload.then_some(Some(Client::Page)) };
     Some(match site {
         "same-origin" => Some(Client::Page),
-        "none" if *method == Method::GET && text(headers, "sec-fetch-mode") == Some("navigate") => Some(Client::Navigation),
         _ => None,
     })
 }
 
-/// `/v1`'s rule: Calcifer's account, then its own page (or a URL opened) or this computer's cozy with the bearer.
+/// `/v1`'s rule: Calcifer's account, then its own page or this computer's cozy with the bearer.
 pub(crate) async fn admitted(api: &Api, peer: &Peer, method: &Method, path: &str, headers: &HeaderMap) -> Result<(Principal, Client), Refusal> {
     let principal = own_user(peer).await?;
     let (code, said) = match (browser(method, path, headers), bearer(headers)) {
-        (Some(None), _) => ("not_own_page", "Calcifer answers its own page only, not another site's, another port's or an extension's"),
+        (Some(None), _) => ("not_own_page", "Calcifer's API answers its own page only: not another site, another port, an extension, or a URL opened directly"),
         (_, Some(token)) if !api.admits(token) => ("unauthenticated", "this isn't the bearer in Calcifer's lock record"),
         (Some(Some(client)), _) => return Ok((principal, client)),
         (None, Some(_)) => return Ok((principal, Client::Native)),
