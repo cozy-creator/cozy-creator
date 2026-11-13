@@ -1,0 +1,1 @@
+A package a plan asks about is described once per project: a description longer than one plan's budget goes on by itself, and the next plan takes its answer, instead of starting over each plan. `cozy machine show` and `machine ls` list the public Hub releases a machine holds (never a local alias, nor a private or uploaded release), asking the Hub without a sign-in.

@@ -34,7 +34,10 @@ pub(crate) fn install(home: &Home, diagnostics: bool) -> Result<(), ::api::error
         tracing_subscriber::fmt::layer()
             .with_ansi(false)
             .with_writer(Mutex::new(file))
-            .with_filter(tracing_subscriber::filter::LevelFilter::WARN)
+            // Where each project job goes, and why, beside them.
+            .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+                *meta.level() <= tracing::Level::WARN || (*meta.level() <= tracing::Level::INFO && meta.target() == "calcifer::project")
+            }))
     });
     tracing_subscriber::registry().with(layer).with(warnings).try_init().map_err(|_| failed())?;
     std::panic::set_hook(Box::new(|_| service_health(HealthEvent::Panicked)));

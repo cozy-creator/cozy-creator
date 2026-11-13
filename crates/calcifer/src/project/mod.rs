@@ -156,6 +156,9 @@ pub(crate) struct Project {
     walking: Mutex<bool>,
     /// Tells the walker something was asked.
     asked: Notify,
+    /// Each package a plan asked described, by Hub and `with`: one description each, going on past the plan's budget, its answer
+    /// kept for the next plan (`Walk::quotable`).
+    described: Mutex<HashMap<(String, String), Arc<tokio::sync::OnceCell<Result<Package, Error>>>>>,
     /// Held while a cut is made.
     cutting: Arc<Mutex<()>>,
     /// How far each Edit being rendered here is, 0 to 1.
@@ -363,6 +366,7 @@ impl Projects {
                     walker: Mutex::default(),
                     walking: Mutex::new(false),
                     asked: Notify::new(),
+                    described: Mutex::default(),
                     cutting: Arc::default(),
                     rendering: Arc::default(),
                     moving: tokio::sync::Mutex::default(),
@@ -3137,7 +3141,7 @@ enum Reach {
 
 /// A project's one walker: gives each job of its graph its turn as what it needs ends, and follows each run until it lands.
 struct Walk {
-    host: Host,
+    host: Arc<Host>,
     project: Arc<Project>,
     began: Instant,
     /// What it landed, for its last word.
@@ -3259,7 +3263,7 @@ struct Followed {
 impl Walk {
     fn new(api: &Arc<Api>, project: &Arc<Project>) -> Self {
         Self {
-            host: Host::for_project(api, &project.id),
+            host: Arc::new(Host::for_project(api, &project.id)),
             project: project.clone(),
             began: Instant::now(),
             tally: Mutex::default(),
@@ -3749,10 +3753,10 @@ impl Walk {
     async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Result<placement::Job, String> {
         let api = self.host.api();
         let limit = late.unwrap_or(std::time::Duration::MAX);
-        let package = match tokio::time::timeout(limit, self.host.package(hub, with, &self.folder().dir, &on)).await {
-            Err(_) => return Err(format!("{with} didn't say within {} s what it calls", limit.as_secs())),
-            Ok(Err(e)) => return Err(format!("{with}: {}", e.message)),
-            Ok(Ok(package)) => package,
+        let package = match self.described(hub, with, &on, limit).await {
+            None => return Err(format!("{with} is still being described: it is planned once that ends")),
+            Some(Err(e)) => return Err(format!("{with}: {}", e.message)),
+            Some(Ok(package)) => package,
         };
         let renderer = match package.maker() {
             Ok(Some(renderer)) => renderer,
@@ -3765,6 +3769,48 @@ impl Walk {
             interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
         });
         Ok(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
+    }
+
+    /// The package `with` names as `hub` has it, described once for every plan of this project: a description that outlasts `late`
+    /// goes on by itself, and a later plan reads its answer. None: it's still going. A failed one is asked again by the next plan.
+    async fn described(&self, hub: &str, with: &str, on: &[On], late: std::time::Duration) -> Option<Result<Package, Error>> {
+        let at = (hub.to_owned(), with.to_owned());
+        let (cell, fresh) = {
+            let mut described = self.project.described.lock().expect("described lock");
+            match described.get(&at) {
+                Some(cell) => (cell.clone(), false),
+                None => {
+                    let cell = Arc::new(tokio::sync::OnceCell::new());
+                    described.insert(at.clone(), cell.clone());
+                    (cell, true)
+                }
+            }
+        };
+        if fresh {
+            // The walk's own host: its installs keyed as the walk's, so a description joins the install its calls ask for.
+            let (host, project, cell, on) = (self.host.clone(), self.project.clone(), cell.clone(), on.to_vec());
+            let scope = crate::private_io::of_path(&project.folder.dir).ok().flatten();
+            tokio::spawn(crate::private_io::context(scope, async move {
+                let began = Instant::now();
+                let found = host.package(&at.0, &at.1, &project.folder.dir, &on).await;
+                if began.elapsed() > QUOTE_LATE {
+                    warn!("{}: {} took {:.1} s to describe, past a plan's budget", project.folder.dir.display(), at.1, began.elapsed().as_secs_f64());
+                }
+                let failed = found.is_err();
+                let _ = cell.set(found);
+                // Its answer is the next plan's; a failure is asked again then.
+                if failed {
+                    project.described.lock().expect("described lock").remove(&at);
+                }
+                project.asked.notify_one();
+            }));
+        }
+        let waited = tokio::time::timeout(late, async {
+            while cell.get().is_none() {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }).await;
+        waited.ok().and_then(|()| cell.get().cloned())
     }
 
     /// Places the jobs not sent yet, the nearest `plan::PLANNED` of them (cl-967): every machine pictured from the Status it pushed, each
@@ -3906,6 +3952,9 @@ impl Walk {
             let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
             walker.starts.insert(unsent.key.clone(), (chosen.start_at_ms, fits));
             if !unsent.ready {
+                if walker.foreseen.get(&unsent.key) != Some(&Some(chosen.machine.clone())) {
+                    info!("{dir}: {}, waiting, goes to {} at its turn", unsent.key, chosen.machine);
+                }
                 walker.foreseen.insert(unsent.key.clone(), Some(chosen.machine.clone()));
                 continue;
             }

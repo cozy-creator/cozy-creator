@@ -74,6 +74,9 @@ pub(crate) struct Machines {
     /// What this computer's machine does for each open project's own runs, read in that project's scope (`follow_project`): the
     /// machine's own status never lists it.
     project_activity: Mutex<HashMap<String, Vec<v1::Operation>>>,
+    /// Each Hub catalog model's public releases, as the default Hub last said, by version and by each lane's checkpoint and header:
+    /// what machine views list of the models a machine holds.
+    public: Mutex<HashMap<String, HashSet<String>>>,
     /// Rentals whose boot is followed, by rental id.
     pub(crate) booting: Mutex<HashSet<String>>,
     /// Runs a rental is being asked for.
@@ -148,6 +151,7 @@ impl Machines {
             seen: Mutex::default(),
             watching: Mutex::default(),
             project_activity: Mutex::default(),
+            public: Mutex::default(),
             booting: Mutex::default(),
             renting: Mutex::default(),
             asking: Mutex::default(),
@@ -303,6 +307,64 @@ impl Machines {
 
     /// One machine by its name, former name or rental id (`named`), with its Status read now:
     /// `local` starts for it.
+    /// Whether `checkpoint` of `model` is one of its public releases on the default Hub, as it last said, by its release or (a
+    /// checkpoint a package pins by hash) its tree or header; one not asked yet isn't.
+    fn public_checkpoint(&self, model: &str, checkpoint: &v1::Checkpoint) -> bool {
+        lock(&self.public).get(model).is_some_and(|public| {
+            (!checkpoint.release.is_empty() && public.contains(checkpoint.release.trim_start_matches('v')))
+                || (!checkpoint.manifest.is_empty() && public.contains(&checkpoint.manifest))
+                || (!checkpoint.tree.is_empty() && public.contains(&checkpoint.tree))
+        })
+    }
+
+    /// What `machine` holds, as its frame says: the default Hub asked once which of its models' releases are public (`public_checkpoint`).
+    pub(crate) async fn learn_holdings(&self, machine: &str) {
+        let mut models: Vec<String> = self.frame(machine).map(|frame| frame.models.iter().map(|m| m.model.clone()).collect()).unwrap_or_default();
+        models.sort();
+        models.dedup();
+        let unknown: Vec<String> = models.into_iter().filter(|model| !model.starts_with("local/") && !lock(&self.public).contains_key(model)).collect();
+        if unknown.is_empty() {
+            self.unmatched(machine);
+            return;
+        }
+        // What the Hub tells anyone: no sign-in.
+        let client = match self.hubs.anonymous(&self.hubs.default_origin()) {
+            Ok(client) => client,
+            Err(error) => { warn!("which models' releases are public is unread: {}", error.message); return }
+        };
+        for model in unknown {
+            let Ok(id) = api::model_ref::ModelId::parse(&model) else { continue };
+            let public = match client.get_model(&id.org, &id.name).await {
+                Ok(card) => card.releases.iter().filter(|release| release.visibility == api::model_ref::ReleaseVisibility::Public)
+                    .flat_map(|release| {
+                        let lanes = release.lanes.values().flat_map(|lane| [lane.checkpoint.clone(), format!("sha256:{}", lane.header.sha256)]);
+                        std::iter::once(release.version.trim_start_matches('v').to_owned()).chain(lanes)
+                    })
+                    .filter(|said| !said.is_empty() && said != "sha256:")
+                    .collect(),
+                Err(::api::hub::Error::Hub { status: 404, .. }) => HashSet::new(),
+                Err(error) => { warn!("which releases of {model} are public is unread: {error}"); continue }
+            };
+            if public.is_empty() {
+                warn!("{model} has no public release on the default Hub: machine views don't list it");
+            }
+            lock(&self.public).insert(model, public);
+        }
+        self.unmatched(machine);
+    }
+
+    /// Each model `machine` holds whose Hub has public releases, none of which
+    /// its checkpoints are: said, as a view leaves it out.
+    fn unmatched(&self, machine: &str) {
+        for model in self.frame(machine).map(|frame| frame.models).unwrap_or_default() {
+            let known = lock(&self.public).get(&model.model).is_some_and(|public| !public.is_empty());
+            if known && !model.checkpoints.iter().any(|checkpoint| self.public_checkpoint(&model.model, checkpoint)) {
+                let said: Vec<String> = model.checkpoints.iter().map(|c| format!("{} {} {}", c.release, c.tree, c.manifest)).collect();
+                warn!("{machine} holds {} as none of its public releases: {}", model.model, said.join("; "));
+            }
+        }
+    }
+
     pub(crate) async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
         if let Some(order) = self.order_named(text)? {
             return Ok(self.order(&order));
@@ -750,26 +812,20 @@ impl Machines {
             machine.status = seen.frame.as_ref().map(|frame| {
                 let mut visible=frame.clone();
                 let rows=self.calcifer.maintenance_rows(&row.name);
-                let mut manifests=HashSet::new();
                 let mut installations=HashSet::new();
                 for run in &rows {
-                    for choice in run.spec.models.iter().chain(run.spec.set.iter().flat_map(|set|set.items.iter().flat_map(|item|&item.models))) {
-                        if !choice.model.is_empty() && !choice.manifest.is_empty() {manifests.insert((choice.model.clone(),choice.manifest.clone()));}
-                    }
-                    if run.status==Some(wire::Status::Completed) {
-                        if let Some(result)=run.outcome.as_ref().and_then(|outcome|outcome.result.as_ref()).and_then(|result|serde_json::from_str::<serde_json::Value>(result.get()).ok()) {
-                            if let Some(id)=result.get("installation").and_then(serde_json::Value::as_str) {installations.insert(id.to_owned());}
-                            for model in result.get("models").and_then(serde_json::Value::as_array).into_iter().flatten() {
-                                if let (Some(name),Some(commit))=(model.get("repository").and_then(serde_json::Value::as_str),model.get("checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
-                                // What the run made: an install's local alias, or an upload's commit, held by its destination.
-                                if let (Some(name),Some(commit))=(model.pointer("/published/destination").and_then(serde_json::Value::as_str),model.pointer("/published/checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
-                            }
-                        }
+                    if run.status==Some(wire::Status::Completed)
+                        && let Some(result)=run.outcome.as_ref().and_then(|outcome|outcome.result.as_ref()).and_then(|result|serde_json::from_str::<serde_json::Value>(result.get()).ok())
+                        && let Some(id)=result.get("installation").and_then(serde_json::Value::as_str)
+                    {
+                        installations.insert(id.to_owned());
                     }
                 }
+                // Public Hub catalog models, for whatever work they came: a local alias, a private or an uploaded release isn't listed.
                 for model in &mut visible.models {
                     let total=model.checkpoints.len();
-                    model.checkpoints.retain(|checkpoint|manifests.contains(&(model.model.clone(),checkpoint.manifest.clone())));
+                    let catalog = !model.model.starts_with("local/");
+                    model.checkpoints.retain(|checkpoint| catalog && self.public_checkpoint(&model.model, checkpoint));
                     if total!=model.checkpoints.len() {model.total_bytes=0;model.unique_bytes=0;}
                 }
                 visible.models.retain(|model|!model.checkpoints.is_empty());
@@ -1425,6 +1481,11 @@ pub(crate) async fn list(
     query: Result<Query<Refresh>, QueryRejection>,
 ) -> Result<Json<MachineList>, Refusal> {
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    // What each holds, read for a client's view; Calcifer's own reads of its machines never wait on it.
+    let names: Vec<String> = api.machines.store().machines().map_err(internal).map_err(Refusal)?.into_iter().map(|row| row.name).collect();
+    for name in names {
+        api.machines.learn_holdings(&name).await;
+    }
     Ok(Json(
         api.machines.list(query.refresh).await.map_err(Refusal)?,
     ))
@@ -1452,6 +1513,9 @@ pub(crate) async fn show(
 /// The machine `GET /v1/machines/{name}` answers.
 async fn asked(api: &Arc<Api>, name: &str, query: Result<Query<Fresh>, QueryRejection>) -> Result<(Machine, Option<String>), Refusal> {
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    if let Ok(Some(row)) = api.machines.named(name) {
+        api.machines.learn_holdings(&row.name).await;
+    }
     let machine = match query.fresh {
         true => fresh(&api.machines, name).await,
         false => api.machines.show(name).await,

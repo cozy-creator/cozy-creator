@@ -14,7 +14,7 @@ dog=$(picture dog2.jpg); other=$(picture dog1.jpg); target=birefnet/remove_backg
 run_cell "$OUT" line-first "$target" --file "image=$dog" --on local || { check "estimate line: the first BiRefNet run: $(run_get "$OUT" line-first .reason.message)"; return; }
 cozy --json machine show local > "$OUT/line-models.json" || { check "estimate line: machine show local"; return; }
 model=$(jq -r '[.status.models[]?.repository] | map(select(test("birefnet"; "i"))) | first // empty' "$OUT/line-models.json")
-[ -n "$model" ] || { check "estimate line: BiRefNet's weights aren't listed: $(jq -c '[.status.models[]?.repository]' "$OUT/line-models.json")"; return; }
+[ -n "$model" ] || { check "estimate line: BiRefNet's weights aren't listed: $(jq -c '[.status.models[]?.repository]' "$OUT/line-models.json")"; diagnosed "estimate line"; return; }
 cozy --json model uninstall "$model" > "$OUT/line-uninstall.json" 2>&1 || { check "estimate line: model uninstall $model: $(tail -c 300 "$OUT/line-uninstall.json")"; return; }
 machine_stop || { check "estimate line: the local machine did not stop"; return; }
 machine_ready
@@ -77,7 +77,7 @@ in_project "$P" --json machine use "local,stand-w" > "$OUT/plan-use.json" 2>&1 |
 coming_go near '["local","stand-w"]'
 coming_done near 900
 went=$(plan_machine near)
-[ "$went" = local ] || check "plan: near, whose weights only local holds, went to ${went:-nowhere}"
+[ "$went" = local ] || { check "plan: near, whose weights only local holds, went to ${went:-nowhere}"; echo "plan: near's job: $(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "near")] | last' | head -c 800)"; echo "plan: local's models: $(cozy --json machine show local | jq -c '[.status.models[]?.repository]')"; diagnosed plan; }
 }
 
 # plan_published (phase b2): each job of a published tool is planned, and its run's record says where the plan sent it and what it
@@ -110,7 +110,7 @@ for at in 1 2 3; do
   esac
 done
 cp "$log" "$OUT/plan-published.log"
-grep -E "isn't planned: " "$OUT/plan-published.log" | sed 's/^/plan: /'
+{ grep -E "isn't planned: " "$OUT/plan-published.log" || true; } | sed 's/^/plan: /'
 for at in 1 2 3; do
   key=${keys[$((at - 1))]}
   ! grep -qF "$key isn't planned: " "$OUT/plan-published.log" || check "plan: cut_$at wasn't planned: $(grep -F "$key isn't planned: " "$OUT/plan-published.log" | head -1)"
@@ -140,7 +140,7 @@ for _ in $(seq 300); do
   sleep 1
 done
 echo "prepare: stand-v holds BiRefNet: ${held:-0}; after was ${state:-unknown} then; stand-v's activity: $(jq -c '.status.activity' "$OUT/stand-v.json" 2> /dev/null)"
-[ "${held:-0}" -gt 0 ] || check "prepare: stand-v never downloaded BiRefNet's weights while after waited for source"
+[ "${held:-0}" -gt 0 ] || { check "prepare: stand-v never downloaded BiRefNet's weights while after waited for source"; echo "prepare: the board's ahead: $(status "$P" | jq -c '.board.ahead' | head -c 600); after: $(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "after")] | last' | head -c 600)"; diagnosed prepare; }
 case $state in waiting | ready | queued | '') ;; *) check "prepare: after was $state, not waiting, when stand-v had BiRefNet: no prepare was needed" ;; esac
 coming_done after 600
 timeout 60 "$COZY" --json machine end stand-v --force -y > "$OUT/stand-v-end.json" 2>&1 || true
