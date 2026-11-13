@@ -22,9 +22,10 @@ function check(name, ok, detail) {
 
 // The page's own (ZoomControl.tsx's ZOOMS): the farthest is the first.
 const FARTHEST = 0.05;
-// As close as the layout keeps a box under another (shown.ts): a picture's tool and shape line and the rise of the name below, a word box's
-// rise alone, then clear's gap; and side by side, the gap. One more, so nothing lies on anything and the page leaves the rows as written.
-const UNDER = { image: 55 + 16 + 1, text: 22 + 16 + 1 };
+// As close as the layout keeps a box under another, under what's drawn of it (shown.ts heightFor and underOf): a picture's row under it,
+// its tool and shape line and the rise of the name below; a word box's rise alone; then clear's gap. Side by side, the gap. One more, so
+// nothing lies on anything and the page leaves the rows as written.
+const UNDER = { image: 40 + 55 + 16 + 1, text: 22 + 16 + 1 };
 const BESIDE = 240 + 16 + 1;
 const COLUMNS = [
   { kind: 'image', names: ['hero_art', 'a_box_whose_name_goes_on_and_on_past_any_width', 'kyogre_art_1', 'x'] },

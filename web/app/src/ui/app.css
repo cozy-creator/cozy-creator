@@ -1116,9 +1116,13 @@ code {
   flex: 0 1 auto;
   font-size: calc(var(--t-body) * var(--ui));
 }
+/* Its shape, cut with an ellipsis where its box ends as a name is: "Auto · 1.6:1 from <hero_art>" is wider than a box 240 wide (cl-885). */
 .card .tile-line .ratio-rest {
   position: static;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: calc(var(--t-body) * var(--ui));
 }
 /* A render's lines at the body step, as the line over them (cl-958): read at the canvas's 100%, and its Cancel 28px. */
