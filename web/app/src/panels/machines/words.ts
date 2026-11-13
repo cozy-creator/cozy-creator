@@ -23,6 +23,7 @@ export const gpusWords = (machine: Machine) => {
 
 export function stateWords(machine: Machine, now: number): string {
   if (machine.offline) return `offline: ${machine.offline}`
+  if (machine.broken && machine.state !== "ended") return `broken: ${machine.broken.code}`
   const unverified = machine.unverified ? " (unverified)" : ""
   switch (machine.state) {
     case "booting":
@@ -44,6 +45,21 @@ export function stateWords(machine: Machine, now: number): string {
   }
 }
 
+/** Why nothing runs on it, and what becomes of it (cl-977). */
+export function brokenWords(machine: Machine): string {
+  const broken = machine.broken
+  if (!broken || machine.state === "ended") return ""
+  const then =
+    machine.kind !== "rental"
+      ? "It takes no work until what's stuck exits; a reboot ends it."
+      : machine.status?.phase === "releasing"
+        ? "It's releasing itself."
+        : broken.code === "silent_after_update" && machine.ordered !== false
+          ? "This computer ends it, as it bills for nothing."
+          : "It takes no work, and releases itself once nothing runs there."
+  return `It's broken: ${broken.message}. ${then}`
+}
+
 /** What makes its runs slow now (cl-913): a GPU throttled for heat, a Runtime without its kernels. Red wherever it shows. */
 export function slowWords(machine: Machine): string[] {
   const status = machine.status
@@ -57,7 +73,7 @@ export function slowWords(machine: Machine): string[] {
 }
 
 export const stateClass = (machine: Machine) =>
-  machine.offline || machine.end_failed
+  machine.offline || machine.end_failed || (machine.broken && machine.state !== "ended")
     ? "s-bad"
     : machine.state === "ready"
       ? "s-current"

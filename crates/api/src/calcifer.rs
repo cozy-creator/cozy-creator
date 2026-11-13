@@ -1160,6 +1160,11 @@ pub struct Machine {
     /// which is what a reader that predates this field shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offline: Option<String>,
+    /// Why nothing can run on it (cl-977): its own word (`stuck_in_driver`: the TensorD before its own can't exit, and its GPUs
+    /// can't be opened), or this computer's (`silent_after_update`: a rental that hasn't answered since an update restarted it).
+    /// It takes no work; a rental is released, by itself or by the computer that ordered it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broken: Option<crate::machine::Broken>,
     /// The Hub's word, for a rental.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rental: Option<Rental>,

@@ -25,6 +25,8 @@ fn main() -> std::process::ExitCode {
         [noun, role, rest @ ..] if *noun == "machine" && *role == "serve" => {
             machine(std::iter::once(*role).chain(rest.iter().copied()).cloned())
         }
+        // The machine's own process opening its GPUs (cl-977); not for people.
+        [noun, role, rest @ ..] if *noun == "machine" && *role == "probe-gpus" => tensord::serve::probe_gpus(rest.iter().copied().cloned()),
         _ => cli::main(),
     }
 }

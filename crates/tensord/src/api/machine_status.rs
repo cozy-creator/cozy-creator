@@ -302,7 +302,15 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
                     gpu_bytes: gpus.iter().map(|(_, bytes)| bytes).sum(), gpus: gpus.into_iter().map(|(gpu, _)| gpu).collect(),
                 }
             })
+            .chain(identity.stuck.lock().unwrap().iter().map(|s| v1::StuckProcess {
+                pid: s.birth.pid,
+                command: "the TensorD before this one".into(),
+                wchan: s.wchan(),
+                since_unix_ms: s.killed_unix_ms,
+                ..Default::default()
+            }))
             .collect(),
+        broken: identity.broken.clone(),
         heat: crate::slowed::heat(),
         runtime_kernels: crate::slowed::runtime_kernels(),
         queue: Some(queue),

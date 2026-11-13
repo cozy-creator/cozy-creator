@@ -269,14 +269,25 @@ fn threads() -> io::Result<usize> {
     Ok(task.pti_threadnum as usize)
 }
 
-/// What wakes a supervising parent: TERM, INT and CHLD, blocked on its thread and taken one at a
-/// time.
+/// What wakes a supervising parent: TERM, INT, CHLD, its service's word that it is leaving (USR1) and its own alarm (ALRM),
+/// blocked on its thread and taken one at a time.
 pub struct SupervisorSignals(libc::sigset_t);
 
 /// What [`SupervisorSignals::wait`] took.
 pub enum Woken {
     Stop(Signal),
     Child,
+    /// Its service says it is exiting ([`leaving`]).
+    Leaving,
+    /// The alarm [`SupervisorSignals::alarm`] set went off.
+    Alarm,
+}
+
+/// Tells this process's parent, a supervisor, that it is exiting: the parent then waits for it only so long.
+pub fn leaving() {
+    if let Some(parent) = rustix::process::getppid() {
+        let _ = rustix::process::kill_process(parent, Signal::USR1);
+    }
 }
 
 /// A `pthread_sigmask` or `sigwait` answer: the error itself, not -1 and errno.
@@ -294,7 +305,7 @@ impl SupervisorSignals {
         unsafe {
             let mut set = std::mem::zeroed();
             libc::sigemptyset(&mut set);
-            for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGCHLD] {
+            for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGCHLD, libc::SIGUSR1, libc::SIGALRM] {
                 libc::sigaddset(&mut set, signal);
             }
             Self(set)
@@ -314,8 +325,16 @@ impl SupervisorSignals {
         Ok(match signal {
             libc::SIGTERM => Woken::Stop(Signal::TERM),
             libc::SIGINT => Woken::Stop(Signal::INT),
+            libc::SIGUSR1 => Woken::Leaving,
+            libc::SIGALRM => Woken::Alarm,
             _ => Woken::Child,
         })
+    }
+
+    /// [`Woken::Alarm`] in `seconds`, replacing an alarm set before; 0 cancels it.
+    pub fn alarm(&self, seconds: u32) {
+        // SAFETY: alarm takes a count and answers the one it replaced.
+        unsafe { libc::alarm(seconds) };
     }
 }
 

@@ -16,7 +16,7 @@ type Mark = "broken" | "slow" | "up" | "download" | "install" | "work" | "idle"
 /** Red blinks broken and yellow coming up. Up, each thing it does: an arrow glowing while weights arrive, a package while one installs, green
  *  blinking while it runs inference; steady grey with nothing to do. Steady red first while something makes its runs slow (cl-913). */
 function marksOf(machine: Machine, doing: Doing[]): Mark[] {
-  if (machine.offline || machine.end_failed || machine.unreachable_since_ms || machine.rental?.unreachable_since_ms) return ["broken"]
+  if (machine.offline || machine.broken || machine.end_failed || machine.unreachable_since_ms || machine.rental?.unreachable_since_ms) return ["broken"]
   if (machine.state === "booting" || machine.state === "ending") return ["up"]
   if (machine.state !== "ready" && machine.state !== "stopped") return ["broken"]
   const kinds = new Set(doing.map((one) => (one.kind === "run" ? (working(one.run, one.on) ? "work" : "waits") : one.kind)))

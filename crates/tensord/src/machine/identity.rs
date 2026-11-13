@@ -32,6 +32,12 @@ pub(crate) fn hold(layout: &Layout) -> io::Result<()> {
         Some(held) => held,
         None => {
             let holder = lock.holder()?.and_then(|record| serde_json::from_slice::<Birth>(&record).ok());
+            // This parent before it exec'd an update (`supervise::exec`): a service of its that can't exit holds the lock it
+            // took, which keeps the root from any other machine meanwhile (cl-977).
+            if holder.as_ref() == Some(&Birth::own()?) {
+                tracing::warn!("this machine's lock is held by a service of its that can't exit; it serves on");
+                return Ok(());
+            }
             let live = holder.filter(|birth| birth.state().is_ok_and(|state| matches!(state, State::Live | State::Stopped)));
             if let Some(live) = live {
                 let root = layout.root.display();

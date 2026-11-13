@@ -388,6 +388,13 @@ errors?: Array<ErrorBody>,
 ended?: RenderEnded | null, };
 
 /**
+ * Why nothing can run on a machine (`StatusFrame::broken`, cl-977). `code` is the state: `stuck_in_driver`, the TensorD
+ * before this one can't exit (it is in `stuck`) and a fresh process can't open its GPUs; Calcifer's own, for a rental that
+ * hasn't answered since an update restarted it, `silent_after_update`.
+ */
+export type Broken = { code: string, message: string, };
+
+/**
  * `GET /v1/tools/browse`: a page of the Hub's packages that make media.
  */
 export type Browsed = { packages: Array<BrowsedPackage>,
@@ -1197,6 +1204,12 @@ reason?: string | null,
  * which is what a reader that predates this field shows.
  */
 offline?: string | null,
+/**
+ * Why nothing can run on it (cl-977): its own word (`stuck_in_driver`: the TensorD before its own can't exit, and its GPUs
+ * can't be opened), or this computer's (`silent_after_update`: a rental that hasn't answered since an update restarted it).
+ * It takes no work; a rental is released, by itself or by the computer that ordered it.
+ */
+broken?: Broken | null,
 /**
  * The Hub's word, for a rental.
  */

@@ -123,6 +123,10 @@ pub(crate) struct GpuConfig {
     /// Tests only: recorded GPU readings every call reads in place of its GPUs' own (`machine.gpu_samples`, cl-913).
     #[serde(default)]
     pub gpu_samples: Option<PathBuf>,
+    /// Why no GPU here can be used (cl-977: the TensorD before this one can't exit, and a fresh process can't open them): each
+    /// is out of service from the start, and runs waiting on one fail for their clients to place them again.
+    #[serde(default)]
+    pub broken: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ImageKernels {
@@ -1128,6 +1132,9 @@ impl Pool {
         }
         #[cfg(target_os = "linux")]
         pool.supervise_ledgers();
+        if pool.config.broken.is_some() {
+            pool.refresh_out();
+        }
         Ok(pool)
     }
     /// Each GPU's ledger and the host's supervised: an asker no peer could help gets an idle executor ended. Started once the
@@ -1546,6 +1553,9 @@ impl Pool {
     fn out_of_service(&self) -> BTreeMap<usize, (String, bool)> {
         let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
         let mut out = BTreeMap::new();
+        if let Some(why) = &self.config.broken {
+            out.extend((0..self.devices.len()).map(|d| (d, (why.clone(), true))));
+        }
         for lost in self.lost.lock().unwrap().values() {
             for (gpu, bytes) in &lost.gpus {
                 if let Some(d) = (0..self.devices.len()).find(|d| self.index(*d) == *gpu) {

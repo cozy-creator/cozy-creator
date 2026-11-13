@@ -77,6 +77,10 @@ pub(crate) struct MachineIdentity {
     pub mode: &'static str,
     /// Where its PyTorch layer comes from.
     pub torch: crate::published::layer::Torch,
+    /// The TensorDs before this one that can't exit, each until it does (cl-977).
+    pub stuck: Arc<std::sync::Mutex<Vec<crate::machine::stuck::Stuck>>>,
+    /// Why nothing can run here (cl-977).
+    pub broken: Option<api::machine::Broken>,
 }
 
 pub(crate) async fn serve(
@@ -316,7 +320,7 @@ async fn prove_readiness(port: u16, readiness: Arc<Readiness>, id: MeasuredIdent
             // and whoever launched it hears the reason, instead of waiting on a machine that
             // will never be ready.
             tracing::error!("readiness not proved: {error}");
-            std::process::exit(78);
+            crate::machine::supervise::leave(78);
         }
     }
 }
