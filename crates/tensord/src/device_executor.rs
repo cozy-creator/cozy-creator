@@ -779,7 +779,10 @@ impl DeviceExecutor {
             .stdin(Stdio::null())
             .stdout(File::create(config.root.join("stdout.log"))?)
             .stderr(File::create(config.root.join("stderr.log"))?);
-        if config.private { command.current_dir(&config.root); }
+        if config.private {
+            command.current_dir(&config.root);
+            platform::private_exec::limit_cores(&mut command).map_err(io::Error::from)?;
+        }
         // Its generation and kernel namespace stay held while it lives, past this machine's death.
         crate::launch_identity::inherit(
             &mut command,

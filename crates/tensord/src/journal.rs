@@ -829,6 +829,11 @@ impl Journal {
         Ok(answer)
     }
 
+    /// Whether execution `id` is still journaled here.
+    pub(crate) fn holds_execution(&self, id: u64) -> io::Result<bool> {
+        self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE id=?1)", [id], |row| row.get(0)).map_err(db_error)
+    }
+
     /// Deletes `ids`' executions and every row of theirs, their pages overwritten (cl-984): a project's legacy worker
     /// history once Calcifer imported it into the project. Answers the objects only they named, and their triage subjects.
     pub(crate) fn retire_executions(&mut self, ids: &[u64]) -> io::Result<(Vec<tensorfs::format::ObjectRef>, Vec<String>)> {
@@ -851,8 +856,8 @@ impl Journal {
             tx.execute("DELETE FROM executions WHERE id=?1", [id]).map_err(db_error)?;
         }
         tx.commit().map_err(db_error)?;
-        // Freed pages are zeroed (`secure_delete`); the WAL's older copies of them go, and the file is rewritten.
-        self.connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);").map_err(db_error)?;
+        // Their cells are zeroed (`secure_delete`); the WAL's older images of those pages go once a reader lets them.
+        let _ = self.connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
         Ok((objects, subjects))
     }
 

@@ -175,7 +175,7 @@ async fn project_bindings_request(m: State<Machine>, Path(project): Path<String>
 /// Calcifer's import of a project's legacy history asks which of its requests this worker accepted (`migration-bindings`),
 /// then has them covered (`migrate`). One machine journal holds every run: a covered acceptance is verified there, kept in
 /// the project's own receipt (`legacy-custody.json` in its machine area), then retired from the machine, its rows,
-/// copies and objects gone (cl-984). A lookup answers from the journal, else from that receipt.
+/// copies and objects gone (cl-984); it is covered once retired. A lookup answers from the journal, else from that receipt.
 async fn legacy_custody(m: Machine, descriptor: v1::LocalPrivateStorage, migrate: bool, request: Request<Body>) -> Response {
     let actor = match m.caller(request.headers()) { Ok(caller) => actor_id(caller.actor), Err(error) => return Refusal::from(error).into_response() };
     let reading = request.method() == axum::http::Method::GET;
@@ -191,9 +191,16 @@ async fn legacy_custody(m: Machine, descriptor: v1::LocalPrivateStorage, migrate
     let same = |a: &v1::ProjectExecutionMigrationBinding, b: &v1::ProjectExecutionMigrationBinding|
         a.request_id == b.request_id && a.source_workspace_id == b.source_workspace_id && a.invocation_spec_digest == b.invocation_spec_digest;
     if migrate && reading {
-        let answered = m.call(move |_| {
+        // Covered once retired: a receipted acceptance still journaled here (its retirement failed or never ran) is not.
+        let answered = m.call(move |runs| {
             let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
-            Ok(v1::ProjectExecutionMigrationReceipt { bindings: kept(&path).into_iter().map(|kept| kept.binding).collect() })
+            let mut bindings = vec![];
+            for kept in kept(&path) {
+                let held = runs.service.engine.with_journal(|journal| journal.holds_execution(kept.source_number))
+                    .map_err(conflict("project_storage_migration_pending"))?;
+                if !held { bindings.push(kept.binding); }
+            }
+            Ok(v1::ProjectExecutionMigrationReceipt { bindings })
         }).await;
         return match answered { Ok(receipt) => Json(receipt).into_response(), Err(error) => Refusal::from(error).into_response() };
     }
