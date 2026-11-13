@@ -241,6 +241,22 @@ skew_refused() {
   fi
 }
 # Sign-in: the email's code, as the Hub logs it, typed into `cozy login` on stdin; then the account's name.
+# cl-989 diagnostics (throwaway branch): Calcifer in the foreground, and the CLI's own view while login waits.
+if [ "$OS" = Windows ]; then
+  log "cl-989 diag: cozy calcifer in the foreground (30 s bound)"
+  timeout 30 "$COZY_BIN" calcifer > calcifer-fg.out 2>&1; fg=$?
+  log "cl-989 diag: cozy calcifer exited $fg; output: $(tr '\r\n' '  ' < calcifer-fg.out | tail -c 300)"
+  { echo "== ~/.cozy"; ls -la ~/.cozy; echo "== calcifer"; ls -la ~/.cozy/calcifer; echo "== services"; ls -la ~/.cozy/services; cat ~/.cozy/calcifer/refused.json; } > cozy-tree-fg.txt 2>&1
+  log "cl-989 diag: after the foreground run: $(tr '\r\n' '  ' < cozy-tree-fg.txt | tail -c 600)"
+  (
+    sleep 45
+    for i in 1 2 3 4 5; do cat ~/.cozy/services/calcifer.birth 2>&1; echo; sleep 1; done > births-during.txt
+    timeout 60 "$COZY_BIN" doctor > doctor-during.out 2>&1; echo "doctor exit $?" >> doctor-during.out
+    tasklist > tasks-during.txt 2>&1
+    { ls -la ~/.cozy ~/.cozy/calcifer ~/.cozy/services; cat ~/.cozy/calcifer/refused.json; } > cozy-tree-during.txt 2>&1
+  ) &
+  DIAG=$!
+fi
 log "cozy login ci@skew.test: the code from the Hub's log, typed on stdin"
 # Its stdin a pipe, written once the Hub has logged the code (or not, after two minutes): an ended pipe is an answer, so a
 # question this harness doesn't answer can't hang the job.
@@ -251,8 +267,16 @@ log "cozy login ci@skew.test: the code from the Hub's log, typed on stdin"
     grep -q '"error"' login.out 2>/dev/null && break  # refused before a code: nothing to type
     sleep 1
   done
-} | cozy --json login ci@skew.test > login.out 2>&1
+} | { [ -z "$PUBLICATION_LOG" ] || { printf '%s\x1f' --json login ci@skew.test; printf '\x1e'; } >> "$PUBLICATION_LOG"; timeout 150 "$COZY_BIN" --json login ci@skew.test; } > login.out 2>&1
 login=${PIPESTATUS[1]}
+if [ "$OS" = Windows ]; then
+  wait "${DIAG:-}" 2>/dev/null
+  log "cl-989 diag: login exit $login; births while it waited: $(tr '\r\n' '  ' < births-during.txt 2>/dev/null | tail -c 300)"
+  log "cl-989 diag: cozy doctor while login waited: $(tr '\r\n' '  ' < doctor-during.out 2>/dev/null | tail -c 1500)"
+  log "cl-989 diag: cozy.exe processes: $(grep -i cozy tasks-during.txt 2>/dev/null | tr '\r\n' '  ' | tail -c 600)"
+  log "cl-989 diag: home while login waited: $(tr '\r\n' '  ' < cozy-tree-during.txt 2>/dev/null | tail -c 800)"
+  [ "$login" = 0 ] || { timeout 20 "$COZY_BIN" login ci@skew.test < /dev/null > login-plain.out 2>&1; log "cl-989 diag: plain login (20 s): exit $?: $(tr '\r\n' '  ' < login-plain.out | tail -c 600)"; }
+fi
 code=$(grep -h 'development device enrollment code' hub.log | grep -o '"code":"[^"]*"' | tail -1 | cut -d'"' -f4)
 if [ -n "$REFUSE" ]; then
   [ "$login" != 0 ] && grep -q '"client_too_old"' login.out && grep -q 'cozy update' login.out &&
