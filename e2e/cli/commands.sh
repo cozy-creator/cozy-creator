@@ -693,6 +693,31 @@ echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing
 [ "$callee" = _/minimax-h3-tools ] || check "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
 }
 
+# xs-194: a package whose floor only the open RC meets (cozy-runtime>=0.47.0.dev0,<0.48) names no Runtime wheel, and runs from
+# its source and from the Hub as it was published: each lock takes the RC's newest build, so a Runtime merge between two
+# runs of this cell (each Runtime merge replaces the RC's wheels) needs no relock. isolated.sh published e2e-rcfloor 0.1.0.
+rc_floor() {
+step "a package with only an RC floor runs from source and from the Hub, its lock on the RC's newest Runtime (xs-194)"
+[ -n "$LOCAL" ] || return 0
+local src=$OUT/rcfloor runtime rc
+rc=$(cozy --version | awk '{n = split($2, v, /[.-]/); print v[1] "." v[2] + ($2 ~ /-/ ? 0 : 1) ".0"}')
+runtime=$(curl -fsSL "https://github.com/cozy-creator/cozy-runtime/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
+  | awk '$2 ~ /-py3-none-any[.]whl$/ {split($2, p, "-"); print p[2]; exit}')
+echo "rc floor: the open RC's newest Runtime is ${runtime:-unread}"
+grep -q '"status": *"published' "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null \
+  || check "rc floor: publishing e2e-rcfloor failed: $(tail -c 300 "${E2E_RCFLOOR_PUBLISHED:-/dev/null}" 2> /dev/null | tr '\n' ' ')"
+rm -rf "$src" && cp -r "$here/relay" "$src"
+sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcsource"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.47.0.dev0,<0.48"/' "$src/pyproject.toml"
+cell rc-floor-source "$src/relay" "text=from source" || check "rc floor: its source run failed: $(run_get "$OUT" rc-floor-source .reason.message | head -c 300)"
+grep -q 'cozy-runtime = ' "$src/pyproject.toml" && check "rc floor: its pyproject.toml took a Runtime source"
+if [ -f "$src/uv.lock" ] && [ -n "$runtime" ]; then
+  grep -A1 -x 'name = "cozy-runtime"' "$src/uv.lock" | grep -qF "version = \"$runtime\"" \
+    || check "rc floor: its lock holds $(grep -A1 -x 'name = "cozy-runtime"' "$src/uv.lock" | tail -1), not the RC's newest $runtime"
+fi
+[ -z "${E2E_RCFLOOR:-}" ] || cell rc-floor-hub "$E2E_RCFLOOR/relay" "text=from the Hub" \
+  || check "rc floor: the published e2e-rcfloor's run failed: $(run_get "$OUT" rc-floor-hub .reason.message | head -c 300)"
+}
+
 # cl-952, se-128: an unversioned run takes the Hub's newest release its machine runs, installing it when the machine holds
 # an older one, and says so; a machine off the RC never takes a prerelease built for the RC's Runtime. isolated.sh publishes
 # e2e-held 0.1.0 and 0.2.0rc1, and e2e-newer 0.1.0 and 0.1.1. On the candidate, an RC build (`+dev`), local takes e2e-held

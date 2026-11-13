@@ -79,15 +79,15 @@ pub(super) fn answer_now() -> Option<(String, super::db::Said)> {
 /// around a helper that said it too, the last word stands.
 pub(super) fn answering<T: serde::Serialize>(status: StatusCode, answer: &T) {
     let Ok(body) = serde_json::to_vec(answer) else { return };
-    said(status, Box::new(move |_: &[String]| body.clone()));
+    said(status, Box::new(move |_: u64, _: &[String]| body.clone()));
 }
 
-/// `answering` what `answer` makes of the heads its act's commit leaves the document at: what words typed on next are typed on.
-pub(super) fn answering_at<T: serde::Serialize>(status: StatusCode, answer: impl Fn(&[String]) -> T + Send + 'static) {
-    said(status, Box::new(move |heads: &[String]| serde_json::to_vec(&answer(heads)).unwrap_or_default()));
+/// `answering` what `answer` makes of the revision and heads its act's commit leaves the project at: what a page reads and types on next.
+pub(super) fn answering_at<T: serde::Serialize>(status: StatusCode, answer: impl Fn(u64, &[String]) -> T + Send + 'static) {
+    said(status, Box::new(move |seq: u64, heads: &[String]| serde_json::to_vec(&answer(seq, heads)).unwrap_or_default()));
 }
 
-fn said(status: StatusCode, body: Box<dyn Fn(&[String]) -> Vec<u8> + Send>) {
+fn said(status: StatusCode, body: Box<dyn Fn(u64, &[String]) -> Vec<u8> + Send>) {
     let _ = CLAIM.try_with(|claim| claim.borrow_mut().answer = Some(super::db::Said { status: status.as_u16(), body }));
 }
 

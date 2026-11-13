@@ -300,7 +300,7 @@ pub(super) async fn patch(
             false => {
                 patched.fields = folder.reading_boxes(came)?;
                 let said = patched.clone();
-                super::keyed::answering_at(StatusCode::OK, move |heads| AssetPatched { heads: heads.to_vec(), ..said.clone() });
+                super::keyed::answering_at(StatusCode::OK, move |_, heads| AssetPatched { heads: heads.to_vec(), ..said.clone() });
             }
         }
         Ok(patched)
@@ -575,6 +575,7 @@ pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)
         |selected| selected == number,
     );
     let before = stale_names(&doc, &doc.stand(&lock));
+    let read_by = doc.read_by(i, number);
     folder
         .act(|| {
             if approved {
@@ -582,10 +583,12 @@ pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)
             }
             folder.update_lock(|lock| lock.asset_mut(&name, "").discard(number))?;
             history::take(folder, &name, number, noun, Took::Listed, Took::Discarded);
+            // Its answer is kept with it, in its transaction (cl-885), as `moving` says it.
+            super::keyed::answering(StatusCode::OK, &VersionMoved { read_by: read_by.clone(), ..moving(folder, &name, number, noun, approved)? });
             Ok(())
         })
         .map_err(Refusal)?;
-    moved(&api, &project, name, number, noun, approved, &before).await.map(|Json(answer)| Json(VersionMoved { read_by: doc.read_by(i, number), ..answer }))
+    moved(&api, &project, name, number, noun, approved, &before).await.map(|Json(answer)| Json(VersionMoved { read_by, ..answer }))
 }
 
 /// `POST /v1/projects/{id}/assets/{name}/versions`: a picture joins it as its next version, so versions of one thing live on one box. The file it held before that
@@ -600,7 +603,13 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     let name = asset.name.clone();
     let kept = keep_file(folder, &asked.source).await?;
     let before = stale_names(&doc, &doc.stand(&folder.lock().map_err(Refusal)?));
-    let (number, already) = joined(folder, &doc, i, &kept).map_err(Refusal)?;
+    // Its answer is kept with it, in its transaction (cl-885), as `moving` says it.
+    let (number, already) = folder.act(|| {
+        let (number, already) = joined(folder, &doc, i, &kept)?;
+        let noun = noun(&doc, &folder.lock()?, i);
+        super::keyed::answering(StatusCode::OK, &VersionMoved { already, ..moving(folder, &name, number, noun, false)? });
+        Ok((number, already))
+    }).map_err(Refusal)?;
     measure_soon(&api, &project);
     let noun = noun(&doc, &folder.lock().map_err(Refusal)?, i);
     moved(&api, &project, name, number, noun, false, &before).await.map(|Json(answer)| Json(VersionMoved { already, ..answer }))
@@ -661,6 +670,8 @@ pub(super) async fn patch_version(State(api): State<Arc<Api>>, Path((id, name, n
                 folder.update_lock(|lock| set_metadata(lock, &name, number, &output, after.clone()))?;
                 history::metadata(folder, &name, number, noun, &output, before, after.clone());
             }
+            // Its answer is kept with it, in its transaction (cl-885).
+            super::keyed::answering(StatusCode::OK, &VersionPatched { name: name.clone(), number, metadata: after.clone() });
             Ok(number)
         })
         .map_err(Refusal)?;
@@ -695,6 +706,18 @@ fn no_version(lock: &folder::Lock, name: &str, noun: &str, number: u32) -> Error
         numbers => format!("{name} has no {noun} {number}: it has {}", numbers.join(", ")),
     };
     Error::new(Kind::NotFound, "version_unknown", said).next("cozy status --full")
+}
+
+/// A version's move as its transaction knows it, for its answer kept with it: what it stands on is what's approved, else its newest. What
+/// that put out of date the answer after says (`moved`).
+fn moving(folder: &folder::Folder, name: &str, number: u32, noun: &str, approved: bool) -> Result<VersionMoved, Error> {
+    let lock = folder.lock()?;
+    let held = lock.asset(name);
+    let pinned = folder.reading_boxes(|written| written.get(name).and_then(|held| held.get("approved").cloned()))?;
+    let pin = format::approved_file(pinned.as_ref(), &lock);
+    let on = held.and_then(|held| held.versions.iter().rev().find(|version| pin.is_some() && version.main() == pin.as_ref()));
+    let stands = on.or_else(|| held.and_then(|held| held.versions.last())).map(|version| version.number);
+    Ok(VersionMoved { name: name.to_owned(), number, noun: noun.to_owned(), approved, stands, stale: vec![], read_by: vec![], already: false })
 }
 
 /// What a version going or coming back left: what's reading `name` looks again, a cut's film follows, and the answer.

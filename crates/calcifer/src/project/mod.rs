@@ -2109,27 +2109,36 @@ async fn reclaim(
                 let _ = std::fs::remove_file(folder.dir.join(FsPath::new(&name).with_extension("otio")));
             }
         }
-        // What a text names by number stays, on any row.
-        let named = doc.versions_named();
-        let row_named: BTreeMap<String, BTreeSet<u32>> = named.iter().flat_map(|(key, numbers)| lock.rows_of(key).map(move |(row, _)| (row.clone(), numbers.clone()))).collect();
-        folder
-            .update_lock(|lock| {
-                lock.assets.retain(|key, _| doc.find(key).is_some() || row_named.contains_key(key));
-                for (key, held) in &mut lock.assets {
-                    match row_named.get(key).filter(|_| doc.find(key).is_none()) {
-                        Some(numbers) => held.keep_only(numbers),
-                        None => held.clear_discarded(row_named.get(key)),
-                    }
+    }
+    if !asked.yes {
+        let (files, bytes, unrecorded, unheld) = folder.sweep(&kept, &recorded, false).map_err(Refusal)?;
+        let next = (lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy open".to_owned()).into_iter().collect();
+        return Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: false, next, lost, unheld }));
+    }
+    // What a text names by number stays, on any row.
+    let named = doc.versions_named();
+    let row_named: BTreeMap<String, BTreeSet<u32>> = named.iter().flat_map(|(key, numbers)| lock.rows_of(key).map(move |(row, _)| (row.clone(), numbers.clone()))).collect();
+    // One transaction: the lock and the canvas without what goes, and its answer with its key (cl-885). Its files go inside it, before it
+    // commits, with what's kept as files arrive held off (`collecting`, taken before the transaction as every keeper takes it): a resend
+    // of one that never committed finds them gone, and says so.
+    let _collecting = folder.collecting();
+    let reclaimed = folder.act(|| {
+        folder.update_lock(|lock| {
+            lock.assets.retain(|key, _| doc.find(key).is_some() || row_named.contains_key(key));
+            for (key, held) in &mut lock.assets {
+                match row_named.get(key).filter(|_| doc.find(key).is_none()) {
+                    Some(numbers) => held.keep_only(numbers),
+                    None => held.clear_discarded(row_named.get(key)),
                 }
-            })
-            .map_err(Refusal)?;
-    }
-    let (files, bytes, unrecorded, unheld) = folder.sweep(&kept, &recorded, asked.yes).map_err(Refusal)?;
-    if asked.yes {
-        canvas::prune(folder, &id, |name| doc.find(name).is_some()).map_err(Refusal)?;
-    }
-    let next = (!asked.yes && lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy open".to_owned()).into_iter().collect();
-    Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: asked.yes, next, lost, unheld }))
+            }
+        })?;
+        let (files, bytes, unrecorded, unheld) = folder.swept(&kept, &recorded, true)?;
+        canvas::prune(folder, &id, |name| doc.find(name).is_some())?;
+        let reclaimed = Reclaimed { orphans, files, bytes, unrecorded, deleted: true, next: vec![], lost, unheld };
+        keyed::answering(StatusCode::OK, &reclaimed);
+        Ok(reclaimed)
+    });
+    Ok(Json(reclaimed.map_err(Refusal)?))
 }
 
 /// Renames asset `from` to `to`, at once, whatever is going, and nothing else about it changes: the lock's row and all it keeps, its pin and what is pending or owed of
@@ -2173,7 +2182,12 @@ async fn machines(
             kept.push(name);
         }
     }
-    project.folder.set_machines(&kept).map_err(Refusal)?;
+    // Its answer is kept with it, in its transaction (cl-885).
+    project.folder.act(|| {
+        project.folder.set_machines(&kept)?;
+        keyed::answering(StatusCode::OK, &ProjectMachines { machines: kept.clone() });
+        Ok(())
+    }).map_err(Refusal)?;
     crate::events::project_settled(&project.folder.dir);
     Ok(Json(ProjectMachines { machines: kept }))
 }
@@ -2706,7 +2720,14 @@ async fn cancel(
 ) -> Result<Json<Cancelled>, Refusal> {
     let asked: Cancel = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    Ok(Json(cancelled(&api, &project, &asked.names, &asked.takes, &|_| "canceled".to_owned())?))
+    // One transaction: what the walk owes dropped, and its answer with its key (cl-885). Its runs are asked to end inside it, before it
+    // commits: a resend of one that never committed asks them again, which ends nothing twice.
+    let done = project.folder.act(|| {
+        let done = cancelled(&api, &project, &asked.names, &asked.takes, &|_| "canceled".to_owned()).map_err(|Refusal(why)| why)?;
+        keyed::answering(StatusCode::OK, &done);
+        Ok(done)
+    });
+    Ok(Json(done.map_err(Refusal)?))
 }
 
 /// `names`' queued work dropped, its rows saying `why`, and their runs canceled, or with `all` everything's.
@@ -2929,12 +2950,15 @@ async fn import(
         }
     }
     let kept = keep_file(folder, &asked.source).await?;
+    let landing = (folder.path(&kept.file.path), kept.file.sha256.clone(), kept.field);
     // Its answer is kept with it, in its transaction (cl-885).
     let answer = folder.act(|| {
         let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, &asked.placed).map_err(|Refusal(why)| why)?;
         keyed::answering(StatusCode::OK, &answer);
         Ok(answer)
     }).map_err(Refusal)?;
+    // What the canvas draws of it, made now (cl-982): its page asks for it in a moment.
+    thumbs::landed(landing.0, &landing.1, landing.2, 0.0);
     measure_soon(&api, &project);
     Ok(Json(answer))
 }
@@ -4958,6 +4982,7 @@ impl Walk {
             walk.walk.runs.insert(run.number, None);
         })?;
         if let Some(offer) = offer {
+            self.host.placed(&self.project.id, &run.id, &offer.placed());
             self.host.quoted(&run.id, offer.quoted());
             self.project.walker.lock().expect("walker lock").sent.insert(job, offer);
         }

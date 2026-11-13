@@ -1417,6 +1417,13 @@ impl Calcifer {
     }
 
     /// What `id`'s machine quoted as it was sent (cl-816): its clock waits at least until its finish.
+    /// Where the plan sent project `project`'s run `id`, and its offer there, on its record (cl-967).
+    pub(crate) fn placed(&self, project: &str, id: &RunId, placed: &::api::calcifer::Placed) {
+        if let Err(error) = self.project_store(project).and_then(|store| store.record_placement(id, placed)) {
+            tracing::warn!("run {id}: where it was placed isn't kept: {error}");
+        }
+    }
+
     pub(crate) fn quoted(&self, id: &RunId, quoted: eta::Quoted) {
         if !lock(&self.drivers).contains_key(id) {
             return;

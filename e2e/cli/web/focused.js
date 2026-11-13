@@ -245,9 +245,10 @@ async function died(error) {
   check('image_workspace_has_no_asset_description_box', await page.locator('.desc-field:visible').count() === 0);
   await shot('wide');
 
-  const fittedPicture = await until('the fitted large image displays a decoded thumbnail at the requested density', decodedImage,
-    (picture) => picture.loaded && picture.sha === wideSha && picture.requested > 0 && picture.requested <= 2048
-      && picture.resolution !== 'original' && picture.width >= picture.requested && picture.width <= 2048);
+  // One thumbnail a picture (cl-982): drawn wider than the canvas's 512, Focus draws the original.
+  const fittedPicture = await until('the fitted large image displays its thumbnail, or drawn wider its original', decodedImage,
+    (picture) => picture.loaded && picture.sha === wideSha && picture.requested > 0
+      && picture.resolution === (picture.requested > 512 ? 'original' : '512') && picture.width >= Math.min(4096, picture.requested));
   await page.evaluate(() => {
     const frames = { total: 0, blank: 0, frame: 0 };
     window.__focusedResolutionFrames = frames;
@@ -273,7 +274,7 @@ async function died(error) {
     delete window.__focusedResolutionFrames;
     return { total: frames.total, blank: frames.blank };
   });
-  check('image_resolution_grows_from_fitted_thumbnail_to_decoded_original', originalPicture.width > fittedPicture.width && (await imageCamera()).zoom >= 4.5, { fittedPicture, originalPicture });
+  check('image_resolution_at_full_zoom_is_the_decoded_original', originalPicture.width >= fittedPicture.width && originalPicture.resolution === 'original' && (await imageCamera()).zoom >= 4.5, { fittedPicture, originalPicture });
   check('resolution_upgrade_keeps_a_decoded_image_on_every_frame', resolutionFrames.total > 0 && resolutionFrames.blank === 0, resolutionFrames);
   check('resolution_upgrade_preserves_focus_and_the_focused_canvas_camera', await focus.isVisible() && sameCamera(focusedCanvas, await camera()));
   await zoomOutToFit();

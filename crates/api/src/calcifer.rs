@@ -409,6 +409,26 @@ pub enum Status {
     Canceled,
 }
 
+/// Where the plan sent a run, and what that machine's offer quoted when it went (cl-967): `cozy run show`'s `placed`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Placed {
+    pub machine: String,
+    /// When it was quoted, and the finish the quote said, on this computer's clock.
+    pub quoted_at_ms: i64,
+    pub finish_at_ms: i64,
+    pub basis: crate::machine::Basis,
+    /// Its time is the function's warm one there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warm: bool,
+    /// Its install, download and load there, part of its finish.
+    #[serde(default)]
+    pub prepare_ms: u64,
+    /// Its weights' bytes it downloads there first.
+    #[serde(default)]
+    pub fetch_bytes: u64,
+}
+
 /// One run as Calcifer holds it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -498,6 +518,9 @@ pub struct Run {
     /// The GPU it ran on, by name, once settled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu: Option<String>,
+    /// Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placed: Option<Placed>,
 }
 
 impl Run {
@@ -1109,6 +1132,10 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         redo: Option<Box<crate::calcifer::project::HistoryEntry>>,
     },
+    /// A thumbnail of a project's file was made, or can't be (cl-982): one asked for before it was answered `202 thumb_pending`; it's
+    /// asked again.
+    #[serde(rename = "thumb")]
+    Thumb { project: String, sha256: String },
     /// This stream fell behind: read again what you hold.
     #[serde(rename = "resync")]
     Resync,

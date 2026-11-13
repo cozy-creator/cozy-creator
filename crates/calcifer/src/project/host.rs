@@ -217,7 +217,7 @@ impl Host {
     pub(crate) async fn ready(&self, path: &Path, on: &On, hub: &str) -> Result<local_code::Prepared, Error> {
         let scope = crate::private_io::current().or(crate::private_io::of_path(path)?);
         crate::private_io::context(scope, async {
-            let code = local_code::own(self.api.machines.hubs.home(), path)?;
+            let code = local_code::own(&self.api, path)?;
             local_code::ready(&self.api, &code, on, hub, &self.key(path, on)).await
         }).await
     }
@@ -419,6 +419,11 @@ impl Host {
     }
 
     /// What run `id`'s machine quoted as it was sent: its time left waits at least until then.
+    /// Where the plan sent project `project`'s run `id`, and its offer there, on its record (cl-967).
+    pub(crate) fn placed(&self, project: &str, id: &RunId, placed: &api::calcifer::Placed) {
+        self.api.calcifer.placed(project, id, placed);
+    }
+
     pub(crate) fn quoted(&self, id: &RunId, quoted: crate::eta::Quoted) {
         self.api.calcifer.quoted(id, quoted);
     }

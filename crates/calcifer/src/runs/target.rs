@@ -54,15 +54,14 @@ fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) ->
         let function = Some(text.trim()).filter(|text| !text.is_empty()).map(str::to_owned);
         return Some(Ok((code.clone(), function)));
     }
-    let home = api.machines.hubs.home();
     match cwd {
         Some(cwd) => crate::local_code::target(text, Some(cwd), &api.machines.user_home).map(|found| {
             let (path, function) = found?;
-            Ok((crate::local_code::own(home, &path)?, function))
+            Ok((crate::local_code::own(api, &path)?, function))
         }),
         None if api::target::written_as_path(text) => Some(Err(by_path(text))),
         // A first-party package the dev home's checkout holds is its source there (xs-195).
-        None => crate::checkout::named(text).map(|(path, function)| Ok((crate::local_code::own(home, &path)?, function))),
+        None => crate::checkout::named(text).map(|(path, function)| Ok((crate::local_code::own(api, &path)?, function))),
     }
 }
 

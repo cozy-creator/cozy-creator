@@ -82,14 +82,14 @@ went=$(plan_machine near)
 [ "$went" = local ] || { check "plan: near, whose weights only local holds, went to ${went:-nowhere}"; echo "plan: near's job: $(status "$P" | jq -c '[.board.jobs[]? | select(.asset == "near")] | last' | head -c 800)"; echo "plan: local's models: $(cozy --json machine show local | jq -c '[.status.models[]?.repository]')"; diagnosed plan; }
 }
 
-# plan_published (phase b2): each job of a published tool is planned (GPU session 43352204256: the second and third shots of one
-# weren't, and went to the first of their machines saying nothing). BiRefNet, as its isolated Hub publishes it, cuts out three stills:
-# twice on stand-w, then on local or stand-w. Calcifer keeps no project's lines in its own log; its test-only diagnostics (warnings,
-# run.sh: calcifer_diagnostics) say a job that `isn't planned`, and no cut's key is there.
+# plan_published (phase b2): each job of a published tool is planned, and its run's record says where the plan sent it and what it
+# quoted there (`placed`; GPU session 43352204256: the second and third shots of one weren't planned, and went to the first of their
+# machines saying nothing). BiRefNet, as its isolated Hub publishes it, cuts out three stills: twice on stand-w, then on local or
+# stand-w. Each cut's run is placed (the first two on stand-w), and no job's line in Calcifer's diagnostics says it `isn't planned`.
 plan_published() {
-step "plan (cl-967): each job of a published tool is planned"
+step "plan (cl-967): each job of a published tool is planned, and its run says where it went"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
-local P=$OUT/plan tool=$here/project/weighted.py/weighted r=$RANDOM at on key keys=() log=$HOME/.cozy/calcifer/diagnostics.log
+local P=$OUT/plan tool=$here/project/weighted.py/weighted r=$RANDOM at on key job run placed keys=() log=$HOME/.cozy/calcifer/diagnostics.log
 [ -f "$log" ] || { check "plan: Calcifer kept no diagnostics log"; return; }
 jq -n --arg t "$tool" --arg r "$r" '[range(1; 4) as $i | (
   {name: "still_\($i)", tool: $t, kind: "image", fields: {instructions: "Still \($i), \($r).", seconds: 0}},
@@ -98,9 +98,18 @@ for at in 1 2 3; do
   on='["stand-w"]'; [ "$at" != 3 ] || on='["local","stand-w"]'
   coming_go "cut_$at" "$on"
   coming_done "cut_$at" 900
-  key=$(status "$P" | jq -r --arg a "cut_$at" '[.board.jobs[]? | select(.asset == $a) | .id // empty] | last // empty')
-  [ -n "$key" ] || { check "plan: cut_$at has no job on the board"; return; }
+  job=$(status "$P" | jq -c --arg a "cut_$at" '[.board.jobs[]? | select(.asset == $a)] | last // empty')
+  key=$(jq -r '.id // empty' <<< "${job:-null}") run=$(jq -r '.run // empty' <<< "${job:-null}")
+  [ -n "$key" ] && [ -n "$run" ] || { check "plan: cut_$at has no job with a run on the board: ${job:-none}"; return; }
   keys+=("$key")
+  echo "$P" > "$OUT/plan-cut-$at.at"
+  run_show "$OUT" "plan-cut-$at" "$run"
+  placed=$(jq -c '.placed // empty' "$OUT/plan-cut-$at.json" 2> /dev/null)
+  echo "plan: cut_$at (run $run) placed: ${placed:-none}"
+  case $at in
+    3) [ -n "$placed" ] || check "plan: cut_3's run $run has no placement on its record" ;;
+    *) J '.machine == "stand-w" and .finish_at_ms >= .quoted_at_ms' <<< "${placed:-null}" || check "plan: cut_$at's run $run, on stand-w alone, isn't placed there: ${placed:-none}" ;;
+  esac
 done
 cp "$log" "$OUT/plan-published.log"
 { grep -E "isn't planned: " "$OUT/plan-published.log" || true; } | sed 's/^/plan: /'

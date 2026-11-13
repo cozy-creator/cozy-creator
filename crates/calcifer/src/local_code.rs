@@ -161,9 +161,16 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
 }
 
 /// A folder of Calcifer's own (a project's `with: ./dir`) as local code: read as a client reads its own, and copied as a
-/// client's is, so the one path from here on is the copy's.
-pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
-    if crate::private_io::current().is_none() { return Err(refuse("source_scope_required","use native independent source capture before staging project-independent code")); }
+/// client's is, so the one path from here on is the copy's. Where no project is, only a package of the dev home's packages
+/// checkout, admitted as independent source (xs-195).
+pub(crate) fn own(api: &Api, path: &Path) -> Result<LocalCode, Error> {
+    let home = api.machines.hubs.home();
+    if crate::private_io::current().is_none() {
+        if crate::checkout::package_at(path).is_some() {
+            return crate::maintenance_source::admit_checkout(api, path);
+        }
+        return Err(refuse("source_scope_required","use native independent source capture before staging project-independent code"));
+    }
     let memo = crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?;
     let staged = match crate::checkout::package_at(path) {
         Some(_) => {
@@ -558,6 +565,15 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     let done = lock_dir(home, code, hub)?;
     let turn = LOCKING.lock().expect("locking lock").entry(done.clone()).or_default().clone();
     let _turn = turn.lock().await;
+    // A lock that took the open RC's build by URL (its floor no release meets, xs-194) names a wheel the next Runtime merge
+    // removes: one that isn't the RC's newest is made again.
+    if let Some(rc) = crate::floor::rc_runtime(&sent).await? {
+        let made = fs::read_to_string(done.join("lock")).ok().filter(|made| !made.is_empty());
+        let held = made.or_else(|| fs::read_to_string(sent.join("uv.lock")).ok());
+        if done.is_dir() && !held.is_some_and(|lock| lock.contains(&rc.url)) {
+            let _ = fs::remove_dir_all(&done);
+        }
+    }
     if !done.is_dir() {
         let project = Project::read(sent.clone())?;
         let say = |line: &str| tracing::info!("{}: {line}", project.name);
@@ -1161,7 +1177,7 @@ pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
     let locked = lock.package.into_iter().find(|p| p.name == "cozy-runtime")?;
-    // The open RC's Runtime is no index's: a lock takes its pure wheel by URL (cl-952).
+    // The open RC's Runtime is no index's: a lock takes its newest pure wheel by URL (`floor::rc_runtime`).
     Some(match locked.source.get("url").and_then(toml::Value::as_str) {
         Some(url) => format!("cozy-runtime @ {url}"),
         None => format!("cozy-runtime=={}", locked.version),

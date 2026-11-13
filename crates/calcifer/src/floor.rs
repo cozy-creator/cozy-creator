@@ -17,7 +17,7 @@ use api::{
     prerelease,
 };
 use api::hub::types::Software;
-use pep440_rs::{Operator, Version, VersionSpecifiers};
+use pep440_rs::{Version, VersionSpecifiers};
 use futures_util::StreamExt as _;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
@@ -281,10 +281,35 @@ impl Machines {
 const READER: &str = include_str!("floor_reader.py");
 
 /// A Runtime wheel the floor check reads: its version, and its pure wheel (URL, sha256).
-struct Wheel {
-    version: String,
-    url: String,
-    sha256: String,
+pub(crate) struct Wheel {
+    pub version: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+/// `src`'s `cozy-runtime` requirement, as its pyproject.toml declares it: None when it names no version.
+fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
+    let pyproject: toml::Value = std::fs::read_to_string(src.join("pyproject.toml")).ok().and_then(|text| toml::from_str(&text).ok())?;
+    let dependencies = pyproject.get("project").and_then(|p| p.get("dependencies")).and_then(toml::Value::as_array);
+    api::release::required(dependencies.into_iter().flatten().filter_map(toml::Value::as_str), "cozy-runtime")
+}
+
+/// The Runtime `src` takes where its `cozy-runtime` floor is an RC build that no release meets (`>=0.47.0.dev0`): the open RC's
+/// newest, which every machine of the RC runs (xs-194). A package names only that floor, never the RC's wheel, which each
+/// Runtime merge replaces: a lock binds the newest build by URL in a private copy, and a publish's floor check reads it.
+/// None: it names no RC floor, a release meets it, or no RC build does.
+pub(crate) async fn rc_runtime(src: &Path) -> Result<Option<Wheel>, Error> {
+    let Some(requirement) = requirement_of(src) else { return Ok(None) };
+    if !requirement.iter().any(|s| s.version().is_dev()) {
+        return Ok(None);
+    }
+    let released = released().await?;
+    if released.iter().any(|release| Version::from_str(&release.version).is_ok_and(|version| requirement.contains(&version))) {
+        return Ok(None);
+    }
+    let Some((build, url)) = crate::rc::runtime_now().await? else { return Ok(None) };
+    let meets = Version::from_str(&build.version).is_ok_and(|version| requirement.contains(&version.without_local()));
+    Ok(meets.then_some(Wheel { version: build.version, url, sha256: build.sha256 }))
 }
 
 /// The pure wheel of the `cozy-runtime` a lock holds: from an index, or the URL its source names (the open RC's build).
@@ -346,25 +371,16 @@ fn lacks(uv: &Path, dir: &Path, python: &str, runtime: &Path, package: &Path) ->
 }
 
 /// Publishing (cl-952): refuses a package whose wheel `package` imports from `cozy_runtime` what its floor lacks, so a machine
-/// meeting its `cozy-runtime` requirement runs it. The floor is the oldest release that requirement admits, or, when it names
-/// the open RC's build (`>=0.47.0.dev2260`), the build its lock takes by URL, which it must be. The refusal names each name and
-/// a floor that has them: its lock's Runtime, else the RC's. A package that names no `cozy-runtime` version claims none.
+/// meeting its `cozy-runtime` requirement runs it. The floor is the oldest release that requirement admits, else, for an RC floor
+/// (`>=0.47.0.dev0`) no release meets yet, the open RC's newest build (`rc_runtime`). The refusal names each name and a floor that
+/// has them: its lock's Runtime, else the RC's. A package that names no `cozy-runtime` version claims none.
 pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, package: &Path, label: &str) -> Result<(), Error> {
     let refuse = |code: &str, why: String| Error::new(Kind::Validation, code, why);
-    let pyproject: toml::Value = std::fs::read_to_string(src.join("pyproject.toml")).ok().and_then(|text| toml::from_str(&text).ok()).unwrap_or(toml::Value::Table(Default::default()));
-    let dependencies: Vec<&str> = pyproject.get("project").and_then(|p| p.get("dependencies")).and_then(toml::Value::as_array).into_iter().flatten().filter_map(toml::Value::as_str).collect();
-    let Some(requirement) = api::release::required(dependencies, "cozy-runtime") else { return Ok(()) };
+    let Some(requirement) = requirement_of(src) else { return Ok(()) };
     let lock = std::fs::read_to_string(src.join("uv.lock")).ok().and_then(|lock| locked(&lock));
-    let floors = || requirement.iter().filter(|s| matches!(s.operator(), Operator::GreaterThanEqual | Operator::GreaterThan | Operator::Equal | Operator::TildeEqual | Operator::ExactEqual));
-    let floor = match floors().filter(|s| s.version().is_dev()).map(|s| s.version().clone()).max() {
-        // An RC floor names the build its lock holds: the build its RC's machines run at least.
-        Some(named) => match lock.as_ref().filter(|lock| Version::from_str(&lock.version).is_ok_and(|locked| locked.without_local() == named)) {
-            Some(lock) => Wheel { version: lock.version.clone(), url: lock.url.clone(), sha256: lock.sha256.clone() },
-            None => {
-                let held = lock.as_ref().map_or_else(|| "none".to_owned(), |lock| lock.version.clone());
-                return Err(refuse("runtime_floor_unlocked", format!("{label} names the RC build cozy-runtime {named} as its floor, and its lock holds {held}: lock that build, its pure wheel as cozy-runtime's source")));
-            }
-        },
+    let floor = match rc_runtime(src).await? {
+        // An RC floor no release meets: the RC's newest build, which its machines run.
+        Some(rc) => rc,
         None => {
             let released = released().await?;
             let oldest = (released.iter())
@@ -372,7 +388,7 @@ pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, p
                 .filter(|(version, _)| requirement.contains(version))
                 .min_by(|(a, _), (b, _)| a.cmp(b));
             let Some((_, release)) = oldest else {
-                return Err(refuse("runtime_floor_unreleased", format!("no cozy-runtime release meets {label}'s cozy-runtime{requirement}")));
+                return Err(refuse("runtime_floor_unreleased", format!("no cozy-runtime release, nor the open RC's newest build, meets {label}'s cozy-runtime{requirement}")));
             };
             let Some((url, sha256)) = release.pure.clone() else { return Ok(()) };
             Wheel { version: release.version.clone(), url, sha256 }
@@ -409,16 +425,18 @@ pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, p
         .collect();
     let more = if missing.len() > 3 { format!(" and {} more", missing.len() - 3) } else { String::new() };
     let floor_said = match api::prerelease::dev(&floor.version) {
-        true => format!("cozy-runtime {}, the RC build its floor names,", prerelease::shown(&floor.version)),
+        true => format!("cozy-runtime {}, the open RC's newest build,", prerelease::shown(&floor.version)),
         false => format!("cozy-runtime {}, the oldest its cozy-runtime{requirement} admits,", floor.version),
     };
     let error = refuse("runtime_floor_lacks", format!("{label} imports {}{more}, which {floor_said} lacks", named.join(", ")));
     Err(match has {
         Some((version, _)) if !api::prerelease::dev(&version) => error.remedy(format!("raise its floor: cozy-runtime>={version}")),
-        Some((version, url)) => error.remedy(format!(
-            "raise its floor to the open RC's build, cozy-runtime>={}, with its wheel as cozy-runtime's source in [tool.uv.sources]: {{ url = \"{url}\" }}",
-            prerelease::shown(&version)
-        )),
+        // The RC's minor, never its build or wheel: each Runtime merge replaces those.
+        Some((version, _)) => {
+            let release = Version::from_str(&version).map(|v| v.release().to_vec()).unwrap_or_default();
+            let (major, minor) = (release.first().copied().unwrap_or(0), release.get(1).copied().unwrap_or(0));
+            error.remedy(format!("raise its floor to the open RC's: cozy-runtime>={major}.{minor}.0.dev0"))
+        }
         None => error.remedy(format!("import only what cozy-runtime {} has, or raise its floor to a Runtime that has them", floor.version)),
     })
 }

@@ -325,7 +325,7 @@ async fn local(
     access: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
 ) -> Result<Arc<Component>, Error> {
     let hub = runs::hub(api, "");
-    let code = local_code::own(api.machines.hubs.home(), path)?;
+    let code = local_code::own(&api, path)?;
     let (_, document) = local_code::describe(api, &code, &runs::default_on(api), &hub).await?;
     let interface = Interface::parse(&document).map_err(|why| unreadable(id, why))?;
     let (ui, module) = declared(&interface, function, id)?;

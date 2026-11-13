@@ -13,7 +13,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
 const { existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
-const { homedir, tmpdir } = require('os');
+const { tmpdir } = require('os');
 const { basename, join } = require('path');
 const { projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, addBoxes, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, storedOf, summary, until, watchBoxes, wav } = require('./page');
 
@@ -83,8 +83,8 @@ const spreadOf = (picture) => {
 /** What each video on the page is doing. */
 const videos = (page) => page.evaluate(() => [...document.querySelectorAll('video')].map((video) => ({ preview: video.classList.contains('preview'), on: video.classList.contains('on'), paused: video.paused, at: video.currentTime, muted: video.muted, loop: video.loop })));
 
-/** A video's preview in Calcifer's cache, by its hash: made as the file landed. */
-const previewOf = (sha256) => join(homedir(), '.cozy', 'cache', 'thumbs', `${sha256.replace('sha256:', '')}-preview.mp4`);
+/** A video's preview, kept in its project by its hash: made as the file landed (cl-982). */
+const previewOf = (folder, sha256) => join(folder, '.thumbs', `${sha256.replace('sha256:', '')}-preview.mp4`);
 
 /** The pointer resting on `handle`, moving a little as a hand does. */
 async function rest(page, handle) {
@@ -248,7 +248,7 @@ async function rest(page, handle) {
   await thumbUp('dark_open');
   const poster = await dark.locator('.media img').first().evaluate(spreadOf);
   check('poster_not_black', poster.spread >= 12, poster);
-  await until('its preview made as it was imported', () => Promise.resolve(existsSync(previewOf(imported.dark_open))), Boolean);
+  await until('its preview made as it was imported', () => Promise.resolve(existsSync(previewOf(folder, imported.dark_open))), Boolean);
   check('preview_made_unasked', !thumbs.some((thumb) => thumb.preview), thumbs);
   check('no_video_before_a_hover', (await page.locator('video').count()) === 0, await videos(page));
   await rest(page, dark.locator('.media'));
@@ -299,7 +299,7 @@ async function rest(page, handle) {
   check('hover_on_an_edit_opens_no_video', (await page.locator('video').count()) === 0);
   // A take on its row plays its preview too: the film's, made as it landed from the cut.
   const film = (await asset('edit')).prefixes.at(-1).main.sha256;
-  await until('the film\'s preview made as it landed', () => Promise.resolve(existsSync(previewOf(film))), Boolean);
+  await until('the film\'s preview made as it landed', () => Promise.resolve(existsSync(previewOf(folder, film))), Boolean);
   const take = element(page, 'edit').locator('.take-thumb').first();
   await rest(page, take);
   await until('the take\'s preview plays', () => take.locator('video.preview').evaluateAll((all) => all.map((video) => !video.paused && video.currentTime > 0)), (all) => all.length === 1 && all[0]);
