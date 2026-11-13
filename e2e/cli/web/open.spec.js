@@ -1,14 +1,16 @@
 // open (cl-973 core cell 1): `cozy open`'s link signs a tab in once, under the page's CSP, with no cookie, its stream on its own session,
 // through a reload; used again, in a browser of its own, it's refused in words until that browser has a code of its own; and a new
-// project from the projects page opens at its address, unencrypted.
+// project made with the bar's New project (cl-980: its folder, edited where it's suggested) opens at its address, unencrypted.
 const { randomBytes } = require('crypto');
+const { join } = require('path');
 const { test, expect } = require('./fixtures');
 
 const redeeming = (answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/session';
 const streaming = (request) => request.method() === 'GET' && new URL(request.url()).pathname === '/v1/events';
 /** Signed in at `project`: its tab, the open one, over the canvas. */
 const signedIn = (page, project) => page.getByRole('navigation', { name: 'Projects' }).getByRole('link', { name: project.name, exact: true });
-const gate = (page) => page.getByRole('heading', { name: "This page isn't signed in" });
+/** No session, however the page found out (cl-980's one state): it says so, and how to open one. */
+const gate = (page) => page.getByRole('heading', { name: 'No project open here' });
 
 test('open', { tag: '@engines' }, async ({ context, newContext, project, api, signIn, guards, removeAfter }) => {
   const page = await context.newPage();
@@ -63,22 +65,23 @@ test('open', { tag: '@engines' }, async ({ context, newContext, project, api, si
     await expect.soft(gate(other)).toHaveCount(0);
   });
 
-  await test.step('New project, on the projects page', async () => {
+  await test.step("New project, from the bar's +", async () => {
     const name = `web-open-made-${randomBytes(3).toString('hex')}`;
-    // The open project's tab opens Projects, ready for a new one's name.
-    await signedIn(page, project).click();
-    const field = page.getByLabel("New project's name");
-    await expect(field).toBeFocused();
-    await field.fill(name);
-    await page.getByLabel('Create without encryption').check();
+    // Its folder suggested in place, edited there: one of this suite's, which it removes after.
+    await page.getByRole('button', { name: 'New project', exact: true }).click();
+    const panel = page.getByRole('region', { name: 'New project', exact: true });
+    const field = panel.getByLabel("New project's folder", { exact: true });
+    await expect(field, 'a folder suggested').toHaveValue(/untitled-\d+$/);
+    await field.fill(join(process.env.OUT, 'web', 'projects', name));
+    await panel.getByLabel('Create without encryption', { exact: true }).check();
     const made = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects');
-    await page.getByRole('button', { name: 'Create project' }).click();
+    await panel.getByRole('button', { name: 'Create project', exact: true }).click();
     const answer = await made;
     expect(answer.status(), 'POST /v1/projects').toBe(200);
     const opened = await answer.json();
     removeAfter(opened.path);
     await expect(page, 'it opens at its address').toHaveURL(`${api.origin}/p/${opened.code}`);
-    expect.soft(opened.name, 'named as asked').toBe(name);
+    expect.soft(opened.name, 'named for its folder').toBe(name);
     await expect(signedIn(page, opened)).toHaveAttribute('aria-current', 'page');
     const listed = (await api.get('/v1/projects?limit=1000')).projects.find((row) => row.id === opened.id);
     expect.soft(listed, 'the API lists it').toMatchObject({ name, code: opened.code });
