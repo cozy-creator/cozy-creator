@@ -209,7 +209,9 @@ async function otherChrome(base, project) {
   const profile = `/tmp/${OTHER}-chrome`;
   const port = 9333;
   spawnSync('sudo', ['-n', '-u', OTHER, 'mkdir', '-p', profile]);
-  const chrome = spawn('sudo', ['-n', '-u', OTHER, '-H', process.env.CHROME, '--headless=new', '--no-sandbox', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  // As Playwright launches it: no crash reporter (its handler wants a database this fresh account lacks), no first-run work.
+  const flags = ['--headless=new', '--no-sandbox', '--disable-breakpad', '--disable-crash-reporter', '--no-first-run', '--no-default-browser-check', '--disable-gpu'];
+  const chrome = spawn('sudo', ['-n', '-u', OTHER, '-H', process.env.CHROME, ...flags, `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
   let said = '';
   chrome.stdout.on('data', (chunk) => { said += chunk; });
   chrome.stderr.on('data', (chunk) => { said += chunk; });

@@ -27,26 +27,28 @@ use crate::api::{Api, Refusal, bearer, refuse};
 pub(crate) struct Peer {
     pub(crate) addr: SocketAddr,
     pub(crate) local: Option<SocketAddr>,
-    user: Arc<OnceCell<Option<User>>>,
+    user: Arc<OnceCell<Result<User, &'static str>>>,
 }
 
 impl Connected<IncomingStream<'_, TcpListener>> for Peer {
     fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
         let peer = Peer { addr: *stream.remote_addr(), local: stream.io().local_addr().ok(), user: Arc::default() };
         let asking = peer.clone();
-        tokio::spawn(async move { asking.user().await; });
+        tokio::spawn(async move {
+            let _ = asking.user().await;
+        });
         peer
     }
 }
 
 impl Peer {
-    async fn user(&self) -> Option<&User> {
+    async fn user(&self) -> Result<&User, &'static str> {
         let (peer, local) = (self.addr, self.local);
         let found = self.user.get_or_init(|| async move {
-            let local = local?;
-            tokio::task::spawn_blocking(move || platform::net::tcp_peer_user(peer, local)).await.ok().flatten()
+            let local = local.ok_or("no_listener")?;
+            tokio::task::spawn_blocking(move || platform::net::tcp_peer_user(peer, local)).await.map_err(|_| "lookup_failed")?
         });
-        found.await.as_ref()
+        found.await.as_ref().map_err(|why| *why)
     }
 }
 
@@ -124,9 +126,12 @@ pub(crate) fn refusal(peer: &Peer, headers: &HeaderMap) -> Option<Refusal> {
 /// The peer is Calcifer's own OS account, by the kernel's word for its socket: another account on this computer reads nothing
 /// through Calcifer, an unlocked encrypted project included. Where the kernel can't say, nothing is let in.
 pub(crate) async fn own_user(peer: &Peer) -> Result<Principal, Refusal> {
+    let said = "Calcifer answers only the account it runs as on this computer";
     match (peer.user().await, own()) {
-        (Some(user), Some(own)) if user == own => Ok(Principal::User(own.clone())),
-        _ => Err(Refusal(Error::new(Kind::Forbidden, "other_user", "Calcifer answers only the account it runs as on this computer"))),
+        (Ok(user), Some(own)) if user == own => Ok(Principal::User(own.clone())),
+        // Which it was, as a code: what the kernel couldn't say of this connection, or that it's another account's.
+        (Err(why), _) => Err(Refusal(Error::new(Kind::Forbidden, "other_user", said).cause(format!("peer_{why}")))),
+        _ => Err(Refusal(Error::new(Kind::Forbidden, "other_user", said).cause("peer_other_account"))),
     }
 }
 

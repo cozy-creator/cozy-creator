@@ -62,8 +62,8 @@ impl fmt::Display for User {
 /// kernel's word for it. Linux reads `/proc/net/tcp{,6}`, whose rows name each socket's owner; macOS asks libproc for the sockets
 /// of this account's processes, and Windows for the connection's owning process, then its token. None when nothing matches: the
 /// connection is gone or closing (only an established socket counts: a closed one's row names root), it's in another network
-/// namespace, or (macOS, Windows) its process is one this account may not inspect.
-pub fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Option<User> {
+/// namespace, or (macOS, Windows) its process is one this account may not inspect. The error is a code saying which step failed.
+pub fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Result<User, &'static str> {
     let (peer, local) = (canonical(peer), canonical(local));
     sys::tcp_peer_user(peer, local)
 }
@@ -82,18 +82,18 @@ mod sys {
 
     use super::{User, canonical};
 
-    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Option<User> {
+    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Result<User, &'static str> {
         for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
             let Ok(text) = std::fs::read_to_string(table) else { continue };
             for row in text.lines().skip(1) {
                 // sl local rem st queues timer retransmits uid timeout inode: established (01), with a live socket's inode.
                 let fields: Vec<&str> = row.split_whitespace().collect();
                 if fields.len() > 9 && fields[3] == "01" && fields[9] != "0" && address(fields[1]) == Some(peer) && address(fields[2]) == Some(local) {
-                    return fields[7].parse::<u32>().ok().map(|uid| User(uid.to_string()));
+                    return fields[7].parse::<u32>().map(|uid| User(uid.to_string())).map_err(|_| "uid_unreadable");
                 }
             }
         }
-        None
+        Err("no_socket")
     }
 
     /// An address as `/proc/net/tcp*` prints it: each 32-bit word of the address in hex as the host holds it, then `:` and the port.
@@ -271,11 +271,22 @@ mod sys {
         }
     }
 
-    /// The socket's owner, among this account's processes: another account's are closed to it anyway.
-    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Option<User> {
+    /// The effective uid of the process holding the socket, asked of it now: the pid listed may have gone and been reused since.
+    fn owner(pid: libc::pid_t) -> Result<User, &'static str> {
+        // SAFETY: plain integers and byte arrays, for which all zeroes is a value.
+        let mut info: libc::proc_bsdinfo = unsafe { mem::zeroed() };
+        let size = mem::size_of::<libc::proc_bsdinfo>() as c_int;
+        // SAFETY: a writable record of the size given.
+        let written = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+        (written == size).then(|| User(info.pbi_uid.to_string())).ok_or("process_unreadable")
+    }
+
+    /// The process holding the socket, among this account's: another account's are closed to it anyway.
+    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Result<User, &'static str> {
         let uid = rustix::process::geteuid().as_raw();
         // SAFETY: a writable buffer of the size given.
-        let pids = listed(libc::pid_t::default(), |buffer, bytes| unsafe { libc::proc_listpids(PROC_UID_ONLY, uid, buffer, bytes) })?;
+        let pids = listed(libc::pid_t::default(), |buffer, bytes| unsafe { libc::proc_listpids(PROC_UID_ONLY, uid, buffer, bytes) }).ok_or("no_processes")?;
+        let (mut sockets, mut tcp) = (0, 0);
         for pid in pids.into_iter().filter(|pid| *pid > 0) {
             let empty = libc::proc_fdinfo { proc_fd: 0, proc_fdtype: 0 };
             // SAFETY: a writable buffer of the size given; a pid gone since is an error, skipped.
@@ -286,18 +297,21 @@ mod sys {
                 let size = mem::size_of::<SocketFdinfo>() as c_int;
                 // SAFETY: a writable record of the size given.
                 let written = unsafe { libc::proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, (&raw mut info).cast(), size) };
+                sockets += 1;
                 if written < size || info.psi.kind != SOCKINFO_TCP {
                     continue;
                 }
+                tcp += 1;
                 // SAFETY: `soi_kind` says the union holds a `tcp_sockinfo`.
                 let tcp = unsafe { info.psi.proto.tcp };
                 let ini = tcp.ini;
                 if tcp.state == TSI_S_ESTABLISHED && address(ini.vflag, ini.laddr, ini.lport) == Some(peer) && address(ini.vflag, ini.faddr, ini.fport) == Some(local) {
-                    return Some(User(info.psi.stat.vst_uid.to_string()));
+                    return owner(pid);
                 }
             }
         }
-        None
+        // Which of the steps found nothing.
+        Err(match (sockets, tcp) { (0, _) => "no_sockets", (_, 0) => "no_tcp", _ => "no_socket" })
     }
 }
 
@@ -375,12 +389,12 @@ mod sys {
 
     /// The owning process's token's user. Another account's process or token is closed to this one: none. The row is read again
     /// once the process is open, whose handle holds its pid: a pid freed and reused between the two reads isn't this socket's.
-    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Option<User> {
-        let pid = owning_pid(peer, local)?;
-        let process = crate::ipc::open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?;
-        if owning_pid(peer, local)? != pid {
-            return None;
+    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Result<User, &'static str> {
+        let pid = owning_pid(peer, local).ok_or("no_socket")?;
+        let process = crate::ipc::open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION).map_err(|_| "process_closed")?;
+        if owning_pid(peer, local) != Some(pid) {
+            return Err("process_changed");
         }
-        crate::ipc::token_user(std::os::windows::io::AsRawHandle::as_raw_handle(&process)).ok().map(User)
+        crate::ipc::token_user(std::os::windows::io::AsRawHandle::as_raw_handle(&process)).map(User).map_err(|_| "token_closed")
     }
 }
