@@ -195,6 +195,9 @@ pub struct Fetching {
     pub hedged: u32,
 }
 
+/// Downloaders made in this process, for their lines.
+static DOWNLOADERS: AtomicU64 = AtomicU64::new(0);
+
 fn unix_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
@@ -235,7 +238,6 @@ impl Drop for GiveWay {
             }
         }
         self.shared.calmed(&queue);
-        tracing::info!(order = self.order, "given way: the transfer outside ended");
     }
 }
 
@@ -299,6 +301,12 @@ pub(crate) struct Shared {
     moved: Notify,
     /// `Queue::floor`, read without the queue's lock.
     floor: AtomicU64,
+    /// When the floor last moved, and what had been received by then (`floor_moved`).
+    floor_since: Mutex<(Instant, u64)>,
+    /// Its own runtime, which says each move of the floor: a caller's thread may say nothing (a project's).
+    runtime: tokio::runtime::Handle,
+    /// Which downloader it is, of the process's: each project has its own.
+    id: u64,
     closed: AtomicBool,
     closing: Notify,
     /// Requests in flight, across every object, as many as the ramp allows (`Pace`).
@@ -698,6 +706,9 @@ impl Shared {
             queued: Notify::new(),
             moved: Notify::new(),
             floor: AtomicU64::new(u64::MAX),
+            floor_since: Mutex::new((Instant::now(), 0)),
+            runtime: tokio::runtime::Handle::current(),
+            id: DOWNLOADERS.fetch_add(1, Ordering::Relaxed),
             closed: AtomicBool::new(false),
             closing: Notify::new(),
             slots: Slots::new(START.min(requests.max(1))),
@@ -1028,10 +1039,32 @@ impl Shared {
     /// `queue`'s floor, as read without its lock; risen, what waits under it wakes.
     fn calmed(&self, queue: &Queue) {
         let floor = queue.floor();
-        if self.floor.swap(floor, Ordering::AcqRel) < floor {
+        let was = self.floor.swap(floor, Ordering::AcqRel);
+        if was != floor {
+            self.floor_moved(was, floor);
+        }
+        if was < floor {
             self.moved.notify_waiters();
             self.queued.notify_waiters();
         }
+    }
+
+    /// One line for each move of the floor, with when it moved (`at_ms`, under the queue's lock) and what was
+    /// received while it stood at `from`. Said on its runtime, where its transfers' lines are.
+    fn floor_moved(&self, from: u64, to: u64) {
+        let (at_ms, received) = (unix_ms(), self.stats.received.load(Ordering::Relaxed));
+        let (bytes, seconds) = {
+            let mut since = lock(&self.floor_since);
+            let stood = (received.saturating_sub(since.1), since.0.elapsed().as_secs_f64());
+            *since = (Instant::now(), received);
+            stood
+        };
+        let shown = |order: u64| if order == u64::MAX { "none".to_string() } else { order.to_string() };
+        let (from, to, downloader) = (shown(from), shown(to), self.id);
+        self.runtime.spawn(async move {
+            let mb_s = bytes as f64 / seconds.max(1e-3) / 1e6;
+            tracing::info!(downloader, from = %from, to = %to, at_ms, bytes, seconds, mb_s, "floor moved");
+        });
     }
 
     /// Whether a request at `order` waits: an emergency (order 0) or a transfer outside comes before it.
@@ -1045,7 +1078,6 @@ impl Shared {
         let mut queue = lock(&self.queue);
         *queue.aside.entry(order).or_default() += 1;
         self.calmed(&queue);
-        tracing::info!(order, "giving way: what comes after a transfer outside waits for it");
         GiveWay { shared: Arc::clone(self), order }
     }
 
