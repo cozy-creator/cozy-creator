@@ -224,6 +224,9 @@ pub struct Known {
 pub struct Address {
     pub id: String,
     pub code: String,
+    /// Its folder is gone: where it was (cl-980). Nothing of it reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gone: Option<String>,
 }
 
 /// `GET /v1/projects/{id}`: its assets in order, and what reading the project said.

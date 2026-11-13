@@ -225,7 +225,7 @@ impl Model {
     }
 }
 
-/// `project.changed`, for the project in `dir`: what changed since streams were last told, by asset. Anything it can't say by asset, as a file
+/// `project.changed`, for the project in `dir`: what changed since streams were last told, by asset; `project.gone` once its folder is. Anything it can't say by asset, as a file
 /// that doesn't read, it says as no list: read it whole, and that read says why.
 pub(crate) async fn told(api: &Arc<Api>, id: String, dir: &Path, settled: bool) -> StreamEvent {
     let rev = match settled {
@@ -233,6 +233,10 @@ pub(crate) async fn told(api: &Arc<Api>, id: String, dir: &Path, settled: bool) 
         true => format!("{}+{}", revision(dir), crate::store::now_ms()),
         false => revision(dir),
     };
+    // Its folder gone, that's all there is to tell: nothing of it reads (cl-980).
+    if let Some(path) = super::gone(api, &id) {
+        return StreamEvent::ProjectGone { id, path: path.to_string_lossy().into_owned() };
+    }
     let project = api.projects.open_now(&id);
     let whole = |id, rev| StreamEvent::ProjectChanged { id, rev, cursor: None, assets: None, gone: vec![], head: false };
     let Some(project) = project else { return whole(id, rev) };

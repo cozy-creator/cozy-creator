@@ -1,4 +1,4 @@
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query"
+import { type QueryClient, skipToken, useQuery, useQueryClient } from "@tanstack/react-query"
 import { createContext, type ReactNode, useCallback, useContext, useLayoutEffect, useRef } from "react"
 import { useLocation, useMatch, useNavigate } from "react-router-dom"
 import { ApiError, type Client } from "../api/client"
@@ -16,6 +16,15 @@ const referenceQuery = (client: Client, reference: string) => ({
   queryFn: () => client.projectAddress(reference),
   staleTime: Infinity,
 })
+
+/** Where a project was whose folder is gone, as the stream said it (`project.gone`): never read, only kept. */
+export const goneKey = (id: string) => ["project-gone", id]
+
+/** Where project `id` was, once its folder is gone; null while it's there (cl-980). */
+export function useGone(id: string | null): string | null {
+  const { data } = useQuery<string>({ queryKey: goneKey(id ?? ""), queryFn: skipToken })
+  return id ? data ?? null : null
+}
 
 /** Browser addresses use the short code. Older records can still be opened by their id. */
 export function projectPath(project: ProjectAddress, rest = ""): string {
@@ -66,6 +75,7 @@ export function ProjectRoute({ children }: { children: ReactNode }) {
   // While the next one's address is read, the page shown stays as it is: the frame never goes, and the screen never goes blank (cl-980).
   // Not an encrypted project's: that's covered at once.
   const shown = useRef<{ project: ProjectAddress | null } | null>(null)
+  if (reference && data?.gone) return <main className="gate"><Unopened gone={data.gone} /></main>
   if (reference && error && !data) return <main className="gate"><Unopened error={error} /></main>
   if (reference && !data && (!shown.current || privateProject(shown.current.project?.id ?? null))) return <main className="gate">Opening project…</main>
   const project = !reference ? null : data ?? shown.current?.project ?? null
@@ -81,16 +91,24 @@ export function rememberProject(queries: QueryClient, project: ProjectAddress) {
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
-/** Why a project can't be opened, and what to do, in its words: in place of it, wherever the page is (cl-980). */
-export function Unopened({ error }: { error: unknown }) {
+/** Why a project can't be opened, and what to do, in its words: in place of it, wherever the page is (cl-980). Its folder `gone`, where it
+ *  was, as Calcifer said it without refusing anything. */
+export function Unopened({ error, gone }: { error?: unknown; gone?: string }) {
+  if (gone) return (
+    <div>
+      <h2>This project's folder is gone: {gone}</h2>
+      <p>Move the folder back, or open another project.</p>
+      <Copyable text="cozy new <folder>" />
+    </div>
+  )
   const body = error instanceof ApiError ? error.body : undefined
   const message = error instanceof Error ? error.message : String(error)
   // Its folder gone, that's the whole story: "This project's folder is gone: <path>".
-  const gone = body?.code === "project_folder_gone"
+  const folderGone = body?.code === "project_folder_gone"
   return (
     <div>
-      <h2>{gone ? sentence(message) : "This project can't be opened yet"}</h2>
-      {!gone && <p>{noHash(sentence(message))}</p>}
+      <h2>{folderGone ? sentence(message) : "This project can't be opened yet"}</h2>
+      {!folderGone && <p>{noHash(sentence(message))}</p>}
       {body?.remedy && <p>{noHash(sentence(body.remedy))}</p>}
       {body?.next?.map((line) => <Copyable key={line} text={line} />)}
     </div>
