@@ -312,6 +312,8 @@ export class CanvasStore {
   private carets = new Map<string, (name: string) => void>()
   /** Has these assets, and what's said of the project, read. */
   readAgain: (names: string[]) => void = () => {}
+  /** These boxes are off this page: no read asks for them. */
+  forget: (names: string[]) => void = () => {}
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
   /** Opens Rent, with a GPU that holds it chosen when one is known. */
@@ -2076,6 +2078,7 @@ export class CanvasStore {
   }
 
   private removeNode(name: string) {
+    this.forget([name])
     const id = this.ids.get(name)
     if (this.surface?.id === id) this.surface = null
     this.unsettled.delete(name)

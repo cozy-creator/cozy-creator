@@ -48,6 +48,8 @@ class Bridge {
   private privacyEpoch = new Map<string, number>()
   /** The boxes the stream has said are gone from each project, until it says they're back: no read asks for one, which could only 404. */
   private gone = new Map<string, Set<string>>()
+  /** The boxes this page has taken off itself (a delete, an Undo of a paste, a Redo of a delete), until it or the stream says they're back. */
+  private taken = new Map<string, Set<string>>()
 
   allowProject(id: string) { this.privateBlocked.delete(id); this.client.allowProject(id) }
 
@@ -60,6 +62,7 @@ class Bridge {
     this.owed.delete(id)
     this.revs.delete(id)
     this.gone.delete(id)
+    this.taken.delete(id)
     for (const [number, run] of this.runs) if (run.project_id === id) this.runs.delete(number)
   }
 
@@ -89,6 +92,7 @@ class Bridge {
       slot.names.add(name)
       slot.gone.delete(name)
       gone.delete(name)
+      this.taken.get(id)?.delete(name)
     }
     for (const name of change.gone ?? []) {
       slot.gone.add(name)
@@ -106,10 +110,23 @@ class Bridge {
     this.go(id, slot)
   }
 
-  /** What this page wants read again of a project, as the stream would say it changed: never a box the stream has said is gone. */
+  /** What this page wants read again of a project, as the stream would say it changed: never a box the stream has said is gone. One this
+   *  page took off and now asks for is back. */
   readAgain(id: string, names: string[]) {
-    const gone = this.gone.get(id)
+    const [gone, taken] = [this.gone.get(id), this.taken.get(id)]
+    for (const name of names) taken?.delete(name)
     this.changed(id, { assets: names.filter((name) => !gone?.has(name)), head: true })
+  }
+
+  /** Boxes this page has taken off: a read of one still owed goes, and none asks for one again until it's back, as one could only 404. */
+  forget(id: string, names: string[]) {
+    let taken = this.taken.get(id)
+    if (!taken) this.taken.set(id, (taken = new Set()))
+    const slot = this.owed.get(id)
+    for (const name of names) {
+      taken.add(name)
+      slot?.names.delete(name)
+    }
   }
 
   private go(id: string, held: Owed) {
@@ -132,7 +149,8 @@ class Bridge {
     const tooMany = held.names.size > MOST_ASSETS
     const whole = held.whole || tooMany
     const cursor = held.wholeCursor
-    const [names, gone, head] = [[...held.names], [...held.gone], held.head]
+    const taken = this.taken.get(id)
+    const [names, gone, head] = [[...held.names].filter((name) => !taken?.has(name)), [...held.gone], held.head]
     held.names.clear()
     held.gone.clear()
     Object.assign(held, { head: false, whole: false, wholeCursor: null })
