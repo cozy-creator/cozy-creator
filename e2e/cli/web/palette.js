@@ -9,6 +9,7 @@
 // 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
+const { readFileSync } = require('fs');
 const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
 
 const failures = [];
@@ -20,8 +21,11 @@ function check(name, ok, detail) {
   during = name;
   if (!ok) failures.push(name);
 }
+// What this cell took off this computer's tool list, put back if it dies first: the cells after it read the same list.
+let putBack;
 async function died(why) {
   failures.push(`${during}: ${why}`);
+  if (putBack) await putBack().catch(() => {});
   await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(1);
@@ -153,18 +157,22 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   await shot('boxes');
 
   // Taken off, it's off the list at rest and the palette; its package added, it's back.
+  putBack = () => fetch(`${calcifer()}/v1/tools/list`, { method: 'POST', headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ add: image.split('/')[0] }) });
   const off = await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ remove: [image] }) });
   check('taken_off', off.status === 200 && off.body?.without?.includes(image), off);
   await page.reload();
   const offRows = await implementationRow(page, 'image').then(() => page.locator(`.tools [data-implementation][data-tool-operation="image"]`).evaluateAll((rows) => rows.map((one) => one.dataset.tool)));
   check('off_the_list_and_the_palette', !(await api(`/v1/tools?project=${id}`)).body.tools.some((tool) => tool.id === image) && !offRows.includes(image), offRows);
   const back = await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ add: image.split('/')[0] }) });
+  putBack = undefined;
   check('back_when_added', back.status === 200 && !back.body?.without?.includes(image) && (await api(`/v1/tools?project=${id}`)).body.tools.some((tool) => tool.id === image), back);
 
   // No Hub: what's installed, and the palette says so. Then Calcifer as it was, and the Hub's tools again.
   seen.hub_checked = Boolean(process.env.NO_HUB && process.env.RESTART);
   if (seen.hub_checked) {
-    await shell(process.env.NO_HUB).catch(() => {});
+    // Each restart done, or said: a failed one leaves the old Calcifer answering, on its Hub, and the cells after on the wrong one.
+    const noHub = await shell(process.env.NO_HUB).then(() => true, (why) => String(why));
+    check('restarted_with_no_hub', noHub === true, noHub);
     await until('Calcifer back with no Hub', () => api('/v1/status').catch(() => null), (answer) => answer?.status === 200);
     const away = (await api(`/v1/tools?project=${id}`)).body;
     seen.no_hub = { note: away?.note, tools: away?.tools?.length };
@@ -173,10 +181,50 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
     const said = await until('the palette says so', () => page.locator('.tools [data-palette="tools"] p').allInnerTexts(), (texts) => texts.some((text) => text.includes("only what's installed"))).catch((why) => String(why));
     check('the_palette_says_so', Array.isArray(said), said);
     await shot('no-hub');
-    await shell(process.env.RESTART).catch(() => {});
+    const onHub = await shell(process.env.RESTART).then(() => true, (why) => String(why));
+    check('restarted_on_its_hub', onHub === true, onHub);
     await until('Calcifer back as it was', () => api('/v1/status').catch(() => null), (answer) => answer?.status === 200);
     const again = await until('the Hub read again', async () => (await api(`/v1/tools?project=${id}`)).body, (body) => body && !body.note && body.tools.some((tool) => tool.id === image)).catch(() => null);
     check('the_hub_tools_back', Boolean(again));
+  }
+
+  // cl-975: local on a released Runtime older than the Hub's newest releases need (0.45.0, this shard's Hub pin: e2e.yaml) moves up for
+  // one as a run of it would (cl-952), so each is still offered: e2e-runtime-046 (cozy-runtime>=0.46.0,<0.47) and every catalog tool,
+  // never e2e-runtime-044 (<0.45). Held on 0.45.0 by hand, it moves for nothing, and 046 is off. Restarted, the first list is the Hub's
+  // as last read, never only what's installed.
+  if (process.env.CATALOG && process.env.RESTART) {
+    const NEXT = 'e2e-runtime-046', OLD = 'e2e-runtime-044';
+    const cozy = (...args) => execFileSync(process.env.COZY, ['--json', ...args], { encoding: 'utf8' });
+    const on = async (runtime) => {
+      const deadline = Date.now() + 10 * STEP_MS;
+      let last;
+      while (Date.now() < deadline) {
+        try { last = JSON.parse(cozy('machine', 'show', 'local')); } catch (why) { last = String(why); }
+        if (last?.state === 'ready' && last?.status?.runtime === runtime) return last;
+        await new Promise((done) => setTimeout(done, 3000));
+      }
+      throw new Error(`local on Runtime ${runtime}: still ${JSON.stringify(last?.status?.runtime ?? last)}`);
+    };
+    const listing = async () => (await api(`/v1/tools?project=${id}`)).body;
+    const lists = (body, name) => Boolean(body?.tools?.some((tool) => tool.package === name));
+    const everyOne = (body) => Object.values(wanted).flat().filter((tool) => !body?.tools?.some((row) => row.id === tool));
+    check('a_newer_runtime_release_is_on_the_hub', released.includes(NEXT), released);
+    cozy('machine', 'update', 'local', '--runtime', '0.45.0', '-y');
+    await on('0.45.0');
+    const held = await until('the list held on 0.45.0', listing, (body) => body && !lists(body, NEXT)).catch(() => null);
+    check('held_on_0_45_it_offers_no_046', Boolean(held), (await listing())?.tools?.map((tool) => tool.id));
+    cozy('machine', 'update', 'local', '-y');
+    await on('0.45.0');
+    const moves = await until('the list on 0.45.0, not held', listing, (body) => body && !body.note && lists(body, NEXT) && everyOne(body).length === 0).catch(() => null);
+    const now = await listing();
+    seen.on_045 = { note: now?.note, missing: everyOne(now), tools: now?.tools?.map((tool) => tool.id) };
+    check('on_0_45_it_offers_what_needs_0_46', Boolean(moves), seen.on_045);
+    check('on_0_45_it_offers_no_044', !lists(now, OLD), seen.on_045);
+    await shell(process.env.RESTART).catch(() => {});
+    await until('Calcifer back', () => api('/v1/status').catch(() => null), (answer) => answer?.status === 200);
+    const first = await listing();
+    seen.after_restart = { note: first?.note, missing: everyOne(first), tools: first?.tools?.length };
+    check('restarted_its_first_list_is_the_hubs', !/^only what's installed/.test(first?.note ?? '') && lists(first, NEXT) && everyOne(first).length === 0, seen.after_restart);
   }
 
   check('no_page_errors', errors.length === 0, errors);

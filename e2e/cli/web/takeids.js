@@ -198,8 +198,11 @@ const RECORD = () => {
   });
   const b = await press();
   check('b_listed_in_the_next_frame', Boolean(b.take), b.pressed);
-  await until('a read while the ask is held', () => reads, (n) => n > 0, 15_000).catch(() => {});
-  await page.waitForTimeout(3000);
+  // The case is a read of the project while Calcifer hasn't heard of the take: it must happen, and its (held) answer be drawn, before looking.
+  const readHeld = await until('a read while the ask is held', () => reads, (n) => n > 0, 15_000).then(() => true, () => false);
+  check('b_the_page_read_while_the_ask_was_held', readHeld, { reads });
+  if (readHeld) await page.waitForEvent('requestfinished', { predicate: (request) => request.method() === 'GET' && slowRead(request.url()), timeout: 15_000 }).catch(() => {});
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   const heldB = await now();
   const heardB = (await asset()).takes?.some((take) => take.id === b.take);
   seen.b_held = { reads, look: heldB };

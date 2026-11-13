@@ -19,6 +19,8 @@ no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr a
     page.py tools <project>                                          the tools a box can be, as the page lists them
     page.py fit <project> <name>...                                  how this computer would render them, as the page asks
                                                                      before a render here alone
+    page.py undo <project>                                           the newest edit that stands undone, as Undo does
+    page.py history <project>                                        the project's history, newest first
 <project> is its folder, which names it in a route."""
 
 import argparse
@@ -44,7 +46,8 @@ MEDIA, LAND_S = ("image", "video", "audio"), 900
 
 
 def call(method: str, route: str, body: bytes | None = None, kind: str = "application/json", timeout: float = 60) -> Json:
-    headers = {**AUTH, "Content-Type": kind}
+    # The page says who it is, as the history shows each edit's editor.
+    headers = {**AUTH, "Content-Type": kind, "Cozy-Client": "page e2e"}
     if method == "POST":
         headers["Idempotency-Key"] = str(uuid.uuid4())
     with OPENER.open(urllib.request.Request(BASE + route, data=body, method=method, headers=headers), timeout=timeout) as response:
@@ -56,14 +59,16 @@ def project(folder: str) -> str:
     return "/v1/projects/" + urllib.parse.quote(str(Path(folder).resolve()), safe="")
 
 
-def held(data: bytes) -> str:
+def held(data: bytes, folder: str) -> str:
+    """The file in the project's own content store, as the page sends it: its digest."""
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    route = "/v1/project-files/" + digest + "?project=" + urllib.parse.quote(str(Path(folder).resolve()), safe="")
     try:
-        OPENER.open(urllib.request.Request(BASE + "/v1/files/" + digest, headers=AUTH, method="HEAD"), timeout=30).close()
+        OPENER.open(urllib.request.Request(BASE + route, headers=AUTH, method="HEAD"), timeout=30).close()
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise
-        call("PUT", "/v1/files/" + digest, data, "application/octet-stream", timeout=600)
+        call("PUT", route, data, "application/octet-stream", timeout=600)
     return digest
 
 
@@ -160,7 +165,7 @@ def main() -> int:
     one = verbs.add_parser("asset")
     one.add_argument("project")
     one.add_argument("names", nargs="+")
-    for verb in ("board", "tools"):
+    for verb in ("board", "tools", "undo", "history"):
         verbs.add_parser(verb).add_argument("project")
     for verb in ("cancel", "fit"):
         one = verbs.add_parser(verb)
@@ -168,7 +173,7 @@ def main() -> int:
         one.add_argument("names", nargs="+")
     args = parser.parse_args()
     if args.verb == "import":
-        ask = {"source": held(Path(args.file).read_bytes())}
+        ask = {"source": held(Path(args.file).read_bytes(), args.project)}
         ask |= {key: value for key, value in (("name", args.name), ("description", args.description)) if value}
         print(json.dumps(call("POST", project(args.project) + "/imports", json.dumps(ask).encode())))
     elif args.verb == "add":
@@ -190,6 +195,10 @@ def main() -> int:
         print(json.dumps(call("POST", project(args.project) + "/fit", json.dumps({"names": args.names}).encode())))
     elif args.verb == "cancel":
         print(json.dumps(call("POST", project(args.project) + "/cancel", json.dumps({"names": args.names}).encode())))
+    elif args.verb == "undo":
+        print(json.dumps(call("POST", project(args.project) + "/history/undo", b"{}")))
+    elif args.verb == "history":
+        print(json.dumps(call("GET", project(args.project) + "/history")))
     elif args.verb == "board":
         print(json.dumps(read(args.project).get("board")))
     elif args.verb == "tools":

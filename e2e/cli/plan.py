@@ -6,12 +6,13 @@ import json
 from pathlib import Path
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
-def upload(base: str, headers: dict[str, str], digest: str, data: bytes) -> None:
-    """The file into Calcifer's store, as the page sends one (`PUT /v1/files/<digest>`), unless it holds it."""
-    url = base + "/v1/files/" + digest
+def upload(base: str, headers: dict[str, str], digest: str, data: bytes, project: Path) -> None:
+    """The file into its project's own content store, as the page sends one (`PUT /v1/project-files/<digest>`), unless it holds it."""
+    url = base + "/v1/project-files/" + digest + "?project=" + urllib.parse.quote(str(project), safe="")
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=headers, method="HEAD")):
             return
@@ -35,14 +36,14 @@ def main() -> int:
     args = parser.parse_args()
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     base = "http://" + holder["address"]
-    headers = {"Authorization": "Bearer " + holder["token"]}
+    headers = {"Authorization": "Bearer " + holder["token"], "cozy-project-storage": "3"}
     files: list[dict[str, str]] = []
     paths: dict[str, dict[str, str]] = {}
     for attached in args.file:
         name, _, written = attached.partition("=")
         data = Path(written).read_bytes()
         digest = "sha256:" + hashlib.sha256(data).hexdigest()
-        upload(base, headers, digest, data)
+        upload(base, headers, digest, data, args.project.resolve(strict=True))
         files.append({"name": name, "file": written})
         paths[written] = {"file": digest}
     request = {"target": args.target, "on": args.on.split(","), "files": files, "paths": paths,

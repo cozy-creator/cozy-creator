@@ -87,6 +87,9 @@ pub enum Error {
 /// Private admission cause: another process cannot repair a local cap or VA refusal.
 pub(crate) enum AllocationFailure {
     DriverOutOfMemory(usize),
+    /// The pages fit, not beside the driver's reserve: `reclaim::acquire` gives what is idle and
+    /// done for it, never a wait, and short of that takes the reserve.
+    ReserveShort(usize),
     Other(Error),
 }
 
@@ -95,13 +98,13 @@ pub(crate) type AllocationResult<T> = std::result::Result<T, AllocationFailure>;
 impl AllocationFailure {
     fn physical_bytes(&self) -> Option<usize> {
         match self {
-            Self::DriverOutOfMemory(bytes) => Some(*bytes),
+            Self::DriverOutOfMemory(bytes) | Self::ReserveShort(bytes) => Some(*bytes),
             Self::Other(_) => None,
         }
     }
 
     fn is_oom(&self) -> bool {
-        matches!(self, Self::DriverOutOfMemory(_)
+        matches!(self, Self::DriverOutOfMemory(_) | Self::ReserveShort(_)
             | Self::Other(Error::OutOfMemory { .. } | Error::Exhausted { .. }))
     }
 }
@@ -113,7 +116,9 @@ impl From<Error> for AllocationFailure {
 impl From<AllocationFailure> for Error {
     fn from(failure: AllocationFailure) -> Self {
         match failure {
-            AllocationFailure::DriverOutOfMemory(requested_bytes) => Self::OutOfMemory { requested_bytes },
+            AllocationFailure::DriverOutOfMemory(requested_bytes) | AllocationFailure::ReserveShort(requested_bytes) => {
+                Self::OutOfMemory { requested_bytes }
+            }
             AllocationFailure::Other(error) => error,
         }
     }
@@ -493,6 +498,28 @@ impl PlanPhase {
 /// What the driver's own charge may grow by between samples under a development cap.
 const CAP_SLACK: usize = 128 << 20;
 
+/// The card's free bytes every map of ours leaves to the driver, one fixed amount per GPU. It allocates
+/// on its own (a kernel's code at its first launch, local memory, a library's handle), and its refusal
+/// fails that launch, not an allocation of ours, so no reclaim answers it: a cold H3 on a full 5090
+/// failed its first `index_select` (cr-293).
+pub(crate) const DRIVER_RESERVE: usize = 512 << 20;
+
+thread_local! {
+    /// A map short only of the reserve, with nothing idle and done left to give (`reclaim::acquire`).
+    static RESERVE_WAIVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `f` with the driver's reserve open to this thread's maps.
+pub(crate) fn waived<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) { RESERVE_WAIVED.set(false); }
+    }
+    RESERVE_WAIVED.set(true);
+    let _restore = Restore;
+    f()
+}
+
 // One process/core-wide namespace for reservation and Plan lifetimes. Never use
 // addresses or these identities in compute fingerprints or reusable measurements.
 static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
@@ -685,7 +712,8 @@ impl Device {
 
     /// What this process has no say over moves as contexts and kernels load and peers come and
     /// go. A slow path calls this before it reads the room; outside capture, in the context.
-    fn sample(&self) -> Result<()> {
+    /// Returns the driver's free bytes.
+    fn sample(&self) -> Result<usize> {
         let (free, total) = self.driver().memory_info()?;
         self.total.store(total, Ordering::Release);
         if self.ceiling.load(Ordering::Acquire) != usize::MAX {
@@ -697,6 +725,25 @@ impl Device {
         if outside > self.outside.swap(outside, Ordering::AcqRel) {
             self.room_outside.fetch_add(1, Ordering::Relaxed);
             self.room_shrank();
+        }
+        Ok(free)
+    }
+
+    /// Of the driver's `free` bytes, what a map of ours may take: all but its reserve.
+    fn spare(&self, free: usize) -> usize {
+        if RESERVE_WAIVED.get() { free } else { free.saturating_sub(DRIVER_RESERVE) }
+    }
+
+    /// Room for `bytes` of new pages: within our limit, and beside the driver's reserve of what the
+    /// card has free now. More than the card has free is the driver's to refuse; less, but not
+    /// beside the reserve, is `ReserveShort`.
+    fn admit(&self, bytes: usize) -> AllocationResult<()> {
+        let free = self.sample()?;
+        if self.over(bytes) != 0 {
+            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
+        }
+        if bytes <= free && bytes > self.spare(free) {
+            return Err(AllocationFailure::ReserveShort(bytes));
         }
         Ok(())
     }
@@ -730,10 +777,7 @@ impl Device {
     /// Physical pages for one region, inside this process's room: over the room reads as the
     /// driver's out of memory, so each admission treats a smaller room as a smaller card.
     fn create(&self, bytes: usize) -> AllocationResult<u64> {
-        self.sample()?;
-        if self.over(bytes) != 0 {
-            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
-        }
+        self.admit(bytes)?;
         let handle = self.driver().create(bytes)?;
         self.pages.fetch_add(bytes, Ordering::AcqRel);
         Ok(handle)

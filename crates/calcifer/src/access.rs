@@ -278,6 +278,45 @@ impl Machines {
         })
     }
 
+    /// The Hub access a machine's list (`PUT /v1/upcoming`, `/v1/prepare`) of `specs` at `hub` carries: what this computer's
+    /// unsettled runs there and they read, signed for its workload key; signed out, the Hub's origin alone, as a run's.
+    pub(crate) async fn list_access(&self, hub: &str, machine: &str, specs: &[v1::RunSpec]) -> Result<Option<v1::HubAccess>, String> {
+        let origin = match Origin::parse(hub) {
+            Ok(origin) => self.hubs.resolve(&origin).await,
+            Err(_) => self.hubs.hub.clone(),
+        };
+        if self.hubs.client(&origin).is_err() {
+            return Ok(Some(v1::HubAccess { origin: origin.to_string(), ..Default::default() }));
+        }
+        let denied = |denied: Denied| match denied {
+            Denied::Refused(reason) => reason.message,
+            Denied::Unreachable(message) => message,
+        };
+        let facts = self.hubs.facts(&origin).await.map_err(denied)?;
+        let mut needs = self.needs(&origin, machine, None);
+        specs.iter().for_each(|spec| needs.add(spec));
+        needs.models.retain(|model| facts.reads_privately(model));
+        let client = self.hubs.client(&origin).map_err(|e| e.message)?;
+        needs.private_releases(&client, &origin).await.map_err(denied)?;
+        let capability = match needs.is_empty() {
+            true => String::new(),
+            false => {
+                let key = self.workload_key(machine).await.map_err(denied)?;
+                let Credential::User(session) = client.credential() else { unreachable!("a signed-in client speaks as its user") };
+                let now = now_s();
+                let mut claims = json!({
+                    "sub": facts.user, "aud": facts.resource, "cnf": {"jkt": key},
+                    "authorization_details": needs.details(), "iat": now, "exp": now + LIFETIME_S,
+                });
+                if let Some(rental) = self.rental_at(&origin, machine) {
+                    claims["rental"] = rental.into();
+                }
+                session.key().capability(&claims)
+            }
+        };
+        Ok(Some(v1::HubAccess { origin: facts.reads, ca_der: facts.ca_der, capability }))
+    }
+
     /// The capability `run`, sent to `machine` as `spec`, reads and writes `origin` under: what this
     /// computer's unsettled runs there need, signed for the machine's workload key; empty when they
     /// need nothing private.

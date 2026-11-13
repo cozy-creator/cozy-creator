@@ -55,12 +55,31 @@ RUN_PROJECT=$OUT/project
 . "$(dirname "${BASH_SOURCE[0]}")/../../e2e/run.sh"
 { run_project "$RUN_PROJECT" && (cd "$RUN_PROJECT" && "$RUN_CLI" --json status); } > "$OUT/project.json" 2>> "$OUT/project.err" \
   || fail "project initialization: $(cat "$OUT/project.err") $(tail -c 300 "$OUT/project.json")"
+# kernels <package dir>: a packages checkout's package, run from source, carries the Triton sets its release ships, built
+# into the checkout once by the checkout's scripts/triton.sh, so its first request is a Hub install's (xs-194). Call it
+# for each package before `rent`: a build after it bills the pod while the runner compiles.
+declare -A KERNELS=()
+kernels() {
+  local d root
+  d=$(cd "$1" 2>/dev/null && pwd) || return 0
+  root=$(dirname "$d")
+  [ -x "$root/scripts/triton.sh" ] && [ -f "$d/pyproject.toml" ] && [ -z "${KERNELS[$d]:-}" ] || return 0
+  KERNELS[$d]=1
+  local t0=$SECONDS
+  "$root/scripts/triton.sh" "$d" > "$OUT/kernels-${d##*/}.log" 2>&1 || fail "${d##*/}'s Triton sets did not build: $(tail -c 400 "$OUT/kernels-${d##*/}.log")"
+  say "kernels ${d##*/}: $(find "$d" -path '*/_triton/manifest.json' -printf '%P ' 2>/dev/null)built in $((SECONDS - t0)) s"
+}
 step() {
   local n=$1 directory=$PWD; shift
   local words=("$@")
   if [ "$1" = run ]; then
     [[ ${words[1]:-} != .* ]] || words[1]="$PWD/${words[1]}"
     directory=$RUN_PROJECT
+  fi
+  # A package run or installed from a packages checkout: its kernels first.
+  if [ "$1" = run ] || { [ "$1" = package ] && [ "${2:-}" = install ]; }; then
+    local t=${words[1]}; [ "$1" = run ] || t=${words[2]:-}
+    case $t in /* | .*) if [ -d "$t" ]; then kernels "$t"; else kernels "$(dirname "$t")"; fi ;; esac
   fi
   say "step $n: cozy ${words[*]}"
   (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0
@@ -137,17 +156,23 @@ quote() {
 # order [SKU]: one rental ($SKU by default) ordered, its boot followed in the background; `ready` waits for it. rent =
 # order + ready. The first order starts the guard (`guard`).
 order() {
-  local o first='' i=${#RIDS[@]} RP sku=${1:-$SKU}
-  o=$(date +%s%3N)
-  # Nothing long-lived holds a session's rent lock (fd 9): only the order does, while it names its machine.
-  cozy machine rent "$sku" --disk-gb "$DISK" $RENT_ARGS -y > "$OUT/rent$i.out" 2> "$OUT/rent$i.err" 9>&- & RP=$!
-  while [ -z "$first" ]; do
-    first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' "$OUT/rent$i.err" | cut -d: -f1)
-    [ -n "$first" ] || kill -0 "$RP" 2>/dev/null || break
-    sleep 2
+  local o first i=${#RIDS[@]} RP sku=${1:-$SKU} try=1 pause=15
+  local done  # the order's exit, when it ended before naming its machine
+  # A SKU no provider has is often offered again within minutes: the order is placed again, six times over about 6 min.
+  while :; do
+    o=$(date +%s%3N) first='' done=''
+    # Nothing long-lived holds a session's rent lock (fd 9): only the order does, while it names its machine.
+    cozy machine rent "$sku" --disk-gb "$DISK" $RENT_ARGS -y > "$OUT/rent$i.out" 2> "$OUT/rent$i.err" 9>&- & RP=$!
+    while [ -z "$first" ]; do
+      first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' "$OUT/rent$i.err" | cut -d: -f1)
+      [ -n "$first" ] || kill -0 "$RP" 2>/dev/null || break
+      sleep 2
+    done
+    [ -n "$first" ] || { wait "$RP"; done=$?; [ "$done" = 0 ] && first=$(awk '$1=="machine"{print $2; exit}' "$OUT/rent$i.out"); }
+    [ -z "$first" ] && [ "$try" -lt 6 ] && grep -q sku_out_of_stock "$OUT/rent$i.err" || break
+    say "no provider has $sku now (attempt $try/6): ordering again in ${pause}s"
+    sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
   done
-  local done=''  # the order's exit, when it ended before naming its machine
-  [ -n "$first" ] || { wait "$RP"; done=$?; [ "$done" = 0 ] && first=$(awk '$1=="machine"{print $2; exit}' "$OUT/rent$i.out"); }
   [ -n "$first" ] || fail "the rent named no machine: $(tail -3 "$OUT/rent$i.err")"
   cozy machine show "$first" --json > "$OUT/show-boot$i.json" 2>&1
   RID=$(jq -r '.rental_id // empty' "$OUT/show-boot$i.json")

@@ -1365,7 +1365,7 @@ impl Pool {
         let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
         let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
         let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min();
-        tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
+        tensorfs::fetch::Hardware { gpus, free_vram, ..Default::default() }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
         self.config.inventory.iter().find(|g| g.device_index.to_string() == entry || g.device_uuid == entry)

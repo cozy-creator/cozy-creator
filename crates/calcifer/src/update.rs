@@ -28,14 +28,19 @@ use crate::{
     store::RunRow,
 };
 
-/// The release this cozy is, or a dev build was built from: what a machine can fetch.
+/// The release this cozy is, or a dev build was built from (`0.25.0`, the RC's `0.26.0-dev`): what a release can fetch.
 pub(crate) fn this_release() -> &'static str {
-    env!("CARGO_PKG_VERSION").split('+').next().unwrap_or(env!("CARGO_PKG_VERSION"))
+    ::api::VERSION.split('+').next().unwrap_or(::api::VERSION)
 }
 
-/// Whether this cozy is a dev build (`+dev.g…`): no release of it to fetch.
+/// Whether this cozy is a dev build (the RC's `0.26.0-dev+g…`, a release's `+dev.g…`): no release of it to fetch.
 pub(crate) fn dev_build() -> bool {
-    env!("CARGO_PKG_VERSION").contains('+')
+    ::api::prerelease::dev(::api::VERSION)
+}
+
+/// Whether this cozy is the open RC's dev version (`0.26.0-dev+g…`, cl-976): a minor no release or worker image is on yet.
+pub(crate) fn rc_version() -> bool {
+    this_release().contains('-')
 }
 
 /// The command that moves `name` to this cozy: its release, or a dev build's own binary.
@@ -55,7 +60,7 @@ async fn this_build() -> Result<DevBuild, Error> {
     let digest = tokio::task::spawn_blocking(move || crate::runs::files::hold(&std::fs::read(&exe).map_err(unreadable)?))
         .await
         .map_err(|e| Error::internal("cozy_unreadable", e.to_string()))??;
-    Ok(DevBuild { sha256: digest, name: "cozy".into(), version: Some(env!("CARGO_PKG_VERSION").into()) })
+    Ok(DevBuild { sha256: digest, name: "cozy".into(), version: Some(::api::VERSION.into()) })
 }
 
 /// A machine on another minor than this cozy, which isn't updated unasked, or whose update failed: no work goes there.
@@ -83,8 +88,10 @@ impl Machines {
             }
         };
         let own = this_release();
-        if same_minor(&frame.version, own) {
-            // A dev home's rental moves to the open RC first, when it is behind it and has no work going (cl-922).
+        // The open RC's dev version moves no released machine to its minor: work goes to one as it runs, as when the RC's builds
+        // said the last release (cl-976). A dev home's rental moves to the open RC first, when it is behind it and has no work
+        // going (cl-922).
+        if same_minor(&frame.version, own) || rc_version() {
             return Ok(self.follow_rc(name, true).await);
         }
         let row = self.named(name)?;

@@ -128,7 +128,9 @@ fn seed_current_web_project() {
         seed.expected_versions
     );
     assert_eq!(loaded.measured.len(), measured);
-    assert!(loaded.crdt.is_some());
+    // A read takes the rows: the document's, at its heads.
+    assert!(!loaded.heads.is_empty());
+    assert_eq!(db::integrity(&conn, &path).unwrap(), Vec::<String>::new());
     let schema: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();

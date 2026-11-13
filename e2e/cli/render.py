@@ -150,7 +150,12 @@ def main() -> int:
     check("new_with_n", new.code == 0 and numbers == [had + 1, had + 2] and len(versions("shot_2")) == had + 2, seen["new"])
     check("json_ends_rendered", bool(events) and events[-1].get("type") == "rendered", events[-1:])
 
-    # Out of date: shot_2's words changed, film renders it first, then itself.
+    # Out of date: shot_2's words changed, film renders it first, then itself. Film is cut on shot_2's newest take first (one already cut
+    # on it is said current and makes nothing), so it stands on a take its words no longer make: what a cut's own key can't see.
+    idle()
+    recut = cozy("render", "film", "--new", "--on", "local")
+    check("film_cut_on_the_newest", recut.code == 0, recut)
+    idle()
     api("/assets/shot_2", "PATCH", {"fields": {"summary": "Then <look>, at dusk."}})
     idle()
     shots, films = len(versions("shot_2")), len(versions("film"))

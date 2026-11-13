@@ -362,7 +362,7 @@ async fn detail(api: &Api, hub: &Origin, model_id: &ModelId, release: Option<Str
         created_at: card.model.created_at,
         source: card.model.source.filter(|s| !s.is_empty()),
         author: card.model.author.map(author),
-        trigger: card.model.trigger.filter(|t| !t.is_empty()),
+        triggers: card.model.triggers,
         strength: card.model.strength,
         tags: card.model.tags,
         releases,
@@ -382,7 +382,7 @@ fn provenance(p: types::ModelLaneProvenance) -> Provenance {
 }
 
 /// `PATCH /v1/models/{org}/{name}`: what its owner sets. Its family (empty or `none` clears the label, and its weights' family
-/// shows), its trigger words (empty clears them) and its recommended strength (null clears it); an absent field is kept.
+/// shows), its triggers (none clears them) and its recommended strength (null clears it); an absent field is kept.
 pub(super) async fn edit(
     State(api): State<Arc<Api>>,
     Path((org, name)): Path<(String, String)>,
@@ -391,8 +391,8 @@ pub(super) async fn edit(
     let edit: ModelEdit = parse(&body?)?;
     let hub = origin(&api, edit.hub.as_deref())?;
     let model_id = ModelId::hub(&format!("{org}/{name}")).map_err(Refusal)?;
-    if edit.family.is_none() && edit.trigger.is_none() && edit.strength.is_none() && !edit.tags_change() {
-        return Err(Refusal(Error::new(Kind::Usage, "model_edit_empty", "name what changes: family, tags, trigger or strength")));
+    if edit.family.is_none() && edit.triggers.is_none() && edit.strength.is_none() && !edit.tags_change() {
+        return Err(Refusal(Error::new(Kind::Usage, "model_edit_empty", "name what changes: family, tags, triggers or strength")));
     }
     let client = signed_in(&api, &hub)?;
     let mut warnings = Vec::new();
@@ -402,8 +402,8 @@ pub(super) async fn edit(
         let answer = (client.update_model(&model_id.org, &model_id.name, &update).await).map_err(|e| refusal(&hub, e))?;
         warnings = answer.warnings;
     }
-    if edit.trigger.is_some() || edit.strength.is_some() {
-        let answer = (client.set_model_display(&model_id.org, &model_id.name, edit.trigger.as_deref(), edit.strength).await).map_err(|e| refusal(&hub, e))?;
+    if edit.triggers.is_some() || edit.strength.is_some() {
+        let answer = (client.set_model_display(&model_id.org, &model_id.name, edit.triggers.as_deref(), edit.strength).await).map_err(|e| refusal(&hub, e))?;
         warnings.extend(answer.warnings);
     }
     Ok(Json(ModelEdited { model: detail(&api, &hub, &model_id, None).await?, warnings }))

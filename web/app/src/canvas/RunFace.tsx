@@ -227,9 +227,9 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
  *  took. The same two lines in the same place, so nothing under them moves. */
 export function RunDone({ view, number }: { view: ElementView; number: number }) {
   const { client } = useConnection()
-  const store = useCanvasStore()
+  const project = useCanvasStore().projectId
   const later = number !== view.run?.number
-  const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number), enabled: Boolean(store.projectId && later) })
+  const { data } = useQuery({ ...runQuery(client, project ?? "", number), enabled: Boolean(project && later) })
   const run = later ? data : view.run
   const made = view.asset?.prefixes?.find((version) => version.run === number)
   const ms = run?.settled_at_ms ? run.settled_at_ms - run.created_at_ms : made?.execution_ms

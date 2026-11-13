@@ -264,7 +264,7 @@ paths:
     post:
       summary: >-
         Work, admitted as one (cl-816). Each new run is accepted with the others before any prepares, so the
-        machine packs them together as `POST /v1/estimate` quoted them. Each is idempotent on its id per
+        machine packs them together as Calcifer quoted them. Each is idempotent on its id per
         signer: the same id with the same spec answers its state; with another spec, `run_id_conflict`. An
         update's activation and a rental's idle release wait for them.
       operationId: submit
@@ -281,22 +281,33 @@ paths:
         '503':
           description: '`machine_updating` or `machine_released`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-  /v1/estimate:
-    post:
+  /v1/upcoming:
+    put:
       summary: >-
-        When each job would run here were the caller to send them all now, packed with the
-        machine's queue by the model its scheduler gives each root its width by. A quote: nothing is reserved.
-      operationId: estimate
+        The jobs the caller expects to send here, nearest first, its whole list, replacing its last (cl-967). Each prepares behind
+        every run, in its order, as a function's warm run: its code installed, what its call reads up front, then its guesses,
+        while they fit; one the list drops stops. Its downloads show in Status under `cozy:upcoming:<key>`.
+      operationId: upcoming
       requestBody:
-        content: {application/json: {schema: {$ref: '#/components/schemas/EstimateRequest'}}}
+        content: {application/json: {schema: {$ref: '#/components/schemas/Upcoming'}}}
         required: true
       responses:
         '200':
-          description: One quote per job, in its order
-          content: {application/json: {schema: {$ref: '#/components/schemas/EstimateAnswer'}}}
-        '400':
-          description: '`invalid_function`'
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+          description: Each job as a run would be admitted, in its order
+          content: {application/json: {schema: {$ref: '#/components/schemas/AheadAnswer'}}}
+  /v1/prepare:
+    put:
+      summary: >-
+        What the caller expects demand for here with no job yet, its whole set, replacing its last; each behind every upcoming
+        job (cl-967). Its downloads show in Status under `cozy:prepare:<key>`.
+      operationId: prepare
+      requestBody:
+        content: {application/json: {schema: {$ref: '#/components/schemas/Prepare'}}}
+        required: true
+      responses:
+        '200':
+          description: Each item as a run would be admitted, in its order
+          content: {application/json: {schema: {$ref: '#/components/schemas/AheadAnswer'}}}
   /v1/runs/{id}/cancel:
     post:
       summary: >-
@@ -997,10 +1008,6 @@ components:
       type: string
       enum: [measured, prior, none]
       description: 'What a quote''s time stands on: runs here, the caller''s `prior_ms`, or nothing (a minute).'
-    EstimateAnswer:
-      type: object
-      properties:
-        jobs: {type: array, items: {$ref: '#/components/schemas/Quote'}, description: One per job asked, in its order.}
     EstimateJob:
       type: object
       properties:
@@ -1023,10 +1030,6 @@ components:
           format: int64
           minimum: 0
           description: 'The soonest it can start, ms from now: when what it reads is made.'
-    EstimateRequest:
-      type: object
-      properties:
-        jobs: {type: array, items: {$ref: '#/components/schemas/EstimateJob'}, description: In the order they would be sent.}
     JobSize:
       type: object
       description: What a job makes, in the units its time scales with; each unknown one absent.
@@ -1054,6 +1057,7 @@ components:
         prepare_ms: {type: integer, format: int64, minimum: 0, description: 'Its install and weights'' fetch, part of `start_ms`.'}
         queue_position: {type: integer, format: int32, minimum: 0}
         basis: {$ref: '#/components/schemas/Basis'}
+        warm: {type: boolean, description: "Its time is the function's warm one there: the model held, its plan compiled."}
     RunBatch:
       type: object
       properties:
@@ -1173,6 +1177,25 @@ components:
           required: [local]
           properties: {local: {$ref: '#/components/schemas/LocalSource'}}
       description: What a run runs.
+    Upcoming:
+      type: object
+      properties: {jobs: {type: array, items: {$ref: '#/components/schemas/Ahead'}, description: Nearest first.}}
+    Prepare:
+      type: object
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Ahead'}}}
+    Ahead:
+      type: object
+      description: One function to have ready, its code and its models in their lanes.
+      properties:
+        key: {type: string, description: "The caller's name for it: an upcoming job's key, the one its run is sent under."}
+        source: {$ref: '#/components/schemas/Source'}
+        entrypoint: {type: string, description: 'Empty: its code installed only.'}
+        models: {type: array, items: {$ref: '#/components/schemas/ModelChoice'}}
+        lane: {type: string}
+        hub: {$ref: '#/components/schemas/HubAccess'}
+    AheadAnswer:
+      type: object
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/Admitted'}}}
     Queued:
       type: object
       properties:
@@ -1199,6 +1222,7 @@ components:
         size: {$ref: '#/components/schemas/JobSize'}
         ms: {type: number}
         load_ms: {type: number}
+        cold: {type: boolean, description: "The function's first call on the machine: its plan compiled as it ran (its cold time)."}
     Resident:
       type: object
       properties:
@@ -1294,6 +1318,10 @@ components:
         link_bytes_per_s: {type: number, description: "Weights' arrival, bytes a second, once 1 GiB came; 0 before."}
         serving_gpus: {type: integer, format: int32, minimum: 0, description: The most GPUs side by side in service.}
         nvlink: {type: boolean, description: Its GPUs talk over NVLink.}
+        ahead:
+          type: array
+          items: {$ref: '#/components/schemas/RunState'}
+          description: "The caller's lists' items (PUT /v1/upcoming, /v1/prepare), each as its run stands: ready once it succeeded."
         started_at_unix_ms: {type: integer, format: int64}
         stuck:
           type: array

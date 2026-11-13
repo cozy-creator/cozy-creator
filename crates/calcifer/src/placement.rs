@@ -17,7 +17,7 @@ use api::{
 use crate::{
     api::Api,
     store::now_ms,
-    update::{same_minor, this_release},
+    update::{rc_version, same_minor, this_release},
 };
 
 /// Within this share of the soonest finish (or a second), two machines finish together.
@@ -53,6 +53,8 @@ pub(crate) struct Offer {
     pub prepare_ms: u64,
     pub queue_position: u32,
     pub basis: Basis,
+    /// Its time is its function's warm one there (cl-967).
+    pub warm: bool,
     /// When its machine should serve, for one on its way (cl-915); none for one that serves.
     pub ready_at_ms: Option<i64>,
 }
@@ -178,6 +180,7 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
             prepare_ms: quote.prepare_ms,
             queue_position: quote.queue_position,
             basis: quote.basis,
+            warm: quote.warm,
             ready_at_ms: picture.ready_at_ms,
         })
         .collect()
@@ -264,12 +267,13 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         machines.local_up().await.map_err(|e| e.message)?;
     }
     let (row, link) = machines.linked(text).map_err(|e| e.message)?;
-    let frame = match machines.frame(&row.name) {
+    // Its Status as its open stream says it; with none open (it stopped answering, or never did), what it answers now, or no quote.
+    let frame = match machines.live_frame(&row.name) {
         Some(frame) => frame,
         None => link.status().await.map_err(|e| e.to_string())?,
     };
     let own = this_release();
-    if !same_minor(&frame.version, own) {
+    if !same_minor(&frame.version, own) && !rc_version() {
         if !update {
             return Err(format!("it runs cozy {}, another minor than this cozy's {own}: its first run updates it", frame.version));
         }
@@ -281,14 +285,15 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![] })
 }
 
-/// An offer in a line of the log: `stand-c finishes in 480 s (measured)`, `pluto finishes in 390 s (none), ready in 210 s`,
-/// `local can't: no_gpu`.
+/// An offer in a line of the log: `stand-c finishes in 480 s (Measured, warm)`, `pluto finishes in 390 s (None), ready in 210 s`,
+/// `local can't: does_not_fit`.
 pub(crate) fn said(offer: &Offer, now: i64) -> String {
     if !offer.fits {
         return format!("{} can't: {}", offer.machine, offer.refusal.as_ref().map_or("no reason given", |reason| reason.code.as_str()));
     }
     let ready = offer.ready_at_ms.map(|at| format!(", ready in {} s", (at - now).max(0) / 1000)).unwrap_or_default();
-    format!("{} finishes in {} s ({:?}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
+    let warm = if offer.warm { ", warm" } else { "" };
+    format!("{} finishes in {} s ({:?}{warm}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
 }
 
 /// How soon, for people: `in under a minute`, `in about 2 min`, `in about 1.5 h`.

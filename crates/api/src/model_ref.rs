@@ -127,6 +127,19 @@ pub fn lane(value: &str) -> Result<String, String> {
     label("--lane", value).map_err(|e| e.message)
 }
 
+/// `REF[:COMPONENT,…]`: the reference and the components it names, none when it names none. The last `:` starts them when each
+/// is a component name (a letter, then letters, digits and `._-`), unless it is a checkpoint's `sha256:`, a held file's or a
+/// run's (`run:N`); a URL's port or path is never one.
+pub fn components(raw: &str) -> (&str, Vec<String>) {
+    let name = |s: &str| s.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    match raw.rsplit_once(':') {
+        Some((head, tail)) if !head.is_empty() && !head.ends_with("@sha256") && !["sha256", "run"].contains(&head)
+            && tail.split(',').all(name) => (head, tail.split(',').map(str::to_owned).collect()),
+        _ => (raw, vec![]),
+    }
+}
+
 /// A checkpoint id: `sha256:` and 64 lowercase hex digits.
 pub fn checkpoint(value: &str) -> Result<String, Error> {
     match value.strip_prefix("sha256:") {

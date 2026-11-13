@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
 const { rmSync } = require('fs');
 const { join } = require('path');
-const { implementationRow, projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, lookAt, openBox, renderOf, storedOf, until } = require('./page');
+const { implementationRow, projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, lookAt, openBox, renderOf, settled, storedOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -124,7 +124,9 @@ async function loseAnswers(page, method, path, times) {
   const name = await page.locator('.card.landing').first().getAttribute('data-asset');
   check('box_named_before_any_answer', Boolean(name) && !hasAsset(name), { name });
   check('a_pending_tool_drop_stays_in_Wander', await page.locator('[data-focused-asset]').count() === 0);
-  check('post_is_held', posts.calls.length <= 1, posts.calls.length);
+  // Its one POST is out and held: asked once, not yet (and not twice).
+  await until('its POST asked', () => Promise.resolve(posts.calls.length), (n) => n >= 1, 5000).catch(() => {});
+  check('post_is_held', posts.calls.length === 1, posts.calls.length);
 
   // Moved and typed in while nothing is saved: each keeps its place in line, and nothing on screen says so.
   const head = await box(name).locator('.head').boundingBox();
@@ -135,7 +137,8 @@ async function loseAnswers(page, method, path, times) {
   const place = () => box(name).evaluate((card) => getComputedStyle(card.closest('.react-flow__node')).transform);
   const moved = await place();
   check('nothing_saved_yet', !hasAsset(name) && !(name in (await cards())));
-  check('no_spinner_on_it', (await box(name).locator('.status').count()) === 0, await box(name).innerText());
+  // Nothing on it says it's waiting: no status line, progress or queued/rendering dot (Card.tsx, StateDot.tsx).
+  check('no_spinner_on_it', (await box(name).locator('.status, .prog, .media-making').count()) + (await box(name).getByRole('img', { name: /^(Queued|Rendering)$/ }).count()) === 0, await box(name).innerText());
   reads.length = 0;
   await posts.release();
   await until('it landed', async () => hasAsset(name) && name in (await cards()), Boolean);
@@ -154,7 +157,7 @@ async function loseAnswers(page, method, path, times) {
   await until('its answer came at last', () => Promise.resolve(lost.keys.length), (n) => n >= 3);
   await lost.done();
   await until('in the project', () => Promise.resolve(hasAsset(second)), Boolean);
-  await page.waitForTimeout(400);
+  await until('both on the page', () => page.locator(`.card[data-asset^="${name}"]`).count(), (n) => n === 2, 5000).catch(() => {});
   check('retried_with_one_key', new Set(lost.keys).size === 1, lost.keys);
   check('retried_makes_one', count(name) === 2 && (await page.locator(`.card[data-asset^="${name}"]`).count()) === 2, names());
 
@@ -167,10 +170,9 @@ async function loseAnswers(page, method, path, times) {
   await until('the other in the project', () => Promise.resolve(hasAsset(third)), Boolean);
   await stalled.release();
   await box(`${name}_4`).waitFor();
-  await page.waitForTimeout(600);
   // What a writer elsewhere adds lands wherever it's free, which may be off screen.
   await page.keyboard.press('f');
-  await page.waitForTimeout(400);
+  await settled(page);
   const shown = await page.locator('.card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset));
   check('another_writers_name_renames_it', (await box(third).count()) === 1 && (await box(`${name}_4`).count()) === 1 && hasAsset(`${name}_4`), { shown, names: names() });
 
@@ -194,11 +196,10 @@ async function loseAnswers(page, method, path, times) {
   // A pending edit and another writer's edit of the same field: the page's unsent words stand, and then both are saved, merged by character, with
   // nothing asked (cl-904: Automerge text).
   projectJson(folder, 'POST', '/assets', { tool: '', name: 'words', exact: true, fields: { text: 'A storm.' } });
-  await page.waitForTimeout(600);
   // Nothing held open: what's open lies over what's below it.
   await page.keyboard.press('f');
   await box('words').waitFor();
-  await page.waitForTimeout(400);
+  await settled(page);
   await openBox(page, 'words');
   await box('words').locator('.mention-text[data-field="text"]').click();
   const patches = await hold(page, 'PATCH', '**/v1/projects/*/assets/*');
@@ -206,14 +207,17 @@ async function loseAnswers(page, method, path, times) {
   await page.keyboard.type('mine');
   await page.mouse.click(1500, 1050);
   await until('its PATCH is held', () => Promise.resolve(patches.calls.length), (n) => n === 1);
+  // The page's read of theirs, from the stream: what its unsent words must stand against.
+  const theirsRead = page.waitForResponse((answer) => answer.request().method() === 'GET' && new URL(answer.url()).pathname.endsWith('/assets/words'), { timeout: 20_000 }).then(() => true, () => false);
   projectJson(folder, 'PATCH', '/assets/words', { fields: { text: 'theirs' } });
   await until('theirs in the project', () => Promise.resolve(words().startsWith('theirs')), Boolean);
-  await page.waitForTimeout(600);
+  check('the_page_read_theirs', await theirsRead);
   await openBox(page, 'words');
   check('unsent_words_stand', (await box('words').locator('.mention-text[data-field="text"]').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
   await patches.release();
   await until('both in the project', () => Promise.resolve(['minetheirs', 'theirsmine'].includes(words())), Boolean);
-  check('nothing_asked', (await box('words').getByRole('button', { name: 'Keep mine' }).count()) === 0);
+  // Nothing asked of the person (cl-904), whatever it would be called.
+  check('nothing_asked', (await page.getByRole('alertdialog').count()) + (await box('words').getByRole('button', { name: /keep mine|keep theirs|take the file/i }).count()) === 0);
   await closeBox(page);
 
   // Another canonical writer commits after ours, before its delayed reply is consumed.
@@ -258,8 +262,12 @@ async function loseAnswers(page, method, path, times) {
     await waits.release();
     await restarted;
     await until('it landed after the restart', () => Promise.resolve(hasAsset(fifth)), Boolean);
+    // A while for a second landing, then all of it in view: the canvas draws only what's in view, and "once" counts what's drawn.
     await page.waitForTimeout(800);
-    check('restart_mid_queue_lands_once', (await box(fifth).count()) === 1 && count(fifth) === 1 && !hasAsset(`${name}_6`), names());
+    await page.keyboard.press('f');
+    await settled(page);
+    const shown = await box(fifth).count();
+    check('restart_mid_queue_lands_once', shown === 1 && count(fifth) === 1 && !hasAsset(`${name}_6`), { shown, held: count(fifth), names: names() });
     await until('the top bar says nothing waits', () => page.locator('.top .pill').allInnerTexts(), (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
     check('nothing_left_saying_not_saved', true);
   }
@@ -273,13 +281,12 @@ async function loseAnswers(page, method, path, times) {
     const primed = (await stillRuns()).length;
     addBoxes(folder, [{ name: 'fixture', tool: `${TOOL}/still`, kind: 'image', fields: { instructions: 'a whale' } }]);
     await box('fixture').waitFor();
-    await page.waitForTimeout(500);
     await openBox(page, 'fixture');
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
     await (await renderOf(page, 'fixture')).click();
-    await page.waitForTimeout(20);
-    // The selected image remains one frame; accepted work is visible there rather than in a second thumbnail column.
-    check('render_says_queued_at_once', await box('fixture').locator('.media-making, .prog, .on-its-way, .here-side .take.making').count() > 0, await box('fixture').innerText());
+    // At once: within a quarter second of the press, its take says it's on its way (StateDot's Queued or Rendering, or its making face).
+    const onItsWay = box('fixture').getByRole('img', { name: /^(Queued|Rendering)$/ }).or(box('fixture').locator('.media-making, .prog, .here-side .take.making')).first();
+    check('render_says_queued_at_once', await onItsWay.waitFor({ timeout: 250 }).then(() => true, () => false), await box('fixture').innerText());
     await until('a version of it', () => Promise.resolve(status().find((asset) => asset.name === 'fixture')?.versions ?? 0), (n) => n >= 1, FIRST_RUN_MS);
     // The take can land before the lost answer's reset reaches the page: what it asks again is seen before the route goes.
     await until('asked again', () => Promise.resolve(renders.keys.length), (n) => n >= 2, 10_000).catch(() => {});
@@ -304,7 +311,10 @@ async function loseAnswers(page, method, path, times) {
   // One a newer cozy has written, its schema one this cozy doesn't read, as after a downgrade. Calcifer reads a schema as it opens a project, so
   // it's opened again by a Calcifer that starts after: on a shared computer, with no restart, that half isn't asked.
   const unreadable = Boolean(process.env.RESTART);
+  let current;
   if (unreadable) {
+    // What this cozy writes is the schema it reads: the refusal names that one.
+    current = execFileSync(PYTHON, ['-c', 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("PRAGMA user_version").fetchone()[0])', join(old.path, 'project.db')], { encoding: 'utf8' }).trim();
     execFileSync(PYTHON, ['-c', 'import sqlite3, sys; sqlite3.connect(sys.argv[1], isolation_level=None).execute("PRAGMA user_version = 99")', join(old.path, 'project.db')]);
     await new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
   }
@@ -312,29 +322,31 @@ async function loseAnswers(page, method, path, times) {
   await page.waitForSelector('.ptabs .ptab.on');
   await box(name).waitFor();
   const tab = (project) => page.getByTitle(project.path, { exact: true });
+  // The open project's tab: its title is its folder, then what a click on it does (cl-958).
+  const opened = (project) => page.locator('.ptab.on[aria-current="page"]').and(page.getByTitle(new RegExp(`^${project.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\n`)));
   const here = page.locator('.ptab.on');
   await page.mouse.move(1400, 1000);
   await page.mouse.down();
   await page.mouse.move(1340, 960, { steps: 3 });
   await page.mouse.up();
-  await page.waitForTimeout(300);
+  await settled(page);
   const view = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const kept = await view();
   await tab(second_project).click();
-  await page.locator('.ptab.on').and(page.getByTitle(second_project.path, { exact: true })).waitFor();
+  await opened(second_project).waitFor();
   await page.waitForSelector('.empty-canvas');
   check('a_tab_opens_its_project', (await box(name).count()) === 0, await here.innerText());
   await page.getByTitle(folder, { exact: true }).click();
   await box(name).waitFor({ timeout: 2000 });
   check('back_shows_its_boxes_at_once', true);
-  await page.waitForTimeout(300);
+  await settled(page);
   check('each_project_keeps_its_view', (await view()) === kept, { kept, now: await view() });
   if (unreadable) {
     await tab(old).click();
     const unread = page.locator('.unread');
     await unread.waitFor();
     const refusal = await unread.innerText();
-    check('what_cant_be_read_says_why', /schema 99/.test(refusal) && /only current CRDT schema 2 is supported/.test(refusal) && /Preserve this database/.test(refusal) && /new current-format project in a separate empty directory/.test(refusal) && (await page.locator('.empty-canvas').count()) === 0, refusal);
+    check('what_cant_be_read_says_why', /schema 99/.test(refusal) && /^\d+$/.test(current) && refusal.includes(`only current CRDT schema ${current} is supported`) && /Preserve this database/.test(refusal) && /new current-format project in a separate empty directory/.test(refusal) && (await page.locator('.empty-canvas').count()) === 0, { refusal, current });
     await until('the Timeline implementation still there', async () => (await editor()).count(), (n) => n === 1);
     await carry(page, await editor(), { x: 1200, y: 300 });
     await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Video Timeline/.test(line)).length, (n) => n === 1);

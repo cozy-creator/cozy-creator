@@ -285,11 +285,6 @@ impl Host {
         rows.iter().find_map(|row| took_s(&store.detail(row).ok()?))
     }
 
-    /// Stops a run fetching ahead, however far it got. Nothing depends on it.
-    pub(crate) fn cancel_ahead(&self, run: &RunId) {
-        let _ = self.api.calcifer.cancel(run);
-    }
-
     /// Sends `run` under `key`: one key is one run, however often it is sent.
     pub(crate) async fn submit(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
         Ok(self.api.calcifer.submit(key, run).await.map_err(refused)?.run)
@@ -334,10 +329,7 @@ impl Host {
             if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && and(&run) {
                 return Ok(run);
             }
-            tokio::select! {
-                _ = tail.recv() => {}
-                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
-            }
+            crate::Calcifer::moved(&mut tail, id).await;
         }
     }
 

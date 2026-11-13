@@ -106,12 +106,14 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   }
   await shot('tools-on-boxes');
 
-  // Zoomed out, it shrinks with the box.
-  await page.click('button[aria-label="Zoom out"]');
+  // Zoomed out, short of far out (under 20% a box shows its picture and name alone: CanvasHost.tsx's band), it's still said and shrinks
+  // with the box.
+  const zoom = async () => Number((await page.getByRole('button', { name: /more zoom options$/ }).getAttribute('aria-label')).match(/(\d+)%/)?.[1]) / 100;
+  await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
   await settled(page);
-  const far = await said('still');
+  const far = { ...(await said('still')), zoom: await zoom() };
   seen.zoomed_out = far;
-  check('it_shrinks_with_the_box', far.text === null || (far.card < near.still.card && Math.abs(far.drawn / far.card - near.still.drawn / near.still.card) < 0.25 * (near.still.drawn / near.still.card)), { near: near.still, far });
+  check('it_shrinks_with_the_box', far.zoom >= 0.2 && far.text !== null && far.card < near.still.card && Math.abs(far.drawn / far.card - near.still.drawn / near.still.card) < 0.25 * (near.still.drawn / near.still.card), { near: near.still, far });
   await shot('tools-zoomed-out');
 
   check('no_page_errors', errors.length === 0, errors);

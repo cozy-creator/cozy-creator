@@ -79,10 +79,13 @@ async function loseAnswers(page, method, path, times) {
 
   // The discard's answer lost: the outbox sends it again under its key, and it's discarded once, with nothing said against it.
   const discard = await loseAnswers(page, 'DELETE', `**${at}/assets/shot/versions/*`, 1);
+  // The retry's own answer (the first's is lost, so this is the one that arrives): read only once it has, or a second discard could land after.
+  const discardAnswered = page.waitForResponse((answer) => answer.request().method() === 'DELETE' && new URL(answer.url()).pathname.startsWith(`${at}/assets/shot/versions/`), { timeout: STEP_MS }).then(() => true, () => false);
   await openBox(page, 'shot');
   await page.locator(`.card.here .take-at:has(.take[data-take="${other}"])`).hover();
   await page.locator(`.card.here .take-at:has(.take[data-take="${other}"]) .take-off`).click();
   await until('the discard sent again', () => Promise.resolve(discard.keys.length), (n) => n >= 2).catch(() => null);
+  check('the_discard_retry_answered', await discardAnswered);
   await discard.done();
   await settled(page);
   seen.discard = { keys: discard.keys, takes: await takes(), notes: await notes() };
@@ -94,9 +97,11 @@ async function loseAnswers(page, method, path, times) {
   // The undo's answer lost: sent again under its key, one entry undone.
   const before = await undone();
   const back = await loseAnswers(page, 'POST', `**${at}/history/undo`, 1);
+  const undoAnswered = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === `${at}/history/undo`, { timeout: STEP_MS }).then(() => true, () => false);
   await page.mouse.move(2, 500);
   await page.keyboard.press('ControlOrMeta+z');
   await until('the undo sent again', () => Promise.resolve(back.keys.length), (n) => n >= 2).catch(() => null);
+  check('the_undo_retry_answered', await undoAnswered);
   await back.done();
   await until('the take back', takes, (n) => n === had).catch(() => null);
   seen.undo = { keys: back.keys, undone_before: before, undone_now: await undone(), takes: await takes() };

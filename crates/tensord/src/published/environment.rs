@@ -331,7 +331,7 @@ impl Publisher {
     /// built with (a Runtime of another series requires another TensorFS).
     fn protocol(&self) -> BTreeMap<String, String> {
         match self.machine_pair() {
-            ours if ours.is_empty() => BTreeMap::from([("tensorfs".to_string(), env!("CARGO_PKG_VERSION").to_string())]),
+            ours if ours.is_empty() => BTreeMap::from([("tensorfs".to_string(), tensorfs::VERSION.to_string())]),
             ours => ours,
         }
     }

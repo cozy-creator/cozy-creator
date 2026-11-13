@@ -4,8 +4,9 @@ encoder, Anima's text conditioner and the Qwen-Image VAE, as the release's modul
 Its adapters (se-127) are laid out as their 0.1.0 releases are, each its author's file uploaded as it is, at the tiny
 DiT's geometry (which the executor takes: PATCH): google/siglip2-base-patch16-512 as its repo holds it (upstream's
 `config.json` with the towers shrunk, SiglipModel's f32 tensors, `preprocessor_config.json`; the Gemma tokenizer, which
-nothing reads, left out), and LuciferTC's IP-Adapter and kohya's four ControlNet-LLLite files as one `model` component
-of their tensors, configured by their files' `__metadata__` (the header's `safetensors_metadata`)."""
+nothing reads, left out), and LuciferTC's IP-Adapter, Claquasse's pose control-LoRA and kohya's ControlNet-LLLite files
+as one `model` component of their tensors, configured by their files' `__metadata__` (the header's
+`safetensors_metadata`)."""
 
 from __future__ import annotations
 
@@ -28,7 +29,12 @@ WIDTH = 64
 #: The tiny DiT: 2 blocks of 2 heads of 16 (Anima Base: 28 of 16 of 128, `anima.adapters`).
 BLOCKS, HEADS, HEAD = 2, 2, 16
 DIT = HEADS * HEAD
-PATCH: dict[str, object] = {"anima.adapters:BLOCKS": BLOCKS, "anima.adapters:WIDTH": DIT, "anima.adapters:HEADS": HEADS}
+#: The tiny text conditioner's one block of WIDTH (Anima Base: 6 of 1024).
+ADAPTER_BLOCKS = 1
+PATCH: dict[str, object] = {"anima.adapters:BLOCKS": BLOCKS, "anima.adapters:WIDTH": DIT, "anima.adapters:HEADS": HEADS,
+                            "anima.adapters:ADAPTER_BLOCKS": ADAPTER_BLOCKS}
+#: The DiT's AdaLN-LoRA width (`adaln_lora_dim`).
+ADALN = 32
 #: SigLIP2's towers, each one layer of 32: a picture is 1024 tokens of 32.
 TOKEN = 32
 _TOWER: dict[str, Json] = {"hidden_size": TOKEN, "intermediate_size": 64, "num_hidden_layers": 1, "num_attention_heads": 2}
@@ -43,10 +49,6 @@ _LLLITE: dict[str, dict[str, str]] = {
         "lllite.cond_dim": "32", "lllite.cond_emb_dim": "32", "lllite.cond_resblocks": "3", "lllite.mlp_dim": "32",
         "lllite.target_atomics": "self_attn_q_pre", "lllite.target_layers": "self_attn_q_pre", "lllite.use_aspp": "false",
         "lllite.version": "2", "modelspec.title": "anima-lllite-depth-1"},
-    "kohya-ss/lllite-pose@0.1.0": {
-        "lllite.cond_dim": "32", "lllite.cond_emb_dim": "32", "lllite.cond_resblocks": "3", "lllite.mlp_dim": "32",
-        "lllite.target_atomics": "self_attn_q_pre,self_attn_kv_pre", "lllite.target_layers": "self_attn_q_pre,self_attn_kv_pre",
-        "lllite.use_aspp": "false", "lllite.version": "2", "modelspec.title": "anima-lllite-pose-3r"},
     "kohya-ss/lllite-any-test-like@0.1.0": {
         "lllite.cond_dim": "64", "lllite.cond_emb_dim": "32", "lllite.cond_in_channels": "3", "lllite.cond_resblocks": "6",
         "lllite.inpaint_masked_input": "false", "lllite.mlp_dim": "64", "lllite.target_atomics": "self_attn_q_pre",
@@ -135,6 +137,27 @@ def _ip_adapter(store: Path) -> str:
                                "lora_alpha": str(RANK), "lora_rank": str(RANK)})
 
 
+def _control_pose(store: Path) -> str:
+    """Claquasse's anima_pose_preview2: the control embedder (a 16-channel latent's 2×2 patches to the DiT's width) and
+    a rank-16 LoRA, without alphas, on every DiT block's linear and the LLM adapter's, under ComfyUI's names."""
+    dit = {"self_attn.q_proj": (DIT, DIT), "self_attn.k_proj": (DIT, DIT), "self_attn.v_proj": (DIT, DIT),
+           "self_attn.output_proj": (DIT, DIT), "cross_attn.q_proj": (DIT, DIT), "cross_attn.k_proj": (WIDTH, DIT),
+           "cross_attn.v_proj": (WIDTH, DIT), "cross_attn.output_proj": (DIT, DIT), "mlp.layer1": (DIT, 4 * DIT),
+           "mlp.layer2": (4 * DIT, DIT),
+           **{f"adaln_modulation_{part}.{i}": io for part in ("self_attn", "cross_attn", "mlp")
+              for i, io in ((1, (DIT, ADALN)), (2, (ADALN, 3 * DIT)))}}
+    adapter = {**{f"{attn}.{p}_proj": (WIDTH, WIDTH) for attn in ("self_attn", "cross_attn") for p in "qkvo"},
+               "mlp.0": (WIDTH, 4 * WIDTH), "mlp.2": (4 * WIDTH, WIDTH)}
+    file = _File(9)
+    file.linear("diffusion_model.control_embedder.proj", DIT, 16 * 2 * 2)
+    sites = [(f"blocks.{b}.{site}", io) for b in range(BLOCKS) for site, io in dit.items()]
+    sites += [(f"llm_adapter.blocks.{b}.{site}", io) for b in range(ADAPTER_BLOCKS) for site, io in adapter.items()]
+    for site, (inputs, outputs) in sites:
+        file.put(f"diffusion_model.{site}.lora_A.weight", RANK, inputs)
+        file.put(f"diffusion_model.{site}.lora_B.weight", outputs, RANK)
+    return file.commit(store, {"format": "pt"})
+
+
 def _lllite(store: Path, metadata: dict[str, str], seed: int) -> str:
     """A kohya ControlNet-LLLite v2 file: the map's trunk (`lllite_conditioning1`) and each target linear's shift, as
     its metadata states them."""
@@ -191,7 +214,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         shutil.copytree(source / name, out / name)
     _siglip(root / "siglip2")
     return {"circlestone-labs/anima@1.0.0": out, "google/siglip2-base-patch16-512@0.1.0": root / "siglip2",
-            "lucifertc/ip-adapter@0.1.0": _ip_adapter(store),
+            "lucifertc/ip-adapter@0.1.0": _ip_adapter(store), "claquasse/control-pose@0.1.0": _control_pose(store),
             **{ref: _lllite(store, metadata, 11 + index) for index, (ref, metadata) in enumerate(_LLLITE.items())}}
 
 
@@ -232,7 +255,8 @@ CELLS: list[Cell] = [
     # The inpaint map's area redrawn from noise, the rest put back each step; its adapter off.
     {"entry": "generate", "name": "inpaint-area", "payload": {**_SMALL, "control": [{"kind": "inpaint", "strength": 0.0}]},
      "files": {"control.0.image": _hole}, "check": size(1024, 1024)},
-    # Each builds its adapters (SigLIP2 and the IP-Adapter, or the LLLites), then refuses in the denoise.
+    # Each builds its adapters (SigLIP2 and the IP-Adapter, the pose control-LoRA, the LLLites), then refuses in the
+    # denoise.
     {"entry": "generate", "name": "reference", "payload": {**_SMALL, "prompt": _prompt("masterpiece, <fox> in the snow", "fox")},
      "files": {"prompt.references.0.file": _FOX}, "check": size(1024, 1024), "skip": _PLANNED},
     {"entry": "generate", "name": "depth", "payload": {**_SMALL, "control": [{"kind": "depth"}]},

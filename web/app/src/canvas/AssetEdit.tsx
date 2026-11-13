@@ -12,7 +12,7 @@ import type { CanvasStore, ElementView } from "./CanvasStore"
 import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
+import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
 import { Ghosts, Spread, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
@@ -733,12 +733,12 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
 /** The rows the frame opens one at a time, with its first prompt's section (cl-938): absent outside the frame. */
 const Sections = createContext<{ row: number | null; setRow: Dispatch<SetStateAction<number | null>> } | null>(null)
 
-/** What the frame holds while a take is written, as an image's prompt is held over it (cl-938, Paul 11-12): its first prompt (else its first
+/** What the frame holds while a take is written, as an image's prompt is held over it (cl-938, Paul 11-12): its main text (else its first
  *  slot), and the list of prompts that adds up to it (H3's beats). A tool with its own box draws all of that itself. */
 export function framedOf(view: ElementView, fields: ToolField[], tool: Tool | undefined): ToolField[] {
   // A picture or a video with no tool asks nothing: its words are a tool's to ask for (Paul, 11-12, cl-933).
   if (!view.hereWords || tool?.ui || (!view.asset?.tool && view.asset?.kind !== "text")) return []
-  const first = fields.find((field) => field.type === "prompt" || field.type === "words") ?? fields.find((field) => field.type === "slot")
+  const first = mainText(fields) ?? fields.find((field) => field.type === "slot")
   const rows = fields.find((field) => field.type === "group" && field.list && field.members?.some((member) => member.total) && field.members.some((member) => member.type === "prompt"))
   return [...(first ? [first] : []), ...(rows ? [rows] : [])]
 }
@@ -841,7 +841,7 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
   const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
   const fields = makes(view) ? fieldsOf(view.asset, tools) : []
   const inFrame = framedOf(view, fields, tool)
-  const first = fields.find((field) => field.type === "prompt" || field.type === "words")
+  const first = mainText(fields)
   // The box's own shape is its shape: its corner sets it.
   const rest = fields.filter((field) => !inFrame.includes(field) && field.type !== "timeline" && field.type !== "shape")
   const faced = !editing ? [] : focused ? rest : rest.filter((field) => field.field === "megapixels" || onFace(field, store.valueOf(name, field.field)))

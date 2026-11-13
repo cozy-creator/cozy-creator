@@ -354,6 +354,11 @@ code {
 .picker {
   display: none;
 }
+/* The canvas stops at the app bar, and in Focus below its title row (`--canvas-top`, FocusedViewport.tsx): nothing of it, a box or its
+   name, is ever under or beside a control there, at any zoom (Paul, 11-12: nothing covers a control). Its paper (Sheet.tsx) goes on behind. */
+.react-flow__renderer {
+  clip-path: inset(var(--canvas-top, var(--top)) 0 0 0);
+}
 .react-flow {
   --xy-background-color: transparent;
   --xy-selection-background-color: color-mix(in srgb, var(--select) 12%, transparent);
@@ -2306,18 +2311,23 @@ video.preview.on {
   overflow-wrap: break-word;
   line-height: 1.1;
   /* A word a little wider than its box runs into the gap beside it rather than splitting (brok/en); not past 20%, where the gap is
-     too narrow and two names ran together. */
+     too narrow and two names ran together. Where that gap isn't free, it keeps to its box (--name-room, CanvasStore's layoutAt, cl-885). */
   flex-shrink: 0;
-  max-width: 130%;
+  max-width: var(--name-room, 130%);
 }
 .stage[data-lod="2"] .react-flow__node .card > .head .nm {
-  max-width: 100%;
+  max-width: var(--name-room, 100%);
 }
 /* Past 20% a box is 60px or so on screen: its name at the small step (14px), so a short word fits it whole. */
 .stage[data-lod="2"] .react-flow__node .card > .head :is(.nm, .state-dot) {
   font-size: calc(var(--t-small) * var(--ui) * var(--name-zoom, 1));
 }
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
+  display: none;
+}
+/* And what hangs under it, its tool, shape and a render's lines, drawn at the canvas's scale (7px on screen at 33%): its dot says it renders.
+   The room rows keep for them is the room its name rises into far out (CanvasStore's lifts, cl-885). */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card:not(.here) > .tile-under {
   display: none;
 }
 

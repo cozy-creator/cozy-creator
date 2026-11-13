@@ -3,7 +3,8 @@
 //! RC's newest builds (cl-922) are on its rolling prerelease `rc-<x.y.z>` in each repository, with the
 //! `cozy` a machine runs (`cozy-<version>-linux-<arch>`): its Runtime as a dev release of the minor it makes
 //! (`0.47.0.dev2260+g1a2b3c4d`, cl-952), so a package's floor can name it, and pure wheels kept for
-//! locks; TensorFS and cozy as `<version>+dev.g<sha8>`.
+//! locks; TensorFS as `<version>+dev.g<sha8>`; cozy as the dev version of that minor with its commit (`0.26.0-dev+g1a2b3c4d`,
+//! cl-976).
 
 fn repo_and_prefix(distribution: &str) -> (&'static str, &'static str) {
     let repo = repo(distribution);
@@ -86,15 +87,19 @@ pub struct Build {
 /// (`cozy-<version>-<os>-<arch>`).
 pub fn rc_build(sums: &str, distribution: &str, platform: &str) -> Option<Build> {
     let (os, arch) = platform.split_once('/').unwrap_or((platform, ""));
-    let (file, sha256) = match distribution {
-        "cozy" => listed(sums).find(|(file, _)| file.starts_with("cozy-") && file.ends_with(&format!("-{os}-{arch}")))?,
+    let (file, sha256, version) = match distribution {
+        // Its version may hold a `-` (`0.26.0-dev+g1a2b3c4d`).
+        "cozy" => listed(sums).find_map(|(file, sha256)| {
+            let version = file.strip_prefix("cozy-")?.strip_suffix(&format!("-{os}-{arch}"))?;
+            Some((file, sha256, version))
+        })?,
         _ => {
             let prefix = format!("{}-", distribution.replace('-', "_"));
-            listed(sums).find(|(file, _)| file.starts_with(&prefix) && file.ends_with(".whl") && native(file, platform))?
+            let (file, sha256) = listed(sums).find(|(file, _)| file.starts_with(&prefix) && file.ends_with(".whl") && native(file, platform))?;
+            (file, sha256, file.split('-').nth(1)?)
         }
     };
-    let version = file.split('-').nth(1).filter(|version| !version.is_empty())?;
-    Some(Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
+    (!version.is_empty()).then(|| Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
 }
 
 /// The pure wheel (`-py3-none-any.whl`) of `distribution` an RC's `SHA256SUMS` names: what a lock and a publish's floor check
@@ -106,19 +111,20 @@ pub fn rc_pure(sums: &str, distribution: &str) -> Option<Build> {
     Some(Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
 }
 
-/// Whether `version` is a dev build: the open RC's Runtime (`0.47.0.dev2260+g1a2b3c4d`), or one built from a commit
-/// (`0.45.0+dev.gb976b092`), the RC's TensorFS and cozy or one by hand.
+/// Whether `version` is a dev build: the open RC's Runtime (`0.47.0.dev2260+g1a2b3c4d`) or cozy (`0.26.0-dev+g1a2b3c4d`), or
+/// one built from a commit (`0.45.0+dev.gb976b092`), the RC's TensorFS or one by hand.
 pub fn dev(version: &str) -> bool {
-    version.contains("+dev.g") || version.parse::<pep440_rs::Version>().is_ok_and(|version| version.is_dev())
+    version.contains("+dev.g") || version.contains("-dev") || version.parse::<pep440_rs::Version>().is_ok_and(|version| version.is_dev())
 }
 
 /// What a dev build is called in a line: the RC's Runtime by its version (`0.47.0.dev2260`), another by its commit
-/// (`b976b092` of `0.45.0+dev.gb976b092`); a release as it is.
+/// (`b976b092` of `0.45.0+dev.gb976b092`, `1a2b3c4d` of the RC's cozy `0.26.0-dev+g1a2b3c4d`); a release as it is.
 pub fn shown(version: &str) -> &str {
     if let Some((_, commit)) = version.split_once("+dev.g") {
         return commit;
     }
     match version.split_once('+') {
+        Some((public, local)) if public.contains("-dev") => local.strip_prefix('g').unwrap_or(local),
         Some((public, _)) if dev(public) => public,
         _ => version,
     }

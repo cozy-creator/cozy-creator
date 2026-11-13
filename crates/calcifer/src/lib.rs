@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 mod access;
+mod ahead;
 mod browser;
 mod maintenance_source;
 mod api;
@@ -674,9 +675,28 @@ impl Calcifer {
         self.events.subscribe()
     }
 
+    /// Waits for an event of run `id` that moves its record (its state, an output landing or failing), not its logs or progress; a
+    /// stream that fell behind may have missed one, so it answers at once.
+    pub(crate) async fn moved(tail: &mut broadcast::Receiver<(RunId, Event)>, id: &RunId) {
+        loop {
+            match tail.recv().await {
+                Ok((run, event)) if run == *id && !matches!(event,
+                    Event::Log { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } | Event::OutputDelta { .. } | Event::Call { .. }) => return,
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => return,
+                Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+            }
+        }
+    }
+
     /// Told each time a machine's row, Status, boot or Hub listing may have changed.
     pub(crate) fn machines_changed(&self) -> watch::Receiver<()> {
         self.machines_changed.subscribe()
+    }
+
+    /// Told when what's known of machine `name` changes (`touch`); with no connection of it held here, when any machine's does.
+    pub(crate) fn machine_watch(&self, name: &str) -> watch::Receiver<()> {
+        lock(&self.machines).get(name).map_or_else(|| self.machines_changed(), |entry| entry.changed.subscribe())
     }
 
     /// Says a machine may have changed, to whoever watches the machines.
@@ -1036,7 +1056,7 @@ impl Calcifer {
     }
 
     /// The machines and their Hubs, once they serve this core.
-    fn machines(&self) -> Option<Arc<machines::Machines>> {
+    pub(crate) fn machines(&self) -> Option<Arc<machines::Machines>> {
         self.granting.get().and_then(Weak::upgrade)
     }
 
@@ -1210,6 +1230,13 @@ impl Calcifer {
             .get(id)
             .map_or((None, None), |live| (live.waiting.clone(), live.progress.clone()));
         for mut event in events {
+            // An update settling frees the runs held behind it.
+            if let Event::Completed { run, .. } | Event::Failed { run, .. } | Event::Canceled { run, .. } = &event
+                && run.kind == ::api::calcifer::Kind::Update
+                && let Some(machine) = &run.machine
+            {
+                self.touch(machine);
+            }
             if let Event::Created { run, .. }
             | Event::Queued { run, .. }
             | Event::InProgress { run, .. } = &mut event
@@ -1533,10 +1560,16 @@ impl Calcifer {
             };
             // Sent now, it would run on what the machine is leaving, or go as it restarts. An update already with the machine
             // finishes what it has first, and what's held here goes to what it became.
-            if run.state == State::Queued && run.kind != ::api::calcifer::Kind::Update && self.store.updating(&name).unwrap_or_default() {
-                self.waiting(id, format!("getting {name} ready"));
-                pause.wait(wake, None).await;
-                continue;
+            if run.state == State::Queued && run.kind != ::api::calcifer::Kind::Update {
+                let mut settled = self.machine_watch(&name);
+                if self.store.updating(&name).unwrap_or_default() {
+                    self.waiting(id, format!("getting {name} ready"));
+                    tokio::select! {
+                        _ = settled.changed() => {}
+                        _ = wake.notified() => {}
+                    }
+                    continue;
+                }
             }
             // This computer's machine starts when a run needs it; a run it was never sent fails
             // when it cannot start, saying why.
@@ -1618,11 +1651,15 @@ impl Calcifer {
                 && run.kind != ::api::calcifer::Kind::Update
                 && let Some(machines) = self.machines()
             {
+                let mut settled = self.machine_watch(&name);
                 match machines.current(&name).await {
                     Ok(None) => {}
                     Ok(Some(update)) => {
                         self.waiting(id, format!("updating {name} first (run {}: {})", update.number, update.target));
-                        pause.wait(wake, None).await;
+                        tokio::select! {
+                            _ = settled.changed() => {}
+                            _ = wake.notified() => {}
+                        }
                         continue;
                     }
                     Err(e) if e.code == crate::update::OTHER_MINOR => {

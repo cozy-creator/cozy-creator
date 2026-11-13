@@ -171,6 +171,20 @@ fn book(folder: &Folder) -> Arc<Book> {
     })
 }
 
+/// Who last changed `field` of box `name` (any of its fields with none): by an edit, or by undoing one, whichever came last. What a
+/// conflict names.
+pub(super) fn last_by(folder: &Folder, name: &str, field: Option<&str>) -> Option<By> {
+    let entries = book(folder).entries.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let key = name_key(name);
+    let touched = |change: &Change| match change {
+        Change::Fields { name, fields } => name_key(name) == key && field.is_none_or(|field| fields.contains_key(field)),
+        Change::Asset { name, .. } => name_key(name) == key,
+        _ => false,
+    };
+    let when = |entry: &Entry| entry.undone.as_ref().map_or_else(|| (entry.at_ms, entry.by.clone()), |undone| (undone.at_ms, undone.by.clone()));
+    entries.iter().filter(|entry| entry.changes.iter().any(touched)).map(when).max_by_key(|(at, _)| *at).map(|(_, by)| by)
+}
+
 /// When the oldest edit the history keeps was made: no Undo reaches past it.
 pub(super) fn oldest_ms(folder: &Folder) -> Option<i64> {
     book(folder).entries.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|entry| entry.at_ms).min()
@@ -487,7 +501,7 @@ fn kept(method: &Method, path: &str) -> bool {
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     let ["v1", "projects", _, rest @ ..] = parts.as_slice() else { return false };
     match (method.as_str(), rest) {
-        ("POST", ["imports" | "assets" | "copies" | "approve" | "unpin" | "rename"]) => true,
+        ("POST", ["imports" | "assets" | "copies" | "approve" | "unpin" | "rename" | "apply"]) => true,
         ("POST", ["assets", _, "versions"]) => true,
         ("PATCH" | "DELETE", ["assets", _]) => true,
         ("PATCH" | "DELETE", ["assets", _, "versions", _]) => true,
