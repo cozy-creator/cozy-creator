@@ -5,7 +5,7 @@ use std::{
 };
 
 use api::{
-    calcifer::project::Address,
+    calcifer::{SessionCode, project::Address},
     config,
     error::{Error, Kind},
 };
@@ -34,10 +34,38 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             (ctx.calcifer().await?, project)
         }
     };
-    let opened: serde_json::Value = calcifer.post("/v1/browser/open", &json!({ "project": project.id }), None).await?;
-    // The printed URL is reference-only; authority was injected through the owned native pipe.
+    let opened = match calcifer.post::<_, Opened>("/v1/browser/open", &json!({ "project": project.id }), None).await {
+        // The printed URL is reference-only; authority was injected through the owned native pipe.
+        Ok(opened) => json!({ "url": opened.url, "private": true }),
+        // No display, no Chrome, or its launch failed: any browser may sign in with a one-use link instead.
+        Err(error) if error.code == "private_browser_unavailable" => {
+            let reason = error.cause.clone().unwrap_or(error.code);
+            let url = sign_in_link(&calcifer, &project).await?;
+            let name = match crate::project::current(ctx).await {
+                Ok(state) => state.path.file_name().map(|name| name.to_string_lossy().into_owned()),
+                Err(_) => None,
+            }.unwrap_or_else(|| project.code.clone());
+            output::warn(&format!("Cozy's private browser couldn't start ({reason}): {name} opens in any browser with this one-use sign-in link, which isn't private"));
+            json!({ "url": url, "private": false, "reason": reason })
+        }
+        Err(error) => return Err(error),
+    };
     output::document(ctx, &opened);
     Ok(ExitCode::SUCCESS)
+}
+
+#[derive(serde::Deserialize)]
+struct Opened {
+    url: String,
+}
+
+/// The project's page with a one-use sign-in code in its fragment, which any browser redeems once.
+async fn sign_in_link(calcifer: &Client, project: &Address) -> Result<String, Error> {
+    let code: SessionCode = calcifer.post("/v1/session-codes", &json!({}), None).await?;
+    let mut link = url::Url::parse(&code.url).map_err(|error| Error::new(Kind::Internal, "session_url", error.to_string()))?;
+    link.path_segments_mut().map_err(|()| Error::new(Kind::Internal, "session_url", "the sign-in URL has no path"))?.clear().extend(["projects", &project.id]);
+    link.set_fragment(Some(&format!("code={}", code.code)));
+    Ok(link.into())
 }
 
 fn reserve_port(port: u16) -> Result<TcpListener, Error> {

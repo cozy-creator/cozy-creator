@@ -25,7 +25,7 @@ mod web_seed_tests;
 pub(crate) mod host;
 mod jobs;
 pub(crate) mod journal;
-pub(crate) use journal::{ProjectRef, ProjectStore, RunOwner};
+pub(crate) use journal::{OpenProject, ProjectRef, ProjectStore, RunOwner};
 mod keyed;
 pub(crate) mod legacy_worker;
 mod view;
@@ -354,6 +354,8 @@ impl Projects {
             }
         };
         drop(open);
+        // Calcifer finds its journal while anything holds it open.
+        api.calcifer.note_open(RunOwner::of(&project, &api.calcifer));
         // Its deleted boxes looked at as it opens: one set aside before cl-919 counts from now.
         purge::due(&project.id, now_ms());
         if let Some(said) = copy_told(&project.root) { project.said.lock().expect("said lock").push(said); }
@@ -371,6 +373,11 @@ const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// Where a run of the project in `dir` lands its outputs.
 pub(crate) fn landing(dir: &FsPath) -> PathBuf {
     vault::logical(dir).join(folder::RUNS)
+}
+
+/// Project `id` opened again for Calcifer's work on it, as any request opens it: none for a locked or unknown one.
+pub(crate) fn reopen(api: &Arc<Api>, id: &str) -> Option<RunOwner> {
+    api.projects.get(api, id).ok().map(|project| RunOwner::of(&project, &api.calcifer))
 }
 
 /// The project a run's landing folder is in, if it's one.
