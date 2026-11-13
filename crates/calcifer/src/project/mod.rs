@@ -234,7 +234,15 @@ impl Projects {
         for project in self.now_open().into_iter().filter(|project| stirred.contains(&project.id)) {
             let id = &project.id;
             let dir = &project.folder.dir;
-            if vault::encrypted(&project.root) || project.require_view().is_err() { continue; }
+            if vault::encrypted(&project.root) { continue; }
+            if project.require_view().is_err() {
+                // Its folder went: a page showing it reads it again, and says so where it stands (cl-980). Held while it's told, as below.
+                let still = self.open.lock().expect("projects lock");
+                if !dir.exists() && still.get(id).is_some_and(|open| open.strong_count() > 0) {
+                    crate::events::project_looked(dir, "gone".to_owned());
+                }
+                continue;
+            }
             let rev = format!("{}.{}", project.folder.stamp(), stamp(&dir.join(folder::FILES)));
             // Held while it's told: a forget waits for it.
             let still = self.open.lock().expect("projects lock");
@@ -442,7 +450,16 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     }
     let mut named: Vec<_> = indexed.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
     match named.len() {
-        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy open")),
+        0 => {
+            let code = code::parse(text).unwrap_or_default();
+            let gone = api.calcifer.store().project_gone(text, &code).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+            Err(match gone {
+                Some(path) => Error::new(Kind::NotFound, "project_folder_gone", format!("this project's folder is gone: {}", path.display()))
+                    .remedy("move the folder back, or open another project")
+                    .next("cozy new <folder>"),
+                None => Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy open"),
+            })
+        }
         1 => Ok(named.remove(0)),
         _ => {
             let ids: Vec<String> = named.iter().map(|entry| format!("{} ({})", entry.id, entry.path.display())).collect();

@@ -168,7 +168,8 @@ code {
   gap: 12px;
   color: var(--mute);
 }
-.gate h1 {
+.gate h1,
+.gate h2 {
   margin: 0;
   font-size: var(--title);
   font-weight: var(--w-title);

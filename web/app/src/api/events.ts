@@ -257,7 +257,7 @@ export class EventStream {
     this.epoch = health.state === "live" ? stream : null
     this.health.set(health)
     if (health.state === "signed_out") {
-      for (const waiter of this.waiters) waiter.fail(new ApiError(401, { kind: "credential", code: "unauthenticated", message: "Sign in again", next: ["cozy open"] }))
+      for (const waiter of this.waiters) waiter.fail(new ApiError(401, { kind: "credential", code: "unauthenticated", message: "This page's session ended", next: ["cozy open"] }))
     }
   }
 

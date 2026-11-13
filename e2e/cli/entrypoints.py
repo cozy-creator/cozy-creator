@@ -240,23 +240,28 @@ def main() -> None:
             opened_files: list[str]  # the loop runs at least once: its deadline is ahead
             while time.monotonic() < until:
                 opened_files = browser_log.read_text().splitlines() if browser_log.exists() else []
-                if len(opened_files) >= 2:
+                if opened_files:
                     break
                 time.sleep(0.05)
-            assert len(opened_files) >= 2, "open did not launch the default browser"
+            assert opened_files, "open did not launch the default browser"
+            # cl-980: a --json caller is a program: it gets the link, and no browser starts (only the plain `open` above launched one).
+            time.sleep(1)
+            opened_files = browser_log.read_text().splitlines()
+            assert len(opened_files) == 1, f"--json open launched a browser: {opened_files}"
             first = Path(opened_files[0])
-            assert opened["url"] in html.unescape(first.read_text()), "browser received a different URL"
-            assert first.stat().st_mode & 0o777 == 0o600, "browser redirect exposes its sign-in code"
+            assert urlsplit(opened["url"]).path in html.unescape(first.read_text()), "browser received a different URL"
+            assert first.stat().st_mode & 0o777 == 0o600, "browser redirect exposes its link's code"
             saved_path = environment["PATH"]
             empty_path = case / "empty-path"
             empty_path.mkdir()
             environment["PATH"] = str(empty_path)
             try:
-                fallback = run("browser unavailable fallback", ["--json", "open"], project)
+                fallback = run("browser unavailable fallback", ["open"], project)
+                quiet = run("json open with no browser", ["--json", "open"], project)
             finally:
                 environment["PATH"] = saved_path
-            assert json.loads(fallback.stdout)["project"] == project.name
-            assert "could not open the browser" in fallback.stderr
+            assert project.name in fallback.stdout and "could not open the browser" in fallback.stderr
+            assert json.loads(quiet.stdout)["project"] == project.name and "could not open the browser" not in quiet.stderr
         for flag in ("--no-open", "--print-url"):
             run(f"removed open flag {flag}", ["open", flag], project, code=2)
         run("removed run selector", ["run", "-p", str(project), "example/generate", "prompt=test"], project, code=2)

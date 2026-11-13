@@ -1,6 +1,4 @@
-import { useQuery } from "@tanstack/react-query"
 import { createBrowserRouter, Navigate, type RouteObject } from "react-router-dom"
-import { projectsQuery } from "../api/queries"
 import { Account } from "../panels/Account"
 import { Files } from "../panels/Files"
 import { ModelDrawer, Models } from "../panels/library/Models"
@@ -12,17 +10,9 @@ import { Projects } from "../panels/Projects"
 import { ProjectVault } from "../panels/ProjectVault"
 import { RunDrawer } from "../panels/runs/RunDrawer"
 import { Runs } from "../panels/runs/Runs"
-import { useConnection } from "./Connection"
+import { guardRedirects } from "./redirect"
 import { Shell } from "./Shell"
-import { ProjectRoute, projectPath } from "./project"
-
-/** The last project used, or the empty canvas it already shows. */
-function Home() {
-  const { client } = useConnection()
-  const { data } = useQuery(projectsQuery(client))
-  const last = data?.projects[0]
-  return last ? <Navigate replace to={projectPath(last)} /> : null
-}
+import { ProjectRoute } from "./project"
 
 /** Whatever threw, a person gets a line and a way back, and the file holds what was saved. */
 function Broke() {
@@ -55,17 +45,18 @@ const drawers: RouteObject[] = [
   drawer("projects", <Projects />),
 ]
 
-/** Made once boot has taken a sign-in link out of the URL: a router reads where it is as it's made, and `to` is where the link goes. */
+/** Made once boot has taken a link's code out of the URL: a router reads where it is as it's made, and `to` is where the link goes. */
 let router: ReturnType<typeof createBrowserRouter> | null = null
 
 export const theRouter = () =>
-  (router ??= createBrowserRouter([
+  (router ??= guardRedirects(createBrowserRouter([
     {
       path: "/",
       element: <ProjectRoute><Shell /></ProjectRoute>,
       errorElement: <Broke />,
       children: [
-        { index: true, element: <Home /> },
+        // The empty canvas: `/` opens no project by itself (cl-980).
+        { index: true, element: null },
         ...drawers,
         ...["p/:code", "projects/:id"].map((path) => ({
           path,
@@ -82,4 +73,4 @@ export const theRouter = () =>
         { path: "*", element: <Navigate replace to="/" /> },
       ],
     },
-  ]))
+  ])))

@@ -27,6 +27,11 @@ pub(crate) const TABLES: &str = "
         code TEXT NOT NULL DEFAULT '',
         purge_ms INTEGER NOT NULL DEFAULT 0
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS projects_gone (
+        id TEXT PRIMARY KEY,
+        code TEXT NOT NULL,
+        path TEXT NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS sessions (
         token_sha256 TEXT PRIMARY KEY,
         media_sha256 TEXT NOT NULL UNIQUE,
@@ -227,14 +232,24 @@ impl Store {
         })
     }
 
-    /// These left the index: their folders are gone.
+    /// These left the index: their folders are gone. Where each was is kept, so asking for one says so (cl-980).
     pub(crate) fn projects_gone(&self, ids: &[String]) -> Result<()> {
         self.write(|tx| {
+            let mut kept = tx.prepare("INSERT OR REPLACE INTO projects_gone (id, code, path) SELECT id, code, path FROM projects WHERE id = ?1")?;
             let mut statement = tx.prepare("DELETE FROM projects WHERE id = ?1")?;
             for id in ids {
+                kept.execute([id])?;
                 statement.execute([id])?;
             }
             Ok(())
+        })
+    }
+
+    /// Where the project `id` or `code` was when its folder went, if it did.
+    pub(crate) fn project_gone(&self, id: &str, code: &str) -> Result<Option<PathBuf>> {
+        self.read(|conn| {
+            let path = conn.query_row("SELECT path FROM projects_gone WHERE id = ?1 OR (code <> '' AND code = ?2)", [id, code], |row| row.get::<_, String>(0)).optional()?;
+            Ok(path.map(PathBuf::from))
         })
     }
 
@@ -243,6 +258,7 @@ impl Store {
         self.write(|tx| {
             // A folder holds one project: another the index had there is gone.
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
+            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
             let code = project_code(tx, id, preferred, crate::project::code::generate)?;
             tx.execute(
                 "INSERT INTO projects (id, path, used_at_ms, name, code) VALUES (?1, ?2, COALESCE(?4, CAST(strftime('%s', 'now') AS INTEGER) * 1000), ?3, ?5)
@@ -293,7 +309,7 @@ impl Store {
         })
     }
 
-    /// Keep only the digest of an unredeemed browser sign-in code.
+    /// Keep only the digest of an unredeemed link code.
     pub(crate) fn session_code(&self, code: &str, now: i64, expires_ms: i64) -> Result<()> {
         self.write(|tx| {
             tx.execute("DELETE FROM session_codes WHERE expires_ms <= ?1", [now])?;
