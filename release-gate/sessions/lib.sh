@@ -55,12 +55,31 @@ RUN_PROJECT=$OUT/project
 . "$(dirname "${BASH_SOURCE[0]}")/../../e2e/run.sh"
 { run_project "$RUN_PROJECT" && (cd "$RUN_PROJECT" && "$RUN_CLI" --json status); } > "$OUT/project.json" 2>> "$OUT/project.err" \
   || fail "project initialization: $(cat "$OUT/project.err") $(tail -c 300 "$OUT/project.json")"
+# kernels <package dir>: a packages checkout's package, run from source, carries the Triton sets its release ships, built
+# into the checkout once by the checkout's scripts/triton.sh, so its first request is a Hub install's (xs-194). Call it
+# for each package before `rent`: a build after it bills the pod while the runner compiles.
+declare -A KERNELS=()
+kernels() {
+  local d root
+  d=$(cd "$1" 2>/dev/null && pwd) || return 0
+  root=$(dirname "$d")
+  [ -x "$root/scripts/triton.sh" ] && [ -f "$d/pyproject.toml" ] && [ -z "${KERNELS[$d]:-}" ] || return 0
+  KERNELS[$d]=1
+  local t0=$SECONDS
+  "$root/scripts/triton.sh" "$d" > "$OUT/kernels-${d##*/}.log" 2>&1 || fail "${d##*/}'s Triton sets did not build: $(tail -c 400 "$OUT/kernels-${d##*/}.log")"
+  say "kernels ${d##*/}: $(find "$d" -path '*/_triton/manifest.json' -printf '%P ' 2>/dev/null)built in $((SECONDS - t0)) s"
+}
 step() {
   local n=$1 directory=$PWD; shift
   local words=("$@")
   if [ "$1" = run ]; then
     [[ ${words[1]:-} != .* ]] || words[1]="$PWD/${words[1]}"
     directory=$RUN_PROJECT
+  fi
+  # A package run or installed from a packages checkout: its kernels first.
+  if [ "$1" = run ] || { [ "$1" = package ] && [ "${2:-}" = install ]; }; then
+    local t=${words[1]}; [ "$1" = run ] || t=${words[2]:-}
+    case $t in /* | .*) if [ -d "$t" ]; then kernels "$t"; else kernels "$(dirname "$t")"; fi ;; esac
   fi
   say "step $n: cozy ${words[*]}"
   (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0
