@@ -410,8 +410,8 @@ impl Provider {
         }
         let guard = ViewGuard::prepare(view)?;
         let parent = platform::process::Birth::own()?;
-        let executable = std::env::current_exe().map_err(io_error("find cozy executable"))?;
-        let mut command = clean_command(&executable);
+        // This very build, which an update can't take away (cl-981): `current_exe()` then names `<path> (deleted)`.
+        let mut command = clean_command(&platform::exe::running()?);
         command
             .arg(ROLE)
             .arg(&self.executable)
@@ -433,6 +433,9 @@ impl Provider {
             // launchd kills a finished job's remaining process group. This owned guardian
             // must survive that cleanup long enough to close its exact mount/image.
             command.process_group(0);
+            if let Some(launch) = platform::exe::launch() {
+                command.arg0(&launch.path);
+            }
         }
         let mut child = command
             .stdin(Stdio::piped())

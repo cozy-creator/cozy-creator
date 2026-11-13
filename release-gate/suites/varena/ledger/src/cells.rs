@@ -5,7 +5,7 @@
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-use varena_ledger::{Donor, Recovery, Row, Table};
+use varena_ledger::{Donor, Look, Recovery, Row, Table};
 
 const GIB: u64 = 1 << 30;
 
@@ -22,7 +22,7 @@ impl Donor for Pretend {
         println!("trimmed {released}");
         released
     }
-    fn tick(&mut self, _: &Table, _: Row, _: u64) -> bool { false }
+    fn tick(&mut self, _: &Table, _: Row, _: u64) -> Look { Look::Nothing }
 }
 
 /// Idle memory it can't give.
@@ -30,7 +30,7 @@ struct Stuck(u64);
 impl Donor for Stuck {
     fn holdings(&mut self) -> (u64, u64) { (self.0, self.0) }
     fn trim(&mut self, _: u64) -> u64 { 0 }
-    fn tick(&mut self, _: &Table, _: Row, _: u64) -> bool { false }
+    fn tick(&mut self, _: &Table, _: Row, _: u64) -> Look { Look::Nothing }
 }
 
 /// Child: hold `gib` GiB as a donor. `age` orders it: lower trims first.

@@ -84,14 +84,9 @@ cozy --json package yank "$WHO/$pkg@0.2.0" > "$OUT/yank.json" || check "package 
 [[ $(resolves yanked) == *@0.1.0* ]] || check "package yank: an unversioned run still takes 0.2.0"
 cozy --json package yank "$WHO/$pkg@0.2.0" --undo > "$OUT/unyank.json" || check "package yank --undo failed"
 [[ $(resolves unyanked) == *@0.2.0* ]] || check "package yank --undo: an unversioned run does not take 0.2.0 again"
-# A candidate: yanked in one Hub call, so the publisher's own next unversioned run keeps the newest (cl-732).
-sed -i.orig 's/^version = "0.2.0"/version = "0.3.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
-(cd "$dir" && cozy --json package publish --yanked > "$OUT/publish-3.json") || check "package publish --yanked 0.3.0 failed"
-J '.status == "published yanked"' "$OUT/publish-3.json" || check "package publish --yanked: $(jq -r .status "$OUT/publish-3.json")"
-[[ $(resolves candidate) == *@0.2.0* ]] || check "package publish --yanked: the publisher's next unversioned run took the candidate"
 # A release its machine still holds and the Hub no longer has, as after a renumbering (birefnet 0.5.3 over 0.1.3): never chosen (cl-748).
 cozy --json package delete "$WHO/$pkg" --yes > "$OUT/pkg-renumber.json" || check "test package cleanup, to renumber, failed"
-sed -i.orig 's/^version = "0.3.0"/version = "0.1.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
+sed -i.orig 's/^version = "0.2.0"/version = "0.1.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
 (cd "$dir" && cozy --json package publish > "$OUT/publish-4.json") || check "package publish 0.1.0 again failed"
 cozy --json package ls --on "$ON" | J --arg p "$WHO/$pkg" '.packages | any(.package == $p and .release == "0.2.0")' || check "the machine no longer holds 0.2.0, so this proves nothing"
 [[ $(resolves renumbered) == *@0.1.0* ]] || check "an unversioned run took a release the Hub no longer has: $(tail -c 300 "$OUT/resolve-renumbered.err")"

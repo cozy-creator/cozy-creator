@@ -18,7 +18,7 @@ use axum::{
 };
 use ::api::hub::types::RentalPlacementRequest;
 use api::{
-    calcifer::{On, ReleaseFrom},
+    calcifer::On,
     error::{Error, Kind},
     interface::{Interface, Slot},
     model_ref::ModelRef,
@@ -250,7 +250,7 @@ async fn need_of(api: &Arc<Api>, hub: &str, dir: &FsPath, target: &str, tool: &s
         None => tokio::time::timeout(HUB_LATE, described).await.ok()?.ok()?,
     };
     let function = found.function.clone()?;
-    let local_code = found.release_from == ReleaseFrom::Local;
+    let local_code = found.release_from.local();
     let weights = Weights::of(&found.interface, &function, made)?;
     if !local_code {
         placed(api, hub, &found.package, &found.release, &function).await;
@@ -495,7 +495,7 @@ pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, 
         let placed = placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param));
         let lane = placed.map(|(_, lane, _)| lane.clone()).or_else(|| slot.lane.clone());
         if let Some((checkpoint, bytes)) = checkpoint(api, hub, written, lane.as_deref()).await {
-            found.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written) });
+            found.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0 });
         }
     }
     found

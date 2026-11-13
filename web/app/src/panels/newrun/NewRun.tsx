@@ -135,7 +135,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
       {resolved.summary && <p className="muted">{resolved.summary}</p>}
       {entry?.description && <p className="muted">{entry.description}</p>}
       <p className="muted">
-        Release {resolved.release} ({resolved.release_from})
+        {resolved.release_from === "source" ? `From source: ${resolved.release}` : `Release ${resolved.release} (${resolved.release_from})`}
       </p>
       <div className="row tabs">
         <button type="button" className={`tab ${mode === "form" ? "on" : ""}`} onClick={() => mode !== "form" && toForm()}>

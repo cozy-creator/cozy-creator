@@ -97,6 +97,8 @@ pub(crate) struct Machines {
     tasks: Mutex<JoinSet<()>>,
     /// The config's `dev = true`: its rentals follow the open RC (`rc`, cl-922).
     pub(crate) dev: bool,
+    /// The config's `download_url` (`COZY_DOWNLOAD_URL`): where cozy's own update reads its release in place of GitHub (cl-978).
+    pub(crate) download_url: Option<String>,
     pub(crate) rc: crate::rc::Rc,
     /// Told when a rental becomes ready: a dev home's moves to the RC before its first run.
     pub(crate) rc_ready: Notify,
@@ -163,6 +165,7 @@ impl Machines {
             local,
             tasks: Mutex::default(),
             dev: config.dev,
+            download_url: config.download_url.as_ref().map(|url| url.as_str().to_owned()),
             rc: crate::rc::Rc::default(),
             rc_ready: Notify::new(),
             lists: crate::ahead::Lists::default(),

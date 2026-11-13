@@ -226,10 +226,17 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
     }
     let reader = reader(api, hub)?;
     let root = home.root().to_owned();
-    let chosen = match ask.release {
-        Some(release) => release,
-        None => api.releases.now(api, hub, &package).await.and_then(|read| read.newest(&package)).map_err(Refusal)?,
-    };
+    // As a run's release: the one asked, else the newest its machine runs, its Runtime moved first (cl-952) or cozy updated first (cl-978).
+    let (chosen, moved, upgrade, cozy) = crate::runs::target::installed_release(api, hub.as_str(), &package, ask.release.as_deref(), &on).await.map_err(Refusal)?;
+    if let Some(wanted) = cozy {
+        return Ok(Planned::Cozy(Box::new(wanted)));
+    }
+    let mut notes: Vec<String> = moved.into_iter().map(|note| note.message).collect();
+    if let Some(upgrade) = &upgrade
+        && api.machines.upgrade(upgrade).await.map_err(Refusal)?.is_some()
+    {
+        notes.push(upgrade.note().message);
+    }
     // The release's card, kept while its machine installs: the first run after an install
     // binds against it with no Hub read on its path (an RTX 4090's cold SDXL run waited 0.55 s
     // on it). A failed read is the run's to repeat.
@@ -240,7 +247,7 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
         }
     });
     let submit = release_install(hub.as_str(), on, &package, &chosen, agreed);
-    Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Retire { package }), notes: vec![], mirror: None })
+    Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Retire { package }), notes, mirror: None })
 }
 
 /// The run that installs `release` of `package` on a machine: a warm one naming no function.

@@ -77,6 +77,9 @@ pub struct CalciferConfig {
     pub undo_seconds: Option<u32>,
     /// Tests only: Calcifer's warnings and errors, project detail included, also in `calcifer/diagnostics.log`.
     pub diagnostics: bool,
+    /// A packages checkout whose first-party packages run from source instead of the Hub (xs-195). Read only with `dev = true` on
+    /// an RC build.
+    pub packages: Option<PathBuf>,
 }
 
 /// `[machine]`: this computer's machine (TensorD, `cozy machine serve`), which judges these. A

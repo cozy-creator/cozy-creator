@@ -165,8 +165,8 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
   without asking the Hub (`GET /v1/account` does).
 
 ### Session
-A browser signs in with a single-use code. `cozy open` launches the browser through a private
-redirect file and prints the project name and authenticated local URL as a fallback. The browser exchanges it for a session; the code expires after 15 minutes and survives Calcifer restarts. The
+A page opens from a link with a single-use code. `cozy open` launches the browser through a private
+redirect file and prints the project name and the link as a fallback; with `--json` it prints them and launches nothing. The browser exchanges it for a session; the code expires after 15 minutes and survives Calcifer restarts. The
 fragment carries `code=<one-use-code>` while the path identifies the project as `/p/<public-code>`. Older `&to=<route>` links are accepted for compatibility. `state.db` holds sessions' digests; 30 days unused ends one.
 - `POST /v1/session-codes` (the lock record's bearer only, else `403 session_code_needs_bearer`):
   `{code, url, expires_ms}`, 32 random bytes in hex, good for 15 minutes. `url` is `http://<Host>/#code=<code>`.
@@ -625,7 +625,8 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   taking `<name>_2` when anything is there, a project or not, which stays as it is and `said` says so; or at `path`, a folder of this
   computer's by its absolute path (`409 project_exists`, its name the folder's unless given; `400 project_path` for a relative one); `starter`: it holds the starter film. The same
   `Idempotency-Key` again answers the same ordinary project. Answers `{id, code, path, name, next, said?, recovery_secret?}` and records it in the index as used now. An existing
-  project needs no call here: a route names it, and `404 project_unknown`, `409 project_ambiguous` (a name two projects share, which they never
+  project needs no call here: a route names it, and `404 project_unknown`, `404 project_folder_gone` (the id or code of one whose folder went,
+  naming where it was; put back, `cozy open` there reopens it), `409 project_ambiguous` (a name two projects share, which they never
   do once each is opened here) or `404 project_not_found` (a folder in none) refuse one that names none. A folder of
   files from before `project.db` is imported by the first call that names it, a format 2 one upgraded first, and `GET /v1/projects/{id}` says it in
   `warnings`. What can't convert refuses with why, its files as they were.

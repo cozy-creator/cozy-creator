@@ -145,6 +145,14 @@ pub(crate) struct Extra {
     pub ops_gone: Vec<(String, u64)>,
     /// A request's key, with the digest of its ask: done, its answer kept after.
     pub key: Option<(String, String)>,
+    /// A request's answer, said in its act, under its key (cl-885).
+    pub answer: Option<(String, Said)>,
+}
+
+/// A request's answer as its act says it: its status, and its JSON made at the heads the act's commit leaves the document at.
+pub(crate) struct Said {
+    pub status: u16,
+    pub body: Box<dyn Fn(&[String]) -> Vec<u8> + Send>,
 }
 
 /// A kept request key: its ask's digest and, once kept, its answer.
@@ -818,7 +826,7 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     // What the rows a read takes moved by.
     let mut moved = Digest::default();
     write(&tx, before, after, extra, &mut moved).map_err(e)?;
-    if tx.total_changes() == was {
+    if tx.total_changes() == was && extra.answer.is_none() {
         tx.rollback().map_err(e)?;
         return Ok(None);
     }
@@ -830,6 +838,7 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
         || (!Arc::ptr_eq(&before.lock, &after.lock) && owners(&before.lock) != owners(&after.lock));
     if !documented {
         (after.crdt, after.heads, after.conflicts, after.rows_held) = (before.crdt.clone(), before.heads.clone(), before.conflicts.clone(), before.rows_held);
+        answered(&tx, extra, &after.heads).map_err(e)?;
         tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('seq', ?1)", [seq.to_string()]).map_err(e)?;
         before_commit();
         tx.commit().map_err(e)?;
@@ -864,6 +873,7 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     // What a read takes besides the rows `write` wrote: the heads they stand at, and the alternatives the document keeps.
     after.heads = Arc::new(doc.heads());
     after.conflicts = Arc::new(doc.conflicts());
+    answered(&tx, extra, &after.heads).map_err(e)?;
     let digest = match kept {
         Some(mut digest) => {
             if after.conflicts != before.conflicts {
@@ -941,6 +951,12 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra, diges
         tx.execute("INSERT OR REPLACE INTO request_keys (key, digest, at_ms) VALUES (?1, ?2, ?3)", params![key, digest, now])?;
     }
     Ok(())
+}
+
+/// The answer its act said, on its key's row, made at `heads`: where the commit leaves the document.
+fn answered(tx: &Transaction, extra: &Extra, heads: &[String]) -> rusqlite::Result<()> {
+    let Some((key, said)) = &extra.answer else { return Ok(()) };
+    tx.execute("UPDATE request_keys SET status = ?2, content_type = 'application/json', body = ?3 WHERE key = ?1", params![key, said.status as i64, (said.body)(heads)]).map(drop)
 }
 
 /// Project the selected box for each normalized name, with each side's own ordinal.

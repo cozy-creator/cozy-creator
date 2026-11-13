@@ -1,7 +1,8 @@
 //! One answer per `Idempotency-Key` for every project write (cl-812). A write sent again under its key, the same ask, is answered what
 //! it was the first time, across a restart too, and one still going is waited for; nothing is done twice. The same key for another ask
-//! is a conflict. A project's write keeps its key in `project.db`, in the transaction of its effect (cl-803), and its answer on that row
-//! just after; `POST /v1/projects` can keep only a non-secret response inside the created project, never globally.
+//! is a conflict. A project's write keeps its key in `project.db`, in the transaction of its effect (cl-803), with its answer as its route
+//! says it there (`answering`), and its whole answer on that row just after; `POST /v1/projects` can keep only a non-secret response
+//! inside the created project, never globally. A keyed write goes on to its answer, kept, whether or not its asker stays to hear it (cl-885).
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -37,13 +38,57 @@ pub(super) struct CreationRetry(pub(super) std::path::PathBuf);
 enum Creation { Fresh, Replay(Response), Resume(CreationRetry) }
 
 tokio::task_local! {
-    /// The key of the project write going, and its ask's digest, until its first act takes it.
-    static CLAIM: RefCell<Option<(String, String)>>;
+    /// The project write going: its key and its ask's digest, until its first act takes them, and its answer once its route says it.
+    static CLAIM: RefCell<Claim>;
+}
+
+#[derive(Default)]
+struct Claim {
+    /// Its key and digest, until its first act takes them.
+    key: Option<(String, String)>,
+    /// Its key, once taken: what an answer said in a later act is kept under.
+    taken: Option<String>,
+    /// What it answers, said in its act.
+    answer: Option<super::db::Said>,
 }
 
 /// The key of the write this act is of, once: it commits with the act's effect.
 pub(super) fn claimed() -> Option<(String, String)> {
-    CLAIM.try_with(|claim| claim.borrow_mut().take()).ok().flatten()
+    CLAIM.try_with(|claim| {
+        let mut claim = claim.borrow_mut();
+        let key = claim.key.take();
+        if let Some((key, _)) = &key {
+            claim.taken = Some(key.clone());
+        }
+        key
+    }).ok().flatten()
+}
+
+/// What this act's write answers, said in it, under its key: it commits with the act's effect, so a write that's done is never answered
+/// again with less than it said, Calcifer stopped between them or not. Taken whether the act commits or not: a failed act's words go with it.
+pub(super) fn answer_now() -> Option<(String, super::db::Said)> {
+    CLAIM.try_with(|claim| {
+        let mut claim = claim.borrow_mut();
+        let answer = claim.answer.take()?;
+        let key = claim.key.as_ref().map(|(key, _)| key.clone()).or_else(|| claim.taken.clone())?;
+        Some((key, answer))
+    }).ok().flatten()
+}
+
+/// What this write answers, as its route will say it, said inside the act that does it (cl-885). Said again in that act, by the route
+/// around a helper that said it too, the last word stands.
+pub(super) fn answering<T: serde::Serialize>(status: StatusCode, answer: &T) {
+    let Ok(body) = serde_json::to_vec(answer) else { return };
+    said(status, Box::new(move |_: &[String]| body.clone()));
+}
+
+/// `answering` what `answer` makes of the heads its act's commit leaves the document at: what words typed on next are typed on.
+pub(super) fn answering_at<T: serde::Serialize>(status: StatusCode, answer: impl Fn(&[String]) -> T + Send + 'static) {
+    said(status, Box::new(move |heads: &[String]| serde_json::to_vec(&answer(heads)).unwrap_or_default()));
+}
+
+fn said(status: StatusCode, body: Box<dyn Fn(&[String]) -> Vec<u8> + Send>) {
+    let _ = CLAIM.try_with(|claim| claim.borrow_mut().answer = Some(super::db::Said { status: status.as_u16(), body }));
 }
 
 /// The project a write's route names (`{id}`), if it names one this Calcifer knows.
@@ -54,9 +99,11 @@ async fn project_of(api: &Arc<Api>, parts: &mut axum::http::request::Parts) -> R
     api.projects.get(api, &named).map(Some)
 }
 
-/// Around every project route: a write with an `Idempotency-Key` is answered once, and again as it was.
+/// Around every project route: a write with an `Idempotency-Key` is answered once, and again as it was. It goes on in a task of its own to
+/// its answer, kept: an asker gone before it (a page's try cut off as Calcifer came back) leaves nothing half done, and the next try of the
+/// same key waits for it and hears what it said.
 pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
-    let mut _activity=None;
+    let mut activity=None;
     if !matches!(*request.method(),Method::GET|Method::HEAD|Method::OPTIONS) && !crate::api::speaks_project_storage(request.headers()) {
         return crate::api::project_storage_protocol_required().into_response();
     }
@@ -67,7 +114,7 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
         let project=match project_of(&api,&mut parts).await { Ok(project)=>project,Err(refusal)=>return refusal.into_response() };
         if let Some(project)=project {
             let store=match api.projects.store(&api,&project.id).await {Ok(store)=>store,Err(error)=>return Refusal(error).into_response()};
-            _activity=Some(api.projects.track_request(&api,store.execution_scope().1));
+            activity=Some(api.projects.track_request(&api,store.execution_scope().1));
         }
         request=Request::from_parts(parts,body);
     }
@@ -79,6 +126,14 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
     if request.uri().path().ends_with("/runs/submit") {return next.run(request).await;}
     let key = request.headers().get("idempotency-key").and_then(|v| v.to_str().ok()).map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned);
     let Some(key) = key else { return next.run(request).await };
+    match tokio::spawn(crate::api::carry_ignored(async move { let _activity = activity; keyed(api, key, request, next).await })).await {
+        Ok(response) => response,
+        Err(error) => Refusal(Error::new(Kind::Internal, "write_failed", format!("a write's task ended: {error}"))).into_response(),
+    }
+}
+
+/// `request`, a write under `key`: answered once, and again as it was.
+async fn keyed(api: Arc<Api>, key: String, request: Request, next: Next) -> Response {
     let (mut parts, body) = request.into_parts();
     let Ok(bytes) = to_bytes(body, MOST).await else {
         return Refusal(Error::new(Kind::Validation, "body_too_large", format!("a write is at most {MOST} bytes"))).into_response();
@@ -101,7 +156,8 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
                 Some(kept) => replay(kept.answer),
                 None => {
                     let request = Request::from_parts(parts, Body::from(bytes));
-                    let response = CLAIM.scope(RefCell::new(Some((key.clone(), digest.clone()))), next.run(request)).await;
+                    let claim = Claim { key: Some((key.clone(), digest.clone())), ..Claim::default() };
+                    let response = CLAIM.scope(RefCell::new(claim), next.run(request)).await;
                     keep_here(folder, &key, digest, response).await
                 }
             }
@@ -116,7 +172,8 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
                 Err(refusal)=>return refusal.into_response(),
             }
             let request = Request::from_parts(parts, Body::from(bytes));
-            let response = CLAIM.scope(RefCell::new(Some((key.clone(), digest.clone()))), next.run(request)).await;
+            let claim = Claim { key: Some((key.clone(), digest.clone())), ..Claim::default() };
+            let response = CLAIM.scope(RefCell::new(claim), next.run(request)).await;
             keep_created(&api, &key, digest, response).await
         }
     };

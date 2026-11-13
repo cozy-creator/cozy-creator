@@ -31,7 +31,7 @@ use tensorfs::format::newest_by;
 
 use crate::{
     api::{Api, Refusal, parse},
-    local_code, private_io,
+    checkout, local_code, private_io,
     project::{self, vault},
     runs::{self, target},
 };
@@ -84,15 +84,22 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
         }
         None => vec![],
     };
-    let held = held(api, &hub, &on).await;
-    let (listed, mut note) = api.listing.tools(api, &hub).await;
+    // A dev home's checkout's first-party packages are their source's, not the Hub's (xs-195).
+    let (source, reading) = from_source(api, &hub, &on).await;
+    let held: Vec<Tool> = held(api, &hub, &on).await.into_iter().filter(|tool| !checkout::holds(&tool.package)).collect();
+    let (listed, note) = api.listing.tools(api, &hub).await;
+    let mut note = note.or(reading);
     let installed: BTreeSet<&str> = held.iter().map(|tool| tool.package.as_str()).collect();
     // What its machine can't run, on its Runtime or one a run of it moves to (cl-952), isn't offered (run 46790: flux-3-klein@0.7.0,
     // locked to Runtime 0.44). A release that needs a newer Runtime is (cl-975: every 0.25 release, on a machine still on 0.45.0).
     let runner = Runner::of(api, &on).await;
     let runs = |offered: &&Offered| runner.as_ref().is_none_or(|runner| runner.takes(&offered.pair));
-    let listed: Vec<Tool> = (listed.iter()).filter(|offered| !installed.contains(offered.tool.package.as_str())).filter(runs).map(|offered| offered.tool.clone()).collect();
-    let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(local).chain(held).chain(listed).collect();
+    let listed: Vec<Tool> = (listed.iter())
+        .filter(|offered| !installed.contains(offered.tool.package.as_str()) && !checkout::holds(&offered.tool.package))
+        .filter(runs)
+        .map(|offered| offered.tool.clone())
+        .collect();
+    let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(local).chain(source).chain(held).chain(listed).collect();
     let (added, unread) = on_your_list(api, &hub, &mine, &tools).await;
     note = note.or(unread);
     tools.extend(added);
@@ -101,7 +108,7 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     if let Some(q) = q {
         let listed: BTreeSet<String> = tools.iter().map(|tool| tool.package.clone()).collect();
         match tokio::time::timeout(HUB_LATE, on_the_hub(api, &hub, q)).await {
-            Ok(Ok(found)) => tools.extend(found.into_iter().filter(|tool| !listed.contains(&tool.package))),
+            Ok(Ok(found)) => tools.extend(found.into_iter().filter(|tool| !listed.contains(&tool.package) && !checkout::holds(&tool.package))),
             Ok(Err(why)) => note = Some(format!("only what's installed: the Hub said {}", why.message)),
             Err(_) => note = Some(late()),
         }
@@ -227,6 +234,54 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
         }));
     }
     tools
+}
+
+/// How long a list waits for the checkout's packages to be read from source; one read later is listed by a later list.
+const SOURCE_LATE: Duration = Duration::from_secs(20);
+/// How many of them are read at once: each locks and describes its source with uv.
+static SOURCE_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+/// The tools of each first-party package the dev home's checkout holds, read from its source as a run of it is (xs-195), each
+/// saying its branch and commit. One that can't be read is left out and logged; a run of it says why. With some still being read
+/// after [`SOURCE_LATE`], the note says so, and they go on being read for the next list.
+async fn from_source(api: &Arc<Api>, hub: &str, on: &On) -> (Vec<Tool>, Option<String>) {
+    let reads: Vec<(String, tokio::task::JoinHandle<Vec<Tool>>)> = (checkout::packages().into_iter())
+        .map(|(name, dir)| {
+            let (api, hub, on, said) = (api.clone(), hub.to_owned(), on.clone(), name.clone());
+            (name, tokio::spawn(async move { source_tools(&api, &hub, &on, &said, &dir).await }))
+        })
+        .collect();
+    let deadline = tokio::time::Instant::now() + SOURCE_LATE;
+    let (mut tools, mut late) = (vec![], vec![]);
+    for (name, read) in reads {
+        match tokio::time::timeout_at(deadline, read).await {
+            Ok(Ok(found)) => tools.extend(found),
+            Ok(Err(_)) => {}
+            Err(_) => late.push(name),
+        }
+    }
+    let note = (!late.is_empty()).then(|| format!("still reading from source, listed once read: {}", late.join(", ")));
+    (tools, note)
+}
+
+/// `name`'s tools from its source at `dir` in the checkout.
+async fn source_tools(api: &Arc<Api>, hub: &str, on: &On, name: &str, dir: &Path) -> Vec<Tool> {
+    let _turn = SOURCE_READS.acquire().await;
+    let described = match local_code::own(api.machines.hubs.home(), dir) {
+        Ok(code) => local_code::describe(api, &code, on, hub).await.map(|described| (code, described)),
+        Err(why) => Err(why),
+    };
+    let (code, (package, document)) = match described {
+        Ok(described) => described,
+        Err(why) => {
+            tracing::warn!("{name} from source isn't listed: {}", why.message);
+            return vec![];
+        }
+    };
+    let Ok(interface) = Interface::parse(&document) else { return vec![] };
+    let said = checkout::of(&code).map(|from| from.said());
+    let release = said.clone().unwrap_or_else(|| "source".into());
+    tool::tools_of(&package, &release, &interface).into_iter().map(|tool| Tool { source: said.clone(), ..tool }).collect()
 }
 
 /// Whether every word of `q` is in `tool`'s package's name or its label.
@@ -401,6 +456,7 @@ struct Runner {
     tensorfs: String,
     runtimes: Vec<String>,
     moves: Moves,
+    newer: Option<api::release::Newer>,
 }
 
 impl Runner {
@@ -409,8 +465,8 @@ impl Runner {
     async fn of(api: &Arc<Api>, on: &On) -> Option<Self> {
         let On::Machine(name) = on else { return None };
         let frame = api.machines.frame(name).filter(|frame| !frame.runtime.is_empty())?;
-        let (runtimes, moves) = tokio::time::timeout(HUB_LATE, api.machines.runtimes(name, &frame, api.machines.takes_rc(name, on))).await.ok()?;
-        Some(Self { runtime: frame.runtime, tensorfs: frame.tensorfs, runtimes, moves })
+        let (runtimes, moves, newer) = tokio::time::timeout(HUB_LATE, api.machines.runtimes(name, &frame, api.machines.takes_rc(name, on))).await.ok()?;
+        Some(Self { runtime: frame.runtime, tensorfs: frame.tensorfs, runtimes, moves, newer })
     }
 
     /// Whether a run here takes a release whose wheel requires `pair`, as a run decides (`api::release::takes`): its Runtime runs it
@@ -418,11 +474,12 @@ impl Runner {
     /// its own TensorFS. A requirement that can't be read holds nothing back, as TensorD's own check decides.
     fn takes(&self, pair: &[String]) -> bool {
         let required = |member: &str| api::release::required(pair.iter().map(String::as_str), member);
-        let machine = api::release::Machine { runtime: &self.runtime, runtimes: &self.runtimes, moves: self.moves };
+        let machine = api::release::Machine { runtime: &self.runtime, runtimes: &self.runtimes, moves: self.moves, newer: self.newer.as_ref() };
         match required(PAIR[0]).map_or(Takes::Runs, |needs| api::release::takes(&needs, &machine)) {
             Takes::Runs => required(PAIR[1]).is_none_or(|needs| self.tensorfs.is_empty() || api::release::runs(&needs, &self.tensorfs)),
-            Takes::Moves(_) => true,
-            Takes::Held(_) | Takes::No => false,
+            // A run moves it, or updates cozy first (cl-978).
+            Takes::Moves(_) | Takes::Cozy { .. } => true,
+            Takes::Held(_) | Takes::Major(_) | Takes::No => false,
         }
     }
 }
@@ -462,6 +519,8 @@ pub(crate) async fn tool_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<To
     let found = match target::describe(api, &hub, tool, None, Some(dir), &runs::default_on(api)).await {
         Ok(found) => found,
         // This computer's machine can't run it (one held on an older Runtime): the Hub's card says what it asks for all the same.
+        // Not for a checkout's package, whose source is what runs.
+        Err(why) if checkout::named(tool).is_some() => return Err(why),
         Err(why) => return listed_tool(api, &hub, tool).await.ok_or(why),
     };
     let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;

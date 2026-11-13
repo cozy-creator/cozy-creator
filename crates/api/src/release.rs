@@ -5,7 +5,8 @@
 //! A package release runs only on a Runtime its `cozy-runtime` requirement admits (`runs`). The open RC's Runtime is a dev
 //! release of the minor it makes (`0.47.0.dev2260+g1a2b3c4d`), so a floor can name it. `choose` decides a run's release with its machine:
 //! the newest it takes, moving the machine to the newest Runtime that runs it; a machine held by hand refuses instead, and one
-//! that isn't this computer's to move takes the newest its Runtime runs.
+//! that isn't this computer's to move takes the newest its Runtime runs. A Runtime only a newer cozy's line runs (cl-978) is
+//! reached by cozy updating itself to that release, a patch or minor; never across a major.
 
 use std::{future::Future, str::FromStr};
 
@@ -105,9 +106,20 @@ pub enum Moves {
 pub struct Machine<'a> {
     /// Its Runtime; empty while it isn't known (a rental to come), which holds nothing back.
     pub runtime: &'a str,
-    /// The Runtimes it can move to: the released ones, and on the RC (cl-922) the RC's build.
+    /// The Runtimes it can move to on this cozy's line: the released ones this cozy runs, and on the RC (cl-922) the RC's build.
     pub runtimes: &'a [String],
     pub moves: Moves,
+    /// The newer cozy whose line runs more Runtimes, when there is one.
+    pub newer: Option<&'a Newer>,
+}
+
+/// A newer cozy release (the Hub's), and the Runtimes its line runs that this one's doesn't (cl-978).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Newer {
+    pub cozy: String,
+    pub runtimes: Vec<String>,
+    /// Of another major: cozy doesn't update itself to it.
+    pub major: bool,
 }
 
 /// The release a run takes, and what its machine does for it.
@@ -119,6 +131,8 @@ pub enum Chosen {
     Moves { release: String, runtime: String },
     /// An older one than `newest`, which needs `needs` of a Runtime its machine doesn't move to.
     Older { release: String, newest: String, needs: String },
+    /// Cozy updates itself to `cozy` first, whose line runs `runtime`, the newest that runs it (cl-978).
+    Cozy { release: String, cozy: String, runtime: String },
 }
 
 /// Why a run takes none of its releases.
@@ -128,6 +142,8 @@ pub enum Refused<E> {
     Held { release: String, needs: String, runtime: String },
     /// No Runtime its machine runs or can move to runs any of them: the newest, and what it needs.
     Unmet { release: String, needs: String },
+    /// Only a cozy of a new major (`cozy`) runs it, which cozy doesn't update itself to.
+    Major { release: String, needs: String, cozy: String },
     /// A release's requirement couldn't be read.
     Unread(E),
 }
@@ -149,7 +165,9 @@ where
         match takes(&needs, machine) {
             Takes::Runs => return Ok(chosen(release, first)),
             Takes::Moves(runtime) => return Ok(Chosen::Moves { release: (*release).to_owned(), runtime }),
+            Takes::Cozy { cozy, runtime } => return Ok(Chosen::Cozy { release: (*release).to_owned(), cozy, runtime }),
             Takes::Held(runtime) => return Err(Refused::Held { release: (*release).to_owned(), needs: needs.to_string(), runtime }),
+            Takes::Major(cozy) => return Err(Refused::Major { release: (*release).to_owned(), needs: needs.to_string(), cozy }),
             Takes::No => {}
         }
         first.get_or_insert_with(|| ((*release).to_owned(), needs.to_string()));
@@ -165,30 +183,64 @@ pub enum Takes {
     Runs,
     /// It moves up to this Runtime, the newest that runs it.
     Moves(String),
+    /// Cozy updates itself to `cozy` first, whose line runs `runtime`, the newest that runs it.
+    Cozy { cozy: String, runtime: String },
     /// It would move to this one, but is held by hand.
     Held(String),
+    /// Only `cozy`, of a new major, runs it.
+    Major(String),
     /// No Runtime it runs or moves to runs it.
     No,
 }
 
 /// What `machine` does for a release needing `needs`: its Runtime runs it, else it moves up (never down: an older Runtime would
-/// take from what it runs now) to the newest that does.
+/// take from what it runs now) to the newest that does on this cozy's line, else on the newer cozy's.
 pub fn takes(needs: &VersionSpecifiers, machine: &Machine<'_>) -> Takes {
     if machine.runtime.is_empty() || runs(needs, machine.runtime) {
         return Takes::Runs;
     }
     let running = Version::from_str(machine.runtime).ok();
-    let moved = (machine.runtimes.iter())
-        .filter(|runtime| runs(needs, runtime))
-        .filter_map(|runtime| Some((Version::from_str(runtime).ok()?, runtime)))
-        .filter(|(version, _)| running.as_ref().is_none_or(|running| version > running))
-        .max_by(|(a, _), (b, _)| a.cmp(b))
-        .map(|(_, runtime)| runtime.clone());
-    match (moved, machine.moves) {
-        (Some(runtime), Moves::Yes) => Takes::Moves(runtime),
+    let newest = |runtimes: &[String]| {
+        (runtimes.iter())
+            .filter(|runtime| runs(needs, runtime))
+            .filter_map(|runtime| Some((Version::from_str(runtime).ok()?, runtime)))
+            .filter(|(version, _)| running.as_ref().is_none_or(|running| version > running))
+            .max_by(|(a, _), (b, _)| a.cmp(b))
+            .map(|(_, runtime)| runtime.clone())
+    };
+    match (newest(machine.runtimes), machine.moves) {
+        (Some(runtime), Moves::Yes) => return Takes::Moves(runtime),
+        (Some(runtime), Moves::Held) => return Takes::Held(runtime),
+        (Some(_), Moves::No) => return Takes::No,
+        (None, _) => {}
+    }
+    let Some(newer) = machine.newer else { return Takes::No };
+    match (newest(&newer.runtimes), machine.moves) {
+        (Some(_), Moves::Yes) if newer.major => Takes::Major(newer.cozy.clone()),
+        (Some(runtime), Moves::Yes) => Takes::Cozy { cozy: newer.cozy.clone(), runtime },
         (Some(runtime), Moves::Held) => Takes::Held(runtime),
         _ => Takes::No,
     }
+}
+
+/// Whether a `tensorfs` requirement admits a TensorFS of `series`'s minor or older: what a TensorD of the cozy that builds
+/// TensorFS `series` speaks (a newer one speaks an older TensorFS's protocol, never a newer one's). None admits any.
+pub fn admits_series(requirement: Option<&VersionSpecifiers>, series: &str) -> bool {
+    let (Some(requirement), Ok(ours)) = (requirement, Version::from_str(series)) else { return true };
+    let minor = |version: &Version| (version.release().first().copied().unwrap_or(0), version.release().get(1).copied().unwrap_or(0));
+    let top = minor(&ours);
+    let base = Version::new([top.0, top.1, 0]);
+    let mut tried = vec![ours.clone(), base];
+    for specifier in requirement.iter().filter(|specifier| minor(specifier.version()) <= top) {
+        let version = specifier.version().clone();
+        let release = version.release().to_vec();
+        let mut next = release.clone();
+        if let Some(last) = next.last_mut() {
+            *last += 1;
+        }
+        tried.extend([version, Version::new(release), Version::new(next)]);
+    }
+    tried.iter().filter(|version| minor(version) <= top).any(|version| requirement.contains(version))
 }
 
 fn chosen(release: &str, passed: Option<(String, String)>) -> Chosen {

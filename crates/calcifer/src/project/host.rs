@@ -263,9 +263,25 @@ impl Host {
         }
         // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, function, card, mut moved, upgrade, .. } = target::published(&self.api, &hub, with, on, true).await? else {
+        let Resolved::Release { package, function, card, mut moved, upgrade, cozy, .. } = target::published(&self.api, &hub, with, on, true).await? else {
             unreachable!("a published target resolves to a release");
         };
+        // cozy updates itself first for a release only a newer cozy's line runs (cl-978): the render waits behind it, and Calcifer
+        // restarts on the new cozy, whose walk takes it up again.
+        if let Some(wanted) = &cozy {
+            let (run, note) = match crate::cozy::update(&self.api, wanted).await {
+                // Installed already: this Calcifer restarts on it.
+                Err(e) if e.code == api::error::STOPPING => return std::future::pending().await,
+                updating => updating?,
+            };
+            tracing::info!("{}: the render waits for run {}", note.message, run.number);
+            let ended = self.own_ended(&run.id).await?;
+            if ended.status != RunStatus::Completed {
+                return Err(crate::cozy::update(&self.api, wanted).await.err().unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", note.message)));
+            }
+            // Its walk ends with this Calcifer, which restarts on the updated cozy; the next takes the render up where it stands.
+            return std::future::pending().await;
+        }
         // Its machine's Runtime moves first to one that runs the release (cl-952): the render waits behind that update.
         if let Some(upgrade) = &upgrade
             && self.api.machines.upgrade(upgrade).await?.is_some()
@@ -316,6 +332,21 @@ impl Host {
     /// The run once it ended on its machine, whatever of its outputs is still on its way here.
     pub(crate) async fn ended(&self, id: &RunId) -> Result<Run, Error> {
         self.until(id, |_| true).await
+    }
+
+    /// Calcifer's own run `id` once it ended: cozy's update (cl-978), kept in no project's journal.
+    async fn own_ended(&self, id: &RunId) -> Result<Run, Error> {
+        let calcifer = &self.api.calcifer;
+        let mut tail = calcifer.subscribe();
+        loop {
+            let row = calcifer.maintenance_store().run(id.as_str()).map_err(|e| refused(e.into()))?;
+            let row = row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
+            let run = calcifer.record(&row).map_err(refused)?;
+            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) {
+                return Ok(run);
+            }
+            crate::Calcifer::moved(&mut tail, id).await;
+        }
     }
 
     async fn until(&self, id: &RunId, and: impl Fn(&Run) -> bool) -> Result<Run, Error> {

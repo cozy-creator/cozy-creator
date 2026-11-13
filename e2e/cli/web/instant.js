@@ -3,7 +3,7 @@
 // POST held; what's typed and moved meanwhile lands after it; the box's own echo costs no read of the project and no redraw; an answer lost goes again
 // under its key and makes one asset; another writer's name renames the box; a refused action rolls back with one line; a pending edit and another
 // writer's: the page's unsent words stand, then both merged by character, with nothing asked; a write's answer never claims another writer's lines; kill -9 of
-// Calcifer mid-queue lands once; and a render whose answer is lost runs once.
+// Calcifer mid-queue lands once; a box another writer adds is drawn where there's room in view; and a render whose answer is lost runs once.
 //   node instant.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $RESTART: a shell command that kills this Calcifer with -9 and brings it
 // back; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so it runs nothing.
@@ -280,6 +280,10 @@ async function loseAnswers(page, method, path, times) {
     execFileSync(COZY, ['--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
     const primed = (await stillRuns()).length;
     addBoxes(folder, [{ name: 'fixture', tool: `${TOOL}/still`, kind: 'image', fields: { instructions: 'a whale' } }]);
+    // Another writer's box, with no row: the page puts it where there's room in view, so it's drawn there (cl-972: it went below a fitted view with room).
+    const drawn = await box('fixture').waitFor({ timeout: 15_000 }).then(() => true, () => false);
+    const at = drawn ? await box('fixture').boundingBox() : null;
+    check('another_writers_box_drawn_in_view', Boolean(at) && at.x >= 0 && at.y >= 0 && at.x < 1600 && at.y < 1100, { at, row: (await cards()).fixture });
     await box('fixture').waitFor();
     await openBox(page, 'fixture');
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);

@@ -15,7 +15,9 @@ mod browser;
 mod maintenance_source;
 mod api;
 mod authorized;
+mod checkout;
 mod coming;
+mod cozy;
 mod eta;
 mod events;
 mod files;
@@ -627,6 +629,11 @@ impl Calcifer {
     /// How many runs `machine` was sent and hasn't settled, in every journal.
     pub(crate) fn working(&self, machine: &str) -> store::Result<u32> {
         Ok(self.each_store(|store| store.working(machine))?.into_iter().sum())
+    }
+
+    /// Whether every journal is at rest (`Store::at_rest`).
+    pub(crate) fn at_rest(&self, quiet_ms: i64) -> store::Result<bool> {
+        Ok(self.each_store(|store| store.at_rest(quiet_ms))?.into_iter().all(|rest| rest))
     }
 
 

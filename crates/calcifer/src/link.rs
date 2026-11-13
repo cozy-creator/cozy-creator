@@ -123,6 +123,8 @@ impl Link {
         Self { machine: self.machine.with_private(scope), lanes: Arc::new(Mutex::new(vec![None; LANES])) }
     }
 
+    pub(crate) fn worker(&self) -> String { self.machine.identity() }
+
     pub(crate) async fn probe_private(&self) -> Result<(), LinkError> {
         self.machine.probe_private().await.map_err(LinkError::from)
     }

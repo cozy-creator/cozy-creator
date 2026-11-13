@@ -1129,6 +1129,8 @@ pub(super) async fn apply(State(api): State<Arc<Api>>, Path(id): Path<String>, b
         for (planned, ready) in writes.iter().zip(&readied) {
             write(&project, folder, &planned.name, planned.write.as_ref().expect("a write"), ready, &kept)?;
         }
+        // Kept with it, in its transaction: what it did; what it reads as after, and what's next, are kept with the rest of its answer (cl-885).
+        super::keyed::answering(axum::http::StatusCode::OK, &Applied { applied: true, ..answer.clone() });
         Ok(())
     }).map_err(Refusal)?;
     answer.applied = true;

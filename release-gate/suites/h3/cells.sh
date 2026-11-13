@@ -1,4 +1,4 @@
-# Suite `h3`: minimax-h3's generate, edit and upscale at their edges, from the package users get (or its --pins release).
+# Suite `h3`: minimax-h3's generate, edit and upscale at their edges, from the package users get (or a --packages checkout's).
 # - Regenerate-2K (`upscale`, the shot a described box) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
 #   layout at 112x64 (frames.py), since regenerated texture rightly differs, and that it moves as the original does (no
 #   flicker: a refine window off the latent chunk grid flickers at every chunk, run 22567).

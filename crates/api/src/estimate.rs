@@ -401,33 +401,73 @@ fn installed<'f>(frame: &'f StatusFrame, code: &str, release: &str) -> (Option<&
     }
 }
 
+/// The checkpoint of `model` that `frame`'s store holds: the one the job names, else the one of its repository this machine pulled,
+/// the most of it held: the lane it chose for its card, which a run of it there reads again (cl-967: a job named one lane of its model,
+/// the machine held another, and every quote there counted the named one's whole download).
+fn held<'f>(frame: &'f StatusFrame, model: &v1::ModelRef) -> Option<&'f v1::Checkpoint> {
+    let all = || frame.models.iter().flat_map(|m| m.checkpoints.iter().map(move |c| (m, c)));
+    let named = all().find(|(_, c)| c.tree == model.checkpoint || c.manifest == model.checkpoint);
+    let pulled = || all().filter(|(m, c)| !model.model.is_empty() && m.model == model.model && c.role != "lora").max_by_key(|(_, c)| c.held_bytes);
+    named.or_else(pulled).map(|(_, c)| c)
+}
+
 /// The bytes of `model` `frame`'s store lacks: what its held checkpoint lacks of its closure, else all the catalog lists.
 fn absent(frame: &StatusFrame, model: &v1::ModelRef) -> u64 {
-    let held = frame.models.iter().flat_map(|m| &m.checkpoints).find(|c| c.tree == model.checkpoint || c.manifest == model.checkpoint);
-    match held {
+    match held(frame, model) {
         Some(checkpoint) if checkpoint.bytes > 0 => checkpoint.bytes.saturating_sub(checkpoint.held_bytes),
         _ => model.bytes,
     }
 }
 
+/// The bytes of `model` a job of `function` fetches on `frame`'s machine (cl-967): none while an idle executor holds it loaded; else,
+/// of what its function's newest run here read of it, those not here now; else what its held checkpoint lacks, no more than a run of
+/// the function read of it elsewhere (`ModelRef::reads`). A lane's closure holds components a function never reads: counted whole,
+/// a machine that ran it was quoted their download every time.
+fn fetches(frame: &StatusFrame, function: &str, model: &v1::ModelRef) -> u64 {
+    let header = header(frame, model);
+    if frame.resident.iter().any(|resident| resident.checkpoints.contains(&header)) {
+        return 0;
+    }
+    let timed = frame.times.iter().flatten().find(|timed| !function.is_empty() && timed.function == function);
+    let here = timed.and_then(|timed| timed.reads.iter().find(|read| read.checkpoint == header || (!model.model.is_empty() && read.model == model.model)));
+    match (here, model.reads) {
+        (Some(read), _) => read.missing,
+        (None, 0) => absent(frame, model),
+        (None, reads) => reads.min(absent(frame, model)),
+    }
+}
+
+/// Each of `job`'s models' `reads` not known yet (cl-967): the most a run of its function read of it on any of `frames`' machines.
+/// Local code's function is known by its package only where it is installed: its machine's own reads count it.
+pub fn learn_reads(frames: &[&StatusFrame], job: &mut EstimateJob) {
+    let Some((code, _, entrypoint)) = named(&job.function).filter(|(code, ..)| !code.starts_with("sha256:")) else { return };
+    let function = format!("{code}/{entrypoint}");
+    for model in job.models.iter_mut().filter(|model| model.reads == 0 && !model.model.is_empty()) {
+        model.reads = (frames.iter().flat_map(|frame| frame.times.iter().flatten()))
+            .filter(|timed| timed.function == function)
+            .flat_map(|timed| &timed.reads)
+            .filter(|read| read.model == model.model)
+            .map(|read| read.bytes)
+            .max()
+            .unwrap_or(0);
+    }
+}
+
+/// `model`'s header as an executor that loaded it names it.
+fn header(frame: &StatusFrame, model: &v1::ModelRef) -> String {
+    held(frame, model).map_or(model.checkpoint.clone(), |c| c.manifest.clone())
+}
+
 /// Whether an idle executor of `frame` holds any of `models` loaded: their function's plan compiled there, its model warm.
 fn warm_there(frame: &StatusFrame, models: &[v1::ModelRef]) -> bool {
-    let header = |model: &v1::ModelRef| {
-        let held = frame.models.iter().flat_map(|m| &m.checkpoints).find(|c| c.tree == model.checkpoint || c.manifest == model.checkpoint);
-        held.map_or(model.checkpoint.clone(), |c| c.manifest.clone())
-    };
     let loaded: HashSet<&String> = frame.resident.iter().flat_map(|r| &r.checkpoints).collect();
-    models.iter().any(|model| loaded.contains(&header(model)))
+    models.iter().any(|model| loaded.contains(&header(frame, model)))
 }
 
 /// Whether an idle executor of `frame` holds every one of `models` loaded: a job of them loads nothing.
 fn resident(frame: &StatusFrame, models: &[v1::ModelRef]) -> bool {
-    let header = |model: &v1::ModelRef| {
-        let held = frame.models.iter().flat_map(|m| &m.checkpoints).find(|c| c.tree == model.checkpoint || c.manifest == model.checkpoint);
-        held.map_or(model.checkpoint.clone(), |c| c.manifest.clone())
-    };
     let loaded: HashSet<&String> = frame.resident.iter().flat_map(|r| &r.checkpoints).collect();
-    !models.is_empty() && models.iter().all(|model| loaded.contains(&header(model)))
+    !models.is_empty() && models.iter().all(|model| loaded.contains(&header(frame, model)))
 }
 
 fn refused(code: &str, message: String) -> Option<v1::Reason> {
@@ -479,7 +519,7 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob]) -> Vec<Quot
             asked.push((None, quote));
             continue;
         }
-        let fetch: u64 = job.models.iter().map(|model| absent(frame, model)).sum();
+        let fetch: u64 = job.models.iter().map(|model| fetches(frame, &function, model)).sum();
         if fetch > free {
             quote.refusal = refused("does_not_fit", format!("its weights' {fetch} bytes don't fit in this machine's {free} free"));
             asked.push((None, quote));
@@ -495,8 +535,9 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob]) -> Vec<Quot
                 installs
             }),
         };
-        let new: u64 = job.models.iter().filter(|model| !line.lands.contains_key(&model.model)).map(|model| absent(frame, model)).sum();
+        let new: u64 = job.models.iter().filter(|model| !line.lands.contains_key(&model.model)).map(|model| fetches(frame, &function, model)).sum();
         let models: Vec<String> = job.models.iter().map(|model| model.model.clone()).collect();
+        quote.fetch_bytes = new;
         let fetched = line.fetch(&models, new, machine.link, install_end);
         let load = match (!function.is_empty() && warm.contains(&function)) || resident(frame, &job.models) || job.models.is_empty() {
             true => 0.0,

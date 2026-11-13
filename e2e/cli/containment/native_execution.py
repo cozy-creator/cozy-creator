@@ -6,7 +6,7 @@ from pathlib import Path
 import secrets
 import subprocess
 
-from common import Native, Receipt, require, sha
+from common import Native, Project, Receipt, require, sha
 from scan import Scanner
 
 
@@ -55,14 +55,14 @@ def storage(payload: Request, out: Outputs) -> Answer:
 '''
 
 
-def _documents(body: bytes) -> list[dict]:
+def _documents(body: bytes) -> list[dict[str, object]]:
     try:
         value = json.loads(body)
         if isinstance(value, dict):
             return [value]
     except (ValueError, UnicodeDecodeError):
         pass
-    result = []
+    result: list[dict[str, object]] = []
     for line in body.splitlines():
         try:
             value = json.loads(line)
@@ -107,28 +107,28 @@ _TRANSPORT = {
 _PASSED_OVER = "is no later patch of its lock"
 
 
-def _errors(documents: list[dict]) -> list[dict]:
-    found = []
+def _errors(documents: list[dict[str, object]]) -> list[dict[str, object]]:
+    found: list[dict[str, object]] = []
     for document in documents:
         run = document.get("run", document)
         containers = [document, run] if isinstance(run, dict) else [document]
         for container in list(containers):
-            if isinstance(container.get("result"), dict):
-                containers.append(container["result"])
+            if isinstance(result := container.get("result"), dict):
+                containers.append(result)
         for container in containers:
             for field in ("error", "reason", "failure"):
-                if isinstance(container.get(field), dict):
-                    found.append(container[field])
+                if isinstance(error := container.get(field), dict):
+                    found.append(error)
     return found
 
 
-def _observation(completed: subprocess.CompletedProcess, documents: list[dict], runs: list[dict], file_created: bool) -> dict:
+def _observation(completed: subprocess.CompletedProcess[bytes], documents: list[dict[str, object]], runs: list[object], file_created: bool) -> dict[str, object]:
     stderr_documents = _documents(completed.stderr)
     errors = _errors(documents) + _errors(stderr_documents)
-    codes = [error["code"] for error in errors if isinstance(error.get("code"), str)]
-    causes = [error["cause"] for error in errors if isinstance(error.get("cause"), str)]
+    codes = [code for error in errors if isinstance(code := error.get("code"), str)]
+    causes = [cause for error in errors if isinstance(cause := error.get("cause"), str)]
     # Diagnostic text is inspected in RAM against fixed strings, never serialized or hashed.
-    details = [error[field] for error in errors for field in ("message", "detail") if isinstance(error.get(field), str)]
+    details = [detail for error in errors for field in ("message", "detail") if isinstance(detail := error.get(field), str)]
     details.append(completed.stderr.decode("utf-8", errors="replace"))
     said = completed.stdout.decode("utf-8", errors="replace") + "\n".join(details)
     return {
@@ -151,7 +151,7 @@ def _observation(completed: subprocess.CompletedProcess, documents: list[dict], 
     }
 
 
-def qualify(native: Native, scanner: Scanner, project: dict, receipt: Receipt) -> None:
+def qualify(native: Native, scanner: Scanner, project: Project, receipt: Receipt) -> None:
     view = project["view"]
     folder = view / "managed-execution-proof"
     folder.mkdir(mode=0o700)

@@ -3,14 +3,21 @@
 # shots: the first, its first call there, records H3's cold time (its plan compiling); the second its warm time, and leaves H3 held.
 # `cold`, rented after them, holds nothing. A third shot, rendered through this computer's Calcifer on both, is planned from what they
 # push: it goes to warm, quoted from its warm time (Calcifer's log: `goes to <warm>: <warm> finishes in N s (Measured, warm)`), and
-# ends within 20% (or 30 s) of that. Both pods end and are seen gone. params:
-#   seconds  each shot's length (default 15)
+# ends within 20% (or 30 s) of that. Each shot is planned (its `goes to` line; none `isn't planned`). Both pods end and are seen gone.
+# params:
+#   seconds  each H3 shot's length (default 15)
+#   tool     the shots' tool (default minimax-h3/generate); another is an image box with a prompt, e.g. qwen-image-2/generate_turbo
+#   paid     the seconds of both pods the cap must buy before renting (default 2400: H3's; the cold one runs about a quarter of them)
 . "$(dirname "$0")/lib.sh"
 SECONDS_LONG=$(param seconds 15)
+TOOL=$(param tool minimax-h3/generate)
 shot() {
-  jq -n --arg name "$1" --argjson seconds "$SECONDS_LONG" --arg words "$2" '{name: $name, tool: "minimax-h3/generate", kind: "video",
-    fields: {aspect_ratio: "16:9", summary: $words, soundscape: "Wind and distant gulls.",
-      beats: [{duration: $seconds, description: $words}]}}'
+  case $TOOL in
+    minimax-h3/*) jq -n --arg name "$1" --arg tool "$TOOL" --argjson seconds "$SECONDS_LONG" --arg words "$2" '{name: $name, tool: $tool,
+      kind: "video", fields: {aspect_ratio: "16:9", summary: $words, soundscape: "Wind and distant gulls.",
+        beats: [{duration: $seconds, description: $words}]}}' ;;
+    *) jq -n --arg name "$1" --arg tool "$TOOL" --arg words "$2" '{name: $name, tool: $tool, kind: "image", fields: {prompt: $words, megapixels: 1}}' ;;
+  esac
 }
 jq -s . <(shot first "A lighthouse on a cliff at dawn, waves breaking below, the camera slowly circling it.") \
   <(shot second "A heron wading through reeds at sunrise, mist over the water, the camera low beside it.") \
@@ -30,14 +37,17 @@ rent_ok() {
     [ "$tries" -lt 3 ] || fail "three rentals came with driver $driver"
   done
 }
-# Both pods for 40 min, which overstates it: the cold one runs about 10 of them.
-quote 2400 "$SKU" "$SKU"
+quote "$(param paid 2400)" "$SKU" "$SKU"
 rent_ok; WARM=$NAME
 step tensord machine update "$WARM" --tensord "$(command -v cozy)" -y || fail "$WARM refused the session's TensorD"
-say "step first: on $WARM alone, its first H3 call there: the cold time"
+say "step first: on $WARM alone, its first $TOOL call there: the cold time"
 timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$WARM" first > "$OUT/first.txt" 2>&1 || fail "the first shot: $(tail -c 400 "$OUT/first.txt")"
-say "step second: on $WARM alone again: the warm time, H3 left held"
+say "step second: on $WARM alone again: the warm time, its model left held"
 timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$WARM" second > "$OUT/second.txt" 2>&1 || fail "the second shot: $(tail -c 400 "$OUT/second.txt")"
+# What warm holds of each model and what its function read (cl-967): what the third shot's quote counts to fetch there.
+cozy --json machine show "$WARM" > "$OUT/show-warm.json" 2>&1 || true
+jq -r '.status.models[]? | .repository as $m | .checkpoints[]? | "held: \($m) \(.lane) \(.bytes) bytes, \(.held_bytes) held"' "$OUT/show-warm.json" 2> /dev/null | tee -a "$R"
+jq -r '.status.times[]? | .function as $f | .reads[]? | "read: \($f) \(.model) \(.bytes) bytes, \(.missing) missing"' "$OUT/show-warm.json" 2> /dev/null | tee -a "$R"
 # The cold one rented only now: nothing of it is paid for while the first two render.
 rent_ok; COLD=$NAME
 step tensord machine update "$COLD" --tensord "$(command -v cozy)" -y || fail "$COLD refused the session's TensorD"
@@ -49,10 +59,16 @@ tail -n 20000 "$HOME/.cozy/calcifer/calcifer.log" > "$OUT/calcifer.log" 2> /dev/
 run=$(jq -c --argjson a "$ASK" '[.runs[]? | select(.kind == "call" and .created_at_ms >= $a)] | first // empty' "$OUT/runs.json")
 [ -n "$run" ] || fail "no run of the third shot: $(head -c 400 "$OUT/runs.json")"
 went=$(jq -r .machine <<< "$run")
-said=$(grep -E "goes to $went: " "$OUT/calcifer.log" | tail -1)
+# Each shot's plan, as Calcifer's log says it: the third's is the line at or after its ask.
+grep -E "goes to [a-z0-9-]+: |isn't planned: " "$OUT/calcifer.log" > "$OUT/planned.log" || true
+sed 's/^/planned: /' "$OUT/planned.log" | tee -a "$R"
+! grep -q "isn't planned: " "$OUT/planned.log" || fail "a shot wasn't planned: $(grep "isn't planned: " "$OUT/planned.log" | head -1)"
+[ "$(grep -c "goes to $WARM: " "$OUT/planned.log")" -ge 3 ] || fail "not each of the three shots has a plan line going to $WARM"
+since=$(date -u -d "@$((ASK / 1000))" +%Y-%m-%dT%H:%M:%S)
+said=$(awk -v t="$since" 'substr($1, 1, 19) >= t' "$OUT/planned.log" | grep -E "goes to $went: " | tail -1)
 say "planned: ${said:-no placement line}"
-[ "$went" = "$WARM" ] || fail "the third shot went to $went, not $WARM, which holds H3"
-grep -q "$went finishes in [0-9]* s (Measured, warm)" <<< "$said" || fail "the third shot's quote isn't its warm time: ${said:-no placement line}"
+[ "$went" = "$WARM" ] || fail "the third shot went to $went, not $WARM, which holds its model"
+grep -qE "$went finishes in [0-9]+ s \(Measured, warm[;)]" <<< "$said" || fail "the third shot's quote isn't its warm time: ${said:-no placement line}"
 quoted=$(grep -oE "$went finishes in [0-9]+ s" <<< "$said" | grep -oE '[0-9]+' | head -1)
 actual=$(( ($(jq -r .settled_at_ms <<< "$run") - ASK) / 1000 ))
 bound=$(( actual / 5 > 30 ? actual / 5 : 30 ))

@@ -98,7 +98,6 @@ test = "pr: packages"
 ["package publish"]
 test = "release: throwaway package, published"
 "--root" = "manual: first-party releases only (packages' task publish), never a throwaway at the root"
-"--yanked" = "release: throwaway package, published yanked"
 ["package yank"]
 test = "release: throwaway package, yanked"
 "--undo" = "release: throwaway package, un-yanked"

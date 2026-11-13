@@ -55,6 +55,8 @@ pub(crate) struct Offer {
     pub basis: Basis,
     /// Its time is its function's warm one there (cl-967).
     pub warm: bool,
+    /// Its weights' bytes it downloads there first (cl-967).
+    pub fetch_bytes: u64,
     /// When its machine should serve, for one on its way (cl-915); none for one that serves.
     pub ready_at_ms: Option<i64>,
 }
@@ -181,6 +183,7 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
             queue_position: quote.queue_position,
             basis: quote.basis,
             warm: quote.warm,
+            fetch_bytes: quote.fetch_bytes,
             ready_at_ms: picture.ready_at_ms,
         })
         .collect()
@@ -192,17 +195,22 @@ pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<V
     let now = now_ms();
     let machines = machines_of(jobs);
     let pictured = pictures(api, &machines, update, now).await;
-    let asked = machines.iter().zip(pictured).map(|(on, pictured)| async move {
+    // What each job's function read of its models on any of them (cl-967).
+    let frames: Vec<&v1::StatusFrame> = pictured.iter().filter_map(|pictured| pictured.as_ref().ok()).map(|picture| &picture.frame).collect();
+    let frames = &frames;
+    let asked = machines.iter().zip(&pictured).map(|(on, pictured)| async move {
         let mine: Vec<usize> = (0..jobs.len()).filter(|&at| jobs[at].on.contains(on)).collect();
         let answer = match pictured {
             Ok(picture) => {
                 let mut asks = vec![];
                 for &at in &mine {
-                    asks.push(asked(&jobs[at], prior(api, &picture, &jobs[at]).await));
+                    let mut ask = asked(&jobs[at], prior(api, picture, &jobs[at]).await);
+                    api::estimate::learn_reads(frames, &mut ask);
+                    asks.push(ask);
                 }
-                Ok(quote(&picture, &asks, now))
+                Ok(quote(picture, &asks, now))
             }
-            Err(why) => Err(why),
+            Err(why) => Err(why.clone()),
         };
         (on, mine, answer)
     });
@@ -316,15 +324,23 @@ fn with_own(mut frame: v1::StatusFrame, own: v1::StatusFrame) -> v1::StatusFrame
     frame
 }
 
-/// An offer in a line of the log: `stand-c finishes in 480 s (Measured, warm)`, `pluto finishes in 390 s (None), ready in 210 s`,
-/// `local can't: does_not_fit`.
+/// An offer in a line of the log: `stand-c finishes in 480 s (Measured, warm)`, `pluto finishes in 390 s (None; 120 s preparing,
+/// 12.0 GiB to fetch), ready in 210 s`, `local can't: does_not_fit`. Preparing: its install, download and load.
 pub(crate) fn said(offer: &Offer, now: i64) -> String {
     if !offer.fits {
         return format!("{} can't: {}", offer.machine, offer.refusal.as_ref().map_or("no reason given", |reason| reason.code.as_str()));
     }
     let ready = offer.ready_at_ms.map(|at| format!(", ready in {} s", (at - now).max(0) / 1000)).unwrap_or_default();
     let warm = if offer.warm { ", warm" } else { "" };
-    format!("{} finishes in {} s ({:?}{warm}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
+    let fetch = match offer.fetch_bytes {
+        0 => String::new(),
+        bytes => format!(", {:.1} GiB to fetch", bytes as f64 / (1u64 << 30) as f64),
+    };
+    let preparing = match offer.prepare_ms / 1000 {
+        0 => String::new(),
+        s => format!("; {s} s preparing{fetch}"),
+    };
+    format!("{} finishes in {} s ({:?}{warm}{preparing}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
 }
 
 /// How soon, for people: `in under a minute`, `in about 2 min`, `in about 1.5 h`.

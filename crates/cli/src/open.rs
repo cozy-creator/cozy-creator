@@ -1,4 +1,4 @@
-//! Open the current project in a browser and print its local URL.
+//! Open the current project in a browser and print its local URL. A `--json` caller is a program: it gets the link, and no browser starts.
 use std::{
     net::{Ipv4Addr, TcpListener},
     process::ExitCode,
@@ -19,7 +19,7 @@ use crate::{
 };
 
 #[derive(clap::Args, Debug)]
-#[command(after_help = "Examples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
+#[command(after_help = "With --json it prints the link and opens no browser.\n\nExamples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
 pub(crate) struct Args {
     /// Use this loopback port for Calcifer, and keep it for later commands.
     #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
@@ -34,7 +34,10 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             (ctx.calcifer().await?, project)
         }
     };
-    let opened = match calcifer.post::<_, Opened>("/v1/browser/open", &json!({ "project": project.id }), None).await {
+    // A `--json` caller is a program: it gets a one-use link, and no browser starts.
+    let opened = if ctx.json {
+        json!({ "url": sign_in_link(&calcifer, &project).await?, "private": false })
+    } else { match calcifer.post::<_, Opened>("/v1/browser/open", &json!({ "project": project.id }), None).await {
         // The printed URL is reference-only; authority was injected through the owned native pipe.
         Ok(opened) => json!({ "url": opened.url, "private": true }),
         // No display, no Chrome, or its launch failed: any browser may sign in with a one-use link instead.
@@ -49,7 +52,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             json!({ "url": url, "private": false, "reason": reason })
         }
         Err(error) => return Err(error),
-    };
+    } };
     output::document(ctx, &opened);
     Ok(ExitCode::SUCCESS)
 }

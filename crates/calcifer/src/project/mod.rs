@@ -268,7 +268,15 @@ impl Projects {
         for project in self.now_open().into_iter().filter(|project| stirred.contains(&project.id)) {
             let id = &project.id;
             let dir = &project.folder.dir;
-            if vault::encrypted(&project.root) || project.require_view().is_err() { continue; }
+            if vault::encrypted(&project.root) { continue; }
+            if project.require_view().is_err() {
+                // Its folder went: a page showing it reads it again, and says so where it stands (cl-980). Held while it's told, as below.
+                let still = self.open.lock().expect("projects lock");
+                if !dir.exists() && still.get(id).is_some_and(|open| open.strong_count() > 0) {
+                    crate::events::project_looked(dir, "gone".to_owned());
+                }
+                continue;
+            }
             let rev = format!("{}.{}", project.folder.stamp(), stamp(&dir.join(folder::FILES)));
             // Held while it's told: a forget waits for it.
             let still = self.open.lock().expect("projects lock");
@@ -486,7 +494,16 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     }
     let mut named: Vec<_> = indexed.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
     match named.len() {
-        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy open")),
+        0 => {
+            let code = code::parse(text).unwrap_or_default();
+            let gone = api.calcifer.store().project_gone(text, &code).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+            Err(match gone {
+                Some(path) => Error::new(Kind::NotFound, "project_folder_gone", format!("this project's folder is gone: {}", path.display()))
+                    .remedy("move the folder back, or open another project")
+                    .next("cozy new <folder>"),
+                None => Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy open"),
+            })
+        }
         1 => Ok(named.remove(0)),
         _ => {
             let ids: Vec<String> = named.iter().map(|entry| format!("{} ({})", entry.id, entry.path.display())).collect();
@@ -1022,6 +1039,8 @@ struct Walker {
     foreseen: HashMap<String, Option<On>>,
     /// Where each job whose turn is next goes, by its key, as the last plan placed it (cl-967), with its other machines' offers.
     placed: HashMap<String, Placed>,
+    /// Why the last plan placed no machine for each job whose turn is next, by its key, as its line said.
+    unplanned: HashMap<String, String>,
     /// What each job not sent asks of a machine, by its key, once its package and its models' cards said.
     quotables: HashMap<String, placement::Job>,
     /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
@@ -1572,14 +1591,15 @@ fn board_of(project: &Project) -> Option<api::calcifer::project::Board> {
     Some(project.jobs.board()).filter(|board| board.seq > 0)
 }
 
-/// The local code `id`'s assets name, each once: its path as they write it, and where that is.
+/// The local code `id`'s assets name, each once: its path as they write it, and where that is. Not a checkout's first-party
+/// package, which is listed by its name (`toolbox::from_source`).
 pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, PathBuf)>, Refusal> {
     let project = api.projects.get(api, id)?;
     let folder = &project.folder;
     let doc = Doc::load(folder).map_err(Refusal)?;
     let home = &api.machines.user_home;
     let mut named = BTreeMap::new();
-    for with in (0..doc.assets.len()).map(|i| doc.target(i)).filter(|with| !with.is_empty()) {
+    for with in (0..doc.assets.len()).map(|i| doc.target(i)).filter(|with| !with.is_empty() && crate::checkout::named(with).is_none()) {
         if let Some(Ok((path, function))) = crate::local_code::target(&with, Some(&folder.dir), home) {
             let written = match function {
                 Some(function) => with.trim().trim_end_matches(['/', '\\']).strip_suffix(function.as_str()).unwrap_or(&with).trim_end_matches(['/', '\\']).to_owned(),
@@ -1627,7 +1647,9 @@ fn known_packages(api: &Arc<Api>, doc: &Doc, dir: &FsPath) -> HeardOf {
         .filter_map(|with| {
             let package = heard_of(api, &with, dir)?;
             let callable = package.named.as_deref().and_then(|function| package.callable(function));
-            let heard = HeardPackage { name: package.name.clone(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local: is_local(&with) };
+            // A checkout's first-party package is said as its release would be (xs-195).
+            let local = is_local(&with) && crate::checkout::named(&with).is_none();
+            let heard = HeardPackage { name: package.name.clone(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local };
             Some((with, heard))
         })
         .collect()
@@ -1659,7 +1681,7 @@ fn tags_now<'a>(doc: &'a Doc, known: &'a HeardOf, i: usize) -> Option<&'a [Strin
 
 /// Whether `with` names local code.
 fn is_local(with: &str) -> bool {
-    api::target::written_as_path(with) || with.ends_with(".py")
+    api::target::written_as_path(with) || with.ends_with(".py") || crate::checkout::named(with).is_some()
 }
 
 /// What was last heard of the package `with`, this moment: published, or local code from `dir` as described on this computer's machine.
@@ -2233,7 +2255,10 @@ fn renamed_under(project: &Arc<Project>, id: &str, asked: Rename, follows: bool)
             folder.then(move |_| film_renamed(&Folder::at(&dir), &from, &to));
         }
         history::renamed(folder, &from, &to);
-        Ok(Renamed { from, to, versions })
+        let renamed = Renamed { from, to, versions };
+        // Its answer is kept with it, in its transaction (cl-885): an undo that renames back says its own after.
+        keyed::answering(StatusCode::OK, &renamed);
+        Ok(renamed)
     });
     done.map_err(Refusal)
 }
@@ -2583,10 +2608,11 @@ async fn runs(
     // One transaction: its snapshot, the ask, and its key, so a retry however late runs nothing twice. What the project has lost is set aside,
     // and what's asked again fails no more.
     let lost = std::cell::Cell::new(false);
+    let begun = ((!joined || added > 0) && !resent).then(|| ask.id.clone());
     (project.folder.act(|| {
         project.folder.keep_snapshot(&digest, &snapshot)?;
         project.folder.update_walk(|walk| {
-            if (!joined || added > 0) && !resent {
+            if begun.is_some() {
                 walk.walk.asks.push(ask.clone());
             }
         })?;
@@ -2597,7 +2623,22 @@ async fn runs(
                     held.failed = None;
                 }
             }
-        })
+        })?;
+        // Its answer is kept with it, in its transaction (cl-885), its board as the transaction knows it: what's going, and each take it
+        // asks, next. What it queued behind, and the board the walk makes of it, its answer after says.
+        let mut board = project.jobs.board();
+        let next: Vec<Job> = (ask.takes.iter().filter(|take| !board.jobs.iter().any(|job| job.id == take.key)))
+            .map(|take| {
+                let noun = doc.find(&take.asset).map_or("version", |i| noun(&doc, &lock, i));
+                Job { id: take.key.clone(), asset: take.asset.clone(), noun: noun.into(), why: Some("next".into()), ..Job::default() }
+            })
+            .collect();
+        board.jobs.extend(next);
+        let path = project.folder.dir.clone();
+        let next = vec!["cozy status".into()];
+        let (skipped, said) = (skipped.clone(), lines.borrow().clone());
+        keyed::answering(StatusCode::ACCEPTED, &Asked { id: id.clone(), ask: begun.clone(), path, joined, added, skipped, queued: vec![], said, next, board });
+        Ok(())
     }))
     .map_err(Refusal)?;
     if lost.get() {
@@ -2609,9 +2650,8 @@ async fn runs(
     sync_jobs(&project, numbered(&api, &project.id)).map_err(Refusal)?;
     let board = project.jobs.board();
     drop(walking);
-    let ask = ((!joined || added > 0) && !resent).then_some(ask.id);
     let said = lines.into_inner();
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })))
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, ask: begun, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })))
 }
 
 /// A run by its number, as its record says now.
@@ -2888,7 +2928,12 @@ async fn import(
         }
     }
     let kept = keep_file(folder, &asked.source).await?;
-    let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, &asked.placed)?;
+    // Its answer is kept with it, in its transaction (cl-885).
+    let answer = folder.act(|| {
+        let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, asked.exact, asked.moves, &asked.placed).map_err(|Refusal(why)| why)?;
+        keyed::answering(StatusCode::OK, &answer);
+        Ok(answer)
+    }).map_err(Refusal)?;
     measure_soon(&api, &project);
     Ok(Json(answer))
 }
@@ -2938,17 +2983,25 @@ async fn approve(
         .or_else(|| versions.iter().copied().rev().find(|version| version.main() == Some(&chosen)));
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    folder.edit(|written| match version {
-        Some(version) => written.selected(&name, version.number, &chosen),
-        None => written.approved(&name, &chosen),
-    }).map_err(Refusal)?;
-    let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
     let files = listed(&lock, &files);
+    // Its answer is kept with it, in its transaction (cl-885): what it approved. What that put out of date, and what settling found, its
+    // answer after says.
+    let approved = folder.act(|| {
+        folder.edit(|written| match version {
+            Some(version) => written.selected(&name, version.number, &chosen),
+            None => written.approved(&name, &chosen),
+        })?;
+        let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag))?;
+        let approved = Approved { name: name.clone(), noun: noun.into(), number, files, path, stale: vec![], warnings: vec![], etag };
+        keyed::answering(StatusCode::OK, &approved);
+        Ok(approved)
+    }).map_err(Refusal)?;
+    let warnings = settle(&api, &project).await;
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
-    Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings, etag }))
+    Ok(Json(Approved { stale, warnings, etag, ..approved }))
 }
 
 /// `POST /v1/projects/{id}/unpin`: `approved` gone from its box, so the asset's state follows its inputs again. A constant,
@@ -2968,13 +3021,19 @@ async fn unpin(
     let stand = doc.stand(&lock);
     let version = stand[i].version().filter(|_| asset.pin.is_some());
     let before = stale_names(&doc, &stand);
-    if asset.pin.is_some() {
-        if asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
-            let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it");
-            return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next("cozy open")));
-        }
-        folder.edit(|written| written.unapproved(&name)).map_err(Refusal)?;
+    if asset.pin.is_some() && asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
+        let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it");
+        return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).next("cozy open")));
     }
+    // Its answer is kept with it, in its transaction (cl-885), as approve's is.
+    folder.act(|| {
+        if asset.pin.is_some() {
+            folder.edit(|written| written.unapproved(&name))?;
+        }
+        let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag))?;
+        keyed::answering(StatusCode::OK, &Unpinned { name: name.clone(), version, stale: vec![], warnings: vec![], etag });
+        Ok(())
+    }).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     let etag = folder.reading_boxes(|written| written.get(&name).map(written::Boxed::etag)).map_err(Refusal)?;
@@ -3139,6 +3198,14 @@ pub(crate) const GONE: [&str; 3] = ["machine_ended", "machine_offline", "machine
 const PLACED_AGAIN: u32 = 3;
 /// How long a job's package may take to say what it calls, and its models' cards what they weigh, before its machines are asked without.
 const QUOTE_LATE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
+fn unplanned(walker: &mut Walker, dir: &str, key: &str, why: String) {
+    if walker.unplanned.get(key) != Some(&why) {
+        warn!("{dir}: {key} isn't planned: {why}; it goes to the first of its machines that takes it");
+        walker.unplanned.insert(key.to_owned(), why);
+    }
+}
 
 /// Something a walker started came to its end.
 enum Done {
@@ -3698,25 +3765,27 @@ impl Walk {
         Ok(Some((item, package.name.clone() + "/" + &renderer.function, files)))
     }
 
-    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices. None when its package doesn't say in
-    /// time what it calls.
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Option<placement::Job> {
+    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices; else why not. `late`: how long its package
+    /// may take to say what it calls, and its models' cards what they weigh (none: as long as they take).
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Result<placement::Job, String> {
         let api = self.host.api();
-        let late = late.unwrap_or(std::time::Duration::MAX);
-        // Why a job isn't placed, said: it goes to the first of its machines, and nothing is fetched ahead for it.
-        let dir = self.folder().dir.display().to_string();
-        let package = match self.described(hub, with, &on, late).await {
+        let limit = late.unwrap_or(std::time::Duration::MAX);
+        let package = match self.described(hub, with, &on, limit).await {
+            None => return Err(format!("{with} is still being described: it is planned once that ends")),
+            Some(Err(e)) => return Err(format!("{with}: {}", e.message)),
             Some(Ok(package)) => package,
-            Some(Err(error)) => { warn!("{dir}: {key} isn't planned: its package: {}", error.message); return None; }
-            None => { warn!("{dir}: {key} isn't planned this time: its package is still being described"); return None; }
         };
-        let Some(renderer) = package.maker().ok().flatten() else { warn!("{dir}: {key} isn't planned: its package makes nothing it can quote"); return None };
-        let models = tokio::time::timeout(late, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
+        let renderer = match package.maker() {
+            Ok(Some(renderer)) => renderer,
+            Ok(None) => return Err(format!("{with} names no function")),
+            Err(e) => return Err(format!("{with}: {}", e.message)),
+        };
+        let models = tokio::time::timeout(limit, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
         let size = v1::JobSize::of(&Value::Object(made));
         let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
             interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
         });
-        Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
+        Ok(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
     }
 
     /// The package `with` names as `hub` has it, described once for every plan of this project: a description that outlasts `late`
@@ -3763,8 +3832,9 @@ impl Walk {
 
     /// Places the jobs not sent yet, the nearest `plan::PLANNED` of them (cl-967): every machine pictured from the Status it pushed, each
     /// job beginning once what it reads ends, ahead of it on each machine the runs sent there that it hasn't accepted yet. A ready job's
-    /// place is where it goes at its turn; one waiting for another's output, where its weights are fetched ahead. A job whose package
-    /// doesn't say in time what it calls isn't placed: it goes to the first of its machines. `update`: as `placement::pictures`.
+    /// place is where it goes at its turn; one waiting for another's output, where its weights are fetched ahead. A ready job waits for its
+    /// package to say what it calls (its send would anyway); one waiting, `QUOTE_LATE` at most. Each ready job's line says where it goes
+    /// and why, or why no machine was planned: then it goes to the first of its machines that takes it. `update`: as `placement::pictures`.
     async fn plan(&self, update: bool) {
         let Ok(walk) = self.folder().walk_now() else { return };
         let dir = self.folder().dir.display().to_string();
@@ -3799,13 +3869,20 @@ impl Walk {
         }
         // What each asks of a machine, read once.
         let known: HashSet<String> = self.project.walker.lock().expect("walker lock").quotables.keys().cloned().collect();
-        let read = unsent.iter().filter(|unsent| !known.contains(&unsent.key)).map(|unsent| {
-            self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), Some(QUOTE_LATE))
+        let read = unsent.iter().filter(|unsent| !known.contains(&unsent.key)).map(|unsent| async move {
+            let late = (!unsent.ready).then_some(QUOTE_LATE);
+            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), late).await)
         });
-        let read: Vec<placement::Job> = futures_util::future::join_all(read).await.into_iter().flatten().collect();
+        let mut unread: HashMap<String, String> = HashMap::new();
         let quotables = {
+            let read = futures_util::future::join_all(read).await;
             let mut walker = self.project.walker.lock().expect("walker lock");
-            read.into_iter().for_each(|job| drop(walker.quotables.insert(job.key.clone(), job)));
+            for (key, quotable) in read {
+                match quotable {
+                    Ok(job) => drop(walker.quotables.insert(key, job)),
+                    Err(why) => drop(unread.insert(key, why)),
+                }
+            }
             let pending: HashSet<&str> = walk.pending.iter().map(|(key, pending)| pending.job_of(key)).collect();
             walker.quotables.retain(|key, _| pending.contains(key.as_str()) || unsent.iter().any(|unsent| unsent.key == *key));
             walker.quotables.clone()
@@ -3869,6 +3946,11 @@ impl Walk {
                 stay: foreseen.get(&unsent.key).cloned().flatten().and_then(|on| plan::index(&pictures, &on)),
             });
         }
+        // What each job's function read of its models on any machine: what it fetches on one that holds none of them (cl-967).
+        let frames: Vec<&api::machine::StatusFrame> = pictures.iter().map(|picture| &picture.frame).collect();
+        for job in &mut planned {
+            api::estimate::learn_reads(&frames, &mut job.ask);
+        }
         let placed = plan::plan(&pictures, &planned, now);
         let mut walker = self.project.walker.lock().expect("walker lock");
         for ((at, _), placement) in jobs.iter().zip(placed) {
@@ -3877,6 +3959,13 @@ impl Walk {
                 walker.placed.remove(&unsent.key);
                 walker.foreseen.remove(&unsent.key);
                 walker.starts.remove(&unsent.key);
+                if unsent.ready {
+                    let why = match placement.offers.is_empty() {
+                        true => "none of its machines answered".to_owned(),
+                        false => placement.offers.iter().map(|offer| placement::said(offer, now)).collect::<Vec<_>>().join("; "),
+                    };
+                    unplanned(&mut walker, &dir, &unsent.key, why);
+                }
                 continue;
             };
             let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
@@ -3890,9 +3979,17 @@ impl Walk {
                 let quoted: Vec<String> = placement.offers.iter().map(|offer| placement::said(offer, now)).collect();
                 info!("{dir}: {} goes to {}: {}", unsent.key, chosen.machine, quoted.join("; "));
             }
+            walker.unplanned.remove(&unsent.key);
             walker.placed.insert(unsent.key.clone(), Placed { offers: placement.offers, soonest: chosen });
         }
+        for unsent in unsent.iter().filter(|unsent| unsent.ready) {
+            if let Some(why) = unread.remove(&unsent.key) {
+                walker.placed.remove(&unsent.key);
+                unplanned(&mut walker, &dir, &unsent.key, why);
+            }
+        }
         walker.placed.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.unplanned.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.foreseen.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.starts.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.items.retain(|(_, key), _| unsent.iter().any(|unsent| unsent.key == *key));
@@ -4800,6 +4897,7 @@ impl Walk {
                     crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await
                 }).await.map_err(named)?;
                 staged.extend(prepared.files);
+                warnings.extend(prepared.from.map(|from| Warning { code: api::calcifer::FROM_SOURCE.into(), message: from.line() }));
                 v1::Source::Local(prepared.source)
             }
         };

@@ -45,8 +45,8 @@ pub(crate) fn rc_version() -> bool {
 
 /// The command that moves `name` to this cozy: its release, or a dev build's own binary.
 pub(crate) fn update_command(name: &str) -> String {
-    let tensord = match (dev_build(), std::env::current_exe()) {
-        (true, Ok(path)) => path.display().to_string(),
+    let tensord = match (dev_build(), platform::exe::launch()) {
+        (true, Some(launch)) => launch.path.display().to_string(),
         _ => this_release().to_owned(),
     };
     format!("cozy machine update {name} --tensord {tensord}")
@@ -56,7 +56,7 @@ pub(crate) fn update_command(name: &str) -> String {
 /// this build when it has no release to fetch.
 async fn this_build() -> Result<DevBuild, Error> {
     let unreadable = |e: std::io::Error| Error::new(Kind::Unavailable, "cozy_unreadable", format!("this cozy's binary: {e}"));
-    let exe = std::env::current_exe().map_err(unreadable)?;
+    let exe = platform::exe::running().map_err(crate::cozy::updated)?;
     let digest = tokio::task::spawn_blocking(move || crate::runs::files::hold(&std::fs::read(&exe).map_err(unreadable)?))
         .await
         .map_err(|e| Error::internal("cozy_unreadable", e.to_string()))??;
@@ -176,10 +176,12 @@ impl Machines {
                 return Err(Error::new(Kind::Unavailable, "machine_unanswered", format!("{} has not reported the software it runs", m.name))
                     .next(format!("cozy machine show {}", m.name)));
             };
-            if self.dev && m.kind == MachineKind::Rental {
-                // A dev home's rental moves to the open RC's builds for its platform (cl-922).
+            let local = m.kind == MachineKind::Local;
+            if self.dev && (m.kind == MachineKind::Rental || (local && crate::checkout::configured())) {
+                // A dev home's rental moves to the open RC's builds for its platform (cl-922), and its `local` where its first-party
+                // packages run from the RC's source (xs-195): its Runtime and TensorFS, its TensorD the cozy installed here.
                 let sums = self.rc.now().await?;
-                for (member, version) in sums.behind(&status.platform, [status.runtime.as_str(), status.tensorfs.as_str(), status.version.as_str()]) {
+                for (member, version) in sums.behind(&status.platform, [status.runtime.as_str(), status.tensorfs.as_str(), status.version.as_str()], local) {
                     let distribution = match member { "runtime" => "cozy_runtime", "tensorfs" => "tensorfs", _ => "" };
                     asked.push((member, distribution, Component::Version(version)));
                 }

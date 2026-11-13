@@ -392,6 +392,15 @@ impl Execution {
 /// spent putting weights on its GPUs (`Ran`).
 pub(crate) use api::machine::TimedRun as RunTime;
 
+/// What a function's run reads of one model (cl-967): its header, its repository, those components and their bytes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct FunctionRead {
+    pub checkpoint: String,
+    pub model: String,
+    pub components: Vec<String>,
+    pub bytes: u64,
+}
+
 /// What a completed root did with its time, by its own and its calls' records and measurements
 /// (cl-816, release owner 11-09). `compute_ms`: its time running less what it spent, while no call
 /// computed, waiting for a GPU lane (its `gpu` log), for its calls' weights to download (`fetched`),
@@ -727,6 +736,7 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS root_times(execution INTEGER PRIMARY KEY REFERENCES executions(id),function TEXT NOT NULL,width INTEGER NOT NULL,size TEXT NOT NULL,ms INTEGER NOT NULL,load_ms INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS root_times_function ON root_times(function,execution);
             CREATE TABLE IF NOT EXISTS cold_times(execution INTEGER PRIMARY KEY REFERENCES executions(id));
+            CREATE TABLE IF NOT EXISTS function_reads(function TEXT NOT NULL,checkpoint TEXT NOT NULL,model TEXT NOT NULL,components TEXT NOT NULL,bytes INTEGER NOT NULL,PRIMARY KEY(function,checkpoint));
             CREATE TABLE IF NOT EXISTS held_memos(actor TEXT NOT NULL,computation TEXT NOT NULL,record BLOB NOT NULL,used_ms INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(actor,computation));
             CREATE TABLE IF NOT EXISTS held_memo_objects(actor TEXT NOT NULL,computation TEXT NOT NULL,sha256 TEXT NOT NULL,PRIMARY KEY(actor,computation,sha256));
             CREATE INDEX IF NOT EXISTS held_memo_objects_digest ON held_memo_objects(sha256);
@@ -1817,6 +1827,38 @@ impl Journal {
         .collect()
     }
 
+    /// What `function`'s newest run here reads, in place of what the one before read (cl-967).
+    pub(crate) fn record_reads(&mut self, function: &str, reads: &[FunctionRead]) -> io::Result<()> {
+        let tx = self.connection.transaction().map_err(db_error)?;
+        tx.execute("DELETE FROM function_reads WHERE function=?1", params![function]).map_err(db_error)?;
+        for read in reads {
+            tx.execute(
+                "INSERT OR REPLACE INTO function_reads(function,checkpoint,model,components,bytes) VALUES(?1,?2,?3,?4,?5)",
+                params![function, read.checkpoint, read.model, encoded(&read.components)?, read.bytes as i64],
+            )
+            .map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)
+    }
+
+    /// Each function's newest reads here (`record_reads`), by function.
+    pub(crate) fn function_reads(&self) -> io::Result<Vec<(String, FunctionRead)>> {
+        let mut statement = self.connection
+            .prepare("SELECT function,checkpoint,model,components,bytes FROM function_reads ORDER BY function,checkpoint")
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
+            })
+            .map_err(db_error)?;
+        rows.map(|row| {
+            let (function, checkpoint, model, components, bytes) = row.map_err(db_error)?;
+            let components = serde_json::from_str(&components).unwrap_or_default();
+            Ok((function, FunctionRead { checkpoint, model, components, bytes: bytes.max(0) as u64 }))
+        })
+        .collect()
+    }
+
     /// Each timed function's newest `limit` times here, newest first (`StatusFrame::times`).
     pub(crate) fn all_run_times(&self, limit: usize) -> io::Result<Vec<api::machine::Timed>> {
         let mut statement = self.connection
@@ -1831,7 +1873,7 @@ impl Journal {
         for row in rows {
             let (function, width, size, ms, load_ms, cold) = row.map_err(db_error)?;
             if timed.last().is_none_or(|last| last.function != function) {
-                timed.push(api::machine::Timed { function, runs: vec![] });
+                timed.push(api::machine::Timed { function, runs: vec![], reads: vec![] });
             }
             let run = RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64, cold };
             timed.last_mut().expect("pushed").runs.push(run);

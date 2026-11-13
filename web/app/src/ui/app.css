@@ -168,7 +168,8 @@ code {
   gap: 12px;
   color: var(--mute);
 }
-.gate h1 {
+.gate h1,
+.gate h2 {
   margin: 0;
   font-size: var(--title);
   font-weight: var(--w-title);
@@ -3438,9 +3439,10 @@ a.tab:hover {
 .in-frame .mention-text .chip {
   text-shadow: none;
 }
+/* The number's column is as wide in every row (v1 as v16), measured in the number's own monospace face, so each row lines up. */
 .image-history .image-version-entry {
   display: grid;
-  grid-template-columns: minmax(3ch, auto) minmax(0, auto) 28px;
+  grid-template-columns: auto minmax(0, auto) 28px;
   gap: 6px;
   align-items: center;
 }
@@ -3451,6 +3453,8 @@ a.tab:hover {
   background: none;
   color: var(--mute);
   font: calc(var(--t-body) * var(--ui)) / 1.3 var(--mono);
+  font-variant-numeric: tabular-nums;
+  min-width: 3ch;
   text-align: right;
 }
 .image-history .image-version-entry > .take-off {
@@ -3480,6 +3484,16 @@ a.tab:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* A first-party package from the dev home's packages checkout (xs-195). */
+.image-tool-source {
+  flex: none;
+  color: var(--mute);
+  white-space: nowrap;
+}
+.tools p.tool-source {
+  font-size: calc(var(--t-body) * var(--ui));
+  overflow-wrap: anywhere;
 }
 .tool-off {
   flex: none;

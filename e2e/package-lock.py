@@ -84,7 +84,8 @@ def project_of(base: str, headers: dict[str, str], directory: Path) -> str | Non
     url = base + "/v1/projects/" + quote(str(directory), safe="") + "/address"
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers={**headers, "cozy-project-storage": "3"})) as response:
-            return json.load(response)["id"]
+            project: str = json.load(response)["id"]
+            return project
     except urllib.error.HTTPError as error:
         if error.code == 404:
             return None

@@ -68,7 +68,7 @@ def main() -> int:
     return subprocess.call([args.cozy, "--json", "run", "watch", run["id"]], cwd=OUTSIDE)
 
 
-def local_code(base: str, headers: dict[str, str], target: Path, stage_code: Path | None) -> tuple[dict, str]:
+def local_code(base: str, headers: dict[str, str], target: Path, stage_code: Path | None) -> tuple[dict[str, object], str]:
     """The code of a local package outside any project and the function it names, as the CLI sends it: captured by
     Calcifer from its folder. A Calcifer before native capture takes it by content (the stage-code example)."""
     package, function = (target, "") if target.is_dir() or target.suffix == ".py" else (target.parent, target.name)

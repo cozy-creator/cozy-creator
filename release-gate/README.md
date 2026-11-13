@@ -13,7 +13,8 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 | Suite | Proves | Rentals (`skus`) | Cost · time | Pick it for |
 |---|---|---|---|---|
 | `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer, Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output), and Regenerate-2K over the whole 15 s shot at 1440p, the largest one forward takes (cr-259): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6.5 · ~95 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
-| `packages` | the packages `--pins` (or `--only`) names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
+| `packages` | from the `--packages` checkout's source, its candidates (each at a prerelease version) and what `--only` names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
+| `publish` | the Hub-publish path source runs skip: `packages_ref`'s candidates published to a throwaway Hub by `task publish -- --hub` (finals, locks rebound to its index, Triton sets, describe), each installed from it, and BiRefNet run from it on the runner (`suites/publish/run.sh`) | none: a runner (job `hub-fixture`) | $0 · ~30 min | every package promotion |
 | `varena` | the memory manager: cold load, co-residency, reload, 8/6/3 GiB caps, a real 8 GB card, host RAM, no backing left without a page (below), a warm call served by graphs, real models repeating byte for byte warm, capped, with memory unmapped and perturbed, and with a kept graph's weights gone or no room for them, and with graphs off (`differential/`), the memory authority's rules (`core`), `vt.offload` beside stock SDXL (`offload-*`) and deliberate faults over SSH (`fault-*`, `faults`); with it, run the `vram-yield` session: a game started next to cozy has its memory within 2 s, idle and mid-call, and the call completes (Sessions) | its `skus`; the session one rtx-3070 | session ~$0.5 · ~45 min | a varena, memory, TensorD or Runtime memory change |
 | `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; an API-warmed `gpu` member kept and its executor reused; two runs at once on two GPUs; output landing against this computer's download speed; distinct LoRA'd calls add nothing to the disk (cl-683); a canceled run's executor releasing most of two GPUs and 16 GiB pinned is waited on, never called stuck (cl-935) | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
 | `tensorfs` | downloads as fast as the last pass (Hub and datacenter cache), nothing from the Hub again, resume after a cut (a private model no cache holds: from the Hub); uploads of new weights, dedup of a re-upload, resume after a cut; a recipe that encodes each component in its own call writes every component; a Hub fp8 checkpoint's quantize with a local package is planned and started, Calcifer up (cl-974); a straggler re-asked, not waited out; a LoRA's scale never taken from training metadata; a source that is no form of its family refused before it downloads (below) | cpu | ~$0.3 · ~40 min | a TensorFS, download, upload or quantize change |
@@ -58,12 +59,12 @@ seconds. A cut runs it beside `interfaces.sh`; the attention suite runs it as it
 
 ## What a gate does
 
-Local-package (`--packages`) gates build a small source-staging helper from this checkout before renting. It uses the CLI's source selection and sends that content through the API for download-only preparation.
+Local-package (`--packages`) gates build a small source-staging helper from this checkout before renting. It uses the CLI's source selection and sends that content through the API for download-only preparation. While the rental boots, the checkout's `scripts/triton.sh` builds each package's Triton sets into it, so a source run's first request serves the kernels its release would ship.
 
 1. Rents one fresh machine of the SKU.
-2. Puts the candidate on it: `--runtime`, `--tensorfs`, `--tensord` (a cozy binary; each a file or `URL#sha256=`), `--pins`
-   (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
-   or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
+2. Puts the candidate on it: `--runtime`, `--tensorfs`, `--tensord` (a cozy binary; each a file or `URL#sha256=`), and
+   `--packages` (a packages checkout whose directories run from source: nothing untested is published). A package the
+   checkout lacks runs as users get it. `--models` names the held private model releases the set uses.
    This computer's cozy puts it on (a cozy of another version would restart a shared Calcifer); `machine update` fails unless the machine then runs it.
    The chosen suites' own packages are described on the Runtime the machine runs (`interfaces.sh`): one the package contract
    refuses fails `gate-packages` by name, whatever its cells do. Gate packages use the public API only; what needs the
@@ -96,7 +97,7 @@ A SKU and suites with no baseline need `--establish` once.
 - **By hand:** `release-gate/gate.sh rtx-4090 --suite runtime --runtime <url#sha256=…> --publish`, through the
   default `~/.cozy`, signed in as you. `--on local` runs the cells on this computer's machine as it is (a dev proof:
   no rental, no `--before`).
-- **From Actions:** `gh workflow run release-gate.yml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f suites=runtime,packages -f pins=…`.
+- **From Actions:** `gh workflow run release-gate.yml -R cozy-creator/cozy-creator --ref rc/<x> -f hub=prod -f suites=runtime,packages,publish -f packages_ref=<packages commit>`.
   The suites' `skus` pick the rentals; `skus` overrides them, `only` narrows the cells.
   Testing is manual (Paul 10-24): only the release agent dispatches it, with the suites it chose; no workflow calls it.
   Dispatch from `master`, `rc/*` or `release/*`: the `release-gate` environment refuses any other branch before a runner
@@ -116,14 +117,20 @@ A SKU and suites with no baseline need `--establish` once.
 
 ## Promotion
 
-Nothing reaches users before a recorded PASS. Candidates wait where users don't look: cozy as a GitHub prerelease
-(cozy-publish.yaml; `cozy update`, the installer and Homebrew follow latest), TensorFS and the Runtime as GitHub
-prerelease assets (tensorfs-publish.yaml `candidate=true`, cozy-runtime runtime-publish.yaml `mode=source`), and packages
-as yanked releases (`task publish`). The release agent picks the suites, runs the gate by hand or from Actions, and
-records the result. `candidate.json` in each gate's output names the exact set: the versions the machine ran and the
-candidate files' digests. `verify.sh <run|dir>...` prints it only when every supplied SKU passed (or its FAIL was accepted by the lead). `verify.sh --release` also requires every row of `escaped.tsv` (a bug that reached users: the expect row of its cell and the SKUs it must pass on) to have passed in those gates: a Runtime, TensorFS or cozy release's record names its output (xs-182: 0.24.0's hand gate ran the bench, prompt LMs off, and no Hopper pair). Numeric IDs must be completed, repository-owned dispatches of `release-gate.yml`; PR and unrelated-workflow artifacts are rejected before download. Local gate directories remain explicit hand receipts. `promote.sh <run id>` (or
-`--record <URL> <dirs>...` for a hand gate) hands that set to users in one step: the same files to PyPI, the cozy
-prerelease latest plus Homebrew (cozy-promote.yaml), the packages un-yanked (`cozy package yank --undo`) on the Hub. Packages' `task promote` calls it. The worker image and the Hub pin follow, by the release owner.
+Nothing reaches users before a recorded PASS, and nothing untested is published (Paul 11-13). Candidates wait where users
+don't look: cozy as a GitHub prerelease (cozy-publish.yaml), TensorFS and the Runtime as GitHub prerelease assets
+(tensorfs-publish.yaml `candidate=true`, cozy-runtime runtime-publish.yaml `mode=source`), worker images staged by digest
+(tensorhub worker-images-publish.yaml `mode=stage`), packages unpublished in the packages commit the gates ran
+(`packages_ref`), models private. `candidate.json` in each gate's output names the set: the versions the machine ran, the
+candidate files' digests, `packages_ref` and `models`. `verify.sh <run|dir>...` prints it only when every supplied SKU
+passed (or its FAIL was accepted by the lead). `verify.sh --release` also requires every row of `escaped.tsv` (a bug that
+reached users: the expect row of its cell and the SKUs it must pass on) to have passed in those gates. Numeric IDs must be
+completed, repository-owned dispatches of `release-gate.yml`; local gate directories are explicit hand receipts.
+
+`promote.sh [--images '<profile>=sha256:… …'] [--packages DIR] <run id>` (or `--record <URL> <dirs>...`) hands the set to
+users, each step waiting for the last: PyPI (TensorFS, Runtime), the worker images, cozy Latest plus Homebrew, then
+`task publish -- --gated <packages_ref>` in the packages checkout at master (the finals of the gated source, only the
+version changed), then the held models published again, public. The Hub pin follows, by the release owner.
 
 ## Clients and the Hub
 
@@ -282,7 +289,7 @@ Hub's record of the rental (`released` or `failed`, with an end time, only once 
     the one place in release-gate that speaks HTTP to the Hub by hand: it is the contract test.
   - In the isolated fixture only, through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami (balance, buy page), the rental catalog; a package
     locked, published twice, run, yanked (the simple index marks it `data-yanked`), resolved past, run by exact pin,
-    un-yanked, and a yanked candidate never named newest; a model commit uploaded in a lane by the machine, published
+    un-yanked; a model commit uploaded in a lane by the machine, published
     (listed), downloaded, downloaded by pin and lane, deleted (gone).
   - Real pods, one fresh `cpu` rental on each provider (`machine rent --provider runpod|vast`: dev-only, so the suite
     writes `dev = true` into the home's config; never a `--help` probe): a local weightless package sent by content,

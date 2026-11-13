@@ -98,9 +98,27 @@ const GAP_Y = 16
 const overlaps = (a: Box, b: Box) => a.x < b.x + b.w + GAP_X / 2 && b.x < a.x + a.w + GAP_X / 2 && a.y < b.y + b.h + GAP_Y && b.y < a.y + a.h + GAP_Y
 
 /**
+ * Where in `on` a `w` by `h` box first fits clear of `placed`: down its left edge, else down the next place a box there ends, left to
+ * right. None when nothing in it has room.
+ */
+function roomIn(on: Box, w: number, h: number, placed: Box[]): { x: number; y: number } | undefined {
+  const columns = [...new Set([on.x, ...placed.map((box) => box.x + box.w + GAP_X)])].filter((x) => x >= on.x && x + w <= on.x + on.w).sort((a, b) => a - b)
+  for (const x of columns) {
+    const below = placed.filter((other) => other.x < x + w + GAP_X / 2 && x < other.x + other.w + GAP_X / 2).sort((a, b) => a.y - b.y)
+    let y = on.y
+    for (const other of below) {
+      if (other.y >= y + h + GAP_Y) break
+      y = Math.max(y, other.y + other.h + GAP_Y)
+    }
+    if (y + h <= on.y + on.h) return { x, y }
+  }
+  return undefined
+}
+
+/**
  * A home for each name with none, once: right of what it reads, else by graph depth, each below what's already there. `boxes` is
- * what's already placed, and grows. With `on`, what's on screen as more arrive, what reads nothing takes the first free place there:
- * down a column, then the next, then wherever's free.
+ * what's already placed, and grows. With `on`, what's on screen as more arrive, what reads nothing takes the first free place there
+ * (`roomIn`), else goes below.
  */
 export function homesFor(names: string[], edges: ReadEdge[], boxes: Map<string, Box>, size: (name: string) => { w: number; h: number }, on?: Box): Map<string, Card> {
   const depth = depths(names, edges)
@@ -119,8 +137,9 @@ export function homesFor(names: string[], edges: ReadEdge[], boxes: Map<string, 
       box.x = Math.max(...reads.map((read) => read.x + read.w)) + GAP_X
       box.y = reads[0].y
     } else if (on) {
-      box.x = on.x
-      box.y = on.y
+      const room = roomIn(on, w, h, placed)
+      box.x = room?.x ?? on.x
+      box.y = room?.y ?? on.y
     }
     for (let bump = placed.find((other) => overlaps(box, other)); bump; bump = placed.find((other) => overlaps(box, other))) {
       box.y = bump.y + bump.h + GAP_Y

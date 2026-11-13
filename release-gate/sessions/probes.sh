@@ -19,13 +19,6 @@ RENT_ARGS=--ssh
 
 # What this runner's Calcifer ordered is this session's (another client's rentals read `ordered: false`), so a lost answer's order is
 # ended too.
-own() { machines_json | jq -r '.machines[] | select(.kind == "rental" and .ordered and .state != "ended") | .rental_id // .name'; }
-claim() {
-  local r
-  for r in $(own); do
-    [[ " ${RIDS[*]:-} " == *" $r "* ]] || { RIDS+=("$r"); echo "$r" >> "$OUT/rental"; say "this runner's Calcifer also holds $r"; }
-  done
-}
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
 
 PW=$(mktemp -d)

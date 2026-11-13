@@ -39,10 +39,10 @@ NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 
 # Generations: install, update and roll back a package; then the Runtime back a release and forward to the candidate.
 # sdxl is the package the rest of this suite runs, at $NEW.
-read -r NEW _ <<< "$(released sdxl)"; NEW=$(tr , '\n' <<< "$PINS" | sed -n 's/^sdxl@//p' | head -1 | grep . || echo "$NEW")
+read -r NEW _ <<< "$(released sdxl)"
 # The rollback is anima's: its last two releases both import on the current Runtime. sdxl's one before 0.2.0 predates Runtime 0.37.0 and refuses to (cl-739).
 read -r first second <<< "$(released anima)"
-AOLD=$first; ANEW=$(tr , '\n' <<< "$PINS" | sed -n 's/^anima@//p' | head -1); ANEW=${ANEW:-$first}; [ "$AOLD" != "$ANEW" ] || AOLD=$second
+AOLD=$second ANEW=$first
 "$CLI" package install "anima@$AOLD" --on "$M" -y > "$T/install.log" 2>&1; a=$(envs)
 "$CLI" package install "anima@$ANEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
 n1=$(submit "anima/generate@$ANEW" prompt="masterpiece, anime illustration of $SCENE, generation $ANEW" seed:=$((R + 30))); until_status "$n1" terminal

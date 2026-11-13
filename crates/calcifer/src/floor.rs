@@ -1,8 +1,10 @@
 //! A package release runs only on a Runtime its `cozy-runtime` requirement admits (cl-952, `api::release::choose`). A run whose
 //! release needs a newer Runtime than its machine's moves the machine to the newest that runs it, a release (PyPI's) or on the
 //! RC the RC's build, before it runs: an update under a `floor-` key, which holds the machine on nothing. A machine held by hand
-//! refuses instead.
+//! refuses instead. Only a Runtime this cozy's line runs (its TensorFS's protocol or an older one's) is moved to; one only a newer
+//! cozy's line runs is reached by cozy updating itself (`crate::cozy`, cl-978).
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
@@ -14,7 +16,9 @@ use api::{
     error::{Error, Kind},
     prerelease,
 };
-use pep440_rs::{Operator, Version};
+use api::hub::types::Software;
+use pep440_rs::{Operator, Version, VersionSpecifiers};
+use futures_util::StreamExt as _;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
@@ -37,6 +41,12 @@ pub(crate) struct Released {
 }
 
 static RELEASED: Mutex<Option<(Instant, Arc<Vec<Released>>)>> = Mutex::new(None);
+
+/// What each Runtime release requires of TensorFS, as PyPI said it once: a release never changes.
+static TENSORFS: Mutex<BTreeMap<String, Option<VersionSpecifiers>>> = Mutex::new(BTreeMap::new());
+
+/// The Hub's software (`/v1/software`), as last read, by Hub.
+static SOFTWARE: Mutex<BTreeMap<String, (Instant, Arc<Software>)>> = Mutex::new(BTreeMap::new());
 
 #[derive(Deserialize)]
 struct Project {
@@ -94,6 +104,33 @@ pub(crate) async fn released() -> Result<Arc<Vec<Released>>, Error> {
     }
 }
 
+/// What Runtime release `version` requires of TensorFS (its `Requires-Dist`), from PyPI, read once: None when it names none, or
+/// PyPI didn't answer (asked again next time), which holds nothing back.
+fn tensorfs_of(version: String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<VersionSpecifiers>> + Send>> {
+    Box::pin(async move { tensorfs_read(&version).await })
+}
+
+async fn tensorfs_read(version: &str) -> Option<VersionSpecifiers> {
+    if let Some(needs) = TENSORFS.lock().expect("tensorfs lock").get(version) {
+        return needs.clone();
+    }
+    #[derive(Deserialize)]
+    struct Read {
+        info: Info,
+    }
+    #[derive(Deserialize)]
+    struct Info {
+        #[serde(default)]
+        requires_dist: Option<Vec<String>>,
+    }
+    let url = format!("https://pypi.org/pypi/cozy-runtime/{version}/json");
+    let read = async { http().ok()?.get(&url).send().await.ok()?.error_for_status().ok()?.json::<Read>().await.ok() };
+    let requires = read.await?.info.requires_dist.unwrap_or_default();
+    let needs = api::release::required(requires.iter().map(String::as_str), "tensorfs");
+    TENSORFS.lock().expect("tensorfs lock").insert(version.to_owned(), needs.clone());
+    needs
+}
+
 /// What a run's machine does for the package release it takes: it moves to `to` first.
 #[derive(Clone, Debug)]
 pub(crate) struct Upgrade {
@@ -113,29 +150,93 @@ impl Upgrade {
 }
 
 impl Machines {
-    /// The Runtimes `name` (on `frame`) can move to for a package release: PyPI's, and on the RC (`rc`, or held off it) the RC's
-    /// build for its platform; and whether it moves (`api::release::Moves`): not when held by hand, nor when another computer's (added here,
-    /// or a rental another client ordered).
-    pub(crate) async fn runtimes(&self, name: &str, frame: &api::machine::StatusFrame, rc: bool) -> (Vec<String>, api::release::Moves) {
+    /// The Runtimes `name` (on `frame`) can move to for a package release on this cozy's line: PyPI's that its TensorFS's protocol
+    /// speaks, and on the RC (`rc`, or held off it) the RC's build for its platform; whether it moves (`api::release::Moves`): not
+    /// when held by hand, nor when another computer's (added here, or a rental another client ordered); and the newer cozy, the
+    /// Hub's, whose line runs Runtimes this one's doesn't (cl-978).
+    pub(crate) async fn runtimes(&self, name: &str, frame: &api::machine::StatusFrame, rc: bool) -> (Vec<String>, api::release::Moves, Option<api::release::Newer>) {
         let moves = match self.named(name).ok().flatten() {
             Some(row) if row.kind == MachineKind::Added || (row.kind == MachineKind::Rental && !self.ordered(&row)) => api::release::Moves::No,
             _ if self.held_by_hand(name).is_some() => api::release::Moves::Held,
             _ => api::release::Moves::Yes,
         };
-        let mut runtimes: Vec<String> = match released().await {
+        let released: Vec<String> = match released().await {
             Ok(released) => released.iter().map(|release| release.version.clone()).collect(),
             Err(e) => {
                 tracing::warn!("the Runtime's releases: {}", e.message);
                 vec![]
             }
         };
+        // Only those newer than its own are asked what TensorFS they need: a machine moves only up.
+        let running = Version::from_str(&frame.runtime).ok();
+        let above: Vec<String> = released.into_iter().filter(|release| match (&running, Version::from_str(release)) {
+            (Some(running), Ok(release)) => release > *running,
+            _ => true,
+        }).collect();
+        let asked: Vec<_> = above.iter().cloned().map(tensorfs_of).collect();
+        let needs: Vec<Option<VersionSpecifiers>> = futures_util::stream::iter(asked).buffered(8).collect().await;
+        let ours = tensorfs::VERSION;
+        let (mut runtimes, mut beyond) = (vec![], vec![]);
+        for (release, needs) in above.into_iter().zip(needs) {
+            match api::release::admits_series(needs.as_ref(), ours) {
+                true => runtimes.push(release),
+                false => beyond.push((release, needs)),
+            }
+        }
         // A machine held off the RC by hand counts the RC's build too: refused, it names the update that moves it there.
         if rc || self.rc_machine(name, frame) {
             if let Ok(sums) = self.rc.now().await {
                 runtimes.extend(sums.build("runtime", &frame.platform).map(|(build, _)| build.version));
             }
         }
-        (runtimes, moves)
+        let newer = match beyond.is_empty() {
+            true => None,
+            false => self.newer(beyond).await,
+        };
+        (runtimes, moves, newer)
+    }
+
+    /// The Hub's cozy, when it is a newer release than this one, and which of `beyond` (Runtimes this cozy's line doesn't run, with
+    /// what each requires of TensorFS) its line runs. A dev build never updates itself: its binary is someone's build.
+    async fn newer(&self, beyond: Vec<(String, Option<VersionSpecifiers>)>) -> Option<api::release::Newer> {
+        if crate::update::dev_build() {
+            return None;
+        }
+        let software = self.software().await?;
+        let cozy = software.cozy.clone().filter(|cozy| crate::cozy::newer(cozy, crate::update::this_release()))?;
+        let runtimes: Vec<String> = (beyond.into_iter())
+            .filter(|(_, needs)| api::release::admits_series(needs.as_ref(), &software.tensorfs))
+            .map(|(release, _)| release)
+            .collect();
+        let major = crate::cozy::major(&cozy) != crate::cozy::major(crate::update::this_release());
+        (!runtimes.is_empty()).then_some(api::release::Newer { cozy, runtimes, major })
+    }
+
+    /// This home's Hub's software (`/v1/software`), read at most once a [`FRESH`]; as last read when it doesn't answer.
+    pub(crate) async fn software(&self) -> Option<Arc<Software>> {
+        let hub = self.hubs.default_origin();
+        let kept = SOFTWARE.lock().expect("software lock").get(&hub).cloned();
+        if let Some((at, read)) = &kept
+            && at.elapsed() < FRESH
+        {
+            return Some(read.clone());
+        }
+        let read = match self.hubs.anonymous(&hub) {
+            Ok(client) => client.get_software().await.map_err(|e| e.to_string()),
+            Err(e) => Err(e.message),
+        };
+        match (read, kept) {
+            (Ok(read), _) => {
+                let read = Arc::new(read);
+                SOFTWARE.lock().expect("software lock").insert(hub, (Instant::now(), read.clone()));
+                Some(read)
+            }
+            (Err(_), Some((_, read))) => Some(read),
+            (Err(e), None) => {
+                tracing::warn!("{hub}'s software: {e}");
+                None
+            }
+        }
     }
 
     /// Moves `upgrade.machine` to Runtime `upgrade.to` before the run that needs it, which waits behind it: a release alone
@@ -162,7 +263,8 @@ impl Machines {
         let mut ask = MachineUpdate { runtime: Some(Component::Version(upgrade.to.clone())), ..Default::default() };
         if prerelease::dev(&upgrade.to) {
             let sums = self.rc.now().await?;
-            for (member, version) in sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()]) {
+            let local = self.named(name).ok().flatten().is_some_and(|row| row.kind == MachineKind::Local);
+            for (member, version) in sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()], local) {
                 match member {
                     "tensorfs" => ask.tensorfs = Some(Component::Version(version)),
                     "tensord" => ask.tensord = Some(Component::Version(version)),

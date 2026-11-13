@@ -25,6 +25,8 @@ export { useProjectId, useTo } from "./project"
 
 /** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. */
 const SAYS_HOW = 5
+/** How long before an unlock's deadline its status is asked again. */
+const EXPIRY_ASK_MS = 2000
 
 /** Whether Calcifer answers, and what's waiting for it: said, and nothing waits on it. Gone once all of it is saved. */
 function Connectivity() {
@@ -346,11 +348,15 @@ export function Shell() {
 
   useEffect(() => {
     if (!id || !vault.data?.encrypted || vault.data.state !== "unlocked" || vault.data.expires_at_ms == null) return
+    const left = Math.max(0, vault.data.expires_at_ms - Date.now())
+    // Activity anywhere (another tab, the CLI, a run) moves the deadline without a word to this tab: it's asked shortly before, and the
+    // cover falls only on one that holds.
+    const ask = left > 0 ? setTimeout(() => void vault.refetch(), Math.max(left / 2, left - EXPIRY_ASK_MS)) : undefined
     const timer = setTimeout(() => {
       flushSync(() => setChecking(true))
       void vault.refetch().then((answer) => { if (!answer.isError) setChecking(false) })
-    }, Math.max(0, vault.data.expires_at_ms - Date.now()))
-    return () => clearTimeout(timer)
+    }, left)
+    return () => { clearTimeout(ask); clearTimeout(timer) }
   }, [id, vault.data?.encrypted, vault.data?.state, vault.data?.expires_at_ms, vault.refetch])
 
   useEffect(() => {

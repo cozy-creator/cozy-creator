@@ -61,6 +61,13 @@ struct Session {
 fn error(code: &'static str, why: impl std::fmt::Display) -> Error { Error::new(Kind::Unavailable, code, why.to_string()) }
 fn io(e: std::io::Error) -> Error { error("vault_io", e) }
 fn provider(e: impl std::fmt::Display) -> Error { error("vault_provider", e) }
+/// A mount's failure; one whose supervisor this cozy can't start, as an update replaced it, names the restart (cl-981).
+fn mounting(e: project_mount::Error) -> Error {
+    match e {
+        project_mount::Error::Platform(e @ platform::Error::Updated { .. }) => crate::cozy::updated(e),
+        other => provider(other),
+    }
+}
 fn key(e: project_vault::Error) -> Error {
     match e {
         rejected @ project_vault::Error::Unlock => Error::new(Kind::Credential, "vault_unlock_failed", rejected.to_string()),
@@ -498,7 +505,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let runtime = project_runtime(root)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
-    let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
+    let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
     let canonical_view = platform::durable::canonical(mounted.view()).map_err(provider)?;
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
     ROOTS.lock().expect("vault roots").insert(canonical_view.clone(), root.to_owned());
@@ -820,7 +827,7 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
         let runtime = project_runtime(root)?;
         let view = project_mount::view_path(&runtime).map_err(provider)?;
         let mut target = created.secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes,
-            MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
+            MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
         let initialized = super::new_database(target.view(), id, name, written);
         target.try_unmount().map_err(provider)?;
         retire_runtime(&runtime)?;

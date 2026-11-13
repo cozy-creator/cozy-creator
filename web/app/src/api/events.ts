@@ -257,7 +257,7 @@ export class EventStream {
     this.epoch = health.state === "live" ? stream : null
     this.health.set(health)
     if (health.state === "signed_out") {
-      for (const waiter of this.waiters) waiter.fail(new ApiError(401, { kind: "credential", code: "unauthenticated", message: "Sign in again", next: ["cozy open"] }))
+      for (const waiter of this.waiters) waiter.fail(new ApiError(401, { kind: "credential", code: "unauthenticated", message: "This page's session ended", next: ["cozy open"] }))
     }
   }
 
@@ -292,10 +292,12 @@ export class EventStream {
   private async follow(): Promise<boolean> {
     const connection = new AbortController()
     this.following = connection
-    let last = Date.now()
-    const watch = setInterval(() => {
-      if (Date.now() - last > SILENT_MS) connection.abort()
-    }, SILENT_MS / 3)
+    let silent: ReturnType<typeof setTimeout> | undefined
+    const heard = () => {
+      clearTimeout(silent)
+      silent = setTimeout(() => connection.abort(), SILENT_MS)
+    }
+    heard()
     let live = false
     try {
       const response = await this.client.events(connection.signal).catch(() => null)
@@ -316,9 +318,7 @@ export class EventStream {
           }
           this.publish(event)
         },
-        () => {
-          last = Date.now()
-        },
+        heard,
       ).catch(() => {})
       return live
     } finally {
@@ -326,7 +326,7 @@ export class EventStream {
       this.following = null
       this.epoch = null
       this.acknowledged = null
-      clearInterval(watch)
+      clearTimeout(silent)
     }
   }
 }

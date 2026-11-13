@@ -32,9 +32,9 @@ pub fn machine(lifetime: Lifetime) -> ExitCode {
 }
 
 fn run(lifetime: Lifetime) -> io::Result<()> {
-    use crate::machine::{binary, identity, provider::ProviderSelf, ssh, supervise, update};
+    use crate::machine::{identity, provider::ProviderSelf, ssh, supervise, update};
     // Where this binary was started from, before anything can rename another over it.
-    if let Err(error) = binary::record() {
+    if let Err(error) = platform::exe::record() {
         eprintln!("cannot record this binary's launch path ({error}): it never activates another");
     }
     // Before config/journal records: trusted parents can retain private allocator bytes for
@@ -327,11 +327,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
                 runtime.block_on(async {
                     tokio::spawn(crate::machine::lifecycle::keep_authority(hub.clone(), keys, state.clone()));
                     crate::machine::speed::serve(hub.clone(), state, origin);
-                    let jobs = move |since| {
-                        let (working, ended_ms) = service.engine.jobs(since)?;
-                        Ok(crate::machine::lifecycle::Jobs { working, ended_ms })
-                    };
-                    crate::machine::lifecycle::release_when_idle(lifecycle, hub, provider, jobs).await;
+                    crate::machine::lifecycle::release_when_idle(lifecycle, hub, provider, service.engine.clone()).await;
                 });
                 // The Hub accepted the release, or the rental ended itself: this process ends.
                 std::process::exit(0);

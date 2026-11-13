@@ -14,6 +14,7 @@ import stat
 import struct
 import subprocess
 import sys
+from typing import cast
 from urllib.parse import quote
 import zipfile
 import zlib
@@ -34,7 +35,7 @@ def places(home: Path, temp: Path, **extra: Path) -> dict[str, Path]:
 
 
 class Scanner:
-    def __init__(self):
+    def __init__(self) -> None:
         self.markers: list[bytes] = []
         self.images: set[bytes] = set()
         self.counts: Counter[str] = Counter()
@@ -45,7 +46,7 @@ class Scanner:
         self.markers.append(raw)
 
     def patterns(self) -> list[bytes]:
-        patterns = set()
+        patterns: set[bytes] = set()
         for raw in self.markers:
             patterns.update((raw, raw.hex().encode(), base64.b64encode(raw), base64.urlsafe_b64encode(raw)))
             try:
@@ -145,16 +146,17 @@ class Scanner:
         if self.images and data[:4] in {b"\x89PNG", b"RIFF", b"\xff\xd8\xff\xe0", b"\xff\xd8\xff\xe1"}:
             try:
                 from PIL import Image
-                with Image.open(io.BytesIO(data)) as picture:
-                    picture = picture.convert("L")
-                    bits = bytes(1 if picture.getpixel((min(picture.width - 1, (2 * x + 1) * picture.width // 32), min(picture.height - 1, (2 * y + 1) * picture.height // 32))) > 127 else 0 for y in range(16) for x in range(16))
+                with Image.open(io.BytesIO(data)) as source:
+                    picture = source.convert("L")
+                    # cast: an "L" (8-bit grey) image's pixel is an int
+                    bits = bytes(1 if cast(int, picture.getpixel((min(picture.width - 1, (2 * x + 1) * picture.width // 32), min(picture.height - 1, (2 * y + 1) * picture.height // 32)))) > 127 else 0 for y in range(16) for x in range(16))
                     if bits in self.images:
                         self.matches.add(label)
                     self.counts["images_decoded"] += 1
             except (ImportError, OSError, ValueError):
                 self.counts["images_unreadable"] += 1
 
-    def scan_privileged(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path]) -> dict | None:
+    def scan_privileged(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path]) -> dict[str, object] | None:
         """`scan` as root, which reads OS-private folders (systemd PrivateTmp, sudo apt state) an
         unprivileged walk cannot. Markers travel on stdin; None if the scan process failed."""
         request = {"markers": [marker.hex() for marker in self.markers], "images": [image.hex() for image in self.images],
@@ -162,9 +164,9 @@ class Scanner:
                    "receipt": str(receipt), "classes": {name: str(root) for name, root in classes.items()}}
         done = subprocess.run(["sudo", "-n", sys.executable, "-E", "-s", str(Path(__file__).resolve())],
                               input=json.dumps(request).encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        return json.loads(done.stdout) if done.returncode == 0 else None
+        return cast(dict[str, object], json.loads(done.stdout)) if done.returncode == 0 else None  # cast: the scan process's JSON
 
-    def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path] | None = None) -> dict:
+    def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path] | None = None) -> dict[str, object]:
         self.counts.clear(); self.matches.clear()
         patterns = self.patterns()
         require(patterns, "scan_markers_missing")
@@ -179,7 +181,7 @@ class Scanner:
         for root in roots:
             if not root.exists():
                 continue
-            def unreadable(error):
+            def unreadable(error: OSError) -> None:
                 self.counts["unreadable"] += 1
                 if places:
                     self.counts["unreadable_" + place(Path(error.filename or root))] += 1

@@ -3,7 +3,7 @@
 # first-party package. Any FAIL blocks the publish. Runs by hand through the default ~/.cozy, and from
 # .github/workflows/release-gate.yaml on a runner signed in with `cozy login --key`.
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
-#           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
+#           [--tensord BIN|URL] [--packages DIR] [--models org/name@version,...] [--only cell,cell] [--before FILE]...
 #           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--stall MIN]
 #           [--cap MIN] [--group NAME] [--corpus RUN] [--hub prod|isolated]
 # --hub: in CI, the Hub this gate rents on (e2e/test-hub.sh require_ci_rental_hub): prod, tensorhub.com, or a verified isolated one.
@@ -22,9 +22,10 @@
 # One FRESH rental. The candidate goes on with $CLI's `machine update`, never the candidate binary's: a cozy of another
 # version talking to a shared Calcifer restarts it on a route it lacks. The update fails unless the
 # machine then runs it; the set the machine reports is the gate's label. Then each cell runs ONCE (e2e/run.sh)
-# with a scenario prompt from scenarios.tsv and fresh seeds. A cell runs the root (first-party) package users get;
-# --pins runs exact releases of them instead (a yanked candidate installs by its exact pin), --packages a packages
-# checkout's dirs. A cell another suite ran, or one known-failing.json parks on the SKU (its "cells"), does not run.
+# with a scenario prompt from scenarios.tsv and fresh seeds. A cell runs the root (first-party) package users get, or
+# from source the --packages checkout's dir of it, with the Triton sets its release would ship (that checkout's
+# scripts/triton.sh, built while the rental boots): nothing untested is published (Paul 11-13). --models names the held
+# private model releases the set uses, which the promotion makes public (candidate.json). A cell another suite ran, or one known-failing.json parks on the SKU (its "cells"), does not run.
 # candidate.json records the set the verdict is for (release-gate/verify.sh reads it before a promotion).
 # analyze.py holds each cell against the SKU's baseline, gate-<SKU>.json on the `release-gate-baselines`
 # release; a SKU with none needs --establish. --publish uploads a PASS as the SKU's new baseline.
@@ -38,7 +39,7 @@ fi
 HERE=$2 BEGAN=$3 HOST=$4 BEGUN_IN=$PWD; shift 4; ARGS=("$@")
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
-SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
+SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= MODELS= SUITES= K= CLIP= GPUS= FIRST= ON= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
 BIN= RW= TW= TD= CAP=300 HOSTS=5 GROUP= CORPUS= HUB_TARGET=isolated
 while [ $# -gt 0 ]; do
   case $1 in
@@ -60,7 +61,7 @@ while [ $# -gt 0 ]; do
     --cap) CAP=$2;;
     --hub) HUB_TARGET=$2;;
     --packages) PKGS=$(cd "$2" && pwd);;
-    --pins) PINS=",$2,";;
+    --models) MODELS=$2;;
     --runtime|--runtime-wheel) RW=$2;;
     --tensorfs|--tensorfs-wheel) TW=$2;;
     --tensord) TD=$2;;
@@ -86,6 +87,18 @@ if [ -n "$PKGS" ] || [ ${#GATE_PKGS[@]} -gt 0 ]; then
   cargo build --quiet --locked --manifest-path "$HERE/../Cargo.toml" -p api --example stage-code --target-dir "$PWD/stage-code-build" > stage-code-build.log 2>&1 \
     || { log "could not build local-source staging helper: $(tail -c 500 stage-code-build.log)"; exit 1; }
   RUN_CODE_STAGE=$PWD/stage-code-build/debug/examples/stage-code
+fi
+# The --packages checkout's packages that declare Triton sets: built into it while the rental boots (`pkg` waits for one).
+if [ -n "$PKGS" ] && [ -x "$PKGS/scripts/triton.sh" ]; then
+  for d in "$PKGS"/*/; do
+    d=${d%/}
+    [ -f "$d/pyproject.toml" ] && grep -rqs --include='*.py' 'TritonKernels(' "$d" || continue
+    # Building or built already (a gate started again on another host): left to it.
+    st=$(cat "kernels-${d##*/}.status" 2>/dev/null) || st=
+    if [ -f "kernels-${d##*/}.log" ] && { [ -z "$st" ] || [ "$st" = 0 ]; }; then continue; fi
+    rm -f "kernels-${d##*/}.status"
+    ( "$PKGS/scripts/triton.sh" "$d" > "kernels-${d##*/}.log" 2>&1; echo $? > "kernels-${d##*/}.status" ) &
+  done
 fi
 # expect <check> PASS|FAIL|SKIP <what happened>: a CLI-behaviour check (cells/*.sh); analyze.py fails the gate on a FAIL.
 expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t\r' '   ' <<< "$3" | cut -c1-400)" >> expect.tsv; log "$1: $2 $3"; }
@@ -249,12 +262,20 @@ cell() {
   printf '%s\t%s\t%s\n' "$name" "$target" "$n" >> cells.tsv
   log "$name run $n $(run_get "$OUT" "$name" .status)$(jq -r 'select(.error) | ": " + .error.message' "$name.ndjson" 2>/dev/null | head -1)"
 }
-# pkg <package> <fn>: the root package's function users get, its --pins release, or the --packages checkout's dir.
+# pkg <package> <fn>: the root package's function users get, or the --packages checkout's dir of it, once its Triton sets
+# are built (a build that failed is the cell's FAIL `kernels-<package>`, and the run compiles them as a source run did).
 pkg() {
-  local pin d=; pin=$(tr , '\n' <<< "$PINS" | grep -m1 "^$1@" | cut -d@ -f2)
+  local d=
   [ -z "$PKGS" ] || d=$PKGS/$1/pyproject.toml
-  if [ -n "$pin" ]; then echo "$1/$2@$pin"
-  elif [ -n "$d" ] && grep -qs cozy.application "$d"; then d=$(dirname "$d"); ln -sfn "$d" "$OUT/${d##*/}"; echo "./${d##*/}/$2"
+  if [ -n "$d" ] && grep -qs cozy.application "$d"; then
+    d=$(dirname "$d")
+    if [ -f "kernels-${d##*/}.log" ]; then
+      while [ ! -s "kernels-${d##*/}.status" ]; do sleep 2; done
+      if [ "$(cat "kernels-${d##*/}.status")" != 0 ] && ! grep -q "^kernels-${d##*/}"$'\t' expect.tsv 2>/dev/null; then
+        expect "kernels-${d##*/}" FAIL "its Triton sets did not build: $(tail -c 300 "kernels-${d##*/}.log")" >&2
+      fi
+    fi
+    ln -sfn "$d" "$OUT/${d##*/}"; echo "./${d##*/}/$2"
   else echo "$1/$2"; fi
 }
 output() { run_output "$OUT" "$1" "$2"; }
@@ -262,7 +283,7 @@ output() { run_output "$OUT" "$1" "$2"; }
 box() { local b; [ -f "$2" ] && b=$(run_box "$@" 2>> box.err) && echo "<$b>"; }
 . "$HERE/products.sh"
 . "$HERE/programs.sh"
-log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${PINS:+ pins ${PINS//,/ }}, cli: $CLI"
+log "gate on $SKU (suites ${SUITES//,/ }): scenario $NAME, seeds from $R, candidate: ${CAND[*]:-released}${PKGS:+ packages $PKGS}${MODELS:+ models $MODELS}, cli: $CLI"
 [ "$HOST" = 1 ] || log "host $HOST of $HOSTS: $(cat slow-*/host-slow | paste -sd';')"
 [ -z "$ON" ] || { M=$ON; BEFORE=(); }
 # acquisition <rental>: the Hub's acquisition attempt while the rental boots, every 5 s into acquisition.jsonl (cl-684).
@@ -329,8 +350,9 @@ PY
 )
   [ -n "$v" ] && expect "acquisition replans" PASS "$v" || log "acquisition replans: this cozy names no acquisition attempt"
 }
-# rented <machine>: its rental id into RID and `rental`, which end_it and the workflow's cleanup end.
-rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
+# accepted: the rental id `--json machine rent` prints once its Hub accepts the order (`rental.accepted`), into RID and
+# `rental`, which end_it and the workflow's cleanup end. An order waiting for capacity has it long before its machine has a name (cl-979).
+accepted() { RID=$(grep -m1 '"type":"rental.accepted"' rent.out 2>/dev/null | jq -r '.rental_id // empty' 2>/dev/null); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
   # Suite tensorfs's `kill` case kills the rental's TensorD over SSH, suite tensord measures the pod's link over it, suite
   # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
@@ -343,37 +365,35 @@ if [ -z "$ON" ]; then
      { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* ]]; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
-  # Followed in the background: the order's first booting line names it, so a gate cancelled mid-boot still ends it.
+  # Followed in the background: its rental id is recorded once its Hub accepts the order, so a gate cancelled before its
+  # machine has a name still ends it.
   RENT_BEGAN=$SECONDS
   for ((order = 1; order <= REORDERS; order++)); do
     : > rent.err
-    "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${SSH:+--ssh} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
-    until first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' rent.err | cut -d: -f1); [ -n "$first" ] || ! kill -0 "$RP" 2>/dev/null; do
-      sleep 2
-    done
-    for _ in 1 2 3; do [ -z "$first" ] || [ -n "$RID" ] || rented "$first"; [ -n "$RID" ] || sleep 5; done
+    "$CLI" --json machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${SSH:+--ssh} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
+    until accepted; [ -n "$RID" ] || ! kill -0 "$RP" 2>/dev/null; do sleep 1; done
+    [ -n "$RID" ] || accepted
     [ -z "$RID" ] || { acquisition "$RID" & AQ=$!; }
     wait "$RP"; rc=$? RP=
     [ -z "$AQ" ] || { kill "$AQ" 2>/dev/null; wait "$AQ" 2>/dev/null; AQ=; }
     # A boot that never starts is released unbilled (th-358: `cpu` with SSH, often): a new order may place elsewhere.
-    if [ "$rc" != 0 ] && grep -q boot_idle rent.err && [ "$order" -lt "$REORDERS" ]; then
+    if [ "$rc" != 0 ] && grep -qs boot_idle rent.out rent.err && [ "$order" -lt "$REORDERS" ]; then
       log "order $order ended boot_idle, nothing billed: ordering again"
-      cat rent.err >> rent-orders.err
-      RID= first=; rm -f acquisition.jsonl rental
+      cat rent.out rent.err >> rent-orders.err
+      RID=; rm -f acquisition.jsonl rental
       continue
     fi
     [ -s acquisition.repriced ] || break
-    log "order $order, $(head -n 1 rent.err), is under the market: $(grep -oE 'waiting for an offer.*' acquisition.repriced)"
+    log "order $order, $(jq -r 'select(.quote?) | .quote | "\(.gpus)× \(.sku) at \(.usd_micros_per_hour) micro-USD/h"' rent.out 2>/dev/null | head -1), is under the market: $(grep -oE 'waiting for an offer.*' acquisition.repriced)"
     cat rent.err >> rent-orders.err
     if [ "$order" = "$REORDERS" ]; then
       echo "$REORDERS orders, each under the market by the time it could place" > acquisition.stuck
       break
     fi
     "$CLI" machine end "$RID" -y >end.log 2>&1 && ! listed "$RID" "$CLI" || { log "rent failed: $RID won't end: $(tail -c 300 end.log)"; exit 1; }
-    RID= first=; rm -f acquisition.repriced acquisition.jsonl rental
+    RID=; rm -f acquisition.repriced acquisition.jsonl rental
   done
   acquired
-  [ -n "$RID" ] || { first=$(awk '$1=="machine"{print $2; exit}' rent.out); [ -z "$first" ] || rented "$first"; }
   [ "$rc" != 0 ] || [ -z "$RID" ] || M=$("$CLI" --json machine show "$RID" 2>/dev/null | jq -r '.name // empty')
 fi
 [ -n "$M" ] || { log "rent failed: $(cat acquisition.stuck 2>/dev/null) $(tail -c 300 rent.err) $(tail -c 300 rent.out)"; exit 1; }
@@ -513,13 +533,13 @@ fi
 [ -z "$RWF" ] || unzip -p "$RWF" cozy_runtime/internal/attention_table.json > attention-table.json 2>/dev/null || rm -f attention-table.json
 # The set the verdict is for (verify.sh, promote.sh): each candidate's version, as the machine reports it, and digest.
 # Components with no candidate are not named: a --before FILE may move them on its SKU only.
-LABEL=cozy$v-rt$rt-tfs$tfs${PKGS:+-packages$(git -C "$PKGS" rev-parse --short HEAD)}${PINS:+-pins$(cksum <<< "$PINS" | cut -d' ' -f1)}
+LABEL=cozy$v-rt$rt-tfs$tfs${PKGS:+-packages$(git -C "$PKGS" rev-parse --short HEAD)}${MODELS:+-models$(cksum <<< "$MODELS" | cut -d' ' -f1)}
 echo "$LABEL" > label; log "gate $LABEL"
 digest() { [ ! -f "$1" ] || sha256sum "$1" | cut -d' ' -f1; }  # a release by number has no file here
 jq -n --arg label "$LABEL" --arg cozy "${TDF:+$v}" --arg runtime "${RWF:+$rt}" --arg tensorfs "${TWF:+$tfs}" --arg cozy_sha256 "$(digest "$TDF")" \
   --arg runtime_wheel "$(basename "${RWF:-}")" --arg runtime_sha256 "$(digest "$RWF")" --arg tensorfs_wheel "$(basename "${TWF:-}")" \
-  --arg tensorfs_sha256 "$(digest "$TWF")" --arg pins "${PINS//,/ }" --arg packages_ref "${PKGS:+$(git -C "$PKGS" rev-parse HEAD)}" \
-  -S '$ARGS.named | .pins |= (split(" ") | map(select(. != "")) | sort)' > candidate.json
+  --arg tensorfs_sha256 "$(digest "$TWF")" --arg models "${MODELS//,/ }" --arg packages_ref "${PKGS:+$(git -C "$PKGS" rev-parse HEAD)}" \
+  -S '$ARGS.named | .models |= (split(" ") | map(select(. != "")) | sort)' > candidate.json
 printf '%s\n' ${SUITES//,/ } > suites
 printf '%s\n' ${ONLY//,/ } > only  # what --only chose, for a suite's check.py (empty: everything)
 for s in ${SUITES//,/ }; do . "$HERE/suites/$s/cells.sh"; done
