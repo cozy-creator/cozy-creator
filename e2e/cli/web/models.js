@@ -310,8 +310,9 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
     }
   }
   await theme(false);
-  // The canvas stops at the app bar (Paul: nothing covers a control). At 1920×1080 in Focus `still` is beside `scene`, its name as high as
-  // the bar: nothing of the canvas is under any of the bar's controls (se-132). `overlapping` says which boxes reach a control's rect.
+  // The canvas stops at the app bar, and in Focus below its title row (Paul: nothing covers a control). At 1920×1080 in Focus `still` is
+  // beside `scene`, its name as high as the bar: nothing of the canvas is under any of the bar's controls, nor anywhere on the title row
+  // (Back to canvas, the name, Render, ×) (se-132). `overlapping` says which boxes reach a control's rect.
   await page.setViewportSize({ width: 1920, height: 1080 });
   await page.waitForTimeout(300);
   const barCheck = await page.evaluate(() => {
@@ -326,12 +327,24 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
       .filter(({ box }) => box.width && box.height && box.bottom <= bar.bottom + 1);
     const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
     const label = (el) => el.getAttribute('aria-label') || el.textContent.trim().slice(0, 24);
+    const canvasAt = (x, y) => document.elementsFromPoint(x, y).filter((hit) => canvas?.contains(hit));
     const under = [];
     for (const { el, box } of controls) {
       for (const fx of [0.1, 0.5, 0.9]) for (const fy of [0.1, 0.5, 0.9]) {
         const [x, y] = [box.left + box.width * fx, box.top + box.height * fy];
-        const canvasHere = document.elementsFromPoint(x, y).filter((hit) => canvas?.contains(hit));
+        const canvasHere = canvasAt(x, y);
         if (canvasHere.length) under.push({ control: label(el), x: Math.round(x), y: Math.round(y), canvas: String(canvasHere[0].className) });
+      }
+    }
+    // The title row, across the window: every point of it, where Back to canvas, the name, Render (from the card) and × are.
+    const row = document.querySelector('.focus-heading')?.getBoundingClientRect();
+    const focusControls = [...document.querySelectorAll('.focus-heading button, .focus-actions button')]
+      .filter((el) => el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })).map(label);
+    const onRow = [];
+    if (row) {
+      for (let x = 2; x < innerWidth; x += 24) for (const y of [row.top + 2, (row.top + row.bottom) / 2, row.bottom - 2]) {
+        const canvasHere = canvasAt(x, y);
+        if (canvasHere.length) onRow.push({ x: Math.round(x), y: Math.round(y), canvas: String(canvasHere[0].className) });
       }
     }
     const overlapping = [...document.querySelectorAll('.react-flow__node')].flatMap((node) => {
@@ -339,10 +352,11 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
       const reached = controls.filter(({ box }) => parts.some((part) => meets(part.getBoundingClientRect(), box))).map(({ el }) => label(el));
       return reached.length ? [{ node: node.querySelector('.card')?.dataset.asset, controls: reached }] : [];
     });
-    return { controls: controls.map(({ el }) => label(el)), under, overlapping };
+    return { controls: controls.map(({ el }) => label(el)), under, focusControls, onRow: onRow.slice(0, 12), rowHits: onRow.length, overlapping };
   });
   seen.app_bar = barCheck;
   check('no_canvas_under_the_app_bars_controls', barCheck.controls.length >= 3 && barCheck.under.length === 0, barCheck);
+  check('no_canvas_on_the_focus_title_row', barCheck.focusControls.length >= 3 && barCheck.rowHits === 0, barCheck);
   await page.setViewportSize({ width: 1600, height: 1100 });
   // The LoRA removed: its words stay as written, no longer drawn.
   await button.click();

@@ -354,10 +354,10 @@ code {
 .picker {
   display: none;
 }
-/* The canvas stops at the app bar: nothing of it, a box or its name, is ever under the bar's controls, at any zoom or in Focus (Paul, 11-12:
-   nothing covers a control). Its paper (Sheet.tsx) goes on behind the bar. */
+/* The canvas stops at the app bar, and in Focus below its title row (`--canvas-top`, FocusedViewport.tsx): nothing of it, a box or its
+   name, is ever under or beside a control there, at any zoom (Paul, 11-12: nothing covers a control). Its paper (Sheet.tsx) goes on behind. */
 .react-flow__renderer {
-  clip-path: inset(var(--top) 0 0 0);
+  clip-path: inset(var(--canvas-top, var(--top)) 0 0 0);
 }
 .react-flow {
   --xy-background-color: transparent;
