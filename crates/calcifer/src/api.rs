@@ -690,7 +690,7 @@ async fn down(State(api): State<Arc<Api>>) -> Result<Json<Down>, Refusal> {
 async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Refusal> {
     let hub = crate::hub::origin(&api, None)?;
     Ok(Json(CalciferStatus {
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         os: std::env::consts::OS.into(),
         local_usable: platform::Os::CURRENT.local_inference(),
         signed_in: hub.device_key(api.machines.hubs.home()).exists(),
@@ -707,7 +707,7 @@ async fn activity(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap) -
     let runs = counts.iter().map(|(runs, _)| runs).sum::<usize>() + here;
     let asker = headers.get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
     Ok(Json(CalciferActivity {
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         pages: api.activity.pages.load(Ordering::Relaxed),
         runs: u32::try_from(runs).unwrap_or(u32::MAX),
         here: u32::try_from(here).unwrap_or(u32::MAX),
@@ -824,6 +824,7 @@ pub(crate) async fn events(
         owner,
         inert,
         vault_token: crate::project::vault::readable_token(&row.out_dir),
+        _following: (row.state != RunState::Settled).then(|| crate::project::vault::following(&row.out_dir)).flatten(),
         id: row.id,
         pending,
         last: starting_after,
@@ -841,6 +842,8 @@ struct Follow {
     owner:Option<crate::project::RunOwner>,
     inert:bool,
     vault_token: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// A run still going, followed: its encrypted project stays unlocked meanwhile.
+    _following: Option<crate::project::vault::Following>,
     id: RunId,
     pending: VecDeque<Event>,
     /// The highest sequence number sent; a durable event at or below it is already known.

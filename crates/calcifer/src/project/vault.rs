@@ -34,8 +34,14 @@ static ROOTS: LazyLock<Mutex<BTreeMap<PathBuf, PathBuf>>> = LazyLock::new(Mutex:
 static OPERATIONS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
 static ACCESS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::RwLock<()>>>>>= LazyLock::new(Mutex::default);
 static CONVERTING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
-/// A session began: its clocks and mount are watched from now on.
+/// A session began, or work on a project began or ended: the sweep (`start`) looks now.
 static HELD: tokio::sync::Notify = tokio::sync::Notify::const_new();
+/// A session closed: a shutdown waiting on the views to close tries again.
+pub(crate) static CLOSED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub(crate) fn stir() {
+    HELD.notify_one();
+}
 
 struct Session {
     identity: MountIdentity,
@@ -225,6 +231,32 @@ fn validate_work(project: &super::Project) -> Result<(), Error> {
         return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
     }
     Ok(())
+}
+
+/// Clients following a run of each project's (`following`), by root: the project is in use until they let go.
+static FOLLOWING: LazyLock<Mutex<BTreeMap<PathBuf, usize>>> = LazyLock::new(Mutex::default);
+
+/// A client follows a run whose outputs land under `path`: while it does, the run's encrypted project is in use, as its run is.
+pub(crate) struct Following(PathBuf);
+
+pub(crate) fn following(path: &FsPath) -> Option<Following> {
+    let path = logical(path);
+    let root = path.ancestors().find(|root| encrypted(root))?.to_owned();
+    *FOLLOWING.lock().expect("vault followers").entry(root.clone()).or_default() += 1;
+    stir();
+    Some(Following(root))
+}
+
+impl Drop for Following {
+    fn drop(&mut self) {
+        let mut following = FOLLOWING.lock().expect("vault followers");
+        if let Some(count) = following.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 { following.remove(&self.0); }
+        }
+        drop(following);
+        stir();
+    }
 }
 
 pub(crate) fn readable_token(path: &FsPath) -> Option<Arc<AtomicBool>> {
@@ -569,6 +601,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
         retire_browser(api, browser)?;
         SESSIONS.lock().expect("vault sessions").remove(root);
         LOCK_RETRIES.lock().expect("lock retries").remove(root);
+        CLOSED.notify_waiters();
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
         if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) {
             let state = reported_status(api, root);
@@ -600,6 +633,7 @@ pub(crate) fn close_all_prepared(api: &Arc<Api>, browser: &mut Option<crate::bro
     Ok(())
 }
 
+/// The vault sweep: each second while a vault is open, its idle and maximum clocks and its mount; with none open it waits for one.
 pub(crate) fn start(api: &Arc<Api>) {
     let api = Arc::downgrade(api);
     tokio::spawn(async move {
@@ -852,6 +886,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
                     session.began_ms = super::now_ms(); session.active_ms = session.began_ms;
                     session.idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE); session.maximum = ask.max_duration_s.unwrap_or(0);
                     session.timer = timer(session.idle, session.maximum);
+                    stir();
                 } else {
                     session.mount.try_unmount().map_err(provider)?;
                     drop(session);
@@ -941,6 +976,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
 /// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
 /// What holds an unlocked vault open now, if anything.
 fn working(api: &Arc<Api>, root: &FsPath) -> Option<&'static str> {
+    if FOLLOWING.lock().expect("vault followers").contains_key(root) { return Some("a client following a run"); }
     if api.projects.active_requests(root) { return Some("a project request being answered"); }
     if crate::local_code::private_process_active(root) { return Some("a private process"); }
     let projects = api.projects.now_open();

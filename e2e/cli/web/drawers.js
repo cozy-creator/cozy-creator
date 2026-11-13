@@ -30,6 +30,9 @@ function cozyAt(cwd, ...args) {
 const cozy = (...args) => cozyAt(here, ...args);
 /** A run by its number, which is its project's (project data containment): asked in the project's folder. */
 const shown = (number, folder) => JSON.parse(cozyAt(folder, '--json', 'run', 'watch', String(number), '--once'));
+// The 300 s run this cell starts, with its project's folder, until it's canceled: a cell that dies must not leave it holding this
+// computer for the cells after.
+let holding;
 const body = (page) => page.textContent('.drawer');
 const rowOf = (page, words) => page.locator('.runrow').filter({ hasText: words });
 const numberIn = async (row) => Number((await row.first().locator('b').textContent()).slice(1));
@@ -78,6 +81,7 @@ async function runs(page, base, id, folder) {
   await page.goto(await projectUrl(id, `/runs`));
   const second = asked(300);
   const secondNumber = await until('the second run', () => numberIn(rowOf(page, 'wait')), (now) => now > number);
+  holding = { number: secondNumber, folder };
   await rowOf(page, 'wait').first().locator('a').click();
   await until('it runs', () => page.textContent('.run-head'), (text) => text.includes('running'), 120_000);
 
@@ -97,6 +101,7 @@ async function runs(page, base, id, folder) {
   await until('canceled, live', () => page.textContent('.run-head'), (text) => text.includes('canceled'), 120_000);
   check('cli_agrees_it_canceled', shown(secondNumber, folder).status === 'canceled', shown(secondNumber, folder).status);
   await second;
+  holding = undefined;
 
   await page.goto(await projectUrl(id, `/runs?status=canceled`));
   await until('only canceled', () => page.locator('.runrow').allTextContents(), (rows) => rows.length > 0 && rows.every((text) => text.includes('canceled')));
@@ -179,6 +184,9 @@ async function runs(page, base, id, folder) {
 
 async function died(error) {
   console.error(error);
+  if (holding !== undefined) {
+    try { cozyAt(holding.folder, '--json', 'run', 'cancel', String(holding.number)); } catch (why) { console.error(`run ${holding.number} not canceled: ${why}`); }
+  }
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
 }

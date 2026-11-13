@@ -94,12 +94,18 @@ pub(crate) struct Machines {
     pub(crate) rc: crate::rc::Rc,
     /// Told when a rental becomes ready: a dev home's moves to the RC before its first run.
     pub(crate) rc_ready: Notify,
+    /// What each machine is told to have ready (cl-967).
+    pub(crate) lists: crate::ahead::Lists,
+    /// Moves when a machine becomes ready or ends: what plans re-plan on (cl-967).
+    pub(crate) arrivals: tokio::sync::watch::Sender<u64>,
 }
 
 /// What Calcifer last heard of a machine, never stored.
 #[derive(Default)]
 pub(crate) struct Seen {
     frame: Option<v1::StatusFrame>,
+    /// Its Status stream is open: `frame` is what it is now, not what it was when the stream broke.
+    streaming: bool,
     unreachable: Option<String>,
     /// Since when it has not answered (unix ms).
     since: Option<i64>,
@@ -151,6 +157,8 @@ impl Machines {
             dev: config.dev,
             rc: crate::rc::Rc::default(),
             rc_ready: Notify::new(),
+            lists: crate::ahead::Lists::default(),
+            arrivals: tokio::sync::watch::channel(0).0,
             calcifer,
         });
         me.calcifer.serve_with(&me);
@@ -219,6 +227,20 @@ impl Machines {
         lock(&self.seen)
             .get(name)
             .and_then(|seen| seen.frame.clone())
+    }
+
+    /// The machine's Status while its stream is open: none once the stream broke, until it says it again (cl-967: a machine that stopped
+    /// answering is never quoted from what it said before).
+    pub(crate) fn live_frame(&self, name: &str) -> Option<v1::StatusFrame> {
+        lock(&self.seen).get(name).filter(|seen| seen.streaming && seen.unreachable.is_none()).and_then(|seen| seen.frame.clone())
+    }
+
+    /// Its Status stream ended or broke.
+    fn stream_closed(&self, name: &str) {
+        if let Some(seen) = lock(&self.seen).get_mut(name) {
+            seen.streaming = false;
+        }
+        self.calcifer.machine_changed();
     }
 
     /// Its first GPU's name, as it last said: a run's record reads it, without its whole frame.
@@ -933,6 +955,7 @@ impl Machines {
         if let Some(seen) = lock(&self.seen).get_mut(name) {
             (seen.boot, seen.attempt) = (None, None);
         }
+        self.arrivals.send_modify(|n| *n += 1);
         self.calcifer.machine_changed();
     }
 
@@ -952,7 +975,9 @@ impl Machines {
             let offline = self.offline(&name).is_some();
             let mut unreachable = false;
             if !offline {
-                let error = match self.status_frames(&name, &mut pause).await {
+                let streamed = self.status_frames(&name, &mut pause).await;
+                self.stream_closed(&name);
+                let error = match streamed {
                     Ok(()) if kind == MachineKind::Local => return self.local_exited(),
                     // A rental's word that it released itself is not its end: its Hub's is, as for
                     // any end. Until the Hub affirms it gone it is `ending`, and if this computer
@@ -1023,17 +1048,32 @@ impl Machines {
         }
     }
 
-    fn observe(&self, name: &str, frame: v1::StatusFrame) {
+    fn observe(&self, name: &str, mut frame: v1::StatusFrame) {
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
+        self.lists.observe(name, &frame);
         let back = {
             let mut seen = lock(&self.seen);
             let seen = seen.entry(name.to_owned()).or_default();
+            // A stream sends its queue and times only when they change: absent, they stand as its last frame said.
+            if let Some(last) = &seen.frame {
+                if frame.queue.is_none() {
+                    frame.queue = last.queue.clone();
+                }
+                if frame.times.is_none() {
+                    frame.times = last.times.clone();
+                }
+            }
             if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready") {
                 self.placing.notify_one();
                 self.rc_ready.notify_one();
             }
+            // Ready on a boot not seen ready before (it came up, or started again on new software): plans count it now.
+            if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready" || f.boot_id != frame.boot_id) {
+                self.arrivals.send_modify(|n| *n += 1);
+            }
             seen.stopped &= frame.phase == "releasing";
+            seen.streaming = true;
             seen.frame = Some(frame);
             seen.since = None;
             seen.unreachable.take().is_some()
@@ -1041,6 +1081,10 @@ impl Machines {
         // Its runs and exports that wait on it try again now.
         if back {
             self.calcifer.touch(name);
+        }
+        // Its lists, unless this boot of it was sent them: it came up since they were set, or started again.
+        if let Some(machines) = self.calcifer.machines() {
+            self.lists.seen(&machines, name);
         }
         self.calcifer.machine_changed();
     }

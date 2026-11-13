@@ -146,26 +146,49 @@ where
         let Some(needs) = requirement((*release).to_owned()).await.map_err(Refused::Unread)? else {
             return Ok(chosen(release, first));
         };
-        if machine.runtime.is_empty() || runs(&needs, machine.runtime) {
-            return Ok(chosen(release, first));
-        }
-        // Only up: an older Runtime would take from what the machine runs now.
-        let running = Version::from_str(machine.runtime).ok();
-        let moved = (machine.runtimes.iter())
-            .filter(|runtime| runs(&needs, runtime))
-            .filter_map(|runtime| Some((Version::from_str(runtime).ok()?, runtime)))
-            .filter(|(version, _)| running.as_ref().is_none_or(|running| version > running))
-            .max_by(|(a, _), (b, _)| a.cmp(b))
-            .map(|(_, runtime)| runtime.clone());
-        match (moved, machine.moves) {
-            (Some(runtime), Moves::Yes) => return Ok(Chosen::Moves { release: (*release).to_owned(), runtime }),
-            (Some(runtime), Moves::Held) => return Err(Refused::Held { release: (*release).to_owned(), needs: needs.to_string(), runtime }),
-            _ => {}
+        match takes(&needs, machine) {
+            Takes::Runs => return Ok(chosen(release, first)),
+            Takes::Moves(runtime) => return Ok(Chosen::Moves { release: (*release).to_owned(), runtime }),
+            Takes::Held(runtime) => return Err(Refused::Held { release: (*release).to_owned(), needs: needs.to_string(), runtime }),
+            Takes::No => {}
         }
         first.get_or_insert_with(|| ((*release).to_owned(), needs.to_string()));
     }
     let (release, needs) = first.unwrap_or_default();
     Err(Refused::Unmet { release, needs })
+}
+
+/// What `machine` does for one release needing `needs`, as `choose` weighs each.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Takes {
+    /// Its Runtime runs it, or isn't known yet.
+    Runs,
+    /// It moves up to this Runtime, the newest that runs it.
+    Moves(String),
+    /// It would move to this one, but is held by hand.
+    Held(String),
+    /// No Runtime it runs or moves to runs it.
+    No,
+}
+
+/// What `machine` does for a release needing `needs`: its Runtime runs it, else it moves up (never down: an older Runtime would
+/// take from what it runs now) to the newest that does.
+pub fn takes(needs: &VersionSpecifiers, machine: &Machine<'_>) -> Takes {
+    if machine.runtime.is_empty() || runs(needs, machine.runtime) {
+        return Takes::Runs;
+    }
+    let running = Version::from_str(machine.runtime).ok();
+    let moved = (machine.runtimes.iter())
+        .filter(|runtime| runs(needs, runtime))
+        .filter_map(|runtime| Some((Version::from_str(runtime).ok()?, runtime)))
+        .filter(|(version, _)| running.as_ref().is_none_or(|running| version > running))
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, runtime)| runtime.clone());
+    match (moved, machine.moves) {
+        (Some(runtime), Moves::Yes) => Takes::Moves(runtime),
+        (Some(runtime), Moves::Held) => Takes::Held(runtime),
+        _ => Takes::No,
+    }
 }
 
 fn chosen(release: &str, passed: Option<(String, String)>) -> Chosen {

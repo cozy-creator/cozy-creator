@@ -83,7 +83,8 @@ async function died(why) {
   const offers = async (name) => {
     const here = page.locator(`.card.here[data-asset="${name}"]`).first();
     await here.waitFor();
-    await page.waitForTimeout(400);
+    // Focus drawn, done entering: its heading and takes come in the same render. The same read finds New once there's a take (below).
+    await page.locator(`[data-focused-asset="${name}"]:not([data-entering]) .focus-heading`).waitFor();
     const take = await page.locator(`.card.here[data-asset="${name}"] .take.add`).count();
     const label = await page.locator('.focus-viewport .focus-version-label').allInnerTexts();
     const said = await page.locator('.focus-viewport .focus-heading').innerText().catch(() => '');
@@ -93,7 +94,7 @@ async function died(why) {
     await openBox(page, box.name);
     const empty = await offers(box.name);
     seen[`${box.name}_empty`] = empty;
-    check(`${box.name}_empty_offers_no_new`, empty.take === 0 && !empty.label.includes('New') && !/\bNew\b/.test(empty.said), empty);
+    check(`${box.name}_empty_offers_no_new`, empty.take === 0 && !empty.label.some((text) => /\bNew\b/.test(text)) && !/\bNew\b/.test(empty.said), empty);
     await shot(`${box.name}-empty`);
     await closeBox(page);
 

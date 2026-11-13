@@ -1,7 +1,9 @@
 // A run says one thing at most, and only what matters (cl-921, Paul 11-12: "a ton of errors like 'image CUDA graph cannot be used' but
 // the image generated … they flashed up on my screen so fast"). A render that completes with warnings (its log's and its result's, as the
-// Runtime's handled fallbacks are) puts none of them in a note: they're its box's to show. A render that fails says so in one note, with
-// its error to copy, that stays until it's dismissed. In a real browser on a real Calcifer with a weightless local tool.
+// Runtime's handled fallbacks are) puts none of them in a note: they're its box's to show. Its one note says it finished (cl-937: its box,
+// its take, a picture of it and View); a take landing while it's looked at says nothing. A render that fails says so in one note, with
+// its error to copy, that stays until it's dismissed. Every note the page puts up is kept as it comes, so none that flashes by is missed.
+// In a real browser on a real Calcifer with a weightless local tool.
 //   node toasts.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so
 // no run. Prints what it saw as JSON and exits 1 if anything failed.
@@ -121,27 +123,33 @@ async function died(why) {
     await openBox(page, name);
     await (await renderOf(page, name)).click();
   };
-  // Every note the page puts up, by its id, while a render goes and a while after: none slips by between looks.
+  // Every note the page puts up, by its id, as the page draws it: an observer in the page keeps each, so one up for a frame is still seen.
+  await page.evaluate(() => {
+    window.notesSeen = {};
+    const keep = () => { for (const one of document.querySelectorAll('[data-note]')) window.notesSeen[one.dataset.note] = one.innerText; };
+    keep();
+    new MutationObserver(keep).observe(document.body, { subtree: true, childList: true, characterData: true });
+  });
   const notes = new Map();
   const look = async () => {
-    for (const [note, text] of await page.evaluate(() => [...document.querySelectorAll('[data-note]')].map((one) => [one.dataset.note, one.innerText]))) notes.set(note, text);
+    for (const [note, text] of Object.entries(await page.evaluate(() => window.notesSeen))) notes.set(note, text);
   };
-  const stop = { done: false };
-  const watching = (async () => {
-    while (!stop.done) {
-      await look().catch(() => {});
-      await page.waitForTimeout(150);
-    }
-  })();
 
   // 1. Completed with warnings: none of them is a note; at most one note of it (that it finished).
   await render('warned');
   await leave();
   const made = await until('warned has a take', () => asset('warned'), (row) => row?.versions >= 1, FIRST_RUN_MS);
+  // Its note that it finished: its box and take, a picture of it, View (cl-937).
+  const finished = page.locator('[data-note]', { hasText: 'warned finished' }).first();
+  await finished.waitFor({ timeout: 15_000 });
+  const picture = await until('its picture', () => finished.locator('img.note-picture').evaluate((img) => img.complete && img.naturalWidth > 0).catch(() => false), Boolean, 10_000).catch(() => false);
+  const finishedSays = await finished.innerText();
+  check('a_finished_take_says_so_with_its_picture_and_view', /warned finished: version 1/.test(finishedSays) && picture && (await finished.getByRole('button', { name: 'View', exact: true }).count()) === 1, { says: finishedSays, picture });
+  // A while after it landed, for a warning that would come late: the observer has every note meanwhile.
   await page.waitForTimeout(4000);
   await look();
   const ofWarned = [...notes.values()].filter((text) => /warned/.test(text) || text.includes(WARNED));
-  seen.warned = { versions: made.versions, notes: [...notes.values()], icon: await page.locator('.react-flow__node .card[data-asset="warned"] .warned').count() };
+  seen.warned = { versions: made.versions, notes: [...notes.values()] };
   const kept = (await api(`/v1/projects/${id}`)).warnings ?? [];
   seen.warned.kept = kept.filter((one) => one.name === 'warned').map((one) => one.message);
   check('its_warnings_reached_the_box', seen.warned.kept.some((line) => line.includes(WARNED)), seen.warned);
@@ -149,7 +157,17 @@ async function died(why) {
   check('one_note_at_most_for_a_completed_run', ofWarned.length <= 1, ofWarned);
   await shot('warned');
 
-  // 2. Failed: one note, its error to copy, still up after 20 s.
+  // 2. Rendered and looked at where it lands: nothing is said of it (cl-937).
+  await render('warned');
+  await until('warned has its second take', () => asset('warned'), (row) => row?.versions >= 2, FIRST_RUN_MS);
+  await until('Focus shows it', () => page.locator('.focus-heading .focus-version-label').innerText().catch(() => ''), (label) => label === 'v2', 15_000).catch(() => {});
+  // As long as a finished note took to come for the first take, and some: the observer would have it.
+  await page.waitForTimeout(3000);
+  await look();
+  check('a_take_landing_while_looked_at_says_nothing', ![...notes.values()].some((text) => /warned finished: version 2/.test(text)), [...notes.values()]);
+  await leave();
+
+  // 3. Failed: one note, its error to copy, still up after 20 s.
   const before = new Set(notes.keys());
   await render('broken');
   await leave();
@@ -158,8 +176,6 @@ async function died(why) {
   await failed.first().waitFor({ timeout: 15_000 });
   await page.waitForTimeout(21_000);
   await look();
-  stop.done = true;
-  await watching;
   const ofBroken = [...notes].filter(([note, text]) => !before.has(note) && /broken/.test(text)).map(([, text]) => text);
   seen.broken = { notes: ofBroken, up: await failed.count(), copy: await failed.first().locator('.copy-error').count().catch(() => 0) };
   check('one_note_for_a_failed_run', ofBroken.length === 1, seen.broken);

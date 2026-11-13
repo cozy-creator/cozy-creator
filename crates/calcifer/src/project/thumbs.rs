@@ -256,8 +256,9 @@ fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name
     let width = drawing.width;
     let scale = format!("scale='min(iw,{width})':-2");
     let part = |ext: &str| tempfile::Builder::new().prefix(".making").suffix(&format!(".{ext}")).tempfile_in(dir).map_err(|e| e.to_string());
-    // A video's sound under its clip on a timeline: quiet sound drawn on a square-root scale, so it shows.
-    let picture = format!("[0:a:0]showwavespic=s={width}x{}:colors={WAVE_COLOR}{}", (width / 4).max(16), if drawing.wave { ":scale=sqrt" } else { "" });
+    // A video's sound under its clip on a timeline: quiet sound drawn on a square-root scale, so it shows. A column a sample at least:
+    // shorter sound, or none's flat line, is padded with silence, as showwavespic refuses fewer samples than its width.
+    let picture = format!("[0:a:0]apad=whole_len={width},showwavespic=s={width}x{}:colors={WAVE_COLOR}{}", (width / 4).max(16), if drawing.wave { ":scale=sqrt" } else { "" });
     let wave = || -> Result<(tempfile::NamedTempFile, &str), String> {
         let out = part("png")?;
         run(ffmpeg, &input(&source), &strs(&["-filter_complex", &picture]), out.path())?;

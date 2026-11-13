@@ -1,0 +1,1 @@
+An explicit pin holds. `cozy machine update <m> --runtime/--tensorfs/--tensord <version>` holds the machine on it whatever that version is; naming the open RC's own builds no longer counts as following the RC, so a dev home's rental pinned that way stays put as the RC moves on. `cozy machine update <m>` with nothing named lets it go.

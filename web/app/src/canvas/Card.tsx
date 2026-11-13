@@ -19,7 +19,7 @@ import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
-import { bare, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
+import { bare, beingMade, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
 import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { VideoEditor } from "./timeline/VideoEditor"
@@ -321,6 +321,16 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
 function OrbitToggle({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
   const shown = shownOf(view)
+  // Being made, its row is there already, to set once the take lands: nothing moves when it does (Paul, 11-12).
+  if (beingMade(view) && !view.hereWords) {
+    return (
+      <label className="row orbit-toggle">
+        <input className="nodrag" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={false} disabled />
+        <span>Orbit</span>
+        <span className="muted">Plays</span>
+      </label>
+    )
+  }
   if (!shown || shown.field !== "video" || view.hereWords || !view.asset) return null
   const on = Boolean(orbitOf(shown))
   const which = shown.number === undefined ? name : `${view.asset.noun} ${shown.number} of ${name}`

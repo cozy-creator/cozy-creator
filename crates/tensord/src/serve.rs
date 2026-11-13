@@ -126,7 +126,7 @@ pub fn version() -> io::Result<()> {
     }
     let record = Version {
         name: "tensord",
-        version: env!("CARGO_PKG_VERSION"),
+        version: ::api::VERSION,
         commit: Some(::api::COMMIT),
         api: ["cozy.machine.v1"],
     };
@@ -219,19 +219,11 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     };
     let sdk = crate::published::PackageSdk::selected(&paths.sdk(), &paths.update("staged"), crate::machine::uv::Uv::of(&layout.root, &engine, rental), torch.clone());
     boot.at("updates");
-    let running = {
-        let engine = service.engine.clone();
-        Box::new(move || {
-            let mut running = engine.with_journal(|journal| journal.started()).unwrap_or_default();
-            if crate::private_io::machine_jobs(i64::MAX).map_or(true, |(working, _)| working) { running.push("protected project execution".into()); }
-            running
-        })
-    };
     let updates = crate::machine::update::Updates::open(
         paths.clone(),
         sdk.uv.clone(),
         sdk.python.clone(),
-        running,
+        service.engine.clone(),
         Some(lifecycle.clone()),
         Some(machine.clone()),
     )?;

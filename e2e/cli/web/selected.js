@@ -115,6 +115,8 @@ const NAMES = ['light', 'dark', 'middle'];
     }
     return out;
   });
+  /** The rings once `ok` holds of them (a selection is a render away), else as they are when it never does, for the check to judge. */
+  const ringsWhen = (ok) => until('the rings as wanted', rings, ok, 5000).catch(rings);
   const ringed = (box, look) => box && box.selected && box.style === 'solid' && box.width >= 3 - 0.05 && box.color === look.select && box.glow;
   // Unselected, no ring: an outline-style of none still reports a width.
   const bare = (box, look) => box && !box.selected && !(box.style === 'solid' && box.color === look.select) && !box.glow;
@@ -128,29 +130,30 @@ const NAMES = ['light', 'dark', 'middle'];
     for (const zoom of [1, 0.25]) {
       const tag = `${theme}_${zoom}`;
       seen[`${tag}_zoom`] = await zoomTo(zoom);
+      // At the zoom it says: a ring judged at 1 when 0.25 was asked proves nothing of 0.25.
+      check(`${tag}_at_its_zoom`, Math.abs(seen[`${tag}_zoom`] - zoom) < 0.01, seen[`${tag}_zoom`]);
       // One, by a click.
       const point = await middle('middle');
       await page.mouse.click(point.x, point.y);
       await page.mouse.move(2, 500);
-      await page.waitForTimeout(250);
-      let look = await rings();
-      check(`${tag}_one_ringed`, ringed(look.boxes.middle, look) && bare(look.boxes.light, look) && bare(look.boxes.dark, look), look);
+      const one = (now) => ringed(now.boxes.middle, now) && bare(now.boxes.light, now) && bare(now.boxes.dark, now);
+      let look = await ringsWhen(one);
+      check(`${tag}_one_ringed`, one(look), look);
       await shot(`${theme}-${zoom}-one`);
       // Several: all of them.
       await page.keyboard.press('ControlOrMeta+a');
-      await page.waitForTimeout(250);
-      look = await rings();
-      check(`${tag}_several_ringed`, NAMES.every((name) => ringed(look.boxes[name], look)), look);
+      const all = (now) => NAMES.every((name) => ringed(now.boxes[name], now));
+      look = await ringsWhen(all);
+      check(`${tag}_several_ringed`, all(look), look);
       await shot(`${theme}-${zoom}-several`);
       await page.keyboard.press('Escape');
-      await page.waitForTimeout(150);
+      await ringsWhen((now) => NAMES.every((name) => !now.boxes[name]?.selected));
     }
     // Hover and a check's green aren't it.
     await zoomTo(1);
     const point = await middle('light');
     await page.mouse.move(point.x, point.y);
-    await page.waitForTimeout(250);
-    const look = await rings();
+    const look = await ringsWhen((now) => now.boxes.light?.style === 'solid');
     check(`${theme}_hover_is_not_selection`, bare(look.boxes.light, look) && look.boxes.light.style === 'solid' && look.boxes.light.width < 3, look.boxes.light);
     check(`${theme}_selection_is_not_the_check_green`, look.select !== look.cur && look.select !== look.line, { select: look.select, cur: look.cur, line: look.line });
     await page.mouse.move(2, 500);
@@ -181,8 +184,7 @@ const NAMES = ['light', 'dark', 'middle'];
     await page.mouse.up();
     await page.keyboard.up('Shift');
     check(`${theme}_box_select_rectangle_shows`, Boolean(rect) && rect.width >= 1.5 && rect.color === rect.select && rect.fill !== 'rgba(0, 0, 0, 0)', rect);
-    await page.waitForTimeout(250);
-    const after = await rings();
+    const after = await ringsWhen((now) => NAMES.every((name) => ringed(now.boxes[name], now)));
     check(`${theme}_box_select_rings_all`, NAMES.every((name) => ringed(after.boxes[name], after)), after);
     await shot(`${theme}-box-selected`);
     await page.keyboard.press('Escape');

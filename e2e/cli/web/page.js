@@ -129,7 +129,7 @@ async function settled(page) {
 
 /** The actual fit action, independent of what control last had keyboard focus. */
 async function fitCanvas(page) {
-  if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
+  if (!(await page.getByRole('menu', { name: 'Zoom', exact: true }).count())) await page.getByRole('button', { name: /, more zoom options$/ }).click();
   await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
   await settled(page);
 }
@@ -250,7 +250,7 @@ async function openBox(page, name) {
   await media.waitFor({ state: 'attached', timeout: 1500 }).catch(() => {});
   if (!(await reached())) {
     await page.keyboard.press('f');
-    await page.waitForTimeout(300);
+    await settled(page);
     await until(`${name} in reach`, reached, Boolean);
   }
   const { x, y } = await middle();
@@ -509,6 +509,11 @@ function projectJson(folder, method = 'GET', suffix = '', body) {
   return text ? JSON.parse(text) : null;
 }
 
+/** Where `folder`'s rows differ from the document they were written with (cl-885): a read takes the rows, so nowhere, after any write. */
+function integrity(folder) {
+  return projectJson(folder, 'GET', '/integrity')?.differences ?? ['no answer'];
+}
+
 /** Import a real file by the same content endpoint the browser uses. */
 function importFile(folder, file, name) {
   const bytes = readFileSync(file);
@@ -705,4 +710,4 @@ async function chooseModel(page, name, id, operation) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { addBoxes, assetsOf, storedOf, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };
+module.exports = { addBoxes, assetsOf, storedOf, integrity, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };

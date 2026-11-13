@@ -2,7 +2,8 @@
 //! (with its kernels), TensorFS and the `cozy` a machine runs, which each push to `rc/<x.y.z>` puts on the rolling
 //! prerelease `rc-<x.y.z>` of cozy-runtime and cozy-creator (their rc-dev.yaml). A rental this computer ordered moves to
 //! them once it is ready, before its first run, and again as the RC moves, only while it has no work. One an update by
-//! hand gave other software keeps it until `cozy machine update <machine>` names nothing, which in a dev home is the RC.
+//! hand named software for (any version, the RC's builds too) keeps it until `cozy machine update <machine>` names nothing,
+//! which in a dev home is the RC.
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -26,12 +27,14 @@ const FRESH: Duration = Duration::from_secs(60);
 /// moves.
 const EVERY: Duration = Duration::from_secs(30);
 
-/// The open RC: the minor after this cozy's release (`0.24.0` → `0.25.0`); RCs are minor bumps.
+/// The open RC: the minor after this cozy's release (`0.25.0` → `0.26.0`), or a dev version's own (`0.26.0-dev` → `0.26.0`,
+/// cl-976); RCs are minor bumps.
 pub(crate) fn open() -> String {
-    let mut parts = crate::update::this_release().split('.');
+    let release = crate::update::this_release();
+    let mut parts = release.split(['.', '-']);
     let major = parts.next().unwrap_or("0");
     let minor: u64 = parts.next().and_then(|minor| minor.parse().ok()).unwrap_or(0);
-    format!("{major}.{}.0", minor + 1)
+    format!("{major}.{}.0", minor + u64::from(!release.contains('-')))
 }
 
 /// What the RC's prereleases name, as read.
@@ -150,8 +153,9 @@ pub(crate) async fn held_cozy(build: &Build, url: &str) -> Result<DevBuild, Erro
     Ok(held)
 }
 
-/// Whether an update's words (`runtime 0.45.0 (prerelease), mode dedicated`) named its machine's software by hand: a
-/// component not marked `(RC)` or `(Hub)`, as one with nothing named moves it. A mode or a GPU memory limit names none.
+/// Whether an update's words (`runtime 0.45.0 (prerelease), mode dedicated`) read as software named by hand: a component
+/// not marked `(RC)` or `(Hub)`, as one with nothing named moves it. Only a store from before holds were kept reads words
+/// this way (`hold_of`); an update now says whether it named anything (`mind_hold`).
 fn by_hand(target: &str) -> bool {
     target.split(", ").any(|named| software(named) && !named.ends_with("(RC)") && !named.ends_with("(Hub)"))
 }
@@ -186,13 +190,14 @@ impl Machines {
     }
 
     /// Keeps or lets go of `name`'s hold for an update under `key` named `target` (`flagless`: nothing named): see `held_by_hand`.
+    /// Software named by version holds it whatever that version is: an RC build named by hand (`(RC)`) is a pin, not the RC.
     pub(crate) fn mind_hold(&self, name: &str, key: &str, target: &str, flagless: bool) {
         if calcifers(key) {
             return;
         }
-        let words = match (by_hand(target), flagless) {
-            (true, _) => Some(target),
-            (false, true) => None,
+        let words = match (flagless, target.split(", ").any(software)) {
+            (true, _) => None,
+            (false, true) => Some(target),
             (false, false) => return,
         };
         if let Err(e) = self.store().hold(name, words) {

@@ -21,11 +21,12 @@ use crate::Calcifer;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub(crate) enum After {
-    /// Sets `model`'s trigger and strength: these, else (`offered`) the trigger its source gave
-    /// (Civitai's trainedWords), which the machine's result names.
+    /// Sets `model`'s triggers and strength: these, else (`offered`) the triggers its source gave
+    /// (Civitai's trainedWords, each one entry), which the machine's result names.
     Display {
         model: String,
-        trigger: Option<String>,
+        #[serde(default)]
+        triggers: Option<Vec<String>>,
         strength: Option<f64>,
         offered: bool,
     },
@@ -73,11 +74,13 @@ impl Calcifer {
         let hub = row.hub.clone().map(String::from).unwrap_or_else(|| machines.hubs.default_origin());
         let mut done = AfterRun::default();
         match after {
-            After::Display { model, trigger, strength, offered } => {
-                let given = result["models"][0]["trigger"].as_str().filter(|t| offered && !t.is_empty());
-                let trigger = trigger.or(given.map(str::to_owned));
-                if trigger.is_some() || strength.is_some() {
-                    done.display = Some(display(&machines, &hub, model, trigger, strength).await);
+            After::Display { model, triggers, strength, offered } => {
+                let given: Vec<String> = (result["models"][0]["triggers"].as_array().into_iter().flatten())
+                    .filter_map(|t| t.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned))
+                    .collect();
+                let triggers = triggers.or_else(|| (offered && !given.is_empty()).then_some(given));
+                if triggers.is_some() || strength.is_some() {
+                    done.display = Some(display(&machines, &hub, model, triggers, strength).await);
                 }
             }
             After::Retire { package } => {
@@ -110,15 +113,17 @@ pub(super) async fn display(
     machines: &crate::machines::Machines,
     hub: &str,
     model: String,
-    trigger: Option<String>,
+    triggers: Option<Vec<String>>,
     strength: Option<f64>,
 ) -> Displayed {
-    let mut shown = Displayed { model, trigger, strength, error: None };
+    let set_triggers = triggers.is_some();
+    let mut shown = Displayed { model, triggers: triggers.unwrap_or_default(), strength, error: None };
     let set = async {
         let model_id = ModelId::hub(&shown.model)?;
         let origin = Origin::parse(hub)?;
         let client = machines.hubs.client(&origin)?;
-        let answer = client.set_model_display(&model_id.org, &model_id.name, shown.trigger.as_deref(), shown.strength.map(Some)).await;
+        let triggers = set_triggers.then_some(shown.triggers.as_slice());
+        let answer = client.set_model_display(&model_id.org, &model_id.name, triggers, shown.strength.map(Some)).await;
         answer.map(drop).map_err(|e| e.refusal(|| crate::rentals::login(hub)))
     };
     if let Err(e) = set.await {

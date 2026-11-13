@@ -8,7 +8,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if
 // anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFromPage, calcifer, signIn, STEP_MS, drop, lastLook, launch, lookAt, noStall, photo, png, until } = require('./page');
+const { projectFromPage, calcifer, signIn, STEP_MS, drop, lastLook, launch, lookAt, noStall, photo, png, settled, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -79,7 +79,8 @@ const PICTURES = [
   await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
   for (let i = 0; i < 8 && (await scale()) > 0.42; i++) {
     await page.keyboard.press('-');
-    await page.waitForTimeout(250);
+    // Each step's zoom done before the next is judged: a slow runner's half-done step would read as one more press needed.
+    await settled(page);
   }
   seen.zoom = await scale();
   check('zoomed_out_not_far', seen.zoom <= 0.42 && seen.zoom >= 0.2, seen.zoom);

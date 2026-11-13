@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   type Edge,
+  type FitViewOptions,
+  getViewportForBounds,
   type OnSelectionChangeParams,
   ReactFlow,
   ReactFlowProvider,
@@ -38,7 +40,7 @@ import { HistoryControls } from "./HistoryControls"
 import type { Box } from "./graph"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
-import { aspectOf, bodyBox, HEAD, madeHere, shownOf } from "./shown"
+import { aspectOf, bandOf, bodyBox, HEAD, madeHere, nameZoomOf, sameStep, shownOf, stepOf } from "./shown"
 import { noHash } from "./text"
 import { pressBeganOutside } from "../ui/press"
 import { ToolPanel } from "./ToolPanel"
@@ -270,6 +272,7 @@ function Canvas({
 }) {
   const connection = useConnection()
   const flow = useReactFlow<ElementNode, Edge>()
+  const flowStore = useStoreApi<ElementNode, Edge>()
   const navigate = useNavigate()
   const to = useTo()
   const { client, stream, bridge, outbox, canvases, closeBlockers } = connection
@@ -404,7 +407,7 @@ function Canvas({
       }
       const owner = { name }
       store.inPlace = owner
-      focusTravel.current = frame ? { owner, body: { x: frame.x, y: frame.y + HEAD, w: frame.w, h: frame.w / aspectOf(view) } } : null
+      focusTravel.current = frame ? { owner, body: { x: frame.x, y: frame.y + HEAD + store.liftOf(name), w: frame.w, h: frame.w / aspectOf(view) } } : null
       store.view(name)
       const words = !view.asset?.prefixes?.length && !view.asset?.sha256
       if (words) store.focusing = name
@@ -494,6 +497,26 @@ function Canvas({
   const readable = unread ? null : projectId
   const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
 
+  /** A fit laid out first for the zoom it lands at (cl-885): far out a name takes more of the canvas, and what's fitted is what's drawn there. */
+  const fitLaidOut = useCallback(
+    (options: FitViewOptions<ElementNode>) => {
+      const { width, height, minZoom, maxZoom } = flowStore.getState()
+      const ids = options.nodes && new Set(options.nodes.map((node) => node.id))
+      let zoom = flow.getViewport().zoom
+      for (let tries = 0; tries < 4; tries++) {
+        const bounds = store.boundsAt(zoom, ids)
+        if (!bounds) break
+        const next = getViewportForBounds({ x: bounds.x, y: bounds.y, width: bounds.w, height: bounds.h }, width, height, options.minZoom ?? minZoom, options.maxZoom ?? maxZoom, options.padding ?? 0.1).zoom
+        const same = sameStep(stepOf(next), stepOf(zoom))
+        zoom = next
+        if (same) break
+      }
+      store.settleZoom(zoom)
+      return flow.fitView(options)
+    },
+    [flow, flowStore, store],
+  )
+
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
     // A project with no rows has nothing to fit at its first read: its first placing is what to look at.
@@ -501,7 +524,7 @@ function Canvas({
     const fitOnce = async () => {
       if (fitted || !store.projectId || store.focusedName.get() || openedNow.current) return
       fitted = true
-      if (openedOn) await flow.fitView(fitOver())
+      if (openedOn) await fitLaidOut(fitOver())
       keepViewport(store.projectId, flow.getViewport())
     }
     store.onFirstRead = async () => {
@@ -518,7 +541,7 @@ function Canvas({
     }
     store.attach(flow)
     return () => store.detach()
-  }, [store, flow, saved, openedOn, bridge, navigate, to, keepView, keepViewport])
+  }, [store, flow, saved, openedOn, bridge, navigate, to, keepView, keepViewport, fitLaidOut])
 
   /** Where the last zoom of the buttons or keys is going, so a second press steps on from there, not from part of the way. */
   const aim = useRef<{ view: Viewport; until: number } | null>(null)
@@ -540,6 +563,7 @@ function Canvas({
       const view = { x: x - ((x - from.x) * to) / from.zoom, y: y - ((y - from.y) * to) / from.zoom, zoom: to }
       aim.current = { view, until: performance.now() + HERE_MS }
       if (store.inPlace) store.inPlace.moved = true
+      store.settleZoom(to)
       void flow.setViewport(view, { duration: HERE_MS })
     },
     [flow, store, aimed],
@@ -558,8 +582,8 @@ function Canvas({
       return
     }
     aim.current = null
-    void flow.fitView({ ...fitOver(), duration: HERE_MS })
-  }, [flow, store])
+    void fitLaidOut({ ...fitOver(), duration: HERE_MS })
+  }, [store, fitLaidOut])
   /** What's selected, else the box worked on. */
   const fitSelected = useCallback(() => {
     if (store.focusedName.get()) {
@@ -569,8 +593,8 @@ function Canvas({
     const nodes = flow.getNodes().filter((node) => node.selected)
     if (!nodes.length) return fit()
     aim.current = null
-    void flow.fitView({ ...fitOver(), maxZoom: MOST_HERE, nodes, duration: HERE_MS })
-  }, [flow, store, fit])
+    void fitLaidOut({ ...fitOver(), maxZoom: MOST_HERE, nodes, duration: HERE_MS })
+  }, [flow, store, fit, fitLaidOut])
   const zoomItems = useCallback(
     (): ZoomItem[] => [
       { label: "Zoom in", keys: keys("Mod", "+"), run: () => zoomBy(1) },
@@ -667,6 +691,8 @@ function Canvas({
     (_: unknown, viewport: Viewport) => {
       if (store.focusedName.get() || visit.current) return
       if (store.projectId) keepViewport(store.projectId, viewport)
+      // At rest on another step, its far names laid out again (cl-885): never on the way there.
+      store.settleZoom(viewport.zoom)
     },
     [store, keepViewport],
   )
@@ -923,7 +949,7 @@ function Canvas({
   const selectionDragStop = useCallback((event: Pointing, nodes: ElementNode[]) => dragStop(event, nodes), [dragStop])
 
   // Far out, a card shows its picture, its name and little else.
-  const band = useStore((state) => (state.transform[2] < 0.2 ? 2 : state.transform[2] < 0.45 ? 1 : 0))
+  const band = useStore((state) => bandOf(state.transform[2]))
   useLayoutEffect(() => store.far.set(band === 2), [store, band])
   const sharpness = useStore((state) => 2 ** Math.max(-2, Math.ceil(Math.log2(state.transform[2] || 1))))
   useLayoutEffect(() => store.sharpness.set(sharpness), [store, sharpness])
@@ -932,8 +958,7 @@ function Canvas({
   useLayoutEffect(() => stage.current?.style.setProperty("--unzoom", String(unzoom)), [unzoom])
   // Far out a box's name keeps its size on screen (cl-958): the zoom's inverse in quarter steps, so it's set only as a zoom crosses one. On
   // the boxes' layer, not the stage: a custom property changed over the sheet restyles it whole, and it's painted again (cl-895).
-  const nameZoom = useStore((state) => 2 ** Math.max(0, Math.ceil(-Math.log2(state.transform[2] || 1) * 4) / 4))
-  const flowStore = useStoreApi<ElementNode, Edge>()
+  const nameZoom = useStore((state) => nameZoomOf(state.transform[2]))
   // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
   useLayoutEffect(() => {
     let [held, settle] = [flowStore.getState().transform[2], 0]

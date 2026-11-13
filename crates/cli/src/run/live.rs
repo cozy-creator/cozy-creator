@@ -32,7 +32,7 @@ impl Runs {
                 ..query
             },
             limit,
-            runs: list.runs.into_iter().filter(list::shown).collect(),
+            runs: list.runs,
             others: list.others,
             watch,
         })

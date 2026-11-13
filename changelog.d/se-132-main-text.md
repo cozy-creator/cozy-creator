@@ -1,0 +1,1 @@
+A box's main text (where it's written, its frame's words, a tool swap's words and a LoRA's triggers) is one rule: its first prompt, else its first words, never a negative prompt. A picture its tool can't use, crossed out, no longer sets its Auto shape.

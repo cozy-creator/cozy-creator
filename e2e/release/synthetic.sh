@@ -182,11 +182,12 @@ header += b" " * (-len(header) % 8)
 open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(32))
 PYLORA
 watched upload-lora lora upload "$OUT/tiny-lora.safetensors" "$model-lora" --lane f16 --source-format as-is --on "$ON" || check "LoRA upload failed"
-cozy --json lora edit "$model-lora" --family e2e-family --tag e2e-lora --trigger e2e --strength 0.8 > /dev/null \
-  && model_details "$model-lora" | J '.family == "e2e-family" and .tags == ["e2e-lora"] and .trigger == "e2e" and .strength == 0.8' \
+# cl-971: each --trigger is one entry, kept whole, commas and all.
+cozy --json lora edit "$model-lora" --family e2e-family --tag e2e-lora --trigger e2e --trigger 'keep its light, and its scene' --strength 0.8 > /dev/null \
+  && model_details "$model-lora" | J '.family == "e2e-family" and .tags == ["e2e-lora"] and .triggers == ["e2e", "keep its light, and its scene"] and .strength == 0.8' \
   || check "LoRA metadata was not set"
 cozy --json lora edit "$model-lora" --trigger '' --strength none > /dev/null \
-  && model_details "$model-lora" | J '.trigger == null and .strength == null' || check "LoRA metadata was not cleared"
+  && model_details "$model-lora" | J '(.triggers // []) == [] and .strength == null' || check "LoRA metadata was not cleared"
 # xs-173: its owner finds the unreleased LoRA, marked private: by its exact name under either verb, and by search text `org/`
 # at a Hub that matches `org/name` (the one with model reads).
 if curl -fsS "$COZY_HUB_URL/.well-known/oauth-protected-resource" | J '.authorization_details_types_supported | index("tensorhub_model_read")'; then

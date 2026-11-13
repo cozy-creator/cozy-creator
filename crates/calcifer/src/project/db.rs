@@ -1,21 +1,24 @@
-//! `project.db` (cl-803, `docs/PROJECT-DB.md`): one SQLite file in a project's folder, WAL, written by this Calcifer alone. `load` reads
-//! canonical Automerge state into what `Folder` holds. Relational graph/history rows are disposable query projections; local
-//! execution bookkeeping stays SQL. `commit` saves original CRDT changes and a recoverable snapshot in the same transaction.
+//! `project.db` (cl-803, `docs/PROJECT-DB.md`): one SQLite file in a project's folder, WAL, written by this Calcifer alone. The Automerge
+//! document is canonical; `commit` saves its changes and, in the same transaction, the rows its boxes, head, canvas, heads and
+//! alternatives project to, the document they stand at and their digest (`rows_kept`). `load` reads those rows, so a read never decodes the
+//! document (cl-885: 600 ms of a 5,000-box project's every open); it's decoded only to write, to merge, for history (`document`), or when
+//! the rows don't stand at it. `integrity` holds the rows to the document.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs::OpenOptions,
     path::Path,
     sync::Arc,
 };
 
 use api::error::{Error, Kind};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, ToSql, Transaction, params, types::Value as Sql};
+use sha2::{Digest as _, Sha256};
 
 use super::{
     crdt,
     folder::{Asset, File, Lock, Measured, Version, WalkFile},
     graph::name_key,
-    written::Written,
+    written::{Boxed, Written},
 };
 
 #[cfg(test)]
@@ -23,13 +26,16 @@ use super::{
 mod tests;
 
 pub(crate) const DB: &str = "project.db";
-/// This schema's `user_version`: a project's files, versions and runs in rows alone (cl-904), and its run journal beside them. A
-/// database of another isn't read; one of 2, or of 3 with either half, is migrated (`migrate`).
-const VERSION: i64 = 4;
+/// Its write-ahead log, where a commit lands first.
+pub(crate) const WAL: &str = "project.db-wal";
+/// This schema's `user_version`: 4's (cl-904's rows, each box's stable id on its row so the rows alone say what the document does,
+/// cl-885), with the project's run journal beside them. A database of another isn't read; an older one from 2 is migrated (`migrate`).
+/// A new schema is this number and its step in `migrate`.
+pub(super) const VERSION: i64 = 5;
 const SCHEMA: &str = "
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
     CREATE TABLE head (key TEXT PRIMARY KEY, ord INTEGER NOT NULL, value TEXT NOT NULL) STRICT;
-    CREATE TABLE boxes (key TEXT PRIMARY KEY, name TEXT NOT NULL, ord INTEGER NOT NULL) STRICT;
+    CREATE TABLE boxes (key TEXT PRIMARY KEY, name TEXT NOT NULL, ord INTEGER NOT NULL, id TEXT NOT NULL DEFAULT '') STRICT;
     CREATE TABLE fields (
         box TEXT NOT NULL,
         ord INTEGER NOT NULL,
@@ -94,8 +100,15 @@ pub(crate) struct CardRow {
 /// transaction copies only what it writes.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Stored {
-    /// The canonical document already decoded while this local project is held open.
+    /// The canonical document, once something decoded it: a write, a merge or history. A read takes the rows (`load`).
     pub(super) crdt: Option<Arc<crdt::Document>>,
+    /// The document's heads the rest stands at, kept on its row: what words typed on it were typed on.
+    pub heads: Arc<Vec<String>>,
+    /// The concurrent alternatives the document keeps, as its last commit found them.
+    pub conflicts: Arc<Vec<String>>,
+    /// Whether project.db's rows are what this holds, their digest checked as they were read or kept as they were written: a write then
+    /// writes only what it changed of them.
+    pub(super) rows_held: bool,
     pub seq: u64,
     pub written: Arc<Written>,
     /// By name key.
@@ -201,13 +214,10 @@ pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
     Ok(conn)
 }
 
-/// A project.db as it was before its files left its document (cl-904).
-const BEFORE_SCHEMA_3: &str = "project.db.pre-schema3";
-
-/// The released schema, 2, or a 3 with either half of 4, whose CRDT format is current: what `migrate` takes.
+/// The released schema, 2, a 3 of either half, or 4: one whose CRDT format is current, what `migrate` takes.
 fn require_readable(conn: &Connection, path: &Path) -> Result<(), Error> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|error| sql(path, error))?;
-    if !matches!(version, 2 | 3) && version != VERSION { return require_current(conn, path); }
+    if !(2..=VERSION).contains(&version) { return require_current(conn, path); }
     let format: i64 = conn.query_row("SELECT format FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|error| sql(path, error))?;
     if format != crdt::FORMAT { return Err(err(path, "unsupported CRDT format")); }
     Ok(())
@@ -217,20 +227,28 @@ fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)", [name], |row| row.get(0))
 }
 
-/// Schema 2 kept a project's files, versions and runs in its Automerge document as well as in rows; 4 keeps them in rows alone
-/// (cl-904, Paul 11-12: the CRDT is for node state, never files), and the project's run journal beside them. The document's are
-/// written to the rows once, which then stand, and the document's next change leaves them out. A 3 has one half or the other.
+/// Schema 2 kept a project's files, versions and runs in its Automerge document as well as in rows. Schema 3 keeps them in rows
+/// alone (cl-904, Paul 11-12: the CRDT is for node state, never files): the document's are written to the rows once, which then
+/// stand, and the document's next change leaves them out. Schema 4 reads a project from its rows (cl-885): it adds each box's id to its
+/// row, and `rows_at` and `conflicts` to `meta`, and changes no row 3 has. Schema 5 adds the project's run journal beside them. A 3
+/// with the journal and no rows, from a candidate of 5, takes the rows too. One transaction from any older schema; the project as it was
+/// is kept beside it once, `project.db.pre-schema5`, never read.
 fn migrate(path: &Path) -> Result<(), Error> {
     let e = |error| sql(path, error);
     let version = |conn: &Connection| conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0));
+    let older = |version: i64| (2..VERSION).contains(&version);
     let checked = connect(path, true)?;
-    if !matches!(version(&checked).map_err(e)?, 2 | 3) {
+    if !older(version(&checked).map_err(e)?) {
         return Ok(());
     }
-    // The move to rows is one way: the project as it was, kept beside it once and never read.
-    let kept = path.with_file_name(BEFORE_SCHEMA_3);
-    if !has_table(&checked, "lock_runs").map_err(e)? && !kept.exists() {
-        let part = path.with_file_name(format!("{BEFORE_SCHEMA_3}.part"));
+    // A 4 with the journal is a candidate's of 5, never released: refused as it is rather than read as #3198's 4.
+    if version(&checked).map_err(e)? == 4 && has_table(&checked, "runs").map_err(e)? {
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} has an unreleased schema 4 with a run journal; only current CRDT schema {VERSION} is supported", path.display()))
+            .remedy("Preserve this database. Create a new current-format project in a separate empty directory"));
+    }
+    let kept = path.with_file_name(format!("{DB}.pre-schema{VERSION}"));
+    if !kept.exists() {
+        let part = path.with_file_name(format!("{DB}.pre-schema{VERSION}.part"));
         checked.backup(rusqlite::MAIN_DB, &part, rusqlite::backup::NO_PROGRESS).map_err(e)?;
         std::fs::rename(&part, &kept).map_err(|error| err(path, error))?;
     }
@@ -238,15 +256,18 @@ fn migrate(path: &Path) -> Result<(), Error> {
     let mut conn = connect(path, false)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     // Another process may have migrated it while this waited.
-    if !matches!(version(&tx).map_err(e)?, 2 | 3) {
+    let from = version(&tx).map_err(e)?;
+    if !older(from) || (from == 4 && has_table(&tx, "runs").map_err(e)?) {
         return Ok(());
     }
+    let doc = read_document(&tx, path)?;
     if !has_table(&tx, "lock_runs").map_err(e)? {
-        let lock = read_document(&tx, path)?.legacy_lock()?;
-        tx.execute_batch("CREATE TABLE lock_runs (ord INTEGER PRIMARY KEY, record TEXT NOT NULL) STRICT;
-            DELETE FROM lock_assets; DELETE FROM versions; DELETE FROM lock_files; DELETE FROM run_files; DELETE FROM facts;").map_err(e)?;
+        let lock = doc.legacy_lock()?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS lock_runs (ord INTEGER PRIMARY KEY, record TEXT NOT NULL) STRICT;
+            DELETE FROM lock_assets; DELETE FROM versions; DELETE FROM lock_files; DELETE FROM run_files; DELETE FROM lock_runs; DELETE FROM facts;").map_err(e)?;
         lock_written(&tx, &Lock::default(), &lock).map_err(e)?;
     }
+    rows_of(&tx, path, doc)?;
     if !has_table(&tx, "runs").map_err(e)? {
         tx.execute_batch(super::journal::SCHEMA).map_err(e)?;
     } else if !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name = 'attempt')", [], |row| row.get::<_, bool>(0)).map_err(e)? {
@@ -254,6 +275,40 @@ fn migrate(path: &Path) -> Result<(), Error> {
     }
     tx.pragma_update(None, "user_version", VERSION).map_err(e)?;
     tx.commit().map_err(e)
+}
+
+/// What a read takes, added beside the rows a project already has: each box's id on its row, and its identity and alternatives in
+/// `meta` where they're missing. No row there is changed. The rows stand (`rows_at`) when they're what the document says; else a read
+/// takes the document and the next write writes them whole.
+fn rows_of(tx: &Transaction, at: &Path, doc: crdt::Document) -> Result<(), Error> {
+    let e = |error| sql(at, error);
+    let has_id: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name = 'id'", [], |row| row.get(0)).map_err(e)?;
+    if has_id == 0 {
+        tx.execute_batch("ALTER TABLE boxes ADD COLUMN id TEXT NOT NULL DEFAULT ''").map_err(e)?;
+    }
+    let identity = doc.identity();
+    let mut projected = from_document(doc)?;
+    Arc::make_mut(&mut projected.written).in_stored_order();
+    // A row holds the box the document selects for its name, its last of that name.
+    for held in projected.written.boxes.iter() {
+        tx.execute("UPDATE boxes SET id = ?1 WHERE key = ?2 AND name = ?3", params![held.id, name_key(&held.name), held.name]).map_err(e)?;
+    }
+    for (key, value) in identity.into_iter().flat_map(|(id, name)| [("id", id), ("name", name)]).chain([(CONFLICTS, json(&*projected.conflicts))]) {
+        tx.execute("INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)", params![key, value]).map_err(e)?;
+    }
+    let (rows, digest) = read_rows(tx, at)?;
+    if rows_differ(&rows, &projected).is_empty() {
+        rows_written(tx, at, &projected.written, digest)?;
+    }
+    Ok(())
+}
+
+/// The identity a read takes, beside the document's.
+fn identity_rows(conn: &Connection, id: &str, name: &str) -> rusqlite::Result<()> {
+    for (key, value) in [("id", id), ("name", name)] {
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value])?;
+    }
+    Ok(())
 }
 
 /// A project's files, versions, runs and what its tools make, from its rows: they're no part of its Automerge document.
@@ -320,9 +375,17 @@ fn configure(conn: &Connection, path: &Path) -> Result<(), Error> {
     conn.pragma_update(None, "wal_autocheckpoint", 0).map_err(e)
 }
 
-/// Canonical identity only; relational projections never supply a missing native identity.
+/// Its identity, as its rows keep it beside its document; one from before schema 4 is the document's.
 pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
-    require_readable(conn, Path::new(DB)).ok()?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).ok()?;
+    if !(2..VERSION).contains(&version) {
+        require_current(conn, Path::new(DB)).ok()?;
+        // Never a project with no native document: its row stands beside what it keeps.
+        document_at(conn, Path::new(DB)).ok()?;
+        if let Some(kept) = meta(conn, "id").zip(meta(conn, "name")) {
+            return Some(kept);
+        }
+    }
     let (bytes, heads): (Vec<u8>, String) = conn.query_row("SELECT snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?))).ok()?;
     crdt::identity_bytes(&bytes, &heads)
 }
@@ -330,14 +393,20 @@ pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
 /// Keeps the project's identity and optional public code in one transaction.
 pub(crate) fn set_identity(conn: &mut Connection, at: &Path, id: &str, name: &str, code: Option<&str>) -> Result<(), Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| sql(at, e))?;
-    for (key, value) in [("id", id), ("name", name)].into_iter().chain(code.map(|code| ("code", code))) {
-        tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [key, value]).map_err(|e| sql(at, e))?;
+    identity_rows(&tx, id, name).map_err(|e| sql(at, e))?;
+    if let Some(code) = code {
+        tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('code', ?1)", [code]).map_err(|e| sql(at, e))?;
     }
+    let kept = rows_kept(&tx, at)?;
     let mut doc = read_document(&tx, at)?;
     let old_heads = doc.doc.get_heads();
     doc.set_identity(id, name)?;
     let seq = meta(&tx, "seq").and_then(|value| value.parse().ok()).unwrap_or(0);
     save_document(&tx, at, &mut doc, seq, Some(&old_heads))?;
+    // Its identity is no row of a box: rows that stood at the document stand at it still.
+    if let Some(digest) = kept {
+        keep_rows_at(&tx, at, digest)?;
+    }
     tx.commit().map_err(|e| sql(at, e))
 }
 
@@ -373,10 +442,20 @@ pub(crate) fn read(conn: &Connection, at: &Path) -> Result<(i64, Stored), Error>
     Ok((data_version(&tx), stored))
 }
 
-/// Canonical project state plus machine-local bookkeeping. SQL projection damage never becomes a
-/// new authoritative project edit on read.
+/// Canonical project state plus machine-local bookkeeping: its rows, when they stand at its document as it is and are as its last commit
+/// left them (`rows_kept`); else the document, decoded, as when another writer set a document in its place or changed a row, or it holds
+/// what its rows can't (two boxes of one name).
 pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
-    let mut stored = read_document(conn, at)?.into_stored()?;
+    let mut stored = match rows_kept(conn, at)? {
+        Some(kept) => match read_rows(conn, at)? {
+            (rows, read) if read == kept => rows,
+            _ => {
+                tracing::warn!("{}: its rows aren't as its last commit left them; it's read from its document, and its next write writes them again", at.display());
+                from_document(read_document(conn, at)?)?
+            }
+        },
+        None => from_document(read_document(conn, at)?)?,
+    };
     stored.lock = Arc::new(read_lock(conn, at)?);
     stored.seq = meta(conn, "seq").and_then(|seq| seq.parse().ok()).unwrap_or(0);
     if let Some(record) = conn.query_row("SELECT record FROM walk WHERE id = 1", [], |row| row.get::<_, String>(0)).optional().map_err(|e| sql(at, e))? {
@@ -390,6 +469,277 @@ pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
     }
     stored.measured = Arc::new(measured);
     Ok(stored)
+}
+
+/// What a commit's rows say the document stood at as they were written (its heads, and the length of its stream), and their digest.
+const ROWS_AT: &str = "rows_at";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RowsAt {
+    heads: std::collections::BTreeSet<String>,
+    bytes: i64,
+    rows: String,
+}
+
+/// The rows a read takes, as one value: each row's hash, XORed, so a commit moves it by the rows it takes out and puts in, and a read
+/// checks it for the cost of a hash of what it reads. Rows changed past Calcifer don't match it.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct Digest([u8; 32]);
+
+impl Digest {
+    fn flip(&mut self, table: &str, row: &[Sql]) {
+        let mut hash = Sha256::new();
+        hash.update(table.as_bytes());
+        for value in row {
+            match value {
+                Sql::Null => hash.update([0u8]),
+                Sql::Integer(n) => {
+                    hash.update([1u8]);
+                    hash.update(n.to_le_bytes());
+                }
+                Sql::Real(x) => {
+                    hash.update([2u8]);
+                    hash.update(x.to_bits().to_le_bytes());
+                }
+                Sql::Text(text) => {
+                    hash.update([3u8]);
+                    hash.update((text.len() as u64).to_le_bytes());
+                    hash.update(text.as_bytes());
+                }
+                Sql::Blob(bytes) => {
+                    hash.update([4u8]);
+                    hash.update((bytes.len() as u64).to_le_bytes());
+                    hash.update(bytes);
+                }
+            }
+        }
+        self.0.iter_mut().zip(hash.finalize()).for_each(|(at, by)| *at ^= by);
+    }
+
+    fn hex(&self) -> String {
+        hex::encode(self.0)
+    }
+}
+
+/// Each row in a read's order and a commit's alike.
+const HEAD: &str = "head";
+const BOXES: &str = "boxes";
+const FIELDS: &str = "fields";
+const CANVAS: &str = "canvas";
+const CONFLICTS: &str = "conflicts";
+
+/// Rows taken out by `statement` (a `DELETE … RETURNING` of every column), each flipped out of `digest` as it stood.
+fn gone(tx: &Transaction, digest: &mut Digest, table: &str, statement: &str, key: &[&dyn ToSql]) -> rusqlite::Result<()> {
+    let mut statement = tx.prepare(statement)?;
+    let columns = statement.column_count();
+    let mut rows = statement.query(key)?;
+    while let Some(row) = rows.next()? {
+        digest.flip(table, &(0..columns).map(|at| row.get::<_, Sql>(at)).collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    Ok(())
+}
+
+/// A row put in by `statement`, flipped into `digest`.
+fn put(tx: &Transaction, digest: &mut Digest, table: &str, statement: &str, row: &[Sql]) -> rusqlite::Result<()> {
+    tx.prepare(statement)?.execute(rusqlite::params_from_iter(row))?;
+    digest.flip(table, row);
+    Ok(())
+}
+
+/// The document as its row says it stands: its heads, and its stream's length (SQLite reads it from the row's header).
+fn document_at(conn: &Connection, at: &Path) -> Result<(std::collections::BTreeSet<String>, i64), Error> {
+    let (heads, bytes): (String, i64) = conn.query_row("SELECT heads, length(snapshot) FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|e| sql(at, e))?;
+    let heads: Vec<String> = serde_json::from_str(&heads).map_err(|error| err(at, error))?;
+    Ok((heads.into_iter().collect(), bytes))
+}
+
+/// The digest its rows were written with, if they were written at the document as it stands: a document set in its place by another
+/// writer, cut short or put back to an older one, isn't what they say.
+fn rows_kept(conn: &Connection, at: &Path) -> Result<Option<Digest>, Error> {
+    let (heads, bytes) = document_at(conn, at)?;
+    let kept = meta(conn, ROWS_AT).and_then(|kept| serde_json::from_str::<RowsAt>(&kept).ok()).filter(|kept| kept.heads == heads && kept.bytes == bytes);
+    Ok(kept.and_then(|kept| hex::decode(kept.rows).ok()?.try_into().ok()).map(Digest))
+}
+
+/// The rows stand at the document as this transaction leaves it, with `digest`.
+fn keep_rows_at(tx: &Transaction, at: &Path, digest: Digest) -> Result<(), Error> {
+    let (heads, bytes) = document_at(tx, at)?;
+    tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", params![ROWS_AT, json(&RowsAt { heads, bytes, rows: digest.hex() })]).map(drop).map_err(|e| sql(at, e))
+}
+
+/// Its rows stand at the document as this transaction leaves it, when they can say all of it: rows hold one box a name, so a document
+/// with two (a merge of two replicas') is read from itself. Whether they stand.
+fn rows_written(tx: &Transaction, at: &Path, written: &Written, digest: Digest) -> Result<bool, Error> {
+    let mut names = std::collections::HashSet::new();
+    if written.boxes.iter().all(|held| names.insert(name_key(&held.name))) {
+        keep_rows_at(tx, at, digest)?;
+        return Ok(true);
+    }
+    tx.execute("DELETE FROM meta WHERE key = ?1", [ROWS_AT]).map_err(|e| sql(at, e))?;
+    Ok(false)
+}
+
+/// The project as its document says, decoded: what its rows say when they stand.
+fn from_document(doc: crdt::Document) -> Result<Stored, Error> {
+    let (heads, conflicts) = (doc.heads(), doc.conflicts());
+    let mut stored = doc.into_stored()?;
+    (stored.heads, stored.conflicts) = (Arc::new(heads), Arc::new(conflicts));
+    Ok(stored)
+}
+
+/// Every row a read takes of what `stored` holds, written whole: the boxes with their ids, head, canvas and alternatives. Their digest.
+fn all_rows(tx: &Transaction, at: &Path, stored: &Stored) -> Result<Digest, Error> {
+    let e = |error| sql(at, error);
+    let mut digest = Digest::default();
+    tx.execute_batch("DELETE FROM head; DELETE FROM fields; DELETE FROM boxes; DELETE FROM canvas;").map_err(e)?;
+    written_rows(tx, &Written::default(), &stored.written, &mut digest).map_err(e)?;
+    for (key, row) in stored.canvas.iter() {
+        put(tx, &mut digest, CANVAS, CANVAS_IN, &canvas_row(key, row)).map_err(e)?;
+    }
+    // Written whole: what the row said before was never in this digest.
+    conflicts_row(tx, &mut digest, &stored.conflicts, false).map_err(e)?;
+    Ok(digest)
+}
+
+const CANVAS_IN: &str = "INSERT INTO canvas (key, name, x, y, w, seq, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+
+fn canvas_row(key: &str, row: &CardRow) -> [Sql; 7] {
+    [Sql::Text(key.to_owned()), Sql::Text(row.name.clone()), Sql::Real(row.card.x), Sql::Real(row.card.y), row.card.w.map_or(Sql::Null, Sql::Real),
+        Sql::Integer(row.seq as i64), Sql::Text(row.by.clone())]
+}
+
+/// The alternatives' row, written over what it was, which `counted` says `digest` holds.
+fn conflicts_row(tx: &Transaction, digest: &mut Digest, conflicts: &[String], counted: bool) -> rusqlite::Result<()> {
+    if let Some(was) = meta(tx, CONFLICTS).filter(|_| counted) {
+        digest.flip(CONFLICTS, &[Sql::Text(was)]);
+    }
+    let now = json(&conflicts);
+    tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", [CONFLICTS, now.as_str()])?;
+    digest.flip(CONFLICTS, &[Sql::Text(now)]);
+    Ok(())
+}
+
+/// The boxes, head, canvas, heads and alternatives the document projects to, from the rows each commit writes with it, and their digest.
+fn read_rows(conn: &Connection, at: &Path) -> Result<(Stored, Digest), Error> {
+    let e = |error| sql(at, error);
+    let mut digest = Digest::default();
+    let text = |value: &Sql| match value {
+        Sql::Text(text) => Ok(text.clone()),
+        other => Err(err(at, format!("a row holds {other:?} where it holds text"))),
+    };
+    let mut read = |table: &str, query: &str| -> Result<Vec<Vec<Sql>>, Error> {
+        let mut statement = conn.prepare(query).map_err(e)?;
+        let columns = statement.column_count();
+        let mut rows = statement.query([]).map_err(e)?;
+        let mut found = Vec::new();
+        while let Some(row) = rows.next().map_err(e)? {
+            let values = (0..columns).map(|at| row.get::<_, Sql>(at)).collect::<rusqlite::Result<Vec<_>>>().map_err(e)?;
+            digest.flip(table, &values);
+            found.push(values);
+        }
+        Ok(found)
+    };
+    let value = |sql: &Sql| serde_json::from_str::<serde_json::Value>(&text(sql)?).map_err(|error| err(at, error));
+    let mut head = Vec::new();
+    for row in read(HEAD, "SELECT key, ord, value FROM head ORDER BY ord")? {
+        head.push((text(&row[0])?, value(&row[2])?));
+    }
+    let mut fields: HashMap<String, Vec<(String, serde_json::Value)>> = HashMap::new();
+    for row in read(FIELDS, "SELECT box, ord, field, value FROM fields ORDER BY box, ord")? {
+        fields.entry(text(&row[0])?).or_default().push((text(&row[2])?, value(&row[3])?));
+    }
+    let mut boxes = Vec::new();
+    for row in read(BOXES, "SELECT key, name, ord, id FROM boxes ORDER BY ord")? {
+        boxes.push(Boxed { id: text(&row[3])?, name: text(&row[1])?, fields: fields.remove(&text(&row[0])?).unwrap_or_default(), at: None });
+    }
+    let mut written = Written { head, boxes };
+    // As the document reads them back: each mapping in key order.
+    written.in_stored_order();
+    let mut canvas = BTreeMap::new();
+    let number = |value: &Sql| match value {
+        Sql::Real(x) => Ok(*x),
+        other => Err(err(at, format!("a canvas row holds {other:?} where it holds a number"))),
+    };
+    for row in read(CANVAS, "SELECT key, name, x, y, w, seq, by FROM canvas")? {
+        let w = match &row[4] { Sql::Null => None, w => Some(number(w)?) };
+        let seq = match row[5] { Sql::Integer(seq) => seq as u64, _ => 0 };
+        let card = api::calcifer::project::Card { x: number(&row[2])?, y: number(&row[3])?, w };
+        canvas.insert(text(&row[0])?, CardRow { name: text(&row[1])?, card, seq, by: text(&row[6])? });
+    }
+    let kept = meta(conn, CONFLICTS);
+    if let Some(kept) = &kept {
+        digest.flip(CONFLICTS, &[Sql::Text(kept.clone())]);
+    }
+    let conflicts: Vec<String> = kept.map(|text| serde_json::from_str(&text).map_err(|error| err(at, error))).transpose()?.unwrap_or_default();
+    // In the order the document gives them: a change hash orders as its hex.
+    let heads: Vec<String> = document_at(conn, at)?.0.into_iter().collect();
+    let stored = Stored { written: Arc::new(written), canvas: Arc::new(canvas), heads: Arc::new(heads), conflicts: Arc::new(conflicts), rows_held: true, ..Default::default() };
+    Ok((stored, digest))
+}
+
+/// The canonical document, decoded: what a write, a merge or history needs, and what `integrity` holds the rows to.
+pub(super) fn document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> {
+    read_document(conn, at)
+}
+
+/// Where the rows a read takes differ from the document they were written with: none, always (each commit writes both). A difference
+/// is a fault, said in full; nothing reads around it.
+pub(crate) fn integrity(conn: &Connection, at: &Path) -> Result<Vec<String>, Error> {
+    let tx = conn.unchecked_transaction().map_err(|e| sql(at, e))?;
+    let digest = rows_kept(&tx, at)?;
+    let (rows, read) = read_rows(&tx, at)?;
+    let doc = read_document(&tx, at)?;
+    let (heads, identity) = (doc.heads(), doc.identity());
+    let mut projected = from_document(doc)?;
+    Arc::make_mut(&mut projected.written).in_stored_order();
+    let mut found = Vec::new();
+    let kept = meta(&tx, "id").zip(meta(&tx, "name"));
+    if kept != identity {
+        found.push(format!("identity: rows {kept:?} | document {identity:?}"));
+    }
+    match digest {
+        None => {
+            let mut names = std::collections::HashSet::new();
+            if projected.written.boxes.iter().all(|held| names.insert(name_key(&held.name))) {
+                found.push(format!("rows written at {:?}, the document at {:?}", meta(&tx, ROWS_AT), document_at(&tx, at).map(|now| json(&now)).ok()));
+                found.extend(rows_differ(&rows, &projected));
+            }
+            // A read takes the document: the rows aren't read.
+            return Ok(found);
+        }
+        // A read takes the document, and the rows are said as they differ.
+        Some(kept) if kept != read => found.push(format!("rows changed past Calcifer: their digest is {}, their last commit's {}", read.hex(), kept.hex())),
+        Some(_) => {}
+    }
+    found.extend(rows_differ(&rows, &projected));
+    let set = |list: &[String]| list.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    if set(&rows.heads) != set(&heads) {
+        found.push(format!("heads: rows {:?} | document {:?}", rows.heads, heads));
+    }
+    Ok(found)
+}
+
+/// Where `rows` (as a read takes them) and `document` (as it projects, in stored order) say otherwise: boxes, head, canvas, alternatives.
+fn rows_differ(rows: &Stored, document: &Stored) -> Vec<String> {
+    let mut found = Vec::new();
+    if serde_json::to_string(&rows.written.head).ok() != serde_json::to_string(&document.written.head).ok() {
+        found.push(format!("head: rows {} | document {}", json(&rows.written.head), json(&document.written.head)));
+    }
+    let boxes = |stored: &Stored| stored.written.boxes.iter().map(|held| (held.id.clone(), held.name.clone(), json(&held.fields))).collect::<Vec<_>>();
+    let (row_boxes, doc_boxes) = (boxes(rows), boxes(document));
+    if row_boxes != doc_boxes {
+        let first = row_boxes.iter().zip(&doc_boxes).position(|(a, b)| a != b).unwrap_or(row_boxes.len().min(doc_boxes.len()));
+        found.push(format!("boxes: {} rows, {} in the document; first differing at {first}: rows {:?} | document {:?}", row_boxes.len(), doc_boxes.len(), row_boxes.get(first), doc_boxes.get(first)));
+    }
+    let cards = |canvas: &BTreeMap<String, CardRow>| canvas.iter().map(|(key, row)| (key.clone(), row.name.clone(), json(&row.card), row.seq, row.by.clone())).collect::<Vec<_>>();
+    if cards(&rows.canvas) != cards(&document.canvas) {
+        found.push(format!("canvas: rows {:?} | document {:?}", cards(&rows.canvas), cards(&document.canvas)));
+    }
+    let set = |list: &[String]| list.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    if set(&rows.conflicts) != set(&document.conflicts) {
+        found.push(format!("conflicts: rows {:?} | document {:?}", rows.conflicts, document.conflicts));
+    }
+    found
 }
 
 fn read_document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> {
@@ -435,6 +785,10 @@ fn initialize_current(conn: &mut Connection, at: &Path, key:Option<&(String,Stri
     let mut doc = crdt::Document::new(at);
     doc.initialize(crdt::value(&Stored::default(), &[], &serde_json::Value::Null, None))?;
     save_document(&tx, at, &mut doc, 0, None)?;
+    if let Some((id, name)) = doc.identity() {
+        identity_rows(&tx, &id, &name).map_err(|error| sql(at, error))?;
+    }
+    rows_written(&tx, at, &Written::default(), Digest::default())?;
     tx.pragma_update(None, "user_version", VERSION).map_err(|error| sql(at, error))?;
     tx.commit().map_err(|error| sql(at, error))
 }
@@ -461,17 +815,42 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     locked();
     let was = tx.total_changes();
-    write(&tx, before, after, extra).map_err(e)?;
+    // What the rows a read takes moved by.
+    let mut moved = Digest::default();
+    write(&tx, before, after, extra, &mut moved).map_err(e)?;
     if tx.total_changes() == was {
         tx.rollback().map_err(e)?;
         return Ok(None);
     }
     let seq = before.seq + 1;
+    // Its files, runs, walk and what's measured are rows alone: a change only to them leaves the document as it was, undecoded if it was.
+    let owners = |lock: &Lock| lock.assets.iter().map(|(key, held)| (key.clone(), held.id.clone())).collect::<Vec<_>>();
+    let documented = !Arc::ptr_eq(&before.written, &after.written) || !Arc::ptr_eq(&before.canvas, &after.canvas)
+        || !extra.ops.is_empty() || !extra.ops_gone.is_empty()
+        || (!Arc::ptr_eq(&before.lock, &after.lock) && owners(&before.lock) != owners(&after.lock));
+    if !documented {
+        (after.crdt, after.heads, after.conflicts, after.rows_held) = (before.crdt.clone(), before.heads.clone(), before.conflicts.clone(), before.rows_held);
+        tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('seq', ?1)", [seq.to_string()]).map_err(e)?;
+        before_commit();
+        tx.commit().map_err(e)?;
+        return Ok(Some(seq));
+    }
     let mut doc = match &before.crdt {
         Some(doc) => (**doc).clone(),
-        None => read_document(&tx, at)?,
+        None => {
+            // Read from its rows, its document is decoded now, as it stands in this transaction: at the heads `before` was read at, or
+            // another commit came between and this one's view is stale.
+            let doc = read_document(&tx, at)?;
+            let stands: std::collections::BTreeSet<String> = doc.heads().into_iter().collect();
+            if !before.heads.is_empty() && stands != before.heads.iter().cloned().collect::<std::collections::BTreeSet<_>>() {
+                return Err(Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being committed; read it again and retry"));
+            }
+            doc
+        }
     };
     let old_heads = doc.doc.get_heads();
+    // Rows that weren't what `before` holds (its read decoded the document) are written whole with it, not by what changed.
+    let kept = rows_kept(&tx, at)?.filter(|_| before.rows_held);
     let mut ops = doc.ops()?;
     ops.retain(|row| !extra.ops_gone.iter().any(|(uid, _)| uid == &row.uid) && !extra.ops.iter().any(|next| next.uid == row.uid));
     ops.extend(extra.ops.iter().cloned());
@@ -479,9 +858,23 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     if doc.doc.get_heads() != old_heads {
         // A fresh staged store's first populated document is its full baseline, not
         // a large change tail on the empty initializer. Normal edits stay incremental.
-        let base = before.crdt.as_ref().map(|_| old_heads.as_slice());
+        let base = (before.crdt.is_some() || !before.heads.is_empty()).then_some(old_heads.as_slice());
         save_document(&tx, at, &mut doc, seq, base)?;
     }
+    // What a read takes besides the rows `write` wrote: the heads they stand at, and the alternatives the document keeps.
+    after.heads = Arc::new(doc.heads());
+    after.conflicts = Arc::new(doc.conflicts());
+    let digest = match kept {
+        Some(mut digest) => {
+            if after.conflicts != before.conflicts {
+                conflicts_row(&tx, &mut digest, &after.conflicts, true).map_err(e)?;
+            }
+            digest.0.iter_mut().zip(moved.0).for_each(|(at, by)| *at ^= by);
+            digest
+        }
+        None => all_rows(&tx, at, after)?,
+    };
+    after.rows_held = rows_written(&tx, at, &after.written, digest)?;
     after.crdt = Some(Arc::new(doc));
     tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('seq', ?1)", [seq.to_string()]).map_err(e)?;
     before_commit();
@@ -489,17 +882,19 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     Ok(Some(seq))
 }
 
-fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> rusqlite::Result<()> {
+fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra, digest: &mut Digest) -> rusqlite::Result<()> {
     let seq = before.seq + 1;
     if !Arc::ptr_eq(&before.written, &after.written) {
-        written_rows(tx, &before.written, &after.written)?;
+        written_rows(tx, &before.written, &after.written, digest)?;
     }
     if !Arc::ptr_eq(&before.canvas, &after.canvas) {
+        const OUT: &str = "DELETE FROM canvas WHERE key = ?1 RETURNING key, name, x, y, w, seq, by";
         for key in before.canvas.keys().filter(|key| !after.canvas.contains_key(*key)) {
-            tx.execute("DELETE FROM canvas WHERE key = ?1", [key])?;
+            gone(tx, digest, CANVAS, OUT, params![key])?;
         }
         for (key, row) in after.canvas.iter().filter(|(key, row)| before.canvas.get(*key) != Some(row)) {
-            tx.execute("INSERT OR REPLACE INTO canvas (key, name, x, y, w, seq, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![key, row.name, row.card.x, row.card.y, row.card.w, row.seq as i64, row.by])?;
+            gone(tx, digest, CANVAS, OUT, params![key])?;
+            put(tx, digest, CANVAS, CANVAS_IN, &canvas_row(key, row))?;
         }
     }
     if !Arc::ptr_eq(&before.lock, &after.lock) {
@@ -549,12 +944,18 @@ fn write(tx: &Transaction, before: &Stored, after: &Stored, extra: &Extra) -> ru
 }
 
 /// Project the selected box for each normalized name, with each side's own ordinal.
-fn written_rows(tx: &Transaction, before: &Written, after: &Written) -> rusqlite::Result<()> {
+fn written_rows(tx: &Transaction, before: &Written, after: &Written, digest: &mut Digest) -> rusqlite::Result<()> {
     if before.head != after.head {
-        tx.execute("DELETE FROM head", [])?;
+        gone(tx, digest, HEAD, "DELETE FROM head RETURNING key, ord, value", params![])?;
         for (ord, (key, value)) in after.head.iter().enumerate() {
-            tx.execute("INSERT INTO head (key, ord, value) VALUES (?1, ?2, ?3)", params![key, ord as i64, json(value)])?;
+            put(tx, digest, HEAD, "INSERT INTO head (key, ord, value) VALUES (?1, ?2, ?3)", &[Sql::Text(key.clone()), Sql::Integer(ord as i64), Sql::Text(json(value))])?;
         }
+    }
+    const FIELDS_OUT: &str = "DELETE FROM fields WHERE box = ?1 RETURNING box, ord, field, value";
+    const BOX_OUT: &str = "DELETE FROM boxes WHERE key = ?1 RETURNING key, name, ord, id";
+    const BOX_IN: &str = "INSERT INTO boxes (key, name, ord, id) VALUES (?1, ?2, ?3, ?4)";
+    fn boxed(key: &str, held: &Boxed, ord: usize) -> [Sql; 4] {
+        [Sql::Text(key.to_owned()), Sql::Text(held.name.clone()), Sql::Integer(ord as i64), Sql::Text(held.id.clone())]
     }
     let common = before.boxes.iter().zip(&after.boxes)
         .take_while(|(old, new)| old.id == new.id && old.name == new.name)
@@ -573,23 +974,25 @@ fn written_rows(tx: &Transaction, before: &Written, after: &Written) -> rusqlite
     }
     for (key, (old, new)) in &rows {
         if old.is_some() && new.is_none() {
-            tx.execute("DELETE FROM fields WHERE box = ?1", [key])?;
-            tx.execute("DELETE FROM boxes WHERE key = ?1", [key])?;
+            gone(tx, digest, FIELDS, FIELDS_OUT, params![key])?;
+            gone(tx, digest, BOXES, BOX_OUT, params![key])?;
         }
     }
     for (key, (old, new)) in &rows {
         let Some((ord, held)) = new else { continue };
         match old {
-            Some((was_ord, was_held)) if was_held == held => {
+            Some((was_ord, was_held)) if was_held == held && was_held.id == held.id => {
                 if was_ord != ord {
-                    tx.execute("UPDATE boxes SET ord = ?2 WHERE key = ?1", params![key, *ord as i64])?;
+                    gone(tx, digest, BOXES, BOX_OUT, params![key])?;
+                    put(tx, digest, BOXES, BOX_IN, &boxed(key, held, *ord))?;
                 }
             }
             _ => {
-                tx.execute("INSERT OR REPLACE INTO boxes (key, name, ord) VALUES (?1, ?2, ?3)", params![key, held.name, *ord as i64])?;
-                tx.execute("DELETE FROM fields WHERE box = ?1", [key])?;
+                gone(tx, digest, BOXES, BOX_OUT, params![key])?;
+                put(tx, digest, BOXES, BOX_IN, &boxed(key, held, *ord))?;
+                gone(tx, digest, FIELDS, FIELDS_OUT, params![key])?;
                 for (n, (field, value)) in held.fields.iter().enumerate() {
-                    tx.execute("INSERT INTO fields (box, ord, field, value) VALUES (?1, ?2, ?3, ?4)", params![key, n as i64, field, json(value)])?;
+                    put(tx, digest, FIELDS, "INSERT INTO fields (box, ord, field, value) VALUES (?1, ?2, ?3, ?4)", &[Sql::Text(key.clone()), Sql::Integer(n as i64), Sql::Text(field.clone()), Sql::Text(json(value))])?;
                 }
             }
         }

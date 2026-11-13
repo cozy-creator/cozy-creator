@@ -72,6 +72,8 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   const tools = (await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? [];
   const h3 = tools.find((tool) => tool.id === 'minimax-h3/generate');
   seen.h3_tool = h3?.id ?? null;
+  // With no H3 listed, the box would be a plain video box, and its case not H3's.
+  check('the_hub_lists_h3', Boolean(h3), tools.map((tool) => tool.id));
   await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: h3?.id ?? '', kind: 'video', name: 'h3', exact: true, fields: { node_kind: 'video', summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 4 }] } }) });
   await api(`${at}/assets/h3/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, clip('h3', 'testsrc'), id) }) });
   await until('the h3 take', async () => (await asset('h3'))?.versions, (n) => n >= 1);
@@ -97,10 +99,11 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   // `old`: made before previews were made at landing, so none is kept yet.
   const oldHex = (await asset('old')).prefixes?.at(-1)?.main?.sha256?.replace(/^sha256:/, '');
   const thumbs = join(homedir(), '.cozy', 'cache', 'thumbs');
-  for (const ext of ['mp4']) {
-    const kept = join(thumbs, `${oldHex}-preview.${ext}`);
-    if (existsSync(kept)) rmSync(kept);
-  }
+  // The preview made at its landing, taken away: with none there to take, `old` would be an ordinary case, not this one.
+  const kept = join(thumbs, `${oldHex}-preview.mp4`);
+  const hadOne = await until('old has its landing preview', () => Promise.resolve(existsSync(kept)), Boolean, 30_000).then(() => true, () => false);
+  check('old_had_a_preview_to_take_away', hadOne, kept);
+  if (hadOne) rmSync(kept);
   seen.old_preview_removed = oldHex;
 
   // Laid out apart, all in view.
@@ -115,8 +118,10 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   // A box whose take was played in Focus: its playhead is the open box's (Pick up from here), not what its tile shows at rest.
   await openBox(page, 'h3');
   const focus = page.locator('.focus-viewport');
-  const play = focus.locator('button[aria-label="Play"]').first();
-  if (await play.count()) await play.click();
+  // Its transport, once drawn: Play is pressed unless it's already playing.
+  const transport = focus.locator('button[aria-label="Play"], button[aria-label="Pause"]').first();
+  await transport.waitFor();
+  if ((await transport.getAttribute('aria-label')) === 'Play') await transport.click();
   const player = focus.locator('video.live').first();
   const played = await until('it plays in Focus', () => player.evaluate((el) => el.currentTime).catch(() => 0), (t) => t > 0.5, 30_000).catch(() => 0);
   seen.played_in_focus = played;
@@ -126,7 +131,8 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   // Under a resting pointer, each plays: its poster first, then its preview, muted and looping.
   const rest = async (name) => {
     await page.mouse.move(4, 500);
-    await page.waitForTimeout(150);
+    // The last box's preview stopped with the pointer gone, before this one's is looked for.
+    await until('no preview playing', () => page.locator('video.preview.on').count(), (n) => n === 0, 5000).catch(() => {});
     const media = boxOf(page, name).locator('.media').first();
     const poster = await until(`${name}'s poster`, () => media.locator('.scrub img').evaluate((el) => el.complete && el.naturalWidth > 0).catch(() => false), Boolean, 60_000).catch(() => false);
     const { x, y, width, height } = await media.boundingBox();
