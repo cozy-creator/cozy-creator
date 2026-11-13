@@ -45,10 +45,11 @@ weights_run "project b: BiRefNet first run" b "$(picture dog1.jpg)"
 weights_run "project a: BiRefNet again" a "$(picture dog2.jpg)"
 # One machine's executors serve every project (cl-984): b's next run takes the executor a's left warm, then both at once.
 weights_run "project b: BiRefNet on a's warm executor" b "$(picture dog2.jpg)"
-local pair=$OUT/envcost-pair
+local pair=$OUT/envcost-pair astronaut
 mkdir -p "$pair"
+astronaut=$(picture astronaut.jpg)
 for p in a b; do
-  (in_project "$ENVCOST_ROOT/$p" --json run "$(birefnet)" --file "image=$(picture astronaut.jpg)" --on local > "$pair/$p.ndjson" 2> "$pair/$p.err"; echo $? > "$pair/$p.code") &
+  (cd "$ENVCOST_ROOT/$p" && timeout 900 "$COZY" --json run "$(birefnet)" --file "image=$astronaut" --on local > "$pair/$p.ndjson" 2> "$pair/$p.err"; echo $? > "$pair/$p.code") &
 done
 wait
 for p in a b; do
@@ -69,11 +70,11 @@ name=$(printf '%s' "$label" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-')
 python3 "$here/envcost.py" measure "${ENVCOST_ROOTS[@]}" > "$OUT/envcost-$name-before.json" || true
 rx0=$(awk '$1 == "lo:" { print $2 }' /proc/net/dev)
 t0=$(date +%s.%N)
-in_project "$dir" --json run "$(birefnet)" --file "image=$pic" --on local > "$OUT/envcost-$name.ndjson" 2> "$OUT/envcost-$name.err" || code=$?
+(cd "$dir" && timeout 900 "$COZY" --json run "$(birefnet)" --file "image=$pic" --on local) > "$OUT/envcost-$name.ndjson" 2> "$OUT/envcost-$name.err" || code=$?
 t1=$(date +%s.%N)
 rx1=$(awk '$1 == "lo:" { print $2 }' /proc/net/dev)
 n=$(grep '^{' "$OUT/envcost-$name.ndjson" | jq -r 'select((.run.number? // 0) > 0) | .run.number' 2> /dev/null | tail -1 || true)
-[ -z "$n" ] || in_project "$dir" --json run watch "$n" --once > "$OUT/envcost-$name.record.json" 2>&1 || true
+[ -z "$n" ] || (cd "$dir" && timeout 60 "$COZY" --json run watch "$n" --once) > "$OUT/envcost-$name.record.json" 2>&1 || true
 python3 "$here/envcost.py" measure "${ENVCOST_ROOTS[@]}" > "$OUT/envcost-$name-after.json" || true
 jq -n --argjson rx "$((rx1 - rx0))" --arg home "$HOME/.cozy" --arg tfs "${ENVCOST_ROOTS[3]}" \
   '{kind: "run", loopback: $rx, home: $home, tensorfs: $tfs}' > "$OUT/envcost-$name.extra.json"
@@ -93,7 +94,8 @@ dir=$ENVCOST_ROOT/$at project=$ENVCOST_ROOT/$at/.vault-machine
 local roots=("${ENVCOST_ROOTS[@]}")
 python3 "$here/envcost.py" measure "${roots[@]}" > "$OUT/envcost-$name-before.json" || true
 t0=$(date +%s.%N)
-in_project "$dir" --json package install "$target" --on local > "$OUT/envcost-$name.ndjson" 2> "$OUT/envcost-$name.err" || code=$?
+# Bounded: a hang is this step's failure, never the shard's.
+(cd "$dir" && timeout 1200 "$COZY" --json package install "$target" --on local) > "$OUT/envcost-$name.ndjson" 2> "$OUT/envcost-$name.err" || code=$?
 t1=$(date +%s.%N)
 python3 "$here/envcost.py" measure "${roots[@]}" > "$OUT/envcost-$name-after.json" || true
 python3 "$here/envcost.py" row "$label" "$project" "$OUT/envcost-$name-before.json" "$OUT/envcost-$name-after.json" \
