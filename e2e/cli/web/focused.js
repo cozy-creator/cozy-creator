@@ -643,8 +643,10 @@ async function died(error) {
   check('video_has_a_new_state_tile', await newVideo.isVisible());
   await newVideo.click();
   check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1);
-  // New keeps the frame's sections as they were, the one open still open.
-  check('new_video_hides_the_main_player_and_keeps_the_prompt_workspace', !await videoFocus.locator('.focus-viewer').isVisible() && await videoFrame.isVisible() && (await videoFrame.locator('.beat-toggle[aria-expanded="true"]').count()) === 1);
+  // New keeps the frame's sections as they were, the one open still open. The frame its takes play in is where its words are written
+  // (cl-938, aeddbfe14: one editing view for a picture and a video): the player goes from it, and the frame stays.
+  const afterNew = { players: await videoFocus.locator('.focus-viewer video:visible').count(), frame: await videoFrame.isVisible(), open: await videoFrame.locator('.beat-toggle[aria-expanded="true"]').count() };
+  check('new_video_hides_the_main_player_and_keeps_the_prompt_workspace', afterNew.players === 0 && afterNew.frame && afterNew.open === 1, afterNew);
   const beatRows = videoFrame.locator('.beats-edit[data-field="beats"] > .beat');
   const summaryOpen = () => videoFrame.locator('.frame-first .beat-toggle').getAttribute('aria-expanded');
   // Closed panels clip their still-laid-out text; descendant isVisible() does not measure that clipping.

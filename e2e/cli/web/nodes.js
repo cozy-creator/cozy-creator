@@ -531,7 +531,11 @@ function replaceFile(at, text) {
   const rowsOut = new Promise((done) => (rowsHeld = done));
   const rowsLate = (call) => (call.request().method() === 'PATCH' ? (rowsHeld(), rowsGoing.then(() => call.fallback().catch(() => {}))) : call.fallback());
   await page.route('**/v1/projects/*/assets/knobs', rowsLate);
-  await page.locator('.card.here[data-asset="knobs"] .beat .mention-text').nth(0).click();
+  // One beat open at a time (de4808cf2, cl-938): the second open, the page opens the first to type in it, as a person does. Shut, its words
+  // are clipped and inert, under the second's head.
+  await knobBeats.nth(0).locator('.beat-toggle').click();
+  await knobBeats.nth(0).locator('.beat-panel[data-open]').waitFor();
+  await knobBeats.nth(0).locator('.mention-text').click();
   await page.keyboard.press('End');
   await page.keyboard.type(' Page.');
   check('the_pages_beat_write_went_out', await Promise.race([rowsOut.then(() => true), new Promise((done) => setTimeout(() => done(false), 20_000))]));
