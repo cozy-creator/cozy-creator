@@ -125,7 +125,8 @@ fn run(retirer: Arc<Retirer>, receiver: mpsc::Receiver<Job>) {
     let mut pending = Vec::new();
     // A read's demand waits on its fill's retirement, which is usually microseconds behind the first
     // look: the fill's events are done, the read's own end event not quite. At 20 ms each, 124 blocks
-    // of SDXL took 2 s of its first step (run 29637). Look again at once, easing off to 12.8 ms.
+    // of SDXL took 2 s of its first step (run 29637). Look again at once, easing off to 12.8 ms. No one
+    // event ends them all: GPU work, a capture, another thread's lock.
     let mut quiet = 0u32;
     loop {
         if pending.is_empty() {

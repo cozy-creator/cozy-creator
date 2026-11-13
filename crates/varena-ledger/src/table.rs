@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 const ROWS: usize = 32;
 const PAGE: usize = 4096;
-/// Between asks: how often a donor republishes and samples.
+/// Between asks, while its holdings move or it samples: how often a donor republishes.
 const CADENCE: Duration = Duration::from_millis(500);
 /// How often a waiter rechecks what no futex wake can report: a killed peer.
 const TICK: Duration = Duration::from_millis(50);
@@ -50,11 +50,13 @@ struct Words {
     short: AtomicU64,
     /// Bytes it has given back for asks, cumulative.
     donated: AtomicU64,
+    /// Rung by every ask and by its own request beginning: its donor waits on it.
+    bell: AtomicU64,
 }
 
 #[repr(C)]
 struct Page {
-    /// Bumped by every ask; donors wait on it.
+    /// Bumped by every ask, which rings each live row's bell.
     generation: AtomicU64,
     /// Bumped by every answer, release and death; askers and the supervisor wait on it.
     answers: AtomicU64,
@@ -77,6 +79,17 @@ pub enum Recovery {
     Final,
 }
 
+/// What a donor's next look between asks is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    /// The card is short: a program taking what was given waits on the next give (`TICK`).
+    Short,
+    /// What it samples has no event, as other programs on a shared card (`CADENCE`).
+    Sample,
+    /// Nothing of its own: once its holdings hold still out of a request, an ask or a request wakes it.
+    Nothing,
+}
+
 /// A process's side of asks. Called only on its one donor thread, with no allocator lock held.
 pub trait Donor {
     /// Physical bytes held and the part not in use now. No driver call.
@@ -84,9 +97,8 @@ pub trait Donor {
     /// Give back about `bytes` of idle memory, without waiting on memory in use.
     /// Returns the bytes actually released.
     fn trim(&mut self, bytes: u64) -> u64;
-    /// Between asks, every `CADENCE`, or every `TICK` while it says the card is short: a program
-    /// taking what was given is still short, and waits on the next give.
-    fn tick(&mut self, table: &Table, row: Row, idle: u64) -> bool;
+    /// At each look between asks, its holdings just published.
+    fn tick(&mut self, table: &Table, row: Row, idle: u64) -> Look;
 }
 
 /// One process's view of one GPU's page. Lives until the process exits.
@@ -138,7 +150,7 @@ impl Table {
 
     fn open_named(name: &str) -> io::Result<Self> {
         // The layout version is in the name: peers of another layout simply do not meet.
-        let path = directory()?.join(format!("v6-{name}"));
+        let path = directory()?.join(format!("v7-{name}"));
         let open = || OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW).open(&path);
         // The mapping gets its own description: a mapping keeps its description alive, in a forked
@@ -252,8 +264,11 @@ impl Table {
         row.idle.store(idle, Release);
     }
 
+    /// Its donor looks again while it runs.
     pub fn request_begin(&self, row: Row) {
-        self.page.rows[row.0].running.fetch_add(1, AcqRel);
+        let row = &self.page.rows[row.0];
+        row.running.fetch_add(1, AcqRel);
+        ring(&row.bell);
     }
 
     pub fn running(&self, row: Row) -> bool {
@@ -297,7 +312,10 @@ impl Table {
     pub fn ask(&self, row: Row, bytes: u64) -> u64 {
         self.page.rows[row.0].want.store(bytes, Release);
         let generation = self.page.generation.fetch_add(1, AcqRel) + 1;
-        wake(&self.page.generation);
+        // A row claimed after its pid is read here owes no earlier generation (`claim`).
+        for words in self.page.rows.iter().filter(|words| words.pid.load(Acquire) != 0) {
+            ring(&words.bell);
+        }
         generation
     }
 
@@ -323,11 +341,18 @@ impl Table {
         0
     }
 
-    /// A process's one donor thread. Trims when asked and answers every generation. Never returns.
+    /// A process's one donor thread. Trims when asked and answers every generation. Between asks it
+    /// republishes while in a request, after one or an ask until two looks find its holdings the
+    /// same, and while its donor samples; else it waits on its bell. Never returns.
     pub fn serve(&self, row: Row, donor: &mut impl Donor) {
-        let mut answered = self.page.rows[row.0].answered.load(Acquire);
-        let mut sample = Instant::now();
+        let words = &self.page.rows[row.0];
+        let mut answered = words.answered.load(Acquire);
+        let mut sample = Some(Instant::now());
+        // The holdings at the last look out of any request.
+        let mut last = None;
         loop {
+            // Read before the generation: an ask bumps it, then rings.
+            let bell = words.bell.load(Acquire);
             let generation = self.page.generation.load(Acquire);
             if generation != answered {
                 self.reap();
@@ -343,16 +368,27 @@ impl Table {
                 if released != 0 { self.page.released.fetch_add(released, AcqRel); }
                 self.changed();
                 answered = generation;
+                sample.get_or_insert_with(|| Instant::now() + CADENCE);
                 continue;
             }
             let now = Instant::now();
-            if now >= sample {
-                let (held, idle) = donor.holdings();
-                self.publish(row, held, idle);
-                sample = now + if donor.tick(self, row, idle) { TICK } else { CADENCE };
-                continue;
+            let running = self.running(row);
+            if running && sample.is_none() {
+                sample = Some(now);
             }
-            wait(&self.page.generation, generation, sample - now);
+            match sample {
+                Some(at) if now >= at => {
+                    let holdings = donor.holdings();
+                    self.publish(row, holdings.0, holdings.1);
+                    let still = if running { last = None; false } else { last.replace(holdings) == Some(holdings) };
+                    sample = match donor.tick(self, row, holdings.1) {
+                        Look::Short => Some(now + TICK),
+                        Look::Nothing if still => None,
+                        Look::Sample | Look::Nothing => Some(now + CADENCE),
+                    };
+                }
+                _ => wait(&words.bell, bell, sample.map(|at| at - now)),
+            }
         }
     }
 
@@ -394,7 +430,7 @@ impl Table {
                     // A running peer may be finishing a stream. An idle one that answered with the same
                     // figure twice has nothing more to give, however long this asks.
                     idle = left;
-                    wait(&page.answers, seen, TICK);
+                    wait(&page.answers, seen, Some(TICK));
                     generation = self.ask(row, bytes);
                     continue;
                 }
@@ -407,7 +443,7 @@ impl Table {
                 }
             }
             let limit = if supervisor.is_some() { TICK } else { TICK.min(deadline.saturating_duration_since(now)) };
-            wait(&page.answers, seen, limit);
+            wait(&page.answers, seen, Some(limit));
         }
     }
 
@@ -437,7 +473,7 @@ impl Table {
             if now >= deadline || self.page.rows.iter().all(|words| !live(words) || words.answered.load(Acquire) >= generation) {
                 break false;
             }
-            wait(&self.page.answers, seen, TICK.min(deadline - now));
+            wait(&self.page.answers, seen, Some(TICK.min(deadline - now)));
         };
         self.stop_asking(row);
         gave
@@ -458,7 +494,7 @@ impl Table {
             let now = Instant::now();
             let waiting = self.page.rows.iter().any(|words| words.pid.load(Acquire) != 0 && words.answered.load(Acquire) < generation);
             if !waiting || now >= deadline { break; }
-            wait(&self.page.answers, seen, TICK.min(deadline - now));
+            wait(&self.page.answers, seen, Some(TICK.min(deadline - now)));
         }
         let given = self.page.released.load(Acquire) - before;
         self.leave(row);
@@ -468,7 +504,9 @@ impl Table {
     /// TensorD's side, for this GPU. While the table's supervisor byte is held, an asker that
     /// peers could not help waits for `end_idle`: it ends an idle process, or says there is none.
     /// Only an exit returns a CUDA context. `end_idle` returns None when the service is gone.
-    /// An asker's own process is never the one ended: its exit can't give it room.
+    /// An asker's own process is never the one ended: its exit can't give it room. It wakes for
+    /// an ask (`changed`) and an exit its service reports (`exited`); a row whose process died
+    /// unreported is reaped by the next of them.
     pub fn supervise(&self, mut end_idle: impl FnMut(&[u32]) -> Option<bool>) {
         if !self.lock(0) { return; } // Another TensorD on this GPU has it.
         loop {
@@ -493,7 +531,7 @@ impl Table {
                 }
                 continue;
             }
-            wait(&self.page.answers, seen, Duration::from_secs(1));
+            wait(&self.page.answers, seen, None);
         }
     }
 }
@@ -506,10 +544,16 @@ fn now_ns() -> u64 {
 }
 
 // Futex words are the low half of a little-endian u64.
-fn wait(word: &AtomicU64, seen: u64, timeout: Duration) {
-    let time = libc::timespec { tv_sec: timeout.as_secs() as i64, tv_nsec: i64::from(timeout.subsec_nanos()) };
-    // SAFETY: a live, aligned shared word. The kernel compares and sleeps atomically; any return is fine.
-    unsafe { libc::syscall(libc::SYS_futex, word.as_ptr().cast::<u32>(), libc::FUTEX_WAIT, seen as u32, &time, 0usize, 0u32) };
+fn wait(word: &AtomicU64, seen: u64, timeout: Option<Duration>) {
+    let time = timeout.map(|timeout| libc::timespec { tv_sec: timeout.as_secs() as i64, tv_nsec: i64::from(timeout.subsec_nanos()) });
+    let time = time.as_ref().map_or(std::ptr::null(), |time| time as *const libc::timespec);
+    // SAFETY: a live, aligned shared word, and a timeout or none. The kernel compares and sleeps atomically; any return is fine.
+    unsafe { libc::syscall(libc::SYS_futex, word.as_ptr().cast::<u32>(), libc::FUTEX_WAIT, seen as u32, time, 0usize, 0u32) };
+}
+
+fn ring(bell: &AtomicU64) {
+    bell.fetch_add(1, AcqRel);
+    wake(bell);
 }
 
 fn wake(word: &AtomicU64) {

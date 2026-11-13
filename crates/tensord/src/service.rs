@@ -64,6 +64,11 @@ const SWEEP_EVERY: std::time::Duration = crate::reclaim::IDLE;
 /// One stuck (D state) is shown in the machine's status and fences nothing: what it holds stays
 /// held, its GPU memory included, as NVML reads it.
 fn holds_gpus(birth: &Birth, before: u64) -> bool {
+    let left = left(birth, before);
+    !left.is_empty() && !platform::contain::all_stuck(&left)
+}
+/// `birth`'s group from before `before`, as far as it has not exited.
+fn left(birth: &Birth, before: u64) -> Vec<Birth> {
     let mut left: Vec<Birth> = platform::process::group_members(birth)
         .into_iter()
         .filter(|m| m.start_ticks < before && m.state().is_ok_and(|s| s != platform::process::State::Gone))
@@ -71,7 +76,7 @@ fn holds_gpus(birth: &Birth, before: u64) -> bool {
     if !birth.ended().unwrap_or(false) {
         left.push(birth.clone());
     }
-    !left.is_empty() && !platform::contain::all_stuck(&left)
+    left
 }
 impl Service {
     pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>) -> io::Result<Arc<Self>> {
@@ -222,9 +227,16 @@ impl Service {
         let (fence, started) = (self.startup_gpu_births.lock().unwrap().clone(), self.started_ticks);
         let (gpu, engine) = (gpu.clone(), self.engine.clone());
         std::thread::Builder::new().name("warm-set-restore".into()).spawn(move || {
-            let mut seen = engine.activity_epoch();
-            while fence.iter().any(|birth| holds_gpus(birth, started)) {
-                seen = engine.wait_activity(seen, Some(std::time::Duration::from_millis(100)));
+            // An exit wakes it; each second it looks whether those left are stuck in the kernel, which `holds_gpus` gives up.
+            while let Some(birth) = fence.iter().find(|birth| holds_gpus(birth, started)) {
+                let exiting = left(birth, started).iter().find_map(|member| platform::process::Exact::open(member).ok().flatten());
+                match exiting {
+                    Some(exact) => drop(exact.wait_for(std::time::Duration::from_secs(1))),
+                    None => std::thread::sleep(std::time::Duration::from_secs(1)),
+                }
+            }
+            if !fence.is_empty() {
+                gpu.ledgers_exited();
             }
             gpu.keep_all(&engine);
         })?;

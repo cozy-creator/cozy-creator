@@ -1,7 +1,7 @@
 #![allow(unsafe_code)]
 use crate::{Error, Result};
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
-use windows_sys::Win32::Foundation::{HANDLE, WAIT_ABANDONED_0, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{HANDLE, WAIT_ABANDONED_0, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{
     CreateEventW, INFINITE, ResetEvent, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
@@ -55,9 +55,22 @@ impl Signal {
 
 /// Blocks until one of `items` is signalled; the lowest such index. No timeout.
 pub fn wait_any(items: &[Waitable<'_>]) -> Result<Vec<super::Ready>> {
+    wait_any_for(items, None)
+}
+
+/// [`wait_any`], or none ready once `timeout` passed.
+pub fn wait_any_for(items: &[Waitable<'_>], timeout: Option<std::time::Duration>) -> Result<Vec<super::Ready>> {
     let handles: Vec<HANDLE> = items.iter().map(|h| h.as_raw_handle() as HANDLE).collect();
+    let ms = timeout.map_or(INFINITE, |timeout| u32::try_from(timeout.as_millis()).unwrap_or(INFINITE - 1));
+    if handles.is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(u64::from(ms)));
+        return Ok(vec![]);
+    }
     // SAFETY: live handles the caller borrows for the call, and their count.
-    let woke = unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, INFINITE) };
+    let woke = unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, ms) };
+    if woke == WAIT_TIMEOUT {
+        return Ok(vec![]);
+    }
     let n = handles.len() as u32;
     let first = match woke {
         w if (WAIT_OBJECT_0..WAIT_OBJECT_0 + n).contains(&w) => (w - WAIT_OBJECT_0) as usize,
