@@ -10,7 +10,7 @@ const { createHash } = require('crypto');
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
+const { projectFolder, projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const failures = [];
@@ -54,7 +54,7 @@ const hex = (digest) => digest?.replace(/^sha256:/, '');
   const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-download-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-download-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

@@ -4,7 +4,7 @@ const { execFileSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { dirname, join } = require('path');
-const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt } = require('./page');
+const { projectFolder, calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt } = require('./page');
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
 const createdFolders = [];
@@ -655,7 +655,7 @@ const newPage = async () => {
   };
   await goto(page, `${origin}/projects`);
   check('new_form_defaults_to_encryption', !(await page.getByLabel('Create without encryption', { exact: true }).isChecked()));
-  await page.getByLabel("New project's name", { exact: true }).fill(`web-vault-new-${Date.now()}`);
+  await page.getByLabel("New project's folder", { exact: true }).fill(projectFolder(`web-vault-new-${Date.now()}`));
   await page.getByLabel('Passphrase', { exact: true }).fill('synthetic new project passphrase');
   await page.getByLabel('Confirm passphrase', { exact: true }).fill('synthetic new project passphrase');
   const creationReply = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects' && answer.ok());
@@ -682,7 +682,7 @@ const newPage = async () => {
   const uploadsBeforeSetup = fileWrites.length;
   const emptyAt = await openCanvas(page);
   await drop(page, [{ name: 'new_private_drop.png', type: 'image/png', bytes: png(109) }], emptyAt.x, emptyAt.y);
-  const setup = page.getByRole('dialog', { name: 'New project', exact: true });
+  const setup = page.getByRole('region', { name: 'New project', exact: true });
   await setup.waitFor();
   check('implicit_creation_waits_before_upload', fileWrites.length === uploadsBeforeSetup);
   await setup.getByLabel('Passphrase', { exact: true }).fill('synthetic implicit project passphrase');
@@ -737,7 +737,7 @@ const newPage = async () => {
 
   const prepareCreation = async (suffix) => {
     await goto(page, `${origin}/projects`);
-    await page.getByLabel("New project's name", { exact: true }).fill(`web-vault-${suffix}-${Date.now()}`);
+    await page.getByLabel("New project's folder", { exact: true }).fill(projectFolder(`web-vault-${suffix}-${Date.now()}`));
     await page.getByLabel('Passphrase', { exact: true }).fill('synthetic pending project passphrase');
     await page.getByLabel('Confirm passphrase', { exact: true }).fill('synthetic pending project passphrase');
   };

@@ -11,7 +11,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { implementationRow, projectFromPage, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, settled, until, watchBoxes } = require('./page');
+const { projectFolder, implementationRow, projectFromPage, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, settled, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -60,7 +60,7 @@ function plate(path, color, seconds, hz) {
   await signIn(page);
   await page.waitForSelector('.top');
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-timeline-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-timeline-${Date.now()}`));
   await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

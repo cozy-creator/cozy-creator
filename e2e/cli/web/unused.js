@@ -1,7 +1,8 @@
 // A mention its tool can't use is struck through, saying why, and never sent (cl-944, Paul 11-12: "It should cross out that reference, to
-// clearly indicate that it's not using its input"), in a real browser on a real Calcifer with the Hub's real MOSS Image, Qwen-Image-2 and H3.
-// A project with a picture, a video and a sound, and a picture box with a version:
-//   MOSS Image (words only): <pic>, <clip> and <photo.1> are struck through, each saying why;
+// clearly indicate that it's not using its input"), in a real browser on a real Calcifer with the Hub's real SDXL, MOSS Image, Qwen-Image-2
+// and H3. A project with a picture, a video and a sound, and a picture box with a version:
+//   SDXL's Image (words only): <pic>, <clip> and <photo.1> are struck through, each saying why;
+//   MOSS Image (pictures, since Moss-Image-Edit is its model: packages #876): <pic> and <photo.1> are not; <clip> is;
 //   Qwen-Image-2 (pictures): <pic> and <photo.1> are not; <clip:0-5> and <hum> are;
 //   H3's Shot (pictures, videos and sounds): nothing is.
 // Calcifer says each with the box (`unused`) and once in the project's notes, which `cozy status` shows; a run of a stand-in picture tool
@@ -15,7 +16,7 @@ const { spawnSync } = require('child_process');
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload, wav } = require('./page');
+const { projectFolder, projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -65,7 +66,7 @@ const cozy = (folder, words) => {
   };
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-unused-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-unused-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
@@ -79,13 +80,14 @@ const cozy = (folder, words) => {
   writeFileSync(join(files, 'clip.mp4'), MP4);
   writeFileSync(join(files, 'hum.wav'), wav());
 
-  // The Hub's own tools: MOSS Image takes words only, Qwen-Image-2 pictures, H3's Shot pictures, videos and sounds.
+  // The Hub's own tools: SDXL's Image takes words only, MOSS Image and Qwen-Image-2 pictures, H3's Shot pictures, videos and sounds.
   const listed = async (q) => (await api(`/v1/tools?project=${id}&q=${q}`)).body?.tools ?? [];
+  const sdxl = (await listed('sdxl')).find((tool) => tool.package === 'sdxl' && tool.function === 'image');
   const moss = (await listed('moss')).find((tool) => tool.package === 'moss-image' && tool.function === 'image');
   const qwen = (await listed('qwen')).find((tool) => tool.package === 'qwen-image-2' && tool.function === 'image');
   const h3 = (await listed('minimax')).find((tool) => tool.id === 'minimax-h3/generate') ?? (await listed('minimax')).find((tool) => tool.package === 'minimax-h3' && tool.makes === 'video');
-  if (!moss || !qwen || !h3) throw new Error(`the Hub lists no MOSS Image, Qwen-Image-2 or H3 Shot: ${JSON.stringify({ moss: moss?.id, qwen: qwen?.id, h3: h3?.id })}`);
-  seen.tools = { moss: moss.id, qwen: qwen.id, h3: h3.id };
+  if (!sdxl || !moss || !qwen || !h3) throw new Error(`the Hub lists no SDXL Image, MOSS Image, Qwen-Image-2 or H3 Shot: ${JSON.stringify({ sdxl: sdxl?.id, moss: moss?.id, qwen: qwen?.id, h3: h3?.id })}`);
+  seen.tools = { sdxl: sdxl.id, moss: moss.id, qwen: qwen.id, h3: h3.id };
 
   for (const [name, file, x] of [['pic', 'pic.png', 100], ['clip', 'clip.mp4', 460], ['hum', 'hum.wav', 820]]) {
     await post(`${at}/imports`, { source: await upload(held?.token, join(files, file), id), name, exact: true, at: { x, y: 80 } });
@@ -93,7 +95,8 @@ const cozy = (folder, words) => {
   await post(`${at}/assets`, { tool: qwen.id, kind: 'image', name: 'photo', exact: true, fields: { instructions: 'a harbour' }, at: { x: 1180, y: 80 } });
   await post(`${at}/assets/photo/versions`, { source: await upload(held?.token, join(files, 'photo.png'), id) });
   const written = {
-    moss: { tool: moss.id, kind: 'image', fields: { instructions: '<pic> is in a pose, beside <clip>, as in <photo.1>' }, x: 100 },
+    sdxl: { tool: sdxl.id, kind: 'image', fields: { instructions: '<pic> is in a pose, beside <clip>, as in <photo.1>' }, x: 100 },
+    moss: { tool: moss.id, kind: 'image', fields: { instructions: '<pic> is in a pose, beside <clip>, as in <photo.1>' }, x: 1480 },
     qwen: { tool: qwen.id, kind: 'image', fields: { instructions: '<pic> by the sea as in <photo.1>, with <clip:0-5> and <hum>' }, x: 560 },
     shot: { tool: h3.id, kind: 'video', fields: { summary: '<clip> then <pic>, and <hum> plays', beats: [{ description: '<pic> waves.', duration: 5 }] }, x: 1020 },
   };
@@ -103,53 +106,60 @@ const cozy = (folder, words) => {
 
   // Calcifer's word, once it has read each package: what each box leaves out, where, and why.
   const unusedOf = async () => Object.fromEntries(((await api(at)).body?.assets ?? []).map((asset) => [asset.name, asset.unused ?? []]));
-  const read = await until('each box read by its package', unusedOf, (now) => now.moss?.length === 3 && now.qwen?.length === 2, STEP_MS * 2).catch(unusedOf);
+  const read = await until('each box read by its package', unusedOf, (now) => now.sdxl?.length === 3 && now.moss?.length === 1 && now.qwen?.length === 2, STEP_MS * 2).catch(unusedOf);
   seen.unused = read;
   const one = (name, mention) => read[name]?.find((unused) => unused.mention === mention);
-  check('moss_leaves_out_a_picture', /^Moss Image can't use images$/.test(one('moss', 'pic')?.why ?? '') && one('moss', 'pic')?.at === 'instructions', read.moss);
-  check('moss_leaves_out_a_video', /can't use videos$/.test(one('moss', 'clip')?.why ?? ''), read.moss);
-  check('moss_leaves_out_a_version', /can't use images$/.test(one('moss', 'photo.1')?.why ?? ''), read.moss);
+  check('sdxl_leaves_out_a_picture', /^SDXL can't use images$/.test(one('sdxl', 'pic')?.why ?? '') && one('sdxl', 'pic')?.at === 'instructions', read.sdxl);
+  check('sdxl_leaves_out_a_video', /^SDXL can't use videos$/.test(one('sdxl', 'clip')?.why ?? ''), read.sdxl);
+  check('sdxl_leaves_out_a_version', /^SDXL can't use images$/.test(one('sdxl', 'photo.1')?.why ?? ''), read.sdxl);
+  check('moss_uses_pictures', !one('moss', 'pic') && !one('moss', 'photo.1'), read.moss);
+  check('moss_leaves_out_a_video', /^Moss Image can't use videos$/.test(one('moss', 'clip')?.why ?? '') && one('moss', 'clip')?.at === 'instructions', read.moss);
   check('qwen_uses_pictures', !one('qwen', 'pic') && !one('qwen', 'photo.1'), read.qwen);
   check('qwen_leaves_out_a_range_of_a_video', /^Qwen Image 2 can't use videos$/.test(one('qwen', 'clip:0-5')?.why ?? ''), read.qwen);
   check('qwen_leaves_out_a_sound', /can't use audio$/.test(one('qwen', 'hum')?.why ?? ''), read.qwen);
   check('h3_uses_all_three', (read.shot ?? []).length === 0, read.shot);
   const notes = (await api(at)).body?.notes ?? [];
   seen.notes = notes;
-  check('the_project_notes_each_once', notes.length === 5 && notes.every((note) => note.message.includes('is left out:')), notes);
+  check('the_project_notes_each_once', notes.length === 6 && notes.every((note) => note.message.includes('is left out:')), notes);
 
   // The call its binder would send: what's left out is its name in the text, and no reference.
   const call = async (name) => (await api(`${at}/assets/${name}?call=true`)).body;
+  const sdxlCall = await call('sdxl');
+  seen.sdxl_call = { call: sdxlCall?.call, said: sdxlCall?.call_warnings };
+  check('sdxl_sends_only_words', typeof sdxlCall?.call?.instructions === 'string' && !sdxlCall.call.instructions.includes('<'), seen.sdxl_call);
   const mossCall = await call('moss');
-  seen.moss_call = { call: mossCall?.call, said: mossCall?.call_warnings };
-  check('moss_sends_only_words', typeof mossCall?.call?.instructions === 'string' && !mossCall.call.instructions.includes('<'), seen.moss_call);
+  seen.moss_call = { call: mossCall?.call?.instructions, said: mossCall?.call_warnings };
+  const mossKeys = (mossCall?.call?.instructions?.references ?? []).map((reference) => reference.key);
+  check('moss_sends_only_pictures', JSON.stringify(mossKeys) === '["pic","photo.1"]' && !/<clip/.test(mossCall?.call?.instructions?.text ?? '<'), seen.moss_call);
   const qwenCall = await call('qwen');
   seen.qwen_call = { call: qwenCall?.call?.instructions, said: qwenCall?.call_warnings };
   const keys = (qwenCall?.call?.instructions?.references ?? []).map((reference) => reference.key);
   check('qwen_sends_only_pictures', JSON.stringify(keys) === '["pic","photo.1"]' && !/<clip|<hum/.test(qwenCall?.call?.instructions?.text ?? '<'), seen.qwen_call);
 
   // The page: each crossed out where it's written, at rest and open, its title why; nothing else.
-  for (const name of ['moss', 'qwen', 'shot']) await boxOf(page, name).waitFor();
+  for (const name of ['sdxl', 'moss', 'qwen', 'shot']) await boxOf(page, name).waitFor();
   await fitCanvas(page);
   await settled(page);
   const chips = (name) => boxOf(page, name).evaluate((node) => [...node.querySelectorAll('.card .words .chip')].map((chip) => ({ text: chip.textContent, unused: chip.classList.contains('unused'), struck: getComputedStyle(chip).textDecorationLine.includes('line-through'), title: chip.title })));
   const rest = {};
-  for (const name of ['moss', 'qwen', 'shot']) rest[name] = await until(`${name}'s words`, () => chips(name), (now) => now.length > 0 && (name === 'shot' || now.some((chip) => chip.unused))).catch(() => chips(name));
+  for (const name of ['sdxl', 'moss', 'qwen', 'shot']) rest[name] = await until(`${name}'s words`, () => chips(name), (now) => now.length > 0 && (name === 'shot' || now.some((chip) => chip.unused))).catch(() => chips(name));
   seen.at_rest = rest;
-  check('at_rest_moss_crosses_out_all_three', rest.moss.length === 3 && rest.moss.every((chip) => chip.unused && chip.struck && /can't use/.test(chip.title)), rest.moss);
+  check('at_rest_sdxl_crosses_out_all_three', rest.sdxl.length === 3 && rest.sdxl.every((chip) => chip.unused && chip.struck && /can't use/.test(chip.title)), rest.sdxl);
+  check('at_rest_moss_crosses_out_the_video_only', JSON.stringify(rest.moss.map((chip) => chip.unused)) === '[false,true,false]' && rest.moss[1]?.struck === true, rest.moss);
   check('at_rest_qwen_crosses_out_the_video_and_sound_only', JSON.stringify(rest.qwen.map((chip) => chip.unused)) === '[false,false,true,true]', rest.qwen);
   check('at_rest_h3_crosses_out_nothing', rest.shot.length >= 3 && rest.shot.every((chip) => !chip.unused && !chip.struck), rest.shot);
   await shot('at-rest');
 
-  await openBox(page, 'moss');
+  await openBox(page, 'sdxl');
   const editor = page.locator('.card.here .mention-text[data-field=instructions]');
   await editor.waitFor();
-  const open = await until('moss open, crossed out', () => editor.evaluate((node) => [...node.querySelectorAll('.chip')].map((chip) => ({ mention: chip.dataset.mention, unused: chip.classList.contains('unused'), title: chip.title }))), (now) => now.length === 3 && now.every((chip) => chip.unused));
+  const open = await until('sdxl open, crossed out', () => editor.evaluate((node) => [...node.querySelectorAll('.chip')].map((chip) => ({ mention: chip.dataset.mention, unused: chip.classList.contains('unused'), title: chip.title }))), (now) => now.length === 3 && now.every((chip) => chip.unused));
   seen.open = open;
-  check('open_moss_crosses_out_each_saying_why', open.every((chip) => /^Moss Image can't use (images|videos)$/.test(chip.title)), open);
+  check('open_sdxl_crosses_out_each_saying_why', open.every((chip) => /^SDXL can't use (images|videos)$/.test(chip.title)), open);
   check('nothing_pops_up', (await page.locator('[role=dialog], [role=alertdialog], .modal').count()) === 0);
-  await shot('moss-open');
+  await shot('sdxl-open');
 
-  // Typed in: a sound in MOSS's words is crossed out once Calcifer reads it; nothing is refused.
+  // Typed in: a sound in SDXL's words is crossed out once Calcifer reads it; nothing is refused.
   await editor.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' and <hum> ');
@@ -162,7 +172,7 @@ const cozy = (folder, words) => {
   const status = cozy(project, ['--json', 'status']);
   const said = (() => { try { return JSON.parse(status.out); } catch { return null; } })();
   seen.status = { code: status.code, notes: said?.notes, health: said?.health, err: status.err.slice(-400) };
-  check('status_notes_each_once', status.code === 0 && Array.isArray(said?.notes) && said.notes.filter((line) => line.startsWith('moss: <hum> is left out:')).length === 1 && said.notes.some((line) => line.startsWith('qwen: <clip:0-5> is left out:')), seen.status);
+  check('status_notes_each_once', status.code === 0 && Array.isArray(said?.notes) && said.notes.filter((line) => line.startsWith('sdxl: <hum> is left out:')).length === 1 && said.notes.some((line) => line.startsWith('qwen: <clip:0-5> is left out:')), seen.status);
   check('status_notes_are_not_warnings', !(said?.warnings ?? []).some((warning) => /is left out/.test(warning.message ?? '')), said?.warnings);
 
   // A run of a stand-in picture tool: the video is its name in the prompt, and `cozy run watch` says it once, as a note.

@@ -307,6 +307,12 @@ class Native:
                 if isinstance(document, dict) and isinstance(document.get("error"), dict):
                     error = document["error"]
                     break
+        if error is None:
+            # A plain command's closed `error[code]` and `cause:` lines (stderr), as its JSON envelope says them.
+            code = re.search(rb"^error\[([a-z0-9_]+)\]", completed.stderr, re.M)
+            cause = re.search(rb"^cause: ([a-z0-9_]+)$", completed.stderr, re.M)
+            if code:
+                error = {"code": code.group(1).decode(), **({"cause": cause.group(1).decode()} if cause else {})}
         facts["error_envelope"] = error is not None
         if error is None:
             return facts
@@ -368,6 +374,20 @@ class Native:
                     self.failure = self.failure_facts(completed, words)
                 raise Failure("cli_exit")
             return completed.stdout
+
+    def open(self, cwd: Path) -> None:
+        # The project in Cozy's own private browser: since cl-980 `--json open` only prints a link and starts none.
+        deadline = time.monotonic() + 90
+        while True:
+            completed = subprocess.run([str(self.cli), "open"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+            if completed.returncode and re.search(rb"^error\[project_busy\]", completed.stderr, re.M) and time.monotonic() < deadline:
+                time.sleep(0.1)
+                continue
+            if completed.returncode:
+                if self.failure is None:
+                    self.failure = self.failure_facts(completed, ("open",))
+                raise Failure("cli_exit")
+            return
 
     def document(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None) -> dict[str, object]:
         return cast(dict[str, object], json.loads(self.command(*words, cwd=cwd, stdin=stdin)))  # cast: the CLI's --json document

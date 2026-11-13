@@ -46,16 +46,13 @@ pub struct ProjectViewport {
     pub zoom: f64,
 }
 
-/// `POST /v1/projects`: a new project called `name`, in Calcifer's home folder (`~/<name>`, the next free name when that is
-/// taken) or at `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in
-/// its `project.db`: the folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.
+/// `POST /v1/projects`: a new project at `path` (absolute, on Calcifer's computer), named for its folder, with the starter film
+/// when `starter`. `cozy new` and the page's New both make one so (cl-980). A project is its id, kept in its `project.db`: the
+/// folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Open {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<PathBuf>,
+    pub path: PathBuf,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub starter: bool,
     /// Explicitly create ordinary local storage instead of the default encrypted project.

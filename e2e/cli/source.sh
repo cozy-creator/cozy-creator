@@ -146,6 +146,28 @@ if stand_in stand-s; then
   cozy --json machine end stand-s -y > "$OUT/source-stand-end.json" 2>&1 || check "from source: stand-s not removed: $(tail -c 300 "$OUT/source-stand-end.json")"
 fi
 
+# A slow reading never empties the page's tools (11-13: a busy Calcifer read the checkout past every list's wait, and Paul's palette
+# showed no first-party tool). e2e-boxed takes a new dependency in a new commit, so its next reading locks and describes it again:
+# the list asked at once has its tools within a few seconds, the last good ones or the new, and a later list the new commit's.
+sed -i 's/"msgspec>=0.19"\]/"msgspec>=0.19", "six>=1.16"]/' "$co/e2e-boxed/pyproject.toml"
+git -C "$co" -c user.name=e2e -c user.email=e2e@localhost commit -qam "e2e-boxed takes six" || check "from source: the checkout's second commit failed"
+local said2 t0 took shown
+said2="rc/e2e @ $(git -C "$co" rev-parse HEAD | cut -c1-8)"
+t0=$(date +%s%3N)
+curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/source-tools-slow.json" 2>&1
+took=$(( $(date +%s%3N) - t0 ))
+shown=$(jq -r '[.tools[]? | select(.id == "e2e-boxed/one_field") | .source] | first // empty' "$OUT/source-tools-slow.json" 2> /dev/null)
+echo "from source: listed at once after a new commit, in ${took} ms: e2e-boxed/one_field from ${shown:-nothing} (before: $said, now: $said2)"
+{ [ "$shown" = "$said" ] || [ "$shown" = "$said2" ]; } && [ "$took" -lt 10000 ] \
+  || check "from source: while e2e-boxed is read again, the list took ${took} ms and shows it from '${shown:-nothing}': $(jq -c .note "$OUT/source-tools-slow.json" 2> /dev/null)"
+for _ in $(seq 30); do
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/source-tools-new.json" 2>&1
+  J --arg said "$said2" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said]' "$OUT/source-tools-new.json" && break
+  sleep 3
+done
+J --arg said "$said2" '[.tools[] | select(.id == "e2e-boxed/one_field") | .source] == [$said]' "$OUT/source-tools-new.json" \
+  || check "from source: e2e-boxed's new commit never listed: $(jq -c '[.tools[]? | select(.id | startswith("e2e-boxed/")) | .source] | unique' "$OUT/source-tools-new.json" 2> /dev/null), $(jq -c .note "$OUT/source-tools-new.json" 2> /dev/null)"
+
 # Off a dev home, the name is the Hub's again.
 cp "$OUT/source-config.toml" "$cfg"
 systemctl --user restart cozy-calcifer || { check "from source: Calcifer didn't restart"; return; }

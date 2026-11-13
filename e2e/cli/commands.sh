@@ -799,6 +799,30 @@ machine_ready
 runtime_floor() {
 step "a package release runs on a Runtime that meets its floor: publishing refuses a dishonest one; a held machine refuses, another upgrades (cl-952)"
 [ -n "$LOCAL" ] || return 0
+runtime_floor_cells
+# Whatever stopped the cells above, local gets its candidates back (and this computer's cozy, if the RC pin stopped
+# halfway), so a red there never runs the cells after it on the held 0.45.0 (child-latents did: 43402947916).
+local was=$OUT/cozy-before-rc-pin code=0
+if [ -f "$was" ] && [ "$(cozy --version)" != "$("$was" --version)" ]; then
+  cozy --json machine update local --tensord "$was" -y > "$OUT/floor-back-cozy.json" 2>&1 \
+    || check "runtime floor: local refused this computer's cozy back: $(tail -c 300 "$OUT/floor-back-cozy.json")"
+fi
+cozy --json machine update local ${CAND_RT:+--runtime "$CAND_RT"} ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/floor-back.json" 2>&1 \
+  || check "runtime floor: local refused its candidates again: $(tail -c 300 "$OUT/floor-back.json")"
+machine_ready
+# The open RC's Runtime (a dev release, as an RC candidate's 0.47.0.dev0+dev.g… is) runs only under the RC's cozy: a released cozy
+# named by hand under it is refused in one line, and nothing moves.
+case $(jq -r '.status.runtime' "$OUT/machine.json") in
+  *.dev[0-9]*)
+    code=0
+    cozy --json machine update local --tensord 0.24.0 -y > "$OUT/floor-rc-cozy.json" 2>&1 || code=$?
+    [ "$code" != 0 ] && grep -q '"rc_runtime_needs_rc_cozy"' "$OUT/floor-rc-cozy.json" \
+      || check "runtime floor: a released cozy under the RC's Runtime wasn't refused: exit $code $(tail -c 300 "$OUT/floor-rc-cozy.json")" ;;
+  *) echo "runtime floor: local's candidate Runtime $(jq -r .status.runtime "$OUT/machine.json") is no RC dev release: the RC cozy pairing isn't asked here" ;;
+esac
+}
+
+runtime_floor_cells() {
 [ -n "${E2E_FLOOR:-}" ] || { check "runtime floor: isolated.sh published no e2e-floor: ${E2E_HELD_REFUSED:-not seeded}"; return; }
 grep -q '"runtime_floor_lacks"' "$E2E_LIES" && grep -q 'call from cozy_runtime.author' "$E2E_LIES" && grep -q 'raise its floor: cozy-runtime>=0\.' "$E2E_LIES" \
   || check "runtime floor: publishing e2e-lies (cozy-runtime>=0.44, imports call) wasn't refused naming call and the floor its lock has: $(tail -c 400 "$E2E_LIES")"
@@ -868,19 +892,6 @@ in_project "$RUN_PROJECT" run "$E2E_CAPPED/relay" text=capped --on local > "$OUT
   || check "runtime floor: the unversioned e2e-capped run failed: $(tail -c 400 "$OUT/floor-capped.err")"
 grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can take does: this run takes 0.1.0" "$OUT/floor-capped.err" \
   || check "runtime floor: e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
-cozy --json machine update local ${CAND_RT:+--runtime "$CAND_RT"} ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/floor-back.json" 2>&1 \
-  || check "runtime floor: local refused its candidates again: $(tail -c 300 "$OUT/floor-back.json")"
-machine_ready
-# The open RC's Runtime (a dev release, as an RC candidate's 0.47.0.dev0+dev.g… is) runs only under the RC's cozy: a released cozy
-# named by hand under it is refused in one line, and nothing moves.
-case $(jq -r '.status.runtime' "$OUT/machine.json") in
-  *.dev[0-9]*)
-    code=0
-    cozy --json machine update local --tensord 0.24.0 -y > "$OUT/floor-rc-cozy.json" 2>&1 || code=$?
-    [ "$code" != 0 ] && grep -q '"rc_runtime_needs_rc_cozy"' "$OUT/floor-rc-cozy.json" \
-      || check "runtime floor: a released cozy under the RC's Runtime wasn't refused: exit $code $(tail -c 300 "$OUT/floor-rc-cozy.json")" ;;
-  *) echo "runtime floor: local's candidate Runtime $(jq -r .status.runtime "$OUT/machine.json") is no RC dev release: the RC cozy pairing isn't asked here" ;;
-esac
 }
 
 # cr-276: a package calling another package's function whose result holds a `Latents` field, as orbit calls minimax-h3's

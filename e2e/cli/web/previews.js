@@ -9,7 +9,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFile } = require('child_process');
 const { appendFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, lastLook, lookAt, projectAction, projectFromPage, signIn, STEP_MS, until } = require('./page');
+const { projectFolder, calcifer, lastLook, lookAt, projectAction, projectFromPage, signIn, STEP_MS, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -62,7 +62,7 @@ const LOOK = (name) => {
   }
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-previews-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-previews-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

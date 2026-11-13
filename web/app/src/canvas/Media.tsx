@@ -4,6 +4,7 @@ import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.
 import type { Client } from "../api/client"
 import { runFullQuery, runQuery } from "../api/queries"
 import { holdMedia, playingHere } from "../api/events"
+import { THUMB_TRIES, thumbWait, whenThumb } from "../api/thumbs"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
 import type { MainFile } from "../api/calcifer"
@@ -26,106 +27,28 @@ const STRIP_FRAMES = 8
 /** How long the pointer rests on a video before its preview plays: one passing over on its way somewhere starts nothing. */
 const PREVIEW_AFTER_MS = 250
 
-/**
- * At most two different thumbnails asked at once. Calcifer makes few at a time, and `<img>`s waiting on it would fill the browser's six
- * connections to it, stalling every other call. Boxes drawing the same request share its place in line. An element scrolled away gives up
- * its own place. What a person is looking at right now, `now`, goes at once, past the line.
- */
-function line(limit: number) {
-  type Start = (complete: () => void) => void
-  type Load = { path: string; subscribers: Set<() => void>; running: boolean }
-  const loads = new Map<string, Load>()
-  const waiting = new Set<Load>()
-  let running = 0
-
-  const complete = (load: Load) => {
-    if (loads.get(load.path) !== load) return
-    loads.delete(load.path)
-    load.subscribers.clear()
-    if (load.running) running -= 1
-    else waiting.delete(load)
-    next()
-  }
-  const begin = (load: Load) => {
-    waiting.delete(load)
-    load.running = true
-    running += 1
-    for (const start of load.subscribers) start()
-  }
-  const next = () => {
-    for (const load of waiting) {
-      if (running >= limit) break
-      begin(load)
-    }
-  }
-
-  return (path: string, start: Start, now = false): (() => void) => {
-    let load = loads.get(path)
-    if (!load) {
-      load = { path, subscribers: new Set(), running: false }
-      loads.set(path, load)
-      waiting.add(load)
-    }
-    const joined = load
-    const ready = () => start(() => {
-      if (joined.subscribers.has(ready)) complete(joined)
-    })
-    joined.subscribers.add(ready)
-    if (joined.running) ready()
-    else if (now) begin(joined)
-    next()
-
-    return () => {
-      joined.subscribers.delete(ready)
-      if (!joined.subscribers.size) complete(joined)
-    }
-  }
-}
-
-const thumbLine = line(2)
 /** What's been up: coming back on screen is no arrival, and fades nothing. */
 const arrived = new Set<string>()
 
-/** What an open box draws: Calcifer's widest, never wider than the file, so a picture at its own resolution. */
+/** What an open box draws of a sound: as wide as Calcifer draws one. */
 const FULL = 2048
+/** A video's frames each, wherever a strip is drawn at rest: a box's hover, a clip. */
+const STRIP_WIDTH = 256
 
-/** A just-landed take's picture, at the size an open box draws it, asked once and decoded ahead, so a click on it shows it at once. */
-const preloaded = new Map<string, HTMLImageElement>()
 const mediaEpoch = new Map<string, number>()
 const mediaKey = (project: string | null, key: string) => `${project ?? ""}\0${key}`
+/** A project's view closed (its vault locked): what this page drew of it is forgotten, and what it's still asking for is let go. */
 export function revokeProjectMedia(project: string) {
   mediaEpoch.set(project, (mediaEpoch.get(project) ?? 0) + 1)
   const prefix = `${project}\0`
-  for (const [key, image] of preloaded) if (key.startsWith(prefix)) { if (image.src.startsWith("blob:")) URL.revokeObjectURL(image.src); image.removeAttribute("src"); preloaded.delete(key) }
   for (const key of arrived) if (key.startsWith(prefix)) arrived.delete(key)
-  for (const key of widest.keys()) if (key.startsWith(prefix)) widest.delete(key)
-}
-export function preload(client: Client, projectId: string | null, sha256: string) {
-  const key = mediaKey(projectId, `${sha256}:${FULL}`)
-  if (!projectId || preloaded.has(key)) return
-  const epoch = mediaEpoch.get(projectId) ?? 0
-  const img = new Image()
-  preloaded.set(key, img)
-  const live = () => preloaded.get(key) === img && (mediaEpoch.get(projectId) ?? 0) === epoch
-  void client.transport.src(client.thumb(projectId, sha256, FULL)).then((url) => {
-    if (!live()) { if (url.startsWith("blob:")) URL.revokeObjectURL(url); return }
-    img.src = url
-    void img.decode().then(() => { if (live()) arrived.add(key) }, () => { if (live()) preloaded.delete(key) })
-  }, () => { if (live()) preloaded.delete(key) })
 }
 
-/** How often a thumbnail that isn't there is asked again (1 s, 2 s, 4 s, 8 s, 16 s), as its file may still be arriving. */
-const THUMB_TRIES = 5
-
-/** Thumbnails come in these widths, so a file has few sizes in Calcifer's cache: as wide as it's drawn on screen, the canvas's zoom and the
- *  screen's density in, up to Calcifer's widest, which is never wider than the file. */
-function thumbWidth(cardWidth: number, zoom = 1): number {
-  const wanted = cardWidth * zoom * Math.min(2, window.devicePixelRatio || 1)
-  return wanted <= 256 ? 256 : wanted <= 512 ? 512 : wanted <= 1024 ? 1024 : FULL
-}
-/** The widest of each file drawn yet: zooming out keeps it rather than asking a smaller one. */
-const widest = new Map<string, number>()
-
+/**
+ * A thumbnail Calcifer keeps in the project, made as its file landed (cl-982): with no width, what the canvas and every list draw of a
+ * picture or a video. Each is asked for at once, as reading it is all Calcifer does. One not made yet (202 thumb_pending) is asked again
+ * when Calcifer says it's there, and one whose file is still on its way here, later each time, before it says there's none.
+ */
 export function Thumb({
   sha256,
   cardWidth,
@@ -134,7 +57,7 @@ export function Thumb({
   exact,
   className,
   frame,
-  now,
+  pulse,
   onSize,
   onShown,
 }: {
@@ -147,30 +70,31 @@ export function Thumb({
   exact?: boolean
   className?: string
   frame?: number
-  /** What a person is looking at: past the line. */
-  now?: boolean
+  /** Its frame pulses, faintly, until it's drawn, as a picture's does (cl-982). */
+  pulse?: boolean
   onSize?: (aspect: number) => void
   onShown?: () => void
 }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const [image, setImage] = useState<{ path: string; src: string; request: number; complete: () => void; live: () => boolean }>()
+  const [image, setImage] = useState<{ path: string; src: string; request: number; live: () => boolean }>()
+  const [loaded, setLoaded] = useState<string>()
   const nextRequest = useRef(0)
   const [failedPath, setFailedPath] = useState<string>()
   const projectId = store.projectId
-  const zoom = useSignal(store.sharpness)
-  const width = exact ? cardWidth : Math.max(thumbWidth(cardWidth, zoom), strip ? 0 : (widest.get(mediaKey(projectId, sha256)) ?? 0))
+  const width = exact ? cardWidth : strip ? STRIP_WIDTH : undefined
+  const drawn = mediaKey(projectId, `${sha256}:${width ?? "picture"}`)
   const base = projectId ? client.thumb(projectId, sha256, width, strip, wave) : undefined
-  // A file still on its way here has none yet (404 file_missing): asked again, later each time, before it says it has none.
   const [tries, setTries] = useState<{ base?: string; n: number }>({ n: 0 })
   const attempt = tries.base === base ? tries.n : 0
   const path = base && attempt ? `${base}&try=${attempt}` : base
-  const retry = useRef<number | undefined>(undefined)
-  useEffect(() => () => clearTimeout(retry.current), [])
+  const wait = useRef<(() => void) | undefined>(undefined)
+  useEffect(() => () => wait.current?.(), [])
   const failed = (at: string) => {
-    if (attempt >= THUMB_TRIES) return setFailedPath(at)
+    if (!projectId || attempt + 1 >= THUMB_TRIES) return setFailedPath(at)
     setImage(undefined)
-    retry.current = window.setTimeout(() => setTries({ base, n: attempt + 1 }), 1000 * 2 ** attempt)
+    wait.current?.()
+    wait.current = whenThumb(projectId, sha256, thumbWait(attempt + 1), () => setTries({ base, n: attempt + 1 }))
   }
   useEffect(() => {
     if (!path) return
@@ -178,48 +102,45 @@ export function Thumb({
     const epoch = projectId ? mediaEpoch.get(projectId) ?? 0 : 0
     const current = () => live && (!projectId || (mediaEpoch.get(projectId) ?? 0) === epoch)
     const request = ++nextRequest.current
-    const leave = thumbLine(path, (complete) => {
-      void client.transport.src(path).then((src) => {
-        if (!current()) { if (src.startsWith("blob:")) URL.revokeObjectURL(src); return }
-        setFailedPath(undefined)
-        setImage({ path, src, request, complete, live: current })
-      }, () => {
-        if (!live) return
-        leave()
-        failed(path)
-      })
-    }, now)
+    void client.transport.src(path).then((src) => {
+      if (!current()) { if (src.startsWith("blob:")) URL.revokeObjectURL(src); return }
+      setFailedPath(undefined)
+      setImage({ path, src, request, live: current })
+    }, () => {
+      if (live) failed(path)
+    })
     return () => {
       live = false
-      leave()
     }
   }, [client, path])
   // A strip that can't be made leaves the poster under it as it was.
   if (path && failedPath === path) return strip || wave ? null : <span className="media-note">No preview</span>
-  if (!image || failedPath === image.path) return null
+  const waiting = pulse && loaded !== path ? <span className="thumb-wait" /> : null
+  if (!image || failedPath === image.path) return waiting
   return (
+    <>
+    {waiting}
     <img
       key={image.request}
       src={image.src}
       alt=""
-      className={`${className ?? ""} ${arrived.has(mediaKey(projectId, `${sha256}:${width}`)) ? "" : "arrives"}`}
+      className={`${className ?? ""} ${arrived.has(drawn) ? "" : "arrives"}`}
       draggable={false}
       style={frame === undefined ? undefined : { transform: `translateX(${(-frame * 100) / (strip ?? 1)}%)` }}
       onError={() => {
         if (image.path !== path || !image.live()) return
-        image.complete()
         failed(image.path)
       }}
       onLoad={(event) => {
         if (image.path !== path || !image.live()) return
-        image.complete()
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
-        arrived.add(mediaKey(projectId, `${sha256}:${width}`))
-        if (!strip && !wave) widest.set(mediaKey(projectId, sha256), Math.max(width, widest.get(mediaKey(projectId, sha256)) ?? 0))
+        arrived.add(drawn)
+        setLoaded(image.path)
         onShown?.()
       }}
     />
+    </>
   )
 }
 
@@ -337,7 +258,7 @@ function Poster({ shown, cardWidth, name, scrubbed, previewing }: { shown: Shown
   const at = scrubbed !== undefined && shown.duration_ms ? (scrubbed * 1000) / shown.duration_ms : null
   return (
     <div className="scrub">
-      <Thumb sha256={shown.sha256} cardWidth={cardWidth} onSize={(aspect) => store.setAspect(name, aspect)} onShown={() => store.showThumb(name)} />
+      <Thumb sha256={shown.sha256} cardWidth={cardWidth} pulse onSize={(aspect) => store.setAspect(name, aspect)} onShown={() => store.showThumb(name)} />
       {at !== null ? <WalkedFrames sha256={shown.sha256} cardWidth={cardWidth} at={at} /> : previewing && <Preview sha256={shown.sha256} />}
       {at !== null && shown.duration_ms ? <span className="tc">{clock(at * shown.duration_ms)}</span> : null}
     </div>
@@ -616,12 +537,11 @@ function FramePicture({ sha256, open, restWidth, onSize, onShown }: { sha256: st
   if (full && !open) setFull(false)
   return (
     <>
-      {open && !full && <Thumb sha256={sha256} cardWidth={restWidth} now />}
+      {open && !full && <Thumb sha256={sha256} cardWidth={restWidth} />}
       <Thumb
         sha256={sha256}
         cardWidth={open ? FULL : restWidth}
         exact={open}
-        now={open}
         onSize={onSize}
         onShown={() => {
           if (open) setFull(true)
@@ -767,7 +687,7 @@ export function Spread({ pictures, cardWidth, className }: { pictures: SpreadPic
           {line.map((picture) => (
             <span key={picture.key} className="spread-picture" data-picture={picture.key}>
               {picture.sha256 ? (
-                <Thumb sha256={picture.sha256} cardWidth={cardWidth / per} now onSize={(aspect) => setRead((was) => (was[picture.key] === aspect ? was : { ...was, [picture.key]: aspect }))} />
+                <Thumb sha256={picture.sha256} cardWidth={cardWidth / per} onSize={(aspect) => setRead((was) => (was[picture.key] === aspect ? was : { ...was, [picture.key]: aspect }))} />
               ) : (
                 <svg className={`ghost-blank ${picture.making ? "making" : ""}`} viewBox={`0 0 ${100 * (picture.shape ?? 1)} 100`} preserveAspectRatio="xMidYMid meet">
                   <rect x="2" y="2" width={100 * (picture.shape ?? 1) - 4} height="96" rx="3" />

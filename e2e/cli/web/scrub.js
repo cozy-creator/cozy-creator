@@ -13,7 +13,7 @@ const { execFileSync } = require('child_process');
 const { mkdtempSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { addBoxes, importFile, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
+const { projectFolder, addBoxes, importFile, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -74,7 +74,7 @@ const SEAM = 6;
   if (!(await api('/v1/status')).body?.local_usable) throw new Error('this computer runs no tools: the cell renders its own take here');
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-scrub-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-scrub-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

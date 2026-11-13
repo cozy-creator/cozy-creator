@@ -209,6 +209,11 @@ pub(crate) fn board_updated(id: &str, board: &api::calcifer::project::Board) {
     let _ = PROJECTS.said.send(StreamEvent::BoardUpdated { project: id.to_owned(), board: Box::new(board.clone()) });
 }
 
+/// Tells every stream showing project `id` that a thumbnail of its file `sha256` was made, or can't be.
+pub(crate) fn thumb(id: &str, sha256: &str) {
+    let _ = PROJECTS.said.send(StreamEvent::Thumb { project: id.to_owned(), sha256: sha256.to_owned() });
+}
+
 /// Tells every stream one job of project `id` changed.
 pub(crate) fn job_updated(id: &str, job: &api::calcifer::project::Job, seq: u64) {
     let _ = PROJECTS.said.send(StreamEvent::JobUpdated { project: id.to_owned(), job: Box::new(job.clone()), seq });
@@ -352,7 +357,7 @@ pub(crate) async fn show(
                 reply.held.push(id.clone());
             }
             Err(crate::api::Refusal(error)) => {
-                reply.refused.insert(id.clone(), ProjectShowRefusal { status: error.kind.http_status(), error });
+                reply.refused.insert(id.clone(), ProjectShowRefusal { status: error.http_status(), error });
             }
         }
     }
@@ -436,7 +441,7 @@ impl Watch {
         let project_id = match event {
             StreamEvent::ProjectVault { .. } => return true,
             StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
-            StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
+            StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } | StreamEvent::Thumb { project, .. } => Some(project),
             StreamEvent::RunUpdated { run } => {
                 return self.api.calcifer.run_store(run.id.as_str()).and_then(|store| store.run(run.id.as_str())).ok().flatten().is_some_and(|row| project::vault::require_path(&row.out_dir).is_ok());
             }

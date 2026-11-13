@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { GPU, STEP_MS, addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectJson, projectUrl, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { projectFolder, GPU, STEP_MS, addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectJson, projectUrl, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
 const { runnerSpeed } = require('./speed');
 
 const failures = [];
@@ -262,7 +262,7 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
   const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => (await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', ...init.headers } })).json();
   const scratch = mkdtempSync(join(tmpdir(), 'web-canvas-'));
-  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `canvas-${Date.now()}` }, body: JSON.stringify({ name: `web-canvas-${Date.now()}`, unencrypted: true }) });
+  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `canvas-${Date.now()}` }, body: JSON.stringify({ path: projectFolder(`web-canvas-${Date.now()}`), unencrypted: true }) });
   const contexts = [first];
   try {
     writeFileSync(join(scratch, 'a.png'), png(90));

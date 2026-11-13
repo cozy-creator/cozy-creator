@@ -1882,8 +1882,9 @@ impl Folder {
                     }
                     Err(_) => drop(self.store(&path, |part| std::fs::copy(dest, part).map(drop))?),
                 }
-                if let Some(measured) = measured.filter(|measured| measured.fps > 0.0 && measured.width > 0) {
-                    super::thumbs::landed(at.clone(), digest, measured.lasts_ms() as f64 / 1000.0);
+                // What the canvas draws of it, made now (cl-982): an open never waits on it.
+                if let Some(measured) = measured.filter(|measured| measured.width > 0) {
+                    super::thumbs::landed(at.clone(), digest, measured.field(), measured.lasts_ms() as f64 / 1000.0);
                 }
             }
             let old = std::cell::RefCell::new(vec![]);
@@ -2056,9 +2057,10 @@ impl Folder {
         for (sha256, probed) in &measured {
             if let Some(file) = lock.files.get_mut(sha256) {
                 file.measured_as(probed);
-                // A video that landed: the page plays its preview on a hover.
+                // A video that landed: the page plays its preview on a hover. A picture's is made as it lands (`adopt`, an import), not as an
+                // older project's files are measured: thousands at once would hold up its pages (web-scale 43380245255).
                 if file.field() == "video" && file.width > 0 {
-                    super::thumbs::landed(self.dir.join(&file.path), sha256, file.lasts_ms() as f64 / 1000.0);
+                    super::thumbs::landed(self.dir.join(&file.path), sha256, "video", file.lasts_ms() as f64 / 1000.0);
                 }
             }
         }

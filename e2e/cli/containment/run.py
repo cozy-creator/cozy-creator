@@ -312,7 +312,7 @@ def main() -> int:
         phase = "browser_open"
         foreign = ForeignBrowsers()
         for index, project in enumerate(projects):
-            native.document("open", cwd=project["folder"])
+            native.open(project["folder"])
             readiness.update(slot=index, ready_errors=0, last_page_ready=False, last_cards=-1)
             until(partial(observe_ready, proof, project["id"], readiness), lambda value: value.get("page_ready") and value.get("cards", 0) >= 2, "owned_page_ready")
         snapshot = proof.ask("snapshot")
@@ -416,7 +416,7 @@ def main() -> int:
         receipt.add("queued_b_edit_then_a_lock", saved=True, owned_retired=True, profile_removed=True, unrelated_preserved=True, busy_refusal=busy)
         scan_case(scanner, receipt, "a_locked_outside_scan", roots, [b["view"]], located)
         phase = "last_window_close"
-        native.document("open", cwd=b["folder"])
+        native.open(b["folder"])
         until(partial(proof.exercise, b["id"], "ready"), lambda value: value.get("page_ready"), "reopened_page_ready")
         last = proof.ask("snapshot")
         try:
@@ -428,7 +428,7 @@ def main() -> int:
         require(foreign.preserved(), "foreign_browser_changed")
         receipt.add("last_window_close", process_gone=True, profile_removed=True, unrelated_preserved=True)
         phase = "browser_crash"
-        native.document("open", cwd=b["folder"])
+        native.open(b["folder"])
         until(partial(proof.exercise, b["id"], "ready"), lambda value: value.get("page_ready"), "crash_page_ready")
         crashed = proof.ask("snapshot")
         kill_exact(crashed["birth"])
@@ -437,7 +437,7 @@ def main() -> int:
         require(foreign.preserved(), "foreign_browser_changed")
         receipt.add("browser_crash", process_gone=not alive(crashed["birth"]), profile_removed=True, unrelated_preserved=True)
         phase = "caf_crash"
-        native.document("open", cwd=b["folder"])
+        native.open(b["folder"])
         until(partial(proof.exercise, b["id"], "ready"), lambda value: value.get("page_ready"), "caf_crash_page_ready")
         orphaned = proof.ask("snapshot")
         previous = native.holder()
@@ -464,7 +464,7 @@ def main() -> int:
         rejected = native.raw("GET", "/v1/project-storage", extra={"Authorization": "Bearer " + previous["token"]}, preflight=False)
         require(rejected.status == 401, "old_holder_authority_survived")
         native.document("vault", "unlock", "--passphrase-file", "-", "--idle", "0", cwd=b["folder"], stdin=(b["credential"] + "\n").encode())
-        native.document("open", cwd=b["folder"])
+        native.open(b["folder"])
         until(lambda: proof.exercise(b["id"], "ready"), lambda value: value.get("page_ready"), "cold_page_ready")
         fresh = proof.ask("snapshot")
         require(fresh["birth"] not in (browser_birth, last["birth"], crashed["birth"]), "browser_birth_reused")

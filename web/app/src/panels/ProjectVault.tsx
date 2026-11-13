@@ -79,7 +79,7 @@ export function Recovery({ secret, onDone, disabled = false }: { secret: string;
   return (
     <section className="sect" aria-label="Save recovery secret">
       <h3>Save your recovery secret</h3>
-      <p>Keep it on your phone, in a password manager, or on paper away from this computer. TensorHub does not receive it.</p>
+      <p>Save this somewhere safe: it opens the project if the passphrase is lost, and it's shown only now. Keep it on your phone, in a password manager, or on paper away from this computer. TensorHub does not receive it.</p>
       <pre className="yaml" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{secret}</pre>
       <QRCode value={secret} size={180} title="Recovery secret for transfer to your own device" />
       <div className="row">
@@ -88,7 +88,7 @@ export function Recovery({ secret, onDone, disabled = false }: { secret: string;
         <button className="tb" type="button" onClick={print}>Print</button>
       </div>
       <label><input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} /> I saved this somewhere away from this computer</label>
-      <button className="tb primary" type="button" disabled={!saved || disabled} onClick={onDone}>Done</button>
+      <div className="row"><button className="tb primary" type="button" disabled={!saved || disabled} onClick={onDone}>Done</button></div>
     </section>
   )
 }

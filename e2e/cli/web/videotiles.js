@@ -8,9 +8,9 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('fs');
-const { homedir, tmpdir } = require('os');
+const { tmpdir } = require('os');
 const { join } = require('path');
-const { boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, projectAction, projectFromPage, signIn, STEP_MS, until, upload } = require('./page');
+const { projectFolder, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, projectAction, projectFromPage, signIn, STEP_MS, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -47,7 +47,7 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   seen.ran = local;
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-videotiles-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-videotiles-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
@@ -98,7 +98,7 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   await until('the cut', async () => (await asset('cut'))?.versions, (n) => n >= 1, RUN_MS);
   // `old`: made before previews were made at landing, so none is kept yet.
   const oldHex = (await asset('old')).prefixes?.at(-1)?.main?.sha256?.replace(/^sha256:/, '');
-  const thumbs = join(homedir(), '.cozy', 'cache', 'thumbs');
+  const thumbs = join(folder, '.thumbs');
   // The preview made at its landing, taken away: with none there to take, `old` would be an ordinary case, not this one.
   const kept = join(thumbs, `${oldHex}-preview.mp4`);
   const hadOne = await until('old has its landing preview', () => Promise.resolve(existsSync(kept)), Boolean, 30_000).then(() => true, () => false);

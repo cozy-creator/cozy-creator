@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, openBox, closeBox, settled, until, addBoxes, upload, rowsOf } = require('./page');
+const { projectFolder, projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, openBox, closeBox, settled, until, addBoxes, upload, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'orbit.py');
 const FRAMES = 48;
@@ -52,7 +52,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   }, { path, init, token: held?.token });
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-orbit-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-orbit-${Date.now()}`));
   await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

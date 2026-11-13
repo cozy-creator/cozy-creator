@@ -308,20 +308,23 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .with_state(api)
 }
 
-/// A refusal, rendered as its envelope with the status its kind names.
+/// A refusal, rendered as its envelope with its status (a peer's 429 stays 429), and the wait it states as `Retry-After`.
 #[derive(Debug)]
 pub(crate) struct Refusal(pub Error);
 
 impl IntoResponse for Refusal {
     fn into_response(self) -> Response {
-        let status =
-            StatusCode::from_u16(self.0.kind.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
+        let status = StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
+        let wait = self.0.retry_after_s;
         let mut response = (status, Json(Envelope { error: self.0 })).into_response();
         if status == StatusCode::UNAUTHORIZED {
             response.headers_mut().insert(
                 header::WWW_AUTHENTICATE,
                 HeaderValue::from_static(r#"Bearer realm="cozy""#),
             );
+        }
+        if let Some(wait) = wait {
+            response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(wait));
         }
         response
     }
@@ -761,6 +764,7 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
         signed_in: hub.device_key(api.machines.hubs.home()).exists(),
         heap_bytes: platform::heap::held(),
         encrypted_project_creation: true,
+        home: api.machines.user_home.clone(),
     }))
 }
 

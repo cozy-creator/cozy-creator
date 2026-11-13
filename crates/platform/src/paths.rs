@@ -104,11 +104,6 @@ impl Home {
         self.root.join("services")
     }
 
-    /// Thumbnails of projects' files, kept while they are used.
-    pub fn thumbs(&self) -> PathBuf {
-        self.root.join("cache").join("thumbs")
-    }
-
     /// Tools cozy fetched for this computer's own use on first need, never bundled.
     pub fn tools(&self) -> PathBuf {
         self.root.join("tools")
