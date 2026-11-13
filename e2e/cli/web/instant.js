@@ -262,7 +262,10 @@ async function loseAnswers(page, method, path, times) {
     await waits.release();
     await restarted;
     await until('it landed after the restart', () => Promise.resolve(hasAsset(fifth)), Boolean);
+    // A while for a second landing, then all of it in view: the canvas draws only what's in view, and "once" counts what's drawn.
     await page.waitForTimeout(800);
+    await page.keyboard.press('f');
+    await settled(page);
     const shown = await box(fifth).count();
     check('restart_mid_queue_lands_once', shown === 1 && count(fifth) === 1 && !hasAsset(`${name}_6`), { shown, held: count(fifth), names: names() });
     await until('the top bar says nothing waits', () => page.locator('.top .pill').allInnerTexts(), (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
