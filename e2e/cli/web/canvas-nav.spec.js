@@ -1,6 +1,10 @@
 // canvas-nav (cl-973 core cell 15), on 300 boxes made by one API batch: − and + step along the zooms about the middle of what's visible; the
 // zoom menu's Zoom to fit shows every box and its 100% is scale 1; Shift+1 and Shift+0 do what they do; at 11% a pan by the wheel keeps all 300
-// drawn. The dots follow the canvas's scale and are never over a picture.
+// drawn. The dots follow the canvas's scale and are never over a picture. A box's name as the canvas zooms (Paul, 11-13: "the text size
+// should be limited ... rather than just truncating"): pictures and words with short and long names, stacked and side by side as close as
+// the layout keeps them, zoomed by − from 100% to the farthest and back by +, then by the wheel: each box where it was, each name one line,
+// cut with an ellipsis where its box ends and whole under the pointer, on no box, no other name and not its own picture; so too at 100%,
+// 45%, 25% and the farthest, at 1440×900 and 1920×1080, paper and dark.
 const { test, expect, canvasIdle, openPoint, png } = require('./fixtures');
 const { camera, colours, sameCamera } = require('./geometry');
 
@@ -15,6 +19,71 @@ const dotStep = (zoom) => {
   while (gap < 12) gap *= 2;
   return gap;
 };
+
+// The named boxes, above the 300: each column's, top to bottom.
+const COLUMNS = [
+  { kind: 'image', names: ['hero_art', 'a_box_whose_name_goes_on_and_on_past_any_width', 'kyogre_art_1', 'x'] },
+  { kind: 'text', names: ['notes', 'scene_one_where_the_hero_meets_the_sea', 'mid_name', 'b'] },
+  { kind: 'image', names: ['sea', 'background_plate_with_a_long_name', 'c', 'boat_at_dawn'] },
+];
+const LONG = ['a_box_whose_name_goes_on_and_on_past_any_width', 'scene_one_where_the_hero_meets_the_sea', 'background_plate_with_a_long_name'];
+const NAMED = COLUMNS.flatMap((column) => column.names);
+// As close as the layout keeps a box under another, under what's drawn of it (shown.ts heightFor and underOf): a picture's row under it,
+// its tool and shape line and the rise of the name below; a word box's rise alone; then clear's gap. Side by side, the gap. One more, so
+// nothing lies on anything and the page leaves the rows as written.
+const UNDER = { image: 40 + 55 + 16 + 1, text: 22 + 16 + 1 };
+const BESIDE = 240 + 16 + 1;
+// Where they're made apart, and where they're laid out close: well clear of the 300, which start at 0,0.
+const APART = -6000;
+const CLOSE = { x: 0, y: -3000 };
+
+/** What's drawn of the named boxes, in the page: each one's place on the canvas, its name's lines and size, and what any of its names lies
+ *  on, of any box. */
+function audit(names) {
+  const R = (el) => el.getBoundingClientRect();
+  const meet = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
+  const shown = (el) => el.checkVisibility?.({ opacityProperty: true, visibilityProperty: true }) && R(el).width >= 1 && R(el).height >= 1;
+  const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+  const all = [...document.querySelectorAll('.react-flow__node')].map((node) => {
+    const at = node.style.transform.match(/translate\(([-\d.]+)px, ?([-\d.]+)px\)/);
+    return {
+      node,
+      name: node.querySelector('.card')?.dataset.asset,
+      at: at ? [Number(at[1]), Number(at[2])] : null,
+      media: node.querySelector(':scope .card > .media, :scope .card > .tl'),
+      labels: [...node.querySelectorAll(':scope .card > .head > *')].filter((el) => !el.matches('.sp') && shown(el)),
+      nm: node.querySelector(':scope .card > .head .nm'),
+    };
+  });
+  const boxes = all.filter((box) => names.includes(box.name));
+  const lines = [];
+  const on = [];
+  const cut = [];
+  const sizes = {};
+  for (const box of boxes) {
+    if (box.nm && shown(box.nm)) {
+      const range = document.createRange();
+      range.selectNodeContents(box.nm);
+      const tops = new Set([...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top)));
+      if (tops.size > 1) lines.push({ name: box.name, lines: tops.size });
+      const style = getComputedStyle(box.nm);
+      sizes[box.name] = { canvas: parseFloat(style.fontSize), screen: Math.round(parseFloat(style.fontSize) * zoom * 10) / 10 };
+      if (box.nm.scrollWidth > box.nm.clientWidth + 1 && style.textOverflow !== 'ellipsis') cut.push({ name: box.name, why: 'cut with no ellipsis' });
+      if (box.nm.title !== box.name) cut.push({ name: box.name, why: `its title is ${JSON.stringify(box.nm.title)}` });
+    }
+    for (const label of box.labels) {
+      const r = R(label);
+      const what = `${box.name}'s ${label.className.split(' ')[0]}`;
+      if (box.media && shown(box.media) && meet(r, R(box.media))) on.push(`${what} on its picture`);
+      for (const other of all) {
+        if (other === box) continue;
+        if (meet(r, R(other.node))) on.push(`${what} on ${other.name}`);
+        for (const theirs of other.labels) if (meet(r, R(theirs))) on.push(`${what} on ${other.name}'s ${theirs.className.split(' ')[0]}`);
+      }
+    }
+  }
+  return { zoom, count: boxes.length, at: Object.fromEntries(boxes.map((box) => [box.name, box.at])), lines, on, cut, sizes };
+}
 
 /** The middle of what's visible, between the tools and the canvas's right edge, as a point of the canvas (CanvasHost.tsx zoomTo). */
 const middleOnCanvas = (page) => page.evaluate(() => {
@@ -154,5 +223,132 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
     expect.soft(panned.places, 'the wheel pans the canvas').toBeGreaterThan(10);
     expect.soft(panned.fewest, `all ${COUNT} boxes stay drawn while it pans`).toBe(COUNT);
     expect.soft((await camera(page)).zoom, 'a pan changes no zoom').toBeCloseTo(0.11, 4);
+  });
+
+  await test.step("names as it zooms: one line, cut where its box ends and whole under the pointer, on nothing; and a zoom moves no box", async () => {
+    // Each box apart first: a picture an import (no tool), a word box with none.
+    let shade = 30;
+    for (const [c, column] of COLUMNS.entries()) {
+      for (const [i, name] of column.names.entries()) {
+        const at = { x: c * 2000 + i * 500, y: APART };
+        if (column.kind === 'image') await project.import(name === 'kyogre_art_1' ? png((shade += 23), 200, 320) : png((shade += 23)), { name, at });
+        else await project.add({ name, kind: 'text', fields: { text: `The words of ${name}.` }, at });
+      }
+    }
+    const size = { width: 1440, height: 900 };
+    await page.setViewportSize(size);
+    /** The page reloaded with `at` (a canvas point) in the middle of what's visible at `zoom`, every picture it draws drawn: its own last
+     *  view saved first, so the one set here is the one the reload reads. */
+    const viewAt = async (zoom, at) => {
+      const now = await camera(page);
+      await expect.poll(async () => {
+        const { viewport } = await api.get(project.at('/view'));
+        return Boolean(viewport) && sameCamera({ x: viewport.x, y: viewport.y, zoom: viewport.zoom }, now);
+      }, { message: "the page's view saved" }).toBe(true);
+      const { width, height } = page.viewportSize();
+      await api.patch(project.at('/view'), { viewport: { x: Math.round((width + 230) / 2 - at.x * zoom), y: Math.round(height / 2 - at.y * zoom), zoom } });
+      await page.reload();
+      await expect(page.locator('.react-flow__node').first()).toBeVisible();
+      await canvasIdle(page);
+      await expect.poll(() => page.evaluate(() => [...document.querySelectorAll('.react-flow__node .media img')].every((image) => image.complete)), { message: 'every picture drawn' }).toBe(true);
+      expect((await camera(page)).zoom, `at ${zoom}`).toBeCloseTo(zoom, 4);
+    };
+
+    // Each box's height as the page draws it, then all laid out as close as the layout keeps them.
+    await viewAt(0.1, { x: 4000, y: APART });
+    const heights = () => page.evaluate((names) => {
+      const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+      return Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.card')?.dataset.asset, Math.round((node.getBoundingClientRect().height / zoom) * 10) / 10]).filter(([name]) => names.includes(name)));
+    }, NAMED);
+    // Each picture at its own shape (a box is 16:9 until its picture's size arrives, then pushes aside what it lies on): the tall one tall,
+    // and nothing changing a second on.
+    let [last, tall] = [null, null];
+    await expect.poll(async () => {
+      const now = await heights();
+      const still = JSON.stringify(now) === JSON.stringify(last);
+      last = now;
+      if (now.kyogre_art_1 > 300 && Object.keys(now).length === NAMED.length && still) tall = now;
+      return Boolean(tall);
+    }, { message: 'every picture its shape, and nothing changing', intervals: [1000], timeout: 30_000 }).toBe(true);
+    const close = {};
+    for (const [c, column] of COLUMNS.entries()) {
+      let y = CLOSE.y;
+      for (const name of column.names) {
+        close[name] = { x: CLOSE.x + c * BESIDE, y: Math.round(y), w: 240 };
+        y += Math.ceil(tall[name]) + UNDER[column.kind];
+      }
+    }
+    await api.patch(project.at('/canvas'), { cards: close });
+    await expect.poll(async () => {
+      const { cards: rows } = await api.get(project.at('/canvas'));
+      return NAMED.filter((name) => rows[name]?.x !== close[name].x || rows[name]?.y !== close[name].y);
+    }, { message: 'laid out close, and left as written' }).toEqual([]);
+    // Each column's long name, its second box's, on screen at 100% under the top bar.
+    const middle = { x: CLOSE.x + (3 * BESIDE - 16) / 2, y: CLOSE.y + 400 };
+
+    // From 100% by − to the farthest and back by +, then out and in by the wheel: where each box is never changes.
+    await viewAt(1, middle);
+    const first = {};
+    const looks = [];
+    const look = async (how) => {
+      await canvasIdle(page);
+      await expect.poll(() => page.evaluate(() => !document.getAnimations().some((held) => held.playState === 'running' && held.effect?.getComputedTiming().iterations !== Infinity)), { message: `${how}: nothing animating` }).toBe(true);
+      const now = await page.evaluate(audit, NAMED);
+      const moved = [];
+      for (const [name, at] of Object.entries(now.at)) {
+        if (!at) continue;
+        first[name] ??= at;
+        if (Math.abs(first[name][0] - at[0]) > 0.5 || Math.abs(first[name][1] - at[1]) > 0.5) moved.push(`${name} from ${first[name]} to ${at}`);
+      }
+      looks.push({ how, zoom: now.zoom, count: now.count, moved, lines: now.lines, on: now.on, cut: now.cut });
+      return now;
+    };
+    const press = async (label) => {
+      await page.getByRole('button', { name: label, exact: true }).click();
+      return look(label);
+    };
+    let at = await look('100%');
+    expect.soft(at.zoom, 'starts at 100%').toBeCloseTo(1, 2);
+    for (let i = 0; i < 20 && at.zoom > ZOOMS[0] + 0.001; i++) at = await press('Zoom out');
+    expect.soft({ zoom: Math.round(at.zoom * 1000) / 1000, count: at.count }, 'reaches the farthest, every named box drawn').toEqual({ zoom: ZOOMS[0], count: NAMED.length });
+    for (let i = 0; i < 20 && at.zoom < 1 - 0.001; i++) at = await press('Zoom in');
+    expect.soft(at.zoom, 'back at 100%').toBeCloseTo(1, 2);
+    // A long name cut short says itself whole under the pointer: its title, on what the pointer finds there.
+    const hover = await page.evaluate((names) => names.map((name) => {
+      const nm = document.querySelector(`.react-flow__node .card[data-asset="${name}"] > .head .nm`);
+      if (!nm) return { name, found: false };
+      const r = nm.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { name, cut: nm.scrollWidth > nm.clientWidth, title: nm.title, under_pointer: hit === nm || nm.contains(hit) };
+    }), LONG);
+    expect.soft(hover, 'a long name is cut, and says itself under the pointer').toEqual(LONG.map((name) => ({ name, cut: true, title: name, under_pointer: true })));
+    const pane = await page.locator('.react-flow__pane').boundingBox();
+    await page.mouse.move(pane.x + pane.width / 2, pane.y + pane.height / 2);
+    await page.keyboard.down('Control');
+    for (let i = 0; i < 12; i++) await page.mouse.wheel(0, 120);
+    await look('wheel out');
+    for (let i = 0; i < 12; i++) await page.mouse.wheel(0, -120);
+    await page.keyboard.up('Control');
+    await look('wheel in');
+    expect.soft(NAMED.filter((name) => !first[name]), 'every named box seen').toEqual([]);
+    expect.soft(looks.filter((one) => one.moved.length), 'a zoom moves no box').toEqual([]);
+    expect.soft(looks.filter((one) => one.lines.length), 'every name one line').toEqual([]);
+    expect.soft(looks.filter((one) => one.on.length).map((one) => ({ zoom: one.zoom, on: one.on })), 'no name on anything').toEqual([]);
+    expect.soft(looks.filter((one) => one.cut.length), 'a cut name ends in an ellipsis and says itself').toEqual([]);
+
+    // As each is drawn at 100%, 45%, 25% and the farthest, at both sizes, paper and dark.
+    const drawnAt = [];
+    for (const each of [size, { width: 1920, height: 1080 }]) {
+      await page.setViewportSize(each);
+      for (const theme of ['paper', 'dark']) {
+        await page.evaluate((theme) => localStorage.setItem('cozy.theme', theme), theme);
+        for (const zoom of [1, 0.45, 0.25, ZOOMS[0]]) {
+          await viewAt(zoom, middle);
+          const now = await page.evaluate(audit, NAMED);
+          if (now.lines.length || now.on.length) drawnAt.push({ size: `${each.width}x${each.height}`, theme, zoom, lines: now.lines, on: now.on });
+        }
+      }
+    }
+    expect.soft(drawnAt, 'drawn at each zoom, size and theme: each name one line, on nothing').toEqual([]);
   });
 });

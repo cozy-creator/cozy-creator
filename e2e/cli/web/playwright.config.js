@@ -1,7 +1,8 @@
 // The web suite (cl-973): Playwright Test, each cell one test in web/<cell>.spec.js, several at once on this job's Calcifer, each on a project
 // and a browser context of its own (fixtures.js). web.sh's web_suite runs a lane of them; nothing here is retried.
 // Projects: chrome (Google Chrome at $CHROME, H.264), firefox and webkit (`@engines` cells), vault (`@vault`, the job with the
-// filesystem driver) and solo (`@solo`: cells that stop, restart or re-point Calcifer, one at a time in a job of their own).
+// filesystem driver) and solo (`@solo`: cells that stop, restart or re-point Calcifer, or need the job to itself, one at a time in a job of
+// their own, which has the filesystem driver too).
 const { defineConfig } = require('@playwright/test');
 const { tmpdir } = require('os');
 const { join } = require('path');

@@ -1,5 +1,6 @@
 // The web suite's fixtures (cl-973): each cell on a project and a browser context of its own, on this job's Calcifer, several at once.
-// Guards fail a cell on a page error, a console error, a CSP violation or a modal. Waits are on state; `observeStill` is the one window.
+// Guards fail a cell on a page error, a console error, a CSP violation or a modal. Waits are on state; `observeStill` and `stays` are the
+// windows.
 //   const { test, expect, box, ... } = require('./fixtures')
 // $HOLDER: Calcifer's lock record; $COZY: the CLI; $OUT: where the job keeps what it made; $ARGV_LOG: each cozy call, for coverage.
 const { test: base, expect } = require('@playwright/test');
@@ -309,7 +310,29 @@ const observeStill = (page, ms, selector = '.react-flow__node .card[data-asset]'
   requestAnimationFrame(frame);
 }), { ms, selector });
 
+/** An init script: in each document, every move of its address that changes its path (`window.__moves`) and each gate drawn
+ *  (`window.__gates`, their words), for `stays`. */
+function recordAddress() {
+  window.__moves = [];
+  for (const name of ['pushState', 'replaceState']) {
+    const native = history[name].bind(history);
+    history[name] = (state, title, url) => {
+      const from = location.pathname;
+      native(state, title, url);
+      if (location.pathname !== from) window.__moves.push(`${from} -> ${location.pathname}`);
+    };
+  }
+  window.__gates = [];
+  new MutationObserver((records) => {
+    for (const record of records) for (const node of record.addedNodes) if (node instanceof Element && node.matches('main.gate')) window.__gates.push(node.textContent);
+  }).observe(document, { childList: true, subtree: true });
+}
+
+/** Where a page recording its address stands 3 s on, long enough for one that sends itself somewhere to have done it (cl-980's loop went
+ *  round several times a second), and each move of its address since its document loaded: the other declared window. */
+const stays = (page) => page.evaluate((ms) => new Promise((done) => setTimeout(() => done({ path: location.pathname, moves: window.__moves }), ms)), 3000);
+
 /** A local fixture tool (e2e/cli/project/<file>/<function>), as a box or `cozy run` names it. */
 const fixtureTool = (path) => join(__dirname, '..', 'project', path);
 
-module.exports = { test, expect, box, canvasIdle, focus, middle, observeStill, openPoint, zoomOf, fixtureTool, DARK_OPEN, MP4, photo, png, wav };
+module.exports = { test, expect, box, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, DARK_OPEN, MP4, photo, png, wav };

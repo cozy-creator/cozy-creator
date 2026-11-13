@@ -1,31 +1,18 @@
-// A project opens at once (cl-982; Paul, 11-13: "all of the nodes should appear immediately ... the previews should all appear very quickly;
-// after all, all files are already on disc"). Two copies of one project of 50 real pictures of a few MB each, one plaintext and one
-// encrypted, opened in a real Chrome on a real Calcifer: when each box's frame is drawn and when each preview is, from the project's first
-// state; how long a request waited for a connection, and the most connections to Calcifer at once; with one tab and with two more of the
-// same Calcifer open. A box whose preview is on its way pulses, faintly (screenshots in light and dark, 1600 wide). Its thumbnails are
-// stored in the project as its files land: an open makes none, and one for a file added while it's open is drawn soon after it lands.
-// Zoomed out from 100%, every box in the new view is drawn in each frame of the zoom.
-//   node opens.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
-// $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
-// computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
-const { chromium } = require(process.env.PLAYWRIGHT);
-const { execFileSync } = require('child_process');
-const { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } = require('fs');
-const { homedir, tmpdir } = require('os');
+// opens (cl-982; Paul, 11-13: "all of the nodes should appear immediately ... the previews should all appear very quickly; after all, all
+// files are already on disc"). Two copies of one project of 50 real pictures of a few MB each, one plaintext and one encrypted: when each
+// box's frame is drawn and when each preview is, from the project's first state; how long a request waited for a connection, and the most
+// connections to Calcifer at once; with one tab and with two more of the same Calcifer open. A box whose preview is on its way pulses,
+// faintly, paper and dark. Its thumbnails are stored in the project as its files land: an open makes none, and one for a file added while
+// it's open is drawn soon after it lands. Zoomed out from 100%, every box in the new view is drawn in each frame of the zoom.
+// `@solo`: its times are held to bars and it clears the thumbnail cache, so it has the job to itself; that job has the filesystem driver
+// its encrypted copy needs.
+const { createHash, randomBytes } = require('crypto');
+const { readdirSync, rmSync } = require('fs');
+const { homedir } = require('os');
 const { join } = require('path');
 const zlib = require('zlib');
-const { calcifer, lastLook, lookAt, noStall, projectAction, projectJson, projectUrl, signIn, STEP_MS, upload } = require('./page');
+const { test: base, expect, canvasIdle } = require('./fixtures');
 const { runnerSpeed } = require('./speed');
-
-const failures = [];
-const seen = {};
-noStall(seen, died);
-let during = 'the start';
-function check(name, ok, detail) {
-  seen[name] = ok ? true : (detail ?? false);
-  during = name;
-  if (!ok) failures.push(name);
-}
 
 const PICTURES = 50;
 const SIDE = 1200;
@@ -36,10 +23,7 @@ const WAIT_MS = 75_000;
 const VIEWPORT = { width: 1600, height: 1000 };
 // What Paul asked (11-13), on the fast hosted runners; each is held times this runner's speed against those (speed.js).
 const BARS = { frames_first_ms: 100, frames_all_ms: 100, previews_cold_ms: 2000, previews_warm_ms: 1000, landed_ms: 2000 };
-const SPEED = runnerSpeed();
-const BAR = Object.fromEntries(Object.entries(BARS).map(([name, ms]) => [name, Math.round(ms * SPEED.factor)]));
-seen.runner = SPEED;
-seen.bars = BAR;
+const soft = expect.configure({ soft: true });
 
 /** A real picture of a few MB: a gradient under noise, `i` telling one from another, as a PNG. */
 function picture(i) {
@@ -157,7 +141,10 @@ const FRAMES = (ms) => new Promise((done) => {
   requestAnimationFrame(tick);
 });
 
-/** Each file a thumbnail is kept as under `dir`, by name: what's made while a project opens. */
+/** Previews drawn in a page, of the 50. */
+const previewsDrawn = (page) => page.evaluate((n) => Object.entries(window.__opens?.nodes ?? {}).filter(([name, row]) => /^pic_\d+$/.test(name) && Number(name.slice(4)) < n && row.preview !== null).length, PICTURES);
+
+/** Each file a thumbnail is kept as under `dirs`: what's made while a project opens. */
 function thumbnails(dirs) {
   const files = new Set();
   const walk = (dir) => {
@@ -256,110 +243,96 @@ class Wire {
   }
 }
 
-/** The file at `path` in `project`, sent as the page sends one (`PUT /v1/project-files`), then imported. */
-async function importInto(project, path, name) {
-  const { token } = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
-  const digest = await upload(token, path, project.id);
-  return (await projectAction(project.folder, 'import', digest, name)).value;
-}
-
 const ms = (value) => (value === null || value === undefined ? null : Math.round(value));
 const quantile = (values, q) => (values.length ? values[Math.min(values.length - 1, Math.floor(q * values.length))] : null);
 
-(async () => {
-  if (process.env.ALONE) {
-    seen.ran = false;
-    console.log(JSON.stringify({ failures, seen }, null, 2));
-    return;
-  }
-  const base = calcifer();
-  const scratch = mkdtempSync(join(tmpdir(), 'web-opens-'));
-  seen.project = { folder: scratch };
-  const plain = join(scratch, 'plain');
-  const sealed = join(scratch, 'sealed');
-  const files = join(scratch, 'pictures');
-  execFileSync('mkdir', ['-p', files]);
-  const cozy = (...words) => execFileSync(process.env.COZY, words, { encoding: 'utf8', timeout: 180_000 });
+const test = base.extend({
+  /** The encrypted copy, made in a folder of the suite's ({id, code, path, view}): locked again before its folder goes. */
+  sealed: async ({ api, cli, removeAfter }, use) => {
+    const opened = await api.post('/v1/projects', { path: join(process.env.OUT, 'web', 'projects', `web-opens-sealed-${randomBytes(4).toString('hex')}`), passphrase: randomBytes(18).toString('base64url') });
+    removeAfter(opened.path);
+    const vault = await cli.json('vault', '--directory', opened.path, 'status');
+    await use({ id: opened.id, code: opened.code, path: opened.path, vault, view: vault.view ?? vault.vault?.view });
+    const at = `/v1/projects/${encodeURIComponent(opened.id)}/vault`;
+    if ((await api.get(at)).state === 'locked') return;
+    await cli('--json', 'vault', '--directory', opened.path, 'lock');
+    await expect.poll(async () => (await api.get(at)).state, { message: `${opened.path} locked before it's removed`, timeout: 60_000 }).toBe('locked');
+  },
+});
 
-  during = 'the fixture';
-  const made = Date.now();
-  const paths = [];
-  for (let i = 0; i <= PICTURES; i++) {
-    const at = join(files, `${named(i)}.png`);
-    writeFileSync(at, picture(i));
-    paths.push(at);
-  }
-  seen.fixture = { pictures: PICTURES, bytes: Math.round(statSync(paths[0]).size / 1e5) / 10 + ' MB each', made_ms: Date.now() - made };
-  cozy('--json', 'new', '--unencrypted', plain);
-  const secrets = join(scratch, 'secrets');
-  execFileSync('mkdir', ['-p', secrets]);
-  writeFileSync(join(secrets, 'pass'), 'synthetic opens passphrase\n');
-  cozy('--json', 'new', sealed, '--passphrase-file', join(secrets, 'pass'), '--recovery-out', join(secrets, 'recovery'));
-  const vault = JSON.parse(cozy('--json', 'vault', '--directory', sealed, 'status'));
-  const view = vault.view ?? vault.vault?.view;
-  check('the_sealed_copy_is_encrypted_and_unlocked', vault.encrypted === true && vault.state === 'unlocked' && Boolean(view), vault);
+test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signIn }, testInfo) => {
+  const speed = runnerSpeed();
+  const BAR = Object.fromEntries(Object.entries(BARS).map(([name, ms]) => [name, Math.round(ms * speed.factor)]));
+  testInfo.annotations.push({ type: 'runner', description: JSON.stringify({ ...speed, bars: BAR }) });
+  /** What each part saw, attached to the report. */
+  const seen = {};
   const projects = {
-    plain: { folder: plain, view: plain, sealed: false },
-    sealed: { folder: sealed, view, sealed: true },
+    plain: { id: project.id, code: project.code, folder: project.path, view: project.path },
+    sealed: { id: sealed.id, code: sealed.code, folder: sealed.path, view: sealed.view },
   };
-  const importing = Date.now();
-  for (const [kind, project] of Object.entries(projects)) {
-    project.id = projectJson(project.folder, 'GET', '?assets=false').id;
-    project.url = await projectUrl(project.id);
-    const cards = {};
-    for (let i = 0; i < PICTURES; i++) cards[(await importInto(project, paths[i], named(i))).name] = placeOf(i);
-    projectJson(project.folder, 'PATCH', '/canvas', { cards });
-    // Its view kept in it, as the page keeps one: the whole grid.
-    projectJson(project.folder, 'PATCH', '/view', { viewport: FIT });
-    seen.fixture[kind] = { id: project.id, imported_ms: Date.now() - importing };
-  }
+  for (const one of Object.values(projects)) one.url = `${api.origin}/p/${one.code}`;
+  const at = (one, rest = '') => `/v1/projects/${encodeURIComponent(one.id)}${rest}`;
+  /** A picture sent as the page sends one (`PUT /v1/project-files`), then imported as `name`. */
+  const importInto = async (one, bytes, name) => {
+    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    await api.call('PUT', `/v1/project-files/${digest}?project=${encodeURIComponent(one.id)}`, bytes, { type: 'application/octet-stream' });
+    return api.post(at(one, '/imports'), { source: digest, name, exact: true });
+  };
   // Where a thumbnail can be kept: the project's own store, and the caches before it.
-  const stores = (project) => [join(project.view, '.thumbs'), join(homedir(), '.cozy', 'cache', 'thumbs'), join(project.view, '.vault-calcifer', 'thumbs')];
+  const stores = (one) => [join(one.view, '.thumbs'), join(homedir(), '.cozy', 'cache', 'thumbs'), join(one.view, '.vault-calcifer', 'thumbs')];
+  const pictures = [];
 
-  during = 'thumbnails stored as the files landed';
-  const storing = Date.now();
-  let stored = {};
-  while (Date.now() - storing < 60_000) {
-    stored = Object.fromEntries(Object.entries(projects).map(([kind, project]) => [kind, thumbnails([join(project.view, '.thumbs')]).size]));
-    if (Object.values(stored).every((count) => count >= PICTURES)) break;
-    await new Promise((done) => setTimeout(done, 250));
-  }
-  seen.stored = { ...stored, ms: Date.now() - storing };
-  check('every_landed_picture_has_its_thumbnail_stored_in_its_project', Object.values(stored).every((count) => count >= PICTURES), seen.stored);
+  await test.step('two copies of 50 pictures, plaintext and encrypted, each thumbnail stored as its file lands', async () => {
+    expect.soft(sealed.vault, 'the sealed copy is encrypted and unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
+    expect(sealed.view, "the sealed copy's readable view").toBeTruthy();
+    const made = Date.now();
+    for (let i = 0; i <= PICTURES; i++) pictures.push(picture(i));
+    seen.fixture = { pictures: PICTURES, mb: Math.round(pictures[0].length / 1e5) / 10, made_ms: Date.now() - made };
+    const importing = Date.now();
+    for (const [kind, one] of Object.entries(projects)) {
+      const cards = {};
+      for (let i = 0; i < PICTURES; i++) cards[(await importInto(one, pictures[i], named(i))).name] = placeOf(i);
+      await api.patch(at(one, '/canvas'), { cards });
+      // Its view kept in it, as the page keeps one: the whole grid.
+      await api.patch(at(one, '/view'), { viewport: FIT });
+      seen.fixture[`${kind}_imported_ms`] = Date.now() - importing;
+    }
+    const storing = Date.now();
+    let stored;
+    await soft.poll(() => {
+      stored = Object.fromEntries(Object.entries(projects).map(([kind, one]) => [kind, thumbnails([join(one.view, '.thumbs')]).size]));
+      return Object.values(stored).every((count) => count >= PICTURES);
+    }, { message: 'every landed picture has its thumbnail stored in its project', timeout: 60_000, intervals: [250] }).toBe(true);
+    seen.stored = { ...stored, ms: Date.now() - storing };
+  });
 
-  const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
-
-  /** A browser of its own, signed in: its cache cold. */
+  /** A browser of its own, its cache cold, and its first tab signed in. */
   const fresh = async (theme = 'paper') => {
-    const context = await browser.newContext({ viewport: VIEWPORT });
-    context.setDefaultTimeout(STEP_MS);
+    const context = await newContext({ viewport: VIEWPORT });
     await context.addInitScript(SAMPLER);
     await context.addInitScript((theme) => {
       try { localStorage.setItem('cozy.theme', theme); } catch {}
     }, theme);
-    const wire = new Wire(base);
-    const errors = [];
+    const wire = new Wire(api.origin);
     // Each tab signs in: a session is the tab's.
     const tab = async (label) => {
       const page = await context.newPage();
-      page.on('pageerror', (error) => errors.push(`${label}: ${error.message}`));
       await wire.watch(page, label);
-      await signIn(page);
-      await page.waitForSelector('.top');
+      await signIn(page, `${api.origin}/`);
+      await expect(page.locator('.top')).toBeVisible();
       return page;
     };
-    const first = await tab('a');
-    lookAt(first);
-    return { context, wire, errors, tab, first };
+    return { context, wire, tab, first: await tab('a') };
   };
 
-  /** `page` opened on `project` (or reloaded): when its boxes and previews were drawn, against the bars of a `cold` or warm open. */
-  const opening = async (label, page, wire, project, { cold, reload = false, others = [], go = true, bars = true } = {}) => {
-    during = label;
-    const before = go ? thumbnails(stores(project)) : new Set();
+  // When each open drew all of its frames on screen, after its state.
+  const framed = [];
+  /** `page` opened on `one` (or reloaded): when its boxes and previews were drawn, against the bars of a `cold` or warm open. */
+  const opening = async (label, page, wire, one, { cold, reload = false, others = [], go = true, bars = true } = {}) => {
+    const before = go ? thumbnails(stores(one)) : new Set();
     const from = wire.now;
     if (reload) await page.reload();
-    else if (go) await page.goto(project.url);
+    else if (go) await page.goto(one.url);
     const read = () => page.evaluate(({ id, pictures }) => {
       const opens = window.__opens;
       const path = (entry) => new URL(entry.name).pathname;
@@ -385,15 +358,13 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
         pulsing: rows.filter(([, row]) => row.waiting > 0 && row.pulsing === row.waiting).length,
         misses: opens?.misses ?? [],
       };
-    }, { id: project.id, pictures: PICTURES });
-    const began = Date.now();
-    let now = await read();
-    while ((now.previews.length < PICTURES && (now.on_screen === 0 || now.on_screen_previews.length < now.on_screen)) && Date.now() - began < WAIT_MS) {
-      await new Promise((done) => setTimeout(done, 100));
+    }, { id: one.id, pictures: PICTURES });
+    let now;
+    await soft.poll(async () => {
       now = await read();
-    }
-    const after = thumbnails(stores(project));
-    const made = [...after].filter((at) => !before.has(at)).length;
+      return now.previews.length >= PICTURES || (now.on_screen > 0 && now.on_screen_previews.length >= now.on_screen);
+    }, { message: `${label}: every preview on screen drawn`, timeout: WAIT_MS, intervals: [100] }).toBe(true);
+    const made = [...thumbnails(stores(one))].filter((file) => !before.has(file)).length;
     const state = now.state;
     // From its first state, or, when that came during a long frame of no script of the page's (its first paint: ~150 ms of style and
     // layout on a runner that rasters in software), from that frame's end: nothing that came in can be handled sooner. Both are kept;
@@ -427,131 +398,113 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
       wire: wire.since(from),
     };
     seen[label] = result;
+    const said = (what) => `${label}: ${what}: ${JSON.stringify({ ...result, trace: undefined, preview_times_ms: undefined })}`;
+    expect.soft(result.pulsed_while_waiting, said('every box waiting for its preview pulses')).toBe(result.waited_for_preview);
     if (!bars) {
-      check(`${label}_every_preview_on_screen_drawn`, result.on_screen > 0 && result.on_screen_previews_ms !== null, { on_screen: result.on_screen, previews: result.previews, all: result.all_previews_ms });
-      check(`${label}_every_box_waiting_for_its_preview_pulses`, result.pulsed_while_waiting === result.waited_for_preview, { waited: result.waited_for_preview, pulsed: result.pulsed_while_waiting, unpulsed: result.unpulsed });
+      expect.soft(result.on_screen > 0 && result.on_screen_previews_ms !== null, said('every preview on screen drawn')).toBe(true);
       return result;
     }
     const bar = cold ? BAR.previews_cold_ms : BAR.previews_warm_ms;
     // Every frame on screen is drawn in one go: its first and its last. How soon is held over all the opens (below), as one open's frames
     // can wait out a frame of the page's other work on a runner that rasters in software.
-    check(`${label}_every_frame_on_screen_drawn`, result.all_frames_ms !== null, { first: result.first_frame_ms, all: result.all_frames_ms, frames: result.frames, on_screen: result.on_screen });
+    expect.soft(result.all_frames_ms, said('every frame on screen drawn')).not.toBeNull();
     framed.push(result.all_frames_ms ?? Infinity);
-    check(`${label}_every_preview_on_screen_within_${bar}ms`, result.on_screen > 0 && result.on_screen_previews_ms !== null && result.on_screen_previews_ms <= bar, { on_screen: result.on_screen, all: result.on_screen_previews_ms, previews: result.previews, median: result.median_preview_ms });
-    check(`${label}_every_box_waiting_for_its_preview_pulses`, result.pulsed_while_waiting === result.waited_for_preview, { waited: result.waited_for_preview, pulsed: result.pulsed_while_waiting, unpulsed: result.unpulsed });
-    if (cold) check(`${label}_makes_no_thumbnail`, made === 0, made);
+    expect.soft(result.on_screen > 0 && result.on_screen_previews_ms !== null && result.on_screen_previews_ms <= bar, said(`every preview on screen within ${bar} ms`)).toBe(true);
+    if (cold) expect.soft(made, said('a cold open makes no thumbnail')).toBe(0);
     return result;
   };
 
-  // When each open drew all of its frames on screen, after its state.
-  const framed = [];
   for (const kind of ['plain', 'sealed']) {
-    const project = projects[kind];
-    const { context, wire, errors, first } = await fresh();
-    await opening(`${kind}_cold`, first, wire, project, { cold: true });
-    await opening(`${kind}_warm`, first, wire, project, { cold: false, reload: true });
-    // All of it in view: each of the 50 read from its store (an encrypted one's from its encrypted store, never the browser's cache).
-    during = `${kind}_fitted`;
-    const fitting = await first.evaluate(() => performance.now());
-    await first.keyboard.press('f');
-    const fitted = await first.waitForFunction((n) => {
-      const times = Object.entries(window.__opens?.nodes ?? {}).filter(([name]) => /^pic_\d+$/.test(name) && Number(name.slice(4)) < n).map(([, row]) => row.preview);
-      return times.length >= n && times.every((at) => at !== null) ? Math.max(...times) : false;
-    }, PICTURES, { timeout: WAIT_MS }).then((handle) => handle.jsonValue(), () => null);
-    seen[`${kind}_fitted`] = { all_previews_ms: fitted === null ? null : Math.max(0, Math.round(fitted - fitting)) };
-    check(`${kind}_fitted_all_${PICTURES}_previews_within_${BAR.previews_warm_ms}ms`, fitted !== null && fitted - fitting <= BAR.previews_warm_ms, seen[`${kind}_fitted`]);
-    check(`${kind}_no_page_errors`, errors.length === 0, errors);
-    await context.close();
+    await test.step(`${kind}: opened cold, then warm, then fitted`, async () => {
+      const one = projects[kind];
+      const { context, wire, first } = await fresh();
+      await opening(`${kind}_cold`, first, wire, one, { cold: true });
+      await opening(`${kind}_warm`, first, wire, one, { cold: false, reload: true });
+      // All of it in view: each of the 50 read from its store (an encrypted one's from its encrypted store, never the browser's cache).
+      const fitting = await first.evaluate(() => performance.now());
+      await first.keyboard.press('f');
+      let fitted = null;
+      await soft.poll(async () => (fitted = await first.evaluate((n) => {
+        const times = Object.entries(window.__opens?.nodes ?? {}).filter(([name]) => /^pic_\d+$/.test(name) && Number(name.slice(4)) < n).map(([, row]) => row.preview);
+        return times.length >= n && times.every((at) => at !== null) ? Math.max(...times) : null;
+      }, PICTURES)) !== null, { message: `${kind}: fitted, all ${PICTURES} previews drawn`, timeout: WAIT_MS, intervals: [100] }).toBe(true);
+      seen[`${kind}_fitted`] = { all_previews_ms: fitted === null ? null : Math.max(0, Math.round(fitted - fitting)) };
+      expect.soft(fitted !== null && fitted - fitting <= BAR.previews_warm_ms, `${kind}: fitted, all ${PICTURES} previews within ${BAR.previews_warm_ms} ms: ${JSON.stringify(seen[`${kind}_fitted`])}`).toBe(true);
+      await context.close();
+    });
   }
 
-  // Two other tabs of this Calcifer open first, showing the other copy; then this one opens, cold, then again warm.
   for (const [kind, other] of [['plain', 'sealed'], ['sealed', 'plain']]) {
-    const { context, wire, errors, tab, first } = await fresh();
-    during = `${kind}_three_tabs: the others`;
-    await first.goto(projects[other].url);
-    const second = await tab('b');
-    await second.goto(projects[other].url);
-    for (const page of [first, second]) await page.waitForFunction((n) => Object.values(window.__opens?.nodes ?? {}).filter((row) => row.preview !== null).length >= n, PICTURES, { timeout: WAIT_MS }).catch(() => {});
-    const third = await tab('c');
-    await opening(`${kind}_three_tabs_cold`, third, wire, projects[kind], { cold: true, others: [first, second] });
-    await opening(`${kind}_three_tabs_warm`, third, wire, projects[kind], { cold: false, reload: true, others: [first, second] });
-    check(`${kind}_three_tabs_no_page_errors`, errors.length === 0, errors);
-    await context.close();
+    await test.step(`${kind}: opened cold, then warm, with two other tabs of this Calcifer open on the other copy`, async () => {
+      const { context, wire, tab, first } = await fresh();
+      await first.goto(projects[other].url);
+      const second = await tab('b');
+      await second.goto(projects[other].url);
+      for (const page of [first, second]) await soft.poll(() => previewsDrawn(page), { message: `the other tabs' ${PICTURES} previews drawn`, timeout: WAIT_MS }).toBeGreaterThanOrEqual(PICTURES);
+      const third = await tab('c');
+      await opening(`${kind}_three_tabs_cold`, third, wire, projects[kind], { cold: true, others: [first, second] });
+      await opening(`${kind}_three_tabs_warm`, third, wire, projects[kind], { cold: false, reload: true, others: [first, second] });
+      await context.close();
+    });
   }
 
   // An old project's thumbnails, none stored: each made in the background as it's asked for, its box pulsing until it's drawn.
   for (const theme of ['paper', 'dark']) {
-    const project = projects.plain;
-    rmSync(join(project.view, '.thumbs'), { recursive: true, force: true });
-    rmSync(join(homedir(), '.cozy', 'cache', 'thumbs'), { recursive: true, force: true });
-    const { context, wire, first } = await fresh(theme);
-    during = `pulse_${theme}`;
-    await first.goto(project.url);
-    const pulsing = await first.waitForFunction(() => {
-      const nodes = [...document.querySelectorAll('.react-flow__node')];
-      const loading = nodes.filter((node) => node.getAnimations({ subtree: true }).some((one) => one.animationName === 'loading-pulse'));
-      return loading.length >= 3 ? loading.length : false;
-    }, null, { timeout: 15_000 }).then((handle) => handle.jsonValue(), () => 0);
-    seen[`pulse_${theme}`] = { pulsing };
-    check(`${theme}_boxes_pulse_while_their_previews_are_made`, pulsing >= 3, pulsing);
-    if (process.env.SHOT && pulsing) {
-      // At the pulse's brightest, then at rest: what a person sees between.
-      for (const [phase, at] of [['peak', 0.999], ['rest', 0]]) {
-        await first.evaluate((at) => {
-          for (const one of document.getAnimations()) {
-            if (one.animationName !== 'loading-pulse') continue;
-            const length = one.effect.getComputedTiming().duration;
-            one.pause();
-            one.currentTime = at * length;
-          }
-        }, at);
-        await first.screenshot({ path: `${process.env.SHOT}-pulse-${theme}-${phase}.png` });
-      }
-    }
-    await first.evaluate(() => { for (const one of document.getAnimations()) if (one.animationName === 'loading-pulse') one.play(); });
-    await opening(`backfill_${theme}`, first, wire, project, { go: false, bars: false });
-    await context.close();
+    await test.step(`${theme}: none stored, each box pulses while its preview is made`, async () => {
+      const one = projects.plain;
+      rmSync(join(one.view, '.thumbs'), { recursive: true, force: true });
+      rmSync(join(homedir(), '.cozy', 'cache', 'thumbs'), { recursive: true, force: true });
+      const { context, wire, first } = await fresh(theme);
+      await first.goto(one.url);
+      let pulsing = 0;
+      await soft.poll(async () => (pulsing = await first.evaluate(() => [...document.querySelectorAll('.react-flow__node')].filter((node) => node.getAnimations({ subtree: true }).some((held) => held.animationName === 'loading-pulse')).length)), { message: `${theme}: boxes pulse while their previews are made`, timeout: 15_000, intervals: [50] }).toBeGreaterThanOrEqual(3);
+      seen[`pulse_${theme}`] = { pulsing };
+      await opening(`backfill_${theme}`, first, wire, one, { go: false, bars: false });
+      await context.close();
+    });
   }
 
-  // Its frames within ~100 ms of its state (Paul's), over every open of it: the middle one, and none past three times that.
-  {
+  await test.step(`frames within ${BAR.frames_all_ms} ms of its state, the middle open, and ${3 * BAR.frames_all_ms} ms every open`, async () => {
     const sorted = [...framed].sort((a, b) => a - b);
     seen.frames = { each_ms: framed, median_ms: sorted[sorted.length >> 1] ?? null };
-    check(`frames_within_${BAR.frames_all_ms}ms_of_its_state_the_middle_open`, sorted.length > 0 && sorted[sorted.length >> 1] <= BAR.frames_all_ms, seen.frames);
-    check(`frames_within_${3 * BAR.frames_all_ms}ms_of_its_state_every_open`, sorted.length > 0 && sorted.at(-1) <= 3 * BAR.frames_all_ms, seen.frames);
-  }
+    expect.soft(sorted.length > 0 && sorted[sorted.length >> 1] <= BAR.frames_all_ms, `the middle open: ${JSON.stringify(seen.frames)}`).toBe(true);
+    expect.soft(sorted.length > 0 && sorted.at(-1) <= 3 * BAR.frames_all_ms, `every open: ${JSON.stringify(seen.frames)}`).toBe(true);
+  });
 
   // Three tabs opening it at once, none of its thumbnails stored (as tabs reopen after Calcifer restarts on a new build): each is made in
   // the background, and nothing a tab asks waits behind them for one of the browser's six connections to Calcifer.
-  {
-    const project = projects.plain;
-    rmSync(join(project.view, '.thumbs'), { recursive: true, force: true });
+  await test.step('three tabs opening it at once, none stored: no call waits for a connection', async () => {
+    const one = projects.plain;
+    rmSync(join(one.view, '.thumbs'), { recursive: true, force: true });
     rmSync(join(homedir(), '.cozy', 'cache', 'thumbs'), { recursive: true, force: true });
     const { context, wire, tab, first } = await fresh();
-    during = 'three_at_once';
-    const [second, third] = [await tab('b'), await tab('c')];
+    const tabs = [first, await tab('b'), await tab('c')];
     const from = wire.now;
-    await Promise.all([first, second, third].map((page) => page.goto(project.url)));
-    const states = await Promise.all([first, second, third].map((page) => page.waitForFunction((id) => {
-      const read = performance.getEntriesByType('resource').find((entry) => new URL(entry.name).pathname === `/v1/projects/${encodeURIComponent(id)}` && !new URL(entry.name).search && entry.responseEnd > 0);
-      return read ? Math.round(read.responseEnd) : false;
-    }, project.id, { timeout: WAIT_MS }).then((handle) => handle.jsonValue(), () => null)));
-    await first.waitForTimeout(3000);
+    await Promise.all(tabs.map((page) => page.goto(one.url)));
+    const states = [];
+    for (const page of tabs) {
+      let state = null;
+      await soft.poll(async () => (state = await page.evaluate((id) => {
+        const read = performance.getEntriesByType('resource').find((entry) => new URL(entry.name).pathname === `/v1/projects/${encodeURIComponent(id)}` && !new URL(entry.name).search && entry.responseEnd > 0);
+        return read ? Math.round(read.responseEnd) : null;
+      }, one.id)) !== null, { message: 'its state read', timeout: WAIT_MS }).toBe(true);
+      states.push(state);
+    }
+    // Each tab's thumbnails made and drawn: every request of theirs is in the log.
+    for (const page of tabs) await soft.poll(() => previewsDrawn(page), { message: `each tab's ${PICTURES} previews drawn`, timeout: WAIT_MS }).toBeGreaterThanOrEqual(PICTURES);
     const result = { state_ms: states, wire: wire.since(from) };
     seen.three_at_once = result;
-    check(`three_at_once_each_state_within_${BAR.previews_warm_ms}ms`, states.every((at) => at !== null && at <= BAR.previews_warm_ms), result);
-    check(`three_at_once_no_call_waits_${BAR.frames_first_ms}ms_for_a_connection`, (result.wire.call_wait_ms?.most ?? 0) <= BAR.frames_first_ms, result.wire);
+    expect.soft(states.every((took) => took !== null && took <= BAR.previews_warm_ms), `each state within ${BAR.previews_warm_ms} ms: ${JSON.stringify(result)}`).toBe(true);
+    expect.soft(result.wire.call_wait_ms?.most ?? 0, `no call waits ${BAR.frames_first_ms} ms for a connection: ${JSON.stringify(result.wire)}`).toBeLessThanOrEqual(BAR.frames_first_ms);
     await context.close();
-  }
+  });
 
-  // Zoomed out from 100%: each frame of the zoom draws every box in its view.
-  {
+  await test.step('zoomed out from 100%, every box in view is drawn in every frame; a picture landing while it is open is drawn soon after', async () => {
     const { context, first } = await fresh();
-    during = 'zoom out';
     await first.goto(projects.plain.url);
-    await first.waitForFunction((n) => Object.values(window.__opens?.nodes ?? {}).filter((row) => row.preview !== null).length >= n, PICTURES, { timeout: WAIT_MS }).catch(() => {});
+    await soft.poll(() => previewsDrawn(first), { message: `its ${PICTURES} previews drawn`, timeout: WAIT_MS }).toBeGreaterThanOrEqual(PICTURES);
     await first.keyboard.press('Shift+Digit0');
-    await first.waitForTimeout(1200);
+    await canvasIdle(first);
     const watching = first.evaluate(FRAMES, 900);
     await first.keyboard.press('f');
     const { pane, frames } = await watching;
@@ -562,7 +515,7 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
     }
     const tall = quantile(Object.values(heights).sort((a, b) => a - b), 0.5) ?? W;
     const missing = [];
-    let zooms = new Set();
+    const zooms = new Set();
     for (const frame of frames) {
       const matrix = /matrix\(([^)]+)\)/.exec(frame.transform ?? '')?.[1]?.split(',').map(Number);
       if (!matrix) continue;
@@ -577,40 +530,34 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
       }
     }
     seen.zoom_out = { frames: frames.length, zooms: zooms.size, missing: missing.length, first_missing: missing.slice(0, 8) };
-    check('zooming_out_moved_the_view', zooms.size >= 2, seen.zoom_out);
-    check('zooming_out_draws_every_box_in_view_in_every_frame', zooms.size >= 2 && missing.length === 0, seen.zoom_out);
+    expect.soft(zooms.size, `zooming out moved the view: ${JSON.stringify(seen.zoom_out)}`).toBeGreaterThanOrEqual(2);
+    expect.soft(missing, `zooming out draws every box in view in every frame: ${JSON.stringify(seen.zoom_out)}`).toEqual([]);
 
     // A file landing while it's open: its thumbnail made as it lands, and drawn soon after.
-    during = 'a picture landing';
+    const name = named(PICTURES);
+    await first.evaluate((name) => {
+      const look = () => {
+        const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector(`.card[data-asset="${name}"]`));
+        const host = node?.querySelector('.buffered-image');
+        const img = host?.querySelector('img');
+        if (host?.dataset.displayedSha && img?.complete && img.naturalWidth > 0) window.__landed = Date.now();
+        else requestAnimationFrame(look);
+      };
+      requestAnimationFrame(look);
+    }, name);
     const before = thumbnails(stores(projects.plain));
     const landing = Date.now();
-    const value = await importInto(projects.plain, paths[PICTURES], named(PICTURES));
+    const value = await importInto(projects.plain, pictures[PICTURES], name);
     const landed = Date.now();
-    projectJson(projects.plain.folder, 'PATCH', '/canvas', { cards: { [value.name]: placeOf(PICTURES) } });
-    const shownAt = await first.waitForFunction((name) => {
-      const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector(`.card[data-asset="${name}"]`));
-      const host = node?.querySelector('.buffered-image');
-      const img = host?.querySelector('img');
-      return host?.dataset.displayedSha && img?.complete && img.naturalWidth > 0 ? Date.now() : false;
-    }, value.name, { timeout: 30_000, polling: 'raf' }).then((handle) => handle.jsonValue(), () => null);
-    const madeNow = [...thumbnails(stores(projects.plain))].filter((at) => !before.has(at));
-    seen.landed = { import_ms: landed - landing, shown_ms: shownAt === null ? null : shownAt - landed, stored: madeNow.map((at) => at.replace(scratch, '')) };
-    check(`a_landed_picture_is_drawn_within_${BAR.landed_ms}ms`, shownAt !== null && shownAt - landed <= BAR.landed_ms, seen.landed);
-    check('a_landed_picture_has_its_thumbnail_stored_in_its_project', madeNow.some((at) => at.startsWith(join(projects.plain.view, '.thumbs'))), seen.landed);
+    await api.patch(at(projects.plain, '/canvas'), { cards: { [value.name]: placeOf(PICTURES) } });
+    let shownAt = null;
+    await soft.poll(async () => (shownAt = await first.evaluate(() => window.__landed ?? null)) !== null, { message: 'the landed picture drawn', timeout: 30_000 }).toBe(true);
+    const madeNow = [...thumbnails(stores(projects.plain))].filter((file) => !before.has(file));
+    seen.landed = { import_ms: landed - landing, shown_ms: shownAt === null ? null : shownAt - landed, stored: madeNow.map((file) => file.replace(projects.plain.view, '')) };
+    expect.soft(shownAt !== null && shownAt - landed <= BAR.landed_ms, `a landed picture is drawn within ${BAR.landed_ms} ms: ${JSON.stringify(seen.landed)}`).toBe(true);
+    expect.soft(madeNow.some((file) => file.startsWith(join(projects.plain.view, '.thumbs'))), `a landed picture has its thumbnail stored in its project: ${JSON.stringify(seen.landed)}`).toBe(true);
     await context.close();
-  }
+  });
 
-  await browser.close();
-  try { cozy('--json', 'vault', '--directory', sealed, 'lock'); } catch {}
-  rmSync(scratch, { recursive: true, force: true });
-  seen.project = {};
-  console.log(JSON.stringify({ failures, seen }, null, 2));
-  process.exit(failures.length ? 1 : 0);
-})().catch(died);
-
-async function died(error) {
-  console.error(error);
-  await lastLook();
-  console.log(JSON.stringify({ failures, seen, during, error: String(error?.stack ?? error) }, null, 2));
-  process.exit(2);
-}
+  await testInfo.attach('opens', { body: JSON.stringify(seen, null, 2), contentType: 'application/json' });
+});

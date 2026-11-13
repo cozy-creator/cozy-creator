@@ -425,6 +425,7 @@ WEB_1=(
   box-actions
   timeline
   open
+  gone
 )
 WEB_2=(
   fields
@@ -453,8 +454,10 @@ WEB_ENGINES=(
   open
   # vault
 )
-# What stops, restarts or re-points Calcifer (`@solo`), one at a time.
+# What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
+  opens
+  open
   # account-rent
   # offline
 )
@@ -696,8 +699,8 @@ case $SHARD in
     broken_answers
     logs
   " ;;
-  # Any other web-<cell> runs web/<cell>.spec.js alone, so a new cell takes no line here, else a web/<cell>.js outside the suite (web.sh's
-  # web_alone). A list above is one cell a line: cells added by two changes never share a line.
+  # Any other web-<cell> runs web/<cell>.spec.js alone, so a new cell takes no line here, else a by-hand web/<cell>.js outside the suite
+  # (web.sh's web_alone: look, scale, pageidle). A list above is one cell a line: cells added by two changes never share a line.
   web-*)
     if [ -f "$(dirname "$0")/web/${SHARD#web-}.spec.js" ]; then
       web_cells=("${SHARD#web-}"); parts="web_lane logs"

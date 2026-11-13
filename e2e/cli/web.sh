@@ -1,6 +1,6 @@
 # e2e/cli/web.sh: the page in a browser. The web suite (cl-973): web/<cell>.spec.js, a lane of them at once on this job's Calcifer
 # (web_suite). What of the page needs no browser is a CLI part: commands.sh's page_http. By hand, `--shard web-<cell>` also runs a
-# web/<cell>.js outside the suite (web_alone): look (pictures to review), scale (cl-885's benchmark), and the cells not yet in the suite.
+# web/<cell>.js outside the suite (web_alone): look (pictures to review), and scale and pageidle (cl-885's benchmarks).
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }
 
@@ -17,8 +17,8 @@ web_chrome() {
 
 # web_suite <lane> <cell...> (cl-973): each cell web/<cell>.spec.js, several at once through Playwright Test (web/playwright.config.js)
 # on this job's Calcifer, each on a project and a browser context of its own. Then one check a failed cell, and each cell's time and the
-# 1-minute load as it ended. <lane>: 1, 2, 3 (Chrome), engines (Firefox's `@engines` cells, and `@vault`), solo (one at a time), native, or a
-# cell's own name (by hand: whichever project takes it).
+# 1-minute load as it ended. <lane>: 1, 2, 3 (Chrome), engines (Firefox's `@engines` cells, and `@vault`), solo (`@solo`, one at a time),
+# native, or a cell's own name (by hand: whichever project takes it).
 web_suite() {
   local lane=$1 pw=$OUT/playwright-test chrome cell engine code line web=$OUT/web
   local projects=() workers=() filters=()
@@ -76,18 +76,16 @@ web_suite() {
 }
 
 # web_alone [cell]: web/<cell>.js ($WEB_ALONE_CELL), by hand, signed in by its own `cozy open` (page.js: signIn) on a project of its own,
-# whose folder it deletes whatever happened. $RESTART kills this Calcifer and brings it back, for a cell that asks for it (stays).
+# whose folder it deletes whatever happened.
 web_alone() {
-  local name=${1:-$WEB_ALONE_CELL} pw=$OUT/playwright chrome json code=0 folder lock=$HOME/.cozy/calcifer/calcifer.lock.holder restart
+  local name=${1:-$WEB_ALONE_CELL} pw=$OUT/playwright chrome json code=0 folder lock=$HOME/.cozy/calcifer/calcifer.lock.holder
   step "web-$name, by hand"
   chrome=$(web_chrome)
   [ -n "$chrome" ] && [ -x "$chrome" ] || { check "web-$name: no Google Chrome on this runner (${chrome:-none})"; return; }
   npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 \
     || { check "web-$name: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
-  if [ "${RUNNER_OS:-}" = Windows ]; then restart="taskkill //F //PID \$(jq -r .pid < '$lock') > /dev/null"; else restart="kill -9 \$(jq -r .pid < '$lock')"; fi
-  restart="$restart; sleep 1; '$COZY' machine ls > /dev/null 2>&1"
   json=$OUT/web-$name.json
-  HOLDER=$(web_path "$lock") ARGV_LOG=$(web_path "$OUT/argv.log") RESTART=$restart LAST_LOOK=$(web_path "$OUT/web-$name") SHOT=$(web_path "$OUT/web-$name") \
+  HOLDER=$(web_path "$lock") ARGV_LOG=$(web_path "$OUT/argv.log") LAST_LOOK=$(web_path "$OUT/web-$name") SHOT=$(web_path "$OUT/web-$name") \
     CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
     node "$(web_path "$here/web/$name.js")" > "$json" 2> "$OUT/web-$name.err" || code=$?
   [ "$code" = 0 ] || check "web-$name: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '(.failures // []) as $f | .seen | with_entries(select(.key as $k | $f | index($k)))' "$json" 2> /dev/null | head -c 2000) $(tail -c 500 "$OUT/web-$name.err")"

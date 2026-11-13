@@ -4,13 +4,22 @@
 // controller goes off, saying why, keeps its value, and `cozy run` ignores it. An image slot refuses a video, saying why; the corner pulled
 // to 1237:689 lands on 16:9. On H3, Models & LoRAs: its base model listed once, a LoRA added with its trigger appended once and drawn, its
 // strength kept as the model is replaced in place. Qwen Image 2's VAE slot lists the seeded VAE. No control lacks a declared field.
-const { test, expect, box, focus, middle, fixtureTool, MP4, png } = require('./fixtures');
+// A box says its shape as film and media say it (cl-983): a take the shape its render asked, whatever size its model rounded to
+// (project/rounded.py sizes as H3: 16:9 at 1344x768, 1.37:1 at 1024x768, which is 4:3 in pixels), still once its box's shape is cleared;
+// a file its pixels' nearest standard ratio within about 2%, else the simplest whole one; a corner pulled near 4:3 sets 4:3, and far from
+// any sets the ratio as pulled and says it. Dark says the same.
+const { test, expect, box, canvasIdle, focus, middle, fixtureTool, MP4, png } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave } = require('./hands');
 
 const EVERY = fixtureTool('boxes.py/shot');
 const WHEN = fixtureTool('when.py/image');
+const ROUNDED = fixtureTool('rounded.py/shot');
+const DRAW = fixtureTool('draw.py/draw');
 const RUN_MS = 120_000;
+// web/app/src/canvas/ratios.ts's.
+const STANDARD = ['16:9', '9:16', '1:1', '4:3', '3:4', '4:5', '5:4', '3:2', '2:3', '21:9', '9:21', '2:1', '1:2', '2.39:1', '1.85:1', '1.90:1', '1.43:1', '1.37:1', '1.66:1'];
+const ratioOf = (shape) => shape.split(':').map(Number).reduce((w, h) => w / h);
 
 /** A point of `name`'s picture on the canvas a hand can press to carry it: not under what floats over it, nor on a button. */
 const reach = (page, name) => page.evaluate((name) => {
@@ -193,6 +202,75 @@ test('fields', async ({ page, project, api, cli }) => {
     const input = (await cli.json('--full', 'run', 'watch', String(run), '--once')).request?.input ?? {};
     expect.soft(input, "the run's request").toMatchObject({ steps: 9, resolution: '1080p', turbo: false, megapixels: saved.megapixels, negative: 'blurry', aspect_ratio: '16:9' });
     expect.soft(input.quality ?? 'standard', 'the field reset goes as its default').toBe('standard');
+  });
+
+  await test.step('a box says its shape as film and media say it: a take what it asked, a file its pixels\' nearest, a corner what it set', async () => {
+    const imports = [['wide', 1344, 768, '16:9'], ['tall', 768, 1344, '9:16'], ['square', 1024, 1024, '1:1'], ['odd', 1000, 333, '3:1']];
+    for (const [i, [name, width, height]] of imports.entries()) await project.import(png(60 + 40 * i, width, height), { name, at: { x: 1300 + 420 * i, y: 0 } });
+    await project.add({ name: 'widescreen', tool: ROUNDED, kind: 'video', fields: { instructions: 'a harbour at dawn', aspect_ratio: '16:9' }, at: { x: 1300, y: 700 } });
+    await project.add({ name: 'academy', tool: ROUNDED, kind: 'video', fields: { instructions: 'a harbour at dusk', aspect_ratio: '1.37:1' }, at: { x: 1760, y: 700 } });
+    await project.add({ name: 'pulled', tool: DRAW, kind: 'image', fields: { instructions: 'a lighthouse', aspect_ratio: '1:1' }, at: { x: 2220, y: 700 } });
+    const rendered = await cli('--json', 'render', 'widescreen', 'academy', '--on', 'local');
+    expect.soft(rendered.code, `cozy render: ${rendered.stderr.slice(-400)}`).toBe(0);
+    const take = (row) => row?.prefixes?.at(-1);
+    const made = {};
+    for (const name of ['widescreen', 'academy']) {
+      await expect.poll(async () => {
+        const row = await project.asset(name);
+        return Boolean((take(row)?.main?.width && !take(row).main.absent) || row?.failure);
+      }, { message: `${name}'s take`, timeout: RUN_MS }).toBe(true);
+      const row = await project.asset(name);
+      made[name] = { aspect_ratio: take(row)?.aspect_ratio, width: take(row)?.main?.width, height: take(row)?.main?.height };
+      if (row.failure) made[name].failure = row.failure;
+    }
+    expect.soft(made, 'each take its rounded size, and the shape it asked').toEqual({ widescreen: { aspect_ratio: '16:9', width: 1344, height: 768 }, academy: { aspect_ratio: '1.37:1', width: 1024, height: 768 } });
+    await fit(page);
+    /** What a box at rest says under it of its shape. */
+    const says = (name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"]) .tile-line .ratio-rest`).first();
+    for (const [name, , , want] of imports) await expect.soft(says(name), `${name}, a file, says its pixels' ${want}`).toHaveText(want);
+    await expect.soft(says('widescreen'), 'a 16:9 render of 1344x768 says 16:9').toHaveText('16:9');
+    await expect.soft(says('academy'), 'a 1.37:1 render of 1024x768 says 1.37:1').toHaveText('1.37:1');
+    // Its box's shape cleared, its take still says what it asked for, never its pixels' 4:3.
+    await api.patch(project.at('/assets/academy'), { fields: { aspect_ratio: null } });
+    await expect.poll(async () => (await fieldsOf('academy')).aspect_ratio ?? null, { message: 'academy cleared' }).toBe(null);
+    await expect.soft(says('academy'), 'its take says what it asked, once its box is cleared').toHaveText('1.37:1');
+
+    /** `pulled`'s corner pulled until its picture is `ratio` wide to 1 tall: what it said as it was held, and what it saved. */
+    const pull = async (ratio) => {
+      const node = page.locator('.react-flow__node:has(.card[data-asset="pulled"])');
+      const corner = await node.locator('.corner').first().boundingBox();
+      const media = await node.locator('.media').first().boundingBox();
+      const before = (await fieldsOf('pulled')).aspect_ratio;
+      const from = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
+      const by = 80;
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(from.x + by, from.y + ((media.width + by) / ratio - media.height), { steps: 20 });
+      const said = page.locator('.ratio-live');
+      await expect.soft(said, `its shape said as it's pulled to ${ratio}`).toHaveCount(1);
+      const live = (await said.count()) ? (await said.first().innerText()).trim() : null;
+      await page.mouse.up();
+      let saved;
+      await expect.poll(async () => (saved = (await fieldsOf('pulled')).aspect_ratio) !== before, { message: `its shape saved, pulled to ${ratio}` }).toBe(true);
+      await canvasIdle(page);
+      return { live, saved };
+    };
+    const near = await pull(1.32);
+    expect.soft(near, 'pulled near 4:3, it sets 4:3').toEqual({ live: '4:3', saved: '4:3' });
+    await expect.soft(says('pulled'), 'and says it').toHaveText('4:3');
+    const free = await pull(1.6);
+    const off = (a, b) => Math.abs(Math.log(ratioOf(a) / (typeof b === 'number' ? b : ratioOf(b))));
+    const as = free.saved;
+    expect.soft(typeof as === 'string' && !STANDARD.includes(as) && off(as, 1.6) < 0.03 && !STANDARD.some((shape) => off(as, shape) <= 0.02), `pulled far from any, it stays as pulled: ${JSON.stringify(free)}`).toBe(true);
+    expect.soft(free.live, 'said as pulled').toBe(as);
+    await expect.soft(says('pulled'), 'and says it').toHaveText(String(as));
+
+    await page.evaluate(() => localStorage.setItem('cozy.theme', 'dark'));
+    await page.reload();
+    await expect(box(page, 'pulled')).toBeVisible();
+    await fit(page);
+    const wanted = { wide: '16:9', tall: '9:16', square: '1:1', odd: '3:1', widescreen: '16:9', academy: '1.37:1', pulled: String(as) };
+    for (const [name, want] of Object.entries(wanted)) await expect.soft(says(name), `dark: ${name} says ${want}`).toHaveText(want);
   });
 
   // Last: a Hub whose LoRA cards hold no triggers fails it, with every step before it already reported.

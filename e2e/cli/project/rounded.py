@@ -3,7 +3,7 @@
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19", "numpy>=2"]
 # ///
 """cl-983's tool: a short grey clip sized as MiniMax H3 sizes its own, its short side 768 and its long one the nearest multiple of 64, so
-16:9 is 1344x768 (1.75) and 1.37:1 is 1024x768 (4:3). Weightless: web/ratios.js reads what its box says of each take."""
+16:9 is 1344x768 (1.75) and 1.37:1 is 1024x768 (4:3). Weightless: web/fields.spec.js reads what its box says of each take."""
 
 import msgspec
 import numpy as np
