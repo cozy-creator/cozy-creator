@@ -37,9 +37,7 @@ function film(path, frames = []) {
 // The size the editor was laid out and measured at (web/timeline.js): its player beside its versions, full size over the timeline.
 test.use({ viewport: { width: 1900, height: 1000 } });
 
-test('timeline', async ({ page, project, guards }) => {
-  // The page asks whether Calcifer holds a file's bytes before it sends them: "no" is a 404, which Chrome logs as an error.
-  guards.allow(/status of 404\b.*\/v1\/project-files\/sha256:[0-9a-f]{64}\?project=/);
+test('timeline', async ({ page, project }) => {
   const red = plate(test.info().outputPath('red.mp4'), 'red', 2, 440);
   const blue = plate(test.info().outputPath('blue.mp4'), 'blue', 3, 880);
   const title = png(0, 400, 400, false, () => GREEN);

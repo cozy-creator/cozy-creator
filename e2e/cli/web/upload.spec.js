@@ -92,9 +92,8 @@ const watch = (page, names) => page.evaluate((names) => {
 test.use({ viewport: { width: 1920, height: 1200 } });
 
 test('upload', { tag: '@engines' }, async ({ page, project, guards }) => {
-  // The page asks whether Calcifer holds a file's bytes before it sends them: "no" is a 404, which Chrome logs as an error.
-  // And the .txt's import, refused on purpose.
-  guards.allow(/status of 404\b.*\/v1\/project-files\/sha256:[0-9a-f]{64}\?project=/, /status of 400\b.*\/v1\/projects\/[^/ ]+\/imports$/);
+  // The .txt's import, refused on purpose.
+  guards.allow(/status of 400\b.*\/v1\/projects\/[^/ ]+\/imports$/);
   const names = page.locator('.react-flow__node .card[data-asset]');
   const assets = async () => Object.fromEntries((await project.assets()).map((asset) => [asset.name, asset]));
   const coast = png(60);
