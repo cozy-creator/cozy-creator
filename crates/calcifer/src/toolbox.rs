@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -13,7 +13,7 @@ use axum::{
     extract::{Query, State, rejection::{BytesRejection, QueryRejection}},
     response::Response,
 };
-use futures_util::{StreamExt as _, stream};
+use futures_util::{FutureExt as _, StreamExt as _, future::{BoxFuture, Shared}, stream};
 use ::api::hub::cards;
 use api::{
     calcifer::On,
@@ -213,7 +213,7 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
     let private = private_io::current().is_some();
     let mut tools = vec![];
     for (written, path) in named {
-        let described = match local_code::own(api.machines.hubs.home(), &path) {
+        let described = match local_code::own(&api, &path) {
             Ok(code) => local_code::describe(api, &code, on, hub).await,
             Err(why) => Err(why),
         };
@@ -238,36 +238,73 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
 
 /// How long a list waits for the checkout's packages to be read from source; one read later is listed by a later list.
 const SOURCE_LATE: Duration = Duration::from_secs(20);
+/// How long a list waits for a package's new reading when it has a good one to show meanwhile.
+const SOURCE_FRESH: Duration = Duration::from_secs(1);
 /// How many of them are read at once: each locks and describes its source with uv.
 static SOURCE_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
+/// A checkout package's tools as a list asks for them: its name, the Hub and the machine.
+type SourceKey = (String, String, String);
+/// Each package's last good tools, shown while a new reading goes on (or failed), so a slow read never empties the list.
+static LAST_GOOD: LazyLock<Mutex<HashMap<SourceKey, Vec<Tool>>>> = LazyLock::new(Mutex::default);
+/// The one reading of each package going on: every list waits on it, none starts another.
+static READING: LazyLock<Mutex<HashMap<SourceKey, Shared<BoxFuture<'static, ()>>>>> = LazyLock::new(Mutex::default);
+
 /// The tools of each first-party package the dev home's checkout holds, read from its source as a run of it is (xs-195), each
-/// saying its branch and commit. One that can't be read is left out and logged; a run of it says why. With some still being read
-/// after [`SOURCE_LATE`], the note says so, and they go on being read for the next list.
+/// saying its branch and commit. Each package is read once at a time, behind every list that asks; a list shows each one's
+/// newest good tools: what its reading found within [`SOURCE_FRESH`] (or [`SOURCE_LATE`] for one never read), else its last
+/// good ones. One never read well yet is said in the note, and listed once read.
 async fn from_source(api: &Arc<Api>, hub: &str, on: &On) -> (Vec<Tool>, Option<String>) {
-    let reads: Vec<(String, tokio::task::JoinHandle<Vec<Tool>>)> = (checkout::packages().into_iter())
-        .map(|(name, dir)| {
-            let (api, hub, on, said) = (api.clone(), hub.to_owned(), on.clone(), name.clone());
-            (name, tokio::spawn(async move { source_tools(&api, &hub, &on, &said, &dir).await }))
-        })
-        .collect();
-    let deadline = tokio::time::Instant::now() + SOURCE_LATE;
+    let packages = checkout::packages();
+    let key = |name: &str| (name.to_owned(), hub.to_owned(), on.to_string());
+    let known = {
+        let last = LAST_GOOD.lock().expect("last good lock");
+        packages.iter().all(|(name, _)| last.contains_key(&key(name)))
+    };
+    let deadline = tokio::time::Instant::now() + if known { SOURCE_FRESH } else { SOURCE_LATE };
+    let reads: Vec<_> = packages.iter().map(|(name, dir)| reading(api, hub, on, key(name), dir.clone())).collect();
+    for read in reads {
+        let _ = tokio::time::timeout_at(deadline, read).await;
+    }
+    let last = LAST_GOOD.lock().expect("last good lock");
     let (mut tools, mut late) = (vec![], vec![]);
-    for (name, read) in reads {
-        match tokio::time::timeout_at(deadline, read).await {
-            Ok(Ok(found)) => tools.extend(found),
-            Ok(Err(_)) => {}
-            Err(_) => late.push(name),
+    for (name, _) in &packages {
+        match last.get(&key(name)) {
+            Some(found) => tools.extend(found.iter().cloned()),
+            None => late.push(name.clone()),
         }
     }
     let note = (!late.is_empty()).then(|| format!("still reading from source, listed once read: {}", late.join(", ")));
     (tools, note)
 }
 
-/// `name`'s tools from its source at `dir` in the checkout.
-async fn source_tools(api: &Arc<Api>, hub: &str, on: &On, name: &str, dir: &Path) -> Vec<Tool> {
+/// The reading of `key`'s package at `dir` going on, else a new one: what it finds good becomes its last good tools.
+fn reading(api: &Arc<Api>, hub: &str, on: &On, key: SourceKey, dir: PathBuf) -> Shared<BoxFuture<'static, ()>> {
+    let mut reading = READING.lock().expect("reading lock");
+    if let Some(going) = reading.get(&key) {
+        return going.clone();
+    }
+    let (api, hub, on, held) = (api.clone(), hub.to_owned(), on.clone(), key.clone());
+    // It takes its place below before it can end: the lock is held until then.
+    let task = tokio::spawn(async move {
+        if let Some(found) = source_tools(&api, &hub, &on, &held.0, &dir).await {
+            LAST_GOOD.lock().expect("last good lock").insert(held.clone(), found);
+        }
+        READING.lock().expect("reading lock").remove(&held);
+    });
+    let going = async move {
+        let _ = task.await;
+    }
+    .boxed()
+    .shared();
+    reading.insert(key, going.clone());
+    going
+}
+
+/// `name`'s tools from its source at `dir` in the checkout; none when it can't be read.
+async fn source_tools(api: &Arc<Api>, hub: &str, on: &On, name: &str, dir: &Path) -> Option<Vec<Tool>> {
     let _turn = SOURCE_READS.acquire().await;
-    let described = match local_code::own(api.machines.hubs.home(), dir) {
+    let described = match local_code::own(api, dir) {
         Ok(code) => local_code::describe(api, &code, on, hub).await.map(|described| (code, described)),
         Err(why) => Err(why),
     };
@@ -275,13 +312,13 @@ async fn source_tools(api: &Arc<Api>, hub: &str, on: &On, name: &str, dir: &Path
         Ok(described) => described,
         Err(why) => {
             tracing::warn!("{name} from source isn't listed: {}", why.message);
-            return vec![];
+            return None;
         }
     };
-    let Ok(interface) = Interface::parse(&document) else { return vec![] };
+    let interface = Interface::parse(&document).ok()?;
     let said = checkout::of(&code).map(|from| from.said());
     let release = said.clone().unwrap_or_else(|| "source".into());
-    tool::tools_of(&package, &release, &interface).into_iter().map(|tool| Tool { source: said.clone(), ..tool }).collect()
+    Some(tool::tools_of(&package, &release, &interface).into_iter().map(|tool| Tool { source: said.clone(), ..tool }).collect())
 }
 
 /// Whether every word of `q` is in `tool`'s package's name or its label.

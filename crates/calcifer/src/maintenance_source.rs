@@ -124,3 +124,44 @@ pub(crate) async fn capture(State(api): State<Arc<Api>>, headers: HeaderMap, Jso
         .map_err(|_|refused("source_admission_unavailable"))?;
     Ok(Json(code))
 }
+
+/// A package of the dev home's packages checkout (xs-195) read where no project is: Calcifer's own first-party source, named by its
+/// config, so it is admitted as independent source is when captured (`capture`): no project owns any of its files, its copy is
+/// whole and verified, and its tree is recorded admitted. It is then read, described and run as the Hub's packages are. Read
+/// again at the checkout's same clean commit, it is the tree admitted then, nothing hashed; a tree admitted before, with its copy
+/// here, is taken as it is.
+pub(crate) fn admit_checkout(api: &Api, dir: &Path) -> Result<LocalCode, Error> {
+    if let Some(code) = crate::checkout::unchanged(dir) {
+        return Ok(code);
+    }
+    let _ownership = OWNERSHIP.try_read().map_err(|_| Error::new(Kind::Conflict, "source_capture_busy", "a project is being created; ask again"))?;
+    let home = api.machines.hubs.home();
+    let memo = home.root().join("cache").join("digests");
+    let staged = crate::checkout::stage(dir, Some(memo.as_path()), &home.calcifer().join("patched"))?;
+    let code = staged.code();
+    let copied = crate::local_code::copy_of(home, &code)?.join("tree");
+    if require(api, &code).is_ok() && copied.is_dir() {
+        crate::checkout::admitted(dir, &code);
+        return Ok(code);
+    }
+    let mut paths: Vec<PathBuf> = staged.files.iter().map(|file| file.path.parent().unwrap_or(&file.path).to_owned()).collect();
+    paths.push(dir.to_owned());
+    paths.sort();
+    paths.dedup();
+    independent(&paths).map_err(|refusal| refusal.0)?;
+    let members = api::tree::parse(&staged.document).map_err(|_| refused("source_snapshot_changed").0)?;
+    if !copied.is_dir() {
+        let from = |digest: &Digest| staged.files.iter().find(|file| file.digest == *digest).map(|file| file.path.clone());
+        crate::local_code::materialize(home, &code.tree, &members, from)?;
+    }
+    for (name, member) in &members {
+        let bytes = std::fs::read(copied.join(name)).map_err(|_| refused("source_snapshot_changed").0)?;
+        if bytes.len() as u64 != member.length || hex::encode(Digest::of(&bytes).bytes()) != member.sha256 {
+            return Err(refused("source_snapshot_changed").0);
+        }
+    }
+    api.calcifer.maintenance_store().write(|tx| { tx.execute("INSERT OR IGNORE INTO maintenance_source_admissions(tree) VALUES(?1)", params![code.tree.to_string()])?; Ok(()) })
+        .map_err(|_| refused("source_admission_unavailable").0)?;
+    crate::checkout::admitted(dir, &code);
+    Ok(code)
+}

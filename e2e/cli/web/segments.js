@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { addBoxes, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
+const { projectFolder, addBoxes, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -81,7 +81,7 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   }
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-segments-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-segments-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

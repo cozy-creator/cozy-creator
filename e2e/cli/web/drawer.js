@@ -5,7 +5,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFromPage, calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
+const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -38,7 +38,7 @@ async function died(why) {
   await signIn(page);
   await page.waitForSelector('.top');
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-drawer-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-drawer-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

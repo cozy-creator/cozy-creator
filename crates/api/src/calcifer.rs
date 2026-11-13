@@ -1132,6 +1132,10 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         redo: Option<Box<crate::calcifer::project::HistoryEntry>>,
     },
+    /// A thumbnail of a project's file was made, or can't be (cl-982): one asked for before it was answered `202 thumb_pending`; it's
+    /// asked again.
+    #[serde(rename = "thumb")]
+    Thumb { project: String, sha256: String },
     /// This stream fell behind: read again what you hold.
     #[serde(rename = "resync")]
     Resync,
@@ -2261,6 +2265,9 @@ pub struct CalciferStatus {
     /// Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
     #[serde(default)]
     pub encrypted_project_creation: bool,
+    /// This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
+    #[serde(default)]
+    pub home: PathBuf,
 }
 
 /// The header each request of a `cozy` process carries: its pid, so Calcifer tells its requests from everyone else's (cl-962).

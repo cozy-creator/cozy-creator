@@ -11,7 +11,7 @@ const { createHash } = require('crypto');
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectUrl, addBoxes, calcifer, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, pointAt, rowsOf, storedOf, until, upload } = require('./page');
+const { projectFolder, projectFromPage, projectUrl, addBoxes, calcifer, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, pointAt, rowsOf, storedOf, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -37,7 +37,7 @@ const DESCRIBED_MS = 300_000;
   await signIn(page);
   await page.waitForSelector('.top');
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-offline-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-offline-${Date.now()}`));
   await page.getByLabel("Create without encryption", { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
@@ -118,7 +118,7 @@ const DESCRIBED_MS = 300_000;
     await opened(path).waitFor();
   };
   // Another project, to go to and come back from while Calcifer's away.
-  const other = (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-offline-other-${Date.now()}`, unencrypted: true }), headers: { 'Idempotency-Key': `other-${Date.now()}` } })).body;
+  const other = (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ path: projectFolder(`web-offline-other-${Date.now()}`), unencrypted: true }), headers: { 'Idempotency-Key': `other-${Date.now()}` } })).body;
   dropOther = async () => rmSync(other.path, { recursive: true, force: true });
   // Read again, as the tabs list what's read at the start.
   await page.goto(await projectUrl(other.id));

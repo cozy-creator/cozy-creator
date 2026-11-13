@@ -160,7 +160,7 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 `Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
 
 ### Status
-- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, encrypted_project_creation}`. Clients must require `encrypted_project_creation: true` before sending encrypted-creation credentials or requests; older controllers omit it. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
+- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, encrypted_project_creation, home}`. `home` is this person's home folder, where the page suggests a first project's folder. Clients must require `encrypted_project_creation: true` before sending encrypted-creation credentials or requests; older controllers omit it. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
   without asking the Hub (`GET /v1/account` does).
 
@@ -612,7 +612,7 @@ An operation is a tool (`[org/]package/function[@release]`, or local code, `./di
 `models` and `lora` go on its call: a tool's `model` is what they mean with no slot named, the one model its function runs, its `slot` the key in `models` and `family` what the header of its `default` says. A tool whose function runs several, or none, has no `model`. The version records its run, and each file by its output's name. The package `cozy` is reserved: `cozy/edit`, a video, and `cozy/frame`, a picture, run here, free, with no machine, once what they
 read settles and on `approve`, reading each asset's state, else its newest version, which they say. An edit keeps its versions, each with the clips that made it, and the same edit isn't rendered again; a frame keeps one and its approved one.
 
-- `POST /v1/projects` `{name?, path?, starter?, passphrase?, unencrypted?}`: new projects are encrypted by default.
+- `POST /v1/projects` `{path, starter?, passphrase?, unencrypted?}`: new projects are encrypted by default.
   A nonempty user-supplied `passphrase` is required unless `unencrypted: true` explicitly opts out; opt-out and
   passphrase cannot be combined. Encrypted creation requires a new/empty directory and initializes its first
   database inside the native encrypted mount. The client first checks the encrypted-creation capability from
@@ -621,10 +621,10 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   Debug representation, outbox or persistent response cache. Encrypted creation refuses `Idempotency-Key` and
   returns `Cache-Control: private, no-store`; ordinary opt-out creation retains the existing idempotency behavior.
   The caller must save recovery off-device and must retain the encrypted backing/keybag too. This creates a
-  new project called `name`, at `~/<name>` in this person's home folder, through `as_name` with `.` as `_` (`untitled` when nothing is left),
-  taking `<name>_2` when anything is there, a project or not, which stays as it is and `said` says so; or at `path`, a folder of this
-  computer's by its absolute path (`409 project_exists`, its name the folder's unless given; `400 project_path` for a relative one); `starter`: it holds the starter film. The same
-  `Idempotency-Key` again answers the same ordinary project. Answers `{id, code, path, name, next, said?, recovery_secret?}` and records it in the index as used now. An existing
+  new project at `path`, a folder of this computer's by its absolute path, made if absent and named for it (cl-980: `cozy new` and the
+  page's New alike; there is no other create). `409 project_exists` for a project there, `409 project_not_empty` for encrypted creation in
+  a folder with anything in it, `403 project_permission` where it can't be made, `400 project_path` for a relative one; `starter`: it holds
+  the starter film. The same `Idempotency-Key` again answers the same ordinary project. Answers `{id, code, path, name, next, said?, recovery_secret?}` and records it in the index as used now. An existing
   project needs no call here: a route names it, and `404 project_unknown`, `404 project_folder_gone` (the id or code of one whose folder went,
   naming where it was; put back, `cozy open` there reopens it), `409 project_ambiguous` (a name two projects share, which they never
   do once each is opened here) or `404 project_not_found` (a folder in none) refuse one that names none. A folder of

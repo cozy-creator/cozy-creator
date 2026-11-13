@@ -7,7 +7,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectUrl, importFile, projectJson, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { projectFolder, projectUrl, importFile, projectJson, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -51,7 +51,7 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
   const api = async (path, init = {}) => (await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', ...init.headers } })).json();
 
   const scratch = mkdtempSync(join(tmpdir(), 'web-zoom-'));
-  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `zoom-${Date.now()}` }, body: JSON.stringify({ name: `web-zoom-${Date.now()}`, unencrypted: true }) });
+  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `zoom-${Date.now()}` }, body: JSON.stringify({ path: projectFolder(`web-zoom-${Date.now()}`), unencrypted: true }) });
   try {
     // 300 boxes in 18 columns, each a picture (see.js's scale case, with no video).
     writeFileSync(join(scratch, 'a.png'), png(140));

@@ -5,7 +5,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { readFileSync } = require('fs');
 const { dirname, join } = require('path');
-const { calcifer, lastLook, launch, lookAt, noStall, projectAction, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
+const { projectFolder, calcifer, lastLook, launch, lookAt, noStall, projectAction, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -44,7 +44,7 @@ const HOLDER = join(dirname(process.env.HOLDER), '..', 'machine', 'var', 'lib', 
   check('no_other_machine', (await machines()).every((machine) => machine.name === 'local' || machine.state === 'ended'), (await machines()).map((machine) => machine.name));
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-localidle-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-localidle-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);

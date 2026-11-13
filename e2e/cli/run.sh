@@ -23,6 +23,7 @@ parse "$@"
 . "$(dirname "$0")/projectdb.sh"
 . "$(dirname "$0")/statedb.sh"
 . "$(dirname "$0")/projectvault.sh"
+. "$(dirname "$0")/containmentscale.sh"
 . "$(dirname "$0")/machineset.sh"
 . "$(dirname "$0")/rental.sh"
 . "$(dirname "$0")/fallback.sh"
@@ -698,6 +699,8 @@ case $SHARD in
     logs
   " ;;
   projectdb-latency) parts="db_latency logs" ;;
+  # Dispatch-only: a large 0.24 home's first start here, and 100 project reads after it (containmentscale.sh).
+  containment-scale) parts="containment_scale logs" ;;
   # A keyed write cut off mid-request, sent again (cl-885).
   projectdb-keyed) parts="db_keyed logs" ;;
   # cozy render alone (cl-956), with the project part's fixtures.
@@ -718,6 +721,7 @@ case $SHARD in
   projectdb-focus) parts="tools_read db_existing_web logs"; DB_WEB=focused ;;
   projectdb-select) parts="tools_read db_existing_web logs"; DB_WEB=select ;;
   projectdb-cancel) parts="db_cancel_undo logs" ;;
+  projectdb-cancelrace) parts="db_cancel_race logs" ;;
   projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
   projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
   projectdb-versions) parts="tools_read db_existing_web logs"; DB_WEB=versions ;;

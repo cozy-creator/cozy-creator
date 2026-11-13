@@ -5,7 +5,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
+const { projectFolder, boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const NAME = 'focus_image';
 // web/app/src/canvas/ratios.ts's: a pull within about 2% of one is it, and past that free (Paul, 11-13).
@@ -47,7 +47,7 @@ async function died(error) {
 
 
   await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-focused-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-focused-${Date.now()}`));
   await page.getByLabel('Create without encryption', { exact: true }).check();
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
@@ -245,9 +245,10 @@ async function died(error) {
   check('image_workspace_has_no_asset_description_box', await page.locator('.desc-field:visible').count() === 0);
   await shot('wide');
 
-  const fittedPicture = await until('the fitted large image displays a decoded thumbnail at the requested density', decodedImage,
-    (picture) => picture.loaded && picture.sha === wideSha && picture.requested > 0 && picture.requested <= 2048
-      && picture.resolution !== 'original' && picture.width >= picture.requested && picture.width <= 2048);
+  // One thumbnail a picture (cl-982): drawn wider than the canvas's 512, Focus draws the original.
+  const fittedPicture = await until('the fitted large image displays its thumbnail, or drawn wider its original', decodedImage,
+    (picture) => picture.loaded && picture.sha === wideSha && picture.requested > 0
+      && picture.resolution === (picture.requested > 512 ? 'original' : '512') && picture.width >= Math.min(4096, picture.requested));
   await page.evaluate(() => {
     const frames = { total: 0, blank: 0, frame: 0 };
     window.__focusedResolutionFrames = frames;
@@ -273,7 +274,7 @@ async function died(error) {
     delete window.__focusedResolutionFrames;
     return { total: frames.total, blank: frames.blank };
   });
-  check('image_resolution_grows_from_fitted_thumbnail_to_decoded_original', originalPicture.width > fittedPicture.width && (await imageCamera()).zoom >= 4.5, { fittedPicture, originalPicture });
+  check('image_resolution_at_full_zoom_is_the_decoded_original', originalPicture.width >= fittedPicture.width && originalPicture.resolution === 'original' && (await imageCamera()).zoom >= 4.5, { fittedPicture, originalPicture });
   check('resolution_upgrade_keeps_a_decoded_image_on_every_frame', resolutionFrames.total > 0 && resolutionFrames.blank === 0, resolutionFrames);
   check('resolution_upgrade_preserves_focus_and_the_focused_canvas_camera', await focus.isVisible() && sameCamera(focusedCanvas, await camera()));
   await zoomOutToFit();

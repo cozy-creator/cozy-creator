@@ -639,9 +639,11 @@ export class Client {
     return this.write("PATCH", `${project(id)}/canvas`, { cards, ...(Object.keys(placed).length ? { placed } : {}) }, undefined, write)
   }
 
-  /** A poster, a strip of `strip` frames, a waveform (a sound's, or with `wave` a video's), or a picture, `w` wide. */
-  thumb(id: string, sha256: string, w: number, strip?: number, wave?: boolean): string {
-    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?w=${w}${strip ? `&strip=${strip}` : ""}${wave ? "&wave=true" : ""}`
+  /** A picture or a poster as the canvas and every list draw it, kept in the project as its file landed (cl-982); with `w`, a strip of
+   *  `strip` frames or a waveform (a sound's, or with `wave` a video's) that wide. */
+  thumb(id: string, sha256: string, w?: number, strip?: number, wave?: boolean): string {
+    const asked = [w ? `w=${w}` : "", strip ? `strip=${strip}` : "", wave ? "wave=true" : ""].filter(Boolean).join("&")
+    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?${asked}`
   }
 
   /** A video's preview: a few seconds of it, small and silent. */
