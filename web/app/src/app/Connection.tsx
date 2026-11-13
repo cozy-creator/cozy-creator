@@ -303,9 +303,11 @@ export async function connect(): Promise<Boot> {
     canvases.delete(id)
     forgetProjectView(id)
     revokeProjectMedia(id)
-    const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-      ((["canvas", "history"].includes(String(queryKey[0])) || String(queryKey[0]).startsWith("project")) && queryKey[1] === id)
-      || queryKey[0] === "tools"
+    // Its protection status stays: it is what the locked page shows. Dropped, it is asked again, and the lock it
+    // answers retires the project again, and again.
+    const privateData = ({ queryKey: [kind, project] }: { queryKey: readonly unknown[] }) =>
+      (project === id && kind !== "project-vault" && (["canvas", "history"].includes(String(kind)) || String(kind).startsWith("project")))
+      || kind === "tools"
     void queries.cancelQueries({ predicate: privateData })
     void queries.resetQueries({ predicate: privateData })
     queries.removeQueries({ predicate: privateData })
@@ -321,7 +323,9 @@ export async function connect(): Promise<Boot> {
   const closeBlockers = new Set<() => boolean>()
   const stopEdit = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation() }
   const editEvents = ["pointerdown", "keydown", "beforeinput", "input", "drop", "paste", "submit"]
-  const hooks = globalThis as typeof globalThis & { __cozyFreeze?: () => boolean; __cozyPrepareClose?: () => Promise<void>; __cozyResume?: () => void }
+  const hooks = globalThis as typeof globalThis & { __cozyFreeze?: () => boolean; __cozyPrepareClose?: () => Promise<void>; __cozyResume?: () => void; __cozyUnsent?: () => number }
+  // A lock past its deadline says how many edits it could not wait for: counts only.
+  hooks.__cozyUnsent = () => outbox.unsent() + client.unsentWrites()
   hooks.__cozyFreeze = () => {
     if ([...closeBlockers].some((blocked) => blocked())) return false
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur()

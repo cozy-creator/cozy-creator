@@ -63,6 +63,19 @@ step status; fixture_calcifer | tee "$OUT/status.json"
 step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
+[ "$SHARD" != projectvault ] || calcifer_diagnostics
+}
+
+# A vault failure names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings
+# in calcifer/diagnostics.log, which the job collects with the other logs.
+calcifer_diagnostics() {
+  local config=$HOME/.cozy/config.toml pid
+  awk '/^diagnostics *=/ { next } { print } /^\[calcifer\]/ { print "diagnostics = true"; put = 1 } END { if (!put) printf "\n[calcifer]\ndiagnostics = true\n" }' "$config" > "$config.next" && mv "$config.next" "$config"
+  pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
+  kill -TERM "$pid" 2> /dev/null || true
+  while kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
+  cozy --json machine ls > /dev/null || fail "Calcifer did not start again with its diagnostics"
+  [ -f "$HOME/.cozy/calcifer/diagnostics.log" ] || fail "Calcifer kept no diagnostics log"
 }
 
 # The candidate set end to end: a request through TensorD, the Runtime and TensorFS to the reply, no model.

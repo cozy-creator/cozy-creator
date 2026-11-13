@@ -525,7 +525,7 @@ fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resu
 fn mark_closing(session: &mut Session) {
     let changed = !session.closing;
     session.closing = true;
-    session.readable.store(false, Ordering::Release);
+    revoke(&session.readable);
     if changed { crate::events::project_vault(session.secret.project_id(), "locking"); }
 }
 
@@ -615,35 +615,69 @@ pub(crate) fn start(api: &Arc<Api>) {
             for root in roots {
                 let api = api.clone();
                 // One slow export/unmount must not delay another project's deadline.
-                tokio::task::spawn_blocking(move || {
-                    let op = operation(&root);
-                    let Ok(_operation) = op.try_lock() else { return; };
-                    let working = working(&api, &root);
-                    let needs = held(&root).is_some_and(|session| {
-                        let mut session = session.lock().expect("vault session");
-                        if session.mount.reconcile().is_err() { mark_closing(&mut session); }
-                        // Work in progress holds it open, its maximum included: the clocks go on when the last of it
-                        // ends. Only an explicit lock ends work (owner 11-11: "runs count as activity").
-                        session.timer.hold(working);
-                        if working && !session.closing { session.active_ms = super::now_ms(); }
-                        lapsed(&session)
-                    });
-                    if !needs { return; }
-                    if LOCK_RETRIES.lock().expect("lock retries").get(&root).is_some_and(|retry| std::time::Instant::now() < retry.at) { return; }
-                    // The browser's save acknowledgements may include activity writes
-                    // under this operation mutex. Never wait for them while owning it.
-                    drop(_operation);
-                    let Ok(mut browser) = prepare_browser(&api) else { return; };
-                    let Ok(_operation) = op.try_lock() else { return; };
-                    let still_needs = held(&root).is_some_and(|session| lapsed(&session.lock().expect("vault session")));
-                    if !still_needs { return; }
-                    if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-                    let Ok(transition) = exclusive(&root) else { return; };
-                    if let Err(failure) = close(&api, &root, &transition, &mut browser) { idle_lock_failed(&root, &failure); }
-                });
+                tokio::task::spawn_blocking(move || idle_sweep(&api, &root));
             }
         }
     });
+}
+
+/// How long past an idle or maximum deadline a vault waits for Cozy's browser to confirm its edits are saved before it
+/// locks anyway: the deadline is a security one.
+const SAVE_GRACE: Duration = Duration::from_secs(30);
+/// When each open vault was first seen past its deadline and not yet locked.
+static DUE: LazyLock<Mutex<BTreeMap<PathBuf, std::time::Instant>>> = LazyLock::new(Mutex::default);
+
+/// One second of a vault's clocks: it locks once its deadline has passed, in order (the browser's edits saved, its
+/// requests drained) and, past `SAVE_GRACE`, whatever is unsaved.
+fn idle_sweep(api: &Arc<Api>, root: &FsPath) {
+    let op = operation(root);
+    let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its clocks wait for a vault operation".into()); return; };
+    let working = working(api, root);
+    let needs = held(root).is_some_and(|session| {
+        let mut session = session.lock().expect("vault session");
+        if session.mount.reconcile().is_err() { mark_closing(&mut session); }
+        // Work in progress holds it open, its maximum included: the clocks go on when the last of it
+        // ends. Only an explicit lock ends work (owner 11-11: "runs count as activity").
+        session.timer.hold(working.is_some());
+        if let Some(why) = working.filter(|_| !session.closing) {
+            session.active_ms = super::now_ms();
+            if session.idle > 0 { say(root, "held", || format!("its idle clock is held by {why}")); }
+        }
+        lapsed(&session)
+    });
+    if !needs { DUE.lock().expect("vault deadlines").remove(root); return; }
+    let due = *DUE.lock().expect("vault deadlines").entry(root.to_owned()).or_insert_with(std::time::Instant::now);
+    let forced = due.elapsed() >= SAVE_GRACE;
+    if !forced && LOCK_RETRIES.lock().expect("lock retries").get(root).is_some_and(|retry| std::time::Instant::now() < retry.at) { return; }
+    // The browser's save acknowledgements may include activity writes
+    // under this operation mutex. Never wait for them while owning it.
+    drop(_operation);
+    let mut browser = match prepare_browser(api) {
+        Ok(browser) => browser,
+        Err(why) if forced => {
+            let unsent = tokio::runtime::Handle::current().block_on(api.browser.unsent());
+            let unsent = unsent.map_or("an unknown number of".to_owned(), |count| count.to_string());
+            say(root, "forced", || format!("its deadline passed {} s ago and Cozy's browser has not confirmed its edits are saved ({}): locking anyway, {unsent} unsent edits left", due.elapsed().as_secs(), why.message));
+            if let Some(id) = project_id(root) { crate::events::project_vault(&id, "locking"); }
+            None
+        }
+        Err(why) => { say(root, "browser", || format!("its lock waits for Cozy's browser to save its edits: {}", why.message)); return; }
+    };
+    let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its lock waits for a vault operation".into()); return; };
+    let still_needs = held(root).is_some_and(|session| {
+        let session = session.lock().expect("vault session");
+        lapsed(&session)
+    });
+    if !still_needs { return; }
+    if let Some(session) = held(root) { mark_closing(&mut session.lock().expect("vault session")); }
+    let Ok(transition) = exclusive(root) else {
+        say(root, "gate", || "locking waits for a request still holding the project".into());
+        return;
+    };
+    match close(api, root, &transition, &mut browser) {
+        Ok(()) => { DUE.lock().expect("vault deadlines").remove(root); }
+        Err(failure) => idle_lock_failed(root, &failure),
+    }
 }
 
 pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>) -> Result<Response, Refusal> {
@@ -794,7 +828,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
                     session.secret = secret;
                     session.keybag = keybag;
                     session.closing = false;
-                    session.readable.store(false, Ordering::Release);
+                    revoke(&session.readable);
                     session.readable = Arc::new(AtomicBool::new(true));
                     session.began_ms = super::now_ms(); session.active_ms = session.began_ms;
                     session.idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE); session.maximum = ask.max_duration_s.unwrap_or(0);
@@ -847,7 +881,13 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             if held(root).is_some() { close(api, root, transition, browser)?; } else { retire_orphaned_views(root)?; }
         }
         "activity" => {
-            if let Some(session) = held(root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { if session.timer.activity() { session.active_ms = super::now_ms(); } } }
+            if let Some(session) = held(root) {
+                let mut session = session.lock().expect("vault session");
+                if !session.closing && !expired(&session) && session.timer.activity() {
+                    session.active_ms = super::now_ms();
+                    say(root, "activity op", || "its idle clock restarts on a page's activity".into());
+                }
+            }
         }
         "passphrase" | "recovery" => {
             let session = held(root).ok_or_else(|| locked(root))?;
@@ -880,17 +920,29 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
 }
 
 /// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
-fn working(api: &Arc<Api>, root: &FsPath) -> bool {
-    if api.projects.active_requests(root) || crate::local_code::private_process_active(root) { return true; }
+/// What holds an unlocked vault open now, if anything.
+fn working(api: &Arc<Api>, root: &FsPath) -> Option<&'static str> {
+    if api.projects.active_requests(root) { return Some("a project request being answered"); }
+    if crate::local_code::private_process_active(root) { return Some("a private process"); }
     let projects = api.projects.now_open();
-    let Some(project) = projects.iter().find(|project| project.root == root) else { return false };
-    if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return true; }
-    let Ok(transition) = exclusive(root) else { return true };
-    let Ok(store) = api.projects.transition_store(api, &project.id, &transition) else { return true };
+    let project = projects.iter().find(|project| project.root == root)?;
+    if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return Some("a render, move or cut"); }
+    let Ok(transition) = exclusive(root) else { return Some("a reader holding the project") };
+    let Ok(store) = api.projects.transition_store(api, &project.id, &transition) else { return Some("a journal it cannot read") };
     // The transition authority can inspect already-accepted work even if an idle
     // deadline just expired. Public viewing admission is deliberately stricter.
-    store.unsettled().map_or(true, |runs| !runs.is_empty())
-        || store.unsettled_here().map_or(true, |runs| !runs.is_empty())
+    (store.unsettled().map_or(true, |runs| !runs.is_empty()) || store.unsettled_here().map_or(true, |runs| !runs.is_empty()))
+        .then_some("runs not settled")
+}
+
+/// A sweeper's reason, said at most every 10 seconds per project: a test's diagnostics name what kept a vault open.
+fn say(root: &FsPath, what: &'static str, said: impl FnOnce() -> String) {
+    static SAID: LazyLock<Mutex<BTreeMap<(PathBuf, &'static str), std::time::Instant>>> = LazyLock::new(Mutex::default);
+    let now = std::time::Instant::now();
+    let mut times = SAID.lock().expect("vault sayings");
+    if times.get(&(root.to_owned(), what)).is_some_and(|at| now.duration_since(*at) < Duration::from_secs(10)) { return; }
+    times.insert((root.to_owned(), what), now);
+    tracing::warn!("{}: {}", root.display(), said());
 }
 
 /// Request cancellation in the owning journal before the exclusive close gate,
@@ -1839,7 +1891,13 @@ pub(super) async fn privacy(
         readable_token(&root)
     };
     if request.method() != axum::http::Method::GET && request.method() != axum::http::Method::HEAD {
-        if let Some(session) = held(&root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { if session.timer.activity() { session.active_ms = super::now_ms(); } } }
+        if let Some(session) = held(&root) {
+            let mut session = session.lock().expect("vault session");
+            if !session.closing && !expired(&session) && session.timer.activity() {
+                session.active_ms = super::now_ms();
+                say(&root, "activity", || format!("its idle clock restarts on {} {}", request.method(), request.uri().path()));
+            }
+        }
     }
     protect_reply(next.run(request).await, token)
 }
@@ -1861,10 +1919,44 @@ pub(crate) async fn project_reply<T: IntoResponse>(
 }
 
 fn protect_reply(response: Response, token: Option<Arc<AtomicBool>>) -> Response {
-    use futures_util::StreamExt as _;
     let response = private(response);
     let Some(token) = token else { return response };
     let (parts, body) = response.into_parts();
-    let body = body.into_data_stream().take_while(move |_| futures_util::future::ready(token.load(Ordering::Acquire)));
-    Response::from_parts(parts, axum::body::Body::from_stream(body))
+    Response::from_parts(parts, revocable(body, token))
+}
+
+/// Told each time a view's readable token is revoked.
+static REVOKED: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+fn revoke(token: &AtomicBool) {
+    token.store(false, Ordering::Release);
+    REVOKED.send_modify(|told| *told = told.wrapping_add(1));
+}
+
+/// A private body that ends once its view's lease is revoked, even while its client reads nothing: what it reads from
+/// (an open file in the view) is dropped at once, so the view can unmount.
+pub(crate) fn revocable(body: axum::body::Body, token: Arc<AtomicBool>) -> axum::body::Body {
+    use futures_util::StreamExt as _;
+    struct Source { body: Mutex<Option<axum::body::BodyDataStream>>, reader: futures_util::task::AtomicWaker }
+    let source = Arc::new(Source { body: Mutex::new(Some(body.into_data_stream())), reader: Default::default() });
+    let (reading, ended) = tokio::sync::oneshot::channel::<()>();
+    let (held, open, mut told) = (Arc::downgrade(&source), token.clone(), REVOKED.subscribe());
+    tokio::spawn(async move {
+        let revoked = async { while open.load(Ordering::Acquire) { if told.changed().await.is_err() { std::future::pending::<()>().await; } } };
+        tokio::select! {
+            _ = ended => {}
+            () = revoked => if let Some(source) = held.upgrade() {
+                source.body.lock().expect("private body").take();
+                // Its reader waits on the dropped source: told now, it reads the end.
+                source.reader.wake();
+            },
+        }
+    });
+    axum::body::Body::from_stream(futures_util::stream::poll_fn(move |cx| {
+        let _reading = &reading;
+        source.reader.register(cx.waker());
+        let mut body = source.body.lock().expect("private body");
+        if !token.load(Ordering::Acquire) { body.take(); }
+        match body.as_mut() { Some(body) => body.poll_next_unpin(cx), None => std::task::Poll::Ready(None) }
+    }))
 }
