@@ -6,7 +6,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { animationsDone, projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
+const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -80,8 +80,15 @@ async function died(why) {
     if ((await toggle.count()) && (await toggle.getAttribute('aria-expanded')) !== 'true') {
       await toggle.click();
       await until(`beat ${i + 1} open`, () => toggle.getAttribute('aria-expanded'), (open) => open === 'true');
-      // Measured once it has opened all the way, not part way through.
-      await animationsDone(row);
+      // Measured once it has opened all the way, not part way through: its height the same two looks running. (Its animation can't be
+      // waited on: headless Chrome's compositor may hold it at its start.)
+      let was = -1;
+      await until(`beat ${i + 1} opened all the way`, async () => {
+        const now = await row.evaluate((one) => one.getBoundingClientRect().height);
+        const still = now === was;
+        was = now;
+        return still;
+      }, Boolean, 10_000).catch(() => {});
     }
     measured.push(await row.evaluate((one) => {
       const words = one.querySelector('.mention-text[data-field$=".description"]') ?? one.querySelector('.mention-text');
