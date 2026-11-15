@@ -13,6 +13,7 @@ from pathlib import Path
 
 AREAS = ["generations", "editable", "torch", "python", "toolchain", "uv-cache", "objects", "other"]
 ENVIRONMENTS = {"generations", "editable"}
+Json = dict[str, object]
 
 
 def area(parts: tuple[str, ...]) -> str:
@@ -52,25 +53,29 @@ def summed(files: dict[tuple[int, int], tuple[int, str]]) -> dict[str, int]:
     return out
 
 
-def measure(roots: list[str]) -> dict:
+def measure(roots: list[str]) -> Json:
     every: dict[tuple[int, int], tuple[int, str]] = {}
-    out: dict = {"roots": {}}
+    each: dict[str, dict[str, int]] = {}
     for root in roots:
         files = walk(Path(root))
-        out["roots"][root] = summed(files)
+        each[root] = summed(files)
         for key, value in files.items():
             every.setdefault(key, value)
-    out["together"] = summed(every)
     fs = os.statvfs(roots[0] if Path(roots[0]).exists() else "/")
-    out["disk"] = {"used": (fs.f_blocks - fs.f_bfree) * fs.f_frsize, "available": fs.f_bavail * fs.f_frsize}
-    return out
+    return {"roots": each, "together": summed(every),
+            "disk": {"used": (fs.f_blocks - fs.f_bfree) * fs.f_frsize, "available": fs.f_bavail * fs.f_frsize}}
 
 
-def events(path: Path) -> dict:
+def number(record: Json, key: str) -> int | None:
+    value = record.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def events(path: Path) -> Json:
     stages: list[tuple[str, int]] = []
     fetched: dict[str, int] = {}
-    runs: dict[int, dict] = {}
-    error = None
+    runs: dict[int, Json] = {}
+    error: object = None
     for line in path.read_text(errors="replace").splitlines():
         if not line.startswith("{"):
             continue
@@ -84,8 +89,8 @@ def events(path: Path) -> dict:
                 stages.append((progress["stage"], progress["at_ms"]))
             if "downloading" in progress["stage"] and "the result" not in progress["stage"]:
                 fetched[progress["stage"]] = max(fetched.get(progress["stage"], 0), progress.get("bytes_done") or 0)
-        run = event.get("run") if isinstance(event.get("run"), dict) else None
-        if run and run.get("number"):
+        run = event.get("run")
+        if isinstance(run, dict) and isinstance(run.get("number"), int):
             runs[run["number"]] = run
         if isinstance(event.get("error"), dict):
             error = event["error"]
@@ -93,18 +98,20 @@ def events(path: Path) -> dict:
     for i, (stage, at) in enumerate(stages):
         end = stages[i + 1][1] if i + 1 < len(stages) else None
         timed.append({"stage": stage, "s": None if end is None else round((end - at) / 1000, 1)})
-    last = runs[max(runs)] if runs else {}
-    span = None
-    if last.get("settled_at_ms") and last.get("created_at_ms"):
-        span = round((last["settled_at_ms"] - last["created_at_ms"]) / 1000, 1)
-    reason = (last.get("reason") or {}).get("message")
-    between = lambda a, b: round((last[b] - last[a]) / 1000, 1) if last.get(a) and last.get(b) else None
-    return {"runs": sorted(runs), "status": last.get("status"), "run_s": span, "stages": timed,
+    last: Json = runs[max(runs)] if runs else {}
+    cause = last.get("reason")
+    reason = cause.get("message") if isinstance(cause, dict) else None
+
+    def between(a: str, b: str) -> float | None:
+        start, end = number(last, a), number(last, b)
+        return round((end - start) / 1000, 1) if start and end else None
+
+    return {"runs": sorted(runs), "status": last.get("status"), "run_s": between("created_at_ms", "settled_at_ms"), "stages": timed,
             "reason": reason, "error": error, "downloaded": sum(fetched.values()),
             "preparing_s": between("accepted_at_ms", "started_at_ms"), "executing_s": between("started_at_ms", "settled_at_ms")}
 
 
-def row(args: list[str]) -> dict:
+def row(args: list[str]) -> Json:
     label, project, before, after, ndjson, wall, code = args[:7]
     extra = json.loads(Path(args[7]).read_text()) if len(args) > 7 else {}
     b, a = json.loads(Path(before).read_text()), json.loads(Path(after).read_text())
@@ -117,6 +124,10 @@ def row(args: list[str]) -> dict:
 
 def gb(n: int) -> str:
     return f"{n / 1e9:.2f}"
+
+
+def mb(n: int) -> str:
+    return f"{n / 1e6:.1f}"
 
 
 def table(path: str) -> str:
@@ -138,7 +149,6 @@ def table(path: str) -> str:
     if runs:
         out += ["", "| run | exit | wall s | preparing s | executing s | downloaded MB | loopback rx MB | its objects Δ MB | ~/.cozy Δ MB | TensorFS home Δ MB | all roots Δ MB |",
                 "|---|---|---|---|---|---|---|---|---|---|---|"]
-        mb = lambda n: f"{n / 1e6:.1f}"
         for r in runs:
             d, home, tfs = r["deltas"][r["project"]], r["deltas"].get(r["home"], {}), r["deltas"].get(r["tensorfs"], {})
             out.append(f"| {r['label']} | {r['exit']} | {r['wall_s']:.1f} | {r['preparing_s']} | {r['executing_s']} | {mb(r['downloaded'])} | "
