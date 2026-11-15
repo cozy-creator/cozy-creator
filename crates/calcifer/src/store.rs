@@ -46,7 +46,8 @@ const SCHEMA: &str = "
         reason TEXT,
         created_at INTEGER NOT NULL,
         alias TEXT,
-        held TEXT
+        held TEXT,
+        ended_at INTEGER
     ) STRICT;
     CREATE UNIQUE INDEX machines_rental ON machines (rental_id) WHERE rental_id IS NOT NULL;
     CREATE UNIQUE INDEX machines_alias ON machines (alias) WHERE alias IS NOT NULL;
@@ -505,6 +506,15 @@ fn job_column(writer: &mut Connection) -> Result<()> {
 }
 
 /// A store made before a hold by hand was kept (cl-952) gains that column: no machine held.
+/// When a machine ended, which its row is kept 90 days from (`prune`). One that ended before has none: its creation stands in.
+fn ended_at_column(writer: &Connection) -> Result<()> {
+    let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('machines') WHERE name = 'ended_at')", [], |r| r.get(0))?;
+    if !has {
+        writer.execute_batch("ALTER TABLE machines ADD COLUMN ended_at INTEGER")?;
+    }
+    Ok(())
+}
+
 fn held_column(writer: &mut Connection) -> Result<()> {
     let has: bool = writer.query_row(
         "SELECT EXISTS (SELECT 1 FROM pragma_table_info('machines') WHERE name = 'held')",
@@ -564,6 +574,11 @@ const ANSWERS: &str = "
         body BLOB NOT NULL,
         at_ms INTEGER NOT NULL
     ) STRICT;";
+/// How long a settled run of no project, and an ended machine's row, are kept (Paul 11-15: "keep other rental data for like 90
+/// days or so, so that users can go back and see what they did").
+const KEPT_FOR_MS: i64 = 90 * 24 * 3600 * 1000;
+/// How many of each a prune takes: more than are recorded meanwhile, few enough to hold the writer briefly.
+const PRUNED_EACH: i64 = 16;
 /// The newest run number whose measurements `drop_measurements` has gone past.
 const MEASUREMENTS_DROPPED: &str = "CREATE TABLE IF NOT EXISTS measurements_dropped (through INTEGER NOT NULL) STRICT;";
 /// How long an answer is kept for its write's retries.
@@ -2132,8 +2147,44 @@ impl Store {
 
     pub(crate) fn machine_ended(&self, machine: &str, reason: &str) -> Result<Vec<(RunId, Event)>> {
         let row = self.machine(machine)?.ok_or_else(|| StoreError::UnknownMachine(machine.into()))?;
-        self.write(|tx| { tx.execute("UPDATE machines SET state = 'ended', reason = ?2 WHERE name = ?1", params![machine, reason])?; Ok(()) })?;
+        self.write(|tx| {
+            tx.execute("UPDATE machines SET state = 'ended', reason = ?2, ended_at = coalesce(ended_at, ?3) WHERE name = ?1", params![machine, reason, now_ms()])?;
+            Ok(())
+        })?;
         self.runs_on_ended_machine(machine, row.served, reason)
+    }
+
+    /// Takes out a few settled runs of no project and ended machines older than [`KEPT_FOR_MS`], as each new run is recorded: the
+    /// store holds about its last 90 days, with no timer (Paul 11-15). Never a project's run: those are in its
+    /// project.db. Machines wait for the legacy history's cut (cl-1003): its rows name them. A failure is said and changes nothing.
+    pub(crate) fn prune(&self, now: i64) -> Vec<String> {
+        let before = now - KEPT_FOR_MS;
+        let pruned = self.write(|tx| {
+            let ids: Vec<String> = {
+                let mut old = tx.prepare("SELECT id FROM runs WHERE state = 'settled' AND settled_at < ?1 AND custody = 'owned' ORDER BY settled_at LIMIT ?2")?;
+                old.query_map(params![before, PRUNED_EACH], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
+            };
+            if !ids.is_empty() {
+                let ids = serde_json::to_string(&ids).expect("serializes");
+                for table in ["outputs", "run_logs", "asks", "run_placements"] {
+                    tx.execute(&format!("DELETE FROM {table} WHERE run IN (SELECT value FROM json_each(?1))"), [&ids])?;
+                }
+                tx.execute("DELETE FROM runs WHERE id IN (SELECT value FROM json_each(?1))", [&ids])?;
+            }
+            if !has_table(tx, "legacy_project_runs")? {
+                tx.execute(
+                    "DELETE FROM machines WHERE name IN (SELECT name FROM machines m WHERE state = 'ended' AND coalesce(ended_at, created_at) < ?1
+                         AND NOT EXISTS (SELECT 1 FROM runs WHERE machine = m.name) LIMIT ?2)",
+                    params![before, PRUNED_EACH],
+                )?;
+            }
+            tx.execute_batch("PRAGMA incremental_vacuum(256)")?;
+            Ok(ids)
+        });
+        pruned.unwrap_or_else(|e| {
+            tracing::warn!("pruning runs and machines older than 90 days: {e}");
+            vec![]
+        })
     }
 
     pub(crate) fn open(path: &Path) -> Result<Self> {
@@ -2153,6 +2204,8 @@ impl Store {
         writer.pragma_update(None, "temp_store", "MEMORY")?;
         match writer.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? {
             0 => {
+                // Pages a prune frees go back to the disk (`prune`).
+                writer.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
                 let tx = writer.transaction()?;
                 tx.execute_batch(SCHEMA)?;
                 tx.pragma_update(None, "user_version", VERSION)?;
@@ -2165,6 +2218,7 @@ impl Store {
                 job_column(&mut writer)?;
                 attempt_column(&mut writer)?;
                 held_column(&mut writer)?;
+                ended_at_column(&writer)?;
                 fence_legacy_projects(&mut writer)?;
             }
             VERSION => {
@@ -2174,6 +2228,7 @@ impl Store {
                 job_column(&mut writer)?;
                 attempt_column(&mut writer)?;
                 held_column(&mut writer)?;
+                ended_at_column(&writer)?;
             }
             other => return Err(StoreError::Version(other)),
         }
@@ -2985,11 +3040,11 @@ fn put_machine_in(tx: &Transaction, machine: &MachineRow) -> Result<()> {
     };
     tx.execute(
         "INSERT INTO machines (name, kind, hub, rental_id, worker_id, address, pin, key, state,
-             served, reason, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             served, reason, created_at, ended_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CASE WHEN ?9 = 'ended' THEN ?12 END)
          ON CONFLICT (name) DO UPDATE SET kind = ?2, hub = ?3, rental_id = ?4, worker_id = ?5,
              address = ?6, pin = ?7, key = ?8, state = ?9, served = served OR ?10, reason = ?11,
-             held = CASE WHEN rental_id IS ?4 THEN held END",
+             held = CASE WHEN rental_id IS ?4 THEN held END, ended_at = CASE WHEN ?9 = 'ended' THEN coalesce(ended_at, ?12) END",
         params![
             machine.name,
             machine_kind(machine.kind),
@@ -3031,6 +3086,8 @@ fn run_list_indexes(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS runs_list_metadata ON runs(number,target,state,status,machine,out_dir,id,{private});
          DROP INDEX IF EXISTS runs_settled_at;
          CREATE INDEX IF NOT EXISTS runs_warm ON runs(machine) WHERE kind = 'warm';
+         CREATE INDEX IF NOT EXISTS runs_settled ON runs(settled_at) WHERE state = 'settled';
+         CREATE INDEX IF NOT EXISTS runs_machine ON runs(machine) WHERE machine IS NOT NULL;
          CREATE INDEX IF NOT EXISTS runs_warm_set ON runs(machine) WHERE kind = 'warm' AND instr(spec, CAST('\"set\":{{' AS BLOB)) > 0;"
     ))?;
     Ok(())

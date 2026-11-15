@@ -1,8 +1,9 @@
 """state_restart (statedb.sh, cl-1010): a store as a laptop's months of agents leave it, and the routes timed as Calcifer restarts on it.
 
-  fill <state.db> <outputs dir> --runs N --machines M   N settled project-less runs (calls, warms, updates on `local`, an outcome
-                                                         of ~14 KB on average with its measurements, one in 10,000 ~2 MB, six log
-                                                         lines each, a call's output exported) and M ended rentals
+  fill <state.db> <outputs dir> --runs N --machines M   N settled project-less runs over 120 days (calls, warms, updates on
+                                                         `local`, an outcome of ~14 KB on average with its measurements, one in
+                                                         10,000 ~2 MB, six log lines each, a call's output exported) and M ended
+                                                         rentals, half of them 100 days old
   empty <state.db>                                      those rows out again
   measure ...                                           each route asked every quarter second from the new Calcifer's record on:
                                                          one JSON line per route, then the verdict
@@ -30,7 +31,7 @@ def fill(args: argparse.Namespace) -> None:
     first = (db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1
     db.execute("PRAGMA synchronous=OFF")
     db.execute("BEGIN")
-    # Over the last 75 days, oldest first, as numbers go up with time.
+    # Over the last 120 days, oldest first, as numbers go up with time: a quarter past the 90 days a run of no project is kept.
     db.execute(
         "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < :count) "
         "INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, "
@@ -40,7 +41,7 @@ def fill(args: argparse.Namespace) -> None:
         "'settled', 'completed', CAST(CASE WHEN i % 10000 = 7 THEN :huge WHEN i % 10 = 0 THEN :big ELSE :done END AS BLOB), "
         ":now - (:count - i) * :gap, :now - (:count - i) * :gap + 1000, :now - (:count - i) * :gap + 1500, :now - (:count - i) * :gap + 9000 FROM n",
         {"count": args.runs, "first": first, "out": args.outputs, "huge": outcome(2_000_000), "big": outcome(60_000), "done": outcome(9_000),
-         "now": now, "gap": 75 * 86_400_000 // args.runs})
+         "now": now, "gap": 120 * 86_400_000 // args.runs})
     columns = list(db.execute("PRAGMA table_info(run_logs)"))
     filled = {name: ("k" if "INT" in kind.upper() else "'step ' || k || ': ' || hex(zeroblob(75))" if "TEXT" in kind.upper() else "X''")
               for _, name, kind, notnull, default, _ in columns if name not in ("run", "level") and notnull and default is None}
@@ -54,7 +55,7 @@ def fill(args: argparse.Namespace) -> None:
         "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < :count) "
         "INSERT INTO machines (name, kind, hub, rental_id, key, state, served, reason, created_at) "
         "SELECT printf('cl1010-gone-%05d', i), 'rental', 'http://127.0.0.1:1', printf('cl1010-rental-%05d', i), "
-        "(SELECT key FROM machines WHERE name = 'local'), 'ended', 0, 'ended', :now - (:count - i) * 60000 FROM n",
+        "(SELECT key FROM machines WHERE name = 'local'), 'ended', 0, 'ended', :now - (CASE WHEN i % 2 = 0 THEN 100 ELSE 1 END) * 86400000 - i * 1000 FROM n",
         {"count": args.machines, "now": now})
     db.execute("COMMIT")
     db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
