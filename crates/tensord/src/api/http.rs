@@ -210,6 +210,9 @@ async fn legacy_custody(m: Machine, descriptor: v1::LocalPrivateStorage, migrate
         let retired = m.call(move |runs| {
             let engine = &runs.service.engine;
             let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
+            // Every private probe asks this: adoptions take turns, so none renames a receipt another just moved.
+            static ADOPTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _turn = ADOPTING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut receipt = kept(&path);
             let fresh: Vec<_> = adoption.legacy_requests.iter().filter(|wanted| !receipt.iter().any(|kept| same(&kept.binding, wanted))).cloned().collect();
             let ids: Vec<String> = fresh.iter().map(|binding| binding.request_id.clone()).collect();
@@ -219,11 +222,14 @@ async fn legacy_custody(m: Machine, descriptor: v1::LocalPrivateStorage, migrate
             if !fresh.iter().all(|binding| found.bindings.iter().any(|actual| same(&actual.binding, binding))) {
                 return Err(Error::conflict("project_storage_migration_conflict", "a legacy binding differs from this worker's acceptance"));
             }
-            // The receipt first: a crash after it retires again at the next adoption, never loses coverage.
-            receipt.extend(found.bindings);
-            let staged = path.with_extension("json.next");
-            std::fs::write(&staged, serde_json::to_vec(&receipt).map_err(std::io::Error::other).map_err(conflict("project_storage_migration_pending"))?)
-                .and_then(|()| std::fs::rename(&staged, &path)).map_err(conflict("project_storage_migration_pending"))?;
+            // The receipt first: a crash after it retires again at the next adoption, never loses coverage. Nothing to adopt
+            // (a fresh home's every probe) writes nothing.
+            if !found.bindings.is_empty() {
+                receipt.extend(found.bindings);
+                let staged = path.with_extension("json.next");
+                std::fs::write(&staged, serde_json::to_vec(&receipt).map_err(std::io::Error::other).map_err(conflict("project_storage_migration_pending"))?)
+                    .and_then(|()| std::fs::rename(&staged, &path)).map_err(conflict("project_storage_migration_pending"))?;
+            }
             let numbers: Vec<u64> = receipt.iter().map(|kept| kept.source_number).collect();
             engine.retire_legacy(&numbers, &logs, &store_logs).map_err(conflict("project_storage_migration_busy"))
         }).await;
