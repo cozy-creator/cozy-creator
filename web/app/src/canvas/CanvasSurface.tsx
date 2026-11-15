@@ -357,7 +357,7 @@ export function CanvasSurface(props: Props) {
 
     void (async () => {
       const created = new Application<WebGLRenderer>()
-      await created.init({ preference: ["webgl"], width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, autoStart: false, sharedTicker: false, backgroundAlpha: 0, antialias: true, gcActive: false })
+      await created.init({ preference: ["webgl"], failIfMajorPerformanceCaveat: true, width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, autoStart: false, sharedTicker: false, backgroundAlpha: 0, antialias: true, gcActive: false })
       if (stopped) { created.destroy(true, { children: true }); return }
       app = created
       const gl = created.renderer.gl, info = gl.getExtension("WEBGL_debug_renderer_info")
