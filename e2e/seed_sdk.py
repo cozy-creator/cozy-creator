@@ -76,11 +76,11 @@ def _release(value: str, distribution: str) -> tuple[str, str]:
         ranks = [i for i, tag in enumerate(tags) if tag in supported]
         if ranks:
             # A pure Runtime is the same author reader on every platform.
-            rank = (
-                -1
-                if filename.endswith("-py3-none-any.whl") or "-abi3-" in filename
-                else min(ranks)
-            )
+            rank = min(ranks)
+            if filename.endswith("-py3-none-any.whl"):
+                rank = -2
+            elif "-abi3-" in filename:
+                rank = -1
             choices.append((rank, filename, digest))
     if not choices:
         raise ValueError(f"{distribution} {version} has no wheel for this reader")
