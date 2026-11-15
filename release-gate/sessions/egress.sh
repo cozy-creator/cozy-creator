@@ -12,7 +12,7 @@ v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 [ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
 say "pod TensorD $v"
 
-if step metadata model download https://169.254.169.254/latest/meta-data/model.safetensors local/xs196-metadata --on "$NAME"; then
+if step metadata model install https://169.254.169.254/latest/meta-data/model.safetensors local/xs196-metadata --on "$NAME"; then
   fail "the pod fetched a model from the metadata address"
 fi
 grep -q link-local "$OUT/metadata.txt" || fail "the metadata source was not refused as link-local: $(tail -c 400 "$OUT/metadata.txt")"
