@@ -52,3 +52,24 @@ The leaf now uses xxhash for a real 64-bit fingerprint of the requested number, 
 through B to A as `fingerprint`; the successful media case must contain 16 hexadecimal
 characters. Only the callee-specific dependency's absence is asserted. The Python SDK
 change does not promise a Torch-free platform environment; native execution is xs-153.
+
+## Acceptance runner
+
+After the coordinator installs the combined candidate, run this cell from the Creator
+checkout with an existing normal Cozy project and a fixture copy locked on that candidate:
+
+```sh
+uv run --no-project e2e/cli/typed-calls/run.py \
+  --project /absolute/cozy-project \
+  --fixture /absolute/typed-calls-fixture \
+  --out /absolute/fresh-receipt-directory \
+  --model-prefix xs198-typed-proof-01
+```
+
+The default CLI is `~/.cozy/bin/cozy` (pass `--cozy` when the coordinator supplies another
+CLI). The runner never changes services, homes, roots or SDK policy. It preserves command
+receipts and full watch records, exports and inspects the image, creates two tiny local F32
+model files, checks both explicit child model choices, checks caught failure propagation,
+and requires `callable_internal` for a direct request to the private leaf. Use a fresh output
+directory and local model prefix each time. `qualified.json` is written only after all
+assertions pass; failed receipts and any still-running job remain available for inspection.
