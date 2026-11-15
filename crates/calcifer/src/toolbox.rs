@@ -213,7 +213,7 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
     let scope = private_io::current();
     let private = scope.is_some();
     // Each function is read at once, the static describer's reading kept in its project until the machine's own takes over, and a
-    // read goes on past a list that stops waiting for it (late, or its caller gone): the next list has it.
+    // read goes on past a list that stops waiting for it (its caller gone, or late): the next list has it.
     let reads: Vec<_> = named.into_iter().map(|(written, path)| {
         let (api, hub, on, scope) = (api.clone(), hub.to_owned(), on.clone(), scope.clone());
         tokio::spawn(private_io::context(scope.clone(), async move {
@@ -254,8 +254,9 @@ fn staged(api: &Api, scope: Option<&private_io::Scope>, path: &Path) -> Result<a
     local_code::own(api, path)
 }
 
-/// How long a list waits for the local functions its project's boxes name to be read; one read later is listed by a later list.
-const LOCAL_LATE: Duration = Duration::from_secs(10);
+/// How long a list waits for the local functions its project's boxes name to be read: the page reads the list again once when a box
+/// names one, so it waits for the reading. One read later still is listed by a later list.
+const LOCAL_LATE: Duration = Duration::from_secs(60);
 /// How many of them are read at once.
 static LOCAL_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 /// How long a list waits for the checkout's packages to be read from source; one read later is listed by a later list.
