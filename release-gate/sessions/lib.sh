@@ -30,6 +30,8 @@ runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
 finish() {
   local status=$?; [ "$RC" != 0 ] || RC=$status
   for p in $WD $BG; do pkill -P "$p"; kill "$p"; done 2>/dev/null
+  # A session's last reads from a live pod (ab.sh: the pod's GPU readings).
+  if declare -F before_end > /dev/null && [ "${#RIDS[@]}" -gt 0 ] && ! gone "${RIDS[0]}"; then before_end; fi
   local r
   for r in "${RIDS[@]}"; do
     local tries=0

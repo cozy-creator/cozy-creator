@@ -24,11 +24,15 @@
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
 #   need_s     seconds the cap must buy (3600)
 #   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
+#   max_fails  optional: the failed cells that stop the session (2); a memory matrix whose tight caps may fail on both
+#              arms sets more
 #   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
 #              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
 . "$(dirname "$0")/lib.sh"
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1)
+MAX_FAILS=$(param max_fails 2)
+[[ $MAX_FAILS =~ ^[1-9][0-9]*$ ]] || fail "max_fails $MAX_FAILS"
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
 [[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
 VRAM=$(dirname "$0")/../suites/bench/vram.py
@@ -82,8 +86,46 @@ quote "$(param need_s 3600)"
 rent
 
 
-# gpu: the processes holding GPU 0 and the card's reading, from the pod's root shell.
-gpu() { timeout 60 cozy machine ssh "$NAME" "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader; nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader" 2>&1 | grep -v '^Warning: Permanently added'; }
+# The pod reads its own cards every 5 s into /var/tmp/ab-gpu.log: each compute process's pid, MiB and command, then each
+# card's used and free MiB. ssh to some pods answers nothing for minutes (43733785568: empty readings, then
+# machine_ssh_unheard; each of those cells waited out a 60 s timeout first), so the pod keeps the readings and the session
+# fetches them whole, in the background each 5 min and before the pod ends (gpu-pod.log).
+WATCH='[ -s /var/tmp/ab-gpu.pid ] && kill -0 "$(cat /var/tmp/ab-gpu.pid)" 2> /dev/null && { echo running; exit 0; }
+cat > /var/tmp/ab-gpu.sh << "EOS"
+while :; do
+  t=$(date -u +%T)
+  nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | while IFS=", " read -r pid mib; do
+    echo "$t pid $pid $mib MiB $(tr "\0" " " < "/proc/$pid/cmdline" 2> /dev/null | cut -c1-200)"
+  done
+  echo "$t card $(nvidia-smi --query-gpu=index,memory.used,memory.free --format=csv,noheader,nounits | paste -sd";")"
+  sleep 5
+done
+EOS
+setsid nohup sh /var/tmp/ab-gpu.sh >> /var/tmp/ab-gpu.log 2>&1 < /dev/null &
+echo $! > /var/tmp/ab-gpu.pid; echo started'
+# watch: start the pod's reader unless it runs (after the rental and each update: a restart may end it).
+gpuwatch() {
+  local try
+  for try in 1 2 3 4 5 6; do
+    timeout 60 cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$WATCH") | base64 -d | sh" 2>&1 | grep -qE '^(started|running)$' && return 0
+    sleep 10
+  done
+  say "the pod's GPU reader did not start: readings only where ssh answers"
+}
+# gpu: the pod's last reading (one ssh; empty when it doesn't answer).
+gpu() { timeout 20 cozy machine ssh "$NAME" 't=$(tail -1 /var/tmp/ab-gpu.log | cut -d" " -f1); grep "^$t " /var/tmp/ab-gpu.log | cut -d" " -f2-' 2>&1 | grep -v '^Warning: Permanently added'; }
+# readings [tries]: the pod's whole log into gpu-pod.log, kept when the fetch returned it.
+readings() {
+  local try
+  for try in $(seq "${1:-1}"); do
+    timeout 120 cozy machine ssh "$NAME" "cat /var/tmp/ab-gpu.log" 2> /dev/null | grep -E '^[0-9:]{8} (pid|card) ' > "$OUT/gpu-pod.tmp"
+    [ -s "$OUT/gpu-pod.tmp" ] && { mv "$OUT/gpu-pod.tmp" "$OUT/gpu-pod.log"; return 0; }
+    [ "$try" = "${1:-1}" ] || sleep 15
+  done
+  return 1
+}
+before_end() { readings 8 || say "the pod's GPU readings were not fetched before it ended"; }
+gpuwatch
 # listeners: the pod's listening TCP sockets as `address:port process`, `ss -Hltnp`'s, else read from /proc.
 LISTENERS='import glob, os, socket, struct
 owners = {}
@@ -109,8 +151,8 @@ listeners() { timeout 60 cozy machine ssh "$NAME" "if command -v ss > /dev/null;
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
 ( p=0; while :; do
     # Each minute, what holds the card (gpu.log): a stalled cell's other holder is named there; and the pod's listeners.
-    [ $((p++ % 4)) != 0 ] || { echo "$(date -u +%T) $(gpu | paste -sd';')" >> "$OUT/gpu.log"
-      k=$(cat "$OUT/current" 2>/dev/null); [ -z "$k" ] || listeners | sed "s/^/$k /" >> "$OUT/listeners.log"; }
+    [ $((p % 20)) != 10 ] || readings
+    [ $((p++ % 4)) != 0 ] || { k=$(cat "$OUT/current" 2>/dev/null); [ -z "$k" ] || listeners | sed "s/^/$k /" >> "$OUT/listeners.log"; }
     t=$(date +%s%3N); s=$(timeout 120 cozy machine show "$RID" --json 2>&1); src=$?; sm=$(( $(date +%s%3N) - t ))
     k=$(cat "$OUT/current" 2>/dev/null); N=''; [ -z "$k" ] || N=$(current "$k")
     rs='' rms='' rrc='' rst=''
@@ -189,6 +231,7 @@ for k in "${names[@]}"; do
     # shellcheck disable=SC2086 # the update's flags and wheel paths (no spaces)
     step "update-$k" machine update "$NAME" ${UPDATE[$k]} -y || fail "$k: the update"
     say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
+    gpuwatch
   fi
   [ -z "$FREE_GIB" ] || { [ -z "${UPDATE[$k]:-}" ] && [ "$k" != "${names[0]}" ]; } || hold "$k" on
   mapfile -t downloads < <(jq -c '.download // [] | .[]' <<<"$c")
@@ -200,7 +243,7 @@ for k in "${names[@]}"; do
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
-  say "$k: the GPU before: $(gpu | paste -sd';')"  # what each process holds as the cell starts (cr-297)
+  say "$k: start"  # what each process held as it started: gpu-pod.log's last reading before this (cr-297)
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
@@ -220,7 +263,7 @@ for k in "${names[@]}"; do
   fi
   # A refusal before any run (st none) is the failure an `expect: failed` cell proves.
   [ "$st" = "$want" ] || { [ "$want" = failed ] && [ "$st" = none ] && [ "$code" != 0 ]; } ||
-    { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
+    { fails=$((fails + 1)); [ "$fails" -lt "$MAX_FAILS" ] || fail "$fails cells failed"; }
 done
 rm -f "$OUT/current"
 
