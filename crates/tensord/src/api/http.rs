@@ -30,7 +30,6 @@ use futures_util::{Stream, StreamExt};
 use v1::path;
 use tower_service::Service as _;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use http_body_util::BodyExt as _;
 
 /// A refusal as its envelope, at the status its kind names unless the protocol names another.
 #[derive(Debug)]
@@ -62,8 +61,8 @@ pub(super) fn router(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> Router 
         .route(path::PRIVATE_CLOSE, post(private_close_request))
         .route(path::PROJECT_MIGRATE, get(project_migrate_request).post(project_migrate_request))
         .route(path::PROJECT_LEGACY_BINDINGS, post(project_bindings_request))
-        .route(path::PROJECT_EXECUTION, get(project_request).post(project_request).put(project_request))
-        .route(path::LOCAL_PRIVATE, get(legacy_private_request).post(legacy_private_request).put(legacy_private_request))
+        .route(path::PROJECT_EXECUTION, get(private_request).post(private_request).put(private_request))
+        .route(path::LOCAL_PRIVATE, get(private_request).post(private_request).put(private_request))
         .with_state(Machine { identity, runs })
 }
 
@@ -92,41 +91,7 @@ fn routes() -> Router<Machine> {
 }
 
 async fn private_close_request(State(m): State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
-    project_request(State(m), Path((project, "close".into())), request).await
-}
-
-async fn legacy_private_request() -> Response {
-    Refusal::from(Error::conflict("project_worker_upgrade_required",
-        "The older private execution contract is unavailable. Use project-owned execution.")).into_response()
-}
-
-async fn project_request(State(m): State<Machine>, Path((project, rest)): Path<(String, String)>, request: Request<Body>) -> Response {
-    // No private body is read while the stronger storage/security contract is being prepared.
-    // This explicit refusal is removed only when the native backend and project-owned engine qualify.
-    let guarded = if rest == "close" || rest == "migrate" || rest == "migration-bindings" {
-        platform::private_exec::disable_project_parent_dumps().map_err(std::io::Error::from)
-    } else { crate::private_io::require_project_execution() };
-    if let Err(error) = guarded {
-        return Refusal::from(Error::conflict("project_execution_unavailable", error.to_string())).into_response();
-    }
-    private_request(State(m), Path((project, rest)), request).await
-}
-
-async fn project_migrate_request(m: State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
-    project_request(m, Path((project, "migrate".into())), request).await
-}
-
-async fn project_bindings_request(m: State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
-    project_request(m, Path((project, "migration-bindings".into())), request).await
-}
-
-fn project_migration_error(error: std::io::Error) -> Error {
-    let (code, message) = match error.kind() {
-        std::io::ErrorKind::WouldBlock => ("project_storage_migration_pending", "Legacy artifacts have unresolved custody; inspect the protected migration receipt before locking or executing."),
-        std::io::ErrorKind::ResourceBusy => ("project_storage_migration_busy", "Legacy executions, readers or project custody are still active; migration remains pending."),
-        _ => ("project_storage_migration_conflict", "Legacy custody could not be reconciled without changing unproven history; migration remains pending."),
-    };
-    Error::conflict(code, message).next("cozy doctor")
+    private_request(State(m), Path((project, "close".into())), request).await
 }
 
 /// New privacy namespace: authenticate and verify a live protected-view proof BEFORE
@@ -150,98 +115,32 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     let (descriptor, token, actor) = match proof { Ok(value) => value, Err(error) => return Refusal::from(error).into_response() };
     let selected = async {
         let checked = descriptor.clone();
-        let registering_actor = actor.clone();
-        tokio::task::spawn_blocking(move || crate::private_io::register(&checked, &token, &registering_actor)).await
-            .map_err(|_| Error::internal("private_storage_stopped", "project workspace verification stopped"))?
-            .map_err(|_| Error::forbidden("private_storage_proof", "the project workspace is locked or its proof is invalid"))?;
+        let fresh = tokio::task::spawn_blocking(move || crate::private_io::register(&checked, &token, &actor)).await
+            .map_err(|_| Error::internal("private_storage_stopped", "private workspace verification stopped"))?
+            .map_err(|_| Error::forbidden("private_storage_proof", "the private workspace is locked or its proof is invalid"))?;
+        if fresh {
+            let runs = m.runs.clone();
+            let scope = descriptor.clone();
+            tokio::task::spawn_blocking(move || crate::private_io::within(Some(scope.clone()), || {
+                runs.service.engine.reconcile()?;
+                crate::runs::resume_private(&runs, &scope.project_id)
+            })).await.map_err(|_| Error::internal("private_storage_stopped", "private workspace recovery stopped"))?
+                .map_err(|_| Error::conflict("private_storage_recovery", "private execution recovery requires the unlocked project"))?;
+        }
         Ok::<_, Error>(descriptor)
     }.await;
     let descriptor = match selected { Ok(value) => value, Err(error) => return Refusal::from(error).into_response() };
-    if rest == "close" && request.method() == axum::http::Method::POST {
-        let headers = request.headers().clone();
-        return crate::private_io::request(descriptor, close_private(State(m), headers)).await.into_response();
-    }
-    if rest == "migration-bindings" {
-        if request.method() != axum::http::Method::POST { return Refusal::from(Error::validation("method_not_allowed", "Legacy acceptance lookup uses POST.")).into_response(); }
-        // Proof and actor authentication above precede even this bounded metadata-only body.
-        let bytes = match axum::body::to_bytes(request.into_body(), 65536).await { Ok(bytes) => bytes, Err(_) => return Refusal::from(Error::validation("invalid_request", "Legacy lookup exceeds its protocol bound.")).into_response() };
-        let query: v1::ProjectExecutionLegacyLookup = match serde_json::from_slice(&bytes) { Ok(query) => query, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid legacy lookup request.")).into_response() };
-        let ordinary = m.runs.clone();
-        let selected = descriptor.clone();
-        let looked = tokio::task::spawn_blocking(move || crate::private_io::within(Some(selected.clone()), || {
-            let target = crate::private_io::open_execution(&selected,&ordinary)?;
-            ordinary.service.engine.with_journal(|journal| target.service.engine.with_journal(|protected| journal.lookup_project_legacy_bindings(&actor, &selected, protected, &query.request_ids)))
-        })).await;
-        return match looked { Ok(Ok(answer)) => Json(answer).into_response(), Ok(Err(error)) => Refusal::from(project_migration_error(error)).into_response(), Err(_) => Refusal::from(Error::conflict("project_storage_migration_stopped", "Legacy acceptance lookup stopped; no binding is available.")).into_response() };
-    }
-    if rest == "migrate" {
-        if request.method() != axum::http::Method::POST && request.method() != axum::http::Method::GET { return Refusal::from(Error::validation("method_not_allowed", "Project migration uses POST; coverage uses GET.")).into_response(); }
-        // Explicit attribution contains only real bindings looked up from the exact registered
-        // worker and revalidated by Caf against canonical project request identities.
-        let read_receipt = request.method() == axum::http::Method::GET;
-        let adoption = if read_receipt { v1::ProjectExecutionMigrationRequest::default() } else {
-            let bytes = match axum::body::to_bytes(request.into_body(), 65536).await { Ok(bytes) => bytes, Err(_) => return Refusal::from(Error::validation("invalid_request", "Legacy binding adoption exceeds its protocol bound.")).into_response() };
-            if bytes.is_empty() { v1::ProjectExecutionMigrationRequest::default() } else { match serde_json::from_slice(&bytes) { Ok(adoption) => adoption, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid verified legacy binding adoption.")).into_response() } }
-        };
-        let ordinary = m.runs.clone();
-        let logs = m.identity.logs.clone();
-        let selected = descriptor.clone();
-        let migrated = tokio::task::spawn_blocking(move || crate::private_io::within(Some(selected.clone()), || {
-            let runs = crate::private_io::migrate_execution_bindings(&selected, &ordinary, &logs, &adoption.legacy_requests)?;
-            if read_receipt { runs.service.engine.with_journal(|journal| journal.project_migration_receipt()).map(Some) } else { Ok(None) }
-        })).await;
-        return match migrated {
-            Ok(Ok(Some(receipt))) => Json(receipt).into_response(),
-            Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
-            Ok(Err(error)) => Refusal::from(project_migration_error(error)).into_response(),
-            Err(_) => Refusal::from(Error::conflict("project_storage_migration_stopped", "Project migration stopped; no completion receipt is available.")).into_response(),
-        };
-    }
-    let ordinary = m.runs.clone();
-    let selected = descriptor.clone();
-    let logs = m.identity.logs.clone();
-    let selected = tokio::task::spawn_blocking(move || {
-        let runs = crate::private_io::within(Some(selected.clone()), || crate::private_io::migrate_execution(&selected, &ordinary, &logs))
-            .map_err(|error| ("project_execution_migrate_failed", error))?;
-        crate::private_io::bind_process_namespace(&selected, ordinary.publisher.process_namespace())
-            .map_err(|error| ("project_execution_namespace_failed", error))?;
-        crate::private_io::within(Some(selected.clone()), || crate::private_io::probe_native(&selected))
-            .map_err(|error| ("project_execution_native_failed", error))?;
-        crate::private_io::within(Some(selected.clone()), || {
-            // Storage health does not install an unrelated public SDK or start a dry-run
-            // executor. Each actual private executor verifies its selected Runtime and
-            // inherited-channel challenge before receiving Start/Invoke.
-            crate::private_io::activate_execution(&selected, &runs)
-                .map_err(|error| ("project_execution_activation_failed", error))?;
-            Ok::<_, (&'static str, std::io::Error)>(runs)
-        })
-    }).await;
-    let runs = match selected {
-        Ok(Ok(runs)) => runs,
-        Ok(Err((_, error))) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::ResourceBusy) => return Refusal::from(project_migration_error(error)).into_response(),
-        Ok(Err((stage, error))) => {
-            let message = match stage {
-                "project_execution_migrate_failed" => "The worker could not finish this project's storage update.",
-                "project_execution_activation_failed" => "The worker could not activate this project's execution journal.",
-                _ => "The worker could not prepare this project's managed process.",
-            };
-            let mut failure = Error::conflict(stage, message);
-            failure.cause = Some(match error.kind() {
-                std::io::ErrorKind::NotFound => "not_found", std::io::ErrorKind::PermissionDenied => "permission_denied",
-                std::io::ErrorKind::Unsupported => "unsupported", std::io::ErrorKind::InvalidData => "invalid_data",
-                std::io::ErrorKind::InvalidInput => "invalid_input", std::io::ErrorKind::BrokenPipe => "broken_pipe",
-                std::io::ErrorKind::ConnectionRefused => "connection_refused", _ => "other",
-            }.into());
-            failure.metadata = Some(serde_json::json!({ "native_os_error": error.raw_os_error(),
-                "transport_unsupported": error.to_string().starts_with("project_transport_unsupported:") }));
-            return Refusal::from(failure).into_response();
-        }
-        Err(_) => return Refusal::from(Error::conflict("project_execution_setup_stopped", "Project execution setup stopped before it was ready.")).into_response(),
-    };
-    let m = Machine { identity: m.identity, runs };
     if rest == "health" && request.method() == axum::http::Method::GET {
         return Json(v1::ProjectExecutionCapabilities { protected_journal: true, protected_objects_and_scratch: true,
             filesystem_write_confinement: false, quiescent_seal: true }).into_response();
+    }
+    // Legacy runs stay in the machine's one journal (cl-984): a binding lookup reads it, and coverage is what was looked up.
+    if rest == "migration-bindings" || rest == "migrate" {
+        return legacy_custody(m, descriptor, rest == "migrate", request).await;
+    }
+    if rest == "close" && request.method() == axum::http::Method::POST {
+        let headers = request.headers().clone();
+        return crate::private_io::request(descriptor, close_private(State(m), headers)).await.into_response();
     }
     // A private scope is data execution, never software updates or global machine log access.
     if rest.starts_with("logs/") || rest == "keepalive" || (rest == "runs" && request.method() != axum::http::Method::GET) {
@@ -261,16 +160,87 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     crate::private_io::request(descriptor, async move {
         let ready = std::future::poll_fn(|context| <Router as tower_service::Service<Request<Body>>>::poll_ready(&mut routing, context)).await;
         match ready { Ok(()) => {}, Err(never) => match never {} }
-        match routing.call(request).await {
-            Ok(response) => {
-                let lease = match crate::private_io::lease() { Ok(lease) => lease, Err(_) => return Refusal::from(Error::conflict("private_storage_busy", "project response custody is unavailable")).into_response() };
-                let (parts, body) = response.into_parts();
-                let body = body.map_frame(move |frame| { let _ = &lease; frame });
-                Response::from_parts(parts, Body::new(body))
-            }
-            Err(never) => match never {}
-        }
+        match routing.call(request).await { Ok(response) => response, Err(never) => match never {} }
     }).await
+}
+
+async fn project_migrate_request(m: State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
+    private_request(m, Path((project, "migrate".into())), request).await
+}
+
+async fn project_bindings_request(m: State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
+    private_request(m, Path((project, "migration-bindings".into())), request).await
+}
+
+/// Calcifer's import of a project's legacy history asks which of its requests this worker accepted (`migration-bindings`),
+/// then has them covered (`migrate`). One machine journal holds every run: a covered acceptance is verified there, kept in
+/// the project's own receipt (`legacy-custody.json` in its machine area), then retired from the machine, its rows,
+/// copies and objects gone (cl-984); it is covered once retired. A lookup answers from the journal, else from that receipt.
+async fn legacy_custody(m: Machine, descriptor: v1::LocalPrivateStorage, migrate: bool, request: Request<Body>) -> Response {
+    let actor = match m.caller(request.headers()) { Ok(caller) => actor_id(caller.actor), Err(error) => return Refusal::from(error).into_response() };
+    let reading = request.method() == axum::http::Method::GET;
+    if !(request.method() == axum::http::Method::POST || (migrate && reading)) {
+        return Refusal::from(Error::validation("method_not_allowed", "Legacy custody uses POST; coverage uses GET.")).into_response();
+    }
+    let bytes = match axum::body::to_bytes(request.into_body(), 65536).await { Ok(bytes) => bytes, Err(_) => return Refusal::from(Error::validation("invalid_request", "Legacy custody exceeds its protocol bound.")).into_response() };
+    let conflict = |code: &'static str| move |error: std::io::Error| Error::conflict(code, error.to_string());
+    let receipt_path = move |scope: &v1::LocalPrivateStorage| crate::private_io::root(scope).map(|root| root.join("legacy-custody.json"));
+    let kept = |path: &std::path::Path| -> Vec<v1::ProjectExecutionLegacyBinding> {
+        std::fs::read(path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default()
+    };
+    let same = |a: &v1::ProjectExecutionMigrationBinding, b: &v1::ProjectExecutionMigrationBinding|
+        a.request_id == b.request_id && a.source_workspace_id == b.source_workspace_id && a.invocation_spec_digest == b.invocation_spec_digest;
+    if migrate && reading {
+        // Covered once retired: a receipted acceptance still journaled here (its retirement failed or never ran) is not.
+        let answered = m.call(move |runs| {
+            let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
+            let mut bindings = vec![];
+            for kept in kept(&path) {
+                let held = runs.service.engine.with_journal(|journal| journal.holds_execution(kept.source_number))
+                    .map_err(conflict("project_storage_migration_pending"))?;
+                if !held { bindings.push(kept.binding); }
+            }
+            Ok(v1::ProjectExecutionMigrationReceipt { bindings })
+        }).await;
+        return match answered { Ok(receipt) => Json(receipt).into_response(), Err(error) => Refusal::from(error).into_response() };
+    }
+    if migrate {
+        let adoption: v1::ProjectExecutionMigrationRequest = if bytes.is_empty() { Default::default() } else { match serde_json::from_slice(&bytes) { Ok(adoption) => adoption, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid verified legacy binding adoption.")).into_response() } };
+        let (logs, store_logs) = (m.identity.logs.clone(), m.identity.store_logs.clone());
+        let retired = m.call(move |runs| {
+            let engine = &runs.service.engine;
+            let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
+            let mut receipt = kept(&path);
+            let fresh: Vec<_> = adoption.legacy_requests.iter().filter(|wanted| !receipt.iter().any(|kept| same(&kept.binding, wanted))).cloned().collect();
+            let ids: Vec<String> = fresh.iter().map(|binding| binding.request_id.clone()).collect();
+            let found = if ids.is_empty() { Default::default() } else {
+                engine.legacy_bindings(&actor, &descriptor, &ids).map_err(conflict("project_storage_migration_conflict"))?
+            };
+            if !fresh.iter().all(|binding| found.bindings.iter().any(|actual| same(&actual.binding, binding))) {
+                return Err(Error::conflict("project_storage_migration_conflict", "a legacy binding differs from this worker's acceptance"));
+            }
+            // The receipt first: a crash after it retires again at the next adoption, never loses coverage.
+            receipt.extend(found.bindings);
+            let staged = path.with_extension("json.next");
+            std::fs::write(&staged, serde_json::to_vec(&receipt).map_err(std::io::Error::other).map_err(conflict("project_storage_migration_pending"))?)
+                .and_then(|()| std::fs::rename(&staged, &path)).map_err(conflict("project_storage_migration_pending"))?;
+            let numbers: Vec<u64> = receipt.iter().map(|kept| kept.source_number).collect();
+            engine.retire_legacy(&numbers, &logs, &store_logs).map_err(conflict("project_storage_migration_busy"))
+        }).await;
+        return match retired { Ok(()) => StatusCode::NO_CONTENT.into_response(), Err(error) => Refusal::from(error).into_response() };
+    }
+    let query: v1::ProjectExecutionLegacyLookup = match serde_json::from_slice(&bytes) { Ok(query) => query, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid legacy lookup request.")).into_response() };
+    let looked = m.call(move |runs| {
+        let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
+        let receipt = kept(&path);
+        let unretired: Vec<String> = query.request_ids.iter().filter(|id| !receipt.iter().any(|kept| kept.binding.request_id == **id)).cloned().collect();
+        let mut answer = if unretired.is_empty() { Default::default() } else {
+            runs.service.engine.legacy_bindings(&actor, &descriptor, &unretired).map_err(conflict("project_storage_migration_pending"))?
+        };
+        answer.bindings.extend(receipt.into_iter().filter(|kept| query.request_ids.contains(&kept.binding.request_id)));
+        Ok(answer)
+    }).await;
+    match looked { Ok(answer) => Json(answer).into_response(), Err(error) => Refusal::from(error).into_response() }
 }
 
 async fn close_private(State(m): State<Machine>, headers: HeaderMap) -> Answer {
@@ -278,11 +248,11 @@ async fn close_private(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     caller.machine()?;
     let descriptor = crate::private_io::current().ok_or_else(|| Error::forbidden("private_storage_scope", "no private workspace was selected"))?;
     let actor = actor_id(caller.actor);
-    let logs = m.identity.logs.clone();
-    m.call(move |ordinary| {
-        let migrated = crate::private_io::migrate_execution(&descriptor, ordinary, &logs).map_err(project_migration_error)?;
-        drop(migrated);
-        crate::private_io::close(&descriptor, &actor).map_err(|_| Error::conflict("private_storage_busy", "Project execution, native handles or output custody are still active."))
+    m.call(move |runs| {
+        runs.service.engine.assert_private_idle(&descriptor.project_id).map_err(|_| Error::conflict("private_storage_busy", "private execution or output finalization is still active"))?;
+        if let Some(pool) = runs.service.pool() { pool.close_private_namespace(&descriptor).map_err(|_| Error::conflict("private_storage_busy", "a private executor is still exiting"))?; }
+        runs.service.engine.close_private_storage(&descriptor.project_id).map_err(|_| Error::conflict("private_storage_busy", "private output custody is still active"))?;
+        crate::private_io::close(&descriptor, &actor).map_err(|_| Error::conflict("private_storage_busy", "private input/output handles are still in use"))
     }).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }

@@ -107,8 +107,8 @@ def scan(roots: list[Path], exclusions: list[Path], since_ns: int, markers: list
                     checked += 1
                     if any(marker.decode() in name for marker in markers) or contains(path, markers):
                         leaked.append(str(path))
-                except FileNotFoundError:
-                    # An unrelated cache file was collected while this read-only audit ran.
+                except (FileNotFoundError, PermissionError):
+                    # An unrelated cache file was collected while this read-only audit ran, or another user's.
                     continue
     return leaked, checked
 

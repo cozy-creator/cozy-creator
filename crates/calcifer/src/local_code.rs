@@ -22,7 +22,7 @@ use api::{
     code::{self as shared, LocalCode},
     config::Origin,
     error::{Error, Kind},
-    ids::Digest,
+    ids::{Digest, RunId},
     machine as v1,
 };
 use serde::{Deserialize, Serialize};
@@ -849,6 +849,17 @@ pub(crate) fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> Su
     }
 }
 
+/// The package a run of local code installs or calls, by its target: `install local/x`, `sync local/x (source changed)`, `local/x/fn`.
+pub(crate) fn package_of(target: &str) -> &str {
+    if let Some(package) = target.strip_prefix("install ") {
+        return package;
+    }
+    if let Some(package) = target.strip_prefix("sync ").and_then(|rest| rest.strip_suffix(" (source changed)")) {
+        return package;
+    }
+    target.rsplit_once('/').map_or(target, |(package, _)| package)
+}
+
 /// What a settled install answered, or why it installed nothing.
 pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
     if run.status != Status::Completed {
@@ -895,7 +906,9 @@ pub(crate) struct Prepared {
 /// `code` made callable `on` a machine, never waiting for an install: the install it
 /// needs is sent under `{key}/install` and returned, and once it has settled the same `key` finds
 /// its answer. `warm` installs again whatever is kept: a warm set names the machine's
-/// installation, which only an install answers.
+/// installation, which only an install answers. `again`: an install canceled for want of waiters
+/// (`project::host::Installs`), which an ask now sends anew.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare(
     api: &Arc<Api>,
     local: &LocalCode,
@@ -904,6 +917,7 @@ pub(crate) async fn prepare(
     warm: bool,
     key: &str,
     agreed: Option<api::calcifer::Agreed>,
+    again: &(dyn Fn(&RunId) -> bool + Sync),
 ) -> Result<Prepared, Error> {
     let hubs = &api.machines.hubs;
     let home = hubs.home().clone();
@@ -931,7 +945,7 @@ pub(crate) async fn prepare(
     }
     let submit = || SubmitRun { agreed: agreed.clone(), ..install_run(&home, origin.as_str(), on.clone(), &code) };
     let after = crate::private_io::current().is_none().then(|| crate::hub::after::After::Keep(code.filed()));
-    match install_through(api, &key, after.as_ref(), submit).await? {
+    match install_through(api, &key, after.as_ref(), again, submit).await? {
         Install::Going(run) => Ok(prepared(None, None, None, Some(run))),
         Install::Ended(run) => {
             let installed = installed(run)?;
@@ -950,27 +964,23 @@ pub(crate) enum Install {
     Ended(Run),
 }
 
-/// The install `submit` makes, under `key`, as far as it has got, with `after` its step once its machine completes it.
-pub(crate) async fn install_through(api: &Arc<Api>, key: &str, after: Option<&crate::hub::after::After>, submit: impl FnOnce() -> SubmitRun) -> Result<Install, Error> {
-    let Some(run) = sent(api, key)? else {
-        if let Some(after) = after {
-            api.calcifer.plan(crate::private_io::current().as_ref().map(|scope|scope.storage.project_id.as_str()),key, after)?;
-        }
-        let run = api.calcifer.submit(key, submit()).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
-        return Ok(Install::Going(run));
-    };
-    match run.status {
-        Status::Completed | Status::Failed | Status::Canceled => Ok(Install::Ended(run)),
-        _ => Ok(Install::Going(run)),
-    }
-}
-
-/// `prepare`, waiting out the install it needs: what Calcifer's own callers (a project's render blocks) use.
-pub(crate) async fn ready(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, key: &str) -> Result<Prepared, Error> {
+/// The install `submit` makes, under `key`, as far as it has got, with `after` its step once its machine completes it. One `again`
+/// names (canceled for want of waiters) is followed by a new one, under a key of its own.
+pub(crate) async fn install_through(api: &Arc<Api>, key: &str, after: Option<&crate::hub::after::After>, again: &(dyn Fn(&RunId) -> bool + Sync), submit: impl FnOnce() -> SubmitRun) -> Result<Install, Error> {
+    let mut key = key.to_owned();
     loop {
-        let prepared = prepare(api, code, on, hub, false, key, None).await?;
-        let Some(run) = &prepared.install else { return Ok(prepared) };
-        crate::project::host::Host::new(api).wait(&run.id).await?;
+        let Some(run) = sent(api, &key)? else {
+            if let Some(after) = after {
+                api.calcifer.plan(crate::private_io::current().as_ref().map(|scope|scope.storage.project_id.as_str()), &key, after)?;
+            }
+            let run = api.calcifer.submit(&key, submit()).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
+            return Ok(Install::Going(run));
+        };
+        match run.status {
+            Status::Canceled if again(&run.id) => key = format!("{key}/after/{}", run.id),
+            Status::Completed | Status::Failed | Status::Canceled => return Ok(Install::Ended(run)),
+            _ => return Ok(Install::Going(run)),
+        }
     }
 }
 

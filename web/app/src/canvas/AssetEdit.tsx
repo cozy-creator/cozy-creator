@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { createContext, type Dispatch, type DragEvent, type FocusEvent, type PointerEvent, type ReactNode, type SetStateAction, useContext, useEffect, useId, useRef, useState } from "react"
-import type { ToolField, Tool } from "../api/calcifer"
+import type { ToolField } from "../api/calcifer"
 import { runFullQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import type { Media } from "../types"
@@ -18,7 +18,6 @@ import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { makes, watched } from "./shown"
 import { mentionsIn, type Row, rowsIn, textsIn } from "./text"
-import { ToolBox } from "./ToolBox"
 import { WhenOff, whenOff } from "./When"
 import "./FocusParameters.css"
 
@@ -734,10 +733,10 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
 const Sections = createContext<{ row: number | null; setRow: Dispatch<SetStateAction<number | null>> } | null>(null)
 
 /** What the frame holds while a take is written, as an image's prompt is held over it (cl-938, Paul 11-12): its main text (else its first
- *  slot), and the list of prompts that adds up to it (H3's beats). A tool with its own box draws all of that itself. */
-export function framedOf(view: ElementView, fields: ToolField[], tool: Tool | undefined): ToolField[] {
+ *  slot), and the list of prompts that adds up to it (H3's beats). */
+export function framedOf(view: ElementView, fields: ToolField[]): ToolField[] {
   // A picture or a video with no tool asks nothing: its words are a tool's to ask for (Paul, 11-12, cl-933).
-  if (!view.hereWords || tool?.ui || (!view.asset?.tool && view.asset?.kind !== "text")) return []
+  if (!view.hereWords || (!view.asset?.tool && view.asset?.kind !== "text")) return []
   const first = mainText(fields) ?? fields.find((field) => field.type === "slot")
   const rows = fields.find((field) => field.type === "group" && field.list && field.members?.some((member) => member.total) && field.members.some((member) => member.type === "prompt"))
   return [...(first ? [first] : []), ...(rows ? [rows] : [])]
@@ -766,7 +765,7 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
   const [open, setOpen] = useState<"first" | number | null>("first")
   const [writing, setWriting] = useState<"first" | number | null>(null)
   const panel = useId()
-  const fields = view.asset ? framedOf(view, fieldsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined) : []
+  const fields = view.asset ? framedOf(view, fieldsOf(view.asset, tools)) : []
   if (!fields.length) return null
   const [first, list] = fields
   const values = (field: ToolField) => store.valueOf(name, field.field)
@@ -838,9 +837,8 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   if (!view.asset) return null
-  const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
   const fields = makes(view) ? fieldsOf(view.asset, tools) : []
-  const inFrame = framedOf(view, fields, tool)
+  const inFrame = framedOf(view, fields)
   const first = mainText(fields)
   // The box's own shape is its shape: its corner sets it.
   const rest = fields.filter((field) => !inFrame.includes(field) && field.type !== "timeline" && field.type !== "shape")
@@ -857,50 +855,44 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
   }
   const cell = (field: ToolField) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named />
   const held = beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)
+  const shown = faced.filter((field) => !small(field))
+  const behind = !focused && (plainFolded.length > 0 || beyond.length > 0)
+  const render = (
+    <div className="row actions">
+      {behind && <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
+      {actions}
+    </div>
+  )
+  const lines = editing && shown.length > 0 && <div className="edit-shown">{shown.map(row)}</div>
+  const grouped = parameters.length > 0 && <div className="edit-parameters">{parameters.map(cell)}</div>
+  if (focused) {
+    return (
+      <div className="edit-face focused">
+        {render}
+        {lines}
+        {grouped}
+        {held}
+        {children}
+      </div>
+    )
+  }
   return (
-    <div className={`edit-face ${focused ? "focused" : ""}`}>
-      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} grouped={parameters} row={row} cell={cell}>
-        {(lines, more, cells) => {
-          const behind = !focused && ((more !== null && plainFolded.length > 0) || beyond.length > 0)
-          const render = (
-            <div className="row actions">
-              {behind && <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
-              {actions}
-            </div>
-          )
-          const grouped = cells !== null && <div className="edit-parameters">{cells}</div>
-          if (focused) {
-            return (
-              <>
-                {render}
-                {editing && lines && <div className="edit-shown">{lines}</div>}
-                {grouped}
-                {held}
-                {children}
-              </>
-            )
-          }
-          return (
-            <>
-              {editing && lines && <div className="edit-shown">{lines}</div>}
-              {more !== null && expert.some((field) => !small(field)) && <div className="advanced">{expert.filter((field) => !small(field)).map(row)}</div>}
-              {grouped}
-              {behind ? (
-                open && (
-                  <div className="edit-more">
-                    {more}
-                    {held}
-                    {children}
-                  </div>
-                )
-              ) : (
-                children
-              )}
-              {render}
-            </>
-          )
-        }}
-      </ToolBox>
+    <div className="edit-face">
+      {lines}
+      {expert.some((field) => !small(field)) && <div className="advanced">{expert.filter((field) => !small(field)).map(row)}</div>}
+      {grouped}
+      {behind ? (
+        open && (
+          <div className="edit-more">
+            {plainFolded.map(row)}
+            {held}
+            {children}
+          </div>
+        )
+      ) : (
+        children
+      )}
+      {render}
     </div>
   )
 }

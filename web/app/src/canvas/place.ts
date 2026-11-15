@@ -202,7 +202,8 @@ export class Placer {
     say(`${verb} ${names.length === 1 ? names[0] : `${names.length} assets`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) }, ms: UNDO_MS })
   }
 
-  /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. */
+  /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. Each takes its step and its turn
+   *  as it's dropped, as a file dropped as a box of its own does once it's named: its bytes go meanwhile, Calcifer there or not. */
   join(files: File[], name: string) {
     const kind = this.store.get(name)?.asset?.kind
     for (const file of files) {
@@ -210,21 +211,14 @@ export class Placer {
         say(`${name} is a ${kind} node and cannot take ${file.name}`)
         continue
       }
-      const landed = this.store.joining(name)
-      const owed = this.store.outbox.owing()
       const signal = new AbortController().signal
-      const sent = async () => {
+      const held = inLine(async () => {
         const projectId = await this.project()
         const digest = await hashFile(file, signal, () => {})
         if (!this.store.holdsFile(digest.slice("sha256:".length))) await this.reaching(() => sendFile(this.client, file, digest, signal, () => {}, () => {}, projectId), signal)
         return digest
-      }
-      void inLine(sent)
-        .then((digest) => this.store.joinVersion(name, { sha256: digest.slice("sha256:".length), field: mediaOf(file) }, digest, file.name), (error) => say(file.name, error))
-        .finally(() => {
-          landed()
-          owed()
-        })
+      })
+      this.store.dropVersion(name, file.name, mediaOf(file), held, this.store.joining(name))
     }
   }
 
@@ -264,14 +258,17 @@ export class Placer {
       const asking = this.ask(key, bytes, dropped, edit, own, signal)
       owed()
       try {
-        then?.(await asking)
+        // Awaited apart from `then`: `then?.(await …)` skips the await with no `then`, and its refusal goes nowhere.
+        const name = await asking
+        then?.(name)
       } catch (error) {
         // What it held went since it looked: moved by another import, or dropped after a day. Send it again.
         if (!(error instanceof ApiError && error.body.code === "file_not_held")) throw error
         const digest = await bytes
         const again = this.store.outbox.owing()
         await inLine(() => this.send(key, file, digest, signal)).finally(again)
-        then?.(await this.ask(key, Promise.resolve(digest), dropped, edit, own, signal))
+        const name = await this.ask(key, Promise.resolve(digest), dropped, edit, own, signal)
+        then?.(name)
       }
     } catch (error) {
       if (!signal.aborted) say(file.name, error)

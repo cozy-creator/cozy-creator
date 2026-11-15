@@ -415,10 +415,24 @@ async function died(why) {
     // Render sends what the page holds: the 1:1 written over the API reaches it first.
     const shapeSaid = await until('the page holds 1:1', () => box('other').locator('.ratio-rest').getAttribute('data-output-aspect').catch(() => null), (label) => (label ?? '').includes('1:1'), 10_000).catch(() => box('other').locator('.ratio-rest').getAttribute('data-output-aspect').catch(() => null));
     await renderIt.click();
-    const second = await until('first modification is v2', () => asset('other'), (row) => row.versions === 2 && !row.making?.length, 5 * STEP_MS);
+    // No take looks done before it's here (Paul, 11-12): listed as its run ends, it's pending, its file absent, unsized and undrawn, and done
+    // once its file is here. Each look reads the page before Calcifer: a picture drawn of a take Calcifer still calls absent is one done too soon.
+    const early = [];
+    const looked = async () => {
+      const drawn = await history('other').locator('.take[data-take="2"] img').evaluateAll((imgs) => imgs.some((img) => img.complete && img.naturalWidth > 0)).catch(() => false);
+      const row = await asset('other');
+      const main = row?.prefixes?.find((version) => version.number === 2)?.main;
+      if (main?.absent && (main.width || main.height || drawn)) early.push({ drawn, main });
+      return row;
+    };
+    const here = (row) => row.prefixes?.some((version) => version.number === 2 && version.main && !version.main.absent);
+    const second = await until('first modification is v2, its file here', looked, (row) => row.versions === 2 && !row.making?.length && here(row), 5 * STEP_MS);
+    check('a_take_looks_done_only_once_here', early.length === 0, early.slice(0, 4));
     check('first_modification_is_v2_beside_the_approved', second.version === 1 && second.approved === 1 && second.pinned && shaOf(second, 1) === originalSha && shaOf(second, 2) !== originalSha, second);
     const made = second.prefixes.find((row) => row.number === 2).main;
     check('new_output_has_requested_ratio', Math.abs(made.width / made.height - 1) < 0.02, { width: made.width, height: made.height, shapeSaid, aspect_ratio: second.fields?.aspect_ratio, main: made });
+    const served = await api(`${at}/${made.path}`);
+    check('a_done_take_is_here', served.status === 200, { status: served.status, main: made });
     await open('other');
     await until('the new take has a retained preview', () => previews('other').count(), (count) => count === 2);
     check('new_output_adds_a_retained_preview', await selected('other') === '1');

@@ -337,7 +337,8 @@ def main() -> int:
             base = project_route(project["id"])
             paths = [base + "/" + project["text_file"], base + "/" + project["path"], base + "/thumbs/" + project["digest"].removeprefix("sha256:") + "?w=128"]
             for number, path in enumerate(paths):
-                observed = proof.exercise(project["id"], "media", path=path)
+                # A thumb not drawn yet is `202 thumb_pending` (cl-982): no picture and no error, asked again until it is.
+                observed = until(partial(proof.exercise, project["id"], "media", path=path), lambda value: value.get("status") != 202, "owned_no_store_200")
                 served = observed.get("authenticated") and observed.get("status") == 200 and observed.get("no_store")
                 if not served:
                     status = observed.get("status")

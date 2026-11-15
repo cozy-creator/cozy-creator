@@ -48,6 +48,7 @@ impl RunOwner {
     pub(crate) fn open(&self, attached: bool, known: bool) -> OpenProject { OpenProject { project: Arc::downgrade(&self.project), controller: self.controller.clone(), attached, known } }
     pub(crate) fn same_view(&self, other:&Self)->bool { Arc::ptr_eq(&self.project,&other.project) }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
+    pub(crate) fn key(&self) -> String { self.project.key() }
     pub(crate) fn root(&self) -> &std::path::Path { &self.project.root }
     pub(crate) fn store(&self) -> store::Result<ProjectStore> {
         let view = vault::try_admit_work(&self.project).map_err(project_error)?;
@@ -250,6 +251,18 @@ impl ProjectStore {
 
     /// Whether this thread is inside one of the project's own edits, which holds its writer until it commits.
     pub(crate) fn acting(&self) -> bool { self.project.folder.acting_here() }
+
+    /// Run `id`'s cancel written in the project's edit going on this thread (`Folder::join_act`): it commits with the edit or not at
+    /// all, and `then` has its events once it committed; dropped unrun, with the edit, when it doesn't. False: no edit is going here.
+    pub(crate) fn cancel_in_act(&self, id: &str, then: impl FnOnce(Vec<api::calcifer::Event>) + 'static) -> bool {
+        let (id, events) = (id.to_owned(), std::rc::Rc::new(std::cell::RefCell::new(vec![])));
+        let kept = events.clone();
+        let write = move |tx: &Transaction<'_>| {
+            *kept.borrow_mut() = store::cancel_in(tx, &id).map_err(|e| crate::api::Refusal::from(crate::Error::from(e)).0)?;
+            Ok(())
+        };
+        self.project.folder.join_act(Box::new(write), move |_| then(events.take()))
+    }
 
     pub(crate) fn answer(&self, key: &str) -> store::Result<Option<Answer>> {
         self.read(|conn| {

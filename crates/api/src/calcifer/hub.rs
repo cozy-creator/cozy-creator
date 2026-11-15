@@ -100,13 +100,20 @@ pub enum Proven {
 }
 
 /// A key for another computer: its file, which the client writes owner-only.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ExportedKey {
     pub email: String,
     pub device_key: String,
     /// The key file's text (`cozy login --key` installs it).
     pub key: String,
+}
+
+/// The key file is never printed.
+impl std::fmt::Debug for ExportedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExportedKey").field("email", &self.email).field("device_key", &self.device_key).finish_non_exhaustive()
+    }
 }
 
 /// `PUT /v1/account/name`: names a new account. The Hub's `account.name_unavailable` and
@@ -119,12 +126,19 @@ pub struct Naming {
 }
 
 /// `PUT /v1/account/key`: makes a key `Export` made this computer's key at its Hub.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyInstall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
     /// The key file's text.
     pub key: String,
+}
+
+/// The key file is never printed.
+impl std::fmt::Debug for KeyInstall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyInstall").field("hub", &self.hub).finish_non_exhaustive()
+    }
 }
 
 /// `DELETE /v1/account`, or a finished `SignOutEverywhere`: this computer's key is erased,

@@ -50,7 +50,6 @@ mod sessions;
 mod slow;
 mod state;
 mod store;
-mod tool_ui;
 mod toolbox;
 mod took;
 mod update;
@@ -149,6 +148,28 @@ impl Here {
 
 /// A turn to write one object to one machine, and the number of the run whose turn it is.
 type Turn = Arc<(tokio::sync::Mutex<()>, Mutex<u64>)>;
+
+/// A cancel asked inside a project's edit, until that edit ends: its run's driver cancels it at its machine meanwhile, and looks again
+/// once it ends, committed or not.
+struct Canceling {
+    calcifer: Arc<Calcifer>,
+    id: RunId,
+}
+
+impl Canceling {
+    fn new(calcifer: &Arc<Calcifer>, id: &RunId) -> Self {
+        lock(&calcifer.canceling).insert(id.as_str().to_owned());
+        calcifer.wake(id);
+        Self { calcifer: calcifer.clone(), id: id.clone() }
+    }
+}
+
+impl Drop for Canceling {
+    fn drop(&mut self) {
+        lock(&self.calcifer.canceling).remove(self.id.as_str());
+        self.calcifer.wake(&self.id);
+    }
+}
 
 /// What a run is doing now, never stored: the latest of each live event, the stage moving
 /// bytes with its last few seconds of (when, bytes moved): its rate, and what says its time left.
@@ -434,7 +455,7 @@ impl Calcifer {
         self.waiting_named(ids,|id| match project {Some(project)=>self.project_store(project).and_then(|store|store.run(id)),None=>self.maintenance_store().run(id)})
     }
     fn waiting_named(&self,ids:&[String],run:impl Fn(&str)->store::Result<Option<RunRow>>)->Option<String> {
-        let name=|id:&String| run(store::calcifer_id(id)).ok().flatten().map(|row|format!("run {}",row.number)).unwrap_or_else(||"other work".into());
+        let name=|id:&String| run(store::calcifer_id(id)).ok().flatten().map(|row|format!("run {}",self.run_name(&row))).unwrap_or_else(||"other work".into());
         match ids {[]=>None,[one]=>Some(format!("waiting for {} to end",name(one))),many=>Some(format!("waiting for {} to end",many.iter().map(name).collect::<Vec<_>>().join(", ")))}
     }
 
@@ -563,6 +584,15 @@ impl Calcifer {
         let Some(root)=&row.project_root else { return Ok(None); };
         let open=self.live_owners().into_iter().find(|owner|owner.root()==root);
         open.or_else(||self.opened(&row.owner).filter(|owner|owner.root()==root)).map(Some).ok_or_else(||StoreError::Locked("project_not_open".into()))
+    }
+    /// What names `row` to a person (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's own; its
+    /// number alone while its project isn't open. Naming a run never opens its project (a lock may be closing it).
+    pub(crate) fn run_name(&self,row:&RunRow)->String {
+        let Some(root)=&row.project_root else { return format!("{}-{}", ::api::calcifer::project::MACHINE_KEY, row.number) };
+        match self.live_owners().into_iter().find(|owner| owner.root()==root) {
+            Some(owner) => format!("{}-{}", owner.key(), row.number),
+            None => row.number.to_string(),
+        }
     }
     pub(crate) fn row_store(&self,row:&RunRow)->store::Result<store::RunStore<'_>> {
         match self.row_owner(row)? { Some(owner)=>owner.store().map(store::RunStore::Project),None=>Ok(store::RunStore::Maintenance(self.maintenance_store())) }
@@ -907,19 +937,15 @@ impl Calcifer {
     /// Asks for the run's cancellation: unsent, it ends here; sent, its machine ends it.
     pub(crate) fn cancel(self: &Arc<Self>, id: &RunId) -> Result<Option<Run>, Error> {
         if let store::RunStore::Project(store) = self.run_store(id.as_str())? && store.acting() {
-            // Asked from inside the project's own edit (a delete of what the run makes), which holds its writer until it commits:
-            // its machine is told now, and the request is kept once the edit lets the writer go.
-            lock(&self.canceling).insert(id.as_str().to_owned());
-            self.wake(id);
-            // Straight to its machine: the run's driver may itself be waiting on that writer to keep the run's progress.
+            // Asked from inside the project's own edit (a cancel, or a delete of what the run makes), which holds its writer until it
+            // commits: the request is written in that edit's transaction, kept with it or not at all, and nothing sends the run
+            // meanwhile (its send waits on that writer). Its machine is told now, as its driver may itself be waiting on that writer
+            // to keep the run's progress; once the edit ends, its driver looks again.
+            let canceling = Canceling::new(self, id);
             self.stop_at_machine(id);
-            let (me, id) = (self.clone(), id.clone());
-            std::thread::spawn(move || {
-                if let Ok(events) = me.with_run_store(id.as_str(), |store| store.request_cancel(id.as_str())) { me.publish(&id, events); }
-                lock(&me.canceling).remove(id.as_str());
-                me.wake(&id);
-            });
-            return Ok(None);
+            if store.cancel_in_act(id.as_str(), move |events| canceling.calcifer.publish(&canceling.id, events)) {
+                return Ok(None);
+            }
         }
         let events = self.with_run_store(id.as_str(), |store| store.request_cancel(id.as_str()))?;
         self.publish(id, events);
@@ -1038,7 +1064,7 @@ impl Calcifer {
                 code: "no_progress".into(),
                 message: format!(
                     "run {} has made no progress for {minutes} min on {}{rate}. It keeps running until you end it: cozy run cancel {}",
-                    run.number, stalled.machine, run.number
+                    run.name, stalled.machine, run.name
                 ),
             };
             warn!(run = %id, "{}", warning.message);
@@ -1202,7 +1228,7 @@ impl Calcifer {
                 continue;
             }
             let mut names: Vec<String> = (ahead.iter().flat_map(|op| &op.runs))
-                .map(|id| self.with_run_store(id, |store| store.run(id)).ok().flatten().map_or_else(|| "another run".to_owned(), |row| format!("run {}", row.number)))
+                .map(|id| self.with_run_store(id, |store| store.run(id)).ok().flatten().map_or_else(|| "another run".to_owned(), |row| format!("run {}", self.run_name(&row))))
                 .collect();
             names.sort();
             names.dedup();
@@ -1685,7 +1711,7 @@ impl Calcifer {
                 match machines.current(&name).await {
                     Ok(None) => {}
                     Ok(Some(update)) => {
-                        self.waiting(id, format!("updating {name} first (run {}: {})", update.number, update.target));
+                        self.waiting(id, format!("updating {name} first (run {}: {})", update.name, update.target));
                         tokio::select! {
                             _ = settled.changed() => {}
                             _ = wake.notified() => {}
@@ -2176,7 +2202,7 @@ impl Calcifer {
                         n => format!("{n} GPUs"),
                     };
                     let holder = match self.with_run_store(&gpu.behind, |store| store.run(&gpu.behind)) {
-                        Ok(Some(holder)) => format!("run {}", holder.number),
+                        Ok(Some(holder)) => format!("run {}", self.run_name(&holder)),
                         _ => "another run".to_owned(),
                     };
                     self.waiting(id, format!("waiting for {gpus}, held by {holder}"));

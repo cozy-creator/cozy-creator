@@ -1050,6 +1050,8 @@ struct Acting {
     extra: RefCell<Extra>,
     made: RefCell<Vec<Made>>,
     after: RefCell<Vec<Box<dyn FnOnce(u64)>>>,
+    /// Writes to its run journal, committed with it (`join_act`).
+    joined: RefCell<Vec<db::Joined>>,
 }
 
 thread_local! {
@@ -1197,6 +1199,16 @@ impl Folder {
         self.reading_db(|conn| db::meta(conn, "code"))
     }
 
+    /// The keys its runs were named by (cl-987), its key now last.
+    pub(crate) fn keys(&self) -> Result<Vec<String>, Error> {
+        self.reading_db(db::keys)
+    }
+
+    /// Keeps `key` as its key now (`db::set_key`): no part of the project moves.
+    pub(crate) fn set_key(&self, key: &str, fresh: bool) -> Result<(), Error> {
+        self.write_past(|conn| db::set_key(conn, &self.db(), key, fresh))
+    }
+
     /// Rare identity changes (first name or a copied project) invalidate the held native view.
     pub(crate) fn set_identity(&self, id: &str, name: &str, code: &str) -> Result<(), Error> {
         let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());
@@ -1334,6 +1346,7 @@ impl Folder {
             extra: RefCell::default(),
             made: RefCell::default(),
             after: RefCell::default(),
+            joined: RefCell::default(),
         });
         let done = {
             let _in = In::enter(act.clone());
@@ -1363,12 +1376,13 @@ impl Folder {
             after.measured = Arc::new(measured);
         }
         let mut extra = act.extra.into_inner();
+        let joined = act.joined.into_inner();
         let entry = super::history::composed(self, act.made.into_inner(), &mut extra);
         if let Some(key) = super::keyed::claimed() {
             extra.key = Some(key);
         }
         extra.answer = said;
-        if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.meta.is_empty() && extra.key.is_none() && extra.answer.is_none() {
+        if !changed.contains(&true) && joined.is_empty() && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.meta.is_empty() && extra.key.is_none() && extra.answer.is_none() {
             return Ok(answer);
         }
         // A document decoded in it, or by its history since, at the heads it began from: the commit needn't decode it again.
@@ -1382,7 +1396,7 @@ impl Folder {
         // BEGIN wait. Only COMMIT and publication share the held guard: a reader can
         // never see our committed data_version with the cache still on the old view.
         let mut publication = None;
-        let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, || current = self.version() == seen,
+        let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, joined, || current = self.version() == seen,
             || publication = Some(self.shared.held.lock().unwrap_or_else(|e| e.into_inner())))?;
         let (seq, shown) = {
             // A no-op rollback does not call before_commit; local-only file facts
@@ -1436,6 +1450,15 @@ impl Folder {
         if let Some(act) = acting(self.id()) {
             act.made.borrow_mut().push(made());
         }
+    }
+
+    /// `write` to the project's run journal in the act this thread is in, which holds its writer: it commits with the act, or not at
+    /// all, and `then` runs once it committed. False: no act of this project is going here.
+    pub(crate) fn join_act(&self, write: db::Joined, then: impl FnOnce(u64) + 'static) -> bool {
+        let Some(act) = acting(self.id()) else { return false };
+        act.joined.borrow_mut().push(write);
+        act.after.borrow_mut().push(Box::new(then));
+        true
     }
 
     /// Done once the act this is in commits, given the revision it made: what a stream is told.
@@ -2220,7 +2243,7 @@ async fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
         // A refusal's first sentence says it; the rest is for whoever reads the policy.
         Ok(Err(refused)) => {
             let why = refused.detail.split(". ").next().unwrap_or_default();
-            Err(why.strip_prefix(&format!("{url}: ")).unwrap_or(why).to_owned())
+            Err(why.strip_prefix(&format!("{}: ", tensorfs::fetch::shown(url))).unwrap_or(why).to_owned())
         }
         Ok(Ok(())) => Ok(bytes),
     }

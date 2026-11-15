@@ -87,7 +87,7 @@ pub(crate) async fn resolve(
 ) -> Result<Resolved, Error> {
     if let Some(found) = local(api, text, code, None) {
         let (code, function) = found?;
-        let prepared = crate::local_code::prepare(api, &code, on, hub, warm, key, agreed).await?;
+        let prepared = crate::local_code::prepare(api, &code, on, hub, warm, key, agreed, &|_| false).await?;
         let interface = match &prepared.interface {
             Some(document) => Some(parse(document)?),
             None => None,

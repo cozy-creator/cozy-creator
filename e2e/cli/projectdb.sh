@@ -10,7 +10,7 @@
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # project.db's schema (db.rs VERSION): what a project this cozy opens holds, and what its copy before a migration is named after.
-SCHEMA=5
+SCHEMA=6
 
 # sql <project> <query>: what project.db holds, read only, one JSON row a line.
 sql() {
@@ -837,8 +837,8 @@ echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.nam
 
 # A 5,000-box project of schema 3 (cl-904's) opens here as $SCHEMA (cl-885) with nothing lost. The migration adds each box's id to its
 # row and rows_at and conflicts to meta, changes no row 3 has, and keeps the project as it was beside it once; its rows then stand at
-# the document, so a read takes them, and adds the project's run journal beside them. Schema 3 is this cozy's project, Calcifer stopped,
-# with what 4 and 5 added taken off.
+# the document, so a read takes them, and adds the project's run journal and keys beside them. Schema 3 is this cozy's project, Calcifer
+# stopped, with what 4 to 6 added taken off.
 db_migrate_large() {
 step "project.db: a 5,000-box project of schema 3 migrates with nothing lost"
 local L=$OUT/migrate-large K=$OUT/migrate-large-kept n=5000 pid was began
@@ -864,7 +864,7 @@ import sqlite3, sys
 db = sqlite3.connect(sys.argv[1], isolation_level=None)
 db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 journal = ["outputs", "run_logs", "asks", "runs", "project_view", "project_diagnostics", "journal_migrations", "after_steps",
-    "project_headers", "project_rendered_here", "project_vault_operations"]
+    "project_headers", "project_rendered_here", "project_vault_operations", "project_keys"]
 db.executescript("BEGIN; ALTER TABLE boxes DROP COLUMN id; DELETE FROM meta WHERE key IN ('rows_at', 'conflicts'); "
     + "".join(f"DROP TABLE {table}; " for table in journal) + "PRAGMA user_version = 3; COMMIT;")
 PY

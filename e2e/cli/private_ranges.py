@@ -6,7 +6,6 @@ from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import time
@@ -39,6 +38,24 @@ class Named(TypedDict):
 class AssetRow(TypedDict, total=False):
     duration_ms: int
     failure: object
+    making: list[int]
+
+
+class ProjectFile(TypedDict):
+    path: str
+    sha256: str
+    absent: NotRequired[bool]
+
+
+class LandedVersion(TypedDict):
+    number: int
+    runs: list[int]
+    files: dict[str, ProjectFile]
+
+
+class LandedAnswer(TypedDict):
+    asset: AssetRow
+    versions: list[LandedVersion]
 
 
 class Version(TypedDict):
@@ -63,6 +80,7 @@ class Output(TypedDict):
     name: str
     status: str
     sha256: NotRequired[str]
+    url: NotRequired[str]
 
 
 class RunDetail(TypedDict, total=False):
@@ -83,17 +101,41 @@ class Tools(TypedDict):
     tools: list[ToolRow]
 
 
-class Error(TypedDict):
-    code: str
-
-
-class Refusal(TypedDict, total=False):
-    error: Error
-
-
 class Queued(TypedDict):
     id: str
     added: int
+
+
+# A still shown as it's saved, its run going on after: its file lands before the run ends.
+LANDED_FIRST = '''# /// script
+# requires-python = ">=3.12"
+# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
+# ///
+import os
+import time
+
+import msgspec
+from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.media import ImageFile
+
+app = App()
+
+
+class Box(msgspec.Struct, kw_only=True):
+    seconds: float = 6.0
+
+
+class Still(msgspec.Struct):
+    image: ImageFile
+
+
+@app.tool(label="A still shown first")
+def first(payload: Box, out: Outputs) -> Still:
+    image = out.save_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png")
+    out.publish("image", image)
+    time.sleep(payload.seconds)
+    return Still(image)
+'''
 
 
 def digest(path: Path) -> str:
@@ -191,15 +233,9 @@ def exercise(args: argparse.Namespace, home: Path, receipt: dict[str, object]) -
     script = view / 'need.py'
     fixture = Path(__file__).parent / 'project'
     source = (fixture / 'tool.py').read_text(encoding='utf-8')
-    decorator = '@app.tool(label="Keep a video")'
-    assert source.count(decorator) == 1, 'the range tool fixture changed its declaration'
-    source = source.replace(decorator, '@app.tool(label="Keep a video", ui="ui/private.js")')
     marker = f'XS160_TOOL_DISCOVERY_{uuid.uuid4().hex}'
     with script.open('x', encoding='utf-8') as target:
         target.write(source + f'\n# {marker}\n')
-    module = view / 'ui/private.js'
-    module.parent.mkdir()
-    shutil.copyfile(fixture / 'boxed/e2e_boxed/ui/shade.js', module)
     tool = str(script) + '/need'
     private_cache = view / '.vault-calcifer/clips'
     global_cache = home / 'cache/clips'
@@ -245,16 +281,13 @@ def exercise(args: argparse.Namespace, home: Path, receipt: dict[str, object]) -
     assert made['name'] == asset, 'the render fixture asset was not created'
     receipt['stage'] = 'cold_private_tool_discovery'
     tools = cast(Tools, api('GET', '/v1/tools?' + urlencode({'project': project_id})))['tools']  # cast: the tool list's JSON
-    assert any(row['id'] == tool and row.get('local') and row.get('ui') for row in tools), 'cold discovery did not return the private tool and its declared UI'
+    assert any(row['id'] == tool and row.get('local') for row in tools), 'cold discovery did not return the private tool'
     copies = view / '.vault-calcifer/code'
     shared_code = home / 'calcifer/code'
     markers = [marker.encode()]
     assert any(contains(path, markers) for path in copies.rglob('*.py')), 'private discovery did not stage the tool in its vault'
     assert not any(contains(path, markers) for path in shared_code.rglob('*.py')), 'private discovery copied source into the shared code cache'
-    module_route = '/v1/tools/' + quote(tool, safe='') + '/ui?' + urlencode({'project': project_id})
-    refused = cast(Refusal, api('GET', module_route, expected=404))  # cast: a refusal's JSON
-    assert refused.get('error', {}).get('code') == 'tool_ui_none', 'the private tool module did not select the declared-control fallback'
-    receipt['private_tool_discovery'] = {'staged_in_vault': True, 'shared_code_unchanged': True, 'module_refused': True}
+    receipt['private_tool_discovery'] = {'staged_in_vault': True, 'shared_code_unchanged': True}
     receipt['stage'] = 'canvas_range'
     asked = cast(Queued, api('POST', route + '/runs', {'names': [asset], 'on': ['local']}))  # cast: the queued render's JSON
     assert asked['id'] == project_id and asked['added'] == 1, 'the canvas did not queue one render'
@@ -275,6 +308,44 @@ def exercise(args: argparse.Namespace, home: Path, receipt: dict[str, object]) -
     call = observed_run(cli('run', tool, 'video=<vault_range_source:24-48>', '--on', 'local'))
     after_cli, cli_name = check_clip('standalone', before_cli, call['number'])
     assert cli_name != canvas_name and after_cli.get(canvas_name) == before_cli[canvas_name], 'the second binding did not retain a distinct private clip'
+
+    # A take whose file landed before its run ended is kept by its hash in the vault, as one that lands after: never "saved no file".
+    receipt['stage'] = 'landed_first'
+    script = view / 'first.py'
+    with script.open('x', encoding='utf-8') as target:
+        target.write(LANDED_FIRST)
+    first = 'vault_landed_first'
+    made = cast(Named, api('POST', route + '/assets', {'tool': str(script) + '/first', 'name': first, 'kind': 'image', 'exact': True, 'fields': {}}))  # cast: the new asset's JSON
+    assert made['name'] == first, 'the landed-first asset was not created'
+    asked = cast(Queued, api('POST', route + '/runs', {'names': [first], 'on': ['local']}))  # cast: the queued render's JSON
+    assert asked['added'] == 1, 'the canvas did not queue the landed-first render'
+
+    def first_state() -> LandedAnswer:
+        state = cast(LandedAnswer, api('GET', route + '/assets/' + first))  # cast: the asset's JSON
+        failure = state['asset'].get('failure')
+        assert not failure, f'the landed-first render failed: {json.dumps(failure)[:1500]}'
+        return state
+
+    number, = wait_for(lambda: first_state()['asset'].get('making', []), bool, 'the landed-first render never ran')
+
+    def first_run() -> RunDetail:
+        return cast(RunDetail, api('GET', f'{route}/runs/{number}?detail=full'))  # cast: the run's JSON
+
+    def here(run: RunDetail) -> bool:
+        return any(item['name'] == 'image' and item.get('url') for item in run.get('output', []))
+
+    seen = wait_for(first_run, lambda run: here(run) or run.get('status') in ('completed', 'failed', 'canceled'), 'the landed-first run never ended')
+    cell: dict[str, object] = {'run': number, 'status_as_it_landed': seen.get('status')}
+    receipt['landed_first'] = cell
+    assert here(seen) and seen.get('status') == 'in_progress', 'its still did not land while its run went on'
+    landed_first = wait_for(first_state, lambda state: bool(state['versions']), 'the landed-first take never landed')
+    taken, = landed_first['versions']
+    image = taken['files']['image']
+    output, = [item for item in first_run()['output'] if item['name'] == 'image']
+    kept = view / image['path']
+    cell.update(version=taken['number'], absent=image.get('absent', False), kept=kept.is_file())
+    assert image['sha256'] == output.get('sha256') and not image.get('absent'), 'the take does not hold the file its run landed'
+    assert kept.is_file() and 'sha256:' + digest(kept) == image['sha256'], "the take's file is not in the vault"
     receipt['passed'] = True
 
 

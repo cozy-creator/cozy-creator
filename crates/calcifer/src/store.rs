@@ -612,6 +612,8 @@ pub(crate) enum StoreError {
     Protected(String),
     #[error("{0}")]
     ProjectCode(String),
+    #[error("{0}")]
+    ProjectKey(String),
     #[error("Calcifer's store could not flush its journal: {0}")]
     Flush(std::io::Error),
 }
@@ -1762,31 +1764,9 @@ macro_rules! journal_methods {
         })
     }
 
-    /// Records the intent to cancel. Unsent work ends canceled here, in the transaction that the
-    /// send boundary races; sent work keeps the intent until its machine's outcome arrives.
+    /// Records the intent to cancel (`cancel_in`).
     pub(crate) fn request_cancel(&self, id: &str) -> Result<Vec<Event>> {
-        self.write(|tx| {
-            let Some(row) = run_in(tx, id)? else {
-                return Ok(vec![]);
-            };
-            match row.state {
-                State::Settled => Ok(vec![]),
-                _ if row.cancel_requested => Ok(vec![]),
-                State::Queued => {
-                    tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [id])?;
-                    let reason = Reason {
-                        code: "canceled".into(),
-                        message: "canceled before it was sent".into(),
-                        ..Default::default()
-                    };
-                    end(tx, id, Status::Canceled, Some(reason))
-                }
-                State::Sent | State::Accepted => {
-                    tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [id])?;
-                    Ok(vec![lifecycle(tx, id)?])
-                }
-            }
-        })
+        self.write(|tx| cancel_in(tx, id))
     }
 
     /// Records `machine` as gone for good and settles what it owed: a run it accepted fails (or
@@ -3090,6 +3070,27 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
     })())
 }
 
+/// Records the intent to cancel run `id` in `tx`. Unsent work ends canceled here, in the transaction that the send boundary races;
+/// sent work keeps the intent until its machine's outcome arrives.
+pub(crate) fn cancel_in(tx: &Transaction, id: &str) -> Result<Vec<Event>> {
+    let Some(row) = run_in(tx, id)? else {
+        return Ok(vec![]);
+    };
+    match row.state {
+        State::Settled => Ok(vec![]),
+        _ if row.cancel_requested => Ok(vec![]),
+        State::Queued => {
+            tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [id])?;
+            let reason = Reason { code: "canceled".into(), message: "canceled before it was sent".into(), ..Default::default() };
+            end(tx, id, Status::Canceled, Some(reason))
+        }
+        State::Sent | State::Accepted => {
+            tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [id])?;
+            Ok(vec![lifecycle(tx, id)?])
+        }
+    }
+}
+
 fn run_in(conn: &Connection, id: &str) -> Result<Option<RunRow>> {
     conn.query_row(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"), [id], run_row)
         .optional()?
@@ -3519,6 +3520,16 @@ fn output_url(row:&RunRow, name: &str, index: u32) -> String {
 }
 
 /// A run row as the API answers it, with its output items in the order they first appeared.
+/// What names `row` to a person (cl-987): `KEY-N`, the key its project.db keeps now (a project's journal is its project.db) and its
+/// number there; `COZY-N` for Calcifer's own.
+fn run_name(conn: &Connection, row: &RunRow) -> String {
+    let key = match row.project_root {
+        Some(_) => conn.query_row("SELECT key FROM project_keys ORDER BY ord DESC LIMIT 1", [], |r| r.get::<_, String>(0)).ok(),
+        None => Some(api::calcifer::project::MACHINE_KEY.to_owned()),
+    };
+    key.map_or_else(|| row.number.to_string(), |key| format!("{key}-{}", row.number))
+}
+
 fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
     let mut statement = conn.prepare(&format!(
         "SELECT name, idx, rev, length, digest, media_type, label, done,
@@ -3580,6 +3591,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         placed,
         id: row.id.clone(),
         number: row.number,
+        name: run_name(conn, row),
         machine_number: None,
         kind: row.kind,
         target: row.target.clone(),

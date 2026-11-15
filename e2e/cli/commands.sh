@@ -173,6 +173,41 @@ was=$(output parts-default png) is=$(output parts-composed png)
 { [ -n "$was" ] && [ -n "$is" ] && ! cmp -s "$was" "$is"; } || check "parts: the composed run's stored picture is not another than the default's (${was:-none}, ${is:-none})"
 }
 
+# Paul's rule (11-13, cl-984): "1. project data is private 2. models / packages installed are machine-specific (not project
+# specific)". After component_models ran parts.py (a script package on e2e/parts, ~4 MiB) in the suite's project, a second
+# project's first run of it downloads nothing, builds no environment and adds no weights anywhere, and the first project's
+# runs, inputs and outputs are not the second's.
+second_project() {
+step "a second project's first run of a package and model this machine holds (cl-984)"
+[ -n "$LOCAL" ] || return 0
+local script=$here/script/parts.py other=$OUT/second-project before after
+envs_in() { find "$@" -maxdepth 10 \( -name 'env-*' -type d -o -path '*/generations/*/env' \) 2> /dev/null | sort; }
+cozy --json new --unencrypted "$other" > "$OUT/second-new.json" 2>&1 || { check "second project: cozy new --unencrypted: $(tail -c 300 "$OUT/second-new.json")"; return; }
+in_project "$RUN_PROJECT" --json run ls --limit 0 > "$OUT/second-first-runs.json" || check "second project: run ls in the first project failed"
+before=$(envs_in "$HOME/.cozy")
+RUN_PROJECT=$other cell second-parts "$script" || return 0
+after=$(envs_in "$HOME/.cozy")
+# Nothing downloaded or installed: no `downloading` stage moved a byte, none installed dependencies.
+grep '^{' "$OUT/second-parts.ndjson" | jq -e -s '[.[] | select(.type == "run.progress") | .progress
+    | select(((.stage | test("downloading")) and ((.stage | test("the result")) | not) and ((.bytes_done // 0) > 0))
+      or (.stage | test("installing its dependencies|installing this machine")))] | length == 0' > /dev/null \
+  || check "second project: its first run downloaded or installed: $(grep '^{' "$OUT/second-parts.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage' | sort -u | grep -E 'download|install' | head -3 | paste -sd';' -)"
+[ "$before" = "$after" ] || check "second project: the machine gained environments: $(comm -13 <(echo "$before") <(echo "$after") | sed "s#$HOME/##" | paste -sd' ' - | cut -c1-400)"
+# Its own area holds no environment, PyTorch, uv cache, Python or weights: those are the machine's.
+local held
+held=$(find "$other/.vault-machine" -maxdepth 4 \( -name 'env-*' -type d -o -name 'torch-*' -o -name uv-cache -o -name python -type d \) 2> /dev/null | head -3)
+[ -z "$held" ] || check "second project: its .vault-machine holds installs: $held"
+held=$(du -sk "$other/.vault-machine/objects" 2> /dev/null | cut -f1)
+[ "${held:-0}" -lt 2048 ] || check "second project: its store holds ${held} KiB, the model's weights among them"
+# Each project's history is its own: the second lists only its parts run, none of the first's other work.
+in_project "$other" --json run ls --limit 0 > "$OUT/second-runs.json" \
+  && J '([.runs[]?] | length) >= 1 and ([.runs[]? | select(.target | test("parts") | not)] | length) == 0' "$OUT/second-runs.json" \
+  || check "second project: run ls holds more than its own run: $(jq -c '[.runs[]? | {number, target}]' "$OUT/second-runs.json" 2> /dev/null | head -c 300)"
+J '[.runs[]? | select(.target | test("parts") | not)] | length >= 1' "$OUT/second-first-runs.json" \
+  || check "second project: the first project lists none of its other runs: $(jq -c '[.runs[]? | .target]' "$OUT/second-first-runs.json" 2> /dev/null | head -c 300)"
+echo "second project: machine environments $(echo "$before" | grep -c .) then $(echo "$after" | grep -c .); its store $(du -sh "$other/.vault-machine/objects" 2> /dev/null | cut -f1)"
+}
+
 # safetensors_file <file>: a 4×4 F16 .safetensors file.
 safetensors_file() {
 uv run -q --no-project python -I - "$1" <<'PY'
@@ -599,7 +634,7 @@ compgen -G "$fetched/*/uv" > /dev/null || check "uv at once: Calcifer never fetc
 local_edits() {
 step "local code edited between runs"
 [ -n "$LOCAL" ] || return 0
-local code=$OUT/edits/e2e-edits envs=$RUN_PROJECT/.vault-machine/editable  # a project's environments are its own
+local code=$OUT/edits/e2e-edits envs=$HOME/.cozy/machine/var/lib/cozy/tensord/editable  # environments are the machine's (cl-984)
 local module=$code/e2e_weightless/__init__.py first now
 rm -rf "$code" && mkdir -p "$OUT/edits" && cp -r "$here/weightless" "$code"
 sed -i 's/^name = "e2e-weightless"/name = "e2e-edits"/' "$code/pyproject.toml"
@@ -942,7 +977,7 @@ grep -q 'directory = "../maker"' "$dir/caller/uv.lock" 2> /dev/null \
 # What still has no lock, the caller's tree described without its uv.lock as TensorD describes in the environment its run built
 # (`ask_runtime`), is refused saying so (its exit is the refusal's), not "add it to [project].dependencies", which names it.
 local py stale=$OUT/child-latents-stale
-py=$(ls -d "$RUN_PROJECT"/.vault-machine/editable/*/e2e-latents-caller/env-*/bin/python 2> /dev/null | head -1) || true
+py=$(ls -d "$HOME"/.cozy/machine/var/lib/cozy/tensord/editable/*/e2e-latents-caller/env-*/bin/python 2> /dev/null | head -1) || true
 rm -rf "$stale" && cp -r "$dir" "$stale" && rm -f "$stale/caller/uv.lock"
 jq -n --arg project "$stale/caller" --arg python "$py" '{kind: "describe", project: $project, environment_python: $python}' \
   | "$py" -I -S -c "import pathlib,runpy,sys;root=pathlib.Path(sys.executable).absolute().parent.parent;\
@@ -1133,6 +1168,67 @@ cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0
 cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
 }
 
+# cl-987: a project's key names its runs, `KEY-N`, from any folder: proposed from its name, kept in its project.db (so it goes
+# with its folder), changed with `cozy key` while the key it had names them still. Calcifer's own runs are `COZY-N`.
+project_keys() {
+[ -n "$LOCAL" ] || return 0
+step "project keys: KEY-N from any folder (cl-987)"
+local root=$OUT/keys ka kb na nb ida idb n own
+local a=$root/kilo-alpha-bravo b=$root/zulu outside=$root/outside
+mkdir -p "$outside"
+cozy --json new --unencrypted "$a" > "$root-new-a.json" 2>&1 && cozy --json new --unencrypted "$b" > "$root-new-b.json" 2>&1 \
+  || { check "keys: cozy new: $(tail -c 300 "$root-new-a.json") $(tail -c 300 "$root-new-b.json")"; return 0; }
+ka=$(jq -r .key "$root-new-a.json") kb=$(jq -r .key "$root-new-b.json")
+[[ $ka == KAB* ]] || check "keys: kilo-alpha-bravo's key is '$ka', not its words' initials KAB"
+[[ $kb == ZUL* ]] || check "keys: zulu's key is '$kb', not its first letters ZUL"
+(cd "$here" && RUN_PROJECT=$a cell keys-a ./weightless/reverse "text=keys$RANDOM") || return 0
+(cd "$here" && RUN_PROJECT=$b cell keys-b ./weightless/reverse "text=keys$RANDOM") || return 0
+na=$(jq -r .name "$OUT/keys-a.json") nb=$(jq -r .name "$OUT/keys-b.json") ida=$(jq -r .id "$OUT/keys-a.json") idb=$(jq -r .id "$OUT/keys-b.json")
+[ "$na" = "$ka-$(cat "$OUT/keys-a.number")" ] && [ "$nb" = "$kb-$(cat "$OUT/keys-b.number")" ] \
+  || check "keys: the runs are named '$na' and '$nb', not $ka-N and $kb-N"
+[ "$ida" != "$idb" ] || check "keys: two projects' runs are one run, $ida"
+# From outside both, in any case, and from the other project's folder: each name is its own project's run.
+(cd "$outside" && cozy --json run watch "$na" --once) > "$root-watch-a.json" 2>&1 || true
+J --arg id "$ida" '.id == $id' "$root-watch-a.json" || check "keys: run watch $na outside both projects: $(tail -c 300 "$root-watch-a.json")"
+(cd "$outside" && cozy --json run watch "${nb,,}" --once) > "$root-watch-b.json" 2>&1 || true
+J --arg id "$idb" '.id == $id' "$root-watch-b.json" || check "keys: run watch ${nb,,} outside both projects: $(tail -c 300 "$root-watch-b.json")"
+(cd "$b" && cozy --json run watch "$na" --once) > "$root-watch-ab.json" 2>&1 || true
+J --arg id "$ida" '.id == $id' "$root-watch-ab.json" || check "keys: run watch $na in $kb's folder isn't $ka's run: $(tail -c 300 "$root-watch-ab.json")"
+(cd "$outside" && cozy --json run ls --all --limit 0) > "$root-ls.json" 2>&1 || true
+J --arg a "$na" --arg b "$nb" '[.runs[].name] | index($a) and index($b)' "$root-ls.json" \
+  || check "keys: run ls --all doesn't name $na and $nb: $(jq -c '[.runs[]?.name]' "$root-ls.json")"
+(cd "$outside" && cozy run ls --all --limit 0) > "$root-ls.txt" 2>&1 || true
+grep -qE "(^| )$na( |$)" "$root-ls.txt" && grep -qE "(^| )$nb( |$)" "$root-ls.txt" || check "keys: run ls's table doesn't name $na and $nb: $(head -c 600 "$root-ls.txt")"
+# Calcifer's own runs (the downloads before) are COZY-N, from a project's folder too, never that project's N.
+J '[.runs[] | select(.project_id == null)] | length > 0 and all(.name | test("^COZY-[0-9]+$"))' "$root-ls.json" \
+  || check "keys: Calcifer's own runs aren't COZY-N: $(jq -c '[.runs[]? | select(.project_id == null) | .name]' "$root-ls.json")"
+own=$(jq -r '[.runs[]? | select(.project_id == null)][0] | "\(.name) \(.id)"' "$root-ls.json") || own=
+(cd "$a" && cozy --json run watch "${own% *}" --once) > "$root-watch-own.json" 2>&1 || true
+J --arg id "${own#* }" '.id == $id' "$root-watch-own.json" || check "keys: run watch ${own% *} in $ka's folder isn't Calcifer's run: $(tail -c 300 "$root-watch-own.json")"
+# A new key names its runs; the key it had names them still, and its project.db keeps both, so they go with the folder.
+(cd "$a" && cozy --json key kx987) > "$root-key.json" 2>&1 || true
+J --arg was "$ka" '.key == "KX987" and (.former | index($was))' "$root-key.json" || check "keys: cozy key kx987: $(tail -c 300 "$root-key.json")"
+n=${na##*-}
+for name in "$na" "KX987-$n"; do
+  (cd "$outside" && cozy --json run watch "$name" --once) > "$root-renamed.json" 2>&1 || true
+  J --arg id "$ida" --arg now "KX987-$n" '.id == $id and .name == $now' "$root-renamed.json" \
+    || check "keys: $name doesn't name KX987-$n: $(tail -c 300 "$root-renamed.json")"
+done
+(cd "$a" && cozy --json key) > "$root-shown.json" 2>&1 || true
+J --arg was "$ka" '.key == "KX987" and .former == [$was]' "$root-shown.json" || check "keys: cozy key: not KX987, formerly $ka: $(tail -c 300 "$root-shown.json")"
+[ "$(python3 -c 'import sqlite3, sys; print(",".join(r[0] for r in sqlite3.connect(sys.argv[1]).execute("SELECT key FROM project_keys ORDER BY ord")))' "$a/project.db" 2>&1)" = "$ka,KX987" ] \
+  || check "keys: its project.db doesn't keep $ka then KX987"
+# Another's key, Calcifer's, a misspelled one and one nobody has: refused, typed.
+(cd "$b" && cozy --json key "$ka") > "$root-taken.json" 2>&1 || true
+J '.error.code == "project_key_taken"' "$root-taken.json" || check "keys: $kb took $ka, KX987's former key: $(tail -c 300 "$root-taken.json")"
+(cd "$b" && cozy --json key cozy) > "$root-reserved.json" 2>&1 || true
+J '.error.code == "project_key_taken"' "$root-reserved.json" || check "keys: $kb took COZY: $(tail -c 300 "$root-reserved.json")"
+(cd "$b" && cozy --json key 9z) > "$root-invalid.json" 2>&1 || true
+J '.error.code == "project_key_invalid"' "$root-invalid.json" || check "keys: 9z wasn't refused project_key_invalid: $(tail -c 300 "$root-invalid.json")"
+(cd "$outside" && cozy --json run watch QQ987-1 --once) > "$root-none.json" 2>&1 || true
+J '.error.code == "run_not_found" and (.error.message | test("QQ987"))' "$root-none.json" || check "keys: QQ987-1, a key nobody has: $(tail -c 300 "$root-none.json")"
+}
+
 run_playback() {
 step "run playback API"
 # The player link hands a browser the output straight from its machine. A project's output goes only by an owned private
@@ -1163,6 +1259,17 @@ if [ -n "$CAND_RT" ] && [ -n "$CAND_TFS" ]; then
 fi
 cozy --json machine ls > "$OUT/machines.json" && J '.machines | any(.name == "local")' "$OUT/machines.json" || check "machine ls: no local"
 cozy --json machine show local > "$OUT/local.json" && J '.state == "ready" and (.address | length > 0)' "$OUT/local.json" || check "machine show local: not ready"
+
+step "this computer's player listens on loopback alone (xs-196)"
+# Until another computer's controller is authorized, only a browser on this computer plays from its machine: the WebRTC listener
+# binds loopback, as the API does. Its port is the one the machine keeps across restarts.
+port=$(cat "$HOME/.cozy/machine/var/lib/cozy/machine/webrtc-port" 2> /dev/null) || true
+[ -n "$port" ] || check "this computer's machine keeps no player port"
+if [ "$RUNNER_OS" = Linux ] && [ -n "$port" ]; then
+  ss -Hltn "sport = :$port" | awk '{print $4}' > "$OUT/webrtc-listen.txt"
+  [ -s "$OUT/webrtc-listen.txt" ] && ! grep -qv '^127\.0\.0\.1:' "$OUT/webrtc-listen.txt" \
+    || check "the player's port $port listens on $(paste -sd' ' "$OUT/webrtc-listen.txt"), not loopback alone"
+fi
 
 step "machine logs"
 cozy machine logs local --lines 5 > "$OUT/log-5.txt" || check "machine logs failed"

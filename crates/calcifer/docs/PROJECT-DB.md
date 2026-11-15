@@ -43,6 +43,7 @@ an `edited-*` side copy. The retained version's media and timeline stay in `file
 | `measured(sha256, record)` | What is measured of a file. Disposable |
 | `request_keys(key, digest, status, content_type, body, at_ms)` | One write's `Idempotency-Key`, its ask's digest and its answer, a day |
 | `ops(id, seq, at_ms, by, words, edits, changes, undone)` | One history entry: undo/redo |
+| `project_keys(key, ord)` | Every key its runs were named by (`KEY-N`, cl-987), in the order it took them: the last is its key now |
 
 Schema 4 (cl-885): a read takes the `head`, `boxes`, `fields` and `canvas` rows, the heads and `meta` `conflicts`, which each commit
 writes with the document; the document is decoded only to write, for history, or when the rows don't stand at it. `rows_at` keeps the
@@ -129,8 +130,8 @@ stands, and is answered in `kept` as it is. This is checked in the transaction, 
 
 ## Current-format opening
 
-Schema 5 databases with the current native Automerge storage format are opened; 2, 3 and 4 are migrated in one transaction, the
-project as it was kept beside it once as `project.db.pre-schema5` (never read). 3 → 4 is additive: `boxes.id` and the `meta` keys
+Schema 6 databases with the current native Automerge storage format are opened; 2 to 5 are migrated in one transaction, a 2, 3
+or 4 as it was kept beside it once as `project.db.pre-schema6` (never read). 5 → 6 adds `project_keys`, and nothing else. 3 → 4 is additive: `boxes.id` and the `meta` keys
 `rows_at` and `conflicts`; no row 3 has is changed. 4 → 5 adds the project's run journal (`runs`, `outputs`, `run_logs`, …). A 4
 that already holds a journal is an unreleased candidate's, refused as it is.
 `db::open` opens an existing file only. Read-only SQLite inspection validates schema and native

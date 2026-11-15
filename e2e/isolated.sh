@@ -197,11 +197,14 @@ case $suite:$shard in
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
-  cli:ondemand) needs='packages birefnet' ;;
+  cli:ondemand) needs='packages birefnet downloads spare' ;;
+  cli:env-cost) needs='packages birefnet' ;;
   cli:plan) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras vaes prompts' ;;
-  cli:) needs='packages birefnet downloads loras vaes fits parts prompts' ;;
+  cli:) needs='packages birefnet downloads spare loras vaes fits parts prompts' ;;
+  # shared_scratch's probe and its warm BiRefNet (cl-984).
+  cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published asks about, and CI reads no production (xs-169).
@@ -309,6 +312,7 @@ if [ -n "$needs" ]; then
   done
   publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
+  [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: what web/unused.js crosses out (cl-944).
   case $shard in web-core | web-unused | '') publish "$packages/moss-image" ;; esac
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
@@ -359,6 +363,11 @@ if [ -n "$needs" ]; then
     mirror "$seed/qwen3.5-0.8b.safetensors" qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B --source-format as-is
     random_weights "$seed/fontbox.safetensors" 115
     mirror "$seed/fontbox.safetensors" lilylilith/fontbox bf16 0.1.0 https://huggingface.co/lilylilith/fontbox --source-format as-is
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" spare "* ]]; then
+    random_weights "$seed/pagebox.safetensors" 900
+    mirror "$seed/pagebox.safetensors" lilylilith/pagebox bf16 0.1.0 https://huggingface.co/lilylilith/pagebox --source-format as-is
     rm -f "$seed"/*.safetensors
   fi
   if [[ " $needs " == *" loras "* ]]; then

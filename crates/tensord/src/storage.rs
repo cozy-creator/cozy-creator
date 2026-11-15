@@ -111,7 +111,6 @@ const TRANSPORT_ROTATE: u64 = 4 << 20;
 /// import did, or why it failed: `<unix seconds> <kind> <subject> <detail>`, one per completed
 /// fetch, never per object. Never fatal.
 pub(crate) fn transport(store: &Store, kind: &str, subject: &str, detail: &str) {
-    let Ok(_writing) = crate::config::legacy_diagnostics_read() else { return };
     let dir = store.root().join("logs");
     let path = dir.join("transport.log");
     let _ = std::fs::create_dir_all(&dir);
@@ -184,54 +183,42 @@ pub(crate) fn tree_or_header(store: &Store, object: &ObjectRef) -> io::Result<Op
     })
 }
 
-/// A checkpoint's native file/mapping lifetime is part of the project seal contract.
-#[derive(Clone, Debug)]
-pub(crate) struct ProjectCheckpoint {
-    checkpoint: tensorfs::store::Checkpoint,
-    _lease: Option<crate::private_io::ProjectExecutionLease>,
-}
-impl std::ops::Deref for ProjectCheckpoint {
-    type Target = tensorfs::store::Checkpoint;
-    fn deref(&self) -> &Self::Target { &self.checkpoint }
-}
-impl ProjectCheckpoint {
-    fn new(checkpoint: tensorfs::store::Checkpoint) -> io::Result<Self> {
-        Ok(Self { checkpoint, _lease: crate::private_io::lease()? })
-    }
-}
-
+/// A header composed in memory, the objects it cites that no store holds (its graph), and what
+/// composes it again.
 #[derive(Debug)]
 pub(crate) struct View {
     pub header: Vec<u8>,
     pub own: Vec<Vec<u8>>,
     pub recipe: crate::adapter::Recipe,
-    checkpoint: ProjectCheckpoint,
 }
+
+/// The views' bytes this process keeps; past them the oldest goes, and a run that names it again
+/// composes it again (an H3 view is about 1 MB).
 const VIEW_BYTES: usize = 256 << 20;
-type Views = BTreeMap<Option<String>, VecDeque<(String, Arc<View>)>>;
-fn views() -> &'static Mutex<Views> {
-    static VIEWS: Mutex<Views> = Mutex::new(BTreeMap::new());
+
+fn views() -> &'static Mutex<VecDeque<(String, Arc<View>)>> {
+    static VIEWS: Mutex<VecDeque<(String, Arc<View>)>> = Mutex::new(VecDeque::new());
     &VIEWS
 }
-fn view_scope() -> Option<String> { crate::private_io::current().map(|scope| scope.project_id) }
-pub(crate) fn close_project_views(project: &str) { views().lock().unwrap().remove(&Some(project.to_owned())); }
 
-/// Private derived headers/graphs/holds belong to the project Store; the registry disappears at seal.
-pub(crate) fn keep_view(store: &Store, header: Vec<u8>, own: Vec<Vec<u8>>, recipe: crate::adapter::Recipe) -> io::Result<ProjectCheckpoint> {
-    let checkpoint = ProjectCheckpoint::new(store.view(&header, &own).map_err(io_error)?)?;
+/// Keeps `header` (and `own`) as a view in memory, open over `store`; nothing is written.
+pub(crate) fn keep_view(store: &Store, header: Vec<u8>, own: Vec<Vec<u8>>, recipe: crate::adapter::Recipe) -> io::Result<tensorfs::store::Checkpoint> {
+    let checkpoint = store.view(&header, &own).map_err(io_error)?;
     let sha256 = checkpoint.id().sha256.clone();
-    let mut all = views().lock().unwrap();
-    let views = all.entry(view_scope()).or_default();
+    let mut views = views().lock().unwrap();
     views.retain(|(id, _)| *id != sha256);
-    views.push_back((sha256, Arc::new(View { header, own, recipe, checkpoint: checkpoint.clone() })));
+    views.push_back((sha256, Arc::new(View { header, own, recipe })));
     let size = |views: &VecDeque<(String, Arc<View>)>| views.iter().map(|(_, v)| v.header.len() + v.own.iter().map(Vec::len).sum::<usize>()).sum::<usize>();
-    while views.len() > 1 && size(views) > VIEW_BYTES { views.pop_front(); }
+    while views.len() > 1 && size(&views) > VIEW_BYTES {
+        views.pop_front();
+    }
     Ok(checkpoint)
 }
 
+/// The view `id` (`sha256:<hex>` or bare hex) this process keeps.
 pub(crate) fn view(id: &str) -> Option<Arc<View>> {
     let sha256 = id.trim_start_matches("sha256:");
-    views().lock().unwrap().get(&view_scope())?.iter().find(|(id, _)| id == sha256).map(|(_, v)| v.clone())
+    views().lock().unwrap().iter().find(|(id, _)| id == sha256).map(|(_, v)| v.clone())
 }
 
 /// The object `id` (`sha256:<hex>` or bare hex) as the store holds it, its length read off disk;
@@ -248,16 +235,16 @@ pub(crate) fn held(store: &Store, id: &str) -> io::Result<ObjectRef> {
 
 /// The checkpoint `id` names, held here (its structure; chunks may be absent): a header, a
 /// commit's (a run's checkpoint output names its commit), or a view this process keeps.
-pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<ProjectCheckpoint> {
+pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<tensorfs::store::Checkpoint> {
     if let Some(view) = view(id) {
-        return Ok(view.checkpoint.clone());
+        return store.view(&view.header, &view.own).map_err(io_error);
     }
     let object = held(store, id)?;
-    let checkpoint = match store.tree(&object) {
+    match store.tree(&object) {
         Ok(_) => store.at_checkpoint(&object),
         Err(_) => store.checkpoint(&object),
-    }.map_err(io_error)?;
-    ProjectCheckpoint::new(checkpoint)
+    }
+    .map_err(io_error)
 }
 
 /// The chunks and assets `components` read (all components when empty), each once, that the

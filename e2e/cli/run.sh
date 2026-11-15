@@ -37,6 +37,8 @@ parse "$@"
 . "$(dirname "$0")/plan.sh"
 . "$(dirname "$0")/render.sh"
 . "$(dirname "$0")/source.sh"
+. "$(dirname "$0")/envcost.sh"
+. "$(dirname "$0")/egress.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -331,9 +333,9 @@ jq -se --argjson got "${once:-null}" 'map(select(.run)) | length > 0 and all(.ru
   "$OUT/watch.ndjson" > /dev/null && J '.project_id' <<< "$once" \
   || check "watch restart: the stream's run records don't name run $n's project as GET does ($(jq -c '{project_id, project}' <<< "${once:-null}")): $(jq -sc 'map(select(.run) | .run | {project_id, project}) | unique' "$OUT/watch.ndjson")"
 # Enter on the newest row, run $n, opens it as `cozy run watch` does; q goes back, and q again quits.
-soon screen_says "$OUT/watch-ls.screen" "^ *$n .* completed" || check "watch restart: cozy run ls past the restarts doesn't list run $n completed: $(head -5 "$OUT/watch-ls.screen")"
+soon screen_says "$OUT/watch-ls.screen" "^ *[A-Z][A-Z0-9]*-$n .* completed" || check "watch restart: cozy run ls past the restarts doesn't list run $n completed: $(head -5 "$OUT/watch-ls.screen")"
 kill -USR1 "$lister" 2> /dev/null || true
-soon screen_says "$OUT/watch-ls.screen" "cozy run watch $n " && soon screen_says "$OUT/watch-ls.screen" 'completed' \
+soon screen_says "$OUT/watch-ls.screen" "cozy run watch [A-Z][A-Z0-9]*-$n " && soon screen_says "$OUT/watch-ls.screen" 'completed' \
   && ! screen_says "$OUT/watch-ls.screen" 'no such run|run_not_found' \
   || check "watch restart: cozy run ls didn't open run $n: $(head -8 "$OUT/watch-ls.screen")"
 kill "$lister" 2> /dev/null || true
@@ -352,7 +354,7 @@ step "a run followed across a Calcifer restart"
 local code n
 (cd "$here" && in_project "$RUN_PROJECT" run "$here/weightless/wait" seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
 local follower=$!
-for _ in $(seq 120); do n=$(grep -oE '^run [0-9]+ ' "$OUT/across.txt" | head -1 | grep -oE '[0-9]+') && break; sleep 0.5; done
+for _ in $(seq 120); do n=$(grep -oE '^run [A-Z][A-Z0-9]*-[0-9]+ ' "$OUT/across.txt" | head -1 | cut -d' ' -f2) && [ -n "$n" ] && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"
 systemctl --user restart cozy-calcifer || check "systemctl --user restart cozy-calcifer failed"
 wait "$follower" || true
@@ -449,12 +451,14 @@ case $SHARD in
     catalog
     basics
     component_models
+    second_project
     yaml_requests
     run_flags
     run_follow
     time_left
     broken_answers
     run_filters
+    project_keys
     run_playback
     hub_away
     lock_refresh
@@ -465,6 +469,8 @@ case $SHARD in
     orbit_angles
     old_runtime
     hostile_media
+    egress
+    hostile_inputs
     unseen
     local_edits
     path_manifest
@@ -515,8 +521,10 @@ case $SHARD in
   lines) parts="machine_lines logs" ;;
   # An idle Calcifer and TensorD, CPU time and wakeups (xs-189): by dispatch, as it measures for minutes.
   idle) parts="idle_cost logs" ;;
+  # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.
+  env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
-  ondemand) parts="ondemand_ahead logs" ;;
+  ondemand) parts="ondemand_ahead ondemand_need ondemand_install logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
   plan) parts="estimate_line plan_picks plan_published prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
@@ -525,8 +533,10 @@ case $SHARD in
     catalog
     basics
     component_models
+    second_project
     yaml_requests
     run_filters
+    project_keys
     bound_runs
     own_references
     lane_fit
@@ -534,6 +544,8 @@ case $SHARD in
     orbit_angles
     old_runtime
     hostile_media
+    egress
+    hostile_inputs
     machine_show_runs
     writes_once
     project_stream
@@ -646,6 +658,7 @@ case $SHARD in
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="
+    shared_scratch
     projectvault
     vault_leftovers
     vault_web

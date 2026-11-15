@@ -1,7 +1,8 @@
 # ab: one rental, a list of cells (each one run of a package function from a packages checkout, run in order), and
 # pairs of cells compared for identical output: a refactor's proof is the same request giving the same bytes (xs-101).
 # While cells run, `machine show` and the current run's `run watch --once` are timed every 15 s (probe.tsv): a busy
-# machine keeps answering and is never "unreachable" (cl-671).
+# machine keeps answering and is never "unreachable" (cl-671). Each minute the pod's TCP listeners are kept with the cell
+# running (listeners.log), and the summary names those beyond loopback per cell: a GPU group opens none (xs-196).
 # A pod's first call of each tree serves what has not compiled yet (its LoRA per step until the bake kernel is ready,
 # a fused block eager until it is built), so give each tree a warm-up cell before the cells it compares; each cell's
 # summary shows its `kernel.ready` and plan reports.
@@ -83,10 +84,33 @@ rent
 
 # gpu: the processes holding GPU 0 and the card's reading, from the pod's root shell.
 gpu() { timeout 60 cozy machine ssh "$NAME" "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader; nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader" 2>&1 | grep -v '^Warning: Permanently added'; }
+# listeners: the pod's listening TCP sockets as `address:port process`, `ss -Hltnp`'s, else read from /proc.
+LISTENERS='import glob, os, socket, struct
+owners = {}
+for fd in glob.glob("/proc/[0-9]*/fd/*"):
+    try:
+        link = os.readlink(fd)
+    except OSError:
+        continue
+    if link.startswith("socket:["):
+        pid = fd.split("/")[2]
+        try:
+            owners.setdefault(link[8:-1], open(f"/proc/{pid}/comm").read().strip() + "/" + pid)
+        except OSError:
+            pass
+for name, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", socket.AF_INET6)):
+    for row in open(name).read().splitlines()[1:]:
+        f = row.split()
+        if f[3] == "0A":
+            host, port = f[1].split(":")
+            raw = b"".join(struct.pack("<I", int(host[i:i + 8], 16)) for i in range(0, len(host), 8))
+            print(f"{socket.inet_ntop(family, raw)}:{int(port, 16)} {owners.get(f[9], chr(63))}")'
+listeners() { timeout 60 cozy machine ssh "$NAME" "if command -v ss > /dev/null; then ss -Hltnp | awk '{print \$4, \$6}'; else echo $(base64 -w0 <<< "$LISTENERS") | base64 -d | python3 -; fi" 2>&1 | grep -v '^Warning: Permanently added'; }
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
 ( p=0; while :; do
-    # Each minute, what holds the card (gpu.log): a stalled cell's other holder is named there.
-    [ $((p++ % 4)) != 0 ] || { echo "$(date -u +%T) $(gpu | paste -sd';')" >> "$OUT/gpu.log"; }
+    # Each minute, what holds the card (gpu.log): a stalled cell's other holder is named there; and the pod's listeners.
+    [ $((p++ % 4)) != 0 ] || { echo "$(date -u +%T) $(gpu | paste -sd';')" >> "$OUT/gpu.log"
+      k=$(cat "$OUT/current" 2>/dev/null); [ -z "$k" ] || listeners | sed "s/^/$k /" >> "$OUT/listeners.log"; }
     t=$(date +%s%3N); s=$(timeout 120 cozy machine show "$RID" --json 2>&1); src=$?; sm=$(( $(date +%s%3N) - t ))
     k=$(cat "$OUT/current" 2>/dev/null); N=''; [ -z "$k" ] || N=$(current "$k")
     rs='' rms='' rrc='' rst=''
@@ -211,6 +235,10 @@ while read -r a b; do
   if [ "$fa" != none ] && [ "$fa" = "$fb" ]; then say "$a vs $b: IDENTICAL decoded frames ($fa); files differ ($da / $db)"; continue; fi
   differ=$((differ + 1)); say "$a vs $b: DIFFERENT: digests $da / $db, frames $fa / $fb, video PSNR $(psnr "$a" "$b")"
 done < <(jq -r '.[] | "\(.[0]) \(.[1])"' <<<"$COMPARE")
+for k in "${names[@]}"; do
+  wide=$(awk -v k="$k" '$1 == k && $2 !~ /^\[?(127\.|::1\]?:|::ffff:127\.)/ {print $2, $3}' "$OUT/listeners.log" 2>/dev/null | sort -u | paste -sd';')
+  say "$k: TCP listeners beyond loopback while it ran: ${wide:-none} ($(awk -v k="$k" '$1 == k' "$OUT/listeners.log" 2>/dev/null | wc -l) rows, listeners.log)"
+done
 u=0; for k in "${names[@]}"; do x=$(grep -ci unreachable "$OUT/$k.txt" 2>/dev/null); u=$((u + ${x:-0})); done
 say "unreachable lines in the cells' follow output: $u"
 awk -F'\t' 'NR>1{n++; if($2>m)m=$2; if($3!=0)e++; if($6!=""){r++; if($6>q)q=$6; if($7!=0)f++}; u+=$9}

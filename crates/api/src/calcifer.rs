@@ -437,6 +437,10 @@ pub struct Run {
     pub id: RunId,
     /// This controller's number for it; 0 for one another client sent.
     pub number: u64,
+    /// What names it to a person from any folder (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's
+    /// own; its id for one another client sent.
+    #[serde(default)]
+    pub name: String,
     /// One another client of this account sent, as the machine it runs on numbers it: read there,
     /// never held here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -521,16 +525,6 @@ pub struct Run {
     /// Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placed: Option<Placed>,
-}
-
-impl Run {
-    /// What names it to a person: its number, or `<machine>/<number>` for one another client sent.
-    pub fn name(&self) -> String {
-        match self.machine_number {
-            Some(_) => self.id.to_string(),
-            None => self.number.to_string(),
-        }
-    }
 }
 
 /// A video's verified segment plan and the completed prefix, in absolute shot frames.
@@ -1944,7 +1938,7 @@ pub struct Ended {
 
 /// `GET /v1/runs/{id}/play?output=<name[/i]>&expires_s=N`: how a browser plays one run output
 /// straight from its machine over WebRTC.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Play {
     /// `host:port` the browser dials.
@@ -2304,17 +2298,47 @@ pub struct SessionCode {
 }
 
 /// `POST /v1/session`'s body.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedeemCode {
     pub code: String,
 }
 
 /// `POST /v1/session`: `token` for `Authorization`, `media` for the `?media=` of a file's URL.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BrowserSession {
     pub token: String,
     pub media: String,
+}
+
+// Credentials are never printed.
+impl fmt::Debug for Play {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Play").field("address", &self.address).field("expires_s", &self.expires_s).finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for RedeemCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedeemCode").finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for BrowserSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BrowserSession").finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for Holder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Holder")
+            .field("address", &self.address)
+            .field("pid", &self.pid)
+            .field("version", &self.version)
+            .field("started_at_ms", &self.started_at_ms)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The file in Calcifer's directory (`~/.cozy/calcifer`) that says, as an `error::Envelope`, why
@@ -2324,7 +2348,7 @@ pub const REFUSED: &str = "refused.json";
 /// What a serving Calcifer publishes beside its lock (`calcifer.lock.holder`, 0600, one JSON
 /// line): where its API listens and the bearer it wants, fresh at every start. Absent while the
 /// lock is held: Calcifer is still opening its store.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Holder {
     pub address: SocketAddr,
     pub token: String,

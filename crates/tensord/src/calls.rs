@@ -7,7 +7,7 @@
 //! its finished calls answered.
 use crate::{
     catalog::HeldGeneration,
-    device_executor::{Answer, ByteGrant, CallInterface, CallProgress, Frame, ModelPrefetch, Request},
+    device_executor::{Answer, ByteGrant, CallInterface, CallProgress, Frame, ModelNeed, ModelPrefetch, Request},
     execution::Engine,
     journal::{Execution, Failure, InputFile, State},
     runs::Runs,
@@ -31,8 +31,6 @@ pub(crate) struct Calls {
     machine: Arc<crate::origin::Machine>,
     /// Each live call's fetches, by run: its cancel ends them at once.
     fetches: Mutex<HashMap<String, Vec<Weak<crate::access::Fetch>>>>,
-    stopped: std::sync::atomic::AtomicBool,
-    observer: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 /// A running attempt that calls: its signer, spool, callables and calls.
@@ -161,26 +159,15 @@ impl Calls {
             parents: Mutex::new(HashMap::new()),
             machine,
             fetches: Mutex::default(),
-            stopped: std::sync::atomic::AtomicBool::new(false),
-            observer: Mutex::default(),
         });
         let (watching, engine) = (Arc::downgrade(&calls), service.engine.clone());
-        let private = crate::private_io::current();
-        *calls.observer.lock().unwrap() = Some(std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("call-nudges".into())
-            .spawn(move || crate::private_io::within(private, || nudge(watching, engine)))?);
+            .spawn(move || nudge(watching, engine))?;
         service.configure_calls(calls.clone());
         Ok(calls)
     }
 
-    pub(crate) fn seal(&self, engine: &Engine) -> io::Result<()> {
-        self.stopped.store(true, std::sync::atomic::Ordering::Release);
-        engine.notify_activity();
-        if let Some(thread) = self.observer.lock().unwrap().take() { thread.join().map_err(|_| io::Error::other("project call observer stopped unexpectedly"))?; }
-        self.parents.lock().unwrap().clear();
-        self.fetches.lock().unwrap().clear();
-        Ok(())
-    }
     /// `id`'s attempt waits on a call it made.
     pub(crate) fn waiting(&self, engine: &Engine, id: &str) -> bool {
         self.parents.lock().unwrap().get(id).is_some_and(|parent| parent.unfinished(engine))
@@ -519,6 +506,8 @@ impl Calls {
                 }
                 ("model_prefetch_unsupported", why)
             }),
+            // A model the call reads now: what of it isn't here comes before everything else (cl-966), answered once it has.
+            Some(Request::ModelNeed(need)) => self.model_need(parent, frame.seq, need),
             Some(Request::GpuRelease(_)) => {
                 let service = self.service.upgrade()
                     .ok_or_else(|| io::Error::other("the machine is stopping"))?;
@@ -536,6 +525,12 @@ impl Calls {
             answered.unwrap_or_else(|(code, detail)| crate::device_executor::refused(frame.seq, code, detail)),
             None,
         ))
+    }
+
+    fn model_need(&self, parent: &Parent, seq: u64, need: &ModelNeed) -> Result<Answer, (&'static str, String)> {
+        let runs = self.runs.upgrade().ok_or(("model_need_unsupported", "the machine is stopping".into()))?;
+        runs.need(&parent.id, &need.manifest, &need.components).map_err(|error| (error.code, error.message))?;
+        Ok(Answer::ok(seq))
     }
 
     fn model_prefetch(&self, parent: &Parent, seq: u64, prefetch: &ModelPrefetch) -> Result<Answer, (&'static str, String)> {
@@ -1017,7 +1012,7 @@ fn nudge(calls: Weak<Calls>, engine: Arc<Engine>) {
         let Some(calls) = calls.upgrade() else {
             return;
         };
-        if seen == u64::MAX || calls.stopped.load(std::sync::atomic::Ordering::Acquire) {
+        if seen == u64::MAX {
             return;
         }
         for parent in calls.parents.lock().unwrap().values() {

@@ -37,6 +37,7 @@ __all__ = [
     'Malformed',
     'Map',
     'MemoSettings',
+    'ModelNeed',
     'ModelPrefetch',
     'PrepareRequest',
     'Preview',
@@ -168,8 +169,8 @@ class Cancel:
     def json(self) -> str: ...
     def replace(self, /, **changes: Unpack[_CancelChanges]) -> Self: ...
 
-_InvokeFields = TypedDict("_InvokeFields", {'tensorfs': NotRequired[TensorFSOptions | None], 'max_output_bytes': NotRequired[int], 'request_id': str, 'construction': str, 'entrypoint': str, 'spool': _StrPath, 'deadline_s': NotRequired[float | None], 'attention_kernel': NotRequired[str], 'attention_capture': NotRequired[str], 'bits': NotRequired[int], 'inputs': NotRequired[Mapping[str, InputFile]], 'trees': NotRequired[Mapping[str, tuple[_StrPath, str]]], 'sources': NotRequired[Mapping[str, str]], 'unbound': NotRequired[Mapping[str, tuple[str, str]]], 'weights': NotRequired[Mapping[str, int]], 'destination': NotRequired[str], 'actor': NotRequired[str], 'operation': NotRequired[str], 'family': NotRequired[str], 'display_limit': NotRequired[Sequence[int]]})
-_InvokeChanges = TypedDict("_InvokeChanges", {'tensorfs': TensorFSOptions | None, 'max_output_bytes': int, 'request_id': str, 'construction': str, 'entrypoint': str, 'spool': _StrPath, 'deadline_s': float | None, 'attention_kernel': str, 'attention_capture': str, 'bits': int, 'inputs': Mapping[str, InputFile], 'trees': Mapping[str, tuple[_StrPath, str]], 'sources': Mapping[str, str], 'unbound': Mapping[str, tuple[str, str]], 'weights': Mapping[str, int], 'destination': str, 'actor': str, 'operation': str, 'family': str, 'display_limit': Sequence[int]}, total=False)
+_InvokeFields = TypedDict("_InvokeFields", {'tensorfs': NotRequired[TensorFSOptions | None], 'max_output_bytes': NotRequired[int], 'request_id': str, 'construction': str, 'entrypoint': str, 'spool': _StrPath, 'deadline_s': NotRequired[float | None], 'attention_kernel': NotRequired[str], 'attention_capture': NotRequired[str], 'bits': NotRequired[int], 'inputs': NotRequired[Mapping[str, InputFile]], 'trees': NotRequired[Mapping[str, tuple[_StrPath, str]]], 'sources': NotRequired[Mapping[str, str]], 'unbound': NotRequired[Mapping[str, tuple[str, str]]], 'weights': NotRequired[Mapping[str, int]], 'destination': NotRequired[str], 'actor': NotRequired[str], 'operation': NotRequired[str], 'family': NotRequired[str], 'display_limit': NotRequired[Sequence[int]], 'scratch': NotRequired[_StrPath | None], 'store': NotRequired[_StrPath | None]})
+_InvokeChanges = TypedDict("_InvokeChanges", {'tensorfs': TensorFSOptions | None, 'max_output_bytes': int, 'request_id': str, 'construction': str, 'entrypoint': str, 'spool': _StrPath, 'deadline_s': float | None, 'attention_kernel': str, 'attention_capture': str, 'bits': int, 'inputs': Mapping[str, InputFile], 'trees': Mapping[str, tuple[_StrPath, str]], 'sources': Mapping[str, str], 'unbound': Mapping[str, tuple[str, str]], 'weights': Mapping[str, int], 'destination': str, 'actor': str, 'operation': str, 'family': str, 'display_limit': Sequence[int], 'scratch': _StrPath | None, 'store': _StrPath | None}, total=False)
 
 @final
 class Invoke:
@@ -213,6 +214,10 @@ class Invoke:
     def family(self) -> str: ...
     @property
     def display_limit(self) -> list[int]: ...
+    @property
+    def scratch(self) -> Path | None: ...
+    @property
+    def store(self) -> Path | None: ...
     def __new__(cls, /, **fields: Unpack[_InvokeFields]) -> Self: ...
     def json(self) -> str: ...
     def replace(self, /, **changes: Unpack[_InvokeChanges]) -> Self: ...
@@ -491,6 +496,19 @@ class ModelPrefetch:
     def json(self) -> str: ...
     def replace(self, /, **changes: Unpack[_ModelPrefetchChanges]) -> Self: ...
 
+_ModelNeedFields = TypedDict("_ModelNeedFields", {'manifest': str, 'components': NotRequired[Sequence[str]]})
+_ModelNeedChanges = TypedDict("_ModelNeedChanges", {'manifest': str, 'components': Sequence[str]}, total=False)
+
+@final
+class ModelNeed:
+    @property
+    def manifest(self) -> str: ...
+    @property
+    def components(self) -> list[str]: ...
+    def __new__(cls, /, **fields: Unpack[_ModelNeedFields]) -> Self: ...
+    def json(self) -> str: ...
+    def replace(self, /, **changes: Unpack[_ModelNeedChanges]) -> Self: ...
+
 _PublishFields = TypedDict("_PublishFields", {'output': str, 'label': NotRequired[str], 'asset_ref': str, 'asset_kind': str, 'media_type': NotRequired[str], 'size_bytes': NotRequired[int], 'digest': NotRequired[str], 'parts': NotRequired[Sequence[PublishPart]]})
 _PublishChanges = TypedDict("_PublishChanges", {'output': str, 'label': str, 'asset_ref': str, 'asset_kind': str, 'media_type': str, 'size_bytes': int, 'digest': str, 'parts': Sequence[PublishPart]}, total=False)
 
@@ -682,6 +700,7 @@ Request: TypeAlias = (
     | ChildForget
     | GpuRelease
     | ModelPrefetch
+    | ModelNeed
     | Publish
     | CheckpointItem
     | StageMemoLookup

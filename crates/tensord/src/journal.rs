@@ -1,8 +1,5 @@
 //! Durable acceptance and transitions. Observation has no lifecycle side effects.
 use platform::process::Birth;
-mod project_migration;
-mod project_inventory;
-mod project_retirement;
 use crate::private_journal;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -599,6 +596,14 @@ fn db_error(error: impl std::fmt::Display) -> io::Error {
 fn encoded(value: &impl Serialize) -> io::Result<String> {
     serde_json::to_string(value).map_err(db_error)
 }
+/// A project run's caller id as the machine's columns keep it (cl-984): digested with its project, so the machine's journal
+/// never holds a project's run identities; an unscoped run's is its own.
+fn stored_id(scope: Option<&api::machine::LocalPrivateStorage>, id: &str) -> String {
+    match scope {
+        Some(scope) => format!("p:{}", tensorfs::sha256::hex_digest(format!("{}\0{id}", scope.project_id).as_bytes())),
+        None => id.to_owned(),
+    }
+}
 fn invocation_index(invocation: &Invocation) -> io::Result<String> {
     if invocation.local_private.is_none() { return encoded(invocation); }
     encoded(&serde_json::json!({
@@ -794,17 +799,115 @@ impl Journal {
         })
     }
 
-    /// A legacy field-encrypted row is still project metadata outside the project. Detect it
-    /// before the strict namespace can claim custody; migration is never an implicit delete.
-    pub(crate) fn contains_private_project(&self, project: &str) -> io::Result<bool> {
-        let present: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE json_extract(invocation,'$.local_private.project_id')=?1 UNION ALL SELECT 1 FROM private_object_uses WHERE project=?1)", [project], |row| row.get(0)).map_err(db_error)?;
-        if present { return Ok(true); }
-        let prefix = format!("local-private:{}:{}:", project.len(), project);
-        for (table, column) in [("installations", "actor"), ("preparations", "actor"), ("warm_sets", "actor"), ("native_outputs", "actor"), ("resolutions", "actor"), ("objects", "actor"), ("held_memos", "actor"), ("held_memo_objects", "actor"), ("held_names", "name")] {
-            let sql = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE substr({column},1,length(?1))=?1)");
-            if self.connection.query_row(&sql, [&prefix], |row| row.get::<_, bool>(0)).map_err(db_error)? { return Ok(true); }
+    /// The acceptance of each of `requests` that `actor` (or its scoped key in `scope`) sent here: what Calcifer's import of
+    /// a project's legacy history checks its records against (cl-984). A request tagged to another project is refused.
+    pub(crate) fn legacy_bindings(&self, actor: &str, scoped: &str, scope: &api::machine::LocalPrivateStorage, requests: &[String])
+        -> io::Result<api::machine::ProjectExecutionLegacyLookupAnswer> {
+        if requests.len() > 256 {
+            return Err(db_error("legacy binding lookup exceeds its protocol bound"));
         }
-        Ok(false)
+        let mut answer = api::machine::ProjectExecutionLegacyLookupAnswer::default();
+        for request in requests {
+            if request.is_empty() || request.len() > 256 || request.chars().any(char::is_control) {
+                return Err(db_error("invalid legacy request identity"));
+            }
+            let row: Option<(u64, String)> = self.connection.query_row(
+                "SELECT id,record FROM executions WHERE request_id=?2 AND (actor=?1 OR actor=?3) LIMIT 1",
+                params![actor, request, scoped], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(db_error)?;
+            let Some((source_number, record)) = row else {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "a legacy request has no acceptance at this worker"));
+            };
+            let record = decoded_execution(&record)?;
+            if record.invocation.local_private.as_ref().is_some_and(|tagged| tagged.project_id != scope.project_id) {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "a legacy request is tagged to another project"));
+            }
+            let accepted = record.submission.ok_or_else(|| db_error("a legacy request has no accepted binding"))?;
+            if accepted.request_id != *request || accepted.invocation_digest.is_empty() {
+                return Err(db_error("a legacy accepted binding is incomplete"));
+            }
+            answer.bindings.push(api::machine::ProjectExecutionLegacyBinding {
+                source_number,
+                binding: api::machine::ProjectExecutionMigrationBinding {
+                    request_id: request.clone(),
+                    source_workspace_id: self.workspace_id.clone(),
+                    invocation_spec_digest: accepted.invocation_digest,
+                },
+            });
+        }
+        Ok(answer)
+    }
+
+    /// Whether execution `id` is still journaled here.
+    pub(crate) fn holds_execution(&self, id: u64) -> io::Result<bool> {
+        self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE id=?1)", [id], |row| row.get(0)).map_err(db_error)
+    }
+
+    /// Deletes `ids`' executions and every row of theirs, their pages overwritten (cl-984): a project's legacy worker
+    /// history once Calcifer imported it into the project. Answers the objects only they named, and their triage subjects.
+    pub(crate) fn retire_executions(&mut self, ids: &[u64]) -> io::Result<(Vec<tensorfs::format::ObjectRef>, Vec<String>)> {
+        const OWNED: [&str; 13] = ["public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied", "run_log_lengths",
+            "package_log_dropped", "run_calls", "triage", "run_objects", "run_specs", "root_times", "cold_times"];
+        self.connection.execute_batch("PRAGMA secure_delete=ON").map_err(db_error)?;
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let (mut objects, mut subjects) = (vec![], vec![]);
+        for id in ids {
+            {
+                let mut only = tx.prepare("SELECT sha256,length FROM run_objects WHERE execution=?1 AND sha256 NOT IN (SELECT sha256 FROM run_objects WHERE execution<>?1)").map_err(db_error)?;
+                let rows = only.query_map([id], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? })).map_err(db_error)?;
+                for row in rows { objects.push(row.map_err(db_error)?); }
+            }
+            // Every object its record names (inputs uploaded for it, outputs it made) that no other run holds.
+            let record: Option<String> = tx.query_row("SELECT record FROM executions WHERE id=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+            if let Some(execution) = record.and_then(|record| decoded_execution(&record).ok()) {
+                let mut named = std::collections::BTreeMap::new();
+                for input in &execution.invocation.inputs {
+                    named.insert(input.digest.strip_prefix("sha256:").unwrap_or(&input.digest).to_owned(), input.length);
+                }
+                fn digests(value: &Value, found: &mut std::collections::BTreeMap<String, u64>) {
+                    match value {
+                        Value::String(text) => {
+                            let hex = text.strip_prefix("sha256:").unwrap_or(text);
+                            if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) { found.entry(hex.to_ascii_lowercase()).or_insert(0); }
+                        }
+                        Value::Array(items) => items.iter().for_each(|item| digests(item, found)),
+                        Value::Object(fields) => fields.values().for_each(|item| digests(item, found)),
+                        _ => {}
+                    }
+                }
+                if let Ok(value) = serde_json::to_value(&execution) { digests(&value, &mut named); }
+                for (sha256, length) in named {
+                    let others: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM run_objects WHERE sha256=?1 AND execution<>?2)", params![sha256, id], |row| row.get(0)).map_err(db_error)?;
+                    if !others && sha256.len() == 64 && !objects.iter().any(|held| held.sha256 == sha256) {
+                        objects.push(tensorfs::format::ObjectRef { sha256, length });
+                    }
+                }
+            }
+            let triage: Option<String> = tx.query_row("SELECT record FROM triage WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+            subjects.extend(triage.and_then(|record| serde_json::from_str::<Value>(&record).ok()?.get("subject_id")?.as_str().map(String::from)));
+            for table in OWNED {
+                tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
+            }
+            tx.execute("DELETE FROM executions WHERE id=?1", [id]).map_err(db_error)?;
+        }
+        // Their objects' uses and uploads name them too.
+        for object in &objects {
+            for table in ["object_uses", "private_object_uses", "objects", "held_memo_objects"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE sha256=?1"), [&object.sha256]).map_err(db_error)?;
+            }
+        }
+        tx.commit().map_err(db_error)?;
+        // Their cells are zeroed (`secure_delete`); the WAL's older images of those pages go once no reader holds them.
+        self.truncate_wal();
+        Ok((objects, subjects))
+    }
+
+    /// The WAL emptied into the journal, retried while a reader holds an older snapshot: no page image it held outlives this.
+    pub(crate) fn truncate_wal(&self) {
+        for _ in 0..40 {
+            let busy: i64 = self.connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0)).unwrap_or(1);
+            if busy == 0 { return; }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
     }
 
     pub(crate) fn workspace_id(&self) -> &str {
@@ -845,13 +948,6 @@ impl Journal {
         Ok(bound)
     }
     /// Every generation an unfinished run names.
-    /// Startup may import independently published software, never local source or an
-    /// environment already observed in a protected legacy invocation. Historical absence of
-    /// a project tag is not permission to resume a saved warm payload.
-    pub(crate) fn auto_import_generations(&self) -> io::Result<std::collections::HashSet<String>> {
-        self.generations("SELECT json_extract(i.record,'$.generation') FROM installations i WHERE i.actor NOT LIKE 'local-private:%' AND json_extract(i.record,'$.package') NOT LIKE 'local/%' AND NOT EXISTS(SELECT 1 FROM executions e WHERE json_extract(e.invocation,'$.local_private.project_id') IS NOT NULL AND json_extract(e.invocation,'$.generation')=json_extract(i.record,'$.generation'))")
-    }
-
     pub(crate) fn running_generations(&self) -> io::Result<std::collections::HashSet<String>> {
         self.generations(
             "SELECT json_extract(invocation,'$.generation') FROM executions
@@ -1250,7 +1346,7 @@ impl Journal {
     /// An accepted run is returned for normal cancellation; its spec/outcome is never replaced.
     pub(crate) fn reserve_run_cancellation(&mut self, actor: &str, id: &str) -> io::Result<Execution> {
         validate_scope(actor, id, id)?;
-        let key = format!("run:{}", encoded(&(actor, id))?);
+        let key = format!("run:{}", encoded(&(actor, stored_id(crate::private_io::current().as_ref(), id)))?);
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
         if update_run_reserved(&tx, actor, id)? {
@@ -1528,7 +1624,7 @@ pub(crate) struct Accepting<'a> {
 fn accepting(tx: &rusqlite::Transaction<'_>, actor: &str, run: Accepting<'_>) -> io::Result<(Execution, bool)> {
     let Accepting { id, digest, invocation, objects, spec } = run;
     validate_scope(actor, id, id)?;
-    let key = format!("run:{}", encoded(&(actor, id))?);
+    let key = format!("run:{}", encoded(&(actor, stored_id(invocation.local_private.as_ref(), id)))?);
     if update_run_reserved(tx, actor, id)? {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "this run id names a software update"));
     }
@@ -1595,7 +1691,7 @@ fn insert(
             })
         })
         .collect();
-    tx.execute("INSERT INTO executions(idempotency_key,invocation,record,state,updated_ms,actor,request_id,submission_id) VALUES(?1,?2,'{}','queued',?3,?4,?5,?6)", params![key, invocation_index(&invocation)?, timestamp(),context.as_ref().map(|context|context.actor.as_str()),context.as_ref().map(|context|context.request_id.as_str()),context.as_ref().map(|context|context.submission_id.as_str())]).map_err(db_error)?;
+    tx.execute("INSERT INTO executions(idempotency_key,invocation,record,state,updated_ms,actor,request_id,submission_id) VALUES(?1,?2,'{}','queued',?3,?4,?5,?6)", params![key, invocation_index(&invocation)?, timestamp(),context.as_ref().map(|context|context.actor.as_str()),context.as_ref().map(|context|stored_id(invocation.local_private.as_ref(), &context.request_id)),context.as_ref().map(|context|stored_id(invocation.local_private.as_ref(), &context.submission_id))]).map_err(db_error)?;
     let execution = Execution {
         id: tx.last_insert_rowid().to_string(),
         idempotency_key: key.into(),
@@ -1658,7 +1754,7 @@ impl Journal {
             .connection
             .query_row(
                 "SELECT record FROM executions WHERE (actor=?1 OR ?1 IS NULL AND actor IS NOT NULL) AND request_id=?2 LIMIT 1",
-                params![actor, request_id],
+                params![actor, stored_id(crate::private_io::current().as_ref(), request_id)],
                 |row| row.get(0),
             )
             .optional()
@@ -1729,14 +1825,6 @@ impl Journal {
                 |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(since))),
             )
             .map_err(db_error)
-    }
-
-    /// Numeric startup ownership only: never decode private or unscoped authored payloads
-    /// merely to keep pre-upgrade work inert until its project claims custody.
-    pub(crate) fn nonterminal_ids(&self) -> io::Result<std::collections::HashSet<String>> {
-        let mut query=self.connection.prepare("SELECT id FROM executions WHERE state IN ('queued','starting','running')").map_err(db_error)?;
-        let rows=query.query_map([],|row|row.get::<_,i64>(0).map(|id|id.to_string())).map_err(db_error)?;
-        rows.collect::<Result<_,_>>().map_err(db_error)
     }
 
     pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
@@ -2623,7 +2711,7 @@ fn public_prior(
     let request: Option<String> = tx
         .query_row(
             "SELECT record FROM executions WHERE actor=?1 AND request_id=?2",
-            params![actor, request_id],
+            params![actor, stored_id(crate::private_io::current().as_ref(), request_id)],
             |row| row.get(0),
         )
         .optional()
@@ -2633,7 +2721,7 @@ fn public_prior(
     }
     tx.query_row(
         "SELECT record FROM executions WHERE actor=?1 AND submission_id=?2",
-        params![actor, submission_id],
+        params![actor, stored_id(crate::private_io::current().as_ref(), submission_id)],
         |row| row.get(0),
     )
     .optional()

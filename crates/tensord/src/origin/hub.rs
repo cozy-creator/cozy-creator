@@ -14,24 +14,22 @@ use tensorfs::{
 use super::{Key, Machine, Remote};
 use crate::{hub, stop::Stop};
 
-/// `source`'s Hub as an endpoint over the machine's client for it (its CA, whether it is on
-/// loopback).
+/// `source`'s Hub as an endpoint over the machine's client for its CA.
 fn endpoint(machine: &Machine, source: &hub::Source) -> Result<(Endpoint, Key)> {
     let trust = source.ca_der.as_deref().map(|der| Arc::new(hub::pem(der).into_bytes()));
-    let local = hub::origin_key(&source.origin).is_some_and(|key| loopback(&key));
-    let client = machine.client(trust.as_ref(), local)?;
+    let client = machine.client(trust.as_ref())?;
     let endpoint = match &source.capability {
         Some(capability) => Endpoint::new(&client, &source.origin, Some(capability.clone() as Arc<dyn TokenProvider>))?,
         None => Endpoint::new(&client, &source.origin, None)?.anonymous(),
     };
-    Ok((endpoint, (trust, local)))
+    Ok((endpoint, trust))
 }
 
 /// Where the objects of `source`'s Hub are read. Nothing is asked of the Hub until a fetch
 /// needs it.
 pub(crate) fn remote(machine: &Machine, source: &hub::Source) -> Result<Remote> {
-    let (endpoint, (trust, local)) = endpoint(machine, source)?;
-    Ok(Remote { origin: Arc::new(endpoint), trust, local })
+    let (endpoint, trust) = endpoint(machine, source)?;
+    Ok(Remote { origin: Arc::new(endpoint), trust })
 }
 
 /// `model`'s checkpoint at `source`'s Hub: of `release` (empty: the newest) in `lane` (empty:
@@ -55,9 +53,4 @@ pub(crate) fn object(machine: &Machine, source: &hub::Source, sha256: &str) -> R
             None => refuse(Code::REF_NOT_FOUND, format!("sha256:{sha256} is not readable at {}", endpoint.url())),
         }
     })
-}
-
-fn loopback(key: &str) -> bool {
-    let host = key.split_once("://").and_then(|(_, rest)| rest.rsplit_once(':')).map(|(host, _)| host);
-    matches!(host, Some("localhost" | "127.0.0.1" | "[::1]"))
 }

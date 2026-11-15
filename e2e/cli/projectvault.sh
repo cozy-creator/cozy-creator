@@ -130,8 +130,16 @@ PY_BACKING_SCAN
   [ ! -e "$view/unsafe-recovery.txt" ] || fail "refused recovery output created an unlocked-view file"
 
   step "locking blocks project reads; wrong credentials do not open it"
+  local key keyed
+  key=$(in_project "$P" --json key | jq -r '.key // empty') || key=
+  [ -n "$key" ] || check "keys: the encrypted project has no key"
   in_project "$P" --json vault lock > "$work/locked.json"
   jq -e '.vault.state == "locked"' "$work/locked.json" > /dev/null || fail "lock did not complete"
+  # Locked, its key is in no index of Calcifer's, only its project.db (cl-987, Paul 11-15): its runs' names are unknown here.
+  keyed=$(python3 -c 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT count(*) FROM project_keys WHERE key = ?", (sys.argv[2],)).fetchone()[0])' "$HOME/.cozy/calcifer/state.db" "$key" 2>&1)
+  [ "$keyed" = 0 ] || check "keys: locked, its key $key stays in state.db's index ($keyed)"
+  (cd "$work" && cozy --json run watch "$key-1" --once) > "$work/locked-key.json" 2>&1 || true
+  jq -e '.error.code == "run_not_found"' "$work/locked-key.json" > /dev/null || check "keys: $key-1 of the locked project wasn't unknown: $(tail -c 300 "$work/locked-key.json")"
   if in_project "$P" --json --full status > "$work/locked-read.json" 2> "$work/locked-read.err"; then fail "locked project state was readable"; fi
   if in_project "$P" --json vault unlock --passphrase-file "$secrets/wrong" > "$work/wrong.json" 2> "$work/wrong.err"; then fail "wrong passphrase unlocked the project"; fi
   if [ -r "$view/files/private-sentinel.txt" ]; then fail "old mount path stayed readable after lock"; fi
@@ -139,6 +147,8 @@ PY_BACKING_SCAN
   step "saved recovery and passphrase replacement preserve the files"
   # The refused in-view replacement must leave the original recovery credential valid.
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery1" --idle 0 > "$work/recovered.json"
+  # Unlocked, it opens with the key its project.db keeps.
+  in_project "$P" --json key | jq -e --arg key "$key" '.key == $key' > /dev/null || check "keys: unlocked, the project's key isn't $key again"
   in_project "$P" --json vault passphrase --passphrase-file "$secrets/changed" > "$work/passphrase.json"
   in_project "$P" --json vault recovery --recovery-out "$secrets/recovery2" > "$work/replacement-recovery.json"
   in_project "$P" --json vault lock > "$work/replaced-lock.json" || fail "the project doesn't lock after its credentials change: $(jq -c '.error | {code, message}' "$work/replaced-lock.json" 2> /dev/null)"
@@ -217,6 +227,24 @@ PY_BACKING_SCAN
 
 # cl-886: encryption leaves nothing outside its vault. A conversion killed midway is recovered by the next start; Calcifer
 # never opens its own `.cozy-*` folders as projects; and no file outside the vault holds the project's plaintext.
+# An ordinary and an unlocked encrypted project run on the machine's executors, one code path, each call in its own scratch
+# inside its project; BiRefNet stays warm across them; locked, nothing of the encrypted one is outside it (cl-984;
+# e2e/cli/shared_scratch.py). isolated.sh published e2e-scratch and BiRefNet's model.
+shared_scratch() (
+  step "two projects, one encrypted, on one shared executor: each call's files, temp and logs in its own project (cl-984)"
+  [ -n "$LOCAL" ] || exit 0
+  local work secrets
+  work=$(mktemp -d "$OUT/shared-scratch.XXXXXX") secrets=$(mktemp -d "$OUT/shared-scratch-credentials.XXXXXX")
+  trap 'in_project "$work/encrypted" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic shared scratch passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  cozy --json new --unencrypted "$work/plain" > "$work/plain.json" || fail "shared scratch: cozy new --unencrypted: $(tail -c 300 "$work/plain.json")"
+  cozy --json new "$work/encrypted" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/encrypted.json" 2> "$work/encrypted.err" \
+    || fail "shared scratch: cozy new --passphrase-file: $(tail -c 300 "$work/encrypted.err")"
+  in_project "$work/encrypted" --json vault status > "$work/status.json"
+  python3 "$E2E/cli/shared_scratch.py" --plain "$work/plain" --encrypted "$work/encrypted" --view "$(jq -r '.view' "$work/status.json")" --image "$(picture dog1.jpg)" \
+    --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" || { cat "$work/proof.err"; check "shared scratch: $(tail -n 1 "$work/proof.err" | cut -c1-400)"; }
+)
+
 vault_leftovers() (
   step "encryption leaves nothing behind: an interrupted conversion recovers; no leftover is listed; no plaintext outside the vault"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault leftovers: Linux runners only"; return 0; }

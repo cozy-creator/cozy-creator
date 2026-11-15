@@ -95,14 +95,24 @@ pub(crate) enum VaultProgress<'a> {
 #[derive(Clone)]
 pub(crate) struct RunAddress { pub project: Option<String>, pub run: String }
 impl RunAddress {
-    pub(crate) fn of(run: &Run) -> Self { Self { project: run.project_id.clone(), run: run.id.to_string() } }
+    pub(crate) fn of(run: &Run) -> Self {
+        match &run.project_id {
+            Some(project) => Self { project: Some(project.clone()), run: run.id.to_string() },
+            // A record a run's stream sent names no project: its `KEY-N` finds it from any scope (cl-987).
+            None if api::calcifer::project::run_name(&run.name).is_some() => Self { project: None, run: run.name.clone() },
+            None => Self { project: None, run: run.id.to_string() },
+        }
+    }
     pub(crate) async fn current(ctx: &Context, run: &str) -> Result<Self, Error> {
+        // `KEY-N` names one run from any folder (cl-987): Calcifer finds its project.
+        if api::calcifer::project::run_name(run).is_some() {
+            return Ok(Self { project: None, run: run.trim().to_ascii_uppercase() });
+        }
         let project = match crate::project::identity(ctx).await {
             Ok(project) => Some(project.id),
             Err(error) if error.code == "not_in_a_project" => None,
             Err(error) => return Err(error),
         };
-        crate::run::in_folder(project.is_some());
         let address = Self { project, run: run.into() };
         if address.project.is_none() || !run.starts_with("run-") {
             return Ok(address);

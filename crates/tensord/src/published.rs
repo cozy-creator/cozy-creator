@@ -177,11 +177,21 @@ fn unresolved(named: &Named) -> Failure {
 }
 
 /// The caller's provider tokens; empty reads public sources anonymously.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Providers {
     pub huggingface: String,
     pub civitai: String,
 }
+
+/// The tokens are never printed.
+impl std::fmt::Debug for Providers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Providers").finish_non_exhaustive()
+    }
+}
+
+/// Checkpoints by header, each with the components read (`access::Selected`).
+type Selected = Vec<(String, Vec<String>)>;
 
 /// Where a preparation's stage and bytes are reported as they change.
 pub(crate) type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
@@ -246,6 +256,26 @@ impl Drop for Within<'_> {
 }
 
 pub(crate) type Failure = (&'static str, String);
+
+/// What a model is made from: a source a run names, or a file written to this machine
+/// (`object://`), the only way a local file reaches it.
+#[derive(Clone, Copy)]
+pub(crate) enum ModelSource<'a> {
+    Named(&'a str),
+    Written(&'a Path),
+}
+
+/// A source a run names: `hf://`, `civitai://`, an https URL, or a file written to this machine
+/// (`object://`, `input://`). A path on the machine is refused: no request reads a machine's files.
+pub(crate) fn named_source(source: &str) -> Result<(), Failure> {
+    let local = !source.trim().is_empty() && matches!(tensorfs::import::remote::parse(source), Ok(tensorfs::import::remote::Spec::Local(_)));
+    if local && !source.starts_with("object://") && !source.starts_with("input://") {
+        return Err(("local_model_path_refused", format!(
+            "{source:?} is a path on the machine, and a run never names a machine's file as a model: \
+             upload the file (`cozy model upload <file> <name>`), which sends its bytes as an object:// input")));
+    }
+    Ok(())
+}
 
 /// A preparation its run's cancel stopped.
 pub(crate) const CANCELED: &str = "preparation_canceled";
@@ -360,18 +390,6 @@ impl Publisher {
         })
     }
 
-    pub(crate) fn for_project(&self, root: &Path, store: Arc<Store>) -> io::Result<Arc<Self>> {
-        // All provider downloads, source conversions and refs default to the project store.
-        // Authentication is never treated as proof that the resulting weights are public.
-        let machine = Machine::new(store.clone(), None)?;
-        let mut sdk = self.sdk.clone();
-        sdk.uv = sdk.uv.in_project(root);
-        if matches!(sdk.torch, layer::Torch::Own { .. }) { sdk.torch = layer::Torch::Own { engine: root.to_owned(), wanted: Arc::default() }; }
-        Ok(Arc::new(Self { sdk, scope_namespace: self.scope_namespace.clone(), machine,
-            store, making: Mutex::default(), building: Mutex::default(), layer: Mutex::default(), refreshing: Arc::default() }))
-    }
-    pub(crate) fn process_namespace(&self) -> &str { &self.scope_namespace }
-    pub(crate) fn origin_machine(&self) -> Arc<Machine> { self.machine.clone() }
     /// This machine's PyTorch layer: its base's, read once. A machine with no image installs its
     /// own base the first time a package needs one, at the version `hub` names (`follow`), else
     /// the newest for its accelerator; none when it cannot (offline), and packages then install
@@ -405,7 +423,7 @@ impl Publisher {
     /// holds torch.
     fn install_torch(&self, engine: &Path, wanted: Option<&str>, job: &Job) -> Result<PathBuf, Failure> {
         job.stage("installing this machine's PyTorch".into());
-        let staging = engine.join(api::machine::project_area::TORCH_STAGING);
+        let staging = engine.join(".torch.partial");
         let _ = fs::remove_dir_all(&staging);
         let (dir, py) = (staging.to_string_lossy(), platform::paths::venv_python(&staging));
         let torch = wanted.map_or("torch".into(), |version| format!("torch=={version}"));
@@ -413,7 +431,7 @@ impl Publisher {
             .and_then(|()| self.uv(&["pip", "install", "--python", &py.to_string_lossy(), "--torch-backend", "auto", &torch, "torchvision", "torchaudio"], &[], job))
             .and_then(|()| {
                 let version = layer::torch_version(&staging).ok_or(("torch_missing", "uv installed no torch".to_string()))?;
-                let base = engine.join(api::machine::project_area::torch_base(&version));
+                let base = engine.join(format!("torch-{version}"));
                 let _ = fs::remove_dir_all(&base); // no base: it holds no torch
                 fs::rename(&staging, &base).map_err(io_failure)?;
                 tracing::info!("installed this machine's PyTorch {version}");
@@ -514,7 +532,7 @@ impl Publisher {
             ));
         }
         let import = crate::activity::Import::new(&choice.source, &job.caller);
-        let made = self.make(&choice.source, &choice.profiles, &choice.trained_on, providers, job.stop.as_ref(), &|stage, moved, total| {
+        let made = self.make(ModelSource::Named(&choice.source), &choice.profiles, &choice.trained_on, providers, job.stop.as_ref(), &|stage, moved, total| {
             import.moved(stage, moved, total);
             job.set(format!("{stage} for {path}"), moved, total)
         })?;
@@ -579,10 +597,10 @@ impl Publisher {
         &self.machine
     }
 
-    /// A provider source made into a local model (`make_source`), as a run's refusal.
+    /// A provider source or a written file made into a local model (`make_source`), as a run's refusal.
     pub(crate) fn make_source(
         &self,
-        source: &str,
+        source: ModelSource<'_>,
         profiles: &[String],
         trained_on: &str,
         providers: &Providers,
@@ -593,11 +611,19 @@ impl Publisher {
             .map_err(|(code, message)| Refused { code, message })
     }
 
-    /// A provider source made into a local model (`make_source`), one maker per source.
-    fn make(&self, source: &str, profiles: &[String], trained_on: &str, providers: &Providers,
+    /// A provider source or a written file made into a local model (`make_source`), one maker per source.
+    fn make(&self, source: ModelSource<'_>, profiles: &[String], trained_on: &str, providers: &Providers,
         stop: Option<&Stop>, progress: &(dyn Fn(&str, u64, u64) + Sync),
     ) -> Result<Made, Failure> {
         let _inventory = crate::held_models::ModelChange;
+        let source = match source {
+            ModelSource::Named(named) if named.starts_with("object://") || named.starts_with("input://") => {
+                return Err(("invalid_request", format!("{named} is a written file, which only a model upload makes into a model")));
+            }
+            ModelSource::Named(named) => named_source(named).map(|()| named.to_owned())?,
+            ModelSource::Written(file) => file.display().to_string(),
+        };
+        let source = source.as_str();
         crate::private_io::check_model_source(source).map_err(|error| ("private_model_import_unsupported", error.to_string()))?;
         let mut sorted = profiles.to_vec();
         sorted.sort();
@@ -765,13 +791,12 @@ impl Publisher {
                 Ok(())
             }).map_err(|e| e.to_string())
         };
-        let private = crate::private_io::current();
-        let spawned = std::thread::Builder::new().name("name-refresh".into()).spawn(move || crate::private_io::within(private, || {
+        let spawned = std::thread::Builder::new().name("name-refresh".into()).spawn(move || {
             if let Err(why) = read() {
                 tracing::info!(name = %done, "a held model name stands: reading it again failed: {why}");
             }
             refreshing.lock().unwrap().remove(&done);
-        }));
+        });
         if let Err(error) = spawned {
             tracing::warn!("a held model name is not read again: {error}");
             self.refreshing.lock().unwrap().remove(&unspawned);
@@ -1095,15 +1120,9 @@ impl Publisher {
                 return Ok(held);
             }
         }
-        // An earlier environment of this release (another SDK's): its card, kept beside it, and
-        // the Runtime pair it holds. A kept card whose wheels the store no longer holds is read
-        // again: its URLs expire.
+        let card = self.card(service, actor, request, &release, &catalog)?;
+        // An earlier environment of this release (another SDK's): the Runtime pair it holds.
         let earlier = self.earlier(service, actor, request, &release);
-        let kept = earlier.as_ref().and_then(|dir| serde_json::from_slice::<Card>(&fs::read(dir.join(CARD)).ok()?).ok());
-        let card = match kept.filter(|card| card.wheels.iter().all(|wheel| self.held_file(wheel))) {
-            Some(card) => card,
-            None => hub_card(&catalog()?, &request.package, &release, &self.sdk.python)?,
-        };
         let locked = read_lock(&card.pyproject, &card.lock, Some(source))?;
         let before = earlier.and_then(|dir| fs::read(dir.join("generation.json")).ok())
             .and_then(|raw| serde_json::from_slice::<crate::catalog::Generation>(&raw).ok())
@@ -1163,6 +1182,38 @@ impl Publisher {
             Err(error) => tracing::warn!("package {} {}: its earlier installations stay: {error}", installed.package, installed.release),
         }
         Ok(installed)
+    }
+
+    /// `release`'s card: as an earlier environment of it (another SDK's) kept it beside itself, else read at its Hub. A kept
+    /// card whose wheels the store no longer holds is read again: its URLs expire.
+    fn card(&self, service: &Service, actor: &str, request: &Request, release: &str, catalog: &dyn Fn() -> Result<Catalog, Failure>) -> Result<Card, Failure> {
+        let earlier = self.earlier(service, actor, request, release);
+        let kept = earlier.as_ref().and_then(|dir| serde_json::from_slice::<Card>(&fs::read(dir.join(CARD)).ok()?).ok());
+        match kept.filter(|card| card.wheels.iter().all(|wheel| self.held_file(wheel))) {
+            Some(card) => Ok(card),
+            None => hub_card(&catalog()?, &request.package, release, &self.sdk.python),
+        }
+    }
+
+    /// The installation of the request's release this signer holds, its environment here; none: one installs.
+    pub(crate) fn held_installation(&self, service: &Service, actor: &str, request: &Request) -> io::Result<Option<Installation>> {
+        let held = service.engine.installation(actor, &self.alias(service, actor, request)?)?;
+        Ok(held.filter(|held| service.catalog.resolve(&held.generation).is_ok()))
+    }
+
+    /// The installation the request's release will be, before its environment is built (cl-966): its card is its static
+    /// reading, the interface its installation holds.
+    pub(crate) fn reading(&self, service: &Service, actor: &str, request: &Request) -> Result<Installation, Failure> {
+        let (org, name) = request.package.split_once('/').ok_or(("release_root_invalid", "package must be org/name".to_string()))?;
+        let source = request.hub("a release")?;
+        let catalog = || Catalog::new(source).map_err(|e| ("catalog_read_failed", e.0));
+        let release = match request.release.is_empty() {
+            true => newest_release(&catalog()?, org, name)?,
+            false => request.release.clone(),
+        };
+        let card = self.card(service, actor, request, &release, &catalog)?;
+        let interface = serde_json::to_vec(&card.interface).map_err(|e| io_failure(io::Error::other(e)))?;
+        Ok(Installation { actor: actor.into(), package: request.package.clone(), release, interface, hub: request.origin(), ..Default::default() })
     }
 
     /// Builds one immutable environment at its final path (its interpreter embeds the path);
@@ -1329,7 +1380,8 @@ impl Publisher {
     /// Held shared through one environment build, so `reclaim` removes nothing from the cache
     /// between uv's own per-command holds either.
     pub(super) fn uv_cache_hold(&self) -> io::Result<File> {
-        let cache = crate::private_io::cache_root(self.uv_cache(), api::machine::project_area::UV_CACHE)?;
+        // The machine's one uv cache: every project's environments are built from it (cl-984).
+        let cache = self.uv_cache();
         fs::create_dir_all(&cache)?;
         let lock = File::options()
             .create(true)
@@ -1340,13 +1392,8 @@ impl Publisher {
         Ok(lock)
     }
 
-    /// The run's model grants and its precision warnings. Each slot takes the run's choice, else
-    /// its declared default (also under a choice of adapters alone); a Hub one is exact as its
-    /// choice names it (th-241), else in the first lane of the rule's order its release
-    /// publishes (`precision`). The request's GPU
-    /// count chooses the group independently of the weight lane; 0 uses the widest group every
-    /// slot supports on the machine. A slot with neither is refused; an on-demand slot that does
-    /// not bind is the plan's `unbound` instead (xs-186).
+    /// The run's plan and its precision warnings, its slots resolved (`grants`) and the plan journaled
+    /// for its installation.
     fn model(
         &self,
         service: &Service,
@@ -1356,6 +1403,71 @@ impl Publisher {
         request: &Request,
         job: &Job,
     ) -> Result<(Plan, Vec<String>), Failure> {
+        // Read before its names: one read anew meanwhile moves it, and this plan stays under the old.
+        let catalog = service.engine.with_journal(|j| j.catalog()).map_err(io_failure)?;
+        let Granted { grants, warnings: said, unbound } = self.grants(service, gpu, installation, request, job)?;
+        let warnings: Vec<String> = gpu.problems().into_iter().chain(said).collect();
+        job.stage(match request.package.is_empty() {
+            true => "preparing the plan".to_owned(),
+            false => format!("preparing the plan for {}", request.package),
+        });
+        let plan = gpu
+            .prepare_root(
+                installation,
+                &request.entrypoint,
+                &request.choices,
+                &grants,
+                unbound,
+                request.gpus,
+            )
+            .map_err(|e| ("model_preparation_failed", e.to_string()))?;
+        service
+            .engine
+            .bind_preparation(Preparation {
+                actor: actor.into(),
+                id: plan.id.clone(),
+                installation: installation.alias.clone(),
+                document: serde_json::to_vec(&plan).map_err(|e| io_failure(io::Error::other(e)))?,
+            })
+            .map_err(io_failure)?;
+        // One that left a slot unbound is made again by the next run: a model published since binds then.
+        if plan.unbound.is_empty() {
+            let key = Self::resolution_key(installation, request, &machine_row(gpu), catalog).map_err(io_failure)?;
+            let said = Value::from(warnings.clone()).to_string();
+            service
+                .engine
+                .with_journal(|j| {
+                    j.bind_resolution(actor, &key, &installation.package, &plan.id)?;
+                    j.bind_named(&warnings_key(&key), &said)
+                })
+                .map_err(io_failure)?;
+        }
+        Ok((plan, warnings))
+    }
+
+    /// What `request`'s function reads up front and may read on demand (`Plan::upfront`, `Plan::possible`), from its
+    /// installation's interface alone: each slot resolved and its structure landed, nothing journaled, so its environment
+    /// need not be built yet (cl-966).
+    pub(crate) fn predicted(&self, service: &Service, request: &Request, observe: Option<Observer>, stop: Option<&Stop>) -> Result<(Selected, Selected), Failure> {
+        let installation = request.installed.as_ref().ok_or(("release_root_installation_absent", "no installation to read".to_string()))?;
+        if !declares_models(installation, &request.entrypoint) {
+            return Ok(Default::default());
+        }
+        let gpu = service.pool().ok_or(("capability_unavailable", "this machine runs no functions".to_string()))?;
+        let job = Job { observer: observe, stop: stop.cloned(), order: request.order, caller: service.engine.caller_id(&request.run), ..Default::default() };
+        let Granted { grants, unbound, .. } = self.grants(service, &gpu, installation, request, &job)?;
+        let plan = gpu.prepare_root(installation, &request.entrypoint, &request.choices, &grants, unbound, request.gpus)
+            .map_err(|e| ("model_preparation_failed", e.to_string()))?;
+        Ok((plan.upfront(), plan.possible()))
+    }
+
+    /// Each model slot of the request's function resolved, all at once (cl-966): its choice, else its declared default (also
+    /// under a choice of adapters alone); a Hub one exact as its choice names it (th-241), else in the first lane of the rule's
+    /// order its release publishes (`precision`), its checkpoint's structure landed. The request's GPU count chooses the group
+    /// independently of the weight lane; 0 uses the widest group every slot supports on the machine. A slot with neither is
+    /// refused; an on-demand slot that does not bind is `unbound` instead (xs-186). An installation not built yet (no
+    /// generation: its static reading) has its adapter views checked once it is.
+    fn grants(&self, service: &Service, gpu: &Pool, installation: &Installation, request: &Request, job: &Job) -> Result<Granted, Failure> {
         let interface: Value = serde_json::from_slice(&installation.interface).map_err(|_| {
             (
                 "package_prepare_interface_invalid",
@@ -1372,8 +1484,6 @@ impl Publisher {
         let entry = api::interface::entrypoint(&interface, &request.entrypoint).cloned().unwrap_or_default();
         let degree = gpu.degree(&entry, request.gpus);
         let hardware = gpu.hardware(degree);
-        // Read before its names: one read anew meanwhile moves it, and this plan stays under the old.
-        let catalog = service.engine.with_journal(|j| j.catalog()).map_err(io_failure)?;
         let main = main_model(&slots);
         // One slot's grant, its Hub checkpoint and its warnings.
         let pick = |slot: &Value| -> Result<(ModelGrant, Option<Named>, Vec<String>), Failure> {
@@ -1442,68 +1552,49 @@ impl Publisher {
                 let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order);
                 // It adapts a component this call runs (`components=`; none declared: any).
                 let runs = slot_components(slot);
-                opens_views(service, installation, choice)?;
+                if !installation.generation.is_empty() {
+                    opens_views(service, installation, choice)?;
+                }
                 warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, &mut grant, &runs, &request.providers, job)?);
             }
             Ok((grant, warnings))
         };
-        let (mut grants, mut warnings, mut unbound) = (vec![], gpu.problems(), BTreeMap::new());
-        for slot in &slots {
-            match bind(slot) {
+        // Each slot on a thread of its own: a cold call's names and headers come in one round, not one after another.
+        // Each thread works in the run's project, as this one does.
+        let private = crate::private_io::current();
+        let bound: Vec<_> = std::thread::scope(|scope| {
+            let each: Vec<_> = slots.iter().map(|slot| scope.spawn(|| crate::private_io::within(private.clone(), || bind(slot)))).collect();
+            each.into_iter().map(|slot| slot.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
+        });
+        let mut granted = Granted::default();
+        for (slot, bound) in slots.iter().zip(bound) {
+            match bound {
                 Ok((grant, said)) => {
-                    grants.push(grant);
-                    warnings.extend(said);
+                    granted.grants.push(grant);
+                    granted.warnings.extend(said);
                 }
                 // A slot the call may never read: a definite answer why it did not bind fails the
                 // call only when its function reads it. A Hub that doesn't answer is waited for
                 // (`patiently`), and a cancel ends the plan.
                 Err(failure) if slot["on_demand"] == true && !matches!(failure.0, CANCELED | UNREACHABLE) => {
                     let (parameter, refusal) = unbound_slot(slot, &request.choices, failure);
-                    if crate::private_io::current().is_none() {
-                        tracing::info!(slot = %parameter, code = %refusal.0, "an on-demand slot is unbound: {}", refusal.1);
-                    }
-                    unbound.insert(parameter, refusal);
+                    tracing::info!(slot = %parameter, code = %refusal.0, "an on-demand slot is unbound: {}", refusal.1);
+                    granted.unbound.insert(parameter, refusal);
                 }
                 Err(failure) => return Err(failure),
             }
         }
-        job.stage(match request.package.is_empty() {
-            true => "preparing the plan".to_owned(),
-            false => format!("preparing the plan for {}", request.package),
-        });
-        let plan = gpu
-            .prepare_root(
-                installation,
-                &request.entrypoint,
-                &request.choices,
-                &grants,
-                unbound,
-                request.gpus,
-            )
-            .map_err(|e| ("model_preparation_failed", e.to_string()))?;
-        service
-            .engine
-            .bind_preparation(Preparation {
-                actor: actor.into(),
-                id: plan.id.clone(),
-                installation: installation.alias.clone(),
-                document: serde_json::to_vec(&plan).map_err(|e| io_failure(io::Error::other(e)))?,
-            })
-            .map_err(io_failure)?;
-        // One that left a slot unbound is made again by the next run: a model published since binds then.
-        if plan.unbound.is_empty() {
-            let key = Self::resolution_key(installation, request, &machine_row(gpu), catalog).map_err(io_failure)?;
-            let said = Value::from(warnings.clone()).to_string();
-            service
-                .engine
-                .with_journal(|j| {
-                    j.bind_resolution(actor, &key, &installation.package, &plan.id)?;
-                    j.bind_named(&warnings_key(&key), &said)
-                })
-                .map_err(io_failure)?;
-        }
-        Ok((plan, warnings))
+        Ok(granted)
     }
+}
+
+/// A function's model slots resolved (`Publisher::grants`): each bound one's grant, the on-demand ones that did not bind by
+/// parameter with why, and their warnings.
+#[derive(Default)]
+struct Granted {
+    grants: Vec<ModelGrant>,
+    warnings: Vec<String>,
+    unbound: BTreeMap<String, (String, String)>,
 }
 
 /// A named release as the newest of its series (xs-183): a model republished complete as a patch
@@ -1640,7 +1731,7 @@ fn make_source(
     };
     let held = crate::storage::local(store, &format!("local/{name}")).map_err(io_failure)?;
     if let Some(local) = held.filter(|local| store.holds(&local.header)) {
-        crate::storage::transport(store, "import", source, &format!("header={} reused", local.header.id()));
+        crate::storage::transport(store, "import", tensorfs::fetch::shown(source), &format!("header={} reused", local.header.id()));
         return Ok(made(local.header));
     }
     let stop = || cancellation.as_ref().is_some_and(Stop::is_cancelled);
@@ -1665,7 +1756,7 @@ fn make_source(
     };
     let started = Instant::now();
     let (header, files) = tensorfs::import::into_store(store, &request, Some(&name)).map_err(|e| {
-        crate::storage::transport(store, "import-failed", source, &e.to_string());
+        crate::storage::transport(store, "import-failed", tensorfs::fetch::shown(source), &e.to_string());
         match stop() {
             true => canceled(),
             false => refused("model_source_failed", e),
@@ -1680,7 +1771,7 @@ fn make_source(
         downloaded.load(std::sync::atomic::Ordering::Relaxed),
         started.elapsed().as_secs_f64()
     );
-    crate::storage::transport(store, "import", source, &detail);
+    crate::storage::transport(store, "import", tensorfs::fetch::shown(source), &detail);
     crate::storage::set_local(store, &name, &header, &files, "").map_err(io_failure)?;
     Ok(made(header))
 }
@@ -1806,7 +1897,7 @@ fn apply_adapters(
         } else {
             // A provider-source LoRA (civitai://, hf://) is made here, normalized at ingest.
             let import = crate::activity::Import::new(&adapter.source, &job.caller);
-            let made = publisher.make(&adapter.source, &adapter.profiles, "", providers, job.stop.as_ref(), &|stage, moved, total| {
+            let made = publisher.make(ModelSource::Named(&adapter.source), &adapter.profiles, "", providers, job.stop.as_ref(), &|stage, moved, total| {
                 import.moved(stage, moved, total);
                 job.set(format!("{stage} for an adapter of {}", grant.slot), moved, total)
             })?;
@@ -2072,7 +2163,7 @@ fn model_slots(interface: &Value, entrypoint: &str) -> Option<Vec<Value>> {
     entry["models"].is_array().then(|| api::interface::models(entry).to_vec())
 }
 
-fn declares_models(installation: &Installation, entrypoint: &str) -> bool {
+pub(crate) fn declares_models(installation: &Installation, entrypoint: &str) -> bool {
     serde_json::from_slice(&installation.interface)
         .ok()
         .and_then(|i: Value| model_slots(&i, entrypoint))

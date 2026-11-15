@@ -336,7 +336,7 @@ fn from_run(api: &Api, reference: &str, destination: &str, lane: &str) -> Result
     let run = api.calcifer.record(&crate::api::find_current(api, number)?)?;
     let item = weights(&run, output)?;
     let machine = run.machine.clone().ok_or_else(|| {
-        Refusal(Error::new(Kind::Conflict, "run_unplaced", format!("run {} never reached a machine", run.number)))
+        Refusal(Error::new(Kind::Conflict, "run_unplaced", format!("run {} never reached a machine", run.name)))
     })?;
     let hub = Origin::parse(&run.hub).map_err(Refusal)?;
     signed_in(api, &hub)?;

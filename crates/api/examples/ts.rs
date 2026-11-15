@@ -72,6 +72,7 @@ fn main() {
     v.visit::<project::Open>();
     v.visit::<project::Opened>();
     v.visit::<project::Address>();
+    v.visit::<project::Key>();
     v.visit::<project::ProjectView>();
     v.visit::<project::ProjectViewPatch>();
     v.visit::<project::VaultStatus>();
@@ -139,7 +140,6 @@ fn main() {
     v.visit::<tool::ToolList>();
     v.visit::<tool::ToolListChange>();
     v.visit::<tool::Browsed>();
-    v.visit::<tool::ToolUi>();
     let twice: Vec<_> = v.decls.iter().filter(|(_, rust)| rust.len() > 1).collect();
     if !twice.is_empty() {
         for (name, rust) in twice {

@@ -166,7 +166,7 @@ A box is a call of its tool, by one binder, the same for the browser's Render an
 - **A number, choice, shape or list** past what it takes is clamped to it, with a warning. A required field left empty, or one of a type this cozy can't fill, fails the box before anything is sent, free, naming the fix.
 - **A pickup** (`Pickup`) is filled only by Pick up from here: `{take, out_frame, …}`, on the frames its `Snap` allows.
 
-`@app.tool(label=, named=, reserved=, ui=)` says the rest: its name in the tool list, what a box of it is called (`shot_1`), its model's own tags, and a component that draws it. Markers on a field (`Range`, `Count`, `Total`, `Ratios`, `Snap`, `Spans`, `Label`, `Placeholder`, `Advanced`) tell the box how to draw it.
+`@app.tool(label=, named=, reserved=)` says the rest: its name in the tool list, what a box of it is called (`shot_1`), and its model's own tags. A box is always drawn from its declared fields. Markers on a field (`Range`, `Count`, `Total`, `Ratios`, `Snap`, `Spans`, `Label`, `Placeholder`, `Advanced`) tell the box how to draw it.
 
 ## Edits and frames
 

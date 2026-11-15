@@ -222,8 +222,8 @@ async function renderOf(page, name) {
   if (await nextVideo.count() && !(await here.locator('.in-frame').count())) await nextVideo.click();
   const next = here.locator('.take.add[aria-label="Its next take"]');
   // A cold tool list can briefly show fallback fields before an image take gains its +.
-  // Wait for an editor (including non-image/custom editors) or that actual next-take control.
-  const editor = here.locator('.in-frame, .prominent, .tl, .tool-ui, .tool-ui-failed, .media.blank:not(:has(.media-making, .made-from, .prog)), .media:has(.play, video, audio)');
+  // Wait for an editor (including non-image editors) or that actual next-take control.
+  const editor = here.locator('.in-frame, .prominent, .tl, .media.blank:not(:has(.media-making, .made-from, .prog)), .media:has(.play, video, audio)');
   const render = here.locator('button[aria-label=Render]');
   // A box being written (a failed or unmade one's words) has its Render out already.
   await editor.or(next).or(nextVideo).or(render).first().waitFor();

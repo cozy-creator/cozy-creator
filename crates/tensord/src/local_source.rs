@@ -132,20 +132,6 @@ fn keyed(name: &str, prefix: &str, length: usize) -> bool {
     name.strip_prefix(prefix).is_some_and(|key| key.len() == length && key.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// Only this layout's environments leave. Unknown entries in a package home are preserved.
-fn collect_environments(home: &Path, named: &HashSet<PathBuf>) {
-    for entry in fs::read_dir(home).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if !keyed(&entry.file_name().to_string_lossy(), "env-", 16) || !path.is_dir() {
-            continue;
-        }
-        if !named.contains(&platform::durable::canonical(&path).unwrap_or_else(|_| path.clone())) {
-            removed("editable environment", &path);
-            removed("carried wheels", &path.with_extension("wheels"));
-        }
-    }
-}
-
 /// Removes `path` (`what`), logging the bytes it freed.
 fn removed(what: &str, path: &Path) {
     let bytes = crate::reclaim::freeable(path);
@@ -214,7 +200,7 @@ fn open_manifest(
 impl LocalSources {
     pub(crate) fn new(objects: Arc<Objects>, publisher: Arc<Publisher>, generations: &Path) -> Self {
         Self {
-            editable: generations.with_file_name(api::machine::project_area::EDITABLE),
+            editable: generations.with_file_name("editable"),
             generations: generations.to_path_buf(),
             objects,
             publisher,
@@ -229,8 +215,20 @@ impl LocalSources {
         if name.is_empty() || name.contains('/') {
             return Err(refused("local_source_invalid", "a local package manifest names local/<name>"));
         }
-        let root = crate::private_io::cache_root(self.editable.clone(), api::machine::project_area::EDITABLE)?;
+        let root = crate::private_io::cache_root(self.editable.clone(), "editable")?;
         Ok(root.join(&sha256::hex_digest(actor.as_bytes())[..16]).join(name))
+    }
+
+    /// Where the environments of a live `package` are: the machine's, whichever project or signer runs it (cl-984). Each
+    /// is keyed on what it is built from, never the code, which stays in the project's own `home`.
+    fn environments(&self, package: &str) -> Result<PathBuf, Refused> {
+        let name = crate::catalog::normalized(package.strip_prefix("local/").unwrap_or_default());
+        if name.is_empty() || name.contains('/') {
+            return Err(refused("local_source_invalid", "a local package manifest names local/<name>"));
+        }
+        let dir = self.editable.join("machine").join(name);
+        fs::create_dir_all(&dir)?;
+        Ok(dir)
     }
 
     /// A local source's objects, its manifest and every member: what a run takes custody of when
@@ -264,7 +262,6 @@ impl LocalSources {
             "own": manifest.project,
             "pair": self.publisher.pair_key(locked), "python": self.publisher.sdk.python,
             "torch": self.publisher.torch_pins(None),
-            "private_view": crate::private_io::current().map(|scope| scope.view_root),
         });
         sha256::hex_digest(key.to_string().as_bytes())
     }
@@ -342,7 +339,7 @@ impl LocalSources {
             Err(error) => return Err(error.into()),
         };
         let built_from = self.environment(&manifest, locked.as_ref());
-        let environment = home.join(format!("env-{}", &built_from[..16]));
+        let environment = self.environments(&manifest.package)?.join(format!("env-{}", &built_from[..16]));
         let ready = environment.join(".ready");
         let label = format!("{} {}", manifest.package, manifest.release);
         // Reused, it is in use again: reclaim drops only an environment no generation names that
@@ -378,13 +375,18 @@ impl LocalSources {
             }, job)).map_err(failed)?;
             let _ = fs::remove_dir_all(&carried);
             fs::write(&ready, serde_json::to_vec(&built).map_err(std::io::Error::other)?)?;
+            // Compiled once for every project's run of it: the generation that names it is a project's (cl-984).
+            environment::compile_bytecode(&platform::paths::venv_python(&environment));
         }
         let built: environment::Built = serde_json::from_slice(&fs::read(&ready)?).map_err(std::io::Error::other)?;
-        // One generation per environment and tree: a run of code unchanged since reads it as it is.
-        let identity = sha256::hex_digest(serde_json::json!([environment, digest]).to_string().as_bytes())[..32].to_string();
+        // One generation per environment, tree and project: a run of code unchanged since reads it as it is. Its project names
+        // it too, as the generation is the project's own (cl-984): the same code in two projects is two generations on one
+        // machine environment, and a dispatch outside any request scope finds exactly one.
+        let owner = crate::private_io::current().map(|scope| scope.project_id).unwrap_or_default();
+        let identity = sha256::hex_digest(serde_json::json!([environment, digest, owner]).to_string().as_bytes())[..32].to_string();
         if service.catalog.resolve(&identity).is_err() {
             job.stage(format!("describing {}", manifest.package));
-            let dir = crate::private_io::cache_root(service.catalog.root().to_owned(), api::machine::project_area::GENERATIONS)?.join(&identity);
+            let dir = crate::private_io::cache_root(service.catalog.root().to_owned(), "generations")?.join(&identity);
             let _ = fs::remove_dir_all(&dir); // an interrupted, never-published one
             fs::create_dir_all(&dir)?;
             let published = || -> Result<(), published::Failure> {
@@ -447,7 +449,7 @@ impl LocalSources {
         let installer = self.installer(package);
         let _installing = installer.turn.lock().unwrap();
         // An unavailable or partial inventory says nothing about which sources are unused.
-        let Ok(generation_root) = crate::private_io::cache_root(self.generations.clone(), api::machine::project_area::GENERATIONS) else { return };
+        let Ok(generation_root) = crate::private_io::cache_root(self.generations.clone(), "generations") else { return };
         let Ok(generations) = fs::read_dir(generation_root)
             .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>()) else { return; };
         // What generations link, canonical as each home's entries are read.
@@ -464,7 +466,7 @@ impl LocalSources {
                 }
             }
         }
-        collect_environments(&home, &named);
+        // Environments are the machine's: reclaim keeps them by use, as it does generations (cl-984).
         for entry in fs::read_dir(&home).into_iter().flatten().flatten() {
             let path = entry.path();
             let root = platform::durable::canonical(&path).unwrap_or_else(|_| path.clone());

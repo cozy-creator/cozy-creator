@@ -6,7 +6,7 @@ import { useConnection } from "../../app/Connection"
 import type { Machine } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
 import { Bar } from "../common"
-import { workWords } from "../runs/words"
+import { runName as runLabel, workWords } from "../runs/words"
 import { Checks, Spec } from "./RenderHere"
 import { type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
 import { called, gpusWords, slowWords, stableName, stateWords } from "./words"
@@ -73,10 +73,10 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
   return (
     <li className="doing" data-doing="run" data-run={run.number}>
       <MarkOf mark={going ? "work" : "idle"} />
-      <Link to={run.project_id ? to(`runs/${run.number}`) : `/runs/${run.number}`} title={`Run ${run.number}: ${run.target}`}>
+      <Link to={run.project_id ? to(`runs/${run.number}`) : `/runs/${run.number}`} title={`Run ${runLabel(run)}: ${run.target}`}>
         <b>{runName(run, boxes)}</b>
       </Link>
-      <span className="kind">Run {run.number}</span>
+      <span className="kind">Run {runLabel(run)}</span>
       {going && fraction != null && <Bar fraction={fraction} />}
       {said && <span className="said">{said}</span>}
     </li>

@@ -32,8 +32,9 @@ const VOLUME_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// run's needs in job order (acceptance, as its GPU work queues), then what jobs waiting on another's
 /// output will read, then guesses, then warm sets. The downloader finishes one before the next.
 pub(crate) mod priority {
-    /// What the machine itself is blocked on (its update), no job's. Before it, 0: a started call's read of what isn't
-    /// here yet (cl-966).
+    /// What a started call's function reads now and isn't here yet (`ModelNeed`): before everything (cl-966).
+    pub(crate) const EMERGENCY: u64 = 0;
+    /// What the machine itself is blocked on (its update), no job's.
     pub(crate) const NOW: u64 = 1;
     /// The run a started run's fetches are ordered as (its calls' weights): ahead of every queued
     /// root, whose order is its acceptance, from 1.
@@ -63,15 +64,15 @@ pub(crate) mod priority {
 }
 
 /// A checkpoint's origin, with the CAs its hosts may present beyond the public roots (a PEM
-/// bundle) and whether its deployment declared itself local (loopback plaintext allowed).
+/// bundle).
 #[derive(Clone)]
 pub(crate) struct Remote {
     pub origin: Arc<dyn Origin>,
     pub trust: Option<Arc<Vec<u8>>>,
-    pub local: bool,
 }
 
-type Key = (Option<Arc<Vec<u8>>>, bool);
+/// A fetcher per trust: the roots beyond the public ones.
+type Key = Option<Arc<Vec<u8>>>;
 
 /// Task cancellation or panic must wake a queued owner too, rather than leaving it waiting
 /// forever for an ordinary result callback. This owns no work beyond the existing fetch.
@@ -109,8 +110,8 @@ impl Machine {
     }
 
     /// The client objects of a remote with this trust are fetched over (for an `Endpoint`).
-    pub(crate) fn client(&self, trust: Option<&Arc<Vec<u8>>>, local: bool) -> Result<Client> {
-        Ok(self.fetcher(&(trust.cloned(), local))?.client().clone())
+    pub(crate) fn client(&self, trust: Option<&Arc<Vec<u8>>>) -> Result<Client> {
+        Ok(self.fetcher(&trust.cloned())?.client().clone())
     }
 
     fn fetcher(&self, key: &Key) -> Result<Arc<Fetcher>> {
@@ -119,9 +120,9 @@ impl Machine {
             return Ok(fetcher.clone());
         }
         // Every object is held to its digest: no host vouches for anything, addresses are
-        // still checked.
-        let policy = SourcePolicy { any_host: true, allow_local: key.1, max_redirects: 8, ..Default::default() };
-        let client = match &key.0 {
+        // still checked, at every hop (a local one only at an origin this computer declared).
+        let policy = SourcePolicy { any_host: true, max_redirects: 8, ..Default::default() };
+        let client = match key {
             Some(pem) => Client::with_roots(policy, pem)?,
             None => Client::new(policy),
         };
@@ -137,6 +138,12 @@ impl Machine {
         self.returned.clone()
     }
 
+    /// Until they drop, what comes after `order` waits in every fetcher (`Fetcher::give_way`): one
+    /// started meanwhile isn't held, and there is one, made by the first pull.
+    pub(crate) fn give_way(&self, order: u64) -> Vec<tensorfs::fetch::GiveWay> {
+        self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.give_way(order)).collect()
+    }
+
     /// The bytes every fetcher received from its origin, and the time any of them was arriving.
     pub(crate) fn received(&self) -> (u64, Duration) {
         self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.stats()).fold(
@@ -146,7 +153,7 @@ impl Machine {
     }
 
     fn of(&self, remote: &Remote) -> Result<Arc<Fetcher>> {
-        self.fetcher(&(remote.trust.clone(), remote.local))
+        self.fetcher(&remote.trust)
     }
 
     /// Each of `objects`' download from `remote` as it stands (`Fetching`); None for one with no
