@@ -14,7 +14,7 @@ use crate::{Context, machine::Adopted};
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
-    /// Release to install. Without a version, update to the latest release.
+    /// Release to install. Without a version, update to the latest release; an older one is installed only when named.
     version: Option<String>,
 }
 
@@ -49,9 +49,18 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let dir = api::update::dir(download_url.as_deref(), wanted)?;
     let release = api::update::release(&dir, wanted).await?;
     let version = release.version.clone();
-    if wanted.is_none() && !newer(&version, current) {
-        println!("cozy {current} is the newest release");
-        return Ok(ExitCode::SUCCESS);
+    if wanted.is_none() {
+        match moves(&version, current) {
+            Move::Up => {}
+            Move::Stay => {
+                println!("cozy {current} is the newest release");
+                return Ok(ExitCode::SUCCESS);
+            }
+            Move::Down => {
+                let said = format!("the Latest release, cozy {version}, is older than this cozy {current}: an update never goes back unless the version is named");
+                return Err(Error::new(Kind::Conflict, "cozy_downgrade", said).next(format!("cozy update {version}")));
+            }
+        }
     }
     crate::output::say(ctx, &format!("fetching cozy {version}"));
     let bar = crate::progress::Transfer::stderr(ctx.term.stderr, "Downloading Cozy");
@@ -173,16 +182,23 @@ fn installed() -> Result<PathBuf, Error> {
     exe.canonicalize().map_err(local)
 }
 
-/// Whether release `version` replaces `current`: a newer release, or any release over a dev build
-/// (the RC's `0.26.0-dev+g<sha>`, a release's `+dev.g<sha>`), even the release it was built from.
-fn newer(version: &str, current: &str) -> bool {
-    match (
-        semver::Version::parse(version),
-        semver::Version::parse(current),
-    ) {
-        (Ok(_), Ok(current)) if !current.build.is_empty() || !current.pre.is_empty() => true,
-        (Ok(version), Ok(current)) => version > current,
-        _ => false,
+enum Move {
+    Up,
+    Stay,
+    Down,
+}
+
+/// What release `version` is to `current`: newer, or a release over a dev build (the RC's `0.26.0-dev+g<sha>`, a release's
+/// `+dev.g<sha>`) that doesn't sort below it, moves up; one that sorts below it moves down; anything else stays.
+fn moves(version: &str, current: &str) -> Move {
+    let (Ok(version), Ok(current)) = (semver::Version::parse(version), semver::Version::parse(current)) else {
+        return Move::Stay;
+    };
+    match version.cmp_precedence(&current) {
+        std::cmp::Ordering::Less => Move::Down,
+        std::cmp::Ordering::Greater => Move::Up,
+        std::cmp::Ordering::Equal if !current.build.is_empty() || !current.pre.is_empty() => Move::Up,
+        std::cmp::Ordering::Equal => Move::Stay,
     }
 }
 

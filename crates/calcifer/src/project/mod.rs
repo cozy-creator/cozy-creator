@@ -518,6 +518,17 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
         return Ok(indexed.swap_remove(at));
     }
+    // A locked project's id and code are no longer in the index (cl-984), only its folder: both are read from its own keybag.
+    let code = code::parse(text);
+    let named_by = |(id, kept): &(String, String)| id == text || code.as_ref().is_some_and(|code| !kept.is_empty() && code::parse(kept).as_ref() == Some(code));
+    if let Some((at, (id, kept))) = indexed.iter().enumerate()
+        .filter(|(_, entry)| entry.id.starts_with("locked-"))
+        .find_map(|(at, entry)| vault::kept_in_keybag(&entry.path).filter(|held| named_by(held)).map(|held| (at, held))) {
+        let mut entry = indexed.swap_remove(at);
+        entry.id = id;
+        entry.code = kept;
+        return Ok(entry);
+    }
     if let Some(code) = code::parse(text) {
         if let Some(at) = indexed.iter().position(|entry| entry.code == code) {
             return Ok(indexed.swap_remove(at));
@@ -845,6 +856,7 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
     }
     let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and(kept_code);
     let code = reserve_code(store, &id, &name, &logical, kept_code.as_deref())?;
+    if encrypted { vault::keep_code(&logical, &code)?; }
     if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
         keep(Keep::Identity { id: &id, name: &name, code: &code })?;
     }
@@ -2966,7 +2978,7 @@ fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
             // This task can outlive its importer and must drain before storage is replaced.
             let _access = access;
             let _permit = permit;
-            let measured = project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock));
+            let measured = crate::tools::quietly(|| project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock)));
             // What was read before this finished said nothing of how long a clip is.
             crate::events::project_settled(&dir);
             measured
@@ -3533,6 +3545,29 @@ impl Walk {
         &self.project.folder
     }
 
+    /// The digest `renderer`'s release must install (xs-196): the one this project's lock recorded at its first run, else its card's,
+    /// recorded now. A card that disagrees with the lock is refused: a published release never changes.
+    fn pinned(&self, hub: &str, renderer: &Renderer) -> Result<String, Error> {
+        let hub = crate::runs::hub(&self.host.api(), hub);
+        let key = format!("{}@{} {hub}", renderer.package, renderer.release);
+        let recorded = self.folder().reading_lock(|lock| lock.releases.get(&key).cloned())?;
+        match (recorded, renderer.digest.as_str()) {
+            (Some(recorded), card) if !card.is_empty() && card != recorded => {
+                let said = format!(
+                    "{}@{} at {hub} isn't the release this project ran: its files' digest is now {card}, and the project recorded {recorded}. A published release never changes, so these are other files",
+                    renderer.package, renderer.release
+                );
+                Err(Error::new(Kind::Conflict, "release_changed", said).remedy("run another release of it, and tell its publisher"))
+            }
+            (Some(recorded), _) => Ok(recorded),
+            (None, "") => Ok(String::new()),
+            (None, card) => {
+                self.folder().update_lock(|lock| drop(lock.releases.insert(key, card.to_owned())))?;
+                Ok(card.to_owned())
+            }
+        }
+    }
+
     /// What has landed, measured: a cut and a function read those sizes, and a film is judged by its frames.
     fn measure(&self) -> Result<(), Error> {
         self.folder().measure(&mut self.folder().lock()?)
@@ -3850,7 +3885,7 @@ impl Walk {
         choices.take(&mut payload)?;
         let models = choices::wire(&choices.into_choices())?;
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)? }),
             Some(path) => {
                 // Staged in its project's storage scope, as its call's are; an encrypted project's code goes with the run that calls it.
                 let scope = crate::private_io::of_path(&self.folder().dir)?;
@@ -5032,7 +5067,7 @@ impl Walk {
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(&hub, &renderer).map_err(named)? }),
             Some(path) => {
                 let prepared = self.again(|| async {
                     let scope = crate::private_io::of_path(&self.folder().dir)?;

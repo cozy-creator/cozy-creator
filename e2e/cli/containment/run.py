@@ -275,7 +275,8 @@ def main() -> int:
             phase = "create_" + slot
             credential = "proof-" + secrets.token_hex(32)
             scanner.add(credential)
-            folder = root / slot
+            # Its name is its folder's, unique, so finding it anywhere but in that folder's path is finding a trace (cl-984).
+            folder = root / (slot + "-" + secrets.token_hex(12))
             opened = cast(Created, native.document("new", str(folder), "--passphrase-file", "-", stdin=(credential + "\n").encode()))  # cast: new's JSON
             require(isinstance(opened.get("id"), str), "encrypted_create_identity")
             if opened.get("recovery_secret"):
@@ -415,6 +416,9 @@ def main() -> int:
         until(lambda: [alive(process) for process in snapshot["processes"]], lambda live: not any(live), "owned_browser_tree_not_retired")
         require(not profile.exists() and foreign.preserved() and not (a["view"] / "root-data.txt").exists(), "whole_browser_retirement")
         receipt.add("queued_b_edit_then_a_lock", saved=True, owned_retired=True, profile_removed=True, unrelated_preserved=True, busy_refusal=busy)
+        # Paul's invariant (cl-984): once locked, nothing of a project stays outside its folder but that folder's path: not its id,
+        # its name, its prompts, inputs, outputs, runs or logs.
+        scanner.identity(a["folder"], a["id"], a["folder"].name)
         scan_case(scanner, receipt, "a_locked_outside_scan", roots, [b["view"]], located)
         phase = "last_window_close"
         native.open(b["folder"])
@@ -479,6 +483,7 @@ def main() -> int:
             receipt.add("native_lock_restart_retention", file_retained=True, history_retained=True, output_sha256=a["native_allowed_sha256"])
         native.document("vault", "lock", cwd=b["folder"])
         receipt.add("cold_restart", new_authority=True, new_browser=True, unrelated_preserved=foreign.preserved())
+        scanner.identity(b["folder"], b["id"], b["folder"].name)
         scan_case(scanner, receipt, "all_locked_outside_scan", roots, [], located)
         health = (Path.home() / ".cozy/calcifer/health.log").read_bytes()
         require(b"started" in health and all(marker not in health for marker in scanner.markers), "closed_health_sink")

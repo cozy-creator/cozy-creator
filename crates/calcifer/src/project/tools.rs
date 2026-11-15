@@ -1012,9 +1012,9 @@ pub(crate) fn files_in(value: &Value, folder: &Folder, lock: &Lock, clips: &Hash
 /// The share of `picture`'s pixels that are fully transparent; none if it can't be read.
 fn transparent_share(ffmpeg: &Path, picture: &Path) -> f64 {
     let read = Media::new(ffmpeg)
-        .args(["-v", "error"])
+        .args(["-v", "error", "-filter_threads", "1", "-threads", "1"])
         .input(picture)
-        .args(["-frames:v", "1", "-vf", "format=rgba,alphaextract", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+        .args(["-frames:v", "1", "-vf", "format=rgba,alphaextract", "-threads", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
         .output();
     match read {
         Ok(out) if out.status.success() && !out.stdout.is_empty() => {

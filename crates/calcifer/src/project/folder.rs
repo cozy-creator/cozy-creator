@@ -526,6 +526,10 @@ pub(crate) struct Lock {
     /// What each tool outputs, `image`, `video` or `audio`, as its interface last said, for what `defaults` fill before it has a version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub makes: BTreeMap<String, String>,
+    /// Each published release the project ran, `org/pkg@release <hub>`, and its digest at its first run (xs-196): every later run of it
+    /// installs exactly those files, on any computer the project goes to.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub releases: BTreeMap<String, String>,
     /// As `pending`.
     #[serde(skip)]
     pub walk: Owed,
@@ -546,7 +550,7 @@ pub(crate) struct RunFile {
 
 impl Default for Lock {
     fn default() -> Self {
-        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), makes: BTreeMap::new(), walk: Owed::default() }
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), makes: BTreeMap::new(), releases: BTreeMap::new(), walk: Owed::default() }
     }
 }
 

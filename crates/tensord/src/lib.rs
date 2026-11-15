@@ -27,6 +27,7 @@ mod import_pages;
 mod calls;
 mod journal;
 mod private_journal;
+mod project_objects;
 mod launch_identity;
 mod line;
 mod local_source;

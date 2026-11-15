@@ -29,8 +29,9 @@ pub(crate) struct Call<'a> {
 
 /// Where the machine finds the function's code.
 pub(crate) enum Source<'a> {
-    /// A published release; none: the one the machine holds, else the newest.
-    Release(Option<&'a str>),
+    /// A published release; none: the one the machine holds, else the newest. With the digest its files must have (the card this
+    /// computer keeps, xs-196); empty: none.
+    Release(Option<&'a str>, &'a str),
     /// Local code the machine installed under `installation`, from `source`, for `owner`.
     Local {
         source: &'a v1::LocalSource,
@@ -43,7 +44,7 @@ impl Call<'_> {
     pub(crate) fn target(&self) -> String {
         let target = format!("{}/{}", self.package, self.callable.name);
         match self.source {
-            Source::Release(Some(release)) => format!("{target}@{release}"),
+            Source::Release(Some(release), _) => format!("{target}@{release}"),
             _ => target,
         }
     }
@@ -53,7 +54,7 @@ impl Call<'_> {
         Ok(v1::RunSpec {
             kind: v1::RunKind::Call,
             source: Some(match self.source {
-                Source::Release(_) => v1::Source::Release(self.release()),
+                Source::Release(..) => v1::Source::Release(self.release()),
                 // The same source as the install: unchanged, the machine installs nothing again.
                 Source::Local { source, .. } => v1::Source::Local(source.clone()),
             }),
@@ -84,7 +85,7 @@ impl Call<'_> {
     /// this one item into the set the machine last reported, and level 0 takes it out.
     pub(crate) fn warm(&self, level: v1::WarmLevel, models: &[Choice], payload: Option<v1::Json>) -> Result<v1::RunSpec, Error> {
         let source = match self.source {
-            Source::Release(_) => v1::WarmSource::Release(self.release()),
+            Source::Release(..) => v1::WarmSource::Release(self.release()),
             Source::Local {
                 installation: Some(installation),
                 ..
@@ -170,13 +171,14 @@ impl Call<'_> {
     }
 
     fn release(&self) -> v1::Release {
-        let release = match self.source {
-            Source::Release(release) => release.unwrap_or_default(),
-            Source::Local { .. } => "",
+        let (release, digest) = match self.source {
+            Source::Release(release, digest) => (release.unwrap_or_default(), digest),
+            Source::Local { .. } => ("", ""),
         };
         v1::Release {
             package: self.package.to_owned(),
             release: release.to_owned(),
+            digest: digest.to_owned(),
         }
     }
 }
