@@ -479,13 +479,17 @@ WEB_SOLO=(
   account-rent
   offline
 )
-# macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout and offline.
+# macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout, and what the old native cells durable, see and undo
+# checked (instant, canvas-nav, delete-undo).
 WEB_NATIVE=(
   layout
   # offline: its step 5 renders on local, which macOS and Windows don't run (lib.sh's LOCAL)
+  canvas-nav
+  instant
   upload
   type
   create
+  delete-undo
   move
   open
 )
