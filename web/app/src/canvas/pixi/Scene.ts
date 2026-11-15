@@ -15,7 +15,7 @@ export interface SceneUpdate {
   camera: { x: number; y: number; zoom: number }
   screen: { width: number; height: number; dpr: number }
   theme: "dark" | "paper"
-  hiddenName?: string
+  hiddenNames?: ReadonlySet<string>
 }
 interface Options {
   world: Container
@@ -78,7 +78,7 @@ interface Drawn {
   fontEpoch: number
   latent?: Latent
   wave?: { graphics: Graphics; began: number; alpha: number; spread: number }
-  loadingPulse?: { graphics: Graphics; began: number; alpha: number }
+  loadingPulse?: { graphics: Graphics; began: number; alpha: number; shape?: string }
   landing?: { began: number; scale: number; alpha: number }
   meter?: { run: number; fraction: number; since: number }
   stateDot?: Box
@@ -141,7 +141,7 @@ export class PixiScene {
     const live = new Set<string>()
     const tools = this.options.store.tools.get()
     for (const node of input.nodes) {
-      if (node.name === input.hiddenName || !intersects({ ...node.box, y: node.box.y - 40, h: node.box.h + 160 }, screen)) continue
+      if (input.hiddenNames?.has(node.name) || !intersects({ ...node.box, y: node.box.y - 40, h: node.box.h + 160 }, screen)) continue
       live.add(node.id)
       let drawn = this.records.get(node.id)
       if (!drawn) {
@@ -156,7 +156,7 @@ export class PixiScene {
       const density = this.resolution(node.box.w)
       const titleScale = Math.max(TITLE, BODY * nameZoomOf(zoom))
       // World position alone never rebuilds labels or reloads textures. Camera changes only touch scale-sensitive drawing buckets.
-      const signature = [node.box.w, node.box.h, node.selected, input.theme, bandOf(zoom), titleScale, density, this.textResolution(), node.selected ? zoom : "", this.fontEpoch].join(":")
+      const signature = [node.box.w, node.box.h, node.selected, input.theme, bandOf(zoom), titleScale, density, this.textResolution(), node.selected ? 2 ** Math.ceil(Math.log2(zoom)) : "", this.fontEpoch].join(":")
       const changed = previous.view !== node.view || drawn.tools !== tools || drawn.context !== node.runContext || drawn.signature !== signature || Boolean(node.view.entity)
       drawn.node = node
       drawn.container.position.set(node.box.x, node.box.y)
@@ -298,14 +298,15 @@ export class PixiScene {
       drawn.meterBox = { x: body.x, y: body.y, w, h }
     }
     if (node.selected || node.view.hot) {
-      const thickness = (node.selected ? 6 : 2) / zoom
-      const inset = far ? Math.min(thickness, Math.min(body.w, body.h) / 4) : -6 / zoom
+      const selectionZoom = node.selected ? 2 ** Math.ceil(Math.log2(zoom)) : zoom
+      const thickness = (node.selected ? 6 : 2) / selectionZoom
+      const inset = far ? Math.min(thickness, Math.min(body.w, body.h) / 4) : -6 / selectionZoom
       const box = { x: body.x + inset, y: body.y + inset, w: Math.max(1, body.w - inset * 2), h: Math.max(1, body.h - inset * 2) }
       if (node.selected) {
         // Three inexpensive feathered strokes keep the existing screen-space glow without one blur filter per selected card.
-        for (const [width, alpha] of [[48, 0.08], [32, 0.18], [20, 0.32]]) ink.rect(body.x, body.y, body.w, body.h).stroke({ width: width / zoom, color: this.palette!.glow, alpha: this.palette!.alpha * alpha, alignment: 0.5 })
+        for (const [width, alpha] of [[48, 0.08], [32, 0.18], [20, 0.32]]) ink.rect(body.x, body.y, body.w, body.h).stroke({ width: width / selectionZoom, color: this.palette!.glow, alpha: this.palette!.alpha * alpha, alignment: 0.5 })
       }
-      ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thickness + 2 / zoom, color: colors.gap, alignment: 0.5 })
+      ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thickness + 2 / selectionZoom, color: colors.gap, alignment: 0.5 })
       ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thickness, color: colors.select, alignment: 0.5 })
     }
     for (const [key, label] of drawn.texts) if (!labels.has(key)) { label.destroy(); drawn.texts.delete(key); drawn.fullTexts.delete(key) }
@@ -713,7 +714,12 @@ export class PixiScene {
         const body = pictureBox(drawn.node)
         const phase = Math.max(0, now - loading.began) % 2800 / 1400
         loading.alpha = this.reducedMotion.matches ? 0.04 : 0.08 * ease(phase <= 1 ? phase : 2 - phase, 0.42, 0, 0.58, 1)
-        loading.graphics.clear().rect(body.x - drawn.node.box.x, body.y - drawn.node.box.y, body.w, body.h).fill({ color: this.palette!.colors.ink, alpha: loading.alpha })
+        const shape = `${body.w}:${body.h}:${this.palette!.colors.ink}`
+        if (loading.shape !== shape) {
+          loading.shape = shape
+          loading.graphics.clear().rect(body.x - drawn.node.box.x, body.y - drawn.node.box.y, body.w, body.h).fill(this.palette!.colors.ink)
+        }
+        loading.graphics.alpha = loading.alpha
         if (!this.reducedMotion.matches) animated = true
       }
       const wave = drawn.wave
