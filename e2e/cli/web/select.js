@@ -32,6 +32,17 @@ async function died(why) {
   const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   const page = await context.newPage();
+  await page.addInitScript(() => {
+    window.clicks = [];
+    for (const type of ['pointerdown', 'pointerup']) window.addEventListener(type, event => {
+      const read = when => {
+        const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+        window.clicks.push({ type, when, x: event.clientX, y: event.clientY, target: event.target?.className, under: document.elementFromPoint(event.clientX, event.clientY)?.className, hit: inspection?.hitTest({ x: event.clientX, y: event.clientY }), selected: inspection?.selectedNames(), interaction: inspection?.interaction?.(), moving: Boolean(document.querySelector('.stage[data-moving]')) });
+        if (window.clicks.length > 40) window.clicks.shift();
+      };
+      read('capture'); queueMicrotask(() => read('after-event')); requestAnimationFrame(() => read('frame'));
+    }, true);
+  });
   lookAt(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
@@ -103,6 +114,7 @@ async function died(why) {
   await page.mouse.click(point.x, point.y);
   const only = await until('only it selected', selected, (now) => now.join() === 'second', 5000).catch(selected);
   check('a_click_selects_only_it', only.join() === 'second', only);
+  seen.first_clicks = await page.evaluate(() => window.clicks);
   point = await middle('first');
   await page.mouse.click(point.x, point.y);
   await shot('selected');
