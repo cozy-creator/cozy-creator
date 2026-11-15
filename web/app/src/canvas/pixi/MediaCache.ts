@@ -1,0 +1,235 @@
+import { Texture } from "pixi.js"
+import type { Client } from "../../api/client"
+import { THUMB_TRIES, thumbWait, whenThumb } from "../../api/thumbs"
+
+/** The prepared thumbnail is always the source below 512px. Only its decoded GPU copy is smaller. */
+export const THUMB_SOURCE_WIDTH = 512
+export const MIN_TEXTURE_WIDTH = 256
+const MIB = 1024 * 1024
+const CACHE_BYTES = 768 * MIB
+const UNUSED_BYTES = 64 * MIB
+const LOADS = 6
+
+export interface MediaRequest {
+  /** Project-relative API path, or an import's existing blob URL. Never logged. */
+  path: string
+  /** Blob URLs belong to the importer; the cache must not revoke somebody else's URL. */
+  local?: boolean
+  sha256?: string
+  width: number
+}
+
+export interface MediaHandle {
+  readonly key: string
+  readonly texture: Texture | undefined
+  readonly failed: boolean
+  readonly aspect: number | undefined
+  release(): void
+}
+
+interface Entry {
+  key: string
+  request: MediaRequest
+  listeners: Set<() => void>
+  pins: number
+  texture?: Texture
+  bitmap?: ImageBitmap
+  bytes: number
+  aspect?: number
+  used: number
+  tries: number
+  failed: boolean
+  controller?: AbortController
+  waiting?: () => void
+}
+
+/**
+ * One scene owns its decoded sources, never Pixi's global Assets cache. Visible pictures are pinned, including a previous resolution
+ * until its replacement is decoded. The 768MiB target is deliberately soft: 5,000 square 256px pictures exceed it. Overflow is reported,
+ * not hidden by missing visible pictures. Unpinned pixels have their own 64MiB limit and are evicted first. Focus retains its separate
+ * existing five-picture DOM buffer; this cache never preloads neighboring versions or starts a video decoder.
+ */
+export class MediaCache {
+  private entries = new Map<string, Entry>()
+  private active = 0
+  private clock = 0
+  private stopped = false
+  private visible = true
+  private sourceBytes = 0
+  private fetchedBytes = 0
+  private decodedTotal = 0
+
+  constructor(private client: Client, private project: string, private invalidate: () => void) {}
+
+  key(request: MediaRequest): string {
+    return JSON.stringify([request.path, request.width, Boolean(request.local)])
+  }
+
+  acquire(request: MediaRequest, changed: () => void): MediaHandle {
+    const key = this.key(request)
+    let entry = this.entries.get(key)
+    if (!entry) {
+      entry = { key, request, listeners: new Set(), pins: 0, bytes: 0, used: ++this.clock, tries: 0, failed: false }
+      this.entries.set(key, entry)
+    }
+    const held = entry
+    held.pins++
+    held.used = ++this.clock
+    held.listeners.add(changed)
+    this.pump()
+    let released = false
+    return {
+      key,
+      get texture() { return held.texture },
+      get failed() { return held.failed },
+      get aspect() { return held.aspect },
+      release: () => {
+        if (released) return
+        released = true
+        held.listeners.delete(changed)
+        held.pins--
+        held.used = ++this.clock
+        if (!held.pins && !held.texture) this.discard(held)
+        this.evict()
+      },
+    }
+  }
+
+  setVisible(visible: boolean) {
+    this.visible = visible
+    if (!visible) {
+      for (const entry of this.entries.values()) {
+        entry.controller?.abort()
+        entry.waiting?.()
+        entry.waiting = undefined
+      }
+    } else this.pump()
+  }
+
+  private pump() {
+    if (this.stopped || !this.visible) return
+    for (const entry of this.entries.values()) {
+      if (this.active >= LOADS) break
+      if (entry.pins && !entry.texture && !entry.controller && !entry.waiting && !entry.failed) void this.load(entry)
+    }
+  }
+
+  private async load(entry: Entry) {
+    const controller = new AbortController()
+    entry.controller = controller
+    this.active++
+    let blobBytes = 0
+    let raw: ImageBitmap | undefined
+    let bitmap: ImageBitmap | undefined
+    const live = () => !this.stopped && this.visible && !controller.signal.aborted && this.entries.get(entry.key) === entry && entry.pins > 0
+    try {
+      const { request } = entry
+      const response = request.local
+        ? await fetch(request.path, { signal: controller.signal })
+        : await this.client.transport.fetch(request.path, { signal: controller.signal })
+      if (!response.ok || response.status === 202) {
+        void response.body?.cancel()
+        throw new Error("Thumbnail is not available")
+      }
+      const blob = await response.blob()
+      if (!live()) return
+      blobBytes = blob.size
+      this.sourceBytes += blobBytes
+      this.fetchedBytes += blobBytes
+      raw = await createImageBitmap(blob)
+      if (!live()) return
+      entry.aspect = raw.width / raw.height
+      this.decodedTotal += raw.width * raw.height * 4
+      const width = Math.min(raw.width, Math.max(MIN_TEXTURE_WIDTH, request.width))
+      bitmap = raw.width > width
+        ? await createImageBitmap(raw, { resizeWidth: width, resizeHeight: Math.max(1, Math.round(width / entry.aspect)), resizeQuality: "high" })
+        : raw
+      if (bitmap !== raw) raw.close()
+      raw = undefined
+      if (!live()) return
+      // skipCache: no global reference survives project close/vault lock. Keep the bitmap for WebGL context restoration.
+      entry.texture = Texture.from(bitmap, true)
+      entry.bitmap = bitmap
+      entry.bytes = bitmap.width * bitmap.height * 4
+      bitmap = undefined
+      entry.failed = false
+      for (const changed of [...entry.listeners]) changed()
+      this.invalidate()
+      this.evict()
+    } catch {
+      if (!live()) return
+      entry.tries++
+      if (entry.request.sha256 && entry.tries < THUMB_TRIES) {
+        entry.waiting = whenThumb(this.project, entry.request.sha256, thumbWait(entry.tries), () => {
+          entry.waiting = undefined
+          this.pump()
+        })
+      } else {
+        entry.failed = true
+        for (const changed of [...entry.listeners]) changed()
+        this.invalidate()
+      }
+    } finally {
+      raw?.close()
+      bitmap?.close()
+      this.sourceBytes -= blobBytes
+      this.active--
+      if (entry.controller === controller) entry.controller = undefined
+      this.pump()
+    }
+  }
+
+  private discard(entry: Entry) {
+    this.entries.delete(entry.key)
+    entry.controller?.abort()
+    entry.waiting?.()
+    entry.texture?.destroy(true)
+    entry.bitmap?.close()
+    entry.listeners.clear()
+    entry.texture = undefined
+    entry.bitmap = undefined
+    entry.bytes = 0
+  }
+
+  private evict() {
+    let total = 0
+    let unused = 0
+    const candidates: Entry[] = []
+    for (const entry of this.entries.values()) {
+      total += entry.bytes
+      if (!entry.pins) { unused += entry.bytes; candidates.push(entry) }
+    }
+    if (total <= CACHE_BYTES && unused <= UNUSED_BYTES) return
+    candidates.sort((a, b) => a.used - b.used)
+    for (const entry of candidates) {
+      if (total <= CACHE_BYTES && unused <= UNUSED_BYTES) break
+      total -= entry.bytes
+      unused -= entry.bytes
+      this.discard(entry)
+    }
+  }
+
+  resourceStats() {
+    let bytes = 0, pinnedBytes = 0, textures = 0, pinnedTextures = 0, failed = 0, queued = 0
+    for (const entry of this.entries.values()) {
+      bytes += entry.bytes
+      if (entry.texture) textures++
+      if (entry.pins) { pinnedBytes += entry.bytes; if (entry.texture) pinnedTextures++ }
+      if (entry.failed) failed++
+      else if (entry.pins && !entry.texture && !entry.controller) queued++
+    }
+    return {
+      textureBytes: bytes, decodedBytes: bytes, sourceBlobBytes: this.sourceBytes,
+      pinnedBytes, unusedBytes: bytes - pinnedBytes, overflowBytes: Math.max(0, bytes - CACHE_BYTES),
+      targetBytes: CACHE_BYTES, unusedTargetBytes: UNUSED_BYTES, textures, pinnedTextures,
+      loading: this.active, queued, failed, fetchedBytes: this.fetchedBytes, decodedTotalBytes: this.decodedTotal,
+      // Decoded and GPU byte estimates describe potentially overlapping storage; do not add them to process memory.
+      minimumTextureWidth: MIN_TEXTURE_WIDTH, preparedSourceWidth: THUMB_SOURCE_WIDTH,
+    }
+  }
+
+  destroy() {
+    this.stopped = true
+    for (const entry of [...this.entries.values()]) this.discard(entry)
+  }
+}
