@@ -34,7 +34,7 @@ class Beat(msgspec.Struct, kw_only=True):
 
 class Segments(msgspec.Struct, kw_only=True):
     summary: Prompt[Image | Video | Audio] = Prompt()
-    beats: list[Beat] = msgspec.field(default_factory=lambda: [Beat()])
+    beats: list[Beat] = []
     wait: Annotated[float, Range(0, 120)] = 30
 
 
