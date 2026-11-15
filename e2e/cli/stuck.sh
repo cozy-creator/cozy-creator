@@ -67,6 +67,21 @@ stuck_settled() {
   done
   return 1
 }
+# listed <pid...>: within 30 s, machine show local lists each as the TensorD before this one (the first frames after a start may
+# still be the last service's).
+stuck_listed() {
+  local pid all
+  for _ in $(seq 30); do
+    cozy --json machine show local > "$OUT/stuck-machine.json" 2> /dev/null || true
+    all=1
+    for pid in "$@"; do
+      J --argjson pid "$pid" 'any(.status.stuck[]?; .pid == $pid and .command == "the TensorD before this one")' "$OUT/stuck-machine.json" || all=''
+    done
+    [ -n "$all" ] && return 0
+    sleep 1
+  done
+  return 1
+}
 stuck_ready() {
   for _ in $(seq "$1"); do
     cozy --json machine show local > "$OUT/stuck-machine.json" 2> "$OUT/stuck-machine.err" || true
@@ -130,8 +145,7 @@ echo "stuck: pid $first's threads: $(stuck_states "$first")"
 [ "$took" -le 200 ] || check "stuck: the update took ${took} s past a service that can't exit"
 stuck_log | grep -q "pid $first can't exit: thread " || check "stuck: TensorD's log doesn't say pid $first can't exit"
 stuck_ready 30 || { check "stuck: the machine isn't ready after its update: $(tail -c 300 "$OUT/stuck-machine.json")"; stuck_diagnose after-update; }
-J --argjson pid "$first" 'any(.status.stuck[]?; .pid == $pid and .command == "the TensorD before this one")' "$OUT/stuck-machine.json" \
-  || check "stuck: machine show local lists no stuck pid $first: $(jq -c .status.stuck "$OUT/stuck-machine.json")"
+stuck_listed "$first" || check "stuck: machine show local lists no stuck pid $first: $(jq -c .status.stuck "$OUT/stuck-machine.json")"
 cozy machine show local > "$OUT/stuck-show.txt" 2>&1 || true
 grep -qE "pid $first \(the TensorD before this one\), killed .* stuck in the kernel" "$OUT/stuck-show.txt" \
   || check "stuck: machine show local doesn't say pid $first is stuck: $(grep -i stuck "$OUT/stuck-show.txt")"
@@ -150,7 +164,7 @@ t0=$SECONDS
 stuck_ready 120 || { check "stuck: the machine didn't start beside pid $first: $(tail -c 300 "$OUT/stuck-machine.json")"; stuck_diagnose beside; }
 took=$((SECONDS - t0))
 [ "$(cat "$STUCK_ROOT/machine/api-port")" = "$port" ] || check "stuck: the machine left its port $port to the stuck pid $first: now $(cat "$STUCK_ROOT/machine/api-port")"
-J --argjson pid "$first" 'any(.status.stuck[]?; .pid == $pid)' "$OUT/stuck-machine.json" || check "stuck: after its start, pid $first isn't listed"
+stuck_listed "$first" || check "stuck: after its start, pid $first isn't listed: $(jq -c .status.stuck "$OUT/stuck-machine.json")"
 stuck_run after-start --on local || check "stuck: no run went to the machine started beside pid $first: $(tail -c 300 "$OUT/stuck-after-start.ndjson")"
 echo "stuck: started in ${took} s beside pid $first, on port $port"
 
@@ -165,8 +179,7 @@ took=$((SECONDS - t0))
 [ "$took" -le 90 ] || check "stuck: a stop with a service that can't exit took ${took} s"
 stuck_in_kernel "$second" || check "stuck: pid $second isn't waiting in the kernel after the stop: $(stuck_states "$second")"
 stuck_ready 120 || check "stuck: the machine didn't start beside pids $first and $second: $(tail -c 300 "$OUT/stuck-machine.json")"
-J '[.status.stuck[]? | select(.command == "the TensorD before this one")] | length == 2' "$OUT/stuck-machine.json" \
-  || check "stuck: machine show local doesn't list both stuck TensorDs: $(jq -c .status.stuck "$OUT/stuck-machine.json")"
+stuck_listed "$first" "$second" || check "stuck: machine show local doesn't list both stuck TensorDs: $(jq -c .status.stuck "$OUT/stuck-machine.json")"
 echo "stuck: stopped in ${took} s with pid $second stuck"
 
 step "stuck: once the filesystem answers, they exit and Status drops them"
