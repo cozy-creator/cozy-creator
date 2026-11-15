@@ -1,7 +1,7 @@
 //! A launchd LaunchAgent in the user's GUI domain. `KeepAlive{SuccessfulExit=false}` restarts it
 //! only after a failure, so a stop is a `bootout` (a signalled exit counts as a failure).
 use super::{ServiceSpec, run};
-use crate::{Error, Result, durable, paths::Home};
+use crate::{Error, Result, durable, paths::Home, process::Detached};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -32,7 +32,7 @@ pub(super) fn current(dir: &Path, spec: &ServiceSpec) -> bool {
     fs::read(plist(dir, &spec.name)).is_ok_and(|kept| kept == render(spec).as_bytes())
 }
 
-pub(super) fn start(dir: &Path, spec: &ServiceSpec) -> Result<()> {
+pub(super) fn start(dir: &Path, spec: &ServiceSpec) -> Result<Option<Detached>> {
     // launchd holds a loaded job's next spawn until 10 s after its last (`ThrottleInterval`), and
     // keeps the definition it loaded: a job loaded but not running (it exited, as Calcifer does on
     // a restart) is booted out, so the bootstrap loads the definition kept here and spawns it at
@@ -47,10 +47,10 @@ pub(super) fn start(dir: &Path, spec: &ServiceSpec) -> Result<()> {
         .output()
         .is_ok_and(|out| out.status.success())
     {
-        return Ok(());
+        return Ok(None);
     }
     // Already bootstrapped is the one expected refusal; kickstart then says whether it runs.
-    run(MANAGER, &mut launchctl(&["kickstart", &target(&spec.name)]))
+    run(MANAGER, &mut launchctl(&["kickstart", &target(&spec.name)])).map(|()| None)
 }
 
 /// Whether launchd runs `name`'s job now.

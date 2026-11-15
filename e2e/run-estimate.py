@@ -99,7 +99,8 @@ def main() -> int:
         if preparing["kind"] != "warm" or number in followed:
             raise ValueError("Calcifer did not finish the local-code preparation")
         followed.add(number)
-        subprocess.run([args.cozy, "--json", "run", "watch", str(number)], stdout=sys.stderr, check=True)
+        # Run numbers are the project's own (#2858): the warm run is watched from the project it was asked in.
+        subprocess.run([args.cozy, "--json", "run", "watch", str(number)], cwd=args.project.resolve(), stdout=sys.stderr, check=True)
 
 
 if __name__ == "__main__":

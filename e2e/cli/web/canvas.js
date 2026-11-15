@@ -118,10 +118,14 @@ const samplesOf = (page) => page.evaluate(() => {
       if (kind(x + gap / 2, y + gap / 2) === 'open') out.between.push([x + gap / 2, y + gap / 2]);
     }
   }
-  // Each box's picture, 2 px in from its edge (past what a dot beside it draws), where it's on screen and topmost.
+  // Each box's picture, 2 px in from its edge (past what a dot beside it draws), where it's on screen and topmost, and drawn: the canvas
+  // stops at the app bar (se-132: its renderer is clipped there, and the paper and its dots go on behind the bar).
+  const renderer = document.querySelector('.react-flow__renderer');
+  const clipped = Number(/inset\(([\d.]+)px/.exec(getComputedStyle(renderer).clipPath)?.[1] ?? 0);
+  const drawnFrom = renderer.getBoundingClientRect().top + clipped;
   for (const media of document.querySelectorAll('.react-flow__node .media')) {
     const box = media.getBoundingClientRect();
-    const [left, top, right, bottom] = [Math.max(0, box.left + 2), Math.max(0, box.top + 2), Math.min(innerWidth, box.right - 2), Math.min(innerHeight, box.bottom - 2)];
+    const [left, top, right, bottom] = [Math.max(0, box.left + 2), Math.max(0, drawnFrom + 2, box.top + 2), Math.min(innerWidth, box.right - 2), Math.min(innerHeight, box.bottom - 2)];
     if (right > left && bottom > top && kind((left + right) / 2, (top + bottom) / 2) === 'box') out.boxes.push([left, top, right, bottom]);
   }
   return out;
