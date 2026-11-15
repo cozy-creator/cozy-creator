@@ -1010,6 +1010,7 @@ components:
       properties:
         package: {type: string, description: org/name}
         release: {type: string, description: 'Empty: the Hub''s newest.'}
+        digest: {type: string, description: 'The release digest its files must have (the Hub''s, recorded in a project''s lock); absent: none.'}
     RunEvent:
       type: object
       description: >-

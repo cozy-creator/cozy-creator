@@ -80,16 +80,33 @@ resolves() {  # the release an unversioned run of the throwaway takes
   grep -oE "\"target\": *\"[^\"]*$pkg[^\"]*\"" "$OUT/resolve-$1.ndjson" | head -1 || true
 }
 [[ $(resolves before) == *@0.2.0* ]] || check "the throwaway's unversioned run is not 0.2.0"
+# The card this computer keeps pins its release's files (xs-196): the Hub's release digest goes with every run, and the machine
+# holds the files it installs to it. A card that names other files is refused release_changed, and nothing runs.
+card=$(find "$HOME/.cozy/packages" -path "*/$WHO/$pkg/0.2.0.json" -print -quit 2> /dev/null)
+if [ -z "$card" ] || ! J '.release.digest | test("^sha256:[0-9a-f]{64}$")' "$card"; then
+  check "release digest: the kept card of $WHO/$pkg@0.2.0 holds no release digest: ${card:-no card}"
+else
+  cp "$card" "$OUT/card-0.2.0.json"
+  jq '.release.digest = "sha256:" + ("0" * 64)' "$OUT/card-0.2.0.json" > "$card"
+  ! watched pinned-wrong run "$WHO/$pkg/reverse@0.2.0" text=e2e --on "$ON" || check "release digest: a run pinned to other files completed"
+  grep -qs release_changed "$OUT"/pinned-wrong.{ndjson,err,json} \
+    || check "release digest: a run pinned to other files wasn't refused release_changed: $(tail -c 300 "$OUT/pinned-wrong.err" 2> /dev/null)"
+  cp "$OUT/card-0.2.0.json" "$card"
+fi
 cozy --json package yank "$WHO/$pkg@0.2.0" > "$OUT/yank.json" || check "package yank failed"
 [[ $(resolves yanked) == *@0.1.0* ]] || check "package yank: an unversioned run still takes 0.2.0"
 cozy --json package yank "$WHO/$pkg@0.2.0" --undo > "$OUT/unyank.json" || check "package yank --undo failed"
 [[ $(resolves unyanked) == *@0.2.0* ]] || check "package yank --undo: an unversioned run does not take 0.2.0 again"
 # A release its machine still holds and the Hub no longer has, as after a renumbering (birefnet 0.5.3 over 0.1.3): never chosen (cl-748).
+# Deleted, its name publishes again, but a version it published never does, with any bytes (xs-196): 0.1.0 is refused release.retired.
 cozy --json package delete "$WHO/$pkg" --yes > "$OUT/pkg-renumber.json" || check "test package cleanup, to renumber, failed"
 sed -i.orig 's/^version = "0.2.0"/version = "0.1.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
-(cd "$dir" && cozy --json package publish > "$OUT/publish-4.json") || check "package publish 0.1.0 again failed"
+! (cd "$dir" && cozy --json package publish > "$OUT/publish-retired.json" 2>&1) && grep -q 'release\.retired' "$OUT/publish-retired.json" \
+  || check "a deleted package's 0.1.0 published again, or wasn't refused release.retired: $(tail -c 300 "$OUT/publish-retired.json")"
+sed -i.orig 's/^version = "0.1.0"/version = "0.0.9"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
+(cd "$dir" && cozy --json package publish > "$OUT/publish-4.json") || check "package publish 0.0.9 after the delete failed"
 cozy --json package ls --on "$ON" | J --arg p "$WHO/$pkg" '.packages | any(.package == $p and .release == "0.2.0")' || check "the machine no longer holds 0.2.0, so this proves nothing"
-[[ $(resolves renumbered) == *@0.1.0* ]] || check "an unversioned run took a release the Hub no longer has: $(tail -c 300 "$OUT/resolve-renumbered.err")"
+[[ $(resolves renumbered) == *@0.0.9* ]] || check "an unversioned run took a release the Hub no longer has: $(tail -c 300 "$OUT/resolve-renumbered.err")"
 [ "$(run_get "$OUT" resolve-renumbered .status)" = completed ] || check "an unversioned run, with a release the Hub no longer has held: $(run_get "$OUT" resolve-renumbered '.reason.message' | head -c 300)"
 python3 "$here/../delete-test-package.py" "$WHO/$pkg" > "$OUT/pkg-delete.json" || check "test package cleanup failed"
 ! package_details "$WHO/$pkg" > /dev/null 2>&1 || check "test package cleanup: $WHO/$pkg still answers"

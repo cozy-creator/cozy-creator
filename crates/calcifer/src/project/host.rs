@@ -43,6 +43,8 @@ pub(crate) struct Package {
     pub moved: Option<api::calcifer::Note>,
     /// The function its tool names; none: the package alone.
     pub named: Option<String>,
+    /// A published release's digest, as its card says (xs-196); empty: local code, or a Hub before it.
+    pub digest: String,
     document: Value,
 }
 
@@ -101,7 +103,8 @@ impl Package {
 
     /// `function` of it.
     pub(crate) fn function(&self, function: &str) -> Result<Renderer, Error> {
-        Renderer::read(&self.name, function, self.release.clone(), &self.document, self.local.clone())
+        let renderer = Renderer::read(&self.name, function, self.release.clone(), &self.document, self.local.clone())?;
+        Ok(Renderer { digest: self.digest.clone(), ..renderer })
     }
 }
 
@@ -120,6 +123,8 @@ pub(crate) struct Renderer {
     pub slots: Vec<Slot>,
     /// The functions it calls, each its own unit of placement, with their model slots.
     pub calls: Vec<Call>,
+    /// Its release's digest, as its card says; empty: none.
+    pub digest: String,
 }
 
 impl Renderer {
@@ -149,6 +154,7 @@ impl Renderer {
             accepts,
             slots: read(interface::models(entry).iter().collect()),
             calls: Interface::parse(document).ok().and_then(|parsed| parsed.callables.into_iter().find(|callable| callable.name == function)).map(|callable| callable.calls).unwrap_or_default(),
+            digest: String::new(),
         })
     }
 
@@ -290,7 +296,7 @@ impl Host {
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
             };
             let release = prepared.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            return Ok(Package { name: prepared.package, release, local: Some(path), manifest: prepared.source.manifest, moved: None, named, document });
+            return Ok(Package { name: prepared.package, release, local: Some(path), manifest: prepared.source.manifest, moved: None, named, digest: String::new(), document });
         }
         let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
         self.published(hub, with, Some(&first)).await
@@ -321,7 +327,7 @@ impl Host {
     pub(crate) async fn described(&self, with: &str, folder: &Path) -> Result<Package, Error> {
         let hub = self.api.machines.hubs.default_origin();
         let found = crate::runs::target::describe(&self.api, &hub, with, None, Some(folder), &crate::runs::default_on(&self.api)).await?;
-        Ok(Package { name: found.package, release: found.release, local: None, manifest: String::new(), moved: None, named: found.function, document: found.interface })
+        Ok(Package { name: found.package, release: found.release, local: None, manifest: String::new(), moved: None, named: found.function, digest: String::new(), document: found.interface })
     }
 
     /// A published package, by `[org/]package[@release]`, for a run `on` its machine (of several, the
@@ -359,7 +365,7 @@ impl Host {
         {
             moved = Some(upgrade.note());
         }
-        let found = Package { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, document: card.interface_document().clone() };
+        let found = Package { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, digest: card.digest().unwrap_or_default().to_owned(), document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })
     }

@@ -7,7 +7,8 @@ name: build
 # Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
 # PR + branch state; on a pull request it is skipped, which lets the PR be queued. A docs-only entry (its diff from
 # the entry ahead) passes without building; ALLGREEN keeps it from vouching for the entries ahead (e2e.yaml).
-# The memory-safety step (scripts/memory-safety.sh) runs only when its inputs change.
+# The memory-safety step (scripts/memory-safety.sh) runs on every build: an advisory published against an unchanged
+# Cargo.lock fails the next one.
 # The Python type check (scripts/typecheck.sh: mypy --strict per import root) and executor.pyi's freshness.
 on:
   pull_request:
@@ -35,17 +36,12 @@ jobs:
           BASE: ${{ github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.merge_group.head_sha }}
         run: |
-          changes=$([ -z "$BASE" ] || gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" --paginate --jq '.files[] | [.filename, ((.patch // "") | test("allow\\(unsafe_code\\)"))] | @tsv') || changes=
-          files=$(cut -f1 <<< "$changes")
+          files=$([ -z "$BASE" ] || gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" --paginate --jq '.files[].filename') || files=
           # A picture under web/app is in the page.
           if [ -n "$files" ] && ! grep -qvE '\.(md|txt|png|jpe?g|svg)$|^docs/|(^|/)LICENSE$' <<< "$files" && ! grep -q '^web/app/' <<< "$files"; then
             echo "docs only"; echo run=false >> "$GITHUB_OUTPUT"
           else
             echo run=true >> "$GITHUB_OUTPUT"
-          fi
-          # An unread diff (a dispatch, a failed compare) runs it too.
-          if [ -z "$files" ] || grep -qP '(^|/)Cargo\.(toml|lock)\t|^(deny\.toml|unsafe-boundaries\.txt|scripts/memory-safety\.sh)\t|\ttrue$' <<< "$changes"; then
-            echo memory_safety=true >> "$GITHUB_OUTPUT"
           fi
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v5
@@ -112,8 +108,14 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - if: steps.scope.outputs.run == 'true'
         run: scripts/web-types.sh
-      - if: steps.scope.outputs.run == 'true' && steps.scope.outputs.memory_safety == 'true'
+      - if: steps.scope.outputs.run == 'true'
         run: scripts/memory-safety.sh
+      # The release and signing workflows run each action by its commit, never a tag that can move (xs-196).
+      - if: steps.scope.outputs.run == 'true'
+        run: |
+          cd .github/workflows
+          ! grep -nE '^\s*(- )?uses: *[^. ]' cozy-publish.yaml cozy-attestations.yaml cozy-promote.yaml tensorfs-publish.yaml rc-dev.yaml dev-build.yaml \
+            | grep -vE '@[0-9a-f]{40} # '
       - if: steps.scope.outputs.run == 'true'
         run: cargo check --workspace --all-targets --locked
       - if: steps.scope.outputs.run == 'true'

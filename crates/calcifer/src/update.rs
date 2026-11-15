@@ -234,11 +234,12 @@ impl Machines {
                 }
                 Component::Version(version) => {
                     let version = release(&version)?;
-                    // A wheel version PyPI lacks is its GitHub prerelease, an exact version being an
-                    // explicit ask: the machine fetches the wheel itself, held to its digest.
+                    // A wheel version PyPI lacks is its GitHub prerelease, its SHA256SUMS signed by its publish workflow
+                    // (xs-196): named by hand, or the Hub's target on a dev computer (`dev = true`) only. The machine fetches
+                    // the wheel itself, held to its digest.
                     let fetched = match member {
                         "tensord" => None,
-                        _ => prerelease(distribution, &version, &platform).await?,
+                        _ => prerelease(distribution, &version, &platform, !flagless || self.dev).await?,
                     };
                     match fetched {
                         Some((url, sha256)) => {
@@ -485,13 +486,17 @@ fn release(text: &str) -> Result<String, Error> {
 /// hold that version: the GitHub prerelease (cozy-runtime `v<version>`, cozy-creator
 /// `tensorfs-v<version>`) names it in its `SHA256SUMS`, the platform's own wheel first, else the
 /// pure one. Its URL and sha256; `None` for a PyPI release, which the machine fetches from PyPI.
-async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result<Option<(String, String)>, Error> {
+async fn prerelease(distribution: &str, version: &str, platform: &str, taken: bool) -> Result<Option<(String, String)>, Error> {
     let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "release_unreachable", e.to_string());
     let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone").read_timeout(tensorfs::fetch::STALL).build().map_err(failed)?;
     let project = distribution.replace('_', "-");
     let pypi = http.get(format!("https://pypi.org/pypi/{project}/{version}/json")).send().await.map_err(failed)?;
     if pypi.status().is_success() {
         return Ok(None);
+    }
+    if !taken {
+        return Err(Error::new(Kind::Conflict, "prerelease_refused", format!("the Hub's target {project} {version} isn't on PyPI, and this computer takes no prerelease unless its config says `dev = true`"))
+            .remedy("name a released version: `cozy machine update <machine> --runtime <version> --tensorfs <version>`"));
     }
     let base = api::prerelease::base(distribution, version);
     let sums = http.get(format!("{base}/SHA256SUMS")).send().await.map_err(failed)?;
@@ -504,6 +509,14 @@ async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result
         .remedy("with no version named, `cozy machine update <machine>` moves it to its Hub's target"));
     }
     let sums = sums.text().await.map_err(failed)?;
+    let bundles = format!("{base}/SHA256SUMS.sigstore.jsonl");
+    let answer = http.get(&bundles).send().await.map_err(failed)?;
+    let lines = match answer.status().is_success() {
+        true => answer.text().await.map_err(failed)?,
+        false => String::new(),
+    };
+    platform::release::prerelease_sums(distribution, version, &sums, &bundles, &lines)
+        .map_err(|e| Error::new(Kind::Validation, e.code, format!("{project} {version}'s prerelease isn't signed by its publish workflow: {}", e.message)))?;
     let (file, sha256) = api::prerelease::wheel(&sums, distribution, version, platform).ok_or_else(|| {
         Error::new(Kind::NotFound, "release_wheel_absent", format!("{project} {version}'s prerelease holds no wheel for {platform}"))
     })?;

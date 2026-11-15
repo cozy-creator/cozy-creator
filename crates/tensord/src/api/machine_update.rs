@@ -119,6 +119,7 @@ pub(super) async fn submit(
     let updates = identity.updates.clone();
     let id = request.id.clone();
     // SQLite serializes this ID's ownership with ordinary acceptance and cancellation.
+    let owns = identity.authority.keys.owns(&actor.public_key);
     let owner = actor_id(actor);
     let stopped = |_| Error::internal("machine_operation_stopped", "machine operation stopped");
     let (reserving, reserved) = (runs.clone(), id.clone());
@@ -140,7 +141,7 @@ pub(super) async fn submit(
             return Ok((false, state(&id, &update)));
         }
         // A machine still starting queues it, as an update in progress does: never refused.
-        stage(&updates, &runs, actor, &id, request.spec, &identity.gpus, identity.readiness.proved())?;
+        stage(&updates, &runs, actor, owns, &id, request.spec, &identity.gpus, identity.readiness.proved())?;
         let update = updates.update(&id).ok_or_else(|| Error::internal("update_unrecorded", "the update was not recorded"))?;
         Ok((true, state(&id, &update)))
     })
@@ -189,10 +190,12 @@ pub(super) async fn events(
     Ok(super::http::received(receiver))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage(
     updates: &Arc<Updates>,
     runs: &Runs,
     actor: VerifiedActor,
+    owns: bool,
     id: &str,
     spec: v1::RunSpec,
     gpus: &[crate::machine::receipt::Gpu],
@@ -208,6 +211,15 @@ fn stage(
         return Err(Error::validation("update_field_unknown", format!(
             "cozy {version} cannot carry out an update's {name:?}: move this machine's cozy first (`cozy machine update <machine>`), then ask again"
         )));
+    }
+    // A build no release vouches for, a staged file or a wheel by URL, only the machine's owner installs (xs-196): its own
+    // Calcifer or a rental owner's devices, never a controller `cozy machine authorize` let in.
+    let by_url = |member: &Option<Member>| matches!(member, Some(Member::Fetched { .. }));
+    if !owns && (!spec.inputs.is_empty() || by_url(&cohort.runtime) || by_url(&cohort.tensorfs)) {
+        return Err(Error::forbidden(
+            "update_owner_only",
+            "only the machine owner's keys install a build no release vouches for (a staged file or a wheel by URL): name released versions",
+        ));
     }
     // The file an input binds to `member`, staged as `file` and held to its digest.
     let held = |member: &str, file: &str| -> Result<Option<Choice>, Error> {

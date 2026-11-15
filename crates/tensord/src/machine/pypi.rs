@@ -73,8 +73,9 @@ fn selected(plan: &str, distribution: &str, version: &str) -> io::Result<Artifac
 }
 
 /// The newest GitHub prerelease of `distribution` whose version `meets` admits and that holds a wheel
-/// for this machine, landed in `dir`: its version and path. None: no release meets it. Err: the
-/// releases couldn't be read, which says nothing of what is published.
+/// for this machine, landed in `dir`: its version and path. Its `SHA256SUMS` must carry its publish
+/// workflow's Sigstore signature (`platform::release::prerelease_sums`), else it is refused `unattested`.
+/// None: no release meets it. Err: the releases couldn't be read, which says nothing of what is published.
 pub(crate) fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, machine: &Machine, order: u64, stop: &Stop) -> io::Result<Option<(String, PathBuf)>> {
     #[derive(serde::Deserialize)]
     struct Release { tag_name: String, #[serde(default)] draft: bool }
@@ -95,6 +96,14 @@ pub(crate) fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: 
             Err(e) if matches!(e.code, Code::REF_NOT_FOUND | Code::ORIGIN_REFUSED) => continue,
             Err(e) => return Err(unread(e)),
         };
+        let bundles = format!("{base}/SHA256SUMS.sigstore.jsonl");
+        let lines = match text(machine, stop, bundles.clone()) {
+            Ok(lines) => lines,
+            Err(e) if matches!(e.code, Code::REF_NOT_FOUND | Code::ORIGIN_REFUSED) => String::new(),
+            Err(e) => return Err(unread(e)),
+        };
+        platform::release::prerelease_sums(distribution, version, &sums, &bundles, &lines)
+            .map_err(|e| io::Error::other(super::update::Coded { code: e.code, message: e.message }))?;
         if let Some((file, sha256)) = api::prerelease::wheel(&sums, distribution, version, &platform) {
             let wheel = wheel_at(&format!("{base}/{file}"), sha256, file, dir, machine, order, stop)?;
             return Ok(Some((version.to_owned(), wheel)));

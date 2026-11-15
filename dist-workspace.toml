@@ -10,7 +10,7 @@ cargo-dist-version = "0.33.0"
 # release carries, with the tap's deploy key (secret HOMEBREW_TAP_DEPLOY_KEY), once a recorded gate passed it; and
 # the attestations job at cozy-attestations.yaml; the page job, which builds web/app once, build-local-artifacts'
 # need of it, fetch into web/app/dist and check for index.html, and host's need of it (a failed page skips the builds,
-# and host accepts skipped builds). After `dist generate` (or a dist upgrade), move release.yml to
+# and host accepts skipped builds); and every action pinned by commit, its tag in a comment (xs-196). After `dist generate` (or a dist upgrade), move release.yml to
 # cozy-publish.yaml and put them back. `cozy update` verifies a release's signer is cozy-publish.yaml: renaming this
 # file again is a hard cut for every installed cozy.
 allow-dirty = ["ci"]

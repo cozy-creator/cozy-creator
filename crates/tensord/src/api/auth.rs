@@ -33,6 +33,8 @@ pub(crate) struct Keys {
     /// When the home's files changed last, as `stamp` reads it, and as it was when read.
     stamp: Option<Arc<dyn Fn() -> Stamp + Send + Sync>>,
     stamped: Arc<RwLock<Stamp>>,
+    /// The home's owner key (`keys/owner.pem`: this computer's Calcifer, a pod's own shell), as it reads now.
+    home_owner: Option<Arc<dyn Fn() -> Option<VerifyingKey> + Send + Sync>>,
 }
 type Stamp = [Option<std::time::SystemTime>; 2];
 impl Keys {
@@ -44,7 +46,18 @@ impl Keys {
             source: None,
             stamp: None,
             stamped: Arc::default(),
+            home_owner: None,
         }
+    }
+    /// These keys, the home's owner key read by `owner`.
+    pub(crate) fn with_home_owner(self, owner: impl Fn() -> Option<VerifyingKey> + Send + Sync + 'static) -> Self {
+        Self { home_owner: Some(Arc::new(owner)), ..self }
+    }
+    /// Whether `key` is the machine owner's: one the grant names (a rental's owner's devices) or the home's owner key, never a
+    /// controller `cozy machine authorize` let in.
+    pub(crate) fn owns(&self, key: &[u8; 32]) -> bool {
+        self.granted.read().unwrap().iter().any(|k| k.as_bytes() == key)
+            || self.home_owner.as_ref().and_then(|owner| owner()).is_some_and(|k| k.as_bytes() == key)
     }
     /// `granted`, and the home's keys `source` reads: read again when `stamp` says the home's
     /// files changed (`cozy machine authorize`, `--remove`: the next call), and when a signer is

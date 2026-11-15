@@ -32,7 +32,7 @@ jobs:
     outputs:
       build: ${{ steps.changed.outputs.build }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       # Each kind is built again when its crates (and their workspace dependencies), the lock or the toolchain changed
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: '*-${{ github.sha }}'
           path: artifacts
