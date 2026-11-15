@@ -61,6 +61,26 @@ struct Session {
 fn error(code: &'static str, why: impl std::fmt::Display) -> Error { Error::new(Kind::Unavailable, code, why.to_string()) }
 fn io(e: std::io::Error) -> Error { error("vault_io", e) }
 fn provider(e: impl std::fmt::Display) -> Error { error("vault_provider", e) }
+/// The provider found and checked: what it needs that this computer lacks is a refusal naming its install command, never a 503
+/// (cl-1000).
+fn unusable(e: project_mount::Error) -> Error {
+    match e {
+        project_mount::Error::DependencyMissing { ref install, .. } => {
+            install.iter().cloned().fold(Error::new(Kind::Conflict, "vault_dependency_missing", e.to_string()), Error::next)
+        }
+        project_mount::Error::DriverMissing(_) | project_mount::Error::HelperMissing => Error::new(Kind::Conflict, "vault_dependency_missing", e.to_string()),
+        other => provider(other),
+    }
+}
+
+/// `unusable`, said to one creating a project: an unencrypted one still works here.
+fn unusable_for_creation(e: project_mount::Error) -> Error {
+    let refused = unusable(e);
+    match refused.code == "vault_dependency_missing" {
+        true => Error { message: format!("{}; or create the project unencrypted", refused.message), ..refused }.next("cozy new --unencrypted"),
+        false => refused,
+    }
+}
 /// A mount's failure; one whose supervisor this cozy can't start, as an update replaced it, names the restart (cl-981).
 fn mounting(e: project_mount::Error) -> Error {
     match e {
@@ -549,7 +569,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     }
     let runtime = project_runtime(root)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
-    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
     let took = crate::took::Took::new("vault mount");
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
     drop(took);
@@ -884,8 +904,8 @@ pub(super) fn private(mut response: Response) -> Response {
 
 /// Refuse missing providers/drivers before creating a new project's directory or reserved storage.
 pub(super) fn preflight_creation(api: &Api) -> Result<Provider, Error> {
-    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
-    engine.check_driver().map_err(provider)?;
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable_for_creation)?;
+    engine.check_driver().map_err(unusable_for_creation)?;
     Ok(engine)
 }
 
@@ -1568,7 +1588,7 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &
         return Err(error("vault_identity", "the unlocked project does not match its keybag"));
     }
     no_nested(api, root)?;
-    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
     if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
     let converting = Converting(root.to_owned());
     close(api, root, transition, browser)?;
@@ -1678,7 +1698,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
         source_key: Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|bag| bag.info().key_id),
         backing_id: None, plain: None };
     save_conversion(&receipt)?;
-    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
+    let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
     secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(provider)?;
     keybag.save(&staged.join(KEYBAG_FILE)).map_err(key)?;
     receipt.backing_id = Some(directory_id(&staged.join(BACKING))?);
