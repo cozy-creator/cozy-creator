@@ -24,12 +24,18 @@
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
 #   need_s     seconds the cap must buy (3600)
 #   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
+#   file       optional: a JSON file in this checkout (from its root) holding all of these, for a matrix past the
+#              dispatch input's 65,535 characters
 #   max_fails  optional: the failed cells that stop the session (2); a memory matrix whose tight caps may fail on both
 #              arms sets more
 #   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
 #              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
 . "$(dirname "$0")/lib.sh"
+F=$(param file '')
+if [ -n "$F" ]; then
+  F=$(dirname "$0")/../../$F; jq -e 'type == "object"' "$F" > /dev/null 2>&1 || fail "params file $F"; PARAMS=$(cat "$F")
+fi
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1)
 MAX_FAILS=$(param max_fails 2)
 [[ $MAX_FAILS =~ ^[1-9][0-9]*$ ]] || fail "max_fails $MAX_FAILS"
