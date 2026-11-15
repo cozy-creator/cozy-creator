@@ -75,12 +75,10 @@ case $SHARD in projectvault | plan) calcifer_diagnostics ;; esac
 # A vault failure names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings
 # in calcifer/diagnostics.log, which the job collects with the other logs.
 calcifer_diagnostics() {
-  local config=$HOME/.cozy/config.toml pid
+  local config=$HOME/.cozy/config.toml
   awk '/^diagnostics *=/ { next } { print } /^\[calcifer\]/ { print "diagnostics = true"; put = 1 } END { if (!put) printf "\n[calcifer]\ndiagnostics = true\n" }' "$config" > "$config.next" && mv "$config.next" "$config"
-  pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
-  kill -TERM "$pid" 2> /dev/null || true
-  while kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
-  cozy --json machine ls > /dev/null || fail "Calcifer did not start again with its diagnostics"
+  # `cozy restart`, not a signal: Git Bash's kill reaches no Windows pid (cl-989).
+  cozy --json restart > "$OUT/diagnostics-restart.json" 2>&1 || fail "Calcifer did not start again with its diagnostics: $(tail -c 300 "$OUT/diagnostics-restart.json")"
   [ -f "$HOME/.cozy/calcifer/diagnostics.log" ] || fail "Calcifer kept no diagnostics log"
 }
 

@@ -948,6 +948,9 @@ jobs:
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
             --command .creator/e2e/isolated.sh -- cli \
             --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $CANDIDATES $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
+      # cozy's logs (Calcifer's too) however the suite ended, as on Linux.
+      - if: always()
+        run: mkdir -p "$RUNNER_TEMP/e2e/cozy-logs" && cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | tar -xf - -C "$RUNNER_TEMP/e2e/cozy-logs" || true
       - if: always()
         uses: ./.creator/e2e/publish
         with:

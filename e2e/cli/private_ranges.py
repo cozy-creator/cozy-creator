@@ -261,7 +261,8 @@ def exercise(args: argparse.Namespace, home: Path, receipt: dict[str, object]) -
 
     def render_state() -> AssetAnswer:
         state = cast(AssetAnswer, api('GET', route + '/assets/' + asset))  # cast: the asset's JSON
-        assert not state['asset'].get('failure'), 'the canvas range render failed'
+        failure = state['asset'].get('failure')
+        assert not failure, f'the canvas range render failed: {json.dumps(failure)[:1500]}'
         return state
 
     landed = wait_for(render_state, lambda state: bool(state['versions']), 'the canvas range render never landed')

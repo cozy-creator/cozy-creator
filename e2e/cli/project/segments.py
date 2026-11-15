@@ -2,10 +2,12 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19", "numpy>=1.26"]
 # ///
-"""The web suite video cell's stand-in for MiniMax H3's shot (cl-907), weightless: its segments in turn, each `seconds` of its own colour and tone,
-and each after the first `wait` seconds in counted steps. Each shows as it lands joined after those before it, as minimax-h3 0.11.1 publishes
-them (`Segment 1 of 3`, `Segments 1-2 of 3`), and the last is the whole video, the take. Its take says where each segment after the first
-starts (`seams`, se-130), and it takes a pickup, as H3 does, so its segments offer Redo (web/video.spec.js); it renders every segment again."""
+"""MiniMax H3's shot's stand-in (cl-907) for web/segments.js and the web suite's video cell, weightless: a segment for each of its beats in
+turn, each its beat's length of its own colour and tone, and each after the first `wait` seconds in counted steps. Its plan is logged as H3
+logs it (`h3 shot segments`), which is what Calcifer lays a run's progress on. Each shows as it lands joined after those before it, as
+minimax-h3 0.11.1 publishes them (`Segment 1 of 3`, `Segments 1-2 of 3`), and the last is the whole video, the take. Its take says where each
+segment after the first starts (`seams`, se-130), and it takes a pickup, as H3 does, so its segments offer Redo (web/video.spec.js); it
+renders every segment again."""
 
 import time
 from collections.abc import Iterator
@@ -15,7 +17,7 @@ from typing import Annotated
 import msgspec
 import numpy as np
 from cozy_runtime.author import App, Context, Outputs, Telemetry
-from cozy_runtime.fields import Audio, Image, Pickup, Prompt, Range, Video
+from cozy_runtime.fields import Audio, Image, Pickup, Prompt, Range, Total, Video
 from cozy_runtime.media import DecodedAudioChunk, DecodedAudioFormat, DecodedMediaHeader, DecodedVideoFormat, DecodedVideoFrame, VideoFile
 
 app = App()
@@ -27,10 +29,14 @@ SOUND = DecodedAudioFormat(channels=2, sample_rate=RATE, channel_layout="stereo"
 HUES = [(200, 40, 40), (40, 160, 60), (40, 70, 200), (200, 170, 40)]
 
 
+class Beat(msgspec.Struct, kw_only=True):
+    description: Prompt[Image | Video | Audio] = Prompt()
+    duration: Annotated[float, Range(1, 15, step=1, unit="s"), Total()] = 10
+
+
 class Segments(msgspec.Struct, kw_only=True):
     summary: Prompt[Image | Video | Audio] = Prompt()
-    segments: Annotated[int, Range(1, 4)] = 3
-    seconds: Annotated[int, Range(1, 15)] = 10
+    beats: list[Beat] = []
     wait: Annotated[float, Range(0, 120)] = 30
     pickup: Pickup | None = None
 
@@ -65,16 +71,22 @@ def _clip(index: int, seconds: int) -> Iterator[DecodedMediaHeader | DecodedVide
 
 @app.tool(label="Segments", named="segments")
 def segments(ctx: Context, payload: Segments, out: Outputs, tel: Telemetry) -> Take:
-    """A shot of `segments` segments, each shown as it lands after those before it, as H3's."""
+    """A shot of a segment a beat, each shown as it lands after those before it, as H3's."""
     joined = out.join_video(SOUND)
-    count, steps, samples = payload.segments, 8, 0
+    lengths = [int(beat.duration) for beat in payload.beats]
+    count, steps, samples = len(lengths), 8, 0
+    if not count:
+        raise AssertionError("a shot has at least one segment")
+    starts = [sum(lengths[:index]) for index in range(count)]
+    tel.log("h3 shot segments", segments=count, seconds=",".join(map(str, lengths)), resumed_at=0,
+            boundaries_s=",".join(f"{start:.2f}" for start in starts[1:]), delivered_frames=sum(lengths) * FPS)  # fmt: skip
     for index in range(count):
         with tel.scope(f"Segment {index + 1} of {count}"), tel.stage("denoise"):
             for at in range(steps):
                 if index:
                     time.sleep(payload.wait / steps)
                 ctx.progress(at + 1, steps)
-            clip = out.save_video_stream(_clip(index, payload.seconds)).video
+            clip = out.save_video_stream(_clip(index, lengths[index])).video
 
         def sound(frames: int, index: int = index) -> Iterator[DecodedAudioChunk]:
             nonlocal samples
@@ -86,6 +98,6 @@ def segments(ctx: Context, payload: Segments, out: Outputs, tel: Telemetry) -> T
         if last:
             video = joined.finish().video
             out.publish("video", video, label="Video")
-            return Take(video, [later * payload.seconds * FPS for later in range(1, count)])
+            return Take(video, [start * FPS for start in starts[1:]])
         out.publish("video", so_far, label=f"Segments 1-{index + 1} of {count}" if index else f"Segment 1 of {count}")
     raise AssertionError("a shot has at least one segment")

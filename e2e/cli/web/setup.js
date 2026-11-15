@@ -12,7 +12,7 @@ const WARM = process.platform === 'linux' ? [
   ['tool.py/still', 'instructions=warm'],
   ['boxes.py/still', 'instructions=warm'],
   ['when.py/image', 'instructions=warm'],
-  ['segments.py/segments', 'segments=1', 'seconds=1', 'wait=0'],
+  ['segments.py/segments', 'beats:=[{"description":"warm","duration":1}]', 'wait=0'],
   ['tool.py/slow', 'seconds=0'],
   ['rounded.py/shot', 'instructions=warm'],
   // torch: a large install, never a cell's first render.

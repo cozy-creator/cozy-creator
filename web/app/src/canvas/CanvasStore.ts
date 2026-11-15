@@ -380,8 +380,8 @@ export class CanvasStore {
   /** A position of ours that the stream hasn't echoed: it wins until then. */
   private masks = new Map<string, Card>()
   private gliding = new Map<string, ReturnType<typeof setTimeout>>()
-  /** Boxes to clear of what they lie on, as soon as this turn's changes are in: true for one whose size is its own, which doesn't shrink. */
-  private unsettled = new Set<string>()
+  /** Boxes to clear of what they lie on, as soon as this turn's changes are in, and why: placed by another writer, or grown. */
+  private unsettled = new Map<string, "placed" | "grown">()
   /** When each of this page's moves was answered, by name. */
   private movedAt = new Map<string, number>()
   /** Rows to write, by node id. */
@@ -398,6 +398,8 @@ export class CanvasStore {
   private movesSoon = false
   private movesOwed = false
   private renames = new Map<string, string>()
+  /** When Calcifer answered each rename of `renames`, by its old name: a read begun after has it. */
+  private renamedAt = new Map<string, number>()
   private adding = 0
   private seen = false
   private selected: Set<string>
@@ -509,7 +511,7 @@ export class CanvasStore {
     this.views.clear(); this.aliases.clear(); this.shapes.clear(); this.asked.clear(); this.unsentSaid.clear(); this.runs.clear()
     this.early.clear(); this.offers.clear(); this.dropTargets.clear(); this.carets.clear(); this.ids.clear(); this.namesById.clear(); this.served.clear()
     this.poses.clear(); this.owners.clear(); this.deleting.clear(); this.own.clear(); this.landings.clear(); this.masks.clear(); this.unsettled.clear()
-    this.movedAt.clear(); this.moving.clear(); this.movingFrom.clear(); this.movingEdits.clear(); this.movingSince.clear(); this.renames.clear()
+    this.movedAt.clear(); this.moving.clear(); this.movingFrom.clear(); this.movingEdits.clear(); this.movingSince.clear(); this.renames.clear(); this.renamedAt.clear()
     this.selected.clear(); this.moreOpen.clear(); this.tools.set(new Map()); this.allAsking.set(null)
     for (const listeners of this.subscribers.values()) for (const listener of listeners) listener()
     this.subscribers.clear(); this.named.clear()
@@ -845,6 +847,13 @@ export class CanvasStore {
     this.cardsRead = cards
     const first = !this.rows
     const rows = new Map(Object.entries(cards))
+    // A rename on its way: Calcifer's row under the old name is this box's, and one under the new name is another's.
+    for (const [from, to] of this.renames) {
+      const ours = rows.get(from) ?? this.rows?.get(to)
+      rows.delete(from)
+      if (ours) rows.set(to, ours)
+      else rows.delete(to)
+    }
     for (const [key, view] of this.views) if (view.placing && this.rows?.has(key)) rows.set(key, this.rows.get(key)!)
     for (const [name, at] of this.movedAt) {
       const mine = this.rows?.get(name)
@@ -868,12 +877,17 @@ export class CanvasStore {
     if (this.retired) return
     this.heard(seq)
     if (!this.rows) return
-    for (const [name, row] of Object.entries(cards)) {
+    const becoming = new Set(this.renames.values())
+    for (const [served, row] of Object.entries(cards)) {
+      // A rename on its way: Calcifer's row under the old name is this box's, and one under the new name is another's. Gone from the old
+      // name, it's landed or the box went, as the next read says.
+      const name = this.renames.get(served) ?? served
+      if (becoming.has(served) && !this.renames.has(served)) continue
       if (row) {
         this.rows.set(name, row)
         this.applyRow(name, row)
-        if (!this.masks.has(name)) this.unsettle(name)
-      } else {
+        if (!this.masks.has(name)) this.unsettle(name, "placed")
+      } else if (name === served) {
         this.rows.delete(name)
       }
     }
@@ -940,7 +954,14 @@ export class CanvasStore {
     const before = [...this.views.keys()]
     for (const [name, until] of this.deleting) if (!present.has(name) || until < this.began) this.deleting.delete(name)
     for (const name of this.deleting.keys()) present.delete(name)
-    for (const [from, to] of this.renames) if (present.has(to)) this.renames.delete(from)
+    // A rename on its way has landed once Calcifer answered it before this read began, or has the new name and not the old. With both,
+    // another writer took the name meanwhile: that box isn't this one, and the answer says what becomes of this one.
+    for (const [from, to] of this.renames) {
+      if ((this.renamedAt.get(from) ?? Infinity) < this.began || (present.has(to) && !present.has(from))) {
+        this.renames.delete(from)
+        this.renamedAt.delete(from)
+      }
+    }
     const becoming = new Set(this.renames.values())
     const fresh: Placed[] = []
     // A row written first, as a rename's is: the same box under a new name, where it was, with whatever's typed in it.
@@ -969,7 +990,7 @@ export class CanvasStore {
         this.owners.set(number, asset.name)
         this.askRun(number)
       }
-      if (this.renames.has(asset.name) || this.deleting.has(asset.name)) continue
+      if (this.renames.has(asset.name) || becoming.has(asset.name) || this.deleting.has(asset.name)) continue
       const view = this.views.get(asset.name)
       if (view) {
         const change: Partial<ElementView> = { ...said(view, asset.name) }
@@ -992,15 +1013,16 @@ export class CanvasStore {
         if (view.gone && gone?.length !== view.gone.length) change.gone = gone?.length ? gone : undefined
         const over = view.over?.filter((ask) => ask.until >= this.began)
         if (view.over && over?.length !== view.over.length) change.over = over?.length ? over : undefined
+        let landing: VersionPrefix | undefined
         if (view.asset !== asset || view.landed) {
           Object.assign(change, { asset: asked(asset, over), landed: undefined })
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) Object.assign(change, { slid: newest, glimpse: undefined })
-          // A take seen being made landed: it's said, with View (cl-937). A file dropped on it or one undo brings back isn't.
+          // A take seen being made landed: it's said, with View (cl-937), unless it's looked at as it lands. A file dropped on it or one undo brings back isn't.
           const made = asset.prefixes?.at(-1)
           const making = (held?: { id?: string; run?: number | null }) => Boolean(held && ((held.id && takingOf(view).some((take) => take.id === held.id)) || (held.run != null && view.asset?.making?.includes(held.run))))
-          if (this.hasRead && made && newest !== view.asset?.prefixes?.at(-1)?.number && making(made)) this.sayLater(asset.name, made.id || undefined, made.number, made.main?.sha256)
+          if (this.hasRead && made && newest !== view.asset?.prefixes?.at(-1)?.number && making(made)) landing = made
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: open, it's the one looked at. At rest a box goes on
@@ -1028,6 +1050,7 @@ export class CanvasStore {
           this.patch(asset.name, change)
           this.reshape(asset.name)
         }
+        if (landing && !this.lookedAt(asset.name, landing.number)) this.sayLater(asset.name, landing.id || undefined, landing.number, landing.main?.sha256)
       } else if (this.adding === 0) {
         // While an import is being asked, a new name may be that import's: its answer says, then this runs again.
         fresh.push({ name: asset.name, asset, queued: queued.has(asset.name), warnings: warnings.get(asset.name) })
@@ -1060,7 +1083,7 @@ export class CanvasStore {
       this.onFirstRead?.(present.size > 0)
       this.separate()
     } else {
-      for (const { name } of fresh) this.unsettle(name)
+      for (const { name } of fresh) this.unsettle(name, "placed")
     }
     this.names.set(this.names.get() + 1)
   }
@@ -1210,7 +1233,7 @@ export class CanvasStore {
     // as any box's: a picture placed before it was measured (16:9 until then) pushes aside what it now lies on (cl-885).
     const picture = view.asset?.kind === "image" && !view.hereWords && shownOf(view)
     const resized = before?.slice(before.indexOf(":")) !== shape.slice(shape.indexOf(":"))
-    if (!picture || resized) this.unsettle(key)
+    if (!picture || resized) this.unsettle(key, "grown")
   }
 
   // Keeping clear: no box lies on another
@@ -1313,40 +1336,50 @@ export class CanvasStore {
     }
   }
 
-  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. */
-  private giveWay(name: string, field: Field, box: Box, give: Give): Box {
-    const { pushed, ...fitted } = fit(box, field, give)
+  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. With `bare`, the boxes
+   *  themselves without the room each keeps: where nowhere near has its room but the box itself lies on none of them, it stays, closer than
+   *  its room, not sent beside everything, off past a crowd's edge. */
+  private giveWay(name: string, field: Field, box: Box, give: Give, bare?: Field): Box {
+    const { pushed, beside, ...fitted } = fit(box, field, give)
+    const itself = beside && bare ? this.boxOf(name, true) : null
+    if (itself && !bare!.under(itself).size) return box
     this.push(field, pushed)
     if (fitted.x === box.x && fitted.y === box.y && fitted.w === box.w) return box
     this.slide(name, fitted)
     return fitted
   }
 
-  private unsettle(name: string) {
+  /** `name` to settle: `placed` by another writer (it wins its spot), or `grown` where it was. Placed and grown, it's placed. */
+  private unsettle(name: string, why: "placed" | "grown") {
     if (!this.seen) return
     if (!this.unsettled.size) queueMicrotask(() => this.settle())
-    this.unsettled.add(name)
+    if (this.unsettled.get(name) !== "placed") this.unsettled.set(name, why)
   }
 
   /**
-   * What arrived lying on something, put there by another writer or grown there, keeps where it was put (Paul, 11-06: "the placement
-   * position of the new object should be primary, and then other objects should move around it"; cl-800: a placement never overwrites an
-   * `at`), and what it lies on is pushed aside, by name order, so every tab does the same. What arrived with it is never pushed by it, and
-   * where what it lies on can't be pushed (held in a drag, open, still being made), it stays all the same. What's held in a drag, or by its
-   * corner, waits to be let go.
+   * What arrived lying on something, put there by another writer or grown there, keeps where it was put and pushes aside what it lies on
+   * (Paul, 11-06: "the placement position of the new object should be primary, and then other objects should move around it"; cl-800),
+   * what arrived or grew with it too, one by one: what was placed first, so it wins its spot, then what grew, each in name order, so every
+   * tab does the same. Where what it lies on can't be pushed (held in a drag, open, still being made), it gives way itself: no box ever lies
+   * on another. What's held in a drag, or by its corner, waits to be let go.
    */
   private settle() {
-    const batch = [...this.unsettled].filter((name) => this.ids.has(name) && !this.dragging.has(name) && name !== this.pulling?.name).sort()
+    const batch = [...this.unsettled]
+      .filter(([name]) => this.ids.has(name) && !this.dragging.has(name) && name !== this.pulling?.name)
+      .sort(([a, why], [b, other]) => (why === other ? (a < b ? -1 : 1) : why === "placed" ? -1 : 1))
+      .map(([name]) => name)
     this.unsettled.clear()
     if (!batch.length) return
-    const names = new Set(batch)
-    const field = this.field(names)
-    const may = this.pushable(names)
+    const [field, bare] = [this.field(), this.field(undefined, true)]
     for (const name of batch) {
       const box = this.boxOf(name)
       if (!box) continue
-      if (field.under(box).size) this.push(field, pushAside(box, field, may))
-      field.add(name, box)
+      field.remove(name)
+      bare.remove(name)
+      const placed = this.giveWay(name, field, box, { pushes: this.pushable(new Set([name])) }, bare)
+      field.add(name, placed)
+      const itself = this.boxOf(name, true)
+      if (itself) bare.add(name, itself)
     }
   }
 
@@ -1377,6 +1410,15 @@ export class CanvasStore {
 
   // Looking at versions, and asking for them
 
+  /** By box id, the take a render asked here looks at once it goes: none once the person looks at a take first. */
+  private aims = new Map<string, string>()
+
+  /** The person looked at one of `name`'s takes: a render of it not gone yet leaves that look alone. */
+  private looked(name: string) {
+    const id = this.ids.get(this.resolveName(name))
+    if (id) this.aims.delete(id)
+  }
+
   /** Looks at version `number`, or with none its state again. Nothing leaves this page. */
   view(name: string, number?: number) {
     this.patch(name, { viewed: number })
@@ -1387,6 +1429,7 @@ export class CanvasStore {
   pickTake(name: string, number: number) {
     const asset = this.get(name)?.asset
     if (!asset) return
+    this.looked(name)
     this.patch(name, { watch: undefined, ...(["image", "video"].includes(asset.kind) ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
     this.view(name, number === asset.version ? undefined : number)
     if (asset.kind === "image") return
@@ -1406,6 +1449,7 @@ export class CanvasStore {
     if (!asset || !numbersOf(asset).includes(number)) return
     if (asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     void this.save(key)
+    this.looked(key)
     this.patch(key, { viewed: undefined, watch: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
     if (asset.pinned && asset.approved === number) return
     const edit = this.step(`Selected version ${number} of ${key}`, [key])
@@ -1504,6 +1548,7 @@ export class CanvasStore {
   watchTake(name: string, take: string, words = false) {
     const asset = this.get(name)?.asset
     if (!asset) return
+    this.looked(name)
     const run = asset.takes?.find((held) => held.id === take)?.run ?? undefined
     this.patch(name, { hereWords: words || undefined, viewed: undefined, watch: take, glimpse: undefined, ...(run !== undefined && this.runs.has(run) ? { run: this.runs.get(run) } : {}) })
   }
@@ -1526,6 +1571,8 @@ export class CanvasStore {
     // Its take has its id from the click, and is listed under it at once (cl-945). However often this goes on, after a question or a
     // machine coming up, it's that take.
     const take = also.take ?? newTakeId()
+    const id = this.ids.get(key)
+    if (!also.take && id) this.aims.set(id, take)
     also = { ...also, take }
     if (!view.taking?.some((held) => held.id === take)) this.patch(key, { taking: [...(view.taking ?? []), { id: take, until: NOT_YET }] })
     const tool = this.tools.get().get(asset.tool ?? "")
@@ -1545,10 +1592,11 @@ export class CanvasStore {
       return
     }
     // From an image tool's words, the box looks at the take being made, and its + goes back to them. Not before it goes: what it waits
-    // for or asks first is said under its words.
-    if (asset.kind === "image" || asset.kind === "video") this.watchTake(key, take, asset.kind === "video")
+    // for or asks first is said under its words, and a take the person looks at meanwhile stays the one looked at.
+    const aimed = !id || this.aims.get(id) === take
+    if (aimed && id) this.aims.delete(id)
+    if (aimed && (asset.kind === "image" || asset.kind === "video")) this.watchTake(key, take, asset.kind === "video")
     this.patch(key, { waiting: undefined, asking: undefined, scrub: undefined, glimpse: undefined, asked: NOT_YET })
-    const id = this.ids.get(key)
     // Answered, its take is Calcifer's to list from a read begun after; not sent, it's no take.
     const settle = (asked?: number) => {
       this.patchId(id, { asked })
@@ -1971,6 +2019,7 @@ export class CanvasStore {
   /** A double tap on a take toggles it (Paul, 11-12): it's approved, or if it was, nothing is, and it's still the one looked at. A picture's
    *  approval selects it as its box's picture (`selectVersion`). */
   toggleApproved(name: string, number: number) {
+    this.looked(name)
     const asset = this.get(name)?.asset
     if (asset?.pinned && asset.approved === number) {
       this.unpin(name)
@@ -2004,13 +2053,16 @@ export class CanvasStore {
     this.landedTimer = window.setTimeout(() => this.sayLanded(), LANDED_MS)
   }
 
+  /** Take `number` of `name` is the one Focus shows. */
+  private lookedAt(name: string, number: number): boolean {
+    const view = this.get(name)
+    return Boolean(view && this.focusedName.get() === this.resolveName(name) && shownOf(view)?.number === number)
+  }
+
   /** What landed, said (Paul, 11-12: "so I can view the result and I know when it's done"): one take with its picture and View, which opens
-   *  its box on it, and that marks it seen; several at once as one note. One already being looked at isn't said. */
+   *  its box on it, and that marks it seen; several at once as one note. One looked at as it landed, or since, isn't said. */
   private sayLanded() {
-    const landed = this.landedNow.splice(0).filter(({ name, number }) => {
-      const view = this.get(name)
-      return view && !(this.focusedName.get() === this.resolveName(name) && shownOf(view)?.number === number)
-    })
+    const landed = this.landedNow.splice(0).filter(({ name, number }) => this.get(name) && !this.lookedAt(name, number))
     if (!landed.length) return
     const [{ name, id, number, sha256 }] = landed
     // That take, by its id (cl-945), whatever has landed since.
@@ -3046,7 +3098,7 @@ export class CanvasStore {
     }
     this.gesture = null
     this.reshape(key)
-    this.unsettle(key)
+    this.unsettle(key, "grown")
   }
 
   /** What the pull pushed aside and no longer does goes back where it is. */
@@ -3404,14 +3456,20 @@ export class CanvasStore {
     this.act(free, {
       send: (served, write) => this.client.rename(this.projectId!, served, free, write),
       edit,
-      done: () => this.served.set(id, free),
+      done: () => {
+        this.served.set(id, free)
+        this.renamedAt.set(from, nextProjectOrder())
+      },
       // A try whose answer was lost: its first did it.
       landed: (error) => (error.status === 404 ? { from, to: free, versions: 0 } : undefined),
       refused: (error) => {
         this.history.forget(edit)
         say(`Couldn't rename ${from}`, error)
         this.renames.delete(from)
-        this.moveName(this.namesById.get(id) ?? free, from, true)
+        const now = this.namesById.get(id)
+        if (now) this.moveName(now, from, true)
+        // What took the name meanwhile, another writer's, shows now as Calcifer has it.
+        if (this.state && this.rows && this.flow) this.reconcile()
       },
     })
   }

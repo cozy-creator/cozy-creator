@@ -120,24 +120,14 @@
 .paper-world.paper-world-plain {
   background-size: calc(1024px * var(--rung)), calc(2048px * var(--rung)), calc(512px * var(--rung));
 }
+/* The clouds stay still (Paul 11-15): their drift repainted the sky 12 times a second, most of an idle page's CPU. */
 .paper-world::after {
-  right: calc(-2048px * var(--rung));
   background-size: calc(2048px * var(--rung));
-  animation-name: paper-world-drift;
-}
-@keyframes paper-world-drift {
-  to {
-    transform: translate3d(calc(-2048px * var(--rung)), 0, 0);
-  }
+  animation: none;
 }
 :root[data-theme="dark"] .paper-world::after,
 .paper-world.paper-world-plain::after {
   content: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .paper-world::after {
-    animation: none;
-  }
 }
 
 /* A zoom scales the landscape (Sheet.tsx) about the bottom of the window, so the land stays on it. Each layer of land is laid out at its rung

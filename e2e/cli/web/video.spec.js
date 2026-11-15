@@ -1,6 +1,7 @@
 // video (cl-973 core cell 19): videos at rest and in Focus, and one rendered in segments (project/segments.py, H3's stand-in). At rest each
 // shows its poster, not black for a clip that opens dark, then a muted looping preview. In Focus a video plays on the transport, its sound
-// on, and its stop is a square. Two segments rendered: segment 1 plays on its take's tile while segment 2 renders; played in Focus as the
+// on, and its stop is a square. Two segments rendered: segment 1 plays on its take's tile while segment 2 renders, the run has reached its
+// frames and its beat is done on the box (cl-885); played in Focus as the
 // take lands, the joined take, one video with its sound, takes its place within 2 px and plays on. Its segments are blocks under the
 // player and a block seeks; Redo says what it keeps and asks for segment 2 alone.
 const { readFileSync } = require('fs');
@@ -30,7 +31,7 @@ test('video', async ({ page, project, api, guards }) => {
   guards.allow(/status of 409\b.*\/runs$/);
   await project.import(clip(test.info().outputPath('walk.mp4')), { name: 'walk', at: { x: 0, y: 0 } });
   await project.import(DARK_OPEN, { name: 'dark', at: { x: 360, y: 0 } });
-  await project.add({ name: 'shot', tool: SEGMENTS, kind: 'video', fields: { summary: 'Along the coast, segment after segment.', segments: 2, seconds: SECONDS, wait: WAIT }, at: { x: 0, y: 320 } });
+  await project.add({ name: 'shot', tool: SEGMENTS, kind: 'video', fields: { summary: 'Along the coast, segment after segment.', beats: [{ description: 'The cliffs.', duration: SECONDS }, { description: 'The harbour.', duration: SECONDS }], wait: WAIT }, at: { x: 0, y: 320 } });
   await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.some((tool) => tool.local && tool.id === SEGMENTS), { message: 'the project lists its local tool' }).toBe(true);
   for (const name of ['walk', 'dark', 'shot']) await expect(box(page, name)).toBeVisible();
   await fit(page);
@@ -79,6 +80,13 @@ test('video', async ({ page, project, api, guards }) => {
       return Boolean(tile && tile.ready >= 2 && tile.at > 0 && /Segment 2 of 2/.test(stage));
     }, { message: "segment 1 playing on its take's tile while segment 2 renders", timeout: RUN_MS }).toBe(true);
     expect.soft(await playing(glimpse), 'silent on its tile').toMatchObject({ muted: true });
+    // As segment 1 lands, the run has reached its frames, and on the box its beat is done (cl-885: H3's joined segments read as none).
+    const reached = async () => (await api.get(project.at(`/runs/${run}?detail=full`))).video_progress ?? null;
+    await expect.configure({ soft: true }).poll(async () => {
+      const now = await reached();
+      return { frames: now?.completed_frames, segments: now?.segments?.map((one) => one.status).join() };
+    }, { message: 'segment 1 reached as it lands' }).toEqual({ frames: SEAM, segments: 'completed,in_progress' });
+    await expect.configure({ soft: true }).poll(() => region.locator('.beat-progress').evaluateAll((bars) => bars.map((bar) => Number(bar.getAttribute('aria-valuenow')))), { message: 'beat 1 done on the box as segment 1 lands' }).toEqual([100, 0]);
   });
 
   await test.step('played in Focus as it lands: the take takes its place within 2 px and plays on', async () => {

@@ -15,6 +15,9 @@ export interface Action<T = unknown> {
   landed?(error: ApiError): T | undefined
   /** As long as a run: its turn comes, and what's behind it goes on. */
   long?: boolean
+  /** The page's own view under this key (what's selected, where the canvas is), no change of the person's: it isn't counted as waiting or
+   *  kept for closing, and a later one with the key takes its place at the back. */
+  view?: string
 }
 
 /** What's on its way to Calcifer, as the top bar says it. */
@@ -102,13 +105,13 @@ export class Outbox {
 
   constructor() {
     addEventListener("beforeunload", (event) => {
-      if (this.queue.length + this.outside) event.preventDefault()
+      if (this.unsent()) event.preventDefault()
     })
   }
 
   freeze() { this.frozen = true; this.closeRefused = false }
   /** Edits not yet sent: queued, and files on their way. */
-  unsent() { return this.queue.length + this.outside }
+  unsent() { return this.queue.filter((action) => !action.view).length + this.outside }
   resume() { this.frozen = false }
   async saved(): Promise<void> {
     while (this.owed.get().count) {
@@ -127,6 +130,7 @@ export class Outbox {
       action.refused?.(new ApiError(423, { kind: "conflict", code: "project_locked", message: "Unlock the project before saving this change" }))
       return
     }
+    if (action.view) this.queue = this.queue.filter((held) => held.view !== action.view || this.active.has(held))
     this.queue.push(action)
     this.tell()
     void this.drain()
@@ -167,7 +171,7 @@ export class Outbox {
   }
 
   private tell(change: Partial<Owed> = {}) {
-    const now = { ...this.owed.get(), ...change, count: this.queue.length + this.outside + [...this.active.keys()].filter((action) => !this.queue.includes(action)).length }
+    const now = { ...this.owed.get(), ...change, count: this.unsent() + [...this.active.keys()].filter((action) => !action.view && !this.queue.includes(action)).length }
     const was = this.owed.get()
     if (now.count !== was.count || now.slow !== was.slow || now.held !== was.held) this.owed.set(now)
   }

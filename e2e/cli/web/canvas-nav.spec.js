@@ -60,6 +60,7 @@ function audit(names) {
   const on = [];
   const cut = [];
   const sizes = {};
+  const parts = {};
   for (const box of boxes) {
     if (box.nm && shown(box.nm)) {
       const range = document.createRange();
@@ -68,6 +69,7 @@ function audit(names) {
       if (tops.size > 1) lines.push({ name: box.name, lines: tops.size });
       const style = getComputedStyle(box.nm);
       sizes[box.name] = { canvas: parseFloat(style.fontSize), screen: Math.round(parseFloat(style.fontSize) * zoom * 10) / 10 };
+      parts[box.name] = R(box.nm).height / R(box.node).height;
       if (box.nm.scrollWidth > box.nm.clientWidth + 1 && style.textOverflow !== 'ellipsis') cut.push({ name: box.name, why: 'cut with no ellipsis' });
       if (box.nm.title !== box.name) cut.push({ name: box.name, why: `its title is ${JSON.stringify(box.nm.title)}` });
     }
@@ -82,7 +84,7 @@ function audit(names) {
       }
     }
   }
-  return { zoom, count: boxes.length, at: Object.fromEntries(boxes.map((box) => [box.name, box.at])), lines, on, cut, sizes };
+  return { zoom, count: boxes.length, at: Object.fromEntries(boxes.map((box) => [box.name, box.at])), lines, on, cut, sizes, parts };
 }
 
 /** The middle of what's visible, between the tools and the canvas's right edge, as a point of the canvas (CanvasHost.tsx zoomTo). */
@@ -301,7 +303,7 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
         first[name] ??= at;
         if (Math.abs(first[name][0] - at[0]) > 0.5 || Math.abs(first[name][1] - at[1]) > 0.5) moved.push(`${name} from ${first[name]} to ${at}`);
       }
-      looks.push({ how, zoom: now.zoom, count: now.count, moved, lines: now.lines, on: now.on, cut: now.cut });
+      looks.push({ how, zoom: now.zoom, count: now.count, moved, lines: now.lines, on: now.on, cut: now.cut, sizes: now.sizes, parts: now.parts });
       return now;
     };
     const press = async (label) => {
@@ -336,6 +338,12 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
     expect.soft(looks.filter((one) => one.lines.length), 'every name one line').toEqual([]);
     expect.soft(looks.filter((one) => one.on.length).map((one) => ({ zoom: one.zoom, on: one.on })), 'no name on anything').toEqual([]);
     expect.soft(looks.filter((one) => one.cut.length), 'a cut name ends in an ellipsis and says itself').toEqual([]);
+    // At 50% a name is still the body size on screen (12.5 × 1.35 px; Paul, 11-13: names "at body size out to 25%"), so more of its box
+    // than at 100%, never less (cl-885).
+    const BODY = 12.5 * 1.35;
+    const [full, half] = [looks.find((one) => Math.abs(one.zoom - 1) < 0.005), looks.find((one) => Math.abs(one.zoom - 0.5) < 0.005)];
+    const small = Object.entries(half?.sizes ?? {}).filter(([name, size]) => !(size.screen >= BODY - 0.05 && half.parts[name] >= full.parts[name] - 1e-6)).map(([name, size]) => ({ name, screen: size.screen, part: half.parts[name], at_100: full.parts[name] }));
+    expect.soft(half && Object.keys(half.sizes).length > 0 ? small : 'no look at 50%', 'at 50% every name the body size on screen, more of its box than at 100%').toEqual([]);
 
     // As each is drawn at 100%, 45%, 25% and the farthest, at both sizes, paper and dark.
     const drawnAt = [];
