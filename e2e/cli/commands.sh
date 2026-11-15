@@ -1199,6 +1199,18 @@ fi
 cozy --json machine ls > "$OUT/machines.json" && J '.machines | any(.name == "local")' "$OUT/machines.json" || check "machine ls: no local"
 cozy --json machine show local > "$OUT/local.json" && J '.state == "ready" and (.address | length > 0)' "$OUT/local.json" || check "machine show local: not ready"
 
+step "this computer's player listens on loopback alone (xs-196)"
+# Until another computer's controller is authorized, only a browser on this computer plays from its machine: the WebRTC listener
+# binds loopback, as the API does, and Status names no other address.
+J '.status.webrtc.addresses | length > 0 and all(startswith("127.0.0.1:"))' "$OUT/local.json" \
+  || check "machine show local: the player is reached at $(jq -c .status.webrtc.addresses "$OUT/local.json")"
+port=$(jq -r '.status.webrtc.port // empty' "$OUT/local.json") || true
+if [ "$RUNNER_OS" = Linux ] && [ -n "$port" ]; then
+  ss -Hltn "sport = :$port" | awk '{print $4}' > "$OUT/webrtc-listen.txt"
+  [ -s "$OUT/webrtc-listen.txt" ] && ! grep -qv '^127\.0\.0\.1:' "$OUT/webrtc-listen.txt" \
+    || check "the player's port $port listens on $(paste -sd' ' "$OUT/webrtc-listen.txt"), not loopback alone"
+fi
+
 step "machine logs"
 cozy machine logs local --lines 5 > "$OUT/log-5.txt" || check "machine logs failed"
 [ "$(wc -l < "$OUT/log-5.txt")" -le 5 ] && [ -s "$OUT/log-5.txt" ] || check "machine logs --lines 5: $(wc -l < "$OUT/log-5.txt") lines"
