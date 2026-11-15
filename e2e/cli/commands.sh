@@ -1226,7 +1226,7 @@ J '.error.code == "project_key_taken"' "$root-reserved.json" || check "keys: $kb
 (cd "$b" && cozy --json key 9z) > "$root-invalid.json" 2>&1 || true
 J '.error.code == "project_key_invalid"' "$root-invalid.json" || check "keys: 9z wasn't refused project_key_invalid: $(tail -c 300 "$root-invalid.json")"
 (cd "$outside" && cozy --json run watch QQ987-1 --once) > "$root-none.json" 2>&1 || true
-J '(.error.code == "run_not_found" or .error.code == "project_locked") and (.error.message | test("QQ987"))' "$root-none.json" || check "keys: QQ987-1, a key nobody has: $(tail -c 300 "$root-none.json")"
+J '.error.code == "run_not_found" and (.error.message | test("QQ987"))' "$root-none.json" || check "keys: QQ987-1, a key nobody has: $(tail -c 300 "$root-none.json")"
 }
 
 run_playback() {

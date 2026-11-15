@@ -135,11 +135,11 @@ PY_BACKING_SCAN
   [ -n "$key" ] || check "keys: the encrypted project has no key"
   in_project "$P" --json vault lock > "$work/locked.json"
   jq -e '.vault.state == "locked"' "$work/locked.json" > /dev/null || fail "lock did not complete"
-  # Locked, its key is in no index of Calcifer's, only its project.db (cl-987, Paul 11-15): its runs' names say unlock it first.
+  # Locked, its key is in no index of Calcifer's, only its project.db (cl-987, Paul 11-15): its runs' names are unknown here.
   keyed=$(python3 -c 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT count(*) FROM project_keys WHERE key = ?", (sys.argv[2],)).fetchone()[0])' "$HOME/.cozy/calcifer/state.db" "$key" 2>&1)
   [ "$keyed" = 0 ] || check "keys: locked, its key $key stays in state.db's index ($keyed)"
   (cd "$work" && cozy --json run watch "$key-1" --once) > "$work/locked-key.json" 2>&1 || true
-  jq -e '.error.code == "project_locked"' "$work/locked-key.json" > /dev/null || check "keys: $key-1 of the locked project wasn't refused project_locked: $(tail -c 300 "$work/locked-key.json")"
+  jq -e '.error.code == "run_not_found"' "$work/locked-key.json" > /dev/null || check "keys: $key-1 of the locked project wasn't unknown: $(tail -c 300 "$work/locked-key.json")"
   if in_project "$P" --json --full status > "$work/locked-read.json" 2> "$work/locked-read.err"; then fail "locked project state was readable"; fi
   if in_project "$P" --json vault unlock --passphrase-file "$secrets/wrong" > "$work/wrong.json" 2> "$work/wrong.err"; then fail "wrong passphrase unlocked the project"; fi
   if [ -r "$view/files/private-sentinel.txt" ]; then fail "old mount path stayed readable after lock"; fi
