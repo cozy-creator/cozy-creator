@@ -42,6 +42,7 @@ parse "$@"
 . "$(dirname "$0")/envcost.sh"
 . "$(dirname "$0")/egress.sh"
 . "$(dirname "$0")/stuck.sh"
+. "$(dirname "$0")/typedcalls.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -734,6 +735,8 @@ case $SHARD in
     rental_end
     logs
   " ;;
+  # Typed package composition on the candidate cohort, with tiny local CPU inputs only.
+  typed-calls) parts="typed_calls logs" ;;
   # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs (cl-977): about 10 min.
   stuck) parts="stuck_exit logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
@@ -765,7 +768,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | web-serves) ;;
+    entrypoints | projectvault | web-serves | typed-calls) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints

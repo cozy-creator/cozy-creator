@@ -48,6 +48,7 @@ def main() -> None:
     parser.add_argument("--fixture", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--model-prefix", required=True)
+    parser.add_argument("--argv-log", type=Path, help="append CLI words in the e2e coverage format")
     args = parser.parse_args()
     args.project = args.project.resolve()
     args.fixture = args.fixture.resolve()
@@ -59,6 +60,9 @@ def main() -> None:
 
     def cli(label: str, *words: str | Path, success: bool = True) -> list[JsonObject]:
         command = [args.cozy, "--json", *map(str, words)]
+        if args.argv_log:
+            with args.argv_log.open("a") as log:
+                log.write("\x1f".join(command[1:]) + "\x1f\x1e")
         print(json.dumps({"case": label, "command": command}), flush=True)
         with (
             (args.out / (label + ".ndjson")).open("w") as stdout,
