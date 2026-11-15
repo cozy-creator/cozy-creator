@@ -47,13 +47,19 @@ up() {
 regenerate memoized=$(jq -r '[.calls[]? | select((.function // "") | test("regenerate")) | .memoized] | first' "$OUT/$1.json"), warnings $(jq -c '.result.warnings // []' "$OUT/$1.json")"
   say "$1 against the shot: $("${FR[@]}" regen "$OUT/take.mp4" "$OUT/$1.mp4" 2>&1 | tail -1 | tee "$OUT/$1.regen.json")"
 }
-# same <a> <b>: the two videos' bytes, else every decoded frame (framemd5 of both streams).
+# same <a> <b>: the two videos' bytes, else every decoded frame: each one's framemd5 (both streams) and the video's mean
+# PSNR, all kept in $OUT (<a>-<b>.psnr.log, each frame's).
 same() {
-  [ "$(sha256sum < "$OUT/$1.mp4")" = "$(sha256sum < "$OUT/$2.mp4")" ] && { echo bytes; return 0; }
-  ffmpeg -v error -i "$OUT/$1.mp4" -f framemd5 - | grep -v '^#' > "$OUT/$1.framemd5"
-  ffmpeg -v error -i "$OUT/$2.mp4" -f framemd5 - | grep -v '^#' > "$OUT/$2.framemd5"
-  cmp -s "$OUT/$1.framemd5" "$OUT/$2.framemd5" && { echo frames; return 0; }
-  echo "differ: $(diff "$OUT/$1.framemd5" "$OUT/$2.framemd5" | grep -c '^<') of $(wc -l < "$OUT/$1.framemd5") frames"; return 1
+  local a b f p
+  a=$(sha256sum < "$OUT/$1.mp4" | cut -c1-64) b=$(sha256sum < "$OUT/$2.mp4" | cut -c1-64)
+  for v in "$1" "$2"; do ffmpeg -v error -i "$OUT/$v.mp4" -f framemd5 - | grep -v '^#' > "$OUT/$v.framemd5"; done
+  ffmpeg -v error -i "$OUT/$1.mp4" -i "$OUT/$2.mp4" -lavfi "[0:v][1:v]psnr=stats_file=$OUT/$1-$2.psnr.log" -f null - 2> /dev/null
+  p=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^psnr_avg:/) { v = substr($i, 10); v = (v == "inf") ? 100 : v + 0; s += v; n++ } } END { if (n) printf "%.2f dB over %d frames (inf = 100)", s / n, n }' "$OUT/$1-$2.psnr.log" 2> /dev/null)
+  say "$1 sha256 $a; $2 sha256 $b; frames $(wc -l < "$OUT/$1.framemd5")/$(wc -l < "$OUT/$2.framemd5"); PSNR ${p:-unread}" >&2
+  [ "$a" = "$b" ] && { echo bytes; return 0; }
+  f=$(diff "$OUT/$1.framemd5" "$OUT/$2.framemd5" | grep -c '^<')
+  [ "$f" = 0 ] && { echo "frames ($p)"; return 0; }
+  echo "differ: $f of $(wc -l < "$OUT/$1.framemd5") frame and audio packets, PSNR $p"; return 1
 }
 # sheet <name> <frame> <video…>: frame N of each, 640 wide, side by side, as $OUT/frames/<name>-<frame>.jpg.
 sheet() {
