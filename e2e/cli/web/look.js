@@ -16,7 +16,7 @@ const FIRST_RUN_MS = 300_000;
 const SIZES = [[1440, 900], [1920, 1080]];
 const TOOL = `# /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
 # ///
 """The look cell's picture tool: a weightless still of one colour, made in steps; asked to, it fails."""
 

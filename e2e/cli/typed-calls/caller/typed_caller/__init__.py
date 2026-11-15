@@ -37,7 +37,7 @@ class Answer(msgspec.Struct, kw_only=True):
     python: str = ""
     child_python: str = ""
     descendant_python: str = ""
-    value: float = 0
+    value: float = 0.0
     checkpoint: str = ""
     child_installed: bool = False
     callee_dependency_installed: bool = False
@@ -45,6 +45,7 @@ class Answer(msgspec.Struct, kw_only=True):
     shared_sympy_available: bool = False
     torch_imported: bool = False
     fingerprint: str = ""
+    squared: int = 0
 
 
 @app.entrypoint(accelerator=False)
@@ -100,6 +101,7 @@ async def run(payload: Ask) -> Answer:
         child_python=result.python,
         descendant_python=result.descendant_python,
         fingerprint=result.fingerprint,
+        squared=result.squared,
         child_installed=child_installed,
         callee_dependency_installed=callee_dependency_installed,
         shared_torch_available=shared_torch_available,

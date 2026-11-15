@@ -9,7 +9,7 @@ from cozy_runtime.author import App, Weights, call
 from cozy_runtime.fields import FileBound
 from cozy_runtime.media import Files, ImageFile
 
-from .leaf_calls import PrimeRequest, judge
+from .leaf_calls import PrimeRequest, SquareRequest, judge, square
 
 app = App()
 
@@ -26,11 +26,13 @@ class Result(msgspec.Struct, kw_only=True):
     python: str
     descendant_python: str
     fingerprint: str
+    squared: int
 
 
 @app.entrypoint(accelerator=False)
 async def shade(payload: Request) -> Result:
     decision = await call(judge, PrimeRequest(number=payload.number, fail=payload.fail))
+    computed = await call(square, SquareRequest(number=payload.number))
     image = payload.image.read().convert("RGBA")
     image.putpixel((0, 0), (7, 11, 19, 95))
     return Result(
@@ -39,6 +41,7 @@ async def shade(payload: Request) -> Result:
         python=sys.executable,
         descendant_python=decision.python,
         fingerprint=decision.fingerprint,
+        squared=computed.value,
     )
 
 
@@ -65,7 +68,7 @@ def weighted(payload: WeightRequest, weights: Weights) -> WeightResult:
 
 @app.entrypoint(accelerator=False, private=True)
 def private(payload: WeightRequest) -> WeightResult:
-    return WeightResult(checkpoint="private", value=0, python=sys.executable)
+    return WeightResult(checkpoint="private", value=0.0, python=sys.executable)
 
 
 class AssetRequest(msgspec.Struct, kw_only=True):

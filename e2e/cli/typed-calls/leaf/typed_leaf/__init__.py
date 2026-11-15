@@ -1,6 +1,7 @@
 """Leaf without a cozy-calls extra: ordinary compute dependencies and a typed private self call."""
 
 import sys
+from typing import Annotated
 import msgspec
 from sympy import isprime  # type: ignore[import-untyped]  # SymPy ships no typing metadata.
 from xxhash import xxh64_hexdigest
@@ -36,3 +37,17 @@ def private(payload: PrimeRequest) -> PrimeResult:
 @app.entrypoint(accelerator=False)
 async def judge(payload: PrimeRequest) -> PrimeResult:
     return await call(private, payload)
+
+
+class SquareRequest(msgspec.Struct, kw_only=True):
+    number: Annotated[int, msgspec.Meta(ge=0, le=1000)] = 17
+
+
+class SquareResult(msgspec.Struct, kw_only=True):
+    value: int
+
+
+@app.entrypoint(accelerator=False, memoize=True)
+def square(payload: SquareRequest) -> SquareResult:
+    """A pure operation: its result depends only on the typed integer input."""
+    return SquareResult(value=payload.number * payload.number)

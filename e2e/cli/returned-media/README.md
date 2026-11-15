@@ -7,25 +7,36 @@ home and an existing normal project, runs only on `local`, and rents nothing.
 
 Copy the fixture into a durable proof directory and pin an immutable candidate before
 running. As with `../typed-calls`, the repository fixture carries no machine-specific
-SDK path and is never published. Do not reference a live SDK worktree: its environments
-and caches can be uploaded along with the source. A tracked-file snapshot is sufficient:
+SDK path and is never published. Use the matching immutable Runtime and TensorFS wheels;
+Runtime 0.48 requires TensorFS 0.27, which may not yet be on PyPI. Do not reference a live
+SDK worktree: its environments and caches can be uploaded along with the source.
 
 ```sh
 proof="<new durable proof directory>"
+runtime="<absolute candidate Runtime wheel>"
+tensorfs="<absolute matched TensorFS wheel>"
 mkdir -p "$proof/sdk"
 cp -a e2e/cli/returned-media/fixture "$proof/fixture"
-git -C "<Runtime checkout>" archive <candidate-commit> | tar -x -C "$proof/sdk"
-cat >> "$proof/fixture/pyproject.toml" <<'TOML'
+cp "$runtime" "$tensorfs" "$proof/sdk/"
+# The direct TensorFS dependency makes its source participate in uv's transitive resolution.
+# The authored Runtime floor and Runtime's own TensorFS bounds remain intact.
+sed -i 's/^dependencies = \[/dependencies = ["tensorfs", /' "$proof/fixture/pyproject.toml"
+cat >> "$proof/fixture/pyproject.toml" <<TOML
 
 [tool.uv.sources]
-cozy-runtime = { path = "../sdk" }
+cozy-runtime = { path = "../sdk/$(basename "$runtime")" }
+tensorfs = { path = "../sdk/$(basename "$tensorfs")" }
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 TOML
 uv lock --project "$proof/fixture"
+sha256sum "$proof/sdk/"*.whl > "$proof/sdk-sha256.txt"
 chmod -R a-w "$proof/sdk"
 ```
 
-An immutable wheel can instead be selected in the copied pyproject's uv source. Keep its
-SHA256 alongside the receipts. The coordinator must install the compatible candidate CLI,
+The example uses the Linux x86_64 cohort. Keep both hashes and the actual lock alongside
+the receipts. The coordinator must install the compatible candidate CLI,
 Calcifer and machine first; the runner never starts a separate daemon or changes installed
 services. Do not set `COZY_HOME`. Choose a new output directory outside the fixture tree.
 

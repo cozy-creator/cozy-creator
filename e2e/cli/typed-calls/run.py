@@ -141,6 +141,7 @@ def main() -> None:
         result = checked["result"]
         assert result["error"] == ""
         assert result["prime"] is True  # generated request default number=17
+        assert result["squared"] == 289  # the real memoized leaf, through its wheel binding
         assert re.fullmatch(r"[0-9a-f]{16}", as_text(result["fingerprint"]))
         assert result["child_python"] and result["python"] != result["child_python"]
         assert result["descendant_python"] == result["child_python"]

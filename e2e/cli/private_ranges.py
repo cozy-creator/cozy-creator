@@ -109,7 +109,7 @@ class Queued(TypedDict):
 # A still shown as it's saved, its run going on after: its file lands before the run ends.
 LANDED_FIRST = '''# /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
 # ///
 import os
 import time

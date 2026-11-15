@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
 # ///
 """A still that reads BiRefNet's raw weights and takes `seconds`: its machine downloads those weights before it runs, and as they are
 built on no device it runs on a CPU too. cl-967's plan cell places it where they already are."""

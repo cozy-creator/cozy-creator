@@ -1,6 +1,8 @@
 # Typed calls through separate installed environments
 
 This is a real CPU package chain (caller → child → leaf without managed dependency extras → private self call), executed with `cozy run` in the default home. The leaf computes primality with SymPy and an xxhash fingerprint through a private self call and can raise an `InvalidRequest`.
+The leaf also exports a pure memoized square operation whose integer result reaches the caller.
+Acceptance builds the leaf as a real wheel; the diagnostic operations are not memoized.
 The middle child receives and returns an image and
 reads one value from an explicitly selected local checkpoint. The caller must import and
 install neither `typed_child` nor the callee-only dependency `xxhash`; its result reports those facts and both Python
@@ -14,9 +16,10 @@ cozy-runtime --dir caller calls xs198-typed-leaf child/typed_child/leaf_calls.py
 cozy-runtime --dir caller calls xs198-typed-child caller/typed_caller/child_calls.py
 ```
 
-Before generation, lock the caller against the candidate Runtime and the adjacent child.
-For development, add the same `cozy-runtime = { path = "<candidate Runtime>" }` source to
-all three fixture pyprojects in a copied fixture directory. Do not publish these fixtures.
+Before generation, lock the caller against the matched Runtime/TensorFS wheels and the
+adjacent child. Acceptance also builds and locks the leaf wheel as described below.
+Pin both SDK sources in copied fixtures; declare TensorFS directly in those copies so its
+source participates in uv resolution. Do not point at a live SDK worktree or publish these fixtures.
 
 In a normal Cozy project, after the coordinator installs the candidate machine/Runtime:
 
@@ -58,10 +61,13 @@ change does not promise a Torch-free platform environment; native execution is x
 The existing CLI e2e harness selects this cell with `--shard typed-calls`. Its normal
 start installs the candidate cohort in the default home and creates the project. The cell
 copies these three packages into `$OUT/typed-calls/fixture`, pins the exact `--runtime`
-wheel in each, locks the caller, and regenerates both reference modules with that wheel's
-public `cozy-runtime calls` command. It then runs the assertions below; all locks,
+and `--tensorfs` wheels in each, builds the leaf wheel, locks the caller, verifies all
+three locked hashes, and regenerates both reference modules with that same pair's public
+`cozy-runtime calls` command. TensorFS is declared directly in the copies so its source participates in
+transitive resolution; the authored Runtime range and Runtime's TensorFS range still apply.
+It then runs the assertions below; all locks,
 generated modules, commands, watch records and outputs remain under `$OUT/typed-calls`.
-The shard needs Linux and a local candidate Runtime wheel. It rents no machine, downloads
+The shard needs Linux and both local candidate SDK wheels. It rents no machine, downloads
 no model weights, and creates only two tiny local F32 checkpoints.
 
 ```sh
@@ -73,6 +79,13 @@ bash e2e/cli/run.sh --out /absolute/fresh-receipts --shard typed-calls \
 Use the existing e2e workflow's isolated Hub wrapper and candidate setup for CI, with
 `select=cli` and `shards=["typed-calls"]`; no CPU model suite or GPU lane is needed.
 The usual `e2e-cli-linux-typed-calls` artifact includes this cell's receipts.
+
+`references.py` compares generated modules from the actual wheel lock under Python 3.12
+and 3.13, and from the leaf's public source/interface description. Fresh real leaf wheels
+with a changed request default or bound must fail public source description with
+`stale_call_reference`. Their receipts live under `typed-calls/references`;
+`qualified.json` there covers source preparation only. The ordinary `cozy run` media
+and assets cases separately require the memoized leaf's actual result, `squared=289`.
 
 After the coordinator installs the combined candidate, run this cell from the Creator
 checkout with an existing normal Cozy project and a fixture copy locked on that candidate:

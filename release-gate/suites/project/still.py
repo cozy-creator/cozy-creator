@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
 # ///
 """The project suite's local renderer (xs-139): a weightless still at the canvas the request asks for, one colour from
 the prompt, so a project renders an asset `tool: ./still.py/draw` from code on this computer. `keep` answers with the picture it's

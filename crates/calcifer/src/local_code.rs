@@ -1181,6 +1181,10 @@ pub(crate) struct Python {
 /// The Runtime source this copied project's lock holds, as uv asks for it. A local SDK or
 /// carried wheel is not interchangeable with the index's build of the same version.
 pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
+    locked_requirement(root, "cozy-runtime")
+}
+
+fn locked_requirement(root: &Path, name: &str) -> Option<String> {
     #[derive(Deserialize)]
     struct Lock {
         #[serde(default)]
@@ -1195,15 +1199,15 @@ pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
         source: std::collections::BTreeMap<String, toml::Value>,
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
-    let locked = lock.package.into_iter().find(|p| p.name == "cozy-runtime")?;
+    let locked = lock.package.into_iter().find(|p| p.name == name)?;
     if let Some(url) = locked.source.get("url").and_then(toml::Value::as_str) {
-        return Some(format!("cozy-runtime @ {url}"));
+        return Some(format!("{name} @ {url}"));
     }
     for kind in ["path", "directory", "editable"] {
         if let Some(path) = locked.source.get(kind).and_then(toml::Value::as_str) {
             let path = std::path::absolute(root.join(path)).ok()?;
             let url = url::Url::from_file_path(path).ok()?;
-            return Some(format!("cozy-runtime @ {url}"));
+            return Some(format!("{name} @ {url}"));
         }
     }
     if let Some(git) = locked.source.get("git").and_then(toml::Value::as_str) {
@@ -1220,9 +1224,9 @@ pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
                 .finish();
             format!("#{query}")
         });
-        return Some(format!("cozy-runtime @ git+{}{revision}{fragment}", repository.trim_start_matches("git+")));
+        return Some(format!("{name} @ git+{}{revision}{fragment}", repository.trim_start_matches("git+")));
     }
-    Some(format!("cozy-runtime=={}", locked.version))
+    Some(format!("{name}=={}", locked.version))
 }
 
 /// The SDK is always cozy-runtime: the one named (a version, or an RC build's wheel URL), an authoritative lock, else
@@ -1281,6 +1285,13 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     let from = describer_requirement(dir, runtime)?;
     let mut command = self::uv(uv, dir);
     command.args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()]);
+    // Carry the locked pair only when this reader chose that lock's Runtime. A caller's
+    // explicit machine Runtime remains authoritative and must not inherit a different lock's TensorFS.
+    if runtime.is_some() && runtime == locked_runtime(dir).as_deref() {
+        if let Some(tensorfs) = locked_requirement(dir, "tensorfs") {
+            command.args(["--with", &tensorfs]);
+        }
+    }
     if runtime.is_none() && from != "cozy-runtime@latest" {
         // Refresh within the bounds, ignoring an older installed tool even when it meets them.
         command.arg("--isolated").args(platform::tools::uv_upgrade(["cozy-runtime"]));

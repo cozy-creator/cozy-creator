@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19", "numpy>=2"]
+# dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19", "numpy>=2"]
 # ///
 """The client-gone session's local renderer: no GPU, no weights. `make` works for `seconds`, then saves a picture of noise `side`
 pixels across, so its landing takes as long as the link it crosses. A prompt that mentions a picture is that picture read instead:

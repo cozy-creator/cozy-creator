@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19", "torch>=2.5"]
+# dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19", "torch>=2.5"]
 # ///
 """The previews cells' tool (cr-282): a still made as a denoise loop makes one, on the CPU and weightless. Its latents
 come out of noise step by step, and each step's clean estimate is shown to a client watching the run (`preview`)."""
