@@ -251,7 +251,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
       const asking = drawer.locator('.confirm');
       await cancel.click();
       await expect.soft(cancel).toHaveAttribute('aria-expanded', 'true');
-      await expect.soft(asking.locator('.says'), 'Cancel asks there, inline').toHaveText(`Cancel run ${long.number}? What it hasn't finished is lost. Its machine goes on.`);
+      await expect.soft(asking.locator('.says'), 'Cancel asks there, inline').toHaveText(`Cancel run ${long.name}? What it hasn't finished is lost. Its machine goes on.`);
       expect.soft(await status(), 'nothing done before its yes').toMatchObject({ status: 'in_progress', cancel_requested: false });
       await asking.getByRole('button', { name: 'Not now' }).click();
       await expect.soft(asking).toHaveCount(0);
