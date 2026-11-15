@@ -376,6 +376,10 @@ if [ -n "$needs" ]; then
       mirror "$seed/disk.safetensors" "e2e/disk-$i" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
       rm -f "$seed/disk.safetensors"
     done
+    # And one bigger than the disk can make free, refused with the sizes.
+    random_weights "$seed/disk.safetensors" 2048 disk-big
+    mirror "$seed/disk.safetensors" e2e/disk-big bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+    rm -f "$seed/disk.safetensors"
   fi
   if [[ " $needs " == *" spare "* ]]; then
     random_weights "$seed/pagebox.safetensors" 900

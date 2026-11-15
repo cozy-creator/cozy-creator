@@ -4,7 +4,8 @@
 # runs at once, each reading a model not here, as a session queues them, while a reader holds the store's fence for 15 s (as
 # the pod's checkpoint opens and holds each did for a moment): the machine's room for their weights waits for it, never
 # refused `model data is in use` (#2858 made it refuse; 0.25.0 waited). Then one more of the first model. Each completes,
-# the idle models' weights evicted, least recently used first, to make its room.
+# the idle models' weights evicted, least recently used first, to make its room. Last, a 2 GiB model, more than the disk can
+# make free, is refused `machine_disk_full` naming the sizes, nothing of it kept.
 
 # disk_store <config.toml> <dir>: config.toml with `machine.store` at <dir>.
 disk_store() {
@@ -58,6 +59,15 @@ for i in 4 5 6; do
 done
 wait "$reader" || check "disk: the reader holding the store failed"
 cell disk-1-again "$script" --model "weights=e2e/disk-1@0.1.0" text=again || true
+step "tfs-150: a model bigger than the disk can make free is refused, naming the sizes, nothing of it kept"
+local before said
+before=$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')
+ALLOW=machine_disk_full cell disk-big "$script" --model "weights=e2e/disk-big@0.1.0" text=big || true
+said=$(run_get "$OUT" disk-big '.reason.message')
+echo "disk-big: $(run_get "$OUT" disk-big .status): ${said:0:400}"
+{ [ -f "$OUT/disk-big.refused" ] && grep -qE '[0-9.]+ (GiB|MiB)' <<< "$said"; } \
+  || check "disk: e2e/disk-big (2 GiB on a 2.5 GiB disk) was not refused machine_disk_full naming the sizes: ${said:0:300}"
+[ "$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')" -le $((before + (64 << 20))) ] || check "disk: the refused e2e/disk-big left bytes on the disk"
 df -B1 --output=used,avail "$mnt" | tail -1 | sed "s/^/after: used, free: /"
 cozy machine logs local --lines 0 --since 1h > "$OUT/disk.tensord.log" 2>&1 || check "disk: machine logs local failed"
 grep -E "evicted|freed|fetch refused .*CAPACITY|disk is full|making room|disk was short|ended the idle|doesn't fit|held it" "$OUT/disk.tensord.log" | cut -c1-300 | head -60 || true
