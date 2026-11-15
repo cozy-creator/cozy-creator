@@ -17,14 +17,16 @@ pub(crate) const DEFAULT_HUB_URL: &str = "https://tensorhub.com";
 pub const DEFAULT_CALCIFER_PORT: u16 = 8818;
 
 /// Every environment variable the load reads, with its key: credentials for model sources, by the
-/// names their own tools use; the Hub (dev and CI point one command elsewhere with it); where
-/// releases are downloaded from (dist's installers read the same one); and the machine's settings
+/// names their own tools use; the Hub (dev and CI point one command elsewhere with it) and the
+/// origins declared local beside it; where releases are downloaded from (dist's installers read the
+/// same one); and the machine's settings
 /// a pod's launcher gives (Tensorhub `podenv`, plus the devices the container may use). A pod's
 /// environment is public: none of its names is a credential.
-pub const ENV: [(&str, &str); 16] = [
+pub const ENV: [(&str, &str); 17] = [
     ("HF_TOKEN", "huggingface_token"),
     ("CIVITAI_TOKEN", "civitai_token"),
     ("COZY_HUB_URL", "hub_url"),
+    ("COZY_LOCAL_ORIGINS", "local_origins"),
     ("COZY_DOWNLOAD_URL", "download_url"),
     ("COZY_MACHINE_ROOT", "machine.root"),
     ("COZY_TENSORFS_ROOT", "machine.store"),
@@ -50,6 +52,12 @@ const EMPTY_IS_A_VALUE: [&str; 1] = ["CUDA_VISIBLE_DEVICES"];
 pub struct Config {
     /// The Hub: [`DEFAULT_HUB_URL`] unless set.
     pub hub_url: Origin,
+    /// Origins (`scheme://host:port`) this computer's operator declares local (`a,b` in the
+    /// environment): with the Hub and `download_url`, the only ones fetched at a loopback or private
+    /// address or over plaintext http. A URL a run, a package or a Hub answer names never is.
+    /// Development and CI: a test Hub's object store on loopback.
+    #[serde(deserialize_with = "list")]
+    pub local_origins: Vec<String>,
     pub calcifer: CalciferConfig,
     pub machine: MachineConfig,
     pub huggingface_token: Option<Secret>,
@@ -475,6 +483,16 @@ impl Config {
             true => "cozy login <email>".into(),
             false => format!("COZY_HUB_URL={hub} cozy login <email>"),
         }
+    }
+
+    /// Declares what this process fetches at a loopback or private address: `local_origins`, the Hub
+    /// and where releases come from. Once, before any fetch.
+    #[cfg(feature = "hub")]
+    pub fn declare_local(&self) -> Result<(), Error> {
+        let configured = [Some(self.hub_url.as_str()), self.download_url.as_ref().map(Url::as_str)];
+        let origins = self.local_origins.iter().map(String::as_str).chain(configured.into_iter().flatten());
+        tensorfs::fetch::declare_local(origins)
+            .map_err(|e| Error::new(Kind::Usage, "config_invalid", format!("`local_origins`: {}", e.detail)))
     }
 
     /// Drops blank secrets.

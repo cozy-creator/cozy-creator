@@ -43,7 +43,7 @@ const COPIES: &[&str] = &[
 ];
 const COPY_DIRS: &[&str] = &["etc/profile.d"];
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ProviderSelf {
     RunPod {
         pod: String,
@@ -55,6 +55,16 @@ pub(crate) enum ProviderSelf {
         key: String,
         origin: String,
     },
+}
+
+/// The provider key is never printed.
+impl std::fmt::Debug for ProviderSelf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RunPod { pod, origin, .. } => f.debug_struct("RunPod").field("pod", pod).field("origin", origin).finish_non_exhaustive(),
+            Self::Vast { instance, origin, .. } => f.debug_struct("Vast").field("instance", instance).field("origin", origin).finish_non_exhaustive(),
+        }
+    }
 }
 
 impl ProviderSelf {

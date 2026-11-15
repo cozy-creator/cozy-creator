@@ -738,6 +738,66 @@ pub(crate) fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, field: &str) 
     })
 }
 
+/// A PNG's, GIF's, WebP's or JPEG's size as it's drawn, read from its header: what ffprobe measures of it, a JPEG turned by its EXIF as
+/// `measured` turns it. None for any other, which waits for ffprobe: an AVIF's or HEIC's size needs its item boxes walked, and a video's
+/// what ffprobe says of its stream, not its container's track header.
+pub(crate) fn shape_of(path: &Path) -> Option<(u64, u64)> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 32];
+    let read = file.read(&mut head).ok()?;
+    let head = &head[..read];
+    let u16_le = |at: usize| head.get(at..at + 2).map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])));
+    let u24_le = |at: usize| head.get(at..at + 3).map(|b| u64::from(b[0]) | u64::from(b[1]) << 8 | u64::from(b[2]) << 16);
+    let u32_be = |at: usize| head.get(at..at + 4).map(|b| u64::from(u32::from_be_bytes([b[0], b[1], b[2], b[3]])));
+    let shape = if head.starts_with(b"\x89PNG\r\n\x1a\n") && head.get(12..16) == Some(b"IHDR") {
+        (u32_be(16)?, u32_be(20)?)
+    } else if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
+        (u16_le(6)?, u16_le(8)?)
+    } else if head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WEBP") {
+        match head.get(12..16)? {
+            b"VP8 " if head.get(23..26) == Some(&[0x9d, 0x01, 0x2a]) => (u16_le(26)? & 0x3fff, u16_le(28)? & 0x3fff),
+            b"VP8L" if head.get(20) == Some(&0x2f) => {
+                let bits = u64::from(u32::from_le_bytes(head.get(21..25)?.try_into().ok()?));
+                ((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1)
+            }
+            b"VP8X" => (u24_le(24)? + 1, u24_le(27)? + 1),
+            _ => return None,
+        }
+    } else if head.starts_with(&[0xff, 0xd8]) {
+        // Segment by segment to the frame's header: an EXIF or ICC profile before it can be any size.
+        file.seek(SeekFrom::Start(2)).ok()?;
+        let mut marker = [0u8; 4];
+        loop {
+            file.read_exact(&mut marker[..2]).ok()?;
+            if marker[0] != 0xff {
+                return None;
+            }
+            match marker[1] {
+                0xff => {
+                    file.seek(SeekFrom::Current(-1)).ok()?;
+                    continue;
+                }
+                0x01 | 0xd0..=0xd7 => continue,
+                0xd9 | 0xda => return None,
+                _ => {}
+            }
+            file.read_exact(&mut marker[2..]).ok()?;
+            let length = i64::from(u16::from_be_bytes([marker[2], marker[3]]));
+            if (0xc0..=0xcf).contains(&marker[1]) && ![0xc4, 0xc8, 0xcc].contains(&marker[1]) {
+                let mut frame = [0u8; 5];
+                file.read_exact(&mut frame).ok()?;
+                let (height, width) = (u64::from(u16::from_be_bytes([frame[1], frame[2]])), u64::from(u16::from_be_bytes([frame[3], frame[4]])));
+                break if orientation(path) >= 5 { (height, width) } else { (width, height) };
+            }
+            file.seek(SeekFrom::Current(length - 2)).ok()?;
+        }
+    } else {
+        return None;
+    };
+    (shape.0 > 0 && shape.1 > 0).then_some(shape)
+}
+
 /// A JPEG's EXIF orientation, 1 to 8, which every browser draws it by: 1 for one that says none, or anything else. FFmpeg draws and
 /// measures a picture as it's stored.
 pub(crate) fn orientation(path: &Path) -> u8 {

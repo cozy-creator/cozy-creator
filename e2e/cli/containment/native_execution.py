@@ -184,7 +184,10 @@ def qualify(native: Native, scanner: Scanner, project: Project, receipt: Receipt
         require(path.is_relative_to(view.resolve()), "managed_path_outside_project")
     # The environment it runs from is the machine's, shared by every project (cl-984): never a copy in the project.
     require(not Path(result["runtime_prefix"]).resolve().is_relative_to(view.resolve()), "managed_environment_in_project")
-    require(Path(result["temporary"]).read_bytes() == expected and (Path(result["cache"]) / "entry.txt").read_bytes() == expected, "managed_cache_contents")
+    # Its temporary file, cache, home and working directory were its call's scratch in the project, gone with the call (cl-984).
+    scratch = (view / ".vault-machine" / "scratch").resolve()
+    require(all(Path(result[field]).resolve().is_relative_to(scratch) for field in ("temporary", "cache", "home", "working_directory")), "managed_scratch_outside")
+    require(not Path(result["temporary"]).exists() and not Path(result["cache"]).exists(), "managed_scratch_kept")
     require(result["core_zero"], "managed_core_limit")
     require(isinstance(run.get("id"), str), "native_private_run_identity_missing")
     for item in runs:

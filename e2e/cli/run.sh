@@ -38,6 +38,7 @@ parse "$@"
 . "$(dirname "$0")/render.sh"
 . "$(dirname "$0")/source.sh"
 . "$(dirname "$0")/envcost.sh"
+. "$(dirname "$0")/egress.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -468,6 +469,8 @@ case $SHARD in
     orbit_angles
     old_runtime
     hostile_media
+    egress
+    hostile_inputs
     unseen
     local_edits
     path_manifest
@@ -541,6 +544,8 @@ case $SHARD in
     orbit_angles
     old_runtime
     hostile_media
+    egress
+    hostile_inputs
     machine_show_runs
     writes_once
     project_stream
@@ -653,6 +658,7 @@ case $SHARD in
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="
+    shared_scratch
     projectvault
     vault_leftovers
     vault_web

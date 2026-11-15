@@ -64,15 +64,15 @@ pub(crate) mod priority {
 }
 
 /// A checkpoint's origin, with the CAs its hosts may present beyond the public roots (a PEM
-/// bundle) and whether its deployment declared itself local (loopback plaintext allowed).
+/// bundle).
 #[derive(Clone)]
 pub(crate) struct Remote {
     pub origin: Arc<dyn Origin>,
     pub trust: Option<Arc<Vec<u8>>>,
-    pub local: bool,
 }
 
-type Key = (Option<Arc<Vec<u8>>>, bool);
+/// A fetcher per trust: the roots beyond the public ones.
+type Key = Option<Arc<Vec<u8>>>;
 
 /// Task cancellation or panic must wake a queued owner too, rather than leaving it waiting
 /// forever for an ordinary result callback. This owns no work beyond the existing fetch.
@@ -110,8 +110,8 @@ impl Machine {
     }
 
     /// The client objects of a remote with this trust are fetched over (for an `Endpoint`).
-    pub(crate) fn client(&self, trust: Option<&Arc<Vec<u8>>>, local: bool) -> Result<Client> {
-        Ok(self.fetcher(&(trust.cloned(), local))?.client().clone())
+    pub(crate) fn client(&self, trust: Option<&Arc<Vec<u8>>>) -> Result<Client> {
+        Ok(self.fetcher(&trust.cloned())?.client().clone())
     }
 
     fn fetcher(&self, key: &Key) -> Result<Arc<Fetcher>> {
@@ -120,9 +120,9 @@ impl Machine {
             return Ok(fetcher.clone());
         }
         // Every object is held to its digest: no host vouches for anything, addresses are
-        // still checked.
-        let policy = SourcePolicy { any_host: true, allow_local: key.1, max_redirects: 8, ..Default::default() };
-        let client = match &key.0 {
+        // still checked, at every hop (a local one only at an origin this computer declared).
+        let policy = SourcePolicy { any_host: true, max_redirects: 8, ..Default::default() };
+        let client = match key {
             Some(pem) => Client::with_roots(policy, pem)?,
             None => Client::new(policy),
         };
@@ -153,7 +153,7 @@ impl Machine {
     }
 
     fn of(&self, remote: &Remote) -> Result<Arc<Fetcher>> {
-        self.fetcher(&(remote.trust.clone(), remote.local))
+        self.fetcher(&remote.trust)
     }
 
     /// Each of `objects`' download from `remote` as it stands (`Fetching`); None for one with no

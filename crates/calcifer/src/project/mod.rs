@@ -2857,13 +2857,18 @@ async fn keep_file(folder: &Folder, source: &str) -> Result<folder::Kept, Refusa
         _ => None,
     });
     let source = whole.as_deref().unwrap_or(source);
-    let Some(digest) = held_name(source)? else {
-        return folder.import(source).await.map_err(|why| import_failed(source, why));
+    let mut kept = match held_name(source)? {
+        None => folder.import(source).await.map_err(|why| import_failed(source, why))?,
+        Some(digest) => match crate::runs::files::held_for(&folder.dir, &digest) {
+            Some(at) => tokio::task::block_in_place(|| folder.take_held(&at, &digest.to_string())).map_err(|why| import_failed(source, why))?,
+            None => folder.own(&digest.to_string()).ok_or_else(|| not_held(source))?,
+        },
     };
-    match crate::runs::files::held_for(&folder.dir, &digest) {
-        Some(at) => tokio::task::block_in_place(|| folder.take_held(&at, &digest.to_string())).map_err(|why| import_failed(source, why)),
-        None => folder.own(&digest.to_string()).ok_or_else(|| not_held(source)),
+    // A picture's size from its header now, so its box is drawn at its shape from the first read (`Folder::keep_shapes`).
+    if kept.field == "image" && kept.file.width == 0 && let Some((width, height)) = tools::shape_of(&folder.path(&kept.file.path)) {
+        (kept.file.width, kept.file.height, kept.file.shape_only) = (width, height, true);
     }
+    Ok(kept)
 }
 
 /// The digest `source` names, if it names one.
@@ -2877,7 +2882,8 @@ fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
 
 fn import_failed(source: &str, why: String) -> Refusal {
     // A hash is no one's to read: a person dropped a file, and is told of it by its name.
-    let said = if source.starts_with("sha256:") { why } else { format!("{source}: {why}") };
+    // A link is shown without its query, which a presigned one's credential is.
+    let said = if source.starts_with("sha256:") { why } else { format!("{}: {why}", tensorfs::fetch::shown(source)) };
     Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("import a picture, video or sound"))
 }
 
@@ -2927,6 +2933,7 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::
             (row.sha256, row.path, row.here) = (file.file.sha256.clone(), file.file.path.clone(), true);
             number.set(lock.joined(&name, file.field, Files::from([(file.field.to_owned(), file.file.sha256.clone())])).0);
         })?;
+        folder.keep_shapes([&file])?;
         folder.edit(|written| {
             written.selected(&name, number.get(), &file.file.sha256)?;
             if api::calcifer::tool::MEDIA.contains(&file.field) {

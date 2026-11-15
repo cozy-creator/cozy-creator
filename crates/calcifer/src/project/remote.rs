@@ -7,7 +7,7 @@ use platform::durable::FileAt as _;
 use api::{config::Origin, error::{Error, Kind}};
 use tensorfs::{
     err::{Code, Refusal as Failed},
-    fetch::{self, is_loopback_origin, Endpoint, Request, SourcePolicy, TokenProvider},
+    fetch::{self, Endpoint, Request, SourcePolicy, TokenProvider},
     format::ObjectRef,
 };
 
@@ -31,7 +31,7 @@ impl TokenProvider for Signed {
 /// `hub` as this computer's signed-in user, and its objects.
 fn signed(api: &Api, hub: &Origin) -> Result<Endpoint, Error> {
     let client = api.machines.hubs.client(hub)?;
-    let policy = SourcePolicy { any_host: true, allow_local: is_loopback_origin(hub), max_redirects: 5, ..Default::default() };
+    let policy = SourcePolicy { any_host: true, max_redirects: 5, ..Default::default() };
     let provider: Arc<dyn TokenProvider> = Arc::new(Signed(client));
     let endpoint = Endpoint::new(&fetch::Client::new(policy), hub, Some(provider)).map_err(failed)?;
     Ok(endpoint)

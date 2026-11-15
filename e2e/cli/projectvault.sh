@@ -227,6 +227,24 @@ PY_BACKING_SCAN
 
 # cl-886: encryption leaves nothing outside its vault. A conversion killed midway is recovered by the next start; Calcifer
 # never opens its own `.cozy-*` folders as projects; and no file outside the vault holds the project's plaintext.
+# An ordinary and an unlocked encrypted project run on the machine's executors, one code path, each call in its own scratch
+# inside its project; BiRefNet stays warm across them; locked, nothing of the encrypted one is outside it (cl-984;
+# e2e/cli/shared_scratch.py). isolated.sh published e2e-scratch and BiRefNet's model.
+shared_scratch() (
+  step "two projects, one encrypted, on one shared executor: each call's files, temp and logs in its own project (cl-984)"
+  [ -n "$LOCAL" ] || exit 0
+  local work secrets
+  work=$(mktemp -d "$OUT/shared-scratch.XXXXXX") secrets=$(mktemp -d "$OUT/shared-scratch-credentials.XXXXXX")
+  trap 'in_project "$work/encrypted" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic shared scratch passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  cozy --json new --unencrypted "$work/plain" > "$work/plain.json" || fail "shared scratch: cozy new --unencrypted: $(tail -c 300 "$work/plain.json")"
+  cozy --json new "$work/encrypted" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/encrypted.json" 2> "$work/encrypted.err" \
+    || fail "shared scratch: cozy new --passphrase-file: $(tail -c 300 "$work/encrypted.err")"
+  in_project "$work/encrypted" --json vault status > "$work/status.json"
+  python3 "$E2E/cli/shared_scratch.py" --plain "$work/plain" --encrypted "$work/encrypted" --view "$(jq -r '.view' "$work/status.json")" --image "$(picture dog1.jpg)" \
+    --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" || { cat "$work/proof.err"; check "shared scratch: $(tail -n 1 "$work/proof.err" | cut -c1-400)"; }
+)
+
 vault_leftovers() (
   step "encryption leaves nothing behind: an interrupted conversion recovers; no leftover is listed; no plaintext outside the vault"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault leftovers: Linux runners only"; return 0; }

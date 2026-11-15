@@ -77,12 +77,19 @@ pub(crate) struct AuthResult {
     pub device_key: Option<SignedDeviceKey>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct TokenSet {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: i64,
+}
+
+/// The token is never printed.
+impl std::fmt::Debug for TokenSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenSet").field("token_type", &self.token_type).field("expires_in", &self.expires_in).finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -92,12 +99,19 @@ pub(crate) struct SignedDeviceKey {
 }
 
 /// A machine's DPoP-bound token for its capability (AuthKit's jwt-bearer grant).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default)]
 pub struct WorkloadToken {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: i64,
+}
+
+/// The token is never printed.
+impl std::fmt::Debug for WorkloadToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkloadToken").field("token_type", &self.token_type).field("expires_in", &self.expires_in).finish_non_exhaustive()
+    }
 }
 
 /// Where a machine reaches this Hub (`GET /v1/execution-environment`).

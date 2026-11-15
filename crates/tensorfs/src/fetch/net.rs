@@ -356,9 +356,9 @@ fn max_age(headers: &HeaderMap) -> Option<Duration> {
     age.trim().parse().ok().map(Duration::from_secs)
 }
 
-/// `url` without its query: a presigned URL's query is its credential.
-pub(crate) fn shown(url: &str) -> &str {
-    url.split('?').next().unwrap_or(url)
+/// `url` without its query or fragment, as errors and logs show it: a presigned URL's query is its credential.
+pub fn shown(url: &str) -> &str {
+    url.split(['?', '#']).next().unwrap_or(url)
 }
 
 pub(crate) fn same_origin(a: &str, b: &str) -> bool {
