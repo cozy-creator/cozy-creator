@@ -27,15 +27,16 @@ async function hold(page, method, path) {
   return { calls, release: async () => { open(); await page.unroute(matches, handler); } };
 }
 
-/** The first `method` call to `path` goes to Calcifer and its answer is lost, as a dropped connection loses one after the write landed. */
-async function loseOne(page, method, path) {
+/** The first `method` call to `path` goes to Calcifer and its answer is lost, as a dropped connection loses one after the write landed. Sent
+ *  from here, not the page, it carries `token`, the holder's bearer: Calcifer answers no other program (cl-985). */
+async function loseOne(page, method, path, token) {
   const keys = [];
   const matches = (url) => url.pathname === path;
   const handler = async (route) => {
     if (route.request().method() !== method) return route.fallback();
     keys.push(route.request().headers()['idempotency-key'] ?? null);
     if (keys.length > 1) return route.fallback();
-    await route.fetch();
+    await route.fetch({ headers: { ...route.request().headers(), authorization: `Bearer ${token}` } });
     await route.abort('connectionreset');
   };
   await page.route(matches, handler);
@@ -196,6 +197,8 @@ test('instant', async ({ page, project, api, guards }) => {
       const card = (await api.get(project.at('/canvas'))).cards[first];
       return card && [Math.round(card.x), Math.round(card.y)];
     }, { message: 'its move landed' }).toEqual([Math.round(place.x), Math.round(place.y)]);
+    // Read once its move's write is seen here: Calcifer's answer to the read above can come before Playwright tells of the request.
+    await softly.poll(() => writes.slice(writes.indexOf('POST /assets')).includes('PATCH /canvas'), { message: "its move's write seen" }).toBe(true);
     const after = writes.slice(writes.indexOf('POST /assets'));
     const order = [after.indexOf('POST /assets'), after.indexOf(`PATCH /assets/${encodeURIComponent(first)}`), after.indexOf('PATCH /canvas')];
     expect.soft(order.every((i) => i >= 0) && order[0] < order[1] && order[1] < order[2], `the drop, then its words, then its move: ${after.join(', ')}`).toBe(true);
@@ -204,7 +207,7 @@ test('instant', async ({ page, project, api, guards }) => {
 
   await test.step("an answer lost after it lands, and a rename onto a name that's taken", async () => {
     const assets = (await project.assets()).length;
-    const lost = await loseOne(page, 'POST', project.at('/assets'));
+    const lost = await loseOne(page, 'POST', project.at('/assets'), api.token);
     await armDrop(page);
     // Left of the first, clear of it.
     await carry(page, text, await centre(page, -320));
