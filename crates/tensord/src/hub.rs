@@ -107,6 +107,13 @@ pub(crate) fn http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
     pooled(&CLIENTS, ca_der)
 }
 
+/// `http` for a rental's check-ins (`machine::lifecycle::keep_authority`), which run on their own thread and runtime: nothing the
+/// machine's API or work does can hold them up (cl-977).
+pub(crate) fn check_in_http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
+    static CLIENTS: Mutex<Vec<(Option<Vec<u8>>, reqwest::Client)>> = Mutex::new(Vec::new());
+    pooled(&CLIENTS, ca_der)
+}
+
 /// `http` for the executors' gateway (`gateway`), which runs on its own runtime.
 pub(crate) fn gateway_http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
     static CLIENTS: Mutex<Vec<(Option<Vec<u8>>, reqwest::Client)>> = Mutex::new(Vec::new());

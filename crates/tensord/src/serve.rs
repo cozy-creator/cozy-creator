@@ -375,11 +375,20 @@ fn run_machine(
         let service = service.clone();
         let provider = grant.provider.clone();
         let (state, origin) = (layout.state.clone(), machine.clone());
+        // Its check-ins (reads of its keys) on a thread and runtime of their own: the Hub hears it while it serves, whatever its
+        // API or a download or an install does meanwhile, and releases it only once it falls silent (cl-977).
+        let check_ins = crate::machine::hub::Hub::for_check_ins(&hub)?;
+        let leased = state.clone();
+        std::thread::Builder::new().name("rental-check-ins".into()).spawn(move || {
+            match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(own) => own.block_on(crate::machine::lifecycle::keep_authority(Arc::new(check_ins), keys, leased)),
+                Err(error) => tracing::error!("no runtime for the rental's check-ins ({error}): its Hub releases it once it hears nothing"),
+            }
+        })?;
         std::thread::Builder::new()
             .name("rental-lifecycle".into())
             .spawn(move || {
                 runtime.block_on(async {
-                    tokio::spawn(crate::machine::lifecycle::keep_authority(hub.clone(), keys, state.clone()));
                     crate::machine::speed::serve(hub.clone(), state, origin);
                     crate::machine::lifecycle::release_when_idle(lifecycle, hub, provider, service.engine.clone()).await;
                 });

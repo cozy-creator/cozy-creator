@@ -582,6 +582,14 @@ impl Client {
             .map(drop)
     }
 
+    /// Tells the rental's Hub that this client's runs are live on its machine, on `boot_id`, now: a sign of the machine's life when
+    /// the Hub neither hears it check in nor reaches it (cl-977).
+    pub async fn vouch_rental(&self, id: &str, boot_id: &str) -> Result<(), Error> {
+        self.send(self.at(Method::POST, "/v1/rentals/{id}/vouch", &[id]).json(&json!({ "boot_id": boot_id })))
+            .await
+            .map(drop)
+    }
+
     /// Releases the rental: its person's end (`owner_stop`), or with `by_pod` its machine's own idle
     /// release, which this client heard and passes on (`released_by_pod`).
     pub async fn release_rental(&self, id: &str, by_pod: bool) -> Result<(), Error> {

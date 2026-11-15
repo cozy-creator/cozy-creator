@@ -1863,6 +1863,34 @@ impl Calcifer {
                     self.waiting(id, format!("local is restarting: {message}"));
                     pause.wait(wake, Some(&mut changed)).await;
                 }
+                // A rental's word that it released itself is not its end: its Hub's is (cl-977, as for a releasing Status). Until
+                // the Hub affirms it gone it is `ending`, and `machine ls` never says gone while it may bill. A run it was never sent
+                // leaves it now, as from one offline; one it holds settles with that end.
+                Err(Stop::Released(message)) if machine.kind == ::api::calcifer::MachineKind::Rental => {
+                    if let Some(machines) = self.machines()
+                        && let Err(e) = machines.released_itself(&name)
+                    {
+                        warn!(run = %id, machine = %name, "confirming its release with its Hub: {}", e.message);
+                    }
+                    if run.state == State::Queued {
+                        let left = match (run.pinned, run.wants.as_str()) {
+                            (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
+                            _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
+                                code: "machine_released".into(),
+                                message: format!("{name} released itself before it took the run: {message}"),
+                                next: vec![format!("cozy run {} … --on new", run.target)],
+                                ..Default::default()
+                            })),
+                        };
+                        match left {
+                            Ok(events) => self.publish(id, events),
+                            Err(e) => warn!(run = %id, "{e}"),
+                        }
+                    } else {
+                        self.waiting(id, format!("{name} released itself; waiting for its Hub to confirm it ended: {message}"));
+                        pause.wait(wake, Some(&mut changed)).await;
+                    }
+                }
                 Err(Stop::Released(message)) => {
                     if let Err(e) = self.machine_ended(&name, &message) {
                         warn!(run = %id, "{e}");

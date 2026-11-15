@@ -1300,9 +1300,14 @@ reach?: string | null,
 ending?: string | null,
 /**
  * Why its last end failed (this computer's sign-in, or the Hub's refusal): nothing was ended,
- * and a rental may still bill. Ending it again asks again.
+ * and a rental may still bill. Ending it again asks again; Calcifer also asks again, paced.
  */
 end_failed?: string | null,
+/**
+ * An ending rental its Hub took the release of minutes ago and has not said is gone: it may still
+ * bill, and Calcifer keeps asking (cl-977).
+ */
+end_unconfirmed?: string | null,
 /**
  * In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
  */

@@ -267,6 +267,9 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
     if let Some(note) = end_failed(m) {
         record = record.note(note);
     }
+    if let Some(why) = m.end_unconfirmed.as_deref().filter(|_| m.state == MachineState::Ending) {
+        record = record.note(format!("{} is not confirmed gone: {why}", m.called()));
+    }
     record
 }
 
