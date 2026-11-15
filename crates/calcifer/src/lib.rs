@@ -962,8 +962,7 @@ impl Calcifer {
         let journal=self.row_store(row)?;
         let mut run=journal.record(row)?;
         let owned=match &journal {store::RunStore::Project(store)=>row.owner==store.project_id(),store::RunStore::Maintenance(_)=>true};
-        if let Some(dir) = project::of_landing(&row.out_dir) {
-            let (id, name) = project::identity(dir);
+        if let Some((id, name)) = project_of(row) {
             (run.project_id, run.project) = (Some(id), Some(name));
         }
         if owned { self.live_gpu(&mut run); }
@@ -1181,9 +1180,9 @@ impl Calcifer {
     /// The items of `items` Calcifer's own runs set on `machine`. `held_back` stays: TensorD's fixed reason why an item holds
     /// less, which names nothing of a project.
     pub(crate) fn maintenance_warm(&self,machine:&str,items:Vec<v1::WarmItem>)->Vec<v1::WarmItem> {
-        match self.maintenance_store().holdings(machine) {
-            Ok(ours) => ours.warm(items),
-            Err(e) => { warn!("reading what this controller's runs put on a machine: {e}"); vec![] }
+        match self.maintenance_store().warm_items(machine) {
+            Ok(ours) => items.into_iter().filter(|item| ours.iter().any(|known| same_warm(known, item))).collect(),
+            Err(e) => { warn!("reading the warm items this controller's runs set: {e}"); vec![] }
         }
     }
 
@@ -2503,6 +2502,11 @@ fn finished(state: &str) -> bool {
 }
 
 /// Waiting for its turn: in the outbox, or in its machine's line.
+/// The project a run's outputs land in, its id and name: what every record of it names, GET's and its events' (cl-885).
+pub(crate) fn project_of(row: &RunRow) -> Option<(String, String)> {
+    project::of_landing(&row.out_dir).map(project::identity)
+}
+
 fn queued(run: &Run) -> bool {
     run.status == RunStatus::Queued
         || (run.status == RunStatus::InProgress && run.machine_state.as_deref() == Some("queued"))

@@ -76,6 +76,14 @@ pub(crate) struct KnownProject {
     pub walking: bool,
 }
 
+/// A project whose folder went (cl-980): what it was known by, and where.
+#[derive(Clone, Debug)]
+pub(crate) struct GoneProject {
+    pub id: String,
+    pub code: String,
+    pub path: PathBuf,
+}
+
 /// A browser session, by its secrets' digests.
 #[derive(Clone, Debug)]
 pub(crate) struct SessionRow {
@@ -210,11 +218,12 @@ impl Store {
         })
     }
 
-    /// Where the project `id` or `code` was when its folder went, if it did.
-    pub(crate) fn project_gone(&self, id: &str, code: &str) -> Result<Option<PathBuf>> {
+    /// The project `id` or `code` whose folder went, if it did: its id, its code, and where it was.
+    pub(crate) fn project_gone(&self, id: &str, code: &str) -> Result<Option<GoneProject>> {
         self.read(|conn| {
-            let path = conn.query_row("SELECT path FROM projects_gone WHERE id = ?1 OR (code <> '' AND code = ?2)", [id, code], |row| row.get::<_, String>(0)).optional()?;
-            Ok(path.map(PathBuf::from))
+            Ok(conn.query_row("SELECT id, code, path FROM projects_gone WHERE id = ?1 OR (code <> '' AND code = ?2)", [id, code], |row| {
+                Ok(GoneProject { id: row.get(0)?, code: row.get(1)?, path: PathBuf::from(row.get::<_, String>(2)?) })
+            }).optional()?)
         })
     }
 

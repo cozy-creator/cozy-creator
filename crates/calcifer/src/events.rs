@@ -443,6 +443,8 @@ impl Watch {
     fn visible(&self, event: &StreamEvent) -> bool {
         let project_id = match event {
             StreamEvent::ProjectVault { .. } => return true,
+            // Out of the index by now: told to whoever shows it.
+            StreamEvent::ProjectGone { id, .. } => return self.showing.as_ref().is_some_and(|showing| showing.includes(id)),
             StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
             StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } | StreamEvent::Thumb { project, .. } => Some(project),
             StreamEvent::RunUpdated { run } => {

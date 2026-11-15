@@ -193,15 +193,6 @@ impl Machines {
             let _took = Took::new("list_hubs");
             lister.list_hubs().await
         });
-        // What Calcifer's runs put on each machine, folded now: no first picture waits for it.
-        let calcifer = me.calcifer.clone();
-        me.spawn(async move {
-            let _ = tokio::task::spawn_blocking(move || {
-                let _took = Took::new("fold_holdings");
-                calcifer.maintenance_store().holdings("")
-            })
-            .await;
-        });
         me
     }
 
@@ -803,27 +794,15 @@ impl Machines {
         Ok(machine)
     }
 
-    /// `frame` as this controller's own views show it: of what the machine holds, only what Calcifer's own runs put there.
+    /// `frame` as this controller's own views show it. Its models and installed packages are the machine's, whoever's run put them
+    /// there (Paul, 11-13: "models / packages installed are machine-specific (not project specific)"); of its warm set, only what
+    /// Calcifer's own runs set, as a project's warm items carry its inputs.
     fn visible(&self, name: &str, frame: &v1::StatusFrame) -> MachineStatus {
         let mut visible = frame.clone();
-        let ours = self.store().holdings(name).unwrap_or_else(|e| {
-            warn!("reading what this controller's runs put on a machine: {e}");
-            Default::default()
-        });
-        for model in &mut visible.models {
-            let total = model.checkpoints.len();
-            model.checkpoints.retain(|checkpoint| ours.manifests.contains(&(model.model.clone(), checkpoint.manifest.clone())));
-            if total != model.checkpoints.len() {
-                (model.total_bytes, model.unique_bytes) = (0, 0);
-            }
-        }
-        visible.models.retain(|model| !model.checkpoints.is_empty());
-        visible.models_bytes = visible.models.iter().map(|model| model.total_bytes).sum();
-        visible.environments.retain(|environment| ours.installations.contains(&environment.installation));
         for environment in &mut visible.environments {
             environment.warning.clear();
         }
-        visible.warm = ours.warm(std::mem::take(&mut visible.warm));
+        visible.warm = self.calcifer.maintenance_warm(name, std::mem::take(&mut visible.warm));
         visible.kernels.clear();
         for process in &mut visible.stuck {
             process.command.clear();
