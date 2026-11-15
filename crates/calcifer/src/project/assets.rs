@@ -246,7 +246,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             let bound = async {
                 let hub = api.machines.hubs.default_origin();
                 let on = [crate::runs::default_on(&api)];
-                let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on).await?;
+                let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on, None).await?;
                 let function = package.maker()?.map(|maker| maker.function).unwrap_or_default();
                 let callable = package.callable(&function).ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function {function}", package.name)))?;
                 let (fields, reserved, stand) = (doc.inputs_of(i), package.reserved(), &model.stand);
