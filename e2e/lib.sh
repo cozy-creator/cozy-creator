@@ -169,7 +169,7 @@ hub_check() {
   [ -n "$addr" ] || fail "hubcheck did not start: $(cat "$OUT/hubcheck.log")"
   # The Hub behind it, its ingress and store, and the egress cell's redirector (E2E_REDIRECT) are declared local: no other
   # loopback or private address is fetched.
-  E2E_REDIRECT=http://127.0.0.1:$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  E2E_REDIRECT=http://127.0.0.1:$((20000 + RANDOM % 20000))
   export E2E_REDIRECT COZY_LOCAL_ORIGINS=$hub${COZY_LOCAL_ORIGINS:+,$COZY_LOCAL_ORIGINS},$E2E_REDIRECT
   mkdir -p ~/.cozy && printf 'hub_url = "http://%s"\nlocal_origins = "%s"\n' "$addr" "$COZY_LOCAL_ORIGINS" >> ~/.cozy/config.toml
   export COZY_HUB_URL=http://$addr
