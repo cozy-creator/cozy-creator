@@ -68,7 +68,7 @@ def weighted(payload: WeightRequest, weights: Weights) -> WeightResult:
 
 @app.entrypoint(accelerator=False, private=True)
 def private(payload: WeightRequest) -> WeightResult:
-    return WeightResult(checkpoint="private", value=0, python=sys.executable)
+    return WeightResult(checkpoint="private", value=0.0, python=sys.executable)
 
 
 class AssetRequest(msgspec.Struct, kw_only=True):
