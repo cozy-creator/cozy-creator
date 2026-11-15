@@ -824,7 +824,6 @@ export class PixiScene {
   inspect(name: string) {
     const drawn = [...this.records.values()].find((record) => record.node.name === name)
     if (!drawn || !this.visible) return null
-    const world = (box?: Box) => box ? { x: drawn.node.box.x + box.x, y: drawn.node.box.y + box.y, width: box.w, height: box.h } : null
     const body = pictureBox(drawn.node)
     const main = drawn.pictures.get("main")
     const texture = main?.current?.texture
