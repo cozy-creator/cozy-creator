@@ -203,6 +203,8 @@ case $suite:$shard in
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras vaes prompts' ;;
   cli:) needs='packages birefnet downloads spare loras vaes fits parts prompts' ;;
+  # shared_scratch's probe and its warm BiRefNet (cl-984).
+  cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published asks about, and CI reads no production (xs-169).
@@ -310,6 +312,7 @@ if [ -n "$needs" ]; then
   done
   publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
+  [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: what web/unused.js crosses out (cl-944).
   case $shard in web-core | web-unused | '') publish "$packages/moss-image" ;; esac
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3

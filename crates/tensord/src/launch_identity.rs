@@ -247,6 +247,28 @@ impl Seal {
         })
     }
 
+    /// Its JIT scope (temporary files, bytecode, compiler caches) and home in `area`, a project's, with its code (cl-984); the
+    /// machine's kernel store stays where `prepare` put it. Earlier machine runs' scopes there go.
+    pub(crate) fn within(&mut self, area: &Path, incarnation: &str) -> io::Result<()> {
+        let owned = |path: PathBuf| -> io::Result<PathBuf> {
+            match fs::create_dir(&path) {
+                Ok(()) => (),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+                Err(error) => return Err(error),
+            }
+            platform::durable::set_mode(&path, 0o700)?;
+            Ok(path)
+        };
+        for boundary in ["home", "jit"] {
+            boundary_directory(&area.join(boundary))?;
+        }
+        remove_stale_jit(area, incarnation);
+        boundary_directory(&area.join("jit").join(incarnation))?;
+        self.jit = owned(area.join("jit").join(incarnation).join(&self.generation))?;
+        self.home = owned(area.join("home").join(format!("u{}", euid())))?;
+        Ok(())
+    }
+
     pub(crate) fn imposed(&self) -> BTreeMap<String, String> {
         let path = |path: PathBuf| path.to_string_lossy().into_owned();
         let mut imposed = BTreeMap::from([

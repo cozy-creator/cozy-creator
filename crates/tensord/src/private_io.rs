@@ -164,6 +164,13 @@ pub(crate) fn project_of(path: &std::path::Path) -> Option<String> {
     VERIFIED.lock().unwrap().values().find(|scope| path.starts_with(&scope.descriptor.view_root)).map(|scope| scope.descriptor.project_id.clone())
 }
 
+/// The machine area (`.vault-machine`) of the project whose view holds `path`: where the executors of that project's own code
+/// keep their files (cl-984). None: the machine's code.
+pub(crate) fn area_of(path: &std::path::Path) -> io::Result<Option<PathBuf>> {
+    let scope = VERIFIED.lock().unwrap().values().find(|scope| path.starts_with(&scope.descriptor.view_root)).map(|scope| scope.descriptor.clone());
+    scope.as_ref().map(root).transpose()
+}
+
 pub(crate) fn root(descriptor: &LocalPrivateStorage) -> io::Result<PathBuf> {
     let root = resolve(descriptor)?.view_root.join(AREA);
     fs::create_dir_all(&root)?;

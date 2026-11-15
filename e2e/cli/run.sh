@@ -651,6 +651,7 @@ case $SHARD in
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="
+    shared_scratch
     projectvault
     vault_leftovers
     vault_web
