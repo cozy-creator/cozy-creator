@@ -227,7 +227,13 @@ impl HeldGeneration {
         let callee = self.record.callees.iter().find(|c| c.application == application)
             .ok_or_else(|| invalid("this environment holds no such application"))?;
         let mut held = self.clone();
-        if let Some(python) = &callee.python { held.record.python = python.clone(); }
+        if callee.python.is_some() {
+            // Execute through this generation's alias, as the editable source .pth expects.
+            // The cached callee path is canonical; it must not choose another generation's tree.
+            let env = self.record.python.parent().and_then(Path::parent)
+                .ok_or_else(|| invalid("generation interpreter has no environment"))?;
+            held.record.python = platform::paths::venv_python(&env.join(".cozy-calls"));
+        }
         held.record.package = callee.package.clone();
         held.record.version = callee.version.clone();
         held.record.application = callee.application.clone();

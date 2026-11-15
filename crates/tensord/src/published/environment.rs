@@ -242,7 +242,7 @@ impl Publisher {
             self.uv(&["pip", "install", "--python", &py, "--no-deps", "--no-sources", "--editable", &dir], &[], job)?;
         }
         if let Some(tree) = project.editable {
-            live_paths(env, tree).map_err(io_failure)?;
+            live_paths(env, tree, project.managed_calls).map_err(io_failure)?;
         }
         // Torch for itself, the rare fallback: at what the package requires, from the index for
         // this machine's accelerator.
@@ -742,7 +742,7 @@ pub(crate) const SOURCE: &str = "source";
 /// each generation reads its own tree. Python adds them at startup all the same, and the Runtime's
 /// static reader, which never runs such a line, reads the environment's installed packages without
 /// following the project out of it: the project is described from its own directory.
-fn live_paths(env: &Path, tree: &Path) -> io::Result<()> {
+fn live_paths(env: &Path, tree: &Path, managed_calls: bool) -> io::Result<()> {
     let Some(site) = platform::paths::venv_site_packages(env) else {
         return Ok(());
     };
@@ -762,8 +762,9 @@ fn live_paths(env: &Path, tree: &Path) -> io::Result<()> {
         let under = |line: &str| target(line).and_then(|p| p.strip_prefix(&tree).ok().map(|rest| {
             rest.components().map(|c| Value::from(c.as_os_str().to_string_lossy().into_owned())).collect::<Vec<_>>()
         }));
+        let generation = if managed_calls { "os.path.dirname(os.path.dirname(sys.prefix))" } else { "os.path.dirname(sys.prefix)" };
         let spelled: String = text.lines().map(|line| match (live(line), under(line)) {
-            (true, Some(parts)) => format!("import os, sys; sys.path.append(os.path.join(os.path.dirname(sys.prefix), {}, *{}))\n",
+            (true, Some(parts)) => format!("import os, sys; sys.path.append(os.path.join({generation}, {}, *{}))\n",
                 Value::from(SOURCE), Value::from(parts)),
             (true, None) => format!("import sys; sys.path.append({})\n", Value::from(line.trim_end())),
             (false, _) => format!("{line}\n"),
