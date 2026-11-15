@@ -10,7 +10,7 @@ const { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFi
 const { homedir } = require('node:os');
 const { extname, join, resolve } = require('node:path');
 const { inflateSync } = require('node:zlib');
-const { png } = require('./page');
+const { png, openCanvas } = require('./page');
 
 const STEP = 30_000;
 const CLI_BUDGET = 120_000; // Fixture setup is separate from interaction timing on the shared machine.
@@ -273,6 +273,51 @@ async function candidate(context, origin, directory) {
   await picture('pixi_renamed', 'reload_real_pixels');
   const reloaded = await placed('pixi_renamed');
   check('reload_keeps_position', Math.abs(reloaded.x - moved.x) < 0.1 && Math.abs(reloaded.y - moved.y) < 0.1, reloaded);
+
+  // Real pointer presses establish Pixi's internal drag state; blur is delivered explicitly in this headless browser.
+  const blank = await openCanvas(page);
+  await page.mouse.move(blank.x, blank.y); await page.mouse.down(); await page.mouse.move(blank.x - 40, blank.y + 20, { steps: 4 });
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  const canceledPan = await camera();
+  await page.mouse.up(); await page.mouse.move(blank.x - 80, blank.y + 40, { steps: 4 }); await settled();
+  check('blur_cancels_camera_drag', JSON.stringify(await camera()) === JSON.stringify(canceledPan));
+
+  p = await point('pixi_renamed'); await page.mouse.move(p.x, p.y); await page.mouse.down();
+  await page.mouse.move(p.x + 35, p.y + 25, { steps: 4 });
+  const heldCamera = await camera();
+  await page.mouse.wheel(20, 30);
+  check('wheel_does_not_move_camera_during_card_drag', JSON.stringify(await camera()) === JSON.stringify(heldCamera));
+  await page.keyboard.press('Escape'); await page.mouse.up(); await settled();
+  await until('canceled card returns to persisted position', () => inspect('card', 'pixi_renamed'), card => card && Math.abs(card.position.x - moved.x) < .1 && Math.abs(card.position.y - moved.y) < .1);
+  const afterCancel = await placed('pixi_renamed');
+  check('escape_cancels_card_drag_without_write', Math.abs(afterCancel.x - moved.x) < .1 && Math.abs(afterCancel.y - moved.y) < .1);
+  check('canceled_drag_clears_target_feedback', await page.locator('.stage[data-carrying],.stage[data-copying],.stage[data-offering]').count() === 0);
+
+  // A hybrid mouse/touch session leaves a native overlay under the first finger. Exercise that actual missing-press path.
+  const input = await context.newCDPSession(page);
+  await input.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+  const touch = (type, points) => input.send('Input.dispatchTouchEvent', { type, touchPoints: points.map(({ x, y, id }) => ({ x, y, id, radiusX: 2, radiusY: 2, force: 1 })) });
+  await passive(); await canvas.focus(); await page.keyboard.press('Escape');
+  p = await point('pixi_renamed'); await page.mouse.move(p.x, p.y);
+  await until('native overlay before touch pan', () => page.locator('.canvas-node').count(), count => count === 1);
+  const beforeTouch = await camera();
+  await touch('touchStart', [{ ...p, id: 1 }]);
+  await touch('touchMove', [{ x: p.x + 40, y: p.y + 20, id: 1 }]);
+  await touch('touchEnd', []); await settled();
+  const afterTouch = await camera();
+  check('native_overlay_touch_pans_canvas', Math.abs(afterTouch.x - beforeTouch.x) > 20 && Math.abs(afterTouch.zoom - beforeTouch.zoom) < .0005, { beforeTouch, afterTouch });
+  p = await point('pixi_renamed'); await page.mouse.click(p.x, p.y);
+  const beforePinch = await camera();
+  await touch('touchStart', [{ x: p.x - 25, y: p.y, id: 2 }]);
+  await touch('touchStart', [{ x: p.x - 25, y: p.y, id: 2 }, { x: p.x + 25, y: p.y, id: 3 }]);
+  await touch('touchMove', [{ x: p.x - 30, y: p.y, id: 2 }, { x: p.x + 30, y: p.y, id: 3 }]);
+  await touch('touchMove', [{ x: p.x - 55, y: p.y, id: 2 }, { x: p.x + 55, y: p.y, id: 3 }]);
+  await touch('touchEnd', []); await settled();
+  check('native_overlay_two_finger_pinch', (await camera()).zoom > beforePinch.zoom * 1.2, { before: beforePinch, after: await camera() });
+  const afterPinch = await placed('pixi_renamed');
+  check('pinch_does_not_commit_card_move', Math.abs(afterPinch.x - moved.x) < .1 && Math.abs(afterPinch.y - moved.y) < .1);
+  await input.send('Emulation.setTouchEmulationEnabled', { enabled: false }); await input.detach();
+  await passive(); await canvas.focus(); await page.keyboard.press('f'); await settled();
   // Exercise the actual WebGL loss/restore path without touching document state or another browser context.
   const beforeLoss = await inspect('card', 'pixi_renamed');
   const loss = await page.locator('canvas.canvas-pixels').evaluate(element => {
