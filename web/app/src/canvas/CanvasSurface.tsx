@@ -1,6 +1,6 @@
 // Pixi's CSP-safe uniform synchronization; this does not grant eval permission.
 import "pixi.js/unsafe-eval"
-import { Application, Container, EventsTicker, FederatedPointerEvent, type WebGLRenderer } from "pixi.js"
+import { Container, EventsTicker, FederatedPointerEvent, WebGLRenderer, isWebGLSupported } from "pixi.js"
 import { Viewport as PixiViewport } from "pixi-viewport"
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
@@ -83,7 +83,7 @@ export function CanvasSurface(props: Props) {
     const element = root.current
     if (!element) return
     let graphicsLost = false
-    let stopped = false, frame = 0, settle = 0, app: Application<WebGLRenderer> | null = null, viewport: PixiViewport | null = null
+    let stopped = false, frame = 0, settle = 0, renderer: WebGLRenderer | null = null, stage: Container | null = null, viewport: PixiViewport | null = null
     let scene: ReturnType<typeof createPixiScene> | null = null
     let unbind = () => {}, resize: ResizeObserver | null = null
     const stops: (() => void)[] = []
@@ -137,7 +137,7 @@ export function CanvasSurface(props: Props) {
     }
     const draw = (now: number) => {
       frame = 0
-      if (stopped || !app || !viewport || !scene || !visible()) return
+      if (stopped || !renderer || !stage || !viewport || !scene || !visible()) return
       const was = controller.getViewport()
       viewport.update(16.667)
       const camera = controller.getViewport()
@@ -177,8 +177,8 @@ export function CanvasSurface(props: Props) {
       if (store.focusedName.get() && !store.focusEntering.get()) hiddenNames.add(store.focusedName.get()!)
       scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenNames })
       const animating = scene.advance(now)
-      app.render()
-      if (app.renderer.context.isLost) return
+      renderer.render({ container: stage })
+      if (renderer.context.isLost) return
       scene.didRender()
       renderFrames++
       if (!controller.hasDrawn && ((store.hasRead && store.empty) || scene.resourceStats().visibleCards > 0)) controller.markDrawn()
@@ -212,14 +212,14 @@ export function CanvasSurface(props: Props) {
     }
     // Pixi already receives captured moves/releases on document/window. A native overlay only needs the missing press path.
     const nativeTouchDown = (event: PointerEvent) => {
-      if (!app || event.pointerType !== "touch" || event.target === app.canvas) return
-      const events = app.renderer.events, boundary = events.rootBoundary
+      if (!renderer || event.pointerType !== "touch" || event.target === renderer.canvas) return
+      const events = renderer.events, boundary = events.rootBoundary
       const touch = new FederatedPointerEvent(boundary)
       Object.assign(touch, { type: "pointerdown", nativeEvent: event, pointerId: event.pointerId, pointerType: event.pointerType, isPrimary: event.isPrimary, button: event.button, buttons: event.buttons, altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey })
       touch.client.set(event.clientX, event.clientY)
       events.mapPositionToPoint(touch.global, event.clientX, event.clientY)
       touch.screen.copyFrom(touch.global); touch.offset.copyFrom(touch.global)
-      boundary.rootTarget = app.renderer.lastObjectRendered
+      boundary.rootTarget = renderer.lastObjectRendered
       boundary.mapEvent(touch)
     }
     const down = (event: PointerEvent) => {
@@ -241,7 +241,7 @@ export function CanvasSurface(props: Props) {
       const nativeTitle = event.target instanceof Element && Boolean(event.target.closest(".nm"))
       clicked = { id: event.pointerId, node, part: nativeTitle ? "title" : hit?.part ?? "body", x: event.clientX, y: event.clientY, touch: event.pointerType === "touch" }
       if (space || event.button === 1) clicked = null
-      if (!isDisabled.current && (space || event.button === 1) && event.target !== app?.canvas) {
+      if (!isDisabled.current && (space || event.button === 1) && event.target !== renderer?.canvas) {
         nativePan = { id: event.pointerId, point: { x: event.clientX, y: event.clientY }, camera: controller.getViewport() }
         controller.setInteractionEnabled(false); element.setPointerCapture(event.pointerId); event.preventDefault(); return
       }
@@ -349,7 +349,7 @@ export function CanvasSurface(props: Props) {
     const wheel = (event: WheelEvent) => {
       if (!visible() || isDisabled.current || callbacks.current.locked || drag || marquee || nativePan || nativeInput(event.target)) return
       stopHoverPreview()
-      if (event.target !== app?.canvas) {
+      if (event.target !== renderer?.canvas) {
         event.preventDefault()
         viewport?.plugins.wheel(event)
       }
@@ -402,16 +402,19 @@ export function CanvasSurface(props: Props) {
     }))
 
     void (async () => {
-      const created = new Application<WebGLRenderer>()
-      await created.init({ preference: ["webgl"], failIfMajorPerformanceCaveat: true, width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, autoStart: false, sharedTicker: false, backgroundAlpha: 0, antialias: true, gcActive: false })
-      if (stopped) { created.destroy(true, { children: true }); return }
-      app = created
-      const gl = created.renderer.gl, info = gl.getExtension("WEBGL_debug_renderer_info")
+      // Pixi 8.23 applies the major-caveat gate in this probe, not in WebGLRenderer's context attributes.
+      if (!isWebGLSupported(true)) throw new Error("Accelerated WebGL is not available in this browser.")
+      const created = new WebGLRenderer()
+      await created.init({ width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias: true, gcActive: false })
+      if (stopped) { created.destroy({ removeView: true, releaseGlobalResources: true }); return }
+      renderer = created
+      stage = new Container()
+      const gl = created.gl, info = gl.getExtension("WEBGL_debug_renderer_info")
       const backend = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER))
       graphics = { backend: "webgl", renderer: backend, version: String(gl.getParameter(gl.VERSION)), software: /swiftshader|llvmpipe|lavapipe|softpipe|swrast|software/i.test(backend) }
       EventsTicker.removeTickerListener()
       // The scene owns resource eviction; no scheduled renderer GC needs a perpetual system ticker.
-      created.renderer.scheduler.destroy()
+      created.scheduler.destroy()
       created.canvas.className = "canvas-pixels canvas-pane"
       const lost = (event: Event) => {
         event.preventDefault(); graphicsLost = true; cancel(); cancelAnimationFrame(frame); frame = 0
@@ -422,9 +425,9 @@ export function CanvasSurface(props: Props) {
       created.canvas.addEventListener("webglcontextrestored", restored)
       stops.push(() => { created.canvas.removeEventListener("webglcontextlost", lost); created.canvas.removeEventListener("webglcontextrestored", restored) })
       element.prepend(created.canvas)
-      viewport = new PixiViewport({ screenWidth: width, screenHeight: height, events: created.renderer.events, noTicker: true, passiveWheel: false, ignoreWheelFromOtherElements: true })
+      viewport = new PixiViewport({ screenWidth: width, screenHeight: height, events: created.events, noTicker: true, passiveWheel: false, ignoreWheelFromOtherElements: true })
       viewport.drag({ wheel: true }).pinch().wheel({ wheelZoom: false, trackpadPinch: true, smooth: false }).clampZoom({ minScale: ZOOMS[0], maxScale: ZOOMS[ZOOMS.length - 1] })
-      created.stage.addChild(viewport)
+      stage.addChild(viewport)
       const world = new Container({ eventMode: "none", interactiveChildren: false })
       viewport.addChild(world)
       scene = createPixiScene({ world, store, client, invalidate })
@@ -432,7 +435,7 @@ export function CanvasSurface(props: Props) {
       unbind = controller.bindCamera(element, viewport)
       callbacks.current.onReady?.()
       interactions()
-      resize = new ResizeObserver(() => { width = element.clientWidth; height = element.clientHeight; if (width > 0 && height > 0 && app && viewport) { app.renderer.resize(width, height, devicePixelRatio || 1); viewport.resize(width, height); invalidate() } })
+      resize = new ResizeObserver(() => { width = element.clientWidth; height = element.clientHeight; if (width > 0 && height > 0 && renderer && viewport) { renderer.resize(width, height, devicePixelRatio || 1); viewport.resize(width, height); invalidate() } })
       resize.observe(element)
       setFailed(null)
       invalidate()
@@ -444,7 +447,7 @@ export function CanvasSurface(props: Props) {
       window.removeEventListener("blur", cancel)
       window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", cancel)
       window.removeEventListener("keydown", keyDown); window.removeEventListener("keyup", keyUp)
-      scene?.destroy(); app?.destroy(true, { children: true })
+      scene?.destroy(); stage?.destroy({ children: true }); renderer?.destroy({ removeView: true, releaseGlobalResources: true })
       store.canvasAt = () => null
       delete (element as HTMLDivElement & { canvasInspection?: unknown }).canvasInspection
       update.current = () => {}; enabled.current = () => {}
