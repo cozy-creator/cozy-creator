@@ -265,7 +265,7 @@ async fn make(host: Host, mut drawing: Drawing) -> Result<PathBuf, Error> {
     tokio::task::spawn_blocking(move || {
         let _access = access;
         let _permit = permit;
-        draw(&ffmpeg, &ffprobe, &drawing, &dir, &name).map_err(|why| {
+        crate::tools::quietly(|| draw(&ffmpeg, &ffprobe, &drawing, &dir, &name)).map_err(|why| {
             // The source path can disappear while waiting for FFmpeg. Only a successful draw is kept.
             if !drawing.private { warn!("thumbnail {name} can't be drawn: {why}"); }
             Error::new(Kind::Validation, "thumb_failed", format!("ffmpeg can't draw this file: {why}"))
@@ -282,7 +282,8 @@ fn run(ffmpeg: &FsPath, before: &[OsString], after: &[OsString], out: &FsPath) -
 
 /// Runs ffmpeg with `args` writing over `out`. Err: what it said.
 fn ran(ffmpeg: &FsPath, args: &[OsString], out: &FsPath) -> Result<(), String> {
-    let done = Media::new(ffmpeg).args(["-y", "-v", "error", "-nostdin"]).args(args).arg(out).output();
+    // One thread each, two at a time (`FFMPEGS`): a page drawing beside it keeps the rest.
+    let done = Media::new(ffmpeg).args(["-y", "-v", "error", "-nostdin", "-filter_threads", "1"]).args(args).args(["-threads", "1"]).arg(out).output();
     let done = done.map_err(|e| e.to_string())?;
     let written = std::fs::metadata(out).is_ok_and(|meta| meta.len() > 0);
     match done.status.success() && written {

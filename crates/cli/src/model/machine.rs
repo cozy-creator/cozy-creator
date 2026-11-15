@@ -142,6 +142,16 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
         ask.add.insert(at.to_owned(), held);
     }
     crate::send::held(ctx, &mut ask.source, &mut ask.name, true).await?;
+    // `run:N` names run N of the project here, as `cozy run watch N` does: sent as its `KEY-N`, which names it from any scope
+    // (cl-987), as the upload is no project's (cl-992: `run:6` read Calcifer's own run 6).
+    if let Some(reference) = ask.source.strip_prefix("run:") {
+        let (named, output) = reference.split_once('#').map_or((reference, None), |(run, output)| (run, Some(output)));
+        let address = crate::calcifer_client::RunAddress::current(ctx, named).await?;
+        if address.project.is_some() {
+            let found = ctx.calcifer().await?.run(&address).await?;
+            ask.source = format!("run:{}{}", crate::run::handle(&found), output.map(|o| format!("#{o}")).unwrap_or_default());
+        }
+    }
     let run = crate::run::job(ctx, job::MODEL_UPLOAD, &ask, on, None, None).await?;
     // A Hub checkpoint is recorded there by Calcifer: no machine ran.
     if run.kind == RunKind::Here {
