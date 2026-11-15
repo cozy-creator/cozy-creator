@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -89,8 +90,11 @@ def local_code(base: str, headers: dict[str, str], target: Path, stage_code: Pat
     return staged["code"], staged["target"]
 
 
-def upload(base: str, headers: dict[str, str], digest: str, data: bytes) -> None:
+def upload(base: str, headers: dict[str, str], digest: str, data: bytes, project: Path | None = None) -> None:
+    """`data` held by Calcifer unless it is: in `project`'s own content store when named, as a run of that project reads its files."""
     url = base + "/v1/files/" + digest
+    if project is not None:
+        url = base + "/v1/project-files/" + digest + "?project=" + urllib.parse.quote(str(project), safe="")
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=headers, method="HEAD")):
             return
