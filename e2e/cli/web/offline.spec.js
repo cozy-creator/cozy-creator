@@ -2,7 +2,7 @@
 // if calcifer is offline, and then we sync the changes in when calcifer comes back online"). Stopped, every edit shows at once, through a tab
 // away and back, counted in the top bar, with nothing over the canvas and nothing in project.db; started, all of it lands in order with no
 // reload (a picture dropped on a box as its next version too, whatever its bytes waited for), and history keeps Redo. Killed with -9 while
-// words are typed, the page says so and comes back with its session and every character.
+// words are typed, the page says so and comes back with every character, and nothing to sign in again (cl-985).
 // With no Hub, the page loads, the palette says it lists only what's installed, a local tool renders, and Rent says why it lists nothing.
 const { execFileSync } = require('child_process');
 const { createHash, randomBytes } = require('crypto');
@@ -108,7 +108,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
   const approve = was.pinned && was.approved === 2 ? 1 : 2;
 
   const page = await context.newPage();
-  const session = await signIn(page, project.url());
+  await signIn(page, project.url());
   await expect(page.locator('.stage')).toBeVisible();
   const tab = (row) => page.getByRole('navigation', { name: 'Projects' }).getByRole('link', { name: row.name, exact: true });
   const reach = async (row) => {
@@ -282,8 +282,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await leave(page, region);
     expect.soft(await page.evaluate(() => window.barSaid), 'it said Calcifer was offline').toContainEqual(expect.stringMatching(/^Calcifer offline/));
     expect.soft(await page.evaluate(() => window.unreloaded), 'no reload').toBe(true);
-    expect.soft(await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session'))?.token), 'the session held').toBe(session.token);
-    await expect.soft(page.getByRole('heading', { name: "This page isn't signed in" })).toHaveCount(0);
+    await expect.soft(page.getByRole('heading', { name: 'No project open here' }), 'no gate: the page keeps no session, so nothing to sign in again').toHaveCount(0);
     await expect.poll(async () => (await project.asset('words'))?.fields?.text, { message: 'every character saved, once', timeout: 30_000 }).toBe(BEFORE + AFTER);
     expect.soft(held(project.path).boxes.words?.text, 'in project.db').toBe(BEFORE + AFTER);
   });

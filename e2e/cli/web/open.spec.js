@@ -1,24 +1,23 @@
-// open (cl-973 core cell 1): `cozy open`'s link signs a tab in once, under the page's CSP, with no cookie, its stream on its own session,
-// through a reload; used again, in a browser of its own, it's refused in words until that browser has a code of its own. With no session the
-// page says so once where it stands, says what to run and shows no project (cl-980); signed in, / opens none by itself and says what to do;
-// the bar's + makes one there (its folder suggested and edited in place, encrypted unless asked, its tab shown at once), which opens at its
-// address, unencrypted. Alone on its Calcifer (`@solo`: an index of its own projects only, so every tab fits the strip): the strip lists
-// them in the index's order, a tab opens its own, going from one to another never blanks the screen, and + and the Projects drawer both
-// suggest `<first project's parent>/untitled-N`; Calcifer killed and back leaves the tab where it is with its canvas, and with its session
-// ended first, the page says so once, in place.
+// open (cl-973 core cell 1): the project's address, as `cozy open` opens it, opens a tab as Calcifer's own page (cl-985): nothing minted
+// or sent, no cookie, nothing of Calcifer's kept in Web Storage, its stream asked with no Authorization, through a reload and in another
+// browser of this account alike. / opens no project by itself and says what to do; the bar's + makes one there (its folder suggested and
+// edited in place, encrypted unless asked, its tab shown at once), which opens at its address, unencrypted. Alone on its Calcifer (`@solo`:
+// an index of its own projects only, so every tab fits the strip): the strip lists them in the index's order, a tab opens its own, going
+// from one to another never blanks the screen, and + and the Projects drawer both suggest `<first project's parent>/untitled-N`; Calcifer
+// killed and back leaves the tab where it is with its canvas and no gate at any moment, a new Calcifer answering its reads, and so again on
+// another project's tab, through a reload. The gate a page Calcifer refuses draws is web/access.js's, with a real second OS account.
 const { randomBytes } = require('crypto');
-const { existsSync, realpathSync } = require('fs');
+const { existsSync, readFileSync, realpathSync } = require('fs');
 const { dirname, join } = require('path');
 const { test, expect, recordAddress, stays } = require('./fixtures');
 
 const NO_SESSION = 'No project open here';
 const HOME_LINE = 'No project open. Pick one above, or press +.';
 
-const redeeming = (answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/session';
 const streaming = (request) => request.method() === 'GET' && new URL(request.url()).pathname === '/v1/events';
-/** Signed in at `project`: its tab, the open one, over the canvas. */
+/** Open at `project`: its tab, the current one, over the canvas. */
 const signedIn = (page, project) => page.getByRole('navigation', { name: 'Projects' }).getByRole('link', { name: project.name, exact: true });
-/** No session, however the page found out (cl-980's one state): it says so, and how to open one. */
+/** The gate a page Calcifer won't answer draws (cl-980's one state). */
 const gate = (page) => page.getByRole('heading', { name: NO_SESSION });
 /** How many gates saying `words` this document drew. */
 const drawn = async (page, words) => (await page.evaluate(() => window.__gates)).filter((text) => text.includes(words)).length;
@@ -27,80 +26,61 @@ const panel = (page) => page.getByRole('region', { name: 'New project', exact: t
 const folderField = (page) => panel(page).getByLabel("New project's folder", { exact: true });
 const index = async (api) => (await api.get('/v1/projects?limit=1000')).projects;
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Each request a context's pages make to Calcifer that mints a credential (`/v1/session…`) or sends one (an Authorization header). */
+function credentials(context, origin) {
+  const seen = { minted: [], sent: [] };
+  context.on('request', async (request) => {
+    if (!request.url().startsWith(origin)) return;
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith('/v1/session')) seen.minted.push(`${request.method()} ${path}`);
+    if (await request.headerValue('authorization')) seen.sent.push(`${request.method()} ${path}`);
+  });
+  return seen;
+}
+/** What this tab keeps in Web Storage that holds `secret`. */
+const keeps = (page, secret) => page.evaluate((secret) => [localStorage, sessionStorage].flatMap((store) => Object.keys(store).filter((key) => key.includes(secret) || (store.getItem(key) ?? '').includes(secret))), secret);
 
-test('open', { tag: '@engines' }, async ({ context, newContext, project, api, signIn, guards, removeAfter }) => {
-  // Refused on purpose: Chrome says each in its console.
-  guards.allow(/status of 400\b.*\/v1\/session$/, /status of 401\b.*\/v1\/status$/);
+test('open', { tag: '@engines' }, async ({ context, newContext, project, api, signIn, removeAfter }) => {
   await context.addInitScript(recordAddress);
   const page = await context.newPage();
-  // A code as `cozy open` asks the holder for one, at the project's address.
-  const { code } = await api.post('/v1/session-codes', {});
-  const link = `${project.url()}#code=${encodeURIComponent(code)}`;
-  let token;
+  const asked = credentials(context, api.origin);
 
-  await test.step("cozy open's link signs this tab in", async () => {
-    const redeemed = page.waitForResponse(redeeming);
+  await test.step("the project's address opens this tab as Calcifer's own page, with nothing minted or sent", async () => {
     const streamed = page.waitForRequest(streaming);
-    await page.goto(link);
-    const session = await redeemed;
-    expect(session.status(), 'POST /v1/session').toBe(200);
-    ({ token } = await session.json());
-    await expect(page, 'the code leaves the address').toHaveURL(project.url());
+    await page.goto(project.url());
     await expect(signedIn(page, project)).toHaveAttribute('aria-current', 'page');
     const stream = await streamed;
-    expect.soft(await stream.headerValue('authorization'), "the page's stream is on its own session").toBe(`Bearer ${token}`);
+    expect.soft(await stream.headerValue('authorization'), "the page's stream carries no credential").toBeNull();
     const answer = await stream.response();
     expect.soft(answer?.status(), 'GET /v1/events').toBe(200);
     expect.soft(await answer?.headerValue('content-type')).toMatch(/^text\/event-stream/);
     expect.soft(await context.cookies(), 'cookies').toEqual([]);
-  });
-
-  await test.step('a reload stays signed in', async () => {
-    const streamed = page.waitForRequest(streaming);
-    await page.reload();
-    await expect(signedIn(page, project)).toHaveAttribute('aria-current', 'page');
-    expect.soft(await (await streamed).headerValue('authorization'), 'the same session').toBe(`Bearer ${token}`);
+    expect.soft(await keeps(page, api.token), "Web Storage keeps nothing of Calcifer's").toEqual([]);
     await expect.soft(gate(page)).toHaveCount(0);
   });
 
-  const other = await (await newContext()).newPage();
-  await test.step('the used link, in a browser of its own, is refused in words', async () => {
-    const refused = other.waitForResponse(redeeming);
-    await other.goto(link);
-    const answer = await refused;
-    expect.soft(answer.status(), 'a used code').toBe(400);
-    expect.soft((await answer.json()).error?.code).toBe('session_code_invalid');
-    await expect(gate(other)).toBeVisible();
-    await expect.soft(other.getByText('cozy open', { exact: true })).toBeVisible();
-    await expect.soft(signedIn(other, project)).toHaveCount(0);
+  await test.step('a reload opens it the same', async () => {
+    const streamed = page.waitForRequest(streaming);
+    await page.reload();
+    await expect(signedIn(page, project)).toHaveAttribute('aria-current', 'page');
+    expect.soft(await (await streamed).headerValue('authorization'), 'still no credential').toBeNull();
+    await expect.soft(gate(page)).toHaveCount(0);
+    expect.soft(await drawn(page, NO_SESSION), 'no gate at any moment').toBe(0);
   });
 
-  await test.step('a code of its own signs it in', async () => {
-    const session = await signIn(other, project.url());
-    expect.soft(session.token, "its own session, not the first tab's").not.toBe(token);
+  await test.step('another browser of this account opens it the same', async () => {
+    const elsewhere = await newContext();
+    await elsewhere.addInitScript(recordAddress);
+    const theirs = credentials(elsewhere, api.origin);
+    const other = await elsewhere.newPage();
+    await signIn(other, project.url());
     await expect(signedIn(other, project)).toHaveAttribute('aria-current', 'page');
     await expect.soft(gate(other)).toHaveCount(0);
+    expect.soft(await drawn(other, NO_SESSION), 'no gate at any moment').toBe(0);
+    expect.soft(theirs, 'nothing minted or sent').toEqual({ minted: [], sent: [] });
   });
 
-  await test.step('with no session, it says so once where it stands, and what to run, and shows no project', async () => {
-    const stranger = await newContext();
-    await stranger.addInitScript(recordAddress);
-    const tab = await stranger.newPage();
-    await tab.goto(project.url());
-    await expect(gate(tab)).toBeVisible();
-    expect.soft(await stays(tab), 'it stays where it is').toEqual({ path: `/p/${project.code}`, moves: [] });
-    expect.soft(await drawn(tab, NO_SESSION), 'said once').toBe(1);
-    await expect.soft(tab.locator('.ptab'), 'no project listed').toHaveCount(0);
-    expect.soft(await tab.content(), "nothing of the project's").not.toContain(project.path);
-    await tab.goto(`${api.origin}/`);
-    await expect(gate(tab)).toBeVisible();
-    const said = await tab.locator('main.gate').innerText();
-    expect.soft(said.includes('cozy open') && said.includes('cozy new'), `what to run: ${said}`).toBe(true);
-    await expect.soft(tab.locator('.ptab'), 'no project listed at /').toHaveCount(0);
-    expect.soft(await tab.content(), "nothing of the project's at /").not.toContain(project.path);
-  });
-
-  await test.step('signed in, / opens no project by itself and says what to do', async () => {
+  await test.step('/ opens no project by itself and says what to do', async () => {
     await page.goto(`${api.origin}/`);
     await expect(page.locator('.home-line')).toBeVisible();
     expect.soft(await page.locator('.home-line').innerText()).toBe(HOME_LINE);
@@ -134,6 +114,8 @@ test('open', { tag: '@engines' }, async ({ context, newContext, project, api, si
     expect.soft(existsSync(join(folder, 'project.db')), 'its project.db in its folder').toBe(true);
     expect.soft(await api.get(`/v1/projects/${encodeURIComponent(opened.id)}/vault`), 'unencrypted').toMatchObject({ encrypted: false });
   });
+
+  expect.soft(asked, 'nothing minted or sent, all along').toEqual({ minted: [], sent: [] });
 });
 
 test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, project, api, guards, removeAfter, calciferControl }) => {
@@ -212,31 +194,43 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     }).observe(document.body, { subtree: true, childList: true, characterData: true });
   });
 
-  await test.step('Calcifer killed and back with the session kept: the tab goes on where it is', async () => {
-    await page.goto(project.url());
-    await expect(page.locator('.react-flow__node').first()).toBeVisible();
+  const pid = () => JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).pid;
+  /** Killed with -9 and back: the bar says Calcifer was offline, then clears. */
+  const killed = async () => {
     await barSays();
+    const was = pid();
     away = true;
     await calciferControl.kill();
     await expect(page.locator('header.top .pill'), 'the top bar clears').toHaveCount(0, { timeout: 60_000 });
     away = false;
     expect.soft(await page.evaluate(() => window.barSaid), 'it said Calcifer was offline').toContainEqual(expect.stringMatching(/^Calcifer offline/));
-    expect.soft(await stays(page), 'it stays where it is').toEqual({ path: `/p/${project.code}`, moves: [] });
-    await expect.soft(page.locator('.unread, .gate'), 'and keeps the canvas').toHaveCount(0);
-    await expect.soft(page.locator('.react-flow__node').first()).toBeVisible();
+    expect.soft(pid(), 'a new Calcifer').not.toBe(was);
+  };
+  /** Where `row`'s tab stands, its canvas kept, and no gate drawn at any moment of this document. */
+  const kept = async (row, only) => {
+    expect.soft(await stays(page), 'it stays where it is').toEqual({ path: `/p/${row.code}`, moves: [] });
+    expect.soft(await drawn(page, NO_SESSION), 'no gate at any moment').toBe(0);
+    await expect.soft(page.locator('.unread, main.gate'), 'none now').toHaveCount(0);
+    await expect.soft(page.locator(`.card[data-asset="${only}"]`), 'and its canvas').toBeAttached();
+  };
+
+  await test.step('Calcifer killed and back: the tab goes on where it is, and the new one answers its reads', async () => {
+    await page.goto(project.url());
+    await expect(page.locator('.react-flow__node').first()).toBeVisible();
+    await killed();
+    await kept(project, 'only_a');
+    // The page's own read, as it asks: no Authorization.
+    const read = await page.evaluate((id) => fetch(`/v1/projects/${encodeURIComponent(id)}?assets=false`, { headers: { 'cozy-project-storage': '3' } }).then((answer) => answer.status), project.id);
+    expect.soft(read, "the new Calcifer answers the page's read").toBe(200);
   });
 
-  await test.step('its session ended, then Calcifer killed and back: one plain state, in place', async () => {
-    const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
-    const ended = await fetch(`${api.origin}/v1/session`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-    expect(ended.status, 'DELETE /v1/session').toBe(204);
-    // Its session gone, on purpose: the page's next asks are refused, as the browser says in its console.
-    guards.allow(/status of 401\b/);
-    away = true;
-    await calciferControl.kill();
-    await expect(page.getByRole('heading', { name: NO_SESSION })).toBeVisible({ timeout: 60_000 });
-    away = false;
-    expect.soft(await stays(page), 'it stays where it is').toEqual({ path: `/p/${project.code}`, moves: [] });
-    expect.soft(await drawn(page, NO_SESSION), 'said once').toBe(1);
+  await test.step("another project's tab, Calcifer killed and back again, then reloaded: its canvas in place, no gate before or after", async () => {
+    await page.goto(`${api.origin}/p/${b.code}`);
+    await expect(page.locator('.card[data-asset="only_b"]')).toBeAttached();
+    await killed();
+    await kept(b, 'only_b');
+    await page.reload();
+    await expect(page.locator('.card[data-asset="only_b"]')).toBeAttached();
+    await kept(b, 'only_b');
   });
 });

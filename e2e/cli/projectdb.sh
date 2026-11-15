@@ -223,14 +223,13 @@ db_closes() {
 step "projects closed once nothing reads them: by the CLI and a page's stream, memory back, a reopen as quick, a render holding its own (cl-823)"
 [ "${RUNNER_OS:-}" = Linux ] || { echo "closes: Calcifer's open files are read on Linux"; return 0; }
 CLOSES=$OUT/closes CLOSES_PREV='' CLOSES_OPENS=() CLOSES_REOPENS=() CLOSES_OPEN=() CLOSES_HELD=()
-local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later code pid first second update run_first look queued=0 held_first=0 held_second=0 P a b h1 h2 busy
+CLOSES_PAGE=(-H "Host: $(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder")" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' -H 'cozy-project-storage: 3')
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later pid first second update run_first look queued=0 held_first=0 held_second=0 P a b h1 h2 busy
   local dropped=() looks=()
 mkdir -p "$CLOSES"
 ffmpeg -v error -y -f lavfi -i 'color=c=gray:size=32x18' -frames:v 1 "$CLOSES/seed.png"
-code=$(curl -fsS -X POST -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/session-codes" | jq -r .code) \
-  && CLOSES_SESSION=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg c "$code" '{code: $c}')" "http://$(jq -r .address "$lock")/v1/session" | jq -r .token) \
-  || { check "closes: no page session"; return; }
-curl -sSN -H "Authorization: Bearer $CLOSES_SESSION" -H 'cozy-project-storage: 3' -H 'Accept: text/event-stream' "http://$(jq -r .address "$lock")/v1/events" > "$CLOSES/page.sse" 2>&1 & pid=$!
+# The page's stream, asked as the page's own fetch asks it (cl-985): Calcifer's Host, same-origin, no Authorization.
+curl -sSN "${CLOSES_PAGE[@]}" -H 'Accept: text/event-stream' "http://$(jq -r .address "$lock")/v1/events" > "$CLOSES/page.sse" 2>&1 & pid=$!
 for _ in $(seq 100); do CLOSES_STREAM=$(sse "$CLOSES/page.sse" | jq -r 'select(.type == "hello") | .stream' | head -1) && [ -n "$CLOSES_STREAM" ] && break; sleep 0.1; done
 [ -n "$CLOSES_STREAM" ] || { check "closes: the page's stream said no hello: $(head -c 300 "$CLOSES/page.sse")"; kill "$pid" 2> /dev/null || true; return; }
 closes_pass 1 2 || { kill "$pid" 2> /dev/null || true; return; }
@@ -311,7 +310,7 @@ closes_shut() { local _; for _ in $(seq 50); do closes_open "$1" || return 0; sl
 # closes_show <id, or nothing>: what the page on the stream shows now.
 closes_show() {
   local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
-  curl -fsS -X PUT -H "Authorization: Bearer $CLOSES_SESSION" -H 'cozy-project-storage: 3' -H 'Content-Type: application/json' \
+  curl -fsS -X PUT "${CLOSES_PAGE[@]}" -H "Origin: http://$(jq -r .address "$lock")" -H 'Content-Type: application/json' \
     -d "$(jq -n --arg id "$1" '{projects: (if $id == "" then [] else [$id] end)}')" "http://$(jq -r .address "$lock")/v1/events/$CLOSES_STREAM"
 }
 # closes_made <i>: project i, 50 pictures of one file and 150 boxes mentioning them, by one `cozy apply`.

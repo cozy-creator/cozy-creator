@@ -212,7 +212,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect.soft(drawer.getByText("That code isn't right. Use the code from your latest email, or ask for another.", { exact: true }), 'a wrong code, said in plain words').toBeVisible();
       await expect.soft(field, 'it stays in the form').toBeVisible();
       await expect.soft(address, 'not back at the email').toHaveCount(0);
-      await expect.soft(page.getByRole('heading', { name: "This page isn't signed in" }), "the page's own session holds").toHaveCount(0);
+      await expect.soft(page.getByRole('heading', { name: 'No project open here' }), 'Calcifer still answers the page as its own').toHaveCount(0);
 
       await expect(field).toBeEnabled();
       await field.pressSequentially(code);

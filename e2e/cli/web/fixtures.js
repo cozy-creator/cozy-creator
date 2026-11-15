@@ -346,22 +346,13 @@ const test = base.extend({
     for (const context of made) await context.close();
   },
 
-  /** Signs a tab in as `cozy open` does: a code from the holder, redeemed at `to`, which the page clears from its address. Its session. */
-  signIn: async ({ api }, use) => {
-    await use(async (page, to) => {
-      const { code } = await api.post('/v1/session-codes', {});
-      // A page reads its code as it loads: at the address it's on, only the fragment would change, and nothing loads.
-      if (page.url() !== 'about:blank') await page.goto('about:blank');
-      const redeemed = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/session');
-      await page.goto(`${to.replace(/#.*$/, '')}#code=${encodeURIComponent(code)}`);
-      const answer = await redeemed;
-      expect(answer.status(), 'POST /v1/session').toBe(200);
-      await expect(page, 'the code leaves the address').not.toHaveURL(/[#&]code=/);
-      return answer.json();
-    });
+  /** Opens `to` in a tab, as `cozy open` does: the page holds no session, and Calcifer answers it as its own page, for the user it runs as,
+   *  which this runner's is (cl-985). The document's answer. */
+  signIn: async ({}, use) => {
+    await use((page, to) => page.goto(to.replace(/#.*$/, '')));
   },
 
-  /** A tab signed in at the cell's project, its canvas up. The box log is attached when the cell fails. */
+  /** A tab open at the cell's project, its canvas up. The box log is attached when the cell fails. */
   page: async ({ page, project, signIn }, use, testInfo) => {
     await signIn(page, project.url());
     await expect(page.locator('.stage')).toBeVisible();

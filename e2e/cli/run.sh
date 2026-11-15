@@ -71,11 +71,12 @@ step status; fixture_calcifer | tee "$OUT/status.json"
 step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
-case $SHARD in projectvault | plan) calcifer_diagnostics ;; esac
+# web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985).
+case $SHARD in projectvault | plan) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
-# A vault failure names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings
-# in calcifer/diagnostics.log, which the job collects with the other logs.
+# A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
+# calcifer.diagnostics (tests only), its warnings in calcifer/diagnostics.log, which the job collects with the other logs.
 calcifer_diagnostics() {
   local config=$HOME/.cozy/config.toml
   awk '/^diagnostics *=/ { next } { print } /^\[calcifer\]/ { print "diagnostics = true"; put = 1 } END { if (!put) printf "\n[calcifer]\ndiagnostics = true\n" }' "$config" > "$config.next" && mv "$config.next" "$config"
