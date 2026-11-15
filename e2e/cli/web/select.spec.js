@@ -13,7 +13,8 @@ const near = (a, b, tolerance = 28) => a.every((value, i) => Math.abs(value - b[
 
 /** Fractional native hover strokes are judged against the same native card with only its outline suppressed.
  * At 25%, the outline, paper border and picture can share one device pixel; adjacent pixels do not contain that underpaint.
- * The restored outline must still match geometric coverage, change a channel by at least 3, and stay within 8 RGB residual levels. */
+ * Require visible paint toward the hover colour, not alpha equal to ideal rectangle area: transformed rasterization mixes underpaint.
+ * The restored stroke must change a channel by at least 3 and stay within 8 RGB residual levels; selection has its separate 3 px/glow bar. */
 function hoverCoverage(read, body, color, dpr, zoom = 1, withoutOutline = null) {
   const noise=8,width=zoom,offset=2*zoom;
   const sides=[['left',body.x,body.y+body.height/2,1,true],['right',body.x+body.width,body.y+body.height/2,-1,true],
@@ -32,13 +33,14 @@ function hoverCoverage(read, body, color, dpr, zoom = 1, withoutOutline = null) 
       const expected=Math.min(coordinate+1,high)-Math.max(coordinate,low);
       const residual=Math.max(...observed.map((value,c)=>Math.abs(value-background[c]-alpha*toward[c])));
       const uncertainty=square?noise*toward.reduce((sum,value)=>sum+Math.abs(value),0)/square:Infinity;
-      const valid=Number.isFinite(alpha) && residual<=noise && Math.abs(alpha-expected)<=uncertainty && background.every(value=>value>=0 && value<=255);
-      if(expected*Math.max(...toward.map(Math.abs))>=3 && Math.max(...observed.map((value,c)=>Math.abs(value-background[c])))>=3)visible=true;
-      samples.push({coordinate,observed,background,expectedCoverage:expected,coverage:Number.isFinite(alpha)?alpha:null,residual:Number.isFinite(residual)?residual:null,uncertainty:Number.isFinite(uncertainty)?uncertainty:null,valid});
+      const delta=Math.max(...observed.map((value,c)=>Math.abs(value-background[c])));
+      const valid=delta<3 || (Number.isFinite(alpha) && alpha>0 && alpha<=1+uncertainty && residual<=noise && background.every(value=>value>=0 && value<=255));
+      if(delta>=3)visible=true;
+      samples.push({coordinate,observed,background,delta,geometricArea:expected,coverage:Number.isFinite(alpha)?alpha:null,residual:Number.isFinite(residual)?residual:null,uncertainty:Number.isFinite(uncertainty)?uncertainty:null,valid});
     }
     const valid=visible && samples.length>0 && samples.every(sample=>sample.valid);
-    const estimatedWidth=samples.every(sample=>sample.coverage!==null)?samples.reduce((sum,sample)=>sum+sample.coverage,0)/dpr:null;
-    return {side,valid,width:valid?estimatedWidth:0,estimatedWidth,expectedWidth:width,outlineOffset:offset,noise,backgroundSamples:[near,far],samples};
+    const projectedAlphaSum=samples.every(sample=>sample.coverage!==null)?samples.reduce((sum,sample)=>sum+sample.coverage,0):null;
+    return {side,valid,projectedAlphaSum,nominalStrokeWidth:width,outlineOffset:offset,noise,backgroundSamples:[near,far],samples};
   });
 }
 
@@ -88,6 +90,9 @@ async function rings(page) {
   }, NAMES);
   let withoutOutline = null, artifacts;
   if (state.native) {
+    const css = state.native.outline.color, values = css.match(/[\d.]+/g).map(Number).slice(0, 3);
+    expect(state.native.outline.style, 'hover has a solid native outline').toBe('solid');
+    expect(css.startsWith('color(') ? values.map(value => value * 255) : values, 'the native hover outline uses --line2').toEqual(state.hover);
     const media = page.locator(`.canvas-node .card[data-asset=${JSON.stringify(state.native.name)}] > .media`).first();
     artifacts = { withoutOutline: test.info().outputPath(`hover-${state.zoom}-without-outline.png`), restored: test.info().outputPath(`hover-${state.zoom}-restored.png`) };
     const inline = await media.evaluate(el => {
