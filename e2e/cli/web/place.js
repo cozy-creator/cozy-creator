@@ -349,20 +349,21 @@ async function placedInView(page, expected) {
     const lay = {};
     const left = Math.max(...Object.values(rows(folder)).map((row) => row.x)) + 1500;
     const put = (name, x, y, w) => { lay[name] = { x: left + x, y, w }; };
-    // Rows of the grid meant to touch: a picture 300 wide (its name 32, the picture 169, its row 40) and the room it keeps under it, 92
-    // (shown.ts heightFor and underOf). That room has changed with the box three times; where the page keeps more, it gives way and the
-    // layout is the one it settles to (`laid`, below), which every drop and pull is judged against.
-    const ROW = 32 + 169 + 40 + 92;
+    // Rows of the grid meant to touch: a picture 300 wide (its name 32, the picture 169, its row 40) and the room it keeps under it, 94: its
+    // shape's line and the rise of a far name at the body size to 25% (shown.ts heightFor and underOf, Paul 11-13). That room has changed
+    // with the box four times; where the page keeps more, it gives way and the layout is the one it settles to (`laid`, below), which
+    // every drop and pull is judged against.
+    const ROW = 32 + 169 + 40 + 94;
     for (const [i, j] of [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1], [0, 2], [1, 2], [2, 2]]) put(`grid_${i}_${j}`, 320 * i, ROW * j, 300);
-    // The chain beside the grid and the rest under it, each clear of the one above as laid out (a 240 picture keeps 299, the crowded 360 one
-    // 367): fitted, it all shows at a zoom of 0.2 or more, where a box has its corner (CanvasHost's far band; all under the grid, 0.197).
+    // The chain beside the grid and the rest under it, each clear of the one above as laid out (a 240 picture keeps 301, the crowded 360 one
+    // 369): fitted, it all shows at a zoom of 0.2 or more, where a box has its corner (CanvasHost's far band; all under the grid, 0.197).
     const BELOW = 3 * ROW + 14;
     put('crowded', 290, BELOW, 360);
     put('beside', 0, BELOW + 400, 240);
-    put('free', 200, BELOW + 700, 240);
-    put('left', 0, BELOW + 1000, 240);
-    put('right', 468, BELOW + 1000, 240);
-    put('nudging', 234, BELOW + 1300, 240);
+    put('free', 200, BELOW + 704, 240);
+    put('left', 0, BELOW + 1008, 240);
+    put('right', 468, BELOW + 1008, 240);
+    put('nudging', 234, BELOW + 1312, 240);
     const CHAIN = ['chain_a', 'chain_b', 'chain_c', 'chain_d', 'chain_e'];
     CHAIN.forEach((name, i) => put(name, 1100 + 260 * i, 0, 240));
     // Two rows four long, 10 apart, with a gap 4 short of the box between them, and room beyond.
@@ -531,6 +532,50 @@ async function placedInView(page, expected) {
     const undone = await until('all back', () => Promise.resolve(rows(folder)), (now) => CHAIN.every((name) => now[name].x === before[name].x && now[name].y === before[name].y && now[name].w === before[name].w)).catch(() => rows(folder));
     check('one_undo_puts_the_pull_back', CHAIN.every((name) => undone[name].x === before[name].x && undone[name].w === before[name].w), Object.fromEntries(CHAIN.map((name) => [name, undone[name]])));
     if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-given-way.png` });
+
+    // A name takes no drop (Paul, 11-13: "what would you drop into a label?"): far out, where a name is drawn large, a picture held over
+    // another's name is offered nothing, and let go there it lands there; nothing joins anything. On the picture itself it joins (web-undo).
+    for (let i = 0; i < 10 && (await zoomNow()) > 0.34; i++) {
+      await page.click('button[aria-label="Zoom out"]');
+      await settled(page);
+    }
+    // A picture on screen there, the grid's far corner, carried over the name of the one at its other corner.
+    const [over, carriedName] = ['grid_0_0', 'grid_2_2'];
+    const beforeLabel = rows(folder);
+    const label = await element(page, over).locator('.head .nm').boundingBox();
+    const media = await element(page, carriedName).locator('.media').first().boundingBox();
+    const grab = { x: media.x + media.width / 2, y: media.y + media.height / 2 };
+    const onScreen = await page.evaluate(({ x, y }) => x > 0 && y > 0 && x < innerWidth && y < innerHeight, grab);
+    const onLabel = { x: label.x + Math.min(label.width / 2, 12), y: label.y + label.height / 2 };
+    await page.mouse.move(grab.x, grab.y);
+    await page.mouse.down();
+    await page.mouse.move(grab.x, grab.y - 3);
+    await page.mouse.move(onLabel.x, onLabel.y, { steps: 12 });
+    const offered = await page.evaluate(({ x, y, over }) => ({
+      under: document.elementsFromPoint(x, y).map((el) => el.className?.baseVal ?? el.className).filter(Boolean).slice(0, 4),
+      on_its_name: Boolean(document.elementsFromPoint(x, y).find((el) => el.matches?.(`.card[data-asset="${over}"] > .head .nm`))),
+      offering: document.querySelector('.stage')?.hasAttribute('data-offering'),
+      hot: [...document.querySelectorAll('.card.hot')].map((card) => card.dataset.asset),
+    }), { ...onLabel, over });
+    const heldAt = await element(page, carriedName).evaluate((node) => {
+      const { e, f } = new DOMMatrix(getComputedStyle(node).transform);
+      return { x: Math.round(e), y: Math.round(f) };
+    });
+    if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-held-over-a-name.png` });
+    await page.mouse.up();
+    const afterLabel = await until(`${carriedName} let go over ${over}'s name`, () => Promise.resolve(rows(folder)), (now) => !now[carriedName] || now[carriedName].x !== beforeLabel[carriedName].x || now[carriedName].y !== beforeLabel[carriedName].y).catch(() => rows(folder));
+    await settled(page);
+    const stillThere = assetsOf(folder).some((asset) => asset.name === carriedName);
+    seen.over_a_name = { zoom: await zoomNow(), label, grab, on_screen: onScreen, offered, heldAt, before: beforeLabel[carriedName], after: afterLabel[carriedName] ?? null, still_there: stillThere };
+    // Held: picked up on screen, and carried there, not left where it was.
+    const carried = Math.hypot(heldAt.x - beforeLabel[carriedName].x, heldAt.y - beforeLabel[carriedName].y);
+    check('held_over_a_name_it_is_on_the_name', onScreen && carried > 100 && offered.on_its_name && label.height >= 8, { carried, ...seen.over_a_name });
+    check('a_name_offers_nothing', !offered.offering && !offered.hot.includes(over), seen.over_a_name);
+    check('let_go_over_a_name_nothing_joins', stillThere && Boolean(afterLabel[carriedName]), seen.over_a_name);
+    // Where it was let go, at most a little smaller about its middle, as any box let go in a crowd (`a_crowded_drop_stays_where_it_was_let_go`).
+    const letGoAt = { ...beforeLabel[carriedName], x: heldAt.x, y: heldAt.y };
+    check('let_go_over_a_name_it_lands_there', Boolean(afterLabel[carriedName]) && apart(afterLabel[carriedName], letGoAt) <= 3 && afterLabel[carriedName].w >= 0.8 * letGoAt.w, { by: afterLabel[carriedName] && apart(afterLabel[carriedName], letGoAt), ...seen.over_a_name });
+    if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-let-go-over-a-name.png` });
   }
 
   // A box the page places as it arrives, and the CLI's `at` for it written between the page's read of where things sit and its write of

@@ -430,7 +430,8 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
   seen.stacked = { near, ...at100 };
   check('stacked_one_under_the_other', above.left < below.right && below.left < above.right && below.top > above.bottom, near);
   check('stacked_nothing_under_it_lies_on_the_box_below', at100.clear >= 0, at100);
-  check('stacked_closer_than_before', at100.room < 180, at100);
+  // Closer than before cl-963's, by all of it but the 39 Paul gave back above every box for a far name at the body size to 25% (11-13).
+  check('stacked_closer_than_before', at100.room < 180 + 39, at100);
   if (rendering !== null && at100.above === 'upper') check('stacked_a_render_under_it_fits', at100.room - rendering >= 0, at100);
   await shot('stacked-zoom-1');
   await zoomTo(0.75);

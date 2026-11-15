@@ -3,7 +3,7 @@ import { say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { isNsfw } from "../ui/Tags"
 import type { CanvasStore, ElementView } from "./CanvasStore"
-import { madeHere } from "./shown"
+import { madeHere, onPicture } from "./shown"
 import { chooseModel, fitsSlot, slotsOf as pickerSlots, withTriggers } from "./ModelPicker"
 
 /** What a box can be given by a drag: whether this one takes it, and what taking it does. A checkpoint is one; anything else goes by this same path. */
@@ -96,7 +96,8 @@ export function whyNot(found: FoundModel, name: string, view: ElementView | unde
 export function boxAt(store: CanvasStore, x: number, y: number): string | null {
   for (const element of document.elementsFromPoint(x, y)) {
     const card = element.closest<HTMLElement>(".card[data-asset]") ?? element.closest(".react-flow__node")?.querySelector<HTMLElement>(".card[data-asset]")
-    if (card) return store.resolveName(card.dataset.asset ?? "")
+    // A box at rest by its picture only: its name takes nothing (Paul, 11-13).
+    if (card && (card.matches(".here") || onPicture(element))) return store.resolveName(card.dataset.asset ?? "")
   }
   return null
 }
