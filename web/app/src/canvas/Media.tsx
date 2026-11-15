@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type CSSProperties, type PointerEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
 import { runFullQuery, runQuery } from "../api/queries"
@@ -148,24 +148,59 @@ export function Thumb({
  * Whether a video's preview plays: once the pointer has rested on it a moment. Only a pointer that moves counts, as a pan slides tiles under
  * one that doesn't; a finger has nothing to rest, and a held button is a drag. A wheel ends it, and so does a press, until the pointer leaves.
  */
-export function usePreview(video: boolean) {
+/** A real unpressed mouse move onto a passive video, carried across its native overlay's mount. */
+export interface PreviewHover {
+  x: number
+  y: number
+  at: number
+  signal: AbortSignal
+}
+
+export function usePreview(video: boolean, initialHover?: PreviewHover) {
   const [on, setOn] = useState(false)
   const resting = useRef<number | undefined>(undefined)
   const pressed = useRef(false)
-  useEffect(() => () => clearTimeout(resting.current), [])
-  const end = () => {
-    if (resting.current === undefined) return
+  const target = useRef<HTMLElement | null>(null)
+  const consumed = useRef<PreviewHover | undefined>(undefined)
+  const visible = useSignal(tabShown)
+  const hold = useCallback((element: HTMLElement | null) => { target.current = element }, [])
+  const end = useCallback(() => {
     clearTimeout(resting.current)
     resting.current = undefined
     setOn(false)
-  }
+  }, [])
+  useEffect(() => () => clearTimeout(resting.current), [])
+  useEffect(() => { if (!video || !visible) end() }, [video, visible, end])
+  useEffect(() => {
+    if (!initialHover) {
+      if (consumed.current) { consumed.current = undefined; end() }
+      return
+    }
+    if (consumed.current === initialHover) return
+    consumed.current = initialHover
+    if (!video || !visible || initialHover.signal.aborted) return
+    const underPointer = () => {
+      const element = target.current
+      const hit = document.elementFromPoint(initialHover.x, initialHover.y)
+      return Boolean(element && hit && element.contains(hit) && !hit.closest("button,input,select,textarea,[contenteditable],.nm"))
+    }
+    initialHover.signal.addEventListener("abort", end, { once: true })
+    if (resting.current === undefined && underPointer()) {
+      resting.current = window.setTimeout(() => {
+        if (!initialHover.signal.aborted && !pressed.current && underPointer()) setOn(true)
+        else resting.current = undefined
+      }, Math.max(0, PREVIEW_AFTER_MS - (performance.now() - initialHover.at)))
+    }
+    return () => { initialHover.signal.removeEventListener("abort", end); end() }
+  }, [initialHover, video, visible, end])
   const leave = {
+    ref: hold,
     onPointerLeave() {
       pressed.current = false
       end()
     },
   }
-  if (!video) return { on: false, hover: leave }
+  if (!video || !visible) return { on: false, hover: leave }
   return {
     on,
     hover: {
@@ -757,7 +792,7 @@ function Making({ view, name, run, cardWidth }: { view: ElementView; name: strin
   )
 }
 
-export function Media({ view, name, cardWidth, restWidth = cardWidth, children }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode }) {
+export function Media({ view, name, cardWidth, restWidth = cardWidth, children, previewHover }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode; previewHover?: PreviewHover }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const { asset, placing, preview } = view
@@ -790,7 +825,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const orbit = field === "video" ? orbitOf(shown) : null
   const turning = open && orbit && here && source && "path" in source && store.projectId ? { path: client.file(store.projectId, source.path), orbit } : null
   // On the canvas: an opened box plays the file itself.
-  const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here)
+  const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here, previewHover)
   const tools = useSignal(store.tools)
   const words = lineOf(valuesOf(view), asset ? fieldsOf(asset, tools) : [])
   const setAspect = (aspect: number) => store.setAspect(name, aspect)

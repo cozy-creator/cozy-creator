@@ -11,6 +11,7 @@ import { useSignal, tabShown } from "../ui/signal"
 import { theme } from "../ui/theme"
 import { Card } from "./Card"
 import { EntityCard } from "./EntityCard"
+import type { PreviewHover } from "./Media"
 import { type CanvasStore, type ElementNode } from "./CanvasStore"
 import { useCanvasViewport } from "./viewportContext"
 import type { Viewport } from "./viewport"
@@ -55,6 +56,7 @@ export function CanvasSurface(props: Props) {
   const callbacks = useRef(props)
   callbacks.current = props
   const [hovered, setHovered] = useState<string | null>(null)
+  const [previewHover, setPreviewHover] = useState<PreviewHover>()
   const [overlayVersion, setOverlayVersion] = useState(0)
   const [failed, setFailed] = useState<string | null>(null)
   const hover = useRef<string | null>(null)
@@ -98,10 +100,17 @@ export function CanvasSurface(props: Props) {
     let graphics: { backend: string; renderer: string; version: string; software: boolean } | null = null
     let sceneWork = false
     const requestedRuns = new Set<number>()
+    let previewIntent: AbortController | null = null
+    const stopHoverPreview = () => {
+      if (!previewIntent) return
+      previewIntent.abort()
+      previewIntent = null
+      setPreviewHover(undefined)
+    }
 
     const visible = () => isActive.current && tabShown.get() && !graphicsLost
     const interactions = () => controller.setInteractionEnabled(visible() && !isDisabled.current && !drag && !marquee)
-    enabled.current = () => { scene?.setVisible(visible()); interactions(); if (!visible()) { cancelAnimationFrame(frame); frame = 0 } }
+    enabled.current = () => { scene?.setVisible(visible()); interactions(); if (!visible()) { stopHoverPreview(); cancelAnimationFrame(frame); frame = 0 } }
     const inBounds = (x: number, y: number) => { const box = element.getBoundingClientRect(); return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom }
     const nodeAt = (x: number, y: number, excluded = new Set<string>()) => {
       if (!inBounds(x, y)) return null
@@ -183,16 +192,24 @@ export function CanvasSurface(props: Props) {
       return nodeAt(x, y, excluded)?.data.name ?? null
     }
 
-    const changeHover = (name: string | null) => {
-      if (hover.current === name) return
+    const changeHover = (name: string | null, point?: { x: number; y: number }) => {
       // Keep a native name field mounted until the name operation ends.
       if (hover.current && store.get(hover.current)?.draft !== undefined) return
+      const changed = hover.current !== name
+      if (changed) stopHoverPreview()
+      // A new intent comes only from an unpressed physical mouse move over the video body, never from a camera/layout update.
+      if (point && !previewIntent) {
+        previewIntent = new AbortController()
+        setPreviewHover({ ...point, at: performance.now(), signal: previewIntent.signal })
+      }
+      if (!changed) return
       hover.current = name
       setHovered(name)
       invalidate()
     }
     const down = (event: PointerEvent) => {
       if (!visible() || callbacks.current.locked || event.button > 1) return
+      stopHoverPreview()
       if (event.pointerType === "touch") {
         touches.add(event.pointerId)
         if (touches.size > 1) {
@@ -253,7 +270,14 @@ export function CanvasSurface(props: Props) {
         callbacks.current.onDrag(event, current[0], current)
         invalidate(); return
       }
-      if (!pointerDown && event.pointerType === "mouse") changeHover(nodeAt(event.clientX, event.clientY)?.data.name ?? null)
+      if (!pointerDown && event.pointerType === "mouse") {
+        const node = nodeAt(event.clientX, event.clientY)
+        const hit = node && (hover.current !== node.data.name || !previewIntent) ? scene?.hitTest(controller.screenToWorld({ x: event.clientX, y: event.clientY })) : null
+        const nativeMedia = event.target instanceof Element && event.target.closest(".media")?.closest<HTMLElement>(".canvas-node[data-id]")?.dataset.id === node?.id
+        const body = hit?.part === "body" || nativeMedia
+        const point = node && body && !event.buttons && !nativeInput(event.target) && store.get(node.data.name)?.asset?.kind === "video" ? { x: event.clientX, y: event.clientY } : undefined
+        changeHover(node?.data.name ?? null, point)
+      }
     }
     const up = (event: PointerEvent) => {
       touches.delete(event.pointerId)
@@ -298,6 +322,7 @@ export function CanvasSurface(props: Props) {
     const keyUp = (event: KeyboardEvent) => { if (event.code === "Space") { space = false; element.style.cursor = "" } }
     const wheel = (event: WheelEvent) => {
       if (!visible() || isDisabled.current || nativeInput(event.target)) return
+      stopHoverPreview()
       if (event.target !== app?.canvas) {
         event.preventDefault()
         const at = controller.getViewport(), p = controller.screenToWorld({ x: event.clientX, y: event.clientY })
@@ -309,10 +334,12 @@ export function CanvasSurface(props: Props) {
       }
       pointerDown = false; changeHover(null); settle = 3; invalidate()
     }
-    const leave = () => { if (!pointerDown) changeHover(null) }
+    const leave = () => { stopHoverPreview(); if (!pointerDown) changeHover(null) }
     const handlers = { pointerdown: down, pointermove: move, pointerup: up, pointercancel: cancel, dblclick: double, contextmenu: menu, wheel, pointerleave: leave }
     for (const [name, handler] of Object.entries(handlers)) element.addEventListener(name, handler as EventListener, { capture: name === "pointerdown", passive: false })
     window.addEventListener("blur", cancel)
+    window.addEventListener("blur", stopHoverPreview)
+    window.addEventListener("pointercancel", stopHoverPreview)
     window.addEventListener("pointerup", up)
     window.addEventListener("pointercancel", cancel)
     window.addEventListener("keydown", keyDown)
@@ -343,13 +370,13 @@ export function CanvasSurface(props: Props) {
       resources: () => scene ? { ...scene.resourceStats(), graphics, frames: renderFrames, scheduledFrame: Boolean(frame), automaticTicker: false } : null,
     }
     Object.defineProperty(element, "canvasInspection", { value: inspection, configurable: true })
-    stops.push(controller.subscribeCamera(() => { callbacks.current.onMoveStart?.(); positionOverlay(); settle = 2; invalidate() }), controller.subscribeCameraEnd(view => callbacks.current.onMoveEnd(null, view)), controller.subscribeNodes(() => { announceSelection(); setOverlayVersion(v => v + 1); invalidate() }), store.sceneRevision.subscribe(() => {
+    stops.push(controller.subscribeCamera(() => { stopHoverPreview(); callbacks.current.onMoveStart?.(); positionOverlay(); settle = 2; invalidate() }), controller.subscribeCameraEnd(view => callbacks.current.onMoveEnd(null, view)), controller.subscribeNodes(() => { announceSelection(); setOverlayVersion(v => v + 1); invalidate() }), store.sceneRevision.subscribe(() => {
       const name = hover.current
       if (name && store.get(name)?.name !== hoveredBefore) { hoveredBefore = store.get(name)?.name ?? ""; setOverlayVersion(v => v + 1) }
       // A fresh import owns a native name field until it is accepted.
       if (!name) { const draft = controller.getNodes().find(n => store.get(n.data.name)?.draft !== undefined); if (draft) changeHover(draft.data.name) }
       invalidate()
-    }), store.tools.subscribe(invalidate), theme.subscribe(invalidate), tabShown.subscribe(() => { scene?.setVisible(visible()); interactions(); if (!visible()) { cancel(new Event("visibilitychange")); cancelAnimationFrame(frame); frame = 0 } else invalidate() }), queries.getQueryCache().subscribe(event => {
+    }), store.tools.subscribe(invalidate), theme.subscribe(invalidate), tabShown.subscribe(() => { scene?.setVisible(visible()); interactions(); if (!visible()) { stopHoverPreview(); cancel(new Event("visibilitychange")); cancelAnimationFrame(frame); frame = 0 } else invalidate() }), queries.getQueryCache().subscribe(event => {
       if (event.type !== "updated" || event.action.type !== "success") return
       const key = event.query.queryKey
       if ((key[0] === "project-run" && key[1] === store.projectId) || (key[0] === "machines" && sceneWork)) invalidate()
@@ -369,6 +396,7 @@ export function CanvasSurface(props: Props) {
       created.canvas.className = "canvas-pixels canvas-pane"
       const lost = (event: Event) => {
         event.preventDefault(); graphicsLost = true; cancelAnimationFrame(frame); frame = 0
+        stopHoverPreview()
         scene?.setVisible(false); interactions(); setFailed("Graphics context lost; waiting for the browser to restore it.")
       }
       const restored = () => { graphicsLost = false; setFailed(null); scene?.setVisible(visible()); interactions(); invalidate() }
@@ -393,9 +421,11 @@ export function CanvasSurface(props: Props) {
     })().catch(error => { if (!stopped) setFailed(error instanceof Error ? error.message : String(error)) })
 
     return () => {
-      stopped = true; cancelAnimationFrame(frame); resize?.disconnect(); unbind(); for (const stop of stops) stop()
+      stopped = true; stopHoverPreview(); cancelAnimationFrame(frame); resize?.disconnect(); unbind(); for (const stop of stops) stop()
       for (const [name, handler] of Object.entries(handlers)) element.removeEventListener(name, handler as EventListener, { capture: name === "pointerdown" })
       window.removeEventListener("blur", cancel)
+      window.removeEventListener("blur", stopHoverPreview)
+      window.removeEventListener("pointercancel", stopHoverPreview)
       window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", cancel)
       window.removeEventListener("keydown", keyDown); window.removeEventListener("keyup", keyUp)
       scene?.destroy(); app?.destroy(true, { children: true })
@@ -406,13 +436,13 @@ export function CanvasSurface(props: Props) {
   }, [controller, store, projectId, client, queries, privateEpoch, loggedOut])
 
   const node = hovered ? controller.getNodes().find(n => n.data.name === store.resolveName(hovered)) : undefined
-  const native = node && focused !== node.data.name ? node : null
+  const native = active && node && focused !== node.data.name ? node : null
   const view = native && store.get(native.data.name)
   return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby={helpId}>
     {props.children}
     <div ref={overlay} className="canvas-world">
-      {native && view && <div className={`canvas-node ${native.selected ? "selected" : ""}`} data-id={native.id} style={{ left: native.bounds.x, top: native.bounds.y, width: native.bounds.w, height: native.bounds.h }}>
-        {native.type === "entity" ? <EntityCard data={native.data} /> : <Card data={native.data} selected={native.selected} />}
+      {native && view && <div key={native.id} className={`canvas-node ${native.selected ? "selected" : ""}`} data-id={native.id} style={{ left: native.bounds.x, top: native.bounds.y, width: native.bounds.w, height: native.bounds.h }}>
+        {native.type === "entity" ? <EntityCard data={native.data} /> : <Card data={native.data} selected={native.selected} previewHover={previewHover} />}
       </div>}
     </div>
     <div ref={selection} className="canvas-selection" hidden />

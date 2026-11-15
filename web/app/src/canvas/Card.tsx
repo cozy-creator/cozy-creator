@@ -15,7 +15,7 @@ import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapeNear } from "./controls"
 import { useDragScroll } from "./dragScroll"
-import { downloadable, Media, Preview, Thumb, usePreview } from "./Media"
+import { downloadable, Media, Preview, Thumb, usePreview, type PreviewHover } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { ratioWords } from "./ratios"
@@ -643,7 +643,7 @@ function TileMeter({ view }: { view: ElementView }) {
 }
 
 
-const CardBody = memo(function CardBody({ name, width, focused = false, snapshot, selected }: { name: string; width: number; focused?: boolean; snapshot?: ElementView; selected?: boolean }) {
+const CardBody = memo(function CardBody({ name, width, focused = false, snapshot, selected, previewHover }: { name: string; width: number; focused?: boolean; snapshot?: ElementView; selected?: boolean; previewHover?: PreviewHover }) {
   const store = useCanvasStore()
   const live = useElement(name)
   const view = snapshot ?? live
@@ -776,7 +776,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       )}
       {focused && !view.placing && !cut && <FocusActions view={view} name={name} />}
       {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text"} zooms={!plays} under={plays ? <VideoTransport name={name} view={view} /> : undefined}>
-        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
+        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width} previewHover={previewHover}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && editing && view.continuing && <LeadIn name={name} view={view} />}
           {here && !focused && !view.hereWords && asset && shownVersion?.main && (
@@ -834,7 +834,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
 })
 
 /** Native interaction overlay: identity and body width come from one geometry publication. */
-export function Card({ data, selected }: Pick<ElementNode, "data" | "selected">) {
+export function Card({ data, selected, previewHover }: Pick<ElementNode, "data" | "selected"> & { previewHover?: PreviewHover }) {
   const store = useCanvasStore()
   const focused = useSignal(store.focusedName)
   const entering = useSignal(store.focusEntering)
@@ -846,7 +846,7 @@ export function Card({ data, selected }: Pick<ElementNode, "data" | "selected">)
   const atRest = focused === data.name && entering && resting.current ? { ...resting.current, here: undefined, hereWords: undefined } : undefined
   return (
     <>
-      <CardBody name={data.name} width={data.width} snapshot={atRest} selected={selected} />
+      <CardBody name={data.name} width={data.width} snapshot={atRest} selected={selected} previewHover={previewHover} />
       <AddOns name={data.name} />
     </>
   )
