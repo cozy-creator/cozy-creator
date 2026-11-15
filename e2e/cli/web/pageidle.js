@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readdirSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { basename, join } = require('path');
-const { projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, signIn, STEP_MS, until, upload } = require('./page');
+const { holderToken, projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, signIn, STEP_MS, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -123,11 +123,11 @@ function calciferUse() {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
-  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
+  const held = { token: holderToken() };
+  const api = (path, init = {}) => page.evaluate(async ({ path, init }) => {
+    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, init, token: held?.token });
+  }, { path, init });
 
   // An ordinary project, as a person leaves one: made on the page, two pictures on its canvas.
   await page.goto(`${base}/projects`);

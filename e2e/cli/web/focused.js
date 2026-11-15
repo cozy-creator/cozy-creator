@@ -5,7 +5,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
+const { holderToken, projectFolder, boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const NAME = 'focus_image';
 // web/app/src/canvas/ratios.ts's: a pull within about 2% of one is it, and past that free (Paul, 11-13).
@@ -42,7 +42,6 @@ async function died(error) {
   });
   const shot = (state) => process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${state}.png` }) : Promise.resolve();
   await signIn(page);
-  // Signed in once the page is up: going on before then drops its session.
   await page.waitForSelector('.top');
 
 
@@ -53,11 +52,10 @@ async function died(error) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const project = await projectFromPage(page);
   const id = project.id;
-  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = async (path, method = 'GET', body) => {
     const answer = await fetch(base + path, {
       method,
-      headers: { Authorization: `Bearer ${session.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${holderToken()}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const value = await answer.json().catch(() => null);
@@ -71,7 +69,7 @@ async function died(error) {
   const picture = (number, width, height) => {
     const path = join(images, `${number}.png`);
     writeFileSync(path, png(20 + number * 15, width, height));
-    return upload(session.token, path, id);
+    return upload(holderToken(), path, id);
   };
   // Only this state needs a full-resolution source larger than the widest thumbnail.
   const first = await picture(1, 4096, 1024);
@@ -619,7 +617,7 @@ async function died(error) {
 
   const clip = join(images, 'completed.mp4');
   writeFileSync(clip, MP4);
-  await api(`${at}/assets/${VIDEO}/versions`, 'POST', { source: await upload(session.token, clip, id) });
+  await api(`${at}/assets/${VIDEO}/versions`, 'POST', { source: await upload(holderToken(), clip, id) });
   const completedVideo = videoFocus.locator('.here-side .take[data-take="1"]');
   const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
   await completedVideo.waitFor();

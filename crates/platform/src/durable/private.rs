@@ -157,3 +157,130 @@ fn create(path: &Path) -> io::Result<File> {
     }
     Ok(file)
 }
+
+/// Makes `dir` this account's alone: mode 0700 on Unix; on Windows a protected DACL whose one entry gives this account everything,
+/// inherited by all that's made in it.
+pub fn make_private_dir(dir: &Path) -> crate::Result<()> {
+    private_dir(dir).map_err(crate::Error::io("make a folder private", dir))
+}
+
+/// Whether another account on this computer may open `dir`: group or other bits on Unix; on Windows, an entry allowing anyone but
+/// this account, SYSTEM, Administrators or the owner.
+pub fn others_may_open(dir: &Path) -> crate::Result<bool> {
+    opened_by_others(dir).map_err(crate::Error::io("read a folder's access", dir))
+}
+
+#[cfg(unix)]
+fn private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(unix)]
+fn opened_by_others(dir: &Path) -> io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt as _;
+    Ok(std::fs::metadata(dir)?.permissions().mode() & 0o077 != 0)
+}
+
+#[cfg(windows)]
+fn wide(path: &Path) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt as _;
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    if name[..name.len() - 1].contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"));
+    }
+    Ok(name)
+}
+
+#[cfg(windows)]
+fn private_dir(dir: &Path) -> io::Result<()> {
+    use std::ptr;
+    use windows_sys::Win32::{
+        Foundation::{HLOCAL, LocalFree},
+        Security::{
+            Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW},
+            DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+        },
+    };
+    let name = wide(dir)?;
+    let sid = crate::ipc::this_user()?;
+    // Protected: nothing inherited from above. Object and container inherit: what's made inside is as private.
+    let sddl: Vec<u16> = format!("D:P(A;OICI;FA;;;{sid})").encode_utf16().chain([0]).collect();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: a terminated UTF-16 descriptor and an owned writable output pointer.
+    if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut descriptor, ptr::null_mut()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (mut present, mut dacl, mut defaulted) = (0, ptr::null_mut(), 0);
+    // SAFETY: the live descriptor just made and writable outputs; the DACL points into it.
+    let read = unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) };
+    let result = if read == 0 || present == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        let information = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+        // SAFETY: a terminated path and the descriptor's DACL, alive through the call; no owner, group or SACL changes.
+        match unsafe { SetNamedSecurityInfoW(name.as_ptr(), SE_FILE_OBJECT, information, ptr::null_mut(), ptr::null_mut(), dacl, ptr::null()) } {
+            0 => Ok(()),
+            code => Err(io::Error::from_raw_os_error(code as i32)),
+        }
+    };
+    // SAFETY: the descriptor the conversion allocated, freed once, after its DACL's last use.
+    unsafe { LocalFree(descriptor as HLOCAL) };
+    result
+}
+
+#[cfg(windows)]
+fn opened_by_others(dir: &Path) -> io::Result<bool> {
+    use std::ptr;
+    use windows_sys::Win32::{
+        Foundation::{HLOCAL, LocalFree},
+        Security::{
+            Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT},
+            DACL_SECURITY_INFORMATION,
+        },
+    };
+    let name = wide(dir)?;
+    let (mut dacl, mut descriptor) = (ptr::null_mut(), ptr::null_mut());
+    // SAFETY: a terminated path and writable outputs; the descriptor is freed below.
+    let code = unsafe {
+        GetNamedSecurityInfoW(name.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, ptr::null_mut(), ptr::null_mut(), &mut dacl, ptr::null_mut(), &mut descriptor)
+    };
+    if code != 0 {
+        return Err(io::Error::from_raw_os_error(code as i32));
+    }
+    let mut text: *mut u16 = ptr::null_mut();
+    // SAFETY: the live descriptor and a writable string pointer; the length is not asked.
+    let converted = unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut text, ptr::null_mut()) };
+    let sddl = (converted != 0).then(|| {
+        // SAFETY: a NUL-terminated string the conversion allocated.
+        let sddl = unsafe {
+            let len = (0..).take_while(|&i| *text.add(i) != 0).count();
+            String::from_utf16_lossy(std::slice::from_raw_parts(text, len))
+        };
+        // SAFETY: the string the conversion allocated, freed once.
+        unsafe { LocalFree(text as HLOCAL) };
+        sddl
+    });
+    let no_dacl = dacl.is_null();
+    // SAFETY: the descriptor GetNamedSecurityInfoW allocated, freed once; `dacl` pointed into it and isn't read again.
+    unsafe { LocalFree(descriptor as HLOCAL) };
+    let sddl = sddl.ok_or_else(io::Error::last_os_error)?;
+    let own = crate::ipc::this_user()?;
+    Ok(no_dacl || others_allowed(&sddl, &own))
+}
+
+/// Whether a DACL in SDDL (`D:PAI(A;OICI;FA;;;SY)(A;;FA;;;S-1-5-21-…)`) allows anyone but `own`, SYSTEM, Administrators or the
+/// owner. An inherit-only entry (`IO`) doesn't apply to the folder itself.
+#[cfg(windows)]
+fn others_allowed(sddl: &str, own: &str) -> bool {
+    let Some(dacl) = sddl.split_once("D:").map(|(_, dacl)| dacl) else { return true };
+    if dacl.starts_with("NO_ACCESS_CONTROL") {
+        return true;
+    }
+    dacl.split('(').skip(1).filter_map(|ace| ace.split(')').next()).any(|ace| {
+        let fields: Vec<&str> = ace.split(';').collect();
+        let (kind, flags, sid) = (fields.first().copied().unwrap_or(""), fields.get(1).copied().unwrap_or(""), fields.get(5).copied().unwrap_or(""));
+        let inherit_only = flags.as_bytes().chunks(2).any(|flag| flag == b"IO");
+        matches!(kind, "A" | "OA" | "XA" | "ZA") && !inherit_only && !["SY", "BA", "OW", "CO", own].contains(&sid)
+    })
+}

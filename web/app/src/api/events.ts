@@ -257,7 +257,7 @@ export class EventStream {
     this.epoch = health.state === "live" ? stream : null
     this.health.set(health)
     if (health.state === "signed_out") {
-      for (const waiter of this.waiters) waiter.fail(new ApiError(401, { kind: "credential", code: "unauthenticated", message: "This page's session ended", next: ["cozy open"] }))
+      for (const waiter of this.waiters) waiter.fail(new ApiError(403, { kind: "forbidden", code: "not_own_page", message: "Calcifer won't answer this page", next: ["cozy open"] }))
     }
   }
 
@@ -301,7 +301,7 @@ export class EventStream {
     let live = false
     try {
       const response = await this.client.events(connection.signal).catch(() => null)
-      if (response?.status === 401) throw new Error("signed out")
+      if (response?.status === 403 && /"(not_own_page|other_user)"/.test(await response.clone().text().catch(() => ""))) throw new Error("not answered")
       if (!response?.ok || !response.body) return false
       await readEvents(
         response.body,

@@ -28,8 +28,8 @@ import time
 from typing import NotRequired, TypedDict, cast
 from urllib.parse import quote
 
-from common import (Birth, Failure, Native, Observed, Project, Proof, Receipt, RunDetail, VaultStatus, alive, birth,
-                    kill_exact, project_route, require, sha, until)
+from common import (HMR, Birth, Failure, Native, Observed, OtherAccount, Project, Proof, Receipt, RunDetail, VaultStatus, alive, birth,
+                    daemon_birth, kill_exact, principal, project_route, require, sha, until, upgrade_headers)
 from scan import Scanner, places, tmpfs
 from native_execution import qualify as qualify_native
 from development import Development
@@ -218,6 +218,65 @@ def observe_ready(proof: Proof, project: str, seen: dict[str, int]) -> Observed:
     return value
 
 
+# calcifer-access.md's refusals of a request from this account: what it adds to a native request, whether it carries the bearer,
+# and the refusal it gets. A browser's word outranks the bearer; another site's or port's page never says `same-origin`.
+REFUSALS: dict[str, tuple[dict[str, str], bool, int, str, str]] = {
+    "cross_site": ({"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"}, True, 403, "not_own_page", "not_own_page_refusal"),
+    "same_site": ({"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "no-cors"}, True, 403, "not_own_page", "not_own_page_refusal"),
+    "none_not_navigation": ({"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "cors"}, True, 403, "not_own_page", "not_own_page_refusal"),
+    # A URL typed or opened by another program, an agent's browser among them: the page opens, /v1 doesn't.
+    "none_navigation": ({"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}, False, 403, "not_own_page", "not_own_page_refusal"),
+    "foreign_origin": ({"Origin": "http://cozy-foreign.invalid"}, True, 403, "origin_not_allowed", "csrf_no_store_refusal"),
+    "no_credential": ({}, False, 401, "unauthenticated", "native_auth_required"),
+}
+
+
+def access_rule(native: Native, receipt: Receipt, project: Project, hmr: bool) -> None:
+    # A project route and a media file route: each answers this computer's cozy, and refuses everything else by its code.
+    routes = {"project": project_route(project["id"]), "media": project_route(project["id"], "/" + project["text_file"])}
+    holder = native.holder()
+    upgrade = upgrade_headers(holder["address"])
+    facts: dict[str, bool] = {}
+    failures: list[str] = []
+    def note(case: str, passed: bool, failure: str) -> None:
+        facts[case] = passed
+        if not passed:
+            failures.append(failure)
+    for route, path in routes.items():
+        note("native_" + route, native.raw("GET", path).status == 200, "native_http_status")
+        for case, (extra, bearer, status, code, failure) in REFUSALS.items():
+            note(case + "_" + route, native.raw("GET", path, auth=bearer, extra=extra).refused(status, code), failure)
+        # A WebSocket's exact Origin counts as the page on GET /__cozy_hmr alone; anywhere else it needs the bearer.
+        note("upgrade_" + route, native.raw("GET", path, auth=False, extra=upgrade).refused(401, "unauthenticated"), "upgrade_needs_bearer")
+    if hmr:
+        # This account's page opens its hot reload socket by its exact Origin, with no bearer.
+        note("hmr_own_page", native.raw("GET", HMR, auth=False, extra=upgrade).status == 101, "hmr_websocket_page")
+    # Another Unix account, made for this: Calcifer's exact Host, the bearer (stdin only) on the routes, the page's upgrade on HMR.
+    asks: dict[str, dict[str, object]] = {route: {"path": path, "headers": {"cozy-project-storage": "3", "Cozy-Client": "cli"}, "bearer": True} for route, path in routes.items()}
+    if hmr:
+        asks["hmr"] = {"path": HMR, "headers": upgrade, "bearer": False}
+    other = OtherAccount()
+    try:
+        answers = other.ask(holder["address"], holder["token"], list(asks.values()))
+    finally:
+        facts["other_account_removed"] = other.remove()
+    for name, answer in zip(asks, answers):
+        refused = answer.get("status") == 403 and answer.get("code") == "other_user" and answer.get("no_store") is True
+        note("other_user_" + name, refused, "hmr_websocket_refusal" if name == "hmr" else "other_user_refusal")
+    receipt.add("access_rule", **facts)
+    require(not failures, failures[0] if failures else "fixture_failure")
+    require(facts["other_account_removed"], "other_user_account")
+
+
+def development_ignored(native: Native, receipt: Receipt) -> None:
+    # Vite is up and named, but without `dev = true` Calcifer serves its embedded page and opens no hot reload socket.
+    page = native.raw("GET", "/", auth=False)
+    embedded = page.status == 200 and page.headers.get("content-type", "").startswith("text/html") and b"/@vite/client" not in page.body
+    upgraded = native.raw("GET", HMR, auth=False, extra=upgrade_headers(native.holder()["address"])).status == 101
+    receipt.add("development_web_needs_dev", embedded_page=embedded, hmr_upgraded=upgraded)
+    require(embedded and not upgraded, "development_web_without_dev")
+
+
 def scan_case(scanner: Scanner, receipt: Receipt, case: str, roots: list[Path], exclusions: list[Path], located: dict[str, Path]) -> None:
     result = scanner.scan_privileged(roots, exclusions, receipt.path, located)
     if result is None:
@@ -267,6 +326,16 @@ def main() -> int:
             phase = "development_start"
             development = Development()
             development.start()
+            # Before any project or browser: a Calcifer with `[calcifer] development_web` and no top-level `dev = true` ignores it.
+            phase = "development_needs_dev"
+            proof = Proof(cli)
+            first_pid = proof.process.pid
+            until(lambda: native.holder(), lambda holder: holder.get("pid") == first_pid, "holder_ready")
+            development_ignored(native, receipt)
+            native.call("POST", "/v1/down", {})
+            proof.process.wait(timeout=90); proof.close_channel(); proof = None
+            development.enable()
+            phase = "development_start"
         proof = Proof(cli)
         caf_pid = proof.process.pid
         until(lambda: native.holder(), lambda holder: holder.get("pid") == caf_pid, "holder_ready")
@@ -315,7 +384,8 @@ def main() -> int:
         for index, project in enumerate(projects):
             native.open(project["folder"])
             readiness.update(slot=index, ready_errors=0, last_page_ready=False, last_cards=-1)
-            until(partial(observe_ready, proof, project["id"], readiness), lambda value: value.get("page_ready") and value.get("cards", 0) >= 2, "owned_page_ready")
+            page = until(partial(observe_ready, proof, project["id"], readiness), lambda value: value.get("page_ready") and value.get("cards", 0) >= 2, "owned_page_ready")
+            require(page.get("owned_injected") is False, "owned_page_injected")
         snapshot = proof.ask("snapshot")
         require(snapshot["present"] and snapshot["pages"] == 2 and len(snapshot.get("processes", [])) >= 2 and snapshot["birth"] in snapshot["processes"], "shared_owned_browser")
         browser_birth, profile = snapshot["birth"], Path(snapshot["profile"])
@@ -329,10 +399,12 @@ def main() -> int:
         require(not any(marker in title for marker in scanner.markers), "private_browser_argv_canary")
         require(all(browser_birth != held[1] for held in foreign.held), "browser_ownership_distinct")
         receipt.add("shared_owned_browser", pages=2, volatile=True, unrelated=foreign.preserved(), birth_sha256=sha(json.dumps(browser_birth, sort_keys=True).encode()),
-                    title_flags=True, tmpdir_singleton=True, launch_environment_redirected=True, launch_environments=len(launched))
+                    title_flags=True, tmpdir_singleton=True, launch_environment_redirected=True, launch_environments=len(launched), nothing_injected=True)
         if ready.get("remote_cpu") is True:
             phase = "remote_cpu"
             qualify_remote(native, a, receipt, ready)
+        # The page sends no credential: its capability names this account and this Calcifer's birth, as the native CLI's does.
+        account, calcifer_birth = principal(), daemon_birth(proof.process.pid)
         for project in projects:
             phase = "headers"
             base = project_route(project["id"])
@@ -340,24 +412,27 @@ def main() -> int:
             for number, path in enumerate(paths):
                 # A thumb not drawn yet is `202 thumb_pending` (cl-982): no picture and no error, asked again until it is.
                 observed = until(partial(proof.exercise, project["id"], "media", path=path), lambda value: value.get("status") != 202, "owned_no_store_200")
-                served = observed.get("authenticated") and observed.get("status") == 200 and observed.get("no_store")
+                facts = {"admitted": observed.get("admitted") is True, "principal": observed.get("principal") == account, "daemon_birth": observed.get("daemon_birth") == calcifer_birth}
+                bound = all(facts.values())
+                served = bound and observed.get("status") == 200 and observed.get("no_store")
                 if not served:
                     status = observed.get("status")
-                    receipt.add("owned_media_failure", index=number, status=status if type(status) is int else -1,
-                                authenticated=observed.get("authenticated") is True, no_store=observed.get("no_store") is True)
+                    receipt.add("owned_media_failure", index=number, status=status if type(status) is int else -1, no_store=observed.get("no_store") is True, **facts)
+                require(bound, "owned_media_capability")
                 require(served, "owned_no_store_200")
                 if number == 1:
                     ranged = proof.exercise(project["id"], "media", path=path, range=True)
                     conditional = proof.exercise(project["id"], "media", path=path, conditional=True)
                     require(ranged.get("status") == 206 and ranged.get("no_store") and ranged.get("range"), "owned_no_store_206")
                     require(conditional.get("status") in {200, 304} and conditional.get("no_store"), "owned_no_store_conditional")
-                    receipt.add("media_" + ("a" if project is a else "b"), status=200, range_status=ranged["status"], conditional_status=conditional["status"], body_sha256=observed["body_sha256"])
+                    receipt.add("media_" + ("a" if project is a else "b"), status=200, range_status=ranged["status"], conditional_status=conditional["status"], body_sha256=observed["body_sha256"],
+                                capability_bound=True, authorization_sent=False)
             storage = proof.exercise(project["id"], "storage")
-            require(storage == {"project_preferences": 0, "durable_session": False, "indexed_databases": 0, "cache_stores": 0, "cookies": 0}, "browser_durable_storage")
+            require(storage == {"project_preferences": 0, "stored_credential": False, "indexed_databases": 0, "cache_stores": 0, "cookies": 0}, "browser_durable_storage")
+        # A private name in a refused path and Origin: refused, no-store, and never found outside by the scans.
         refused = native.raw("GET", project_route(a["id"], "/files/" + a["marker"]), extra={"Origin": "http://" + a["marker"] + ".invalid"})
-        require(refused.status == 403 and "no-store" in refused.headers.get("cache-control", ""), "csrf_no_store_refusal")
-        unauthenticated = native.raw("GET", project_route(a["id"]), auth=False)
-        require(unauthenticated.status == 401, "native_auth_required")
+        require(refused.refused(403, "origin_not_allowed"), "csrf_no_store_refusal")
+        access_rule(native, receipt, a, development is not None)
         scan_case(scanner, receipt, "live_outside_scan", roots, [a["view"], b["view"], profile], located)
         if development is not None:
             phase = "development_hmr"
@@ -454,7 +529,7 @@ def main() -> int:
         caf_pid = proof.process.pid
         until(lambda: native.holder(), lambda value: value.get("pid") == caf_pid, "restart_holder_ready")
         rejected = native.raw("GET", "/v1/project-storage", extra={"Authorization": "Bearer " + previous["token"]}, preflight=False)
-        require(rejected.status == 401, "old_holder_authority_survived")
+        require(rejected.refused(401, "unauthenticated"), "old_holder_authority_survived")
         until(lambda: [alive(process) for process in orphaned["processes"]], lambda live: not any(live), "caf_crash_browser_tree_not_retired")
         until(lambda: Path(orphaned["profile"]).exists(), lambda exists: not exists, "caf_crash_profile_not_retired")
         require(foreign.preserved(), "foreign_browser_changed")
@@ -467,7 +542,7 @@ def main() -> int:
         proof = Proof(cli)
         until(lambda: native.holder(), lambda value: value.get("pid") == proof.process.pid, "restart_holder_ready")
         rejected = native.raw("GET", "/v1/project-storage", extra={"Authorization": "Bearer " + previous["token"]}, preflight=False)
-        require(rejected.status == 401, "old_holder_authority_survived")
+        require(rejected.refused(401, "unauthenticated"), "old_holder_authority_survived")
         native.document("vault", "unlock", "--passphrase-file", "-", "--idle", "0", cwd=b["folder"], stdin=(b["credential"] + "\n").encode())
         native.open(b["folder"])
         until(lambda: proof.exercise(b["id"], "ready"), lambda value: value.get("page_ready"), "cold_page_ready")

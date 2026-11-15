@@ -114,18 +114,29 @@ calcifer_record() {
   jq -r ".$1 // empty" "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null || true
 }
 
-# open_page: a page as the browser makes one, against the running Calcifer: a sign-in code traded for a session, its events
-# stream held open in the background ($PAGE_PID, writing $OUT/page.sse). close_page ends it.
+# open_page: a page as the browser makes one, against the running Calcifer: its events stream asked as the page's own fetch asks it
+# (cl-985: Calcifer's Host, `Sec-Fetch-Site: same-origin`, no Authorization, nothing signed in), answered, held open in the background
+# ($PAGE_PID, writing $OUT/page.sse) and counted among Calcifer's open pages. close_page ends it. A release from before cl-985
+# (busy_skew's) answers its page only by a session from a sign-in code, as that release's page signs in.
 open_page() {
   local address code session token
   address=$(calcifer_record address) token=$(calcifer_record token)
   [ -n "$address" ] || { check "page: no Calcifer runs"; return 1; }
-  code=$(curl -fsS -X POST -H "Authorization: Bearer $token" -H 'cozy-project-storage: 3' "http://$address/v1/session-codes" | jq -r .code) &&
-    session=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg c "$code" '{code: $c}')" "http://$address/v1/session" | jq -r .token) ||
-    { check "page: no browser session from $address"; return 1; }
-  curl -sSN -H "Authorization: Bearer $session" -H 'cozy-project-storage: 3' -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
+  curl --fail-with-body -sSN -H "Host: $address" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' \
+    -H 'cozy-project-storage: 3' -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
   sleep 2
-  kill -0 "$PAGE_PID" 2> /dev/null || { check "page: its events stream did not stay open: $(tail -c 300 "$OUT/page.sse")"; return 1; }
+  if ! kill -0 "$PAGE_PID" 2> /dev/null && code=$(curl -fsS -X POST -H "Authorization: Bearer $token" -H 'cozy-project-storage: 3' "http://$address/v1/session-codes" 2> /dev/null | jq -er .code); then
+    session=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg c "$code" '{code: $c}')" "http://$address/v1/session" | jq -r .token) ||
+      { check "page: no browser session from the release's Calcifer at $address"; return 1; }
+    curl -sSN -H "Authorization: Bearer $session" -H 'cozy-project-storage: 3' -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
+    sleep 2
+    kill -0 "$PAGE_PID" 2> /dev/null || { check "page: its events stream did not stay open on the release's Calcifer: $(tail -c 300 "$OUT/page.sse")"; return 1; }
+    return 0
+  fi
+  kill -0 "$PAGE_PID" 2> /dev/null || { check "page: its events stream, asked as the page asks it, was refused or closed: $(tail -c 300 "$OUT/page.sse")"; return 1; }
+  # Calcifer takes it for its page, not for a program with the bearer: what keeps a cozy of another version from restarting it.
+  curl -fsS -H "Authorization: Bearer $token" "http://$address/v1/activity" | jq -e '.pages >= 1' > /dev/null \
+    || { check "page: Calcifer counts no open page while its stream is open"; close_page; return 1; }
 }
 close_page() { [ -z "${PAGE_PID:-}" ] || kill "$PAGE_PID" 2> /dev/null || true; PAGE_PID=''; }
 
@@ -347,7 +358,7 @@ show_events() {
 
 project_stream() {
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder ADDR TOKEN
-  ADDR=$(jq -er .address "$holder") && TOKEN=$(jq -er .token "$holder") || fail "project stream: missing Calcifer session"
+  ADDR=$(jq -er .address "$holder") && TOKEN=$(jq -er .token "$holder") || fail "project stream: no Calcifer lock record"
   walking
   event_stream
 }

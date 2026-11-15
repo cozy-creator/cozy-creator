@@ -41,7 +41,6 @@ fn main() {
     let mut v = Declared { cfg: Config::new().with_large_int("number"), seen: HashSet::new(), decls: BTreeMap::new() };
     v.visit::<error::Envelope>();
     v.visit::<interface::Snap>();
-    v.visit::<calcifer::BrowserSession>();
     v.visit::<calcifer::CalciferStatus>();
     v.visit::<calcifer::RemoveModel>();
     v.visit::<calcifer::RemovedModel>();

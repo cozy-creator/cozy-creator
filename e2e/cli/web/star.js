@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, launch, lookAt, noStall, png, rowsOf, settled, until, upload } = require('./page');
+const { holderToken, projectFolder, projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, launch, lookAt, noStall, png, rowsOf, settled, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -40,11 +40,11 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
-  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
+  const held = { token: holderToken() };
+  const api = (path, init = {}) => page.evaluate(async ({ path, init }) => {
+    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, init, token: held?.token });
+  }, { path, init });
   const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
 
   await page.goto(`${base}/projects`);

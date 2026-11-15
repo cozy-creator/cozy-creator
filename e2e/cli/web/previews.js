@@ -9,7 +9,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFile } = require('child_process');
 const { appendFileSync } = require('fs');
 const { join } = require('path');
-const { projectFolder, calcifer, lastLook, lookAt, projectAction, projectFromPage, signIn, STEP_MS, until } = require('./page');
+const { holderToken, projectFolder, calcifer, lastLook, lookAt, projectAction, projectFromPage, signIn, STEP_MS, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -51,7 +51,7 @@ const LOOK = (name) => {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const token = holderToken();
   const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json().catch(() => null);
   const local = Boolean((await api('/v1/status'))?.local_usable) && !process.env.ALONE;
   seen.ran = local;
