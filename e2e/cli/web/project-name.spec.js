@@ -40,5 +40,5 @@ test('project-name', async ({ page, project, api, removeAfter }) => {
   await expect(current).toBeVisible();
   await page.reload();
   await expect(current).toBeVisible();
-  expect((await api.get(`/v1/projects/${created.id}`)).name).toBe(name);
+  expect((await api.get('/v1/projects')).projects.find(held => held.id === created.id)?.name).toBe(name);
 });
