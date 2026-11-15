@@ -75,6 +75,7 @@ interface Drawn {
   fontEpoch: number
   latent?: Latent
   wave?: { graphics: Graphics; began: number; alpha: number; spread: number }
+  loadingPulse?: { graphics: Graphics; began: number; alpha: number }
   meter?: { run: number; fraction: number; since: number }
   stateDot?: Box
   meterBox?: Box
@@ -163,6 +164,7 @@ export class PixiScene {
       }
       this.latentFor(drawn)
       this.waveFor(drawn)
+      this.loadingFor(drawn)
     }
     for (const [id, drawn] of this.records) if (!live.has(id)) { this.remove(drawn); this.records.delete(id) }
     this.scheduleClock()
@@ -585,19 +587,41 @@ export class PixiScene {
     }
   }
 
+  private loadingFor(drawn: Drawn) {
+    const main = drawn.pictures.get("main")
+    // Import bytes have their own already-decoded preview, with no import-phase pulse (cl-918).
+    const waiting = main?.pending && !main.current && !main.failed && !main.local
+    if (!this.visible || !this.onScreen(drawn) || !waiting) {
+      drawn.loadingPulse?.graphics.destroy()
+      drawn.loadingPulse = undefined
+    } else if (!drawn.loadingPulse) {
+      const graphics = new Graphics()
+      drawn.pixels.addChild(graphics)
+      drawn.loadingPulse = { graphics, began: performance.now(), alpha: 0 }
+    }
+  }
+
   /** Host-owned demand scheduling: a visible render breathes; idle, hidden and reduced-motion scenes request no animation frames. */
   advance(now: number): boolean {
     if (!this.visible || this.stopped || !this.input) return false
     let animated = false
     const zoom = Math.max(0.0001, this.input.camera.zoom)
     // CSS render-wave's cubic-bezier(0.25, 0.6, 0.3, 1), solved only for the few cards actually rendering.
-    const ease = (x: number) => {
+    const ease = (x: number, x1 = 0.25, y1 = 0.6, x2 = 0.3, y2 = 1) => {
       let lo = 0, hi = 1
       const curve = (t: number, a: number, b: number) => 3 * (1 - t) ** 2 * t * a + 3 * (1 - t) * t * t * b + t ** 3
-      for (let n = 0; n < 12; n++) { const t = (lo + hi) / 2; if (curve(t, 0.25, 0.3) < x) lo = t; else hi = t }
-      return curve((lo + hi) / 2, 0.6, 1)
+      for (let n = 0; n < 12; n++) { const t = (lo + hi) / 2; if (curve(t, x1, x2) < x) lo = t; else hi = t }
+      return curve((lo + hi) / 2, y1, y2)
     }
     for (const drawn of this.records.values()) {
+      const loading = drawn.loadingPulse
+      if (loading) {
+        const body = pictureBox(drawn.node)
+        const phase = Math.max(0, now - loading.began) % 2800 / 1400
+        loading.alpha = this.reducedMotion.matches ? 0.04 : 0.08 * ease(phase <= 1 ? phase : 2 - phase, 0.42, 0, 0.58, 1)
+        loading.graphics.clear().rect(body.x - drawn.node.box.x, body.y - drawn.node.box.y, body.w, body.h).fill({ color: this.palette!.colors.ink, alpha: loading.alpha })
+        if (!this.reducedMotion.matches) animated = true
+      }
       const wave = drawn.wave
       if (!wave) continue
       const body = pictureBox(drawn.node), graphics = wave.graphics
@@ -751,6 +775,7 @@ export class PixiScene {
     const displayed = main?.displayed ?? ""
     const sha = displayed.startsWith("blob:") ? drawn.node.view.preview?.sha256 : /^(sha256:)?[0-9a-f]{64}$/i.test(displayed) ? displayed : undefined
     const latent = drawn.latent
+    const world = (box?: Box) => box ? { x: drawn.node.box.x + box.x, y: drawn.node.box.y + box.y, width: box.w, height: box.h } : null
     return {
       body: { x: body.x, y: body.y, width: body.w, height: body.h },
       labels: Object.fromEntries([...drawn.texts].map(([key, label]) => [key, {
@@ -763,6 +788,7 @@ export class PixiScene {
       stateDot: world(drawn.stateDot), meter: world(drawn.meterBox),
       controls: drawn.hits.filter(hit => hit.part === "delete" || hit.part === "cancel").map(hit => ({ part: hit.part, x: drawn.node.box.x + hit.box.x, y: drawn.node.box.y + hit.box.y, width: hit.box.w, height: hit.box.h })),
       wave: drawn.wave ? { active: true, x: body.x, y: body.y, width: body.w, height: body.h, animation: this.reducedMotion.matches ? "none" : "render-wave", alpha: drawn.wave.alpha, spread: drawn.wave.spread, cycleMs: 2400, reducedMotion: this.reducedMotion.matches } : null,
+      loadingPulse: drawn.loadingPulse ? { active: true, alpha: drawn.loadingPulse.alpha, cycleMs: 2800, reducedMotion: this.reducedMotion.matches } : null,
       media: {
         ready: Boolean(texture), failed: Boolean(main?.failed), local, width: texture?.width ?? 0, height: texture?.height ?? 0,
         requestedWidth: this.resolution(body.w), resolution: local ? "local" : path.includes("/thumbs/") ? String(width) : "original",
