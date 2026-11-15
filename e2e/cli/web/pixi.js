@@ -182,7 +182,7 @@ async function candidate(context, origin, directory) {
   const camera = () => inspect('camera');
   const settled = async () => {
     let prior, still = 0;
-    await until('camera settled', camera, view => { if (!view) return false; const next = JSON.stringify(view); still = next === prior ? still + 1 : 0; prior = next; return still >= 3; });
+    await until('camera settled', () => page.evaluate(() => ({ view: document.querySelector('.canvas-root')?.canvasInspection?.camera(), moving: Boolean(document.querySelector('.stage[data-moving]')) })), ({ view, moving }) => { if (!view || moving) { still = 0; return false; } const next = JSON.stringify(view); still = next === prior ? still + 1 : 0; prior = next; return still >= 3; });
   };
   const gpu = await page.locator('canvas.canvas-pixels').evaluate(element => {
     const gl = element.getContext('webgl2') || element.getContext('webgl');
@@ -379,7 +379,10 @@ async function candidate(context, origin, directory) {
   sameService();
 })().catch(async error => {
   failures.push(`${during}: ${clean(error.stack ?? error)}`);
-  if (page) seen.failedResources = await page.locator('.canvas-root').evaluate(el => el.canvasInspection?.resources()).catch(() => null);
+  if (page) {
+    seen.failedResources = await page.locator('.canvas-root').evaluate(el => el.canvasInspection?.resources()).catch(() => null);
+    seen.failedInteraction = await page.locator('.canvas-root').evaluate(el => ({ interaction: el.canvasInspection?.interaction(), camera: el.canvasInspection?.camera(), names: el.canvasInspection?.names(), selected: el.canvasInspection?.selectedNames(), cards: el.canvasInspection?.names().map(name => ({ name, ...el.canvasInspection.card(name) })) })).catch(() => null);
+  }
   if (page && out) await page.screenshot({ path: join(out, 'failure.png'), timeout: 5000 }).catch(() => {});
 }).finally(async () => {
   if (browser) await browser.close().catch(() => {});
