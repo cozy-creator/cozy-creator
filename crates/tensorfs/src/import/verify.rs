@@ -82,16 +82,27 @@ fn base(input: &Input, bases: &[(&str, &[&Planned])], out: &mut Checked) -> Resu
     let by_table = tables.iter().find_map(|t| family::of_table(t));
     let classes = (input.layout.pipeline.iter().map(|p| p.class.name.as_str()))
         .chain(input.layout.components.iter().map(|c| c.class.name.as_str()));
-    // A class several families share (Qwen3-VL's) is the first's whose form its components are.
-    let named = match by_table {
-        Some(fam) => vec![fam],
-        None => family::of_classes(classes),
-    };
     let form = |fam: &Family| {
         let stored: Vec<Stored> = (bases.iter().filter(|(c, _)| fam.def(c).is_some()))
             .map(|(c, t)| Stored { name: c, keys: t.iter().map(|p| (p.key.as_str(), p.shape.as_slice())).collect() })
             .collect();
         !stored.is_empty() && fam.form_of(&stored).is_ok()
+    };
+    // A class several families share (Qwen3-VL's) is the first's whose form its components are. A part alone (a VAE) is the one
+    // family's whose component it is a form of; a part several share is none of theirs alone.
+    let named = match by_table {
+        Some(fam) => vec![fam],
+        None => match family::of_classes(classes) {
+            named if !named.is_empty() => named,
+            _ => {
+                let parts = input.layout.components.iter().map(|c| (c.name.as_str(), c.class.name.as_str()));
+                let fits: Vec<&Family> = family::of_parts(parts).into_iter().filter(|fam| form(fam)).collect();
+                if fits.len() != 1 {
+                    return Ok(());
+                }
+                fits
+            }
+        },
     };
     let Some(fam) = named.iter().copied().find(|fam| form(*fam)).or(named.first().copied()) else {
         return Ok(());

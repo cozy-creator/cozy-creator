@@ -20,8 +20,9 @@ use crate::ids::{Digest, RunId};
 
 pub mod hub;
 pub mod project;
-pub use crate::machine::{RemoveModel, RemovedModel};
+pub use crate::machine::{HeldAnswer, HeldObject, HeldRequest, RemoveModel, RemovedModel};
 pub mod report;
+pub mod node;
 pub mod tool;
 
 /// What a run does on its machine (`RunSpec.kind`), or that Calcifer carries it out itself, on no machine.
@@ -51,6 +52,9 @@ pub enum On {
 /// `POST /v1/runs`, with an `Idempotency-Key` header: one key names one submission forever.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SubmitRun {
+    /// Canonical project owner. Absent only for validated project-independent maintenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     pub on: On,
     /// The Tensorhub origin the run belongs to.
     pub hub: String,
@@ -120,6 +124,13 @@ pub struct Warning {
     pub code: String,
     pub message: String,
 }
+
+/// A run's `Warning` code for a mention its function can't use, left out (cl-944): a note, nothing to act on.
+pub const MENTION_UNUSED: &str = "mention_unused";
+
+/// A run's `Warning` code for a first-party package run from a dev home's packages checkout (xs-195): its branch and commit, a
+/// note.
+pub const FROM_SOURCE: &str = "from_source";
 
 /// A run that has not moved: since when, on which machine, and what that machine costs an hour
 /// (none: not a rental, or its Hub has not said).
@@ -325,6 +336,15 @@ pub enum ReleaseFrom {
     Latest,
     /// Local code: its source as it is now.
     Local,
+    /// A first-party package from a dev home's packages checkout (xs-195): its source at the checkout's commit.
+    Source,
+}
+
+impl ReleaseFrom {
+    /// Whether it runs code from this computer, not a release.
+    pub fn local(self) -> bool {
+        matches!(self, ReleaseFrom::Local | ReleaseFrom::Source)
+    }
 }
 
 impl fmt::Display for ReleaseFrom {
@@ -334,6 +354,7 @@ impl fmt::Display for ReleaseFrom {
             ReleaseFrom::Installed => "installed",
             ReleaseFrom::Latest => "the Hub's latest",
             ReleaseFrom::Local => "local",
+            ReleaseFrom::Source => "from source",
         })
     }
 }
@@ -388,6 +409,26 @@ pub enum Status {
     Canceled,
 }
 
+/// Where the plan sent a run, and what that machine's offer quoted when it went (cl-967): `cozy run show`'s `placed`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Placed {
+    pub machine: String,
+    /// When it was quoted, and the finish the quote said, on this computer's clock.
+    pub quoted_at_ms: i64,
+    pub finish_at_ms: i64,
+    pub basis: crate::machine::Basis,
+    /// Its time is the function's warm one there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warm: bool,
+    /// Its install, download and load there, part of its finish.
+    #[serde(default)]
+    pub prepare_ms: u64,
+    /// Its weights' bytes it downloads there first.
+    #[serde(default)]
+    pub fetch_bytes: u64,
+}
+
 /// One run as Calcifer holds it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -396,6 +437,10 @@ pub struct Run {
     pub id: RunId,
     /// This controller's number for it; 0 for one another client sent.
     pub number: u64,
+    /// What names it to a person from any folder (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's
+    /// own; its id for one another client sent.
+    #[serde(default)]
+    pub name: String,
     /// One another client of this account sent, as the machine it runs on numbers it: read there,
     /// never held here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -477,16 +522,9 @@ pub struct Run {
     /// The GPU it ran on, by name, once settled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu: Option<String>,
-}
-
-impl Run {
-    /// What names it to a person: its number, or `<machine>/<number>` for one another client sent.
-    pub fn name(&self) -> String {
-        match self.machine_number {
-            Some(_) => self.id.to_string(),
-            None => self.number.to_string(),
-        }
-    }
+    /// Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placed: Option<Placed>,
 }
 
 /// A video's verified segment plan and the completed prefix, in absolute shot frames.
@@ -997,10 +1035,13 @@ pub struct RunList {
 }
 
 /// `PUT /v1/events/{stream}`: the projects a page on that stream shows, which Calcifer holds open
-/// while it lasts or until it shows others.
+/// while it lasts or until it shows others, and whether it shows a machine's view: its runs that
+/// are no project's (installs, updates). A page stream hears a run only of what it shows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Shown {
     pub projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub machines: bool,
 }
 
 /// The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
@@ -1045,7 +1086,7 @@ pub enum StreamEvent {
     /// It left the list.
     #[serde(rename = "machine.removed")]
     MachineRemoved { name: String },
-    /// `rev` is opaque, and changes whenever project.yaml or project.lock does. Optional
+    /// `rev` is opaque, and changes whenever the project does. Optional
     /// `cursor` is its emission position, comparable only with the same controller generation.
     #[serde(rename = "project.changed")]
     ProjectChanged {
@@ -1066,6 +1107,10 @@ pub enum StreamEvent {
     /// Public protection metadata reaches every tab, including tabs showing another project.
     #[serde(rename = "project.vault")]
     ProjectVault { id: String, state: String },
+    /// Its folder is gone (deleted, moved away, on a drive that isn't there): where it was. Nothing of it reads, so a stream showing it
+    /// is told this in place of `project.changed`, and asks it nothing more (cl-980).
+    #[serde(rename = "project.gone")]
+    ProjectGone { id: String, path: String },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::calcifer::project::Card>> },
@@ -1088,6 +1133,10 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         redo: Option<Box<crate::calcifer::project::HistoryEntry>>,
     },
+    /// A thumbnail of a project's file was made, or can't be (cl-982): one asked for before it was answered `202 thumb_pending`; it's
+    /// asked again.
+    #[serde(rename = "thumb")]
+    Thumb { project: String, sha256: String },
     /// This stream fell behind: read again what you hold.
     #[serde(rename = "resync")]
     Resync,
@@ -1156,6 +1205,11 @@ pub struct Machine {
     /// which is what a reader that predates this field shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offline: Option<String>,
+    /// Why nothing can run on it (cl-977): its own word (`stuck_in_driver`: the TensorD before its own can't exit, and its GPUs
+    /// can't be opened), or this computer's (`silent_after_update`: a rental that hasn't answered since an update restarted it).
+    /// It takes no work; a rental is released, by itself or by the computer that ordered it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broken: Option<crate::machine::Broken>,
     /// The Hub's word, for a rental.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rental: Option<Rental>,
@@ -1462,9 +1516,15 @@ pub struct Operation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_s: Option<i64>,
     pub started_at_ms: i64,
-    /// The runs waiting on it, by number.
+    /// The runs waiting on it, by number: this computer's own runs, or those of `project`.
     #[serde(default)]
     pub runs: Vec<u64>,
+    /// The same runs by name, `KEY-N` (cl-987).
+    #[serde(default)]
+    pub names: Vec<String>,
+    /// The project whose runs wait on it, shown to its own views only; none for this computer's own work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 /// A run a machine holds for this controller, beside this controller's record of it.
@@ -1889,7 +1949,7 @@ pub struct Ended {
 
 /// `GET /v1/runs/{id}/play?output=<name[/i]>&expires_s=N`: how a browser plays one run output
 /// straight from its machine over WebRTC.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Play {
     /// `host:port` the browser dials.
@@ -2196,6 +2256,30 @@ pub struct Down {
     pub owed: Vec<String>,
 }
 
+/// `GET /v1/projects/{id}/legacy`: the project's history from before projects kept their own (cl-984): runs imported into
+/// its journal, and runs Calcifer's store still holds for it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyHistory {
+    pub imported: u64,
+    pub pending: u64,
+}
+
+/// `GET /v1/legacy`: the old project runs Calcifer's store still holds (cl-984), by the project folder each names: those whose
+/// folder is here (each imported as its project opens), those whose folder is gone, and those whose record can't be read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyRows {
+    pub existing: Vec<LegacyFolder>,
+    pub gone: Vec<LegacyFolder>,
+    pub unreadable: u64,
+}
+
+/// A project folder's old runs still in Calcifer's store.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyFolder {
+    pub path: std::path::PathBuf,
+    pub runs: u64,
+}
+
 /// `GET /v1/status`: this Calcifer at a glance. It never waits on a Hub.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -2214,29 +2298,47 @@ pub struct CalciferStatus {
     /// Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
     #[serde(default)]
     pub encrypted_project_creation: bool,
+    /// This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
+    #[serde(default)]
+    pub home: PathBuf,
 }
 
-/// `POST /v1/session-codes`: a code a browser trades once for a session.
+/// The header each request of a `cozy` process carries: its pid, so Calcifer tells its requests from everyone else's (cl-962).
+pub const PROCESS_HEADER: &str = "cozy-process";
+
+/// `GET /v1/activity` (cl-962): who uses this Calcifer now, which a `cozy` of another version reads before it would restart it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionCode {
-    pub code: String,
-    /// Calcifer's page, the code in its fragment.
-    pub url: String,
-    pub expires_ms: i64,
+pub struct CalciferActivity {
+    pub version: String,
+    /// Pages with a stream open.
+    pub pages: u32,
+    /// Runs not yet settled, Calcifer's own among them (`here`).
+    pub runs: u32,
+    /// Calcifer's own runs not yet settled: an upload, a publish.
+    pub here: u32,
+    /// Requests it is serving now, other than this one: an upload, a submission, a page's write.
+    pub requests: u32,
+    /// The newest request of anyone but the asking process (`PROCESS_HEADER`): a page, another `cozy`, one that sends no pid.
+    pub others_request_ms: Option<i64>,
+    pub now_ms: i64,
 }
 
-/// `POST /v1/session`'s body.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RedeemCode {
-    pub code: String,
+// Credentials are never printed.
+impl fmt::Debug for Play {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Play").field("address", &self.address).field("expires_s", &self.expires_s).finish_non_exhaustive()
+    }
 }
 
-/// `POST /v1/session`: `token` for `Authorization`, `media` for the `?media=` of a file's URL.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct BrowserSession {
-    pub token: String,
-    pub media: String,
+impl fmt::Debug for Holder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Holder")
+            .field("address", &self.address)
+            .field("pid", &self.pid)
+            .field("version", &self.version)
+            .field("started_at_ms", &self.started_at_ms)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The file in Calcifer's directory (`~/.cozy/calcifer`) that says, as an `error::Envelope`, why
@@ -2246,7 +2348,7 @@ pub const REFUSED: &str = "refused.json";
 /// What a serving Calcifer publishes beside its lock (`calcifer.lock.holder`, 0600, one JSON
 /// line): where its API listens and the bearer it wants, fresh at every start. Absent while the
 /// lock is held: Calcifer is still opening its store.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Holder {
     pub address: SocketAddr,
     pub token: String,

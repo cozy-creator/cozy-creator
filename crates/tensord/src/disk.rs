@@ -89,11 +89,18 @@ impl Disks {
     }
 }
 
-/// Hands each look's ended stalls to `ended` every `LOOK`, until it returns false (its owner is gone).
-pub(crate) fn watch(mut ended: impl FnMut(Vec<Stall>) -> bool + Send + 'static) -> std::io::Result<()> {
+/// While a call runs, hands each look's ended stalls to `ended` every `LOOK`, until it returns false (its owner is gone).
+/// The kernel says nothing of a device that stopped answering, so it's sampled; with no call running nothing is looked
+/// at, as a stall is named only on the runs it held up.
+pub(crate) fn watch(running: crate::memory::Running, mut ended: impl FnMut(Vec<Stall>) -> bool + Send + 'static) -> std::io::Result<()> {
     std::thread::Builder::new().name("disk-stalls".into()).spawn(move || {
         let mut disks = Disks::default();
         loop {
+            if running.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty() {
+                running.wait_busy();
+                // What the disks did meanwhile held up no run.
+                disks = Disks::default();
+            }
             std::thread::sleep(LOOK);
             let Ok(stats) = std::fs::read_to_string("/proc/diskstats") else { return };
             if !ended(disks.look(&stats, Instant::now())) {

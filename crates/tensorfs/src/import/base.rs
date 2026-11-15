@@ -2,12 +2,13 @@
 //! --base <model>[:<component>,…]`): which of the source's components go where, the header
 //! metadata that records it, and the header itself (`format::compose`). Only the base's header
 //! is read: the components it keeps stay its objects, wherever they are held. A Hub checkpoint on a
-//! base is made complete instead: it takes only what it lacks ([`inherit`]).
+//! base is made complete instead: it takes only what it lacks ([`inherit`]). A model cut to some of its components
+//! (`<source>:<component>,…`) is [`only`] those.
 use std::collections::BTreeMap;
 
-use crate::err::{refuse, Code, Result};
+use crate::err::{refuse, Code, Refusal, Result};
 use crate::family::{self, Record, Stored};
-use super::compose::{compose, Supply};
+use super::compose::{compose, cut, Supply};
 pub use super::compose::{inherit, with_assets, Inherited, ADDED, INHERITED};
 use crate::format::{Header, ObjectRef, Provenance, Value};
 use crate::store::Store;
@@ -132,4 +133,65 @@ pub fn on_base(store: &Store, base: &ObjectRef, source: &ObjectRef, names: &[Str
     let bytes = header.to_cbor().or_else(|e| refuse(Code::UNKNOWN_FORMAT, e.to_string()))?;
     let header = store.put_bytes(&bytes).map_err(crate::store::Error::refusal)?;
     Ok(Composed { header, components })
+}
+
+/// `header` cut to the components `names` (`cozy model upload <source>:<component>,…`): each of its components by that name, or,
+/// for one name, its one component with weights under that name (a VAE file's root `model` as `vae`). It keeps no pipeline (a part
+/// is no pipeline's) and only the chunks their tensors touch, so no other byte is read or sent. What its metadata says by component
+/// follows each to its name; a record of the whole it was cut from (`composed`, `inherited`) goes. Its `family` is what the parts it
+/// keeps verify as: the family it was, or the one family whose part each is.
+pub fn only(header: &Header, names: &[String]) -> Result<Header> {
+    let held: Vec<&str> = header.components().iter().map(|c| c.name.as_str()).collect();
+    let weighted: Vec<&str> = (header.components().iter()).filter(|c| !c.tensors.is_empty()).map(|c| c.name.as_str()).collect();
+    if let Some(twice) = names.iter().enumerate().find(|(i, n)| names[..*i].contains(n)).map(|(_, n)| n) {
+        return refuse(Code::AMBIGUOUS_CLASSIFICATION, format!("component {twice:?} is named twice"));
+    }
+    let kept: Vec<(String, &str)> = match (names, weighted.as_slice()) {
+        _ if names.iter().all(|n| held.contains(&n.as_str())) => names.iter().map(|n| (n.clone(), n.as_str())).collect(),
+        ([name], [one]) => vec![(name.clone(), *one)],
+        _ => return refuse(Code::MISSING_FIELD, format!(
+            "the source holds {}: name some of those, or one name for a source of one", held.join(", "))),
+    };
+    if !kept.iter().any(|(_, from)| weighted.contains(from)) {
+        return refuse(Code::MISSING_FIELD, format!("{} holds no weights", names.join(", ")));
+    }
+    let (chunks, components) = cut(header, &kept).or_else(|e| refuse(Code::UNKNOWN_FORMAT, e.to_string()))?;
+    let mut metadata = header.metadata.clone();
+    for key in [FILE_METADATA, family::ADAPTER] {
+        if let Some(Value::Map(map)) = metadata.remove(key) {
+            let moved: BTreeMap<String, Value> = (kept.iter()).filter_map(|(name, from)| Some((name.clone(), map.get(*from)?.clone()))).collect();
+            if !moved.is_empty() {
+                metadata.insert(key.into(), Value::Map(moved));
+            }
+        }
+    }
+    if let Some(Value::List(files)) = metadata.remove(ADDED) {
+        let moved: Vec<Value> = (files.iter().filter_map(Value::as_str))
+            .filter_map(|file| {
+                let (component, path) = file.split_once('/')?;
+                let (name, _) = kept.iter().find(|(_, from)| *from == component)?;
+                Some(Value::Str(format!("{name}/{path}")))
+            })
+            .collect();
+        if !moved.is_empty() {
+            metadata.insert(ADDED.into(), Value::List(moved));
+        }
+    }
+    metadata.remove(COMPOSED);
+    metadata.remove(INHERITED);
+    let invalid = |e: crate::format::Error| Refusal { code: Code::UNKNOWN_FORMAT, detail: e.to_string() };
+    match Record::read(&metadata) {
+        Some(mut record) => {
+            record.components = kept.iter().map(|(name, from)| (name.clone(), record.component(from).to_owned())).collect();
+            metadata.insert(family::FAMILY.into(), record.value());
+            family::reverify(&mut metadata, &components);
+        }
+        None => {
+            let unverified = Header::new(chunks.clone(), None, components.clone(), metadata.clone()).map_err(invalid)?;
+            if let Some(record) = Record::of(&unverified) {
+                metadata.insert(family::FAMILY.into(), record.value());
+            }
+        }
+    }
+    Header::new(chunks, None, components, metadata).map_err(invalid)
 }

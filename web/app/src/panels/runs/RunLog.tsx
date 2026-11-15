@@ -5,6 +5,7 @@ import { LogView, plain, Section } from "../common"
 import { Failure } from "../common"
 import { follow, followingLine, type Following } from "../follow"
 import { span } from "../format"
+import { runName } from "./words"
 
 /** The most a drawer keeps: what scrolls past this is in `cozy run watch`. */
 const KEPT = 5000
@@ -41,7 +42,7 @@ function line(event: RunEvent, start: number): string | null {
 }
 
 /** A run's log and events from `GET /v1/runs/{id}/events`, one such stream across tabs. */
-export function RunLog({ run }: { run: Run }) {
+export function RunLog({ run, project }: { run: Run; project: string | null }) {
   const { client } = useConnection()
   const [text, setText] = useState("")
   const [following, setFollowing] = useState<Following>({ state: "waiting" })
@@ -58,12 +59,12 @@ export function RunLog({ run }: { run: Run }) {
     // A settled run replays its whole log in one go: the page redraws for it ten times a second, not once a line.
     const flush = () => {
       timer = undefined
-      setText((dropped ? [`(${dropped} earlier lines: cozy run watch ${run.number})`, ...lines] : lines).join("\n"))
+      setText((dropped ? [`(${dropped} earlier lines: cozy run watch ${runName(run)})`, ...lines] : lines).join("\n"))
     }
     setText("")
     void follow(
       stop.signal,
-      () => client.runEvents(run.id, after, stop.signal),
+      () => project ? client.runEvents({ project, run: run.id }, after, stop.signal) : client.maintenanceRunEvents(run.id, after, stop.signal),
       (data) => {
         const event = JSON.parse(data) as RunEvent
         if ("sequence_number" in event) {
@@ -87,7 +88,7 @@ export function RunLog({ run }: { run: Run }) {
       stop.abort()
       clearTimeout(timer)
     }
-  }, [client, run.id, run.number])
+  }, [client, project, run.id, run.number])
 
   const note = followingLine(following, "a log")
   return (

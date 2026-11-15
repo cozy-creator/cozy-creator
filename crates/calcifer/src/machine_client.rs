@@ -3,7 +3,10 @@
 //! HTTP/1.1 connections of their own, so parts and ranges move side by side on separate TCP connections. Nothing here
 //! judges the machine by its silence: a busy one answers late, never wrongly. Every connection
 //! carries TCP keepalive, which the peer's kernel answers however busy its process is, so only a
-//! host or path that is gone ends one; bulk callers judge their lanes by measured progress.
+//! host or path that is gone ends one; bulk callers judge their lanes by measured progress. With a
+//! stream open, an HTTP/2 PING its server's connection task answers (however busy its work is):
+//! a TensorD that can't exit (cl-977) leaves its connections open in the kernel, and only an
+//! unanswered PING ends them, so its runs are attached again at the service after it.
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -26,7 +29,7 @@ use url::Url;
 use api::{
     error::{Envelope, Kind},
     machine::{
-        EstimateAnswer, EstimateRequest, Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
+        Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
         PREVIEW_STEP, RunBatch, RunBatchAnswer, RunEvent, RunList, RunRequest, RunState, SERVER_NAME, StatusFrame, capability, parse_held,
         path,
     },
@@ -142,12 +145,49 @@ impl Machine {
         Self { private: Some(scope), ..self.clone() }
     }
 
+    /// Which worker this is: its address and certificate pin.
+    pub(crate) fn identity(&self) -> String {
+        format!("{}#{}", self.origin, hex::encode(self.pin))
+    }
+
     /// Feature/authentication probe before any private file bytes cross the wire.
     pub(crate) async fn probe_private(&self) -> Result<(), Error> {
-        send(self.request(Method::GET, path::HEALTH, &[])).await.map(|_| ())
+        self.migrate_private().await?;
+        let capability: api::machine::ProjectExecutionCapabilities =
+            json(send(self.request(Method::GET, path::HEALTH, &[])).await?).await?;
+        if !capability.ready() {
+            return Err(Error::Refused { status: 409, error: Box::new(api::error::Error::new(
+                Kind::Conflict, "project_execution_unavailable", "This worker cannot protect project execution storage.",
+            ).next("cozy doctor")) });
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn migrate_private(&self) -> Result<(), Error> {
+        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("migration requires a selected project proof".into()))?;
+        send(self.request(Method::POST, path::PROJECT_MIGRATE, &[&scope.storage.project_id])).await.map(|_| ())
+    }
+
+    pub(crate) async fn legacy_project_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, Error> {
+        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("legacy binding lookup requires a selected project proof".into()))?;
+        let query = api::machine::ProjectExecutionLegacyLookup { request_ids: request_ids.to_vec() };
+        json(send(self.request(Method::POST, path::PROJECT_LEGACY_BINDINGS, &[&scope.storage.project_id]).json(&query)).await?).await
+    }
+
+    pub(crate) async fn legacy_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, Error> { self.legacy_project_bindings(request_ids).await }
+    pub(crate) async fn migrate_private_bindings(&self, verified: &api::machine::ProjectExecutionMigrationReceipt) -> Result<(), Error> {
+        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("verified adoption requires a selected project proof".into()))?;
+        let request = api::machine::ProjectExecutionMigrationRequest { legacy_requests: verified.bindings.clone() };
+        send(self.request(Method::POST, path::PROJECT_MIGRATE, &[&scope.storage.project_id]).json(&request)).await.map(|_| ())
+    }
+
+    pub(crate) async fn migration_receipt(&self) -> Result<api::machine::ProjectExecutionMigrationReceipt, Error> {
+        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("migration coverage requires a selected project proof".into()))?;
+        json(send(self.request(Method::GET, path::PROJECT_MIGRATE, &[&scope.storage.project_id])).await?).await
     }
 
     pub(crate) async fn close_private(&self) -> Result<(), Error> {
+        self.migrate_private().await?;
         let scope = self.private.as_ref().ok_or_else(|| Error::Answer("closing private storage requires a selected project".into()))?;
         send(self.request(Method::POST, path::PRIVATE_CLOSE, &[&scope.storage.project_id])).await.map(|_| ())
     }
@@ -226,9 +266,14 @@ impl Machine {
             .collect())
     }
 
-    /// When each of `jobs` would finish here, packed with the machine's queue.
-    pub(crate) async fn estimate(&self, jobs: &EstimateRequest) -> Result<EstimateAnswer, Error> {
-        json(send(self.request(Method::POST, path::ESTIMATE, &[]).json(jobs)).await?).await
+    /// This key's upcoming jobs here, nearest first, replacing its last list (cl-967).
+    pub(crate) async fn upcoming(&self, list: &api::machine::Upcoming) -> Result<api::machine::AheadAnswer, Error> {
+        json(send(self.request(Method::PUT, path::UPCOMING, &[]).json(list)).await?).await
+    }
+
+    /// What this key expects demand for here with no job yet, replacing its last set (cl-967).
+    pub(crate) async fn prepare(&self, list: &api::machine::Prepare) -> Result<api::machine::AheadAnswer, Error> {
+        json(send(self.request(Method::PUT, path::PREPARE, &[]).json(list)).await?).await
     }
 
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).
@@ -364,9 +409,9 @@ impl Machine {
         let mut args = args.iter();
         let mut segments = url.path_segments_mut().expect("an https URL has a path");
         segments.clear();
-        let selected = self.private.as_ref().filter(|_| !template.starts_with(api::machine::LOCAL_PRIVATE_PREFIX));
+        let selected = self.private.as_ref().filter(|_| !template.starts_with(api::machine::PROJECT_EXECUTION_PREFIX));
         let path = if let Some(scope) = selected {
-            segments.extend(["v1", "local-private", scope.storage.project_id.as_str()]);
+            segments.extend(["v1", "project-execution", scope.storage.project_id.as_str()]);
             template.strip_prefix("/v1/").unwrap_or(template.trim_start_matches('/'))
         } else { template.trim_start_matches('/') };
         segments.extend(path.split('/').map(|part| {
@@ -502,6 +547,8 @@ fn builder(pin: [u8; 32], alpn: &[&[u8]]) -> reqwest::ClientBuilder {
         .tcp_keepalive(PROBE)
         .tcp_keepalive_interval(PROBE)
         .tcp_keepalive_retries(PROBES)
+        .http2_keep_alive_interval(PROBE)
+        .http2_keep_alive_timeout(PROBE * PROBES)
         .no_proxy()
 }
 

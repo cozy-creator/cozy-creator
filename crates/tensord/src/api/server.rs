@@ -61,7 +61,8 @@ pub(crate) struct MachineIdentity {
     pub webrtc: Option<std::net::TcpListener>,
     /// Where browsers reach it; Status reports it with the port `serve` bound.
     pub player: crate::machine::player::Reach,
-    pub(crate) webrtc_port: Option<u16>,
+    /// The address `serve` bound it on.
+    pub(crate) webrtc_bound: Option<std::net::SocketAddr>,
     /// The store's directory; Status reports its filesystem.
     pub store: std::path::PathBuf,
     /// Where the store's logs rotate, and where TensorD's own log rolls.
@@ -77,6 +78,10 @@ pub(crate) struct MachineIdentity {
     pub mode: &'static str,
     /// Where its PyTorch layer comes from.
     pub torch: crate::published::layer::Torch,
+    /// The TensorDs before this one that can't exit, each until it does (cl-977).
+    pub stuck: Arc<crate::machine::stuck::Before>,
+    /// Why nothing can run here (cl-977).
+    pub broken: Option<api::machine::Broken>,
 }
 
 pub(crate) async fn serve(
@@ -93,12 +98,12 @@ pub(crate) async fn serve(
         }
         None => None,
     };
-    identity.webrtc_port = match &webrtc {
-        Some(listener) => Some(listener.local_addr()?.port()),
+    identity.webrtc_bound = match &webrtc {
+        Some(listener) => Some(listener.local_addr()?),
         None => None,
     };
     let mut measured = MeasuredIdentity::of(&identity);
-    measured.webrtc_port = identity.webrtc_port;
+    measured.webrtc_port = identity.webrtc_bound.map(|bound| bound.port());
     tokio::spawn(prove_readiness(port, readiness, measured));
     let tls = TlsAcceptor::from(Arc::new(tls(&identity.key_pem, &identity.cert_der)?));
     let identity = Arc::new(identity);
@@ -111,11 +116,23 @@ pub(crate) async fn serve(
     // keepalive (`live`) keeps NAT mappings open through a quiet run and ends a connection whose
     // client's host is gone (its runs go on; a client attaches again).
     let http = Arc::new(auto::Builder::new(TokioExecutor::new()));
+    let mut failed = 0u64;
     loop {
         let stream = match listener.accept().await {
-            Ok((stream, _)) => stream,
-            // Out of descriptors, say: accept fails again at once, so pause rather than spin.
-            Err(_) => {
+            Ok((stream, _)) => {
+                if failed > 0 {
+                    tracing::warn!("the listener accepts connections again, after {failed} failed accepts");
+                    failed = 0;
+                }
+                stream
+            }
+            // Out of descriptors, say: accept fails again at once, so pause rather than spin. Said
+            // once a streak: while it lasts no client or Hub reaches this machine (th-373).
+            Err(error) => {
+                if failed == 0 {
+                    tracing::warn!("the listener cannot accept connections, so nothing reaches this machine: {error}");
+                }
+                failed += 1;
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -172,7 +189,7 @@ pub(crate) fn booting(
     let frame = super::v1::StatusFrame {
         worker_id: identity.authority.worker_id.clone(),
         boot_id: identity.authority.boot_id.clone(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         commit: api::COMMIT.into(),
         phase: "booting".into(),
         ..Default::default()
@@ -304,7 +321,7 @@ async fn prove_readiness(port: u16, readiness: Arc<Readiness>, id: MeasuredIdent
             // and whoever launched it hears the reason, instead of waiting on a machine that
             // will never be ready.
             tracing::error!("readiness not proved: {error}");
-            std::process::exit(78);
+            crate::machine::supervise::leave(78);
         }
     }
 }

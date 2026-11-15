@@ -202,7 +202,8 @@ export class Placer {
     say(`${verb} ${names.length === 1 ? names[0] : `${names.length} assets`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) }, ms: UNDO_MS })
   }
 
-  /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. */
+  /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. Each takes its step and its turn
+   *  as it's dropped, as a file dropped as a box of its own does once it's named: its bytes go meanwhile, Calcifer there or not. */
   join(files: File[], name: string) {
     const kind = this.store.get(name)?.asset?.kind
     for (const file of files) {
@@ -210,21 +211,14 @@ export class Placer {
         say(`${name} is a ${kind} node and cannot take ${file.name}`)
         continue
       }
-      const landed = this.store.joining(name)
-      const owed = this.store.outbox.owing()
       const signal = new AbortController().signal
-      const sent = async () => {
+      const held = inLine(async () => {
         const projectId = await this.project()
         const digest = await hashFile(file, signal, () => {})
         if (!this.store.holdsFile(digest.slice("sha256:".length))) await this.reaching(() => sendFile(this.client, file, digest, signal, () => {}, () => {}, projectId), signal)
         return digest
-      }
-      void inLine(sent)
-        .then((digest) => this.store.joinVersion(name, { sha256: digest.slice("sha256:".length), field: mediaOf(file) }, digest, file.name), (error) => say(file.name, error))
-        .finally(() => {
-          landed()
-          owed()
-        })
+      })
+      this.store.dropVersion(name, file.name, mediaOf(file), held, this.store.joining(name))
     }
   }
 
@@ -248,57 +242,79 @@ export class Placer {
     )
   }
 
-  /** `own`: `edit` is this file's alone, its step made as it's sent. */
+  /** `own`: `edit` is this file's alone, its step made once it's named. */
   private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }, then: ((name: string) => void) | undefined, edit: string, own: boolean) {
     const owed = this.store.outbox.owing()
+    let queued = false
     try {
       await this.project()
       signal.throwIfAborted()
-      const digest = await inLine(() => this.hashAndSend(key, file, signal))
-      await this.store.whenNamed(key, signal)
-      // Its import is in the queue from here, and counted there.
+      const bytes = inLine(() => this.hashAndSend(key, file, signal))
+      const named = this.store.whenNamed(key, signal)
+      await Promise.race([named, bytes.then(() => named)])
+      signal.throwIfAborted()
+      // Named, the drop is done: its step and its import take their turn now, before what's done after it, however long its bytes take.
+      queued = true
+      const asking = this.ask(key, bytes, dropped, edit, own, signal)
       owed()
       try {
-        const name = await this.ask(key, digest, dropped, edit, own)
+        // Awaited apart from `then`: `then?.(await …)` skips the await with no `then`, and its refusal goes nowhere.
+        const name = await asking
         then?.(name)
       } catch (error) {
         // What it held went since it looked: moved by another import, or dropped after a day. Send it again.
         if (!(error instanceof ApiError && error.body.code === "file_not_held")) throw error
+        const digest = await bytes
         const again = this.store.outbox.owing()
         await inLine(() => this.send(key, file, digest, signal)).finally(again)
-        const name = await this.ask(key, digest, dropped, edit, own)
+        const name = await this.ask(key, Promise.resolve(digest), dropped, edit, own, signal)
         then?.(name)
       }
     } catch (error) {
-      if (signal.aborted) return
-      say(file.name, error)
-      this.store.cancel(key, edit)
+      if (!signal.aborted) say(file.name, error)
+      if (!signal.aborted || queued) this.store.cancel(key, edit)
+      // Its step was made, and nothing of it landed: there's nothing to undo.
+      if (queued && own) this.store.history.forget(edit)
     } finally {
       owed()
     }
   }
 
-  private async ask(key: string, digest: string, dropped: { x: number; y: number; w: number }, edit: string, own: boolean): Promise<string> {
-    this.stage(key, "adding")
-    const at = this.store.position(key) ?? dropped
-    const name = this.store.get(key)!.name
-    if (own && !this.store.history.stepOf({ edit })) this.store.newStep(`Added ${name}`, [], edit)
+  /** In the queue at once; sent once `bytes` are held and it's named, as it's called and where it is by then. */
+  private async ask(key: string, bytes: Promise<string>, dropped: { x: number; y: number; w: number }, edit: string, own: boolean, placing: AbortSignal): Promise<string> {
+    if (own && !this.store.history.stepOf({ edit })) this.store.newStep(`Added ${this.store.get(key)!.name}`, [], edit)
     this.store.joinStep(edit, [key])
-    this.store.beginAdding()
+    const once = `import-${crypto.randomUUID()}`
+    // What its drop pushed aside goes with it, the same on every try: one request, one transaction, one entry.
+    let asked: { digest: string; name: string; at: Card; pushes: Pushes } | undefined
+    let over = false
     try {
-      const once = `import-${crypto.randomUUID()}`
-      // What its drop pushed aside goes with it, the same on every try: one request, one transaction, one entry.
-      let pushes: Pushes | undefined
       const send = async (signal: AbortSignal) => {
-        pushes ??= this.store.pushesFor(edit)
+        if (!asked) {
+          let digest: string
+          try {
+            digest = await bytes
+            await this.store.whenNamed(key, placing)
+            placing.throwIfAborted()
+          } catch (error) {
+            // Cancelled before it went: refused, never tried again.
+            throw placing.aborted ? new Error("Cancelled") : error
+          }
+          if (over || !this.store.get(key)) throw new Error("Cancelled")
+          this.stage(key, "adding")
+          this.store.beginAdding()
+          asked = { digest, name: this.store.get(key)!.name, at: this.store.position(key) ?? dropped, pushes: this.store.pushesFor(edit) }
+        }
+        const { digest, name, at, pushes } = asked
         return this.client.import(await this.project(), once, { source: digest, name, at, moves: pushes.moves, placed: pushes.placed }, { once: signal, edit })
       }
       const answer = await new Promise<Imported>((done, refused) => this.store.outbox.add({ send, done, refused }))
-      if (pushes) this.store.pushesSent(pushes, answer.kept)
-      this.store.land(key, answer, at, edit)
+      this.store.pushesSent(asked!.pushes, answer.kept)
+      this.store.land(key, answer, asked!.at, edit)
       return answer.name
     } finally {
-      this.store.endAdding()
+      over = true
+      if (asked) this.store.endAdding()
     }
   }
 
@@ -338,9 +354,11 @@ export class Placer {
 
   /** One setup for all pending imports. Credentials stay in the local setup form, outside the outbox. */
   private project(): Promise<string> {
+    if (!this.store.active) return Promise.reject(new DOMException("Project view retired", "AbortError"))
     if (this.store.projectId) return Promise.resolve(this.store.projectId)
     this.made ??= this.hooks.create().then(
       ({ id, code, said }) => {
+        if (!this.store.active) throw new DOMException("Project view retired", "AbortError")
         this.store.projectId = id
         for (const line of said ?? []) say(line)
         this.hooks.adopt(id, code ?? "")

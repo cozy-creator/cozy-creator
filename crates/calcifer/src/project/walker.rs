@@ -101,6 +101,8 @@ pub(crate) struct Named {
     pub key: String,
     pub asset: String,
     pub approve: bool,
+    /// What it reads with no state renders first, a cut's too (`cozy render`): a cut named otherwise cuts what stands.
+    pub covers: bool,
 }
 
 /// What a render owes as it stands: what it asked, less what it has sent.
@@ -233,8 +235,8 @@ impl Graph {
         for &i in order.iter().rev() {
             let node = &nodes[i];
             let named = !taken[i].is_empty();
-            // Naming a cut cuts what stands, free: it pays for nothing it reads.
-            covered[i] |= named && !node.free;
+            // Naming a cut cuts what stands, free: it pays for nothing it reads, unless its take covers what it reads.
+            covered[i] |= named && (!node.free || taken[i].iter().any(|take| take.covers));
             if covered[i] && (!holds[i] || named || (node.free && !node.pinned)) {
                 for &read in &node.reads {
                     covered[read] = true;
@@ -426,8 +428,8 @@ impl Graph {
     }
 
     /// Those waiting that `wanted` names leave, and what reads them finds it at its turn. Answers them, and those going, whose runs are the caller's to cancel.
-    pub(crate) fn cancel(&mut self, wanted: impl Fn(&str) -> bool) -> (Vec<usize>, Vec<usize>) {
-        let named: Vec<usize> = (0..self.jobs.len()).filter(|&id| !matches!(self.jobs[id].state, State::Ended(_)) && wanted(&self.jobs[id].asset)).collect();
+    pub(crate) fn cancel(&mut self, wanted: impl Fn(&str, &str) -> bool) -> (Vec<usize>, Vec<usize>) {
+        let named: Vec<usize> = (0..self.jobs.len()).filter(|&id| !matches!(self.jobs[id].state, State::Ended(_)) && wanted(&self.jobs[id].asset, &self.jobs[id].key)).collect();
         let (going, dropped): (Vec<usize>, Vec<usize>) = named.into_iter().partition(|&id| self.jobs[id].state == State::Going);
         dropped.iter().for_each(|&id| self.end(id, End::Dropped));
         (dropped, going)

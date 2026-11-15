@@ -18,7 +18,7 @@ import numpy as np
 import torch
 
 # The pinned typecheck Runtime (0.45.0) predates the bench: drop the ignore when the pin moves past it.
-from cozy_runtime import bench  # type: ignore[attr-defined]
+from cozy_runtime import bench
 from cozy_runtime.author import (
     App,
     Config,
@@ -438,12 +438,12 @@ class Reuse(msgspec.Struct, forbid_unknown_fields=True):
 async def components(payload: Reuse, ctx: Context) -> Report:
     """Two components converted one call each under one plan identity, then reused and refused from a finished Output:
     the Runtime's built-in `bench.quantize_reuse` (it reopens the Runtime's own Outputs)."""
-    found = await call(bench.quantize_reuse, case="components", seed=payload.seed)
+    found = await call(bench.quantize_reuse, bench.QuantizeReuseRequest(case="components", seed=payload.seed))
     return Report(True, found.detail)
 
 
 @app.entrypoint(accelerator=False)
 async def resume(payload: Reuse, ctx: Context) -> Report:
     """An unfinished Output's close and reopen, finished reuse and identity refusals: `bench.quantize_reuse`."""
-    found = await call(bench.quantize_reuse, case="resume", seed=payload.seed)
+    found = await call(bench.quantize_reuse, bench.QuantizeReuseRequest(case="resume", seed=payload.seed))
     return Report(True, found.detail)

@@ -17,14 +17,16 @@ pub(crate) const DEFAULT_HUB_URL: &str = "https://tensorhub.com";
 pub const DEFAULT_CALCIFER_PORT: u16 = 8818;
 
 /// Every environment variable the load reads, with its key: credentials for model sources, by the
-/// names their own tools use; the Hub (dev and CI point one command elsewhere with it); where
-/// releases are downloaded from (dist's installers read the same one); and the machine's settings
+/// names their own tools use; the Hub (dev and CI point one command elsewhere with it) and the
+/// origins declared local beside it; where releases are downloaded from (dist's installers read the
+/// same one); and the machine's settings
 /// a pod's launcher gives (Tensorhub `podenv`, plus the devices the container may use). A pod's
 /// environment is public: none of its names is a credential.
-pub const ENV: [(&str, &str); 16] = [
+pub const ENV: [(&str, &str); 17] = [
     ("HF_TOKEN", "huggingface_token"),
     ("CIVITAI_TOKEN", "civitai_token"),
     ("COZY_HUB_URL", "hub_url"),
+    ("COZY_LOCAL_ORIGINS", "local_origins"),
     ("COZY_DOWNLOAD_URL", "download_url"),
     ("COZY_MACHINE_ROOT", "machine.root"),
     ("COZY_TENSORFS_ROOT", "machine.store"),
@@ -50,6 +52,12 @@ const EMPTY_IS_A_VALUE: [&str; 1] = ["CUDA_VISIBLE_DEVICES"];
 pub struct Config {
     /// The Hub: [`DEFAULT_HUB_URL`] unless set.
     pub hub_url: Origin,
+    /// Origins (`scheme://host:port`) this computer's operator declares local (`a,b` in the
+    /// environment): with the Hub and `download_url`, the only ones fetched at a loopback or private
+    /// address or over plaintext http. A URL a run, a package or a Hub answer names never is.
+    /// Development and CI: a test Hub's object store on loopback.
+    #[serde(deserialize_with = "list")]
+    pub local_origins: Vec<String>,
     pub calcifer: CalciferConfig,
     pub machine: MachineConfig,
     pub huggingface_token: Option<Secret>,
@@ -69,9 +77,18 @@ pub struct CalciferConfig {
     /// record says which.
     #[serde(deserialize_with = "calcifer_port")]
     pub port: Option<u16>,
+    /// Dev mode's local Vite, read only with `dev = true`: Calcifer serves its page code and hot reload as its own page, and the
+    /// browser talks to Calcifer alone.
+    #[serde(deserialize_with = "development_web")]
+    pub development_web: Option<std::net::SocketAddr>,
     /// Tests only: a shorter window than the fixed 3 hours in which Undo can bring a deleted box back, after which its files leave
     /// its project (cl-919).
     pub undo_seconds: Option<u32>,
+    /// Tests only: Calcifer's warnings and errors, project detail included, also in `calcifer/diagnostics.log`.
+    pub diagnostics: bool,
+    /// A packages checkout whose first-party packages run from source instead of the Hub (xs-195). Read only with `dev = true` on
+    /// an RC build.
+    pub packages: Option<PathBuf>,
 }
 
 /// `[machine]`: this computer's machine (TensorD, `cozy machine serve`), which judges these. A
@@ -194,6 +211,14 @@ fn calcifer_port<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u16>, 
     match port(d)? {
         Some(0) => Err(serde::de::Error::custom("Calcifer's port must be between 1 and 65535")),
         port => Ok(port),
+    }
+}
+
+fn development_web<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<std::net::SocketAddr>, D::Error> {
+    let address = Option::<std::net::SocketAddr>::deserialize(d)?;
+    match address {
+        Some(address) if !address.ip().is_loopback() || address.port() == 0 => Err(serde::de::Error::custom("calcifer.development_web must be a nonzero loopback socket address")),
+        address => Ok(address),
     }
 }
 
@@ -459,6 +484,16 @@ impl Config {
             true => "cozy login <email>".into(),
             false => format!("COZY_HUB_URL={hub} cozy login <email>"),
         }
+    }
+
+    /// Declares what this process fetches at a loopback or private address: `local_origins`, the Hub
+    /// and where releases come from. Once, before any fetch.
+    #[cfg(feature = "hub")]
+    pub fn declare_local(&self) -> Result<(), Error> {
+        let configured = [Some(self.hub_url.as_str()), self.download_url.as_ref().map(Url::as_str)];
+        let origins = self.local_origins.iter().map(String::as_str).chain(configured.into_iter().flatten());
+        tensorfs::fetch::declare_local(origins)
+            .map_err(|e| Error::new(Kind::Usage, "config_invalid", format!("`local_origins`: {}", e.detail)))
     }
 
     /// Drops blank secrets.

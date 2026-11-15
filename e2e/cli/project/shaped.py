@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 """The node cell's package: weightless tools in a video model's own shape, so what a project gives a function can be read from its run
 with no model. `shot` takes a summary and beats, a first and last frame, a plate and a pickup. `up` is an upscale whose video slot reads
@@ -110,11 +110,11 @@ class Still(msgspec.Struct):
     image: ImageFile
 
 
-def _still(out: Outputs) -> ImageFile:
-    return out.save_image(ImageFrame(SIDE, SIDE, b"\x20\x40\x60" * SIDE**2), format="png")
+def _still() -> ImageFile:
+    return ImageFile.from_image(ImageFrame(SIDE, SIDE, b"\x20\x40\x60" * SIDE**2), format="png")
 
 
 @app.tool(label="Shaped Picture")
-def picture(payload: PictureInput, out: Outputs) -> Still:
+def picture(payload: PictureInput) -> Still:
     """A picture of what it's told, reading each picture it names."""
-    return Still(_still(out))
+    return Still(_still())

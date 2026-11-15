@@ -38,6 +38,13 @@ class Cell(TypedDict):
     #: the mean difference allowed, of 255: an output's thumbnail from its reference's (default 1), and a `same_as`
     #: cell's worst frame from its twin's, sample by sample (default 0.5)
     tolerance: NotRequired[float]
+    #: Steering: each other cell (`entry/name`; its run here, else its reference) -> the least mean difference, of 255,
+    #: this cell's thumbnail keeps from that one's: the same request without its adapter or with another map, which an
+    #: adapter zeroed or not applied (or a map not read) comes within.
+    apart: NotRequired[dict[str, float]]
+    #: where `apart` is judged, `[x0, y0, x1, y1]` of the picture (0-1): it steers there, and the rest keeps within a
+    #: reference's tolerance of the other cell's (an inpaint's area)
+    region: NotRequired[tuple[float, float, float, float]]
     #: why this cell cannot run on the CPU; printed as SKIP
     skip: NotRequired[str]
     #: outputs (by output id) the function returns empty by design
@@ -74,6 +81,11 @@ class Seen(TypedDict):
     result: Json
     outputs: list[Output]
     weights: NotRequired[dict[str, dict[str, int]]]
+
+
+#: The least an adapter moves a picture, of 255, from the same request without it (`Cell.apart`): a stored reference's
+#: own tolerance (`drive.tolerance`), so a move below it can't be told from drift.
+STEERS = 1.0
 
 
 def size(width: int, height: int) -> Check:

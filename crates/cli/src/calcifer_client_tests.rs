@@ -47,7 +47,7 @@ async fn put(body: &[u8], start: u64, total: u64, complete: bool) -> Captured {
         json: true,
         holder: Mutex::new(Some(Holder {
             address, token: "fixture-token".into(), pid: std::process::id(),
-            version: env!("CARGO_PKG_VERSION").into(), started_at_ms: 0,
+            version: ::api::VERSION.into(), started_at_ms: 0,
         })),
     }));
     let digest = Digest::of(if total == 0 { b"" } else { b"hello" });

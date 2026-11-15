@@ -1,0 +1,1 @@
+The palette offers a release that needs a newer Runtime than its machine's when a run of it would move the machine up to one (cl-952's rule), so a computer still on Runtime 0.45.0 lists every 0.25 package again instead of only what's installed. A restarted Calcifer lists the Hub's tools as it last read them until the Hub answers.

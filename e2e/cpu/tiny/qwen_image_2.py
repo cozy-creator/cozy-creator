@@ -1,12 +1,16 @@
 """Tiny Qwen-Image-2.1: the Diffusers folder Qwen ships (the causal-condition DiT, Qwen3-VL as its text encoder with
 Qwen3-VL's processor, the 16x RGBA VAE in F32) at a few channels, and Qwen's two prompt enhancers (Qwen3.5 VLMs, as-is
-uploads) at 32 wide. The DiT has 2 blocks; Alibaba PAI's Fun Acc overlay builds at the release geometry (`model.py`
-SITES: 4096 wide, 32 blocks), so the executor takes the tiny DiT's (PATCH). The abliterated text encoder and both
-enhancers are bound to these same tiny weights."""
+uploads, each with its `system_prompt.txt`) at 32 wide. The DiT has 2 blocks; Alibaba PAI's Fun Acc overlay builds at the
+release geometry (`model.py` SITES: 4096 wide, 32 blocks), so the executor takes the tiny DiT's (PATCH), and carries its
+`pdd_config.json`. The abliterated text encoder and both enhancers are bound to these same tiny weights. A second VAE,
+other weights of the same shape, stands in for madebyollin's in the `vae` slot (se-131). Parts of the same pipeline, each a
+model of its own (xs-192): its transformer with its scheduler, as a community fine-tune is published, and its text encoder
+with its processor."""
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import tensorfs
@@ -19,7 +23,14 @@ from tiny import _shared
 
 MODEL, ENCODER = "qwen/qwen-image-2.1@0.1.0", "atomicchat/qwen-image-2.1-text-encoder-abliterated@0.1.0"
 ENHANCERS = ("pottokao/qwen-image-2.1-pe-t2i-abliterated@0.1.0", "darrellbest/qwen-image-2.1-pe-i2i-abliterated@0.1.0")
-FUN_ACC = "alibaba-pai/qwen-image-2.1-fun-acc@0.1.0"
+VAE = "madebyollin/texture-fix-vae@0.3.0"
+#: The pipeline's transformer and its text encoder, each a model of that part alone (xs-192).
+DIT, ENCODER_PART = "aimeasop/redcraft@0.2.0", "atomicchat/qwen-image-2.1-text-encoder-abliterated@0.2.0"
+#: 0.1.1 carries `pdd_config.json` (xs-183); qwen-image-2 before 0.10.0rc2 names 0.1.0.
+FUN_ACC = ("alibaba-pai/qwen-image-2.1-fun-acc@0.1.0", "alibaba-pai/qwen-image-2.1-fun-acc@0.1.1")
+#: Fun Acc's `pdd_config.json`: the 4-step grid, already shifted, and its terminal 0.
+PDD = {"pdd_num_steps": 4, "pdd_block_size": 1,
+       "pdd_sigmas": [1.0, 0.9169867038726807, 0.7861579060554504, 0.5494909882545471, 0.0]}
 TEXT_WIDTH, Z = 32, 64
 
 
@@ -54,11 +65,15 @@ SITES, PROJ_OUT = _sites()
 PATCH: dict[str, object] = {"qwen_image_2.model:SITES": SITES, "qwen_image_2.model:PROJ_OUT": PROJ_OUT}
 
 
+def _vae() -> torch.nn.Module:
+    return module(AutoencoderKLQwenImage21(base_dim=8, decoder_base_dim=8, z_dim=Z, num_res_blocks=1))
+
+
 def _image(out: Path) -> None:
     _shared.qwen_processor(out / "processor")
     save(module(Qwen3VLForConditionalGeneration(_shared.qwen3_vl(2, TEXT_WIDTH))).to(torch.bfloat16), out / "text_encoder")
     save(_dit().to(torch.bfloat16), out / "transformer")
-    save(module(AutoencoderKLQwenImage21(base_dim=8, decoder_base_dim=8, z_dim=Z, num_res_blocks=1)), out / "vae")
+    save(_vae(), out / "vae")
     save(FlowMatchEulerDiscreteScheduler(use_dynamic_shifting=True, base_shift=0.5, max_shift=0.9, base_image_seq_len=256,
                                          max_image_seq_len=8192, shift_terminal=0.02, time_shift_type="exponential"),
          out / "scheduler")
@@ -69,18 +84,35 @@ def _image(out: Path) -> None:
         "transformer": ["diffusers", "QwenImage21Transformer2DModel"], "vae": ["diffusers", "AutoencoderKLQwenImage21"]}))
 
 
+def _other_vae(out: Path) -> None:
+    """A VAE alone, as a pipeline of only its `vae`."""
+    save(_vae(), out / "vae")
+    (out / "model_index.json").write_text(json.dumps({
+        "_class_name": "QwenImage21Pipeline", "_diffusers_version": "0.41.0", "vae": ["diffusers", "AutoencoderKLQwenImage21"]}))
+
+
+def _part(pipeline: Path, out: Path, names: tuple[str, ...]) -> None:
+    """Some of `pipeline`'s components, as a pipeline of only those: the same files, so the same weights."""
+    index = json.loads((pipeline / "model_index.json").read_text())
+    for name in names:
+        shutil.copytree(pipeline / name, out / name)
+    (out / "model_index.json").write_text(json.dumps({key: index[key] for key in ("_class_name", "_diffusers_version", *names)}))
+
+
 def _enhancer(out: Path) -> None:
     """A Qwen3.5 VLM as its as-is upload: the Transformers folder with its processor files at the root."""
     save(module(Qwen3_5ForConditionalGeneration(_shared.qwen3_5_vl())).to(torch.bfloat16), out)
     _shared.qwen_processor(out)
+    (out / "system_prompt.txt").write_text("Rewrite the request as one JSON object with `rewritten_prompt`.\n")
 
 
 def _fun_acc(store: Path) -> str:
     """Fun Acc's layout (TensorFS's `qwenimage21.lora`): rank-4 factors on every adapted linear and the four per-step
-    output projections (`proj_out.heads`)."""
+    output projections (`proj_out.heads`), and its `pdd_config.json`."""
     rank = 4
     writer = tensorfs.Writer(cache_dir=store)
     component = writer.component("transformer", cls=None, config={"r": rank, "lora_alpha": rank})
+    component.asset("pdd_config.json", json.dumps(PDD).encode())
     generator = torch.Generator().manual_seed(2)
     shapes = {f"{site}.{factor}.weight": shape for site, (inputs, outputs) in SITES.items()
               for factor, shape in (("lora_A", [rank, inputs]), ("lora_B", [outputs, rank]))}
@@ -95,8 +127,14 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     _image(root / "qwen-image-2.1")
     torch.manual_seed(1)
     _enhancer(root / "enhancer")
+    fun_acc = _fun_acc(store)
+    torch.manual_seed(3)
+    _other_vae(root / "texture-fix")
+    _part(root / "qwen-image-2.1", root / "dit", ("transformer", "scheduler"))
+    _part(root / "qwen-image-2.1", root / "text-encoder", ("text_encoder", "processor"))
     return {MODEL: root / "qwen-image-2.1", ENCODER: root / "qwen-image-2.1", ENHANCERS[0]: root / "enhancer",
-            ENHANCERS[1]: root / "enhancer", FUN_ACC: _fun_acc(store)}
+            ENHANCERS[1]: root / "enhancer", **dict.fromkeys(FUN_ACC, fun_acc), VAE: root / "texture-fix",
+            DIT: root / "dit", ENCODER_PART: root / "text-encoder"}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:
@@ -125,5 +163,12 @@ CELLS: list[Cell] = [
      "files": {"prompt.references.0.file": _FOX}},
     {"entry": "image", "name": "turbo", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7,
                                                    "megapixels": 1}},
+    # The `vae` slot bound to another VAE: the same latents as `image/turbo`, another decoder's picture (se-131).
+    {"entry": "image", "name": "vae", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
+     "models": {"image.models.vae": VAE}},
+    # The `model` and `text_encoder` slots bound to models of those parts alone, the VAE the default's: the same weights as
+    # `image/turbo`'s, composed at run time, so the same picture (xs-192).
+    {"entry": "image", "name": "parts", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
+     "models": {"image.models.model": DIT, "image.models.text_encoder": ENCODER_PART}},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

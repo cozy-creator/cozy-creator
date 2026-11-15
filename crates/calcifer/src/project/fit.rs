@@ -18,7 +18,7 @@ use axum::{
 };
 use ::api::hub::types::RentalPlacementRequest;
 use api::{
-    calcifer::{On, ReleaseFrom},
+    calcifer::On,
     error::{Error, Kind},
     interface::{Interface, Slot},
     model_ref::ModelRef,
@@ -88,8 +88,7 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
     // A machine that hasn't said what it has can't be judged: nothing is said of it.
     let Some(gpus) = gpus(api) else { return Ok(Fit::default()) };
     let (targets, dir) = {
-        let text = project.folder.text().map_err(Refusal)?;
-        let doc = Doc::read(&project.folder, &text).map_err(Refusal)?;
+        let doc = Doc::load(&project.folder).map_err(Refusal)?;
         let lock = project.folder.lock().map_err(Refusal)?;
         let stand = doc.stand(&lock);
         let mut targets: BTreeMap<String, Vec<(String, String, Map<String, Value>)>> = BTreeMap::new();
@@ -118,7 +117,7 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
         }
     });
     let needs = futures_util::future::join_all(judging).await;
-    let kept = api.calcifer.store().rendered_here(&machine)?;
+    let kept = api.calcifer.project_store(&project.id)?.rendered_here(&machine)?;
     let mut fit = Fit::default();
     let mut picks = vec![];
     for (need, names) in needs.into_iter().flatten() {
@@ -137,7 +136,7 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
     });
     if keep && !fit.tools.is_empty() {
         let tools: Vec<(String, u64)> = fit.tools.iter().map(|tool| (tool.tool.clone(), tool.bytes)).collect();
-        let kept = api.calcifer.store().keep_rendered_here(&machine, &tools);
+        let kept = api.calcifer.project_store(&project.id)?.keep_rendered_here(&machine, &tools);
         kept.map_err(|why| Refusal(Error::new(Kind::Unavailable, "here_io", why.to_string())))?;
         fit.tools.iter_mut().for_each(|tool| tool.here = true);
     }
@@ -251,7 +250,7 @@ async fn need_of(api: &Arc<Api>, hub: &str, dir: &FsPath, target: &str, tool: &s
         None => tokio::time::timeout(HUB_LATE, described).await.ok()?.ok()?,
     };
     let function = found.function.clone()?;
-    let local_code = found.release_from == ReleaseFrom::Local;
+    let local_code = found.release_from.local();
     let weights = Weights::of(&found.interface, &function, made)?;
     if !local_code {
         placed(api, hub, &found.package, &found.release, &function).await;
@@ -440,6 +439,14 @@ async fn sized(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Optio
     checkpoint(api, hub, written, lane).await.map(|(_, bytes)| bytes)
 }
 
+/// The repository (`org/name`) a slot's choice names, as a machine names what it downloads; empty for any other choice.
+fn repository(written: &str) -> String {
+    match ModelRef::parse(written) {
+        Ok(ModelRef::Hub { model, .. } | ModelRef::Checkpoint { model, .. }) => model.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// The checkpoint and bytes of a checkpoint in `lane`, else its least, as `sized` reads them.
 async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<(String, u64)> {
     let key = format!("{hub}\n{written}\n{}", lane.unwrap_or_default());
@@ -488,7 +495,7 @@ pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, 
         let placed = placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param));
         let lane = placed.map(|(_, lane, _)| lane.clone()).or_else(|| slot.lane.clone());
         if let Some((checkpoint, bytes)) = checkpoint(api, hub, written, lane.as_deref()).await {
-            found.push(api::machine::ModelRef { checkpoint, bytes });
+            found.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0 });
         }
     }
     found

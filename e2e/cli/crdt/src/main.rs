@@ -1,6 +1,6 @@
 //! Inspect snapshots produced by real current-format CLI/project API operations and exercise their actual CRDT
 //! format across offline native replicas. No daemon, mock project store or media merge is involved.
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{fs, path::Path};
 
 use automerge::{ActorId, AutoCommit, AutoSerde, ObjId, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use serde_json::{Value, json};
@@ -26,26 +26,6 @@ fn named(value: &Value, name: &str) -> Result<String, String> {
         .map(|(id, _)| id.clone())
         .ok_or_else(|| format!("no box {name}"))
 }
-fn new_version(doc: &mut AutoCommit, asset_id: &str, id: &str, number: u64, source: &Value, words: &str) -> Result<(), String> {
-    let assets = object(doc, &ROOT, "assets")?;
-    let asset = object(doc, &assets, asset_id)?;
-    let versions = object(doc, &asset, "versions")?;
-    let version = doc.put_object(&versions, id, ObjType::Map).map_err(|e| e.to_string())?;
-    doc.put(&version, "present", true).map_err(|e| e.to_string())?;
-    doc.put(&version, "discarded", false).map_err(|e| e.to_string())?;
-    let record = doc.put_object(&version, "record", ObjType::Map).map_err(|e| e.to_string())?;
-    doc.put(&record, "id", id).map_err(|e| e.to_string())?;
-    doc.put(&record, "number", number).map_err(|e| e.to_string())?;
-    doc.put(&record, "text", words).map_err(|e| e.to_string())?;
-    let files = doc.put_object(&record, "files", ObjType::Map).map_err(|e| e.to_string())?;
-    for (role, hash) in source["files"].as_object().into_iter().flatten() {
-        doc.put(&files, role.as_str(), hash.as_str().ok_or("non-string media reference")?)
-            .map_err(|e| e.to_string())?;
-    }
-    doc.commit();
-    Ok(())
-}
-
 /// Add independent history entries with the same local display number to real CLI state.
 /// The caller installs this native merged snapshot as a fixture, then exercises the product's
 /// next ordinary CLI transaction before checking that both original identities survive.
@@ -57,10 +37,6 @@ fn history_fixture(input: &Path, output: &Path) -> Result<Value, String> {
         .filter_map(|(_, record)| record["record"]["id"].as_u64())
         .max().unwrap_or(0) + 1;
     let graph = value(&seed);
-    let content_hash = graph["assets"].as_object().into_iter().flatten()
-        .flat_map(|(_, asset)| asset["versions"].as_object().into_iter().flatten())
-        .flat_map(|(_, version)| version["record"]["files"].as_object().into_iter().flatten())
-        .find_map(|(_, hash)| hash.as_str()).ok_or("no CLI-created media hash for run fixture")?;
     let mut replicas = Vec::new();
     for (actor, uid) in [(201u64, "e2e-history-a"), (202u64, "e2e-history-b")] {
         let mut doc = AutoCommit::load(&bytes).map_err(|e| e.to_string())?.with_actor(ActorId::from(actor.to_be_bytes()));
@@ -88,18 +64,6 @@ fn history_fixture(input: &Path, output: &Path) -> Result<Value, String> {
         for (key, text) in [("by", r#"{"via":"api"}"#), ("words", uid), ("edits", "[]"), ("changes", "[]")] {
             doc.put(&record, key, text).map_err(|e| e.to_string())?;
         }
-        let runs = object(&doc, &ROOT, "runs")?;
-        let run_uid = format!("{uid}-file");
-        let run = doc.put_object(&runs, run_uid.as_str(), ObjType::Map).map_err(|e| e.to_string())?;
-        doc.put(&run, "present", true).map_err(|e| e.to_string())?;
-        doc.put(&run, "order", 0u64).map_err(|e| e.to_string())?;
-        let record = doc.put_object(&run, "record", ObjType::Map).map_err(|e| e.to_string())?;
-        doc.put(&record, "id", run_uid).map_err(|e| e.to_string())?;
-        doc.put(&record, "run_id", uid).map_err(|e| e.to_string())?;
-        doc.put(&record, "run", number).map_err(|e| e.to_string())?;
-        for (key, text) in [("function", "e2e/replica"), ("output", "image"), ("sha256", content_hash)] {
-            doc.put(&record, key, text).map_err(|e| e.to_string())?;
-        }
         doc.commit();
         replicas.push(doc);
     }
@@ -118,13 +82,6 @@ fn history_check(input: &Path) -> Result<Value, String> {
     require(a["present"] == true && b["present"] == true, "next CLI write lost a concurrent same-number history entry")?;
     require(a["record"]["uid"] == "e2e-history-a" && b["record"]["uid"] == "e2e-history-b", "history map identity was replaced")?;
     require(a["record"]["id"] == b["record"]["id"], "history fixture no longer exercises colliding local labels")?;
-    let a = &value["runs"]["e2e-history-a-file"];
-    let b = &value["runs"]["e2e-history-b-file"];
-    require(a["present"] == true && b["present"] == true, "next CLI write lost a same-number peer run file")?;
-    require(a["record"]["run"] == b["record"]["run"] && a["record"]["run_id"] != b["record"]["run_id"], "run fixture lost its distinct global origins")?;
-    let mut orders = [a["order"].as_u64().ok_or("missing run order")?, b["order"].as_u64().ok_or("missing run order")?];
-    orders.sort();
-    require(orders == [0, 1], "unrelated CLI edit did not normalize merged run display order as full logical state does")?;
     let boxes = object(&doc, &ROOT, "boxes")?;
     let held = object(&doc, &boxes, &named(&value, "whale")?)?;
     let fields = object(&doc, &held, "fields")?;
@@ -145,7 +102,7 @@ fn history_check(input: &Path) -> Result<Value, String> {
     }
     nested.sort();
     require(nested == [vec!["e2e-history-a-left", "e2e-history-a-right"], vec!["e2e-history-b-left", "e2e-history-b-right"]], "nested object alternatives changed")?;
-    Ok(json!({"passed":true,"same_number_history_preserved_after_cli_commit":2,"same_number_run_files_preserved_after_cli_commit":2,"conflicts_retained_after_cli_commit":alternatives,"nested_conflicts_retained_after_cli_commit":nested}))
+    Ok(json!({"passed":true,"same_number_history_preserved_after_cli_commit":2,"conflicts_retained_after_cli_commit":alternatives,"nested_conflicts_retained_after_cli_commit":nested}))
 }
 fn run(before: &Path, renamed: &Path) -> Result<Value, String> {
     let seed_bytes = fs::read(before).map_err(|e| e.to_string())?;
@@ -155,24 +112,9 @@ fn run(before: &Path, renamed: &Path) -> Result<Value, String> {
     require(initial["schema"] == 1, "unexpected logical schema")?;
     let box_id = named(&initial, "kyogre")?;
     require(named(&value(&after), "whale")? == box_id, "rename replaced stable entity identity")?;
-    let (asset_id, asset) = initial["assets"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .find(|(_, item)| item["present"] == true && item["versions"].as_object().is_some_and(|versions| !versions.is_empty()))
-        .ok_or("no real CLI-created asset versions in fixture")?;
-    let versions = asset["versions"].as_object().ok_or("versions are not a stable-ID map")?;
-    for (id, item) in versions {
-        require(item["record"]["id"] == *id, "version ID differs from its CRDT key")?;
-    }
-    let original: BTreeSet<String> = versions.keys().cloned().collect();
-    let source = versions.values().next().ok_or("no version")?["record"].clone();
-    let display = versions
-        .values()
-        .filter_map(|item| item["record"]["number"].as_u64())
-        .max()
-        .unwrap_or(0)
-        + 1;
+    // Files, versions and runs are project.db's rows, never node state (cl-904).
+    let outside = ["assets", "files", "runs", "reserved", "makes"].iter().all(|key| initial.get(*key).is_none());
+    require(outside, "the document holds files, versions or runs")?;
     let heads = seed.get_heads();
     let mut replicas: Vec<AutoCommit> = (101u64..104)
         .map(|actor| {
@@ -189,8 +131,6 @@ fn run(before: &Path, renamed: &Path) -> Result<Value, String> {
             .map_err(|e| e.to_string())?;
         doc.commit();
     }
-    new_version(&mut replicas[0], asset_id, "e2e-version-a", display, &source, "independent dawn")?;
-    new_version(&mut replicas[1], asset_id, "e2e-version-b", display, &source, "independent dusk")?;
     let packets: Vec<_> = replicas.iter_mut().map(|doc| doc.get_changes(&heads)).collect();
     for doc in &mut replicas {
         for packet in packets.iter().rev() {
@@ -204,19 +144,6 @@ fn run(before: &Path, renamed: &Path) -> Result<Value, String> {
     }
     let merged = value(&replicas[0]);
     require(replicas.iter().all(|doc| value(doc) == merged), "replicas diverged")?;
-    let actual: BTreeSet<String> = merged["assets"][asset_id]["versions"]
-        .as_object()
-        .ok_or("lost version map")?
-        .keys()
-        .cloned()
-        .collect();
-    require(
-        original.is_subset(&actual)
-            && actual.contains("e2e-version-a")
-            && actual.contains("e2e-version-b")
-            && actual.len() == original.len() + 2,
-        "same display number lost an immutable version",
-    )?;
     let boxes = object(&replicas[0], &ROOT, "boxes")?;
     let held = object(&replicas[0], &boxes, &box_id)?;
     let fields = object(&replicas[0], &held, "fields")?;
@@ -236,7 +163,7 @@ fn run(before: &Path, renamed: &Path) -> Result<Value, String> {
         require(value(&restored) == merged, "snapshot restart changed merged state")?;
     }
     Ok(
-        json!({"passed":true,"native_replicas":3,"stable_rename_id":box_id,"same_number_versions_preserved":2,"original_versions":original.len(),"prompt_alternatives":alternatives,"duplicate_reordered_delivery":true,"snapshot_reload":true}),
+        json!({"passed":true,"native_replicas":3,"stable_rename_id":box_id,"no_files_versions_runs":outside,"prompt_alternatives":alternatives,"duplicate_reordered_delivery":true,"snapshot_reload":true}),
     )
 }
 fn canvas_collision(input: &Path, output: &Path) -> Result<Value, String> {

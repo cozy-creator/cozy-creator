@@ -762,6 +762,7 @@ fn run_worker(receiver: mpsc::Receiver<Payload>) {
                 .recv()
                 .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
         } else {
+            // A fill ends on the GPU, which wakes no host thread short of a host function holding each producer stream.
             receiver.recv_timeout(Duration::from_millis(1))
         };
         match received {

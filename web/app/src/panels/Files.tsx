@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import type { Asset } from "../api/calcifer"
 import { projectQuery } from "../api/queries"
+import { THUMB_TRIES, thumbWait, whenThumb } from "../api/thumbs"
 import { useConnection } from "../app/Connection"
 import { useProjectId, useTo } from "../app/Shell"
 import { downloadable } from "../canvas/Media"
@@ -10,18 +11,26 @@ import { nodeState, StateDot } from "../canvas/StateDot"
 import { Menu, useMenuAt } from "../ui/Menu"
 import { DrawerFrame } from "./Drawer"
 
-/** Its picture, a video's poster: a small thumbnail. */
+/** Its picture, a video's poster: the thumbnail its box draws. One not made yet is asked again when Calcifer says it's there. */
 function Picture({ id, sha256 }: { id: string; sha256: string }) {
   const { client } = useConnection()
   const [src, setSrc] = useState<string>()
+  const [tries, setTries] = useState(0)
+  const wait = useRef<(() => void) | undefined>(undefined)
   useEffect(() => {
     let live = true
-    void client.transport.src(client.thumb(id, sha256, 256)).then((url) => live && setSrc(url))
+    const path = client.thumb(id, sha256)
+    void client.transport.src(tries ? `${path}&try=${tries}` : path).then((url) => live && setSrc(url))
     return () => {
       live = false
     }
-  }, [client, id, sha256])
-  return src ? <img src={src} alt="" draggable={false} /> : null
+  }, [client, id, sha256, tries])
+  useEffect(() => () => wait.current?.(), [])
+  const missed = () => {
+    if (tries + 1 >= THUMB_TRIES) return setSrc(undefined)
+    wait.current = whenThumb(id, sha256, thumbWait(tries + 1), () => setTries(tries + 1))
+  }
+  return src ? <img src={src} alt="" draggable={false} onError={missed} /> : null
 }
 
 function Row({ id, asset, waiting }: { id: string; asset: Asset; waiting: boolean }) {

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { createContext, type Dispatch, type DragEvent, type FocusEvent, type PointerEvent, type ReactNode, type SetStateAction, useContext, useEffect, useId, useRef, useState } from "react"
-import type { ToolField, Tool } from "../api/calcifer"
+import type { ToolField } from "../api/calcifer"
 import { runFullQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import type { Media } from "../types"
@@ -12,13 +12,12 @@ import type { CanvasStore, ElementView } from "./CanvasStore"
 import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
+import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
 import { Ghosts, Spread, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { makes, watched } from "./shown"
 import { mentionsIn, type Row, rowsIn, textsIn } from "./text"
-import { ToolBox } from "./ToolBox"
 import { WhenOff, whenOff } from "./When"
 import "./FocusParameters.css"
 
@@ -59,9 +58,6 @@ function memberBound(parent: Bound, field: string): Bound {
 
 const said = (value: unknown): string => (typeof value === "string" ? value : "")
 
-/** What words take of a mention: nothing but words. */
-const WORDS_ONLY: Media[] = []
-
 interface Drawn {
   name: string
   field: ToolField
@@ -90,7 +86,7 @@ function Reset({ field, bound }: { field: ToolField; bound: Bound }) {
   )
 }
 
-/** Words, or a prompt: chips for what it mentions, and what a prompt can't send is marked, never sent. */
+/** Words, or a prompt: chips for what it mentions, and what its tool can't use there struck through, never sent (cl-944). */
 function TextField({ name, field, bound, view, place, label, focus, named, block, framed }: Drawn) {
   const store = useCanvasStore()
   const beat = /^beats\.\d+\./.test(place)
@@ -106,7 +102,6 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
       label={label}
       placeholder={field.placeholder ?? undefined}
       missing={view.asset?.missing ?? []}
-      takes={field.type === "words" ? WORDS_ONLY : ((field.takes as Media[] | null) ?? undefined)}
       focus={focus}
       thumbs={!inFrame && !references}
       onDraft={bound.draft}
@@ -319,7 +314,8 @@ export function whyNotIn(store: CanvasStore, accept: Media | undefined, mention:
   return `${label} takes ${WANTED[accept]}, and ${baseOf(mention)} is ${kind === "text" ? "words" : (WANTED[kind as Media] ?? "a file")}`
 }
 
-/** A slot's file: its thumbnail, and on a video its in and out. One of another kind, written by hand, is marked: a render ignores it (decision 8). */
+/** A slot's file: its thumbnail, and on a video its in and out. One its tool can't use, written by hand, is struck through, saying why: a render
+ *  leaves it out (decision 8, cl-944). */
 function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; mention: string; label: string; wrong: string | null; onRange(next: string): void; onOff(): void }) {
   const store = useCanvasStore()
   const said = store.mentionOf(mention, name)
@@ -332,7 +328,7 @@ function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; m
   const frames = framesIn(file?.duration_ms, fps)
   return (
     <div className={`slot-held ${missing ? "missing" : ""}`}>
-      <span className={`chip ${wrong && !missing ? "refused" : ""}`} title={wrong && !missing ? `${wrong}: a render leaves it out` : mention} data-mention={mention}>
+      <span className={`chip ${wrong && !missing ? "unused" : ""}`} title={wrong && !missing ? wrong : mention} data-mention={mention}>
         {baseOf(mention)}
         {range && ` ${timecode(range.from, fps)}–${timecode(range.to ?? frames, fps)}`}
         {angled && ` ${degrees(angled)}`}
@@ -427,7 +423,7 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
       <span className="ctl-name">{field.label}</span>
       {why && <span className="refusal">{why}</span>}
       {held.map((one, i) => (
-        <Held key={`${i}:${baseOf(one)}`} name={name} mention={one} label={field.label} wrong={refusal(one)} onOff={() => write(held.filter((other) => other !== one))} onRange={(next) => write(held.map((other) => (other === one ? next : other)))} />
+        <Held key={`${i}:${baseOf(one)}`} name={name} mention={one} label={field.label} wrong={view.asset?.unused?.find((unused) => unused.at === place && unused.mention === one)?.why ?? null} onOff={() => write(held.filter((other) => other !== one))} onRange={(next) => write(held.map((other) => (other === one ? next : other)))} />
       ))}
       {(!held.length || field.multiple) && (
         <input
@@ -507,9 +503,9 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
   const run = accordion && focused === name ? watched(view)?.run : undefined
   const live = view.run?.number === run ? view.run : undefined
   const settled = (status: string | undefined) => status === "completed" || status === "failed" || status === "canceled"
-  const enabled = run !== undefined && !settled(live?.status)
+  const enabled = Boolean(store.projectId) && run !== undefined && !settled(live?.status)
   const { data: full } = useQuery({
-    ...runFullQuery(client, run ?? 0, live?.settled_at_ms ?? 0),
+    ...runFullQuery(client, store.projectId ?? "", run ?? 0, live?.settled_at_ms ?? 0),
     enabled,
     refetchInterval: (query) => enabled && !settled(query.state.data?.status) ? 1000 : false,
     refetchIntervalInBackground: false,
@@ -736,12 +732,12 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
 /** The rows the frame opens one at a time, with its first prompt's section (cl-938): absent outside the frame. */
 const Sections = createContext<{ row: number | null; setRow: Dispatch<SetStateAction<number | null>> } | null>(null)
 
-/** What the frame holds while a take is written, as an image's prompt is held over it (cl-938, Paul 11-12): its first prompt (else its first
- *  slot), and the list of prompts that adds up to it (H3's beats). A tool with its own box draws all of that itself. */
-export function framedOf(view: ElementView, fields: ToolField[], tool: Tool | undefined): ToolField[] {
+/** What the frame holds while a take is written, as an image's prompt is held over it (cl-938, Paul 11-12): its main text (else its first
+ *  slot), and the list of prompts that adds up to it (H3's beats). */
+export function framedOf(view: ElementView, fields: ToolField[]): ToolField[] {
   // A picture or a video with no tool asks nothing: its words are a tool's to ask for (Paul, 11-12, cl-933).
-  if (!view.hereWords || tool?.ui || (!view.asset?.tool && view.asset?.kind !== "text")) return []
-  const first = fields.find((field) => field.type === "prompt" || field.type === "words") ?? fields.find((field) => field.type === "slot")
+  if (!view.hereWords || (!view.asset?.tool && view.asset?.kind !== "text")) return []
+  const first = mainText(fields) ?? fields.find((field) => field.type === "slot")
   const rows = fields.find((field) => field.type === "group" && field.list && field.members?.some((member) => member.total) && field.members.some((member) => member.type === "prompt"))
   return [...(first ? [first] : []), ...(rows ? [rows] : [])]
 }
@@ -769,7 +765,7 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
   const [open, setOpen] = useState<"first" | number | null>("first")
   const [writing, setWriting] = useState<"first" | number | null>(null)
   const panel = useId()
-  const fields = view.asset ? framedOf(view, fieldsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined) : []
+  const fields = view.asset ? framedOf(view, fieldsOf(view.asset, tools)) : []
   if (!fields.length) return null
   const [first, list] = fields
   const values = (field: ToolField) => store.valueOf(name, field.field)
@@ -841,10 +837,9 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   if (!view.asset) return null
-  const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
   const fields = makes(view) ? fieldsOf(view.asset, tools) : []
-  const inFrame = framedOf(view, fields, tool)
-  const first = fields.find((field) => field.type === "prompt" || field.type === "words")
+  const inFrame = framedOf(view, fields)
+  const first = mainText(fields)
   // The box's own shape is its shape: its corner sets it.
   const rest = fields.filter((field) => !inFrame.includes(field) && field.type !== "timeline" && field.type !== "shape")
   const faced = !editing ? [] : focused ? rest : rest.filter((field) => field.field === "megapixels" || onFace(field, store.valueOf(name, field.field)))
@@ -858,51 +853,46 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
     const control = <ControlRow key={field.field} name={name} field={field} view={view} focus={store.focusing === name && field === first} named={folded.includes(field)} />
     return focused && field.type === "group" && field.list ? <section key={field.field} className="focus-parameter-group"><h3>{field.label}</h3>{control}</section> : control
   }
+  const cell = (field: ToolField) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named />
   const held = beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)
+  const shown = faced.filter((field) => !small(field))
+  const behind = !focused && (plainFolded.length > 0 || beyond.length > 0)
+  const render = (
+    <div className="row actions">
+      {behind && <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
+      {actions}
+    </div>
+  )
+  const lines = editing && shown.length > 0 && <div className="edit-shown">{shown.map(row)}</div>
+  const grouped = parameters.length > 0 && <div className="edit-parameters">{parameters.map(cell)}</div>
+  if (focused) {
+    return (
+      <div className="edit-face focused">
+        {render}
+        {lines}
+        {grouped}
+        {held}
+        {children}
+      </div>
+    )
+  }
   return (
-    <div className={`edit-face ${focused ? "focused" : ""}`}>
-      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} grouped={parameters} row={row}>
-        {(lines, more, set) => {
-          const behind = !focused && ((more !== null && plainFolded.length > 0) || beyond.length > 0)
-          const render = (
-            <div className="row actions">
-              {behind && <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
-              {actions}
-            </div>
-          )
-          const grouped = set !== null && <div className="edit-parameters">{set}</div>
-          if (focused) {
-            return (
-              <>
-                {render}
-                {editing && lines && <div className="edit-shown">{lines}</div>}
-                {grouped}
-                {held}
-                {children}
-              </>
-            )
-          }
-          return (
-            <>
-              {editing && lines && <div className="edit-shown">{lines}</div>}
-              {more !== null && expert.some((field) => !small(field)) && <div className="advanced">{expert.filter((field) => !small(field)).map(row)}</div>}
-              {grouped}
-              {behind ? (
-                open && (
-                  <div className="edit-more">
-                    {more}
-                    {held}
-                    {children}
-                  </div>
-                )
-              ) : (
-                children
-              )}
-              {render}
-            </>
-          )
-        }}
-      </ToolBox>
+    <div className="edit-face">
+      {lines}
+      {expert.some((field) => !small(field)) && <div className="advanced">{expert.filter((field) => !small(field)).map(row)}</div>}
+      {grouped}
+      {behind ? (
+        open && (
+          <div className="edit-more">
+            {plainFolded.map(row)}
+            {held}
+            {children}
+          </div>
+        )
+      ) : (
+        children
+      )}
+      {render}
     </div>
   )
 }

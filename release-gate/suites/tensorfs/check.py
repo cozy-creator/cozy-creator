@@ -100,6 +100,7 @@ class Straggler(TypedDict):
     error: str
     silenced: set[str]
     body_failed: int
+    hedged: int
 
 
 class Timing(TypedDict):
@@ -245,7 +246,8 @@ def check(gate: 'GateHistory') -> tuple[list[str], list[str]]:
                     'asks': max((r['ask'] for r in objs if r['path'] in slow), default=0),
                     'error': open(os.path.join(t, name + '.err')).read()[-300:] if code != '0' else '',
                     'silenced': {r['path'] for r in objs if r.get('silent')},
-                    'body_failed': sum('body failed' in line for line in open(os.path.join(t, name + '.err'), errors='replace'))}
+                    'body_failed': sum('body failed' in line for line in open(os.path.join(t, name + '.err'), errors='replace')),
+                    'hedged': sum('asked again on another connection' in line for line in open(os.path.join(t, name + '.err'), errors='replace'))}
     c = st.get('straggler-clean')
     # Each slowed arm against the clean one: stragglers (the first ask drips), cold objects (every ask drips, tfs-138),
     # crawling objects (every ask moves 64 KiB and drips, tfs-141), and many, whose parts come at full speed (tfs-143).
@@ -302,6 +304,23 @@ def check(gate: 'GateHistory') -> tuple[list[str], list[str]]:
             good = sl['seconds'] <= 60 and sl['body_failed'] >= 1 and asks >= 2
             (notes if good else fails).append(f'tensorfs straggler-silent: {sl["seconds"]:.1f} s (limit 60), {sl["body_failed"]} body '
                                               f'failed, the silent object asked {asks} times')
+
+    # One small ask dripping 16 KiB every 25 s after half its body, under the 30 s stall (run 47820's last ~1 MB took
+    # 15 min, tfs-149): a hedge on another connection lands it within 20 s of the clean download.
+    sl = st.get('straggler-drip')
+    if chosen('straggler'):
+        if not sl:
+            fails.append('tensorfs straggler-drip: the case did not run')
+        elif not sl['ok']:
+            fails.append(f'tensorfs straggler-drip: tfs download with a dripping tail failed: {sl["error"]}')
+        elif not sl['silenced']:
+            fails.append('tensorfs straggler-drip: no ask dripped: the case tested nothing')
+        else:
+            asks = max((r['ask'] for r in events(os.path.join(t, 'straggler-drip.proxy')) if r.get('path') in sl['silenced']), default=0)
+            limit = (c['seconds'] if c else 0) + 20
+            good = sl['seconds'] <= limit and sl['hedged'] >= 1 and asks >= 2
+            (notes if good else fails).append(f'tensorfs straggler-drip: {sl["seconds"]:.1f} s (limit {limit:.1f}), {sl["hedged"]} '
+                                              f'hedged, the dripping object asked {asks} times')
 
     def rate(name: str, nbytes: int | None, seconds: float | None) -> None:
         if nbytes and seconds:

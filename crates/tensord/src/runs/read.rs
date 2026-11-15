@@ -134,14 +134,22 @@ impl Runs {
         }
         Ok(self.service.engine.want_preview(&record.id))
     }
-    /// The runs `actor` reads, newest first, before the run numbered `before` (0: the newest).
+    /// The runs `actor` reads, newest first, before the run numbered `before` (0: the newest); never a list's (`ahead`).
     pub(crate) fn list(&self, actor: VerifiedActor, before: u64, limit: u32) -> Result<v1::RunList, Error> {
         let limit = if limit == 0 { 64 } else { limit.min(256) };
-        Ok(v1::RunList { runs: self.page(actor, &[], before, true, limit as usize)? })
+        let runs = self.page(actor, &[], before, true, limit as usize)?;
+        Ok(v1::RunList { runs: runs.into_iter().filter(|run| !crate::ahead::hidden(&run.id)).collect() })
     }
-    /// The runs of `actor`'s that have not ended, oldest first.
+    /// The runs of `actor`'s that have not ended, oldest first; never a list's (`ahead`).
     pub(crate) fn live(&self, actor: VerifiedActor) -> Result<Vec<v1::RunState>, Error> {
-        self.page(actor, &LIVE.map(String::from), 0, false, 256)
+        let runs = self.page(actor, &LIVE.map(String::from), 0, false, 256)?;
+        Ok(runs.into_iter().filter(|run| !crate::ahead::hidden(&run.id)).collect())
+    }
+    /// The ids of the runs `actor` itself sent that have not ended, its lists' included.
+    pub(crate) fn live_ids(&self, actor: VerifiedActor) -> Result<Vec<String>, Error> {
+        let own = actor_id(actor);
+        let records = (self.service.engine.actor_page(Some(&own), 0, 0, false, &LIVE.map(String::from), usize::MAX)).map_err(problem)?;
+        records.iter().filter(|record| scope_allows(record)).map(|record| self.state_of(record).map(|state| state.id)).collect()
     }
     /// Cancels `actor`'s run `id`; an id this machine never received is recorded canceled.
     pub(crate) fn cancel(&self, actor: VerifiedActor, id: &str) -> Result<v1::RunState, Error> {
@@ -627,7 +635,10 @@ impl Runs {
                 .filter_map(|e| api::interface::name(e).map(str::to_string))
                 .collect::<Vec<_>>();
             entrypoints.sort();
+            let functions = crate::estimate::functions(&self.service, &installed, &entrypoints);
             environments.push(v1::Environment {
+                functions,
+                manifest: installed.manifest,
                 level: level.name().into(),
                 installation: installed.alias,
                 package: installed.package,

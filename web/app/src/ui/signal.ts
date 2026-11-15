@@ -25,3 +25,10 @@ export function signal<T>(value: T): Signal<T> {
 export function useSignal<T>(source: Signal<T>): T {
   return useSyncExternalStore(source.subscribe, source.get)
 }
+
+/** Whether this tab is in view: what's only for a person looking stops while it isn't. */
+export const tabShown = (() => {
+  const shown = signal(document.visibilityState === "visible")
+  document.addEventListener("visibilitychange", () => shown.set(document.visibilityState === "visible"))
+  return shown
+})()

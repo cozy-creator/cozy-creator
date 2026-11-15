@@ -21,9 +21,9 @@ from vault_stream import events  # noqa: E402
 def main() -> None:
     project, credential = Path(sys.argv[1]).resolve(), Path(sys.argv[2])
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
-    url = f"http://{holder['address']}/v1/projects/{urllib.parse.quote(str(project), safe='')}/vault/operations/{uuid.uuid4().hex}"
+    url = f"http://{holder['address']}/v1/projects/{urllib.parse.quote(str(project), safe='')}/vault/operations/p3_{uuid.uuid4().hex}"
     body = json.dumps({"action": "encrypt", "passphrase": credential.read_text().strip(), "idle_timeout_s": 0}).encode()
-    headers = {"Authorization": f"Bearer {holder['token']}", "Content-Type": "application/json", "Accept": "text/event-stream"}
+    headers = {"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3", "Content-Type": "application/json", "Accept": "text/event-stream"}
     request = urllib.request.Request(url, data=body, headers=headers, method="PUT")
     seen: dict[str, int] = {}
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=300) as stream:
@@ -44,12 +44,16 @@ def main() -> None:
         except ProcessLookupError:
             break
         time.sleep(0.1)
-    parent = project.parent
-    stages = sorted(path.name for path in parent.glob(".cozy-vault-stage-*"))
-    receipts = sorted(path.name for path in parent.glob(".cozy-vault-*.transaction.json"))
-    runtime = sorted(path.name for path in (Path.home() / ".cozy/calcifer/vaults").glob("stage-*"))
-    assert len(stages) == 1 and len(receipts) == 1, f"no half-made stage to recover: {stages} {receipts}"
-    print(json.dumps({"interrupted": seen, "stages": len(stages), "receipts": len(receipts), "runtime": len(runtime)}))
+    # A conversion is contained in its project: its stage, the source it moves aside, its receipt and its mounts.
+    stages = sorted(path.name for path in project.glob(".cozy-vault-stage-*"))
+    sources = sorted(path.name for path in project.glob(".cozy-project-source-*"))
+    receipt = (project / ".vault-transition.json").is_file()
+    runtime = sorted(path.name for path in project.glob(".cozy-vault-stage-*/.vault-runtime/*") if path.is_dir())
+    assert len(stages) == 1 and len(sources) == 1 and receipt, f"no half-made stage to recover: {stages} {sources} {receipt}"
+    outside = sorted(str(path) for path in [*project.parent.glob(".cozy-vault-*"), *project.parent.glob(".cozy-project-source-*"),
+                                            *(Path.home() / ".cozy/calcifer/vaults").glob("stage-*")])
+    assert not outside, f"the conversion wrote outside its project: {outside}"
+    print(json.dumps({"interrupted": seen, "stages": len(stages), "sources": len(sources), "receipts": int(receipt), "runtime": len(runtime)}))
 
 
 if __name__ == "__main__":

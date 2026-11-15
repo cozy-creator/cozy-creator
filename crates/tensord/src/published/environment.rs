@@ -13,13 +13,16 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     str::FromStr,
 };
 
 /// What one environment is built from.
+#[derive(Clone, Copy)]
 pub(crate) struct Project<'a> {
+    /// This build installs the locked managed-call optional extra.
+    pub managed_calls: bool,
     /// Its pyproject.toml's directory (and its uv.lock's, when `locked`).
     pub dir: &'a Path,
     pub python: &'a str,
@@ -94,15 +97,21 @@ impl Publisher {
         let said = |reason: Option<String>| job.waiting(reason);
         let _turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
         let layer = self.layer(job, None)?;
-        let missed = match self.build_on(env, project, job, layer.as_deref(), &[]) {
+        let built = self.build_selected(env, project, job, layer.as_deref())?;
+        if !project.managed_calls && has_managed_calls(project.dir) {
+            let managed = Project { managed_calls: true, fetch: None, ..*project };
+            self.build_selected(&env.join(MANAGED_CALLS), &managed, job, layer.as_deref())?;
+        }
+        Ok(built)
+    }
+
+    fn build_selected(&self, env: &Path, project: &Project, job: &Job, layer: Option<&Layer>) -> Result<Built, Failure> {
+        let missed = match self.build_on(env, project, job, layer, &[]) {
             Err((TORCH_MISSED, missed)) => missed,
             built => return built,
         };
-        let torch = layer.as_ref().and_then(|l| l.version("torch")).unwrap_or_default();
+        let torch = layer.and_then(|l| l.version("torch")).unwrap_or_default();
         let warning = format!("requires {missed}; this machine's torch is {torch}: its environment installs its own");
-        if crate::private_io::current().is_none() {
-            tracing::warn!("package {} {warning}", project.label);
-        }
         job.stage(format!("warning: {warning}"));
         let own: Vec<String> = missed.split(", ").filter(|r| on_root(r)).map(String::from).collect();
         let mut built = self.build_on(env, project, job, None, &own)?;
@@ -127,7 +136,12 @@ impl Publisher {
             next("fetching its files");
             fetch()?;
         }
-        let carried = carried(project.wheels).map_err(io_failure)?;
+        // uv's downloads come from their own index, outside the downloader, and its many requests starve them (run
+        // 43316018343: 1080 s at 100-450 KiB/s): what comes after this install waits until it is built (cl-966).
+        let _aside = self.machine.give_way(job.order);
+        let carried: Vec<_> = carried(project.wheels).map_err(io_failure)?.into_iter()
+            .filter(|(name, _)| project.managed_calls || !has_managed_calls(project.dir)
+                || project.locked.is_none_or(|locked| locked.caller_packages.contains(name))).collect();
         if env.exists() {
             fs::remove_dir_all(env).map_err(io_failure)?;
         }
@@ -143,6 +157,7 @@ impl Publisher {
         let sync = |locked: &Locked, over: bool| -> Result<(), Failure> {
             let mut args = vec!["sync", "--frozen", "--inexact", "--no-dev", "--no-editable", "--no-install-project",
                 "--project", &dir, "--python", &py];
+            if has_managed_calls(project.dir) { args.extend([if project.managed_calls { "--extra" } else { "--no-extra" }, "cozy-calls"]); }
             let held = carried.iter().map(|(name, _)| name.as_str()).chain(project.skip.iter().map(String::as_str))
                 .chain(SDK.into_iter().filter(|name| over && locked.packages.contains_key(*name)))
                 .chain(locked.torch.iter().map(String::as_str).filter(|_| layer.is_some()));
@@ -227,7 +242,7 @@ impl Publisher {
             self.uv(&["pip", "install", "--python", &py, "--no-deps", "--no-sources", "--editable", &dir], &[], job)?;
         }
         if let Some(tree) = project.editable {
-            live_paths(env, tree).map_err(io_failure)?;
+            live_paths(env, tree, project.managed_calls).map_err(io_failure)?;
         }
         // Torch for itself, the rare fallback: at what the package requires, from the index for
         // this machine's accelerator.
@@ -251,8 +266,11 @@ impl Publisher {
                             let why = format!("its requirements refuse this machine's ({})", ranges.join("; "));
                             return Err(self.unspoken(env, project, &theirs, &why, true));
                         }
-                        fallback.push(format!("its lock's {} can't speak this machine's executor protocol: it runs on this machine's {}; {}",
-                            shown(&theirs), shown(&self.machine_pair()), relock(project, false)));
+                        // The open RC's Runtime runs released packages as a matter of course (cl-952): nothing to say.
+                        if !self.machine_pair().get("cozy-runtime").is_some_and(|runtime| rc_build(runtime)) {
+                            fallback.push(format!("its lock's {} can't speak this machine's executor protocol: it runs on this machine's {}; {}",
+                                shown(&theirs), shown(&self.machine_pair()), relock(project, false)));
+                        }
                         fallback.extend(checked(&found));
                     }
                     Ok(found) => fallback.extend(checked(&found)),
@@ -313,11 +331,13 @@ impl Publisher {
     /// it the lock's or a later patch of it (before 1.0 a minor may change what a package calls, a
     /// patch doesn't), so a release runs what its lock resolved, with a Runtime's fixes; or a pair
     /// that can't speak this machine's executor protocol (`speaks`), which only this machine's can.
-    /// A member the lock doesn't name is this machine's.
+    /// A member the lock doesn't name is this machine's. An RC build stands in for any RC build of its
+    /// series a lock took (xs-194): an RC package runs on its machine's Runtime, never the wheel its lock
+    /// named, which the next Runtime merge replaces.
     pub(crate) fn stands_in(&self, locked: &Locked) -> bool {
         let ours = self.machine_pair();
         !ours.is_empty() && (!self.speaks(&locked.packages) || SDK.iter().all(|name| match (ours.get(*name), locked.packages.get(*name)) {
-            (Some(ours), Some(locked)) => patch_of(ours, locked),
+            (Some(ours), Some(locked)) => patch_of(ours, locked) || (rc_build(ours) && rc_build(locked) && same_series(ours, locked)),
             (ours, _) => ours.is_some(),
         }))
     }
@@ -327,7 +347,7 @@ impl Publisher {
     /// built with (a Runtime of another series requires another TensorFS).
     fn protocol(&self) -> BTreeMap<String, String> {
         match self.machine_pair() {
-            ours if ours.is_empty() => BTreeMap::from([("tensorfs".to_string(), env!("CARGO_PKG_VERSION").to_string())]),
+            ours if ours.is_empty() => BTreeMap::from([("tensorfs".to_string(), tensorfs::VERSION.to_string())]),
             ours => ours,
         }
     }
@@ -388,12 +408,13 @@ impl Publisher {
             Err(("package_installation_uv_failed", detail)) => return Ok(Err(crate::triage::ends(&detail, 1000))),
             done => done?,
         }
-        Ok(Ok(self.check(py, job)?.difference(&before).cloned().collect()))
+        Ok(Ok(self.check(py, job)?.difference(&before).filter(|line| !rc_admitted(line)).cloned().collect()))
     }
 
     /// Finds a published version for each of `floors` and for what a prerelease's wheel requires of
-    /// the pair beyond what `env` holds: uv's index, else a GitHub prerelease, landed in `env`'s
-    /// `PAIR_WHEELS` for uv to find. Each as uv installs it.
+    /// the pair beyond what `env` holds: uv's index, else, only on a computer whose config says `dev = true`
+    /// (xs-196), a signed GitHub prerelease, landed in `env`'s `PAIR_WHEELS` for uv to find. Each as uv
+    /// installs it.
     fn published_pair(&self, env: &Path, floors: &[String], label: &str, job: &Job) -> Result<Vec<String>, Failure> {
         let stop = job.stop.clone().unwrap_or_default();
         let wheels = env.join(PAIR_WHEELS);
@@ -415,10 +436,17 @@ impl Publisher {
             let on_index = resolved.ok().and_then(|plan| plan.lines().find_map(|line| line.trim().strip_prefix(&prefix).map(str::to_owned)));
             let version = match on_index {
                 Some(version) => version,
+                // A prerelease no user machine takes by itself (xs-196): only a dev computer's, which opted in.
+                None if !api::config::load().is_ok_and(|loaded| loaded.config.dev) => {
+                    return Err(match &unread {
+                        Some(said) => (super::UNREACHABLE, format!("{label} needs {requirement}, and uv's index can't be read now ({said})")),
+                        None => ("runtime_floor_unmet", format!("{label} needs {requirement}, which isn't on PyPI: {}", floor_remedy(label))),
+                    });
+                }
                 None => {
                     let meets = |version: &str| floor.meets(version);
                     let index = if unread.is_some() { "uv's index can't be read now" } else { "uv's index doesn't have it" };
-                    let found = pypi::prerelease(&floor.name, &meets, &wheels, &self.machine, &stop).map_err(|why| {
+                    let found = pypi::prerelease(&floor.name, &meets, &wheels, &self.machine, job.order, &stop).map_err(|why| {
                         let said = format!("{label} needs {requirement}: {index}, and a GitHub prerelease couldn't be fetched ({why})");
                         (if why.kind() == io::ErrorKind::NotConnected { super::UNREACHABLE } else { "runtime_floor_unread" }, said)
                     })?;
@@ -455,7 +483,8 @@ impl Publisher {
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
         let mut command = self.sdk.uv.command().map_err(|e| ("uv_unavailable", e.to_string()))?;
         command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
-        crate::private_io::protect_command(&mut command).map_err(io_failure)?;
+        // A package's environment is the machine's, whichever project's run builds it (cl-984): its uv runs on the
+        // machine's cache and Pythons, never a project's.
         let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, job.stop.as_ref(), &|read| job.bytes(read, 0))?;
         let step = args[..2.min(args.len())].join(" ");
         match ended {
@@ -637,16 +666,27 @@ pub(crate) struct Described {
 /// description fails the install: an environment never publishes with silently missing callees.
 pub(crate) fn describe_environment(python: &Path, root: &str, packages: &BTreeMap<String, String>, closures: bool, stop: Option<&crate::stop::Stop>)
     -> Result<Described, Failure> {
-    let reply = ask_runtime(python, &json!({"kind": "describe_environment", "root": root, "packages": packages, "closures": closures}), stop)?;
-    let callees = serde_json::from_value(reply["callees"].clone())
+    let calls_python = managed_python(python);
+    let reply = ask_runtime(python, &json!({"kind": "describe_environment", "root": root, "packages": packages, "closures": closures, "calls_python": calls_python}), stop)?;
+    let mut callees: Vec<crate::catalog::Callee> = serde_json::from_value(reply["callees"].clone())
         .map_err(|e| ("package_prepare_description_failed", format!("the environment's callees: {e}")))?;
+    if let Some(python) = calls_python {
+        let called = ask_runtime(&python, &json!({"kind": "describe_environment", "root": root, "packages": packages}), stop)?;
+        let managed: Vec<crate::catalog::Callee> = serde_json::from_value(called["callees"].clone())
+            .map_err(|e| ("package_prepare_description_failed", format!("managed callees: {e}")))?;
+        for mut callee in managed {
+            if callees.iter().any(|existing| existing.distribution == callee.distribution) { continue; }
+            callee.python = Some(python.clone());
+            callees.push(callee);
+        }
+    }
     Ok(Described { source_digest: reply["source_digest"].as_str().unwrap_or_default().to_string(), callees, closures: closures_of(&reply) })
 }
 
 /// A live project's interface and code closures, read from its source directory by the
 /// environment's Runtime.
 pub(crate) fn describe_project(python: &Path, project: &Path, stop: Option<&crate::stop::Stop>) -> Result<(Value, BTreeMap<String, String>), Failure> {
-    let reply = ask_runtime(python, &json!({"kind": "describe", "project": project, "environment_python": python}), stop)?;
+    let reply = ask_runtime(python, &json!({"kind": "describe", "project": project, "environment_python": python, "calls_python": managed_python(python)}), stop)?;
     let interface = Some(reply["interface"].clone()).filter(Value::is_object)
         .ok_or(("package_prepare_description_failed", "the project's description holds no interface".into()))?;
     Ok((interface, closures_of(&reply)))
@@ -710,7 +750,7 @@ pub(crate) const SOURCE: &str = "source";
 /// each generation reads its own tree. Python adds them at startup all the same, and the Runtime's
 /// static reader, which never runs such a line, reads the environment's installed packages without
 /// following the project out of it: the project is described from its own directory.
-fn live_paths(env: &Path, tree: &Path) -> io::Result<()> {
+fn live_paths(env: &Path, tree: &Path, managed_calls: bool) -> io::Result<()> {
     let Some(site) = platform::paths::venv_site_packages(env) else {
         return Ok(());
     };
@@ -730,8 +770,9 @@ fn live_paths(env: &Path, tree: &Path) -> io::Result<()> {
         let under = |line: &str| target(line).and_then(|p| p.strip_prefix(&tree).ok().map(|rest| {
             rest.components().map(|c| Value::from(c.as_os_str().to_string_lossy().into_owned())).collect::<Vec<_>>()
         }));
+        let generation = if managed_calls { "os.path.dirname(os.path.dirname(sys.prefix))" } else { "os.path.dirname(sys.prefix)" };
         let spelled: String = text.lines().map(|line| match (live(line), under(line)) {
-            (true, Some(parts)) => format!("import os, sys; sys.path.append(os.path.join(os.path.dirname(sys.prefix), {}, *{}))\n",
+            (true, Some(parts)) => format!("import os, sys; sys.path.append(os.path.join({generation}, {}, *{}))\n",
                 Value::from(SOURCE), Value::from(parts)),
             (true, None) => format!("import sys; sys.path.append({})\n", Value::from(line.trim_end())),
             (false, _) => format!("{line}\n"),
@@ -840,6 +881,19 @@ fn same_series(a: &str, b: &str) -> bool {
 /// Whether release `a` is of a later series than `b`.
 fn later_series(a: &str, b: &str) -> bool {
     matches!((Version::from_str(a), Version::from_str(b)), (Ok(a), Ok(b)) if series(&a) > series(&b))
+}
+
+/// Whether uv's finding `line` (`The package `sdxl` requires `cozy-runtime<0.46,>=0.45.0`, but `0.47.0.dev2260+g…` is
+/// installed`) is a cap the open RC's Runtime goes over (`api::release::runs`, cl-952): the RC runs released packages to try them.
+fn rc_admitted(line: &str) -> bool {
+    let mut parts = line.split('`');
+    let (Some(required), Some(installed)) = (parts.nth(3), parts.nth(1)) else { return false };
+    SDK.iter().any(|name| api::release::required([required], name).is_some_and(|versions| api::release::runs(&versions, installed)))
+}
+
+/// Whether a Runtime is the open RC's build: a dev release of the minor it makes (`0.47.0.dev2260+g1a2b3c4d`, cl-952).
+fn rc_build(runtime: &str) -> bool {
+    Version::from_str(runtime).is_ok_and(|version| version.is_dev() && !version.is_pre() && !version.is_post())
 }
 
 /// What uv's check found that the pair added, as the run's warning.
@@ -970,4 +1024,22 @@ pub(crate) fn compile_bytecode(python: &Path) {
     if let Err(error) = reaped {
         tracing::warn!("environment bytecode: {error}");
     }
+}
+
+/// Its nested prepared environment belongs to the same generation lifetime and lock.
+const MANAGED_CALLS: &str = ".cozy-calls";
+
+fn has_managed_calls(project: &Path) -> bool {
+    fs::read_to_string(project.join("pyproject.toml")).ok()
+        .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+        .and_then(|doc| doc.get("project")?.get("optional-dependencies")?.get("cozy-calls")?.as_array().cloned())
+        .is_some_and(|group| !group.is_empty())
+}
+
+fn managed_python(python: &Path) -> Option<PathBuf> {
+    // Local generations share one immutable environment; cached callee records must not
+    // retain whichever generation symlink happened to describe it first.
+    let environment = fs::canonicalize(python.parent()?.parent()?).ok()?;
+    let path = platform::paths::venv_python(&environment.join(MANAGED_CALLS));
+    path.is_file().then_some(path)
 }

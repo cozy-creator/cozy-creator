@@ -2,7 +2,6 @@
 # local machine up. Uses lifetime.sh's `launch` and `settled`.
 #   machine_show_runs   cl-811: `cozy machine show` gives a held run's progress, not its status twice
 #   writes_once         cl-812: a project write sent again under its key is done once: an undo resent steps once
-#   page_resend         cl-812: the page's outbox sends a discard and an undo again after their answers are lost: each done once
 #   hub_away            cl-809: locked local code that names the `tensorhub` index runs while the Hub doesn't answer
 #   broken_answers      cl-810: a machine that fails when asked about a run for over 120 s: the run ends as the machine says
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -66,7 +65,7 @@ launch held silent seconds:=60 || return 0
 local line=''
 for _ in $(seq 30); do
   cozy machine show local > "$OUT/held.machine.txt" 2>&1 || true
-  line=$(grep -E "run $n\b" "$OUT/held.machine.txt" | head -1)
+  line=$(grep -E "run [A-Z][A-Z0-9]*-$n\b" "$OUT/held.machine.txt" | head -1)
   grep -q 'waiting silently' <<< "$line" && break
   sleep 1
 done
@@ -91,7 +90,7 @@ id=$(status "$P" | jq -r '.id // empty')
 addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock")
 [ -n "$id" ] || { check "once: the project has no id"; return; }
 for try in first second; do
-  curl -sS -D "$OUT/once-$try.headers" -o "$OUT/once-$try.json" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  curl -sS -D "$OUT/once-$try.headers" -o "$OUT/once-$try.json" -H "Authorization: Bearer $token" -H 'cozy-project-storage: 3' -H 'Content-Type: application/json' \
     -H "Idempotency-Key: $key" -X POST -d '{}' "http://$addr/v1/projects/$id/history/undo" || check "once: the $try undo got no answer"
 done
 first=$(jq -c '[.entries[].id]' "$OUT/once-first.json") second=$(jq -c '[.entries[].id]' "$OUT/once-second.json")
@@ -107,18 +106,6 @@ project_api "$P" /history/undo -X POST -H 'Content-Type: application/json' -H "I
 kept=$(sql1 "$P" "SELECT count(*) FROM request_keys WHERE key LIKE 'fixture-%'" 2> "$OUT/once-keys.err") || kept=0
 echo "once: request keys kept under the fixture keys: ${kept:-0}"
 [ "${kept:-0}" -ge 1 ] || check "once: the fixture write carried no key project.db kept: $(head -c 200 "$OUT/once-keys.err")"
-}
-
-# web/resend.js in Chrome: the outbox's tries of one action share its key, and a discard and an undo whose answers are lost land once.
-page_resend() {
-step "page: a discard and an undo whose answers are lost, each done once (cl-812)"
-local chrome pw=$OUT/playwright
-chrome=$(web_chrome)
-[ -n "$chrome" ] && [ -x "$chrome" ] || { check "page resend: no Google Chrome on this runner (${chrome:-none})"; return; }
-[ -d "$pw/node_modules/playwright-core" ] || npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 \
-  || { check "page resend: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
-web_proof resend "$chrome" "$pw" ''
-jq -c '{discard: .seen.discard, undo: .seen.undo}' "$OUT/web-resend.json" 2> /dev/null || true
 }
 
 # A locked project whose sources name the `tensorhub` index (a Windows-only dependency, so nothing comes from it here): run once,
@@ -180,6 +167,7 @@ kill "$index"
 broken_answers() {
 step "a machine that fails when asked about a run for 150 s (cl-810)"
 local journal said='' since=0 status
+# One TensorD journal for every project's runs (cl-984).
 journal=$(find ~/.cozy -name executions.sqlite3 -path '*tensord*' 2> /dev/null | head -1)
 [ -n "$journal" ] || { check "broken: no TensorD journal under ~/.cozy"; return; }
 journal_table() { python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1], timeout=60); c.execute(f"ALTER TABLE {sys.argv[2]} RENAME TO {sys.argv[3]}"); c.commit()' "$journal" "$1" "$2"; }

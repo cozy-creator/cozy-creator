@@ -7,6 +7,7 @@ use axum::{
     Json,
     body::Bytes,
     extract::{Path, State, rejection::BytesRejection},
+    http::StatusCode,
 };
 use api::{
     error::Error,
@@ -78,16 +79,6 @@ pub(super) fn moved(folder: &Folder, id: &str, from: &str, to: &str) -> Result<(
     set(folder, id, BTreeMap::from([(from.to_owned(), None), (to.to_owned(), Some(card))]))
 }
 
-/// Every row as `renamed` says.
-pub(super) fn all_renamed(folder: &Folder, id: &str, renamed: impl Fn(&str) -> Option<String>) -> Result<(), Error> {
-    let rows = folder.canvas()?;
-    let changed: BTreeMap<String, Option<Card>> = rows.values().filter_map(|row| Some((row.name.clone(), renamed(&row.name)?, row.card))).flat_map(|(from, to, card)| [(from, None), (to, Some(card))]).collect();
-    if changed.is_empty() {
-        return Ok(());
-    }
-    set(folder, id, changed)
-}
-
 /// The rows `named` says nothing names, gone.
 pub(super) fn prune(folder: &Folder, id: &str, named: impl Fn(&str) -> bool) -> Result<(), Error> {
     let gone: BTreeMap<String, Option<Card>> = folder.canvas()?.into_values().filter(|row| !named(&row.name)).map(|row| (row.name, None)).collect();
@@ -117,8 +108,15 @@ pub(super) async fn patch(
     }
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
-    let kept = set_from(&project.folder, &id, asked.cards, &asked.placed).map_err(Refusal)?;
-    Ok(Json(CanvasPatched { seq: project.folder.seq(), kept }))
+    let folder = &project.folder;
+    // Its answer is kept with it, in its transaction, at the revision it commits (cl-885).
+    let kept = folder.act(|| {
+        let kept = set_from(folder, &id, asked.cards, &asked.placed)?;
+        let said = kept.clone();
+        super::keyed::answering_at(StatusCode::OK, move |seq, _| CanvasPatched { seq, kept: said.clone() });
+        Ok(kept)
+    }).map_err(Refusal)?;
+    Ok(Json(CanvasPatched { seq: folder.seq(), kept }))
 }
 
 /// Rows a request makes beside its box, as one transaction with it: the push-aside of a drop (`moves`, each worked out from its revision in

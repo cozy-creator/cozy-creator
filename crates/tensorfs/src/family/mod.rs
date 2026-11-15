@@ -137,7 +137,7 @@ pub fn families_digest() -> &'static str {
 /// What [`Facts`] are read under: the families and what [`parts`] counts. A reader keeping facts reads them again when it changes.
 pub fn facts_digest() -> &'static str {
     static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    DIGEST.get_or_init(|| crate::sha256::hex_digest(format!("{}\0parts 1", families_digest()).as_bytes()))
+    DIGEST.get_or_init(|| crate::sha256::hex_digest(format!("{}\0parts 3", families_digest()).as_bytes()))
 }
 
 pub(crate) fn named(name: &str) -> Option<&'static Family> {
@@ -163,8 +163,20 @@ pub(crate) fn of_classes<'a>(classes: impl IntoIterator<Item = &'a str>) -> Vec<
     out
 }
 
+/// Every family whose component of a stored component's name is of its class: what a part stored alone (a VAE, whose class no
+/// family's `classes` names) may be.
+pub(crate) fn of_parts<'a>(components: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<&'static Family> {
+    let parts: Vec<(&str, &str)> = components.into_iter().collect();
+    let has = |f: &Family, name: &str, class: &str| f.def(name).and_then(|(_, def)| def.class.as_deref()) == Some(class);
+    families().iter().filter(|f| parts.iter().any(|(name, class)| has(f, name, class))).collect()
+}
+
 /// What a LoRA's tensors end in: its factors, alpha and a DoRA's magnitude.
-pub(crate) const FACTORS: [&str; 4] = [".lora_A.weight", ".lora_B.weight", ".alpha", ".lora_magnitude_vector"];
+pub(crate) const FACTORS: [&str; 11] = [
+    ".lora_A.weight", ".lora_B.weight", ".alpha", ".lora_magnitude_vector",
+    // A LoKr's (`ΔW = kron(W1, W2)`), each factor whole or an `_a @ _b` pair, and the rows a split module's target takes.
+    ".lokr_w1", ".lokr_w2", ".lokr_w1_a", ".lokr_w1_b", ".lokr_w2_a", ".lokr_w2_b", ".lokr_rows",
+];
 /// What a LoRA keeps beside its factors that adapts no base weight: a parallel decoder's per-step
 /// output heads (PDD, `qwenimage21.lora`'s `proj_out.heads`), and a whole module it was trained with in
 /// place of the base's (a Krea 2 control LoRA's widened image input, `krea2.lora`'s `img_in.modules_to_save`).
@@ -175,20 +187,68 @@ pub(crate) fn lora_key(key: &str) -> bool {
     FACTORS.iter().chain(&KEPT).any(|f| key.ends_with(f))
 }
 
-/// A LoRA target's factors' shapes, A and B.
-pub(crate) type Factors<'a> = (Option<&'a [u64]>, Option<&'a [u64]>);
+/// A LoRA target's factors' shapes, A and B; a LoKr's, those of the update it makes, `[1, in]` and `[out, 1]`.
+pub(crate) type Factors = (Option<Vec<u64>>, Option<Vec<u64>>);
 
 /// A LoRA's targets, by path, from its tensors' keys and shapes.
-pub(crate) fn targets_of<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> BTreeMap<&'a str, Factors<'a>> {
+pub(crate) fn targets_of<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> BTreeMap<&'a str, Factors> {
     let mut targets: BTreeMap<&str, Factors> = BTreeMap::new();
+    let mut kron: BTreeMap<&str, BTreeMap<&str, &[u64]>> = BTreeMap::new();
     for (key, shape) in tensors {
         if let Some(path) = key.strip_suffix(".lora_A.weight") {
-            targets.entry(path).or_default().0 = Some(shape);
+            targets.entry(path).or_default().0 = Some(shape.to_vec());
         } else if let Some(path) = key.strip_suffix(".lora_B.weight") {
-            targets.entry(path).or_default().1 = Some(shape);
+            targets.entry(path).or_default().1 = Some(shape.to_vec());
+        } else if let Some((path, factor)) = key.rsplit_once(".lokr_") {
+            kron.entry(path).or_default().insert(factor, shape);
+        }
+    }
+    for (path, factors) in kron {
+        let dims = |w: &str| match (factors.get(w), factors.get(format!("{w}_a").as_str()), factors.get(format!("{w}_b").as_str())) {
+            (Some([rows, cols]), None, None) | (None, Some([rows, _]), Some([_, cols])) => Some((*rows, *cols)),
+            _ => None,
+        };
+        if let (Some((a, b)), Some((c, d))) = (dims("w1"), dims("w2")) {
+            let out = factors.get("rows").and_then(|rows| rows.first().copied()).unwrap_or(a * c);
+            targets.insert(path, (Some(vec![1, b * d]), Some(vec![out, 1])));
         }
     }
     targets
+}
+
+/// Each LoRA component of `header` with no `adapter` record, and the component of family `family` its factors fit, in any
+/// spelling (kohya's `lora_down`): what an upload on a base of that family records (xs-183). One that fits none, or several, is
+/// left out.
+pub fn unrecorded_adapters(header: &Header, family: &str) -> BTreeMap<String, Adapter> {
+    let recorded = Adapter::read_all(&header.metadata);
+    (header.components().iter())
+        .filter(|c| !recorded.contains_key(&c.name) && paired(c))
+        .filter_map(|c| {
+            let keys: Vec<(String, &[u64])> = (c.tensors.iter())
+                .filter_map(|t| Some((crate::import::lora::peft_key(&t.key)?, t.shape.as_slice())))
+                .collect();
+            let targets = targets_of(keys.iter().map(|(key, shape)| (key.as_str(), *shape)));
+            let fits: Vec<&str> = fitting(&targets).into_iter().filter(|(f, _)| f.name == family).map(|(_, component)| component).collect();
+            match fits.as_slice() {
+                [component] => Some((c.name.clone(), Adapter { family: family.to_owned(), component: (*component).to_owned(), trained_on: None })),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The family `header` verifies as, or records: a base's, for a LoRA uploaded on it.
+pub fn family_of(header: &Header) -> Option<String> {
+    Facts::of(header).and_then(|facts| facts.family)
+}
+
+/// `header` with `adapters` added to its `adapter` record; its chunks, components and other metadata as they are.
+pub fn with_adapters(header: &Header, adapters: &BTreeMap<String, Adapter>) -> crate::format::Result<Header> {
+    let mut all = Adapter::read_all(&header.metadata);
+    all.extend(adapters.iter().map(|(c, a)| (c.clone(), a.clone())));
+    let mut metadata = header.metadata.clone();
+    metadata.insert(ADAPTER.into(), Adapter::value_all(&all));
+    Header::new(header.chunks.clone(), header.pipeline().cloned(), header.components().to_vec(), metadata)
 }
 
 /// Every family component all of `targets` fit: an adapter with no record of its family is one when that's a single one.
@@ -215,10 +275,30 @@ pub struct Facts {
     pub parts: parts::Parts,
 }
 
-/// Whether every tensor of a stored component is a LoRA's, as its source may have spelled it (kohya's
-/// `lora_down`, PEFT's adapter name): one kept as it was until a table read it.
+/// Whether a stored component is a LoRA's: every tensor a LoRA's, as its source may have spelled it (kohya's `lora_down`,
+/// PEFT's adapter name), one kept as it was until a table read it; or factor pairs with tensors it keeps beside them (a
+/// step-distilled LoRA's per-step tables and heads: H3 Turbo's, Regenerate-2K's), as the catalog's role reads it.
 fn holds_factors(component: &Component) -> bool {
-    component.tensors.iter().all(|t| lora_key(&t.key) || crate::import::lora::peft_key(&t.key).is_some())
+    component.tensors.iter().all(|t| factor(&t.key)) || paired(component)
+}
+
+/// A LoRA's factor, alpha or tensor it keeps, in any spelling a source has.
+pub(crate) fn factor(key: &str) -> bool {
+    lora_key(key) || crate::import::lora::peft_key(key).is_some()
+}
+
+/// Whether a component holds a factor pair: one module's A (`lora_down`) and B (`lora_up`).
+pub(crate) fn paired(component: &Component) -> bool {
+    let mut sides: BTreeMap<String, u8> = BTreeMap::new();
+    for key in component.tensors.iter().filter_map(|t| crate::import::lora::peft_key(&t.key)) {
+        let (module, side) = match (key.strip_suffix(".lora_A.weight"), key.strip_suffix(".lora_B.weight")) {
+            (Some(module), _) => (module.to_owned(), 1),
+            (_, Some(module)) => (module.to_owned(), 2),
+            _ => continue,
+        };
+        *sides.entry(module).or_default() |= side;
+    }
+    sides.values().any(|sides| *sides == 3)
 }
 
 impl Facts {
@@ -267,17 +347,24 @@ fn based(header: &Header, bases: &[&Component]) -> Option<String> {
     }
 }
 
-/// The family `based` verifies, its form and the components it verified.
+/// The family `based` verifies, its form and the components it verified. A part stored alone is the one family's whose component
+/// it verifies as; a part several families share (FLUX.2's VAE) is none of theirs alone.
 fn verified<'h>(header: &'h Header, bases: &[&'h Component]) -> Option<(&'static Family, String, Vec<&'h str>)> {
     let classes = header.pipeline().map(|p| p.class.name.as_str()).into_iter().chain(header.components().iter().map(|c| c.class.name.as_str()));
-    of_classes(classes).into_iter().find_map(|family| {
+    let check = |family: &'static Family| {
         let (named, rest): (Vec<&Component>, Vec<&Component>) = bases.iter().copied().filter(|c| family.def(&c.name).is_some()).partition(|c| family.classes.contains(&c.class.name));
         let stored: Vec<Stored> = (if named.is_empty() { rest } else { named }.iter())
             .map(|c| Stored { name: &c.name, keys: c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice())).collect() })
             .collect();
         let form = family.form_of(&stored).ok().filter(|_| !stored.is_empty())?;
         Some((family, form, stored.iter().map(|s| s.name).collect()))
-    })
+    };
+    let named = of_classes(classes);
+    if !named.is_empty() {
+        return named.into_iter().find_map(check);
+    }
+    let mut parts = of_parts(bases.iter().map(|c| (c.name.as_str(), c.class.name.as_str()))).into_iter().filter_map(check);
+    parts.next().filter(|_| parts.next().is_none())
 }
 
 /// One stored component: its name and every tensor's key and logical shape.

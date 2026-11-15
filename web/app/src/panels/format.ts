@@ -35,6 +35,12 @@ export const ms = (value: number) => (value < 1000 ? `${Math.round(value)} ms` :
 
 export const when = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
 
+/** A Hub timestamp as a person reads it ("Nov 12, 2026, 10:04 AM"), never its raw ISO; what doesn't parse stays as it came. */
+export const stamp = (iso: string) => {
+  const at = Date.parse(iso)
+  return Number.isNaN(at) ? iso : when(at)
+}
+
 /** A name as people read it: first-party names drop their `_/`. */
 export const shown = (name: string) => name.replace(/^_\//, "")
 

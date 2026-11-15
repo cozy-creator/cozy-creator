@@ -1,0 +1,1 @@
+# None: headers only, no rental. release-gate.yml's `checkpoints` job runs it on a runner; by hand, walk.py.

@@ -46,14 +46,14 @@ projectvault() (
   answered_ms=$(python3 -c 'import time; print(time.time_ns() // 1000000)')
   jq -e --argjson b "$asked_ms" --argjson a "$answered_ms" '.vault.state == "unlocked" and .vault.expires_at_ms >= $b + 86400000 and .vault.expires_at_ms <= $a + 86400000' \
     "$work/plain-encrypted.json" > /dev/null || fail "vault encrypt --max-duration 86400: $(jq -c .vault "$work/plain-encrypted.json")"
-  in_project "$plain" --json vault lock > /dev/null || fail "the project the CLI encrypted doesn't lock"
+  in_project "$plain" --json vault lock > "$work/plain-lock.json" || fail "the project the CLI encrypted doesn't lock: $(jq -c '.error | {code, message}' "$work/plain-lock.json" 2> /dev/null)"
   step "a new project encrypted from the start: its passphrase from a file, its recovery secret saved outside it"
   cozy --json new "$work/born" --passphrase-file "$secrets/initial" --recovery-out "$secrets/born-recovery" > "$work/born.json" 2> "$work/born.err" \
     || fail "new --passphrase-file --recovery-out: $(tail -c 300 "$work/born.err")"
   in_project "$work/born" --json vault status > "$work/born-status.json"
   jq -e '.encrypted == true and .state == "unlocked"' "$work/born-status.json" > /dev/null || fail "new --passphrase-file made no unlocked encrypted project: $(cat "$work/born-status.json")"
   [ -s "$secrets/born-recovery" ] || fail "new --recovery-out saved no recovery secret"
-  in_project "$work/born" --json vault lock > /dev/null || fail "the new encrypted project doesn't lock"
+  in_project "$work/born" --json vault lock > "$work/born-lock.json" || fail "the new encrypted project doesn't lock: $(jq -c '.error | {code, message}' "$work/born-lock.json" 2> /dev/null)"
   cozy --json new --unencrypted "$P" > "$work/created.json"
   boxes_of "$P" > "$work/before.json"
   mkdir -p "$P/files"
@@ -96,8 +96,9 @@ PY_ENCRYPT_DEADLINE
   ffprobe -v error -show_entries format=duration -of json "$view/files/audio.wav" > "$work/audio.json"
   boxes_of "$P" > "$work/after-encryption.json"
   cmp "$work/before.json" "$work/after-encryption.json" || fail "encryption changed logical project state"
-  # The fixture directory contains only encrypted backing storage and a public keybag.
-  python3 - "$E2E/cli" "$P" > "$work/plaintext-matches.txt" <<'PY_BACKING_SCAN'
+  # The fixture directory contains only encrypted backing storage and a public keybag. Its open view is mounted inside it
+  # (`.vault-runtime/<id>/view`): that mount, and no other, is the readable view, not backing.
+  python3 - "$E2E/cli" "$P" "$view" > "$work/plaintext-matches.txt" <<'PY_BACKING_SCAN'
 import os
 from pathlib import Path
 import sys
@@ -106,8 +107,11 @@ from private_execution import contains
 markers = [b"SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400", b"private-sentinel.txt"]
 def failed(error):
     raise error
-leaks = []
+leaks, mounts = [], []
 for directory, dirs, files in os.walk(sys.argv[2], followlinks=False, onerror=failed):
+    mounted = [name for name in dirs if os.path.ismount(Path(directory) / name)]
+    mounts += [Path(directory) / name for name in mounted]
+    dirs[:] = [name for name in dirs if name not in mounted]
     for name in dirs + files:
         path = Path(directory) / name
         assert not path.is_symlink(), "backing scan encountered an unexpected symlink"
@@ -116,7 +120,8 @@ for directory, dirs, files in os.walk(sys.argv[2], followlinks=False, onerror=fa
         if any(marker in name.encode() for marker in markers) or contains(path, markers):
             leaks.append(str(path))
 print("\n".join(leaks))
-assert not leaks, "encrypted backing retains readable private file content or names"
+assert all(mount.resolve() == Path(sys.argv[3]).resolve() for mount in mounts), f"backing holds a mount other than its view: {mounts}"
+assert not leaks, "encrypted backing retains readable private file content or names: " + ", ".join(os.path.relpath(leak, sys.argv[2]) for leak in leaks)
 PY_BACKING_SCAN
 
   step "recovery output inside the unlocked view refuses without replacing recovery"
@@ -125,8 +130,16 @@ PY_BACKING_SCAN
   [ ! -e "$view/unsafe-recovery.txt" ] || fail "refused recovery output created an unlocked-view file"
 
   step "locking blocks project reads; wrong credentials do not open it"
+  local key keyed
+  key=$(in_project "$P" --json key | jq -r '.key // empty') || key=
+  [ -n "$key" ] || check "keys: the encrypted project has no key"
   in_project "$P" --json vault lock > "$work/locked.json"
   jq -e '.vault.state == "locked"' "$work/locked.json" > /dev/null || fail "lock did not complete"
+  # Locked, its key is in no index of Calcifer's, only its project.db (cl-987, Paul 11-15): its runs' names are unknown here.
+  keyed=$(python3 -c 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT count(*) FROM project_keys WHERE key = ?", (sys.argv[2],)).fetchone()[0])' "$HOME/.cozy/calcifer/state.db" "$key" 2>&1)
+  [ "$keyed" = 0 ] || check "keys: locked, its key $key stays in state.db's index ($keyed)"
+  (cd "$work" && cozy --json run watch "$key-1" --once) > "$work/locked-key.json" 2>&1 || true
+  jq -e '.error.code == "run_not_found"' "$work/locked-key.json" > /dev/null || check "keys: $key-1 of the locked project wasn't unknown: $(tail -c 300 "$work/locked-key.json")"
   if in_project "$P" --json --full status > "$work/locked-read.json" 2> "$work/locked-read.err"; then fail "locked project state was readable"; fi
   if in_project "$P" --json vault unlock --passphrase-file "$secrets/wrong" > "$work/wrong.json" 2> "$work/wrong.err"; then fail "wrong passphrase unlocked the project"; fi
   if [ -r "$view/files/private-sentinel.txt" ]; then fail "old mount path stayed readable after lock"; fi
@@ -134,9 +147,11 @@ PY_BACKING_SCAN
   step "saved recovery and passphrase replacement preserve the files"
   # The refused in-view replacement must leave the original recovery credential valid.
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery1" --idle 0 > "$work/recovered.json"
+  # Unlocked, it opens with the key its project.db keeps.
+  in_project "$P" --json key | jq -e --arg key "$key" '.key == $key' > /dev/null || check "keys: unlocked, the project's key isn't $key again"
   in_project "$P" --json vault passphrase --passphrase-file "$secrets/changed" > "$work/passphrase.json"
   in_project "$P" --json vault recovery --recovery-out "$secrets/recovery2" > "$work/replacement-recovery.json"
-  in_project "$P" --json vault lock > /dev/null
+  in_project "$P" --json vault lock > "$work/replaced-lock.json" || fail "the project doesn't lock after its credentials change: $(jq -c '.error | {code, message}' "$work/replaced-lock.json" 2> /dev/null)"
   if in_project "$P" --json vault unlock --passphrase-file "$secrets/initial" > "$work/old-pass.json" 2> "$work/old-pass.err"; then fail "old live passphrase slot remained active"; fi
   if in_project "$P" --json vault unlock --recovery-file "$secrets/recovery1" > "$work/old-recovery.json" 2> "$work/old-recovery.err"; then fail "old live recovery slot remained active"; fi
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery2" --idle 0 > "$work/new-recovery.json"
@@ -159,7 +174,7 @@ PY_BACKING_SCAN
   boxes_of "$P" > "$work/after-rekey.json"
   cmp "$work/before-rekey.json" "$work/after-rekey.json" || fail "rekey changed logical project history"
   step "status polling cannot defeat the absolute unlock deadline"
-  in_project "$P" --json vault lock > /dev/null
+  in_project "$P" --json vault lock > "$work/deadline-lock.json" || fail "the rotated project doesn't lock: $(jq -c '.error | {code, message}' "$work/deadline-lock.json" 2> /dev/null)"
   in_project "$P" --json vault unlock --passphrase-file "$secrets/rekey" --idle 0 --max-duration 2 > "$work/timed-unlock.json"
   code=unlocked
   for _ in $(seq 1 80); do
@@ -212,6 +227,59 @@ PY_BACKING_SCAN
 
 # cl-886: encryption leaves nothing outside its vault. A conversion killed midway is recovered by the next start; Calcifer
 # never opens its own `.cozy-*` folders as projects; and no file outside the vault holds the project's plaintext.
+# Encrypted create and unlock times through the CLI (cl-995): a create (its two key slots, its filesystem and first database),
+# an unlock by passphrase and one by recovery secret. Calcifer's health.log names any phase of a second or more (`vault keys`,
+# `vault filesystem`, `vault mount`, `vault project database`).
+vault_times() (
+  step "encrypted create and unlock times (cl-995)"
+  [ -n "$LOCAL" ] || exit 0
+  local work secrets at create by_passphrase by_recovery
+  work=$(mktemp -d "$OUT/vault-times.XXXXXX") secrets=$(mktemp -d "$OUT/vault-times-credentials.XXXXXX")
+  trap 'in_project "$work/p" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic timing passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  ms() { date +%s%3N; }
+  locked() {
+    in_project "$work/p" --json vault lock > "$work/lock.json" 2>&1 || true
+    for _ in $(seq 60); do [ "$(in_project "$work/p" --json vault status | jq -r .state)" = locked ] && return; sleep 0.5; done
+    fail "vault times: the project did not lock: $(tail -c 300 "$work/lock.json")"
+  }
+  at=$(ms)
+  cozy --json new "$work/p" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" 2> "$work/new.err" \
+    || fail "vault times: cozy new: $(tail -c 300 "$work/new.err")"
+  create=$(($(ms) - at))
+  locked
+  at=$(ms)
+  in_project "$work/p" --json vault unlock --passphrase-file "$secrets/passphrase" --idle 0 > "$work/unlock-passphrase.json" 2>&1 \
+    || fail "vault times: unlock by passphrase: $(tail -c 300 "$work/unlock-passphrase.json")"
+  by_passphrase=$(($(ms) - at))
+  locked
+  at=$(ms)
+  in_project "$work/p" --json vault unlock --recovery-file "$secrets/recovery" --idle 0 > "$work/unlock-recovery.json" 2>&1 \
+    || fail "vault times: unlock by recovery secret: $(tail -c 300 "$work/unlock-recovery.json")"
+  by_recovery=$(($(ms) - at))
+  jq -cn --argjson c "$create" --argjson p "$by_passphrase" --argjson r "$by_recovery" \
+    '{create_ms: $c, unlock_passphrase_ms: $p, unlock_recovery_ms: $r}' | tee "$OUT/vault-times.json" | sed 's/^/vault times: /'
+  grep 'task="vault' "$HOME/.cozy/calcifer/health.log" 2> /dev/null | tail -n 12 || echo "vault times: no vault phase took a second"
+)
+
+# An ordinary and an unlocked encrypted project run on the machine's executors, one code path, each call in its own scratch
+# inside its project; BiRefNet stays warm across them; locked, nothing of the encrypted one is outside it (cl-984;
+# e2e/cli/shared_scratch.py). isolated.sh published e2e-scratch and BiRefNet's model.
+shared_scratch() (
+  step "two projects, one encrypted, on one shared executor: each call's files, temp and logs in its own project (cl-984)"
+  [ -n "$LOCAL" ] || exit 0
+  local work secrets
+  work=$(mktemp -d "$OUT/shared-scratch.XXXXXX") secrets=$(mktemp -d "$OUT/shared-scratch-credentials.XXXXXX")
+  trap 'in_project "$work/encrypted" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic shared scratch passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  cozy --json new --unencrypted "$work/plain" > "$work/plain.json" || fail "shared scratch: cozy new --unencrypted: $(tail -c 300 "$work/plain.json")"
+  cozy --json new "$work/encrypted" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/encrypted.json" 2> "$work/encrypted.err" \
+    || fail "shared scratch: cozy new --passphrase-file: $(tail -c 300 "$work/encrypted.err")"
+  in_project "$work/encrypted" --json vault status > "$work/status.json"
+  python3 "$E2E/cli/shared_scratch.py" --plain "$work/plain" --encrypted "$work/encrypted" --view "$(jq -r '.view' "$work/status.json")" --image "$(picture dog1.jpg)" \
+    --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" || { cat "$work/proof.err"; check "shared scratch: $(tail -n 1 "$work/proof.err" | cut -c1-400)"; }
+)
+
 vault_leftovers() (
   step "encryption leaves nothing behind: an interrupted conversion recovers; no leftover is listed; no plaintext outside the vault"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault leftovers: Linux runners only"; return 0; }
@@ -219,13 +287,23 @@ vault_leftovers() (
   work=$(mktemp -d "$OUT/vault-leftovers.XXXXXX")
   secrets=$(mktemp -d "$OUT/vault-leftovers-credentials.XXXXXX")
   L=$work/leftovers fake=$work/.cozy-project-source-planted copy=$work/leftovers-copy
-  trap 'in_project "$L" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  # A Calcifer the interrupt killed starts again before anything else reads this folder: its start detaches the
+  # conversion's dead mount and recovers the stage. A mount a failed recovery left (its checks already failed) would
+  # break the artifact upload, so it is detached last.
+  trap 'cozy --json machine ls > /dev/null 2>&1 || true; in_project "$L" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"
+    mounts | while IFS= read -r m; do fusermount3 -uz "$m" 2> /dev/null || fusermount -uz "$m" 2> /dev/null || true; done' EXIT
   printf '%s\n' 'synthetic leftovers passphrase' > "$secrets/pass"
   chmod 600 "$secrets/pass"
-  # What a conversion may leave: its stage, the original it moves aside, its receipt and its mounts' folders.
+  # Encrypted views mounted under the fixture, live or dead.
+  mounts() { awk '$0 ~ / - fuse\.securefs / {print $5}' /proc/self/mountinfo | grep -F -- "$work/" || true; }
+  # What a conversion may leave: in the project, its stage, the original it moves aside, its receipt and its mounts'
+  # runtime folders; beside it or in Calcifer's home, where conversions once staged, anything; and any mount.
   left() {
-    find "$work" -maxdepth 1 \( -name '.cozy-vault-stage-*' -o -name '.cozy-project-source-*' -o -name '.cozy-vault-*.transaction.json' \) -print
+    find "$L" -maxdepth 1 \( -name '.cozy-vault-stage-*' -o -name '.cozy-project-source-*' -o -name '.vault-transition.json' \) -print 2> /dev/null || true
+    find "$L/.vault-runtime" -mindepth 1 -maxdepth 1 -type d -print 2> /dev/null || true
+    find "$work" -maxdepth 1 \( -name '.cozy-vault-*' -o -name '.cozy-project-source-*' \) -print
     find "$HOME/.cozy/calcifer/vaults" -mindepth 1 -maxdepth 1 \( -name 'stage-*' -o -name 'source-*' -o -name 'decrypt-*' -o -name 'new-*' \) -print 2> /dev/null || true
+    mounts
   }
   listed_clean() {
     fixture_projects > "$work/ls-$1.json" || { check "leftovers: project list ($1) failed"; return; }
@@ -315,19 +393,50 @@ PY_LEFTOVER_SCAN
   jq -c '{interrupted: .interrupted, stages_at_kill: .stages}' "$work/interrupted.json" > "$work/receipt.json"
 )
 
-# Same installed candidate, normal browser, no mock HTTP or account service.
-vault_web() {
-  local chrome pw=$OUT/vault-playwright
-  chrome=$(web_chrome)
-  [ -n "$chrome" ] && [ -x "$chrome" ] || { check "project vault: native browser is unavailable"; return; }
-  mkdir -p "$pw"
-  printf '{"private":true}\n' > "$pw/package.json"
-  if command -v pnpm > /dev/null; then
-    pnpm --dir "$(web_path "$pw")" add --ignore-scripts playwright-core@1.55.0 > "$OUT/vault-playwright.log" 2>&1 || { check "project vault: browser driver install failed"; return; }
+# cl-981: an update renames a new cozy over the one Calcifer runs, which goes on running a deleted file, whose `current_exe()` is
+# `<path> (deleted)`. An encrypted project then still unlocks: Calcifer starts its filesystem supervisor from the build it runs
+# (Linux's /proc/self/exe), never that path (ENOENT) and never the newer file. The new file here is a copy: the same bytes, another
+# inode, as every update's rename leaves.
+vault_swapped() (
+  step "an encrypted project unlocks after Calcifer's binary is replaced on disk (cl-981)"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault swapped: Linux runners only"; return 0; }
+  local work secrets S pid exe ran sup='' p a b
+  work=$(mktemp -d "$OUT/vault-swapped.XXXXXX")
+  secrets=$(mktemp -d "$OUT/vault-swapped-credentials.XXXXXX")
+  S=$work/swapped
+  trap 'in_project "$S" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic swapped passphrase' > "$secrets/pass"
+  chmod 600 "$secrets/pass"
+  cozy --json new "$S" --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" > "$work/created.json" 2> "$work/created.err" \
+    || fail "vault swapped: new encrypted project: $(tail -c 300 "$work/created.err")"
+  in_project "$S" --json vault lock > "$work/locked.json" || fail "vault swapped: lock: $(head -c 300 "$work/locked.json")"
+  # Calcifer and its supervisor are nondumpable (#2858): their /proc links read as root only.
+  pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder") || fail "vault swapped: no Calcifer lock record"
+  exe=$(sudo -n readlink "/proc/$pid/exe") || fail "vault swapped: Calcifer ($pid)'s program can't be read"
+  [ -f "$exe" ] || fail "vault swapped: Calcifer ($pid) runs $exe, not a file"
+  # The update: a new file renamed over Calcifer's while it runs.
+  cp -p "$exe" "$exe.cl981" && mv -f "$exe.cl981" "$exe" || fail "vault swapped: $exe could not be replaced"
+  ran=$(sudo -n readlink "/proc/$pid/exe") || fail "vault swapped: Calcifer ($pid) is gone after the swap"
+  [ "$ran" = "$exe (deleted)" ] || fail "vault swapped: Calcifer runs $ran after the swap, not $exe (deleted)"
+  in_project "$S" --json vault unlock --passphrase-file "$secrets/pass" --idle 0 > "$work/unlocked.json" 2> "$work/unlocked.err" \
+    || check "vault swapped: unlock after Calcifer's binary was replaced: $(head -c 400 "$work/unlocked.json") $(tail -c 200 "$work/unlocked.err")"
+  J '.vault.state == "unlocked"' "$work/unlocked.json" || check "vault swapped: not unlocked: $(head -c 300 "$work/unlocked.json")"
+  [ "$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$pid" ] || check "vault swapped: Calcifer restarted, so the swap went unseen"
+  # Its supervisor runs Calcifer's own build: the deleted file, not the new one.
+  for p in $(pgrep -f __cozy_vault_provider || true); do
+    if sudo -n cat "/proc/$p/cmdline" 2> /dev/null | tr '\0' '\n' | grep -qF "$S/"; then sup=$p; fi
+  done
+  if [ -z "$sup" ]; then
+    if J '.vault.state == "unlocked"' "$work/unlocked.json"; then check "vault swapped: unlocked with no supervisor of $S"; fi
   else
-    # The CLI runner does not inherit the separate candidate-build job's pnpm setup.
-    # Use its existing npm, as web_serves does, without changing the pinned driver.
-    npm install -s --ignore-scripts --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/vault-playwright.log" 2>&1 || { check "project vault: browser driver install failed"; return; }
+    a=$(sudo -n stat -L -c %d:%i "/proc/$sup/exe") || a="unreadable"
+    b=$(sudo -n stat -L -c %d:%i "/proc/$pid/exe") || b="unreadable"
+    [ "$a" = "$b" ] && [ "$a" != unreadable ] \
+      || check "vault swapped: the supervisor runs $a ($(sudo -n readlink "/proc/$sup/exe" 2>&1)), not Calcifer's build $b"
   fi
-  web_proof vault "$chrome" "$pw" ''
-}
+  in_project "$S" --json vault lock > "$work/relocked.json" || check "vault swapped: lock after unlock: $(head -c 300 "$work/relocked.json")"
+  # Calcifer onto the installed file again, for what follows.
+  cozy --json restart > "$work/restart.json" 2> "$work/restart.err" || check "vault swapped: cozy restart: $(tail -c 300 "$work/restart.err")"
+  trap - EXIT
+  rm -rf -- "$secrets" "$S"
+)

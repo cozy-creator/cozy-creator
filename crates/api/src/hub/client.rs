@@ -247,18 +247,18 @@ impl Client {
         self.json(request.json(edit)).await
     }
 
-    /// Sets a model's display metadata: trigger words (empty clears them) and recommended
-    /// strength (`Some(None)` clears it); a `None` field is left as it is.
+    /// Sets a model's display metadata: its triggers, each kept whole (none clears them), and
+    /// recommended strength (`Some(None)` clears it); a `None` field is left as it is.
     pub async fn set_model_display(
         &self,
         org: &str,
         name: &str,
-        trigger: Option<&str>,
+        triggers: Option<&[String]>,
         strength: Option<Option<f64>>,
     ) -> Result<ModelAnswer, Error> {
         let mut body = serde_json::Map::new();
-        if let Some(trigger) = trigger {
-            body.insert("trigger".into(), json!(trigger));
+        if let Some(triggers) = triggers {
+            body.insert("triggers".into(), json!(triggers));
         }
         if let Some(strength) = strength {
             body.insert("strength".into(), json!(strength));
@@ -443,9 +443,8 @@ impl Client {
         release: &str,
         publication_id: &str,
         python_version: &str,
-        yanked: bool,
     ) -> Result<PackageFinalization, Error> {
-        let body = json!({"publication_id": publication_id, "python_version": python_version, "yanked": yanked});
+        let body = json!({"publication_id": publication_id, "python_version": python_version});
         let request = self.at(
             Method::POST,
             "/v1/packages/{org}/{name}/publish/{release}/finalize",
@@ -583,10 +582,12 @@ impl Client {
             .map(drop)
     }
 
-    pub async fn release_rental(&self, id: &str) -> Result<(), Error> {
-        self.send(self.at(Method::DELETE, "/v1/rentals/{id}", &[id]))
-            .await
-            .map(drop)
+    /// Releases the rental: its person's end (`owner_stop`), or with `by_pod` its machine's own idle
+    /// release, which this client heard and passes on (`released_by_pod`).
+    pub async fn release_rental(&self, id: &str, by_pod: bool) -> Result<(), Error> {
+        let request = self.at(Method::DELETE, "/v1/rentals/{id}", &[id]);
+        let cause: &[(&str, &str)] = if by_pod { &[("cause", "released_by_pod")] } else { &[] };
+        self.send(request.query(cause)).await.map(drop)
     }
 
     pub async fn get_software(&self) -> Result<Software, Error> {

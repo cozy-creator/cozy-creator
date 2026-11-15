@@ -1,12 +1,11 @@
-//! Open the current project in a browser and print its local URL.
+//! Open the current project in a browser and print its local URL. A `--json` caller is a program: it gets the link, and no browser starts.
 use std::{
-    io::{self, IsTerminal as _, Write},
     net::{Ipv4Addr, TcpListener},
-    process::{Command, ExitCode, Stdio},
+    process::ExitCode,
 };
 
 use api::{
-    calcifer::{SessionCode, project::State},
+    calcifer::project::Address,
     config,
     error::{Error, Kind},
 };
@@ -20,7 +19,7 @@ use crate::{
 };
 
 #[derive(clap::Args, Debug)]
-#[command(after_help = "Examples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
+#[command(after_help = "With --json it prints the link and opens no browser.\n\nExamples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
 pub(crate) struct Args {
     /// Use this loopback port for Calcifer, and keep it for later commands.
     #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
@@ -31,60 +30,42 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let (calcifer, project) = match args.port {
         Some(port) => select_port(ctx, port).await?,
         None => {
-            let project = current_or_unlock(ctx).await?;
+            let project = project::identity(ctx).await?;
             (ctx.calcifer().await?, project)
         }
     };
-    calcifer.text("/").await?;
-    let code: SessionCode = calcifer.post("/v1/session-codes", &json!({}), None).await?;
-    let mut link = url::Url::parse(&code.url)
-        .map_err(|error| Error::new(Kind::Internal, "session_url", error.to_string()))?;
-    let path = if project.code.is_empty() {
-        format!("/projects/{}", project.id)
-    } else {
-        format!("/p/{}", project.code)
-    };
-    link.set_path(&path);
-    link.set_fragment(Some(&format!("code={}", code.code)));
-    let name = project.path.file_name().map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| project.code.clone());
-    if let Err(error) = browse(ctx, link.as_str()) {
-        output::warn(&format!("could not open the browser: {error}; use the URL below"));
-    }
-    output::document(ctx, &json!({ "project": name, "url": link.as_str() }));
+    // A `--json` caller is a program: it gets the page's address, and no browser starts.
+    let opened = if ctx.json {
+        json!({ "url": page_url(&calcifer, &project)?, "private": false })
+    } else { match calcifer.post::<_, Opened>("/v1/browser/open", &json!({ "project": project.id }), None).await {
+        // The printed URL is reference-only; authority was injected through the owned native pipe.
+        Ok(opened) => json!({ "url": opened.url, "private": true }),
+        // No display, no Chrome, or its launch failed: any browser on this computer opens the page, Calcifer's own (cl-980).
+        Err(error) if error.code == "private_browser_unavailable" => {
+            let reason = error.cause.clone().unwrap_or(error.code);
+            let url = page_url(&calcifer, &project)?;
+            let name = match crate::project::current(ctx).await {
+                Ok(state) => state.path.file_name().map(|name| name.to_string_lossy().into_owned()),
+                Err(_) => None,
+            }.unwrap_or_else(|| project.code.clone());
+            output::warn(&format!("Cozy's private browser couldn't start ({reason}): open {name} at this address in any browser, which isn't private"));
+            json!({ "url": url, "private": false, "reason": reason })
+        }
+        Err(error) => return Err(error),
+    } };
+    output::document(ctx, &opened);
     Ok(ExitCode::SUCCESS)
 }
 
-/// One explicit Open may prompt for an unlock. Pipes and JSON never acquire credentials implicitly.
-async fn current_or_unlock(ctx: &Context) -> Result<State, Error> {
-    match project::current(ctx).await {
-        Err(error) if error.code == "project_locked" && !ctx.json && io::stdin().is_terminal() && ctx.term.stderr => {
-            project::vault::unlock_for_open(ctx).await?;
-            project::current(ctx).await
-        }
-        answer => answer,
-    }
+#[derive(serde::Deserialize)]
+struct Opened {
+    url: String,
 }
 
-/// Keep the one-use sign-in code out of the browser process's command line.
-fn browse(ctx: &Context, url: &str) -> io::Result<()> {
-    let cache = ctx.home.root().join("cache");
-    std::fs::create_dir_all(&cache)?;
-    let mut redirect = tempfile::Builder::new().prefix("open-").suffix(".html").tempfile_in(cache)?;
-    let escaped = url.replace('&', "&amp;").replace('"', "&quot;");
-    write!(redirect, "<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0; url={escaped}\"><title>Cozy</title><a href=\"{escaped}\">Open Cozy</a>")?;
-    let path = redirect.into_temp_path().keep().map_err(|error| error.error)?;
-    let (program, arguments): (&str, &[&str]) = match std::env::consts::OS {
-        "macos" => ("open", &[]),
-        "windows" => ("cmd", &["/C", "start", ""]),
-        _ => ("xdg-open", &[]),
-    };
-    let result = Command::new(program).args(arguments).arg(&path)
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-    if result.is_err() {
-        let _ = std::fs::remove_file(path);
-    }
-    result.map(drop)
+/// The project's page on this Calcifer, as the owned browser opens it: any browser of this account opens it as Calcifer's own page.
+fn page_url(calcifer: &Client, project: &Address) -> Result<String, Error> {
+    let holder = calcifer.holder().ok_or_else(|| Error::new(Kind::Unavailable, "calcifer_unavailable", "Calcifer isn't running").next("cozy open"))?;
+    Ok(format!("http://{}/projects/{}", holder.address, project.id))
 }
 
 fn reserve_port(port: u16) -> Result<TcpListener, Error> {
@@ -95,7 +76,7 @@ fn reserve_port(port: u16) -> Result<TcpListener, Error> {
     })
 }
 
-async fn select_port(ctx: &Context, port: u16) -> Result<(Client, State), Error> {
+async fn select_port(ctx: &Context, port: u16) -> Result<(Client, Address), Error> {
     let port_error = |error: platform::Error| Error::new(Kind::Unavailable, "calcifer_port", error.to_string());
     ctx.home.open().map_err(port_error)?;
     let _held = LockFile::new(ctx.home.root().join("calcifer-port.lock"))
@@ -121,7 +102,7 @@ async fn select_port(ctx: &Context, port: u16) -> Result<(Client, State), Error>
                 Kind::Conflict, "calcifer_port", format!("Calcifer did not start on the requested port {port}"),
             ));
         }
-        current_or_unlock(ctx).await
+        project::identity(ctx).await
     }.await;
     match selected {
         Ok(project) => Ok((calcifer, project)),

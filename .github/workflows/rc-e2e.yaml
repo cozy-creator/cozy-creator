@@ -2,8 +2,9 @@ name: rc-e2e
 # Every e2e suite on the open RC's head, after merges (Paul, 11-12: "merge it in and then do the tests on the RC branch
 # itself"): an rc/* merge queue requires `build` alone. One run per RC at a time: pushes while one runs wait, and only the
 # newest waiting one runs, so a busy RC is tested about hourly, each run its newest head. Nightly, master's rc-nightly.yaml
-# dispatches it with macOS and Windows too. A red lists what merged since the last green run, each with its issue, to find
-# the commit that caused it (tracker cl-885).
+# dispatches it with macOS and Windows too, and its rc-siblings.yaml dispatches it when cozy-runtime's or packages' RC moves.
+# A red lists what merged since the last green run, here and in those two, each with its issue, to find the commit that
+# caused it (tracker cl-885).
 # By hand: gh workflow run rc-e2e.yaml -R cozy-creator/cozy-creator --ref rc/<x.y.z> [-f select='cli os:macos os:windows']
 on:
   push:
@@ -46,8 +47,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ github.ref_name }}
         run: |
-          green=$(gh run list -R "$GITHUB_REPOSITORY" -w rc-e2e.yaml -b "$BRANCH" -s success -L 1 --json headSha -q '.[0].headSha')
+          read -r green green_run <<< "$(gh run list -R "$GITHUB_REPOSITORY" -w rc-e2e.yaml -b "$BRANCH" -s success -L 1 --json headSha,databaseId -q '.[0] // empty | "\(.headSha) \(.databaseId)"')"
           range=${green:+$green..}$GITHUB_SHA
           [ -n "$green" ] || range="-30 $GITHUB_SHA"
           { echo "### $BRANCH ${GITHUB_SHA:0:9} is red: merged since the last green run (${green:0:9})"
             echo; git log --first-parent --format='- %h %s' $range; } | tee -a "$GITHUB_STEP_SUMMARY"
+          # The siblings' RC merges between the green run's pins and this run's (each run's `e2e / affected` job).
+          pins() {
+            local job
+            job=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1/jobs?per_page=100" -q '.jobs[] | select(.name == "e2e / affected") | .id')
+            [ -z "$job" ] || gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$job/logs" | sed -nE 's/.*Z (runtime|packages)=([0-9a-f]{40})\r?$/\1=\2/p'
+          }
+          now=$(pins "$GITHUB_RUN_ID") was=
+          [ -z "${green_run:-}" ] || was=$(pins "$green_run")
+          for sibling in runtime packages; do
+            repo=$([ $sibling = runtime ] && echo cozy-runtime || echo packages)
+            to=$(sed -n "s/^$sibling=//p" <<< "$now" | tail -1) from=$(sed -n "s/^$sibling=//p" <<< "$was" | tail -1)
+            [ -n "$to" ] && [ "$to" != "$from" ] || continue
+            git init -q "$RUNNER_TEMP/$repo" && git -C "$RUNNER_TEMP/$repo" fetch -q --filter=blob:none "https://github.com/cozy-creator/$repo" "$BRANCH"
+            span=${from:+$from..}$to
+            [ -n "$from" ] || span="-30 $to"
+            { echo; echo "#### cozy-creator/$repo $BRANCH ${from:0:9}..${to:0:9}"
+              echo; git -C "$RUNNER_TEMP/$repo" log --first-parent --format='- %h %s' $span; } | tee -a "$GITHUB_STEP_SUMMARY"
+          done

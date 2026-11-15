@@ -1,6 +1,7 @@
 # e2e/run.sh: how every suite runs `cozy` and reads what a run made (e2e/lib.sh, release-gate/gate.sh and its suites).
 # RUN_CLI is the cozy to call (default `cozy`). A run is kept in <dir> under its <name>: <name>.ndjson (its events),
-# <name>.err, <name>.number (`none`: it never got one) and <name>.json, its whole record (`cozy run watch --once --json --full`).
+# <name>.err, <name>.number (`none`: it never got one), <name>.id (what names it from any folder: `run_handle`) and <name>.json,
+# its whole record (`cozy run watch --once --json --full`).
 # A run belongs to a project (`run_project`): its outputs land in the project's files/, and `run_output` downloads them by
 # their digest (`cozy run watch -o`): Calcifer's paths are its own (cl-819).
 #
@@ -33,7 +34,7 @@ import urllib.request
 holder = json.loads((Path.home() / '.cozy/calcifer/calcifer.lock.holder').read_text())
 body = json.dumps({'path': str(Path.cwd()), 'unencrypted': True}).encode()
 request = urllib.request.Request('http://' + holder['address'] + '/v1/projects', data=body, method='POST',
-    headers={'Authorization': 'Bearer ' + holder['token'], 'Content-Type': 'application/json'})
+    headers={'Authorization': 'Bearer ' + holder['token'], 'cozy-project-storage': '3', 'Content-Type': 'application/json'})
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 with opener.open(request, timeout=30) as response:
     if not json.load(response).get('id'):
@@ -84,8 +85,8 @@ run_submit1() {
 
 run_start() {
   local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
-  rm -f "$dir/$name".{ndjson,err,json,number,pid}
-  (cd "${RUN_PROJECT:-$PWD}" && "$@") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
+  rm -f "$dir/$name".{ndjson,err,json,number,id,pid,at}
+  (cd "${RUN_PROJECT:-$PWD}" && exec "$@") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
   local pid=$!
   echo "$pid" > "$dir/$name.pid"
   at=$((limit / 31))
@@ -103,6 +104,7 @@ run_start() {
   done
   [ -n "$n" ] || n=$(run_number "$dir/$name.ndjson")
   echo "${n:-none}" > "$dir/$name.number"
+  [ -z "$n" ] || run_handle "$dir/$name.ndjson" > "$dir/$name.id"
   [ -z "$n" ] || echo "$n"
 }
 
@@ -121,37 +123,83 @@ run_warm_cell() {
 }
 # Its events' lines (a merged stderr's are not JSON).
 run_number() { { grep '^{' "$1" 2> /dev/null | jq -r 'select(.run.number != null) | .run.number' 2> /dev/null || true; } | head -1; }
+# run_handle <ndjson>: the run's name (`KEY-N`, cl-987), else its id: either names it from any folder, where a bare number names a
+# run of the project it is asked in (a model upload's run is no project's: its number read in one names another run or none).
+run_handle() {
+  { grep '^{' "$1" 2> /dev/null | jq -r 'select(.run.number != null) | if (.run.name // "") != "" then .run.name else .run.id // empty end' 2> /dev/null || true; } | head -1
+}
+# run_ref <dir> <name> <number>: what names run <number> of <name> to `cozy run watch`: its <name>.id, else the number.
+run_ref() { if [ "$(cat "$1/$2.number" 2> /dev/null)" = "$3" ] && [ -s "$1/$2.id" ]; then cat "$1/$2.id"; else echo "$3"; fi; }
 # run_reached <ndjson> <status>: whether the run's events reached the status.
 run_reached() { grep '^{' "$1" 2> /dev/null | jq -en --arg s "$2" 'any(inputs; .run.status? == $s)' > /dev/null 2>&1; }
 
+# run_ended <ndjson>: whether the follower said the run's terminal event, which it says last, just before it exits.
+run_ended() { grep '^{' "$1" 2> /dev/null | jq -en 'any(inputs; .type? | IN("run.completed", "run.failed", "run.canceled"))' > /dev/null 2>&1; }
+# run_alive <pid>: running; a zombie answers kill -0 too.
+run_alive() { kill -0 "$1" 2> /dev/null && ! grep -qE '^[0-9]+ \(.*\) Z' "/proc/$1/stat" 2> /dev/null; }
+
+# run_linger <dir> <name> <pid>: what a follower still running after its terminal event is doing, into <name>.linger.
+run_linger() {
+  local pid=$3 t
+  {
+    ps -o pid,ppid,stat,etime,args -p "$pid"; ps -o pid,ppid,stat,etime,args --ppid "$pid" 2> /dev/null
+    if [ -d "/proc/$pid" ]; then
+      grep -E '^(State|PPid|Threads)' "/proc/$pid/status"
+      for t in /proc/"$pid"/task/*; do
+        echo "thread ${t##*/} $(cat "$t/comm") wchan=$(cat "$t/wchan" 2> /dev/null) syscall=$(sudo -n cat "$t/syscall" 2> /dev/null)"
+        sudo -n cat "$t/stack" 2> /dev/null | sed 's/^/    /'
+      done
+      sudo -n ls -l "/proc/$pid/fd" 2> /dev/null
+      { sudo -n ss -tanpx 2> /dev/null || true; } | grep "pid=$pid,"
+    fi
+  } > "$1/$2.linger" 2>&1
+}
+
 # run_wait <dir> <name> [status]: run <name> followed to its end (or, given a status, until its events reach it), its
-# record in <name>.json. 0: ended (or reached the status); 1: never started, ended without reaching the status, or its
-# follower exited before the run ended (its typed error is in <name>.ndjson).
+# record in <name>.json. 0: ended (or reached the status); 1: never started, ended without reaching the status, its
+# follower exited before the run ended (its typed error is in <name>.ndjson), or its follower was still running
+# RUN_EXIT_S (default 10) s after it said the run's terminal event: it is ended then, what it was doing in <name>.linger.
 run_wait() {
-  local dir=$1 name=$2 want=${3:-} n pid
+  local dir=$1 name=$2 want=${3:-} n pid said='' lingered=''
   n=$(cat "$dir/$name.number" 2> /dev/null || true) pid=$(cat "$dir/$name.pid" 2> /dev/null || true)
   if [ -z "$n" ] || [ "$n" = none ]; then return 1; fi
-  while kill -0 "$pid" 2> /dev/null; do
+  rm -f "$dir/$name.linger"
+  while run_alive "$pid"; do
     if [ -n "$want" ] && run_reached "$dir/$name.ndjson" "$want"; then run_show "$dir" "$name" "$n"; return 0; fi
+    if [ -z "$want" ]; then
+      if [ -z "$said" ]; then run_ended "$dir/$name.ndjson" && said=$SECONDS
+      elif [ $((SECONDS - said)) -ge "${RUN_EXIT_S:-10}" ]; then
+        run_linger "$dir" "$name" "$pid"
+        echo "$name: cozy (pid $pid) still running ${RUN_EXIT_S:-10} s after the run's terminal event; ended it ($name.linger)" >&2
+        kill -9 "$pid" 2> /dev/null; lingered=1
+        break
+      fi
+    fi
     sleep 0.2
   done
   run_show "$dir" "$name" "$n"
   if [ -n "$want" ]; then run_reached "$dir/$name.ndjson" "$want"; return; fi
+  [ -z "$lingered" ] || return 1
   # The follower can end with the run still going (this computer's cozy restarted under it): the run keeps going on its
-  # machine, so its record is read again until it settles, through Calcifer's own restarts.
-  local s began=$SECONDS
-  while s=$(run_get "$dir" "$name" .status); { [ -z "$s" ] || [ "$s" = queued ] || [ "$s" = in_progress ]; } && [ $((SECONDS - began)) -lt 10800 ]; do
+  # machine, so its record is read again until it settles, through Calcifer's own restarts. One that said the terminal event
+  # leaves a settled run, read once: a record that can't be read then is said, not waited on (cl-992: 90 min of reads).
+  local s began=$SECONDS limit=10800
+  ! run_ended "$dir/$name.ndjson" || limit=0
+  while s=$(run_get "$dir" "$name" .status); { [ -z "$s" ] || [ "$s" = queued ] || [ "$s" = in_progress ]; } && [ $((SECONDS - began)) -lt "$limit" ]; do
     sleep 15; run_show "$dir" "$name" "$n"
   done
   case $s in completed | failed | canceled) return 0 ;; esac
+  [ -n "$s" ] || echo "$name: no record of run $(run_ref "$dir" "$name" "$n") (cozy run watch $(run_ref "$dir" "$name" "$n") --once)" >&2
   return 1
 }
 
 # run_show <dir> <name> <number>: the run's record now, into <name>.json (kept as it was when the read fails). `run
-# show` exits non-zero for a run that failed or was canceled: the record is what it printed.
-
+# show` exits non-zero for a run that failed or was canceled: the record is what it printed. Read by its name or id
+# (`run_ref`) where run_start asked it, or where <name>.at says.
 run_show() {
-  "$RUN_CLI" --json --full run watch "$3" --once > "$1/$2.json.new" 2> /dev/null || true
+  local at
+  at=$(cat "$1/$2.at" 2> /dev/null || echo "${RUN_PROJECT:-$PWD}")
+  (cd "$at" && "$RUN_CLI" --json --full run watch "$(run_ref "$1" "$2" "$3")" --once) > "$1/$2.json.new" 2> /dev/null || true
   if jq -e .status "$1/$2.json.new" > /dev/null 2>&1; then
     mv "$1/$2.json.new" "$1/$2.json"
   else
@@ -182,11 +230,12 @@ run_get() { jq -r "($3) // empty" "$1/$2.json" 2> /dev/null || true; }
 # run_outputs <dir> <name>: each landed output of the run, downloaded into <dir>/<name>.out by its digest, in its record's
 # order, one path a line.
 run_outputs() {
-  local n name line path
+  local n name line path out
   n=$(cat "$1/$2.number" 2> /dev/null || true)
   [ -n "$n" ] && [ "$n" != none ] || return 0
   # JSON's paths belong to Calcifer and are not sent; the CLI says each downloaded path on stderr.
-  "$RUN_CLI" run watch "$n" --once -o "$1/$2.out" > /dev/null 2> "$1/$2.export.err" || true
+  out=$(cd "$1" && pwd)/$2.out
+  (cd "${RUN_PROJECT:-$PWD}" && "$RUN_CLI" run watch "$(run_ref "$1" "$2" "$n")" --once -o "$out") > /dev/null 2> "$1/$2.export.err" || true
   while IFS= read -r line; do
     while IFS= read -r name; do
       case "$line" in

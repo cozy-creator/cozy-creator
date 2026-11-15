@@ -21,11 +21,12 @@ use crate::Calcifer;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub(crate) enum After {
-    /// Sets `model`'s trigger and strength: these, else (`offered`) the trigger its source gave
-    /// (Civitai's trainedWords), which the machine's result names.
+    /// Sets `model`'s triggers and strength: these, else (`offered`) the triggers its source gave
+    /// (Civitai's trainedWords, each one entry), which the machine's result names.
     Display {
         model: String,
-        trigger: Option<String>,
+        #[serde(default)]
+        triggers: Option<Vec<String>>,
         strength: Option<f64>,
         offered: bool,
     },
@@ -40,44 +41,46 @@ pub(crate) enum After {
 
 impl Calcifer {
     /// Keeps `after` for the ask under `key`, before its run is submitted.
-    pub(crate) fn plan(&self, key: &str, after: &After) -> Result<(), Error> {
+    pub(crate) fn plan(&self, project: Option<&str>, key: &str, after: &After) -> Result<(), Error> {
         let step = serde_json::to_string(after).expect("a step serializes");
-        self.store.plan_after(key, &step).map_err(|e| Error::internal("calcifer_store", e.to_string()))
+        match project { Some(project) => self.project_store(project).and_then(|store| store.plan_after(key,&step)), None => self.maintenance_store().plan_after(key,&step) }.map_err(|e| Error::internal("calcifer_store", e.to_string()))
     }
 
     /// Forgets the step kept under `key`: its run was refused.
-    pub(crate) fn unplan(&self, key: &str) {
-        if let Err(e) = self.store.forget_after(key) {
+    pub(crate) fn unplan(&self, project: Option<&str>, key: &str) {
+        if let Err(e) = match project { Some(project) => self.project_store(project).and_then(|store| store.forget_after(key)), None => self.maintenance_store().forget_after(key) } {
             warn!("an ask's step stays: {e}");
         }
     }
 
     /// Run `id`'s step, if its ask kept one: done when its machine succeeded, then forgotten.
     pub(crate) async fn after(&self, id: &RunId, outcome: &mut v1::Outcome) {
-        let Ok(Some(key)) = self.store.key(id.as_str()) else { return };
-        let Ok(Some(step)) = self.store.after_step(&key) else { return };
+        let Ok(Some(key)) = self.with_run_store(id.as_str(), |store| store.key(id.as_str())) else { return };
+        let Ok(Some(step)) = self.with_run_store(id.as_str(), |store| store.after_step(&key)) else { return };
         if outcome.status == "succeeded" {
             match serde_json::from_str::<After>(&step) {
                 Ok(after) => self.apply(id, after, outcome).await,
                 Err(e) => warn!(run = %id, "an ask's step is unreadable: {e}"),
             }
         }
-        self.unplan(&key);
+        let _ = self.with_run_store(id.as_str(), |store| store.forget_after(&key));
     }
 
     async fn apply(&self, id: &RunId, after: After, outcome: &mut v1::Outcome) {
-        let (Some(machines), Ok(Some(row))) = (self.machines(), self.store.run(id.as_str())) else { return };
+        let (Some(machines), Ok(Some(row))) = (self.machines(), self.with_run_store(id.as_str(), |store| store.run(id.as_str()))) else { return };
         let mut result: serde_json::Value = (outcome.result.as_ref())
             .and_then(|json| serde_json::from_str(json.0.get()).ok())
             .unwrap_or_else(|| serde_json::json!({}));
         let hub = row.hub.clone().map(String::from).unwrap_or_else(|| machines.hubs.default_origin());
         let mut done = AfterRun::default();
         match after {
-            After::Display { model, trigger, strength, offered } => {
-                let given = result["models"][0]["trigger"].as_str().filter(|t| offered && !t.is_empty());
-                let trigger = trigger.or(given.map(str::to_owned));
-                if trigger.is_some() || strength.is_some() {
-                    done.display = Some(display(&machines, &hub, model, trigger, strength).await);
+            After::Display { model, triggers, strength, offered } => {
+                let given: Vec<String> = (result["models"][0]["triggers"].as_array().into_iter().flatten())
+                    .filter_map(|t| t.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned))
+                    .collect();
+                let triggers = triggers.or_else(|| (offered && !given.is_empty()).then_some(given));
+                if triggers.is_some() || strength.is_some() {
+                    done.display = Some(display(&machines, &hub, model, triggers, strength).await);
                 }
             }
             After::Retire { package } => {
@@ -88,8 +91,7 @@ impl Calcifer {
             }
             After::Keep(filed) => {
                 let row = row.machine.as_deref().and_then(|name| machines.named(name).ok().flatten());
-                let status = row.and_then(|row| machines.picture(&row).ok()?.status);
-                if let Some(runtime) = status.map(|status| status.runtime).filter(|runtime| !runtime.is_empty()) {
+                if let Some(runtime) = row.and_then(|row| machines.frame(&row.name)).map(|frame| frame.runtime).filter(|runtime| !runtime.is_empty()) {
                     crate::local_code::keep(machines.hubs.home(), &filed, &runtime, &result["interface"]);
                 }
                 return;
@@ -110,15 +112,17 @@ pub(super) async fn display(
     machines: &crate::machines::Machines,
     hub: &str,
     model: String,
-    trigger: Option<String>,
+    triggers: Option<Vec<String>>,
     strength: Option<f64>,
 ) -> Displayed {
-    let mut shown = Displayed { model, trigger, strength, error: None };
+    let set_triggers = triggers.is_some();
+    let mut shown = Displayed { model, triggers: triggers.unwrap_or_default(), strength, error: None };
     let set = async {
         let model_id = ModelId::hub(&shown.model)?;
         let origin = Origin::parse(hub)?;
         let client = machines.hubs.client(&origin)?;
-        let answer = client.set_model_display(&model_id.org, &model_id.name, shown.trigger.as_deref(), shown.strength.map(Some)).await;
+        let triggers = set_triggers.then_some(shown.triggers.as_slice());
+        let answer = client.set_model_display(&model_id.org, &model_id.name, triggers, shown.strength.map(Some)).await;
         answer.map(drop).map_err(|e| e.refusal(|| crate::rentals::login(hub)))
     };
     if let Err(e) = set.await {
@@ -159,7 +163,7 @@ async fn retire(
     });
     let mut retired = vec![];
     for env in older {
-        let submit = SubmitRun {
+        let submit = SubmitRun { project: crate::private_io::current().map(|scope|scope.storage.project_id),
             agreed: None,
             stays: vec![],
             on: On::Machine(machine.to_owned()),
@@ -173,7 +177,7 @@ async fn retire(
             },
             inputs: vec![],
             held: vec![],
-            out: None,
+            out: crate::private_io::current().map(|scope|crate::project::landing(&crate::project::vault::logical(&scope.storage.view_root))),
             warnings: vec![],
         };
         let key = format!("retire-{id}-{}", env.installation);
@@ -197,7 +201,7 @@ pub(crate) async fn settled(calcifer: &std::sync::Arc<Calcifer>, key: &str, subm
     let mut events = calcifer.subscribe();
     let run = calcifer.submit(key, submit).await?.run;
     loop {
-        if let Some(row) = calcifer.store.run(run.id.as_str())?
+        if let Some(row) = calcifer.run_store(run.id.as_str())?.run(run.id.as_str())?
             && row.state == crate::store::State::Settled
         {
             return calcifer.record(&row);

@@ -5,7 +5,6 @@ use std::{
     convert::Infallible,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex, atomic::{AtomicU64, Ordering}},
-    time::Duration,
 };
 
 use axum::{
@@ -14,7 +13,7 @@ use axum::{
 };
 use futures_util::Stream;
 use api::{
-    calcifer::{Event, Machine, ProjectEventCursor, ProjectShowReply, ProjectShowRefusal, Shown, StreamEvent},
+    calcifer::{Event, Machine, ProjectEventCursor, ProjectShowReply, ProjectShowRefusal, Run, Shown, StreamEvent},
     error::Error,
     ids::RunId,
     calcifer::project::Card,
@@ -35,11 +34,6 @@ use serde::Deserialize;
 
 use crate::{api::Api, machines::Machines, project};
 
-/// How often, while anyone listens, what changes in an open project with no write of Calcifer's is looked for: a file into or out of
-/// `files/`, another program's commit to project.db. A look is a stat and a pragma a project, and an open canvas shows it within this
-/// and its one read.
-const LOOK: Duration = Duration::from_millis(250);
-
 /// What projects say to every stream. Process-wide, as `folder::WRITING` is: one process holds one
 /// Calcifer, and a `Folder` that writes may be no more than a path.
 static PROJECTS: LazyLock<Projects> = LazyLock::new(|| {
@@ -52,8 +46,19 @@ static PROJECTS: LazyLock<Projects> = LazyLock::new(|| {
         revs: Mutex::default(),
         owed: Mutex::default(),
         wake: Notify::new(),
+        stirred: Mutex::default(),
+        stirring: Notify::new(),
     }
 });
+
+/// Moves whenever a project's revision does (a commit of this Calcifer's, or another program's its look read): what a walk looks at
+/// its deletions on, never a clock (xs-189).
+static EDITS: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+/// Told each time a project's revision moves.
+pub(crate) fn edits() -> tokio::sync::watch::Receiver<u64> {
+    EDITS.subscribe()
+}
 
 struct Projects {
     generation: String,
@@ -64,6 +69,9 @@ struct Projects {
     /// The projects to say something of, each by id: its folder, and whether it's to be said though neither file changed.
     owed: Mutex<BTreeMap<String, (PathBuf, bool)>>,
     wake: Notify,
+    /// The open projects whose folders changed since they were last looked at (`project_stirred`).
+    stirred: Mutex<std::collections::BTreeSet<String>>,
+    stirring: Notify,
 }
 
 fn cursor(sequence: u64) -> Option<ProjectEventCursor> {
@@ -83,7 +91,7 @@ fn owe(dir: &Path, settled: bool) {
     PROJECTS.wake.notify_one();
 }
 
-/// Tells every stream if project.yaml or project.lock in `dir` changed since it last did. A write is never held up working out what it changed.
+/// Tells every stream if the project in `dir` changed since it last did. A write is never held up working out what it changed.
 pub(crate) fn project_changed(dir: &Path) {
     moved(dir, || project::revision(dir));
 }
@@ -100,8 +108,16 @@ fn moved(dir: &Path, rev: impl FnOnce() -> String) {
     if revs.get(&id) != Some(&rev) {
         revs.insert(id, rev);
         drop(revs);
+        EDITS.send_modify(|n| *n += 1);
         owe(dir, false);
     }
+}
+
+/// Project `id`'s folder changed: a file into or out of `files/`, a write to project.db, perhaps another program's. It's looked at
+/// (`Projects::look`), and told if that moved its revision.
+pub(crate) fn project_stirred(id: &str) {
+    PROJECTS.stirred.lock().expect("stirred lock").insert(id.to_owned());
+    PROJECTS.stirring.notify_one();
 }
 
 /// Tells every stream to read `dir`'s project again though neither file changed: `moving` ended, say.
@@ -114,12 +130,13 @@ pub(crate) fn project_settled(dir: &Path) {
 pub(crate) fn tell(api: Arc<Api>) {
     let looking = api.clone();
     tokio::spawn(async move {
-        let mut looks = tokio::time::interval(LOOK);
-        looks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            looks.tick().await;
+            PROJECTS.stirring.notified().await;
+            let stirred = std::mem::take(&mut *PROJECTS.stirred.lock().expect("stirred lock"));
+            // With no one listening there is no one to tell: whoever comes next reads it whole.
             if PROJECTS.said.receiver_count() > 0 {
-                looking.projects.look();
+                let _took = crate::took::Took::new("look_projects");
+                looking.projects.look(&stirred);
             }
         }
     });
@@ -128,6 +145,7 @@ pub(crate) fn tell(api: Arc<Api>) {
         loop {
             PROJECTS.wake.notified().await;
             let began = Instant::now();
+            let took = crate::took::Took::new("tell_projects");
             let owed = std::mem::take(&mut *PROJECTS.owed.lock().expect("owed lock"));
             for (id, (dir, settled)) in owed {
                 if PROJECTS.said.receiver_count() == 0 {
@@ -149,6 +167,7 @@ pub(crate) fn tell(api: Arc<Api>) {
                 }
                 let _ = PROJECTS.said.send(event);
             }
+            drop(took);
             // As long again before the next: however big a project, telling of it doesn't keep a core busy.
             tokio::time::sleep(began.elapsed()).await;
         }
@@ -193,6 +212,11 @@ pub(crate) fn board_updated(id: &str, board: &api::calcifer::project::Board) {
     let _ = PROJECTS.said.send(StreamEvent::BoardUpdated { project: id.to_owned(), board: Box::new(board.clone()) });
 }
 
+/// Tells every stream showing project `id` that a thumbnail of its file `sha256` was made, or can't be.
+pub(crate) fn thumb(id: &str, sha256: &str) {
+    let _ = PROJECTS.said.send(StreamEvent::Thumb { project: id.to_owned(), sha256: sha256.to_owned() });
+}
+
 /// Tells every stream one job of project `id` changed.
 pub(crate) fn job_updated(id: &str, job: &api::calcifer::project::Job, seq: u64) {
     let _ = PROJECTS.said.send(StreamEvent::JobUpdated { project: id.to_owned(), job: Box::new(job.clone()), seq });
@@ -213,7 +237,7 @@ pub(crate) struct Subscription {
 }
 
 /// Subscribed before this answers, so what changes after a client's first read is on the
-/// stream. Runs-only subscribers neither read machines nor enable project polling.
+/// stream. Runs-only subscribers read neither machines nor projects.
 pub(crate) async fn stream(
     State(api): State<Arc<Api>>,
     query: Result<Query<Subscription>, QueryRejection>,
@@ -233,14 +257,14 @@ async fn subscribe(api: Arc<Api>, scope: Scope) -> Watch {
     let runs = api.calcifer.subscribe();
     let said = all.then(|| PROJECTS.said.subscribe());
     let shown = if all {
-        listed(&api.machines).await.unwrap_or_else(|e| {
+        listed(&api.machines, &[]).await.unwrap_or_else(|e| {
             warn!("the events stream cannot list the machines: {}", e.message);
             HashMap::new()
         })
     } else { HashMap::new() };
     let showing = all.then(Showing::new);
     let id = showing.as_ref().map(|showing| showing.0.clone()).unwrap_or_else(stream_id);
-    let hello = StreamEvent::Hello { version: env!("CARGO_PKG_VERSION").into(), stream: id };
+    let hello = StreamEvent::Hello { version: ::api::VERSION.into(), stream: id };
     Watch {
         showing,
         pending: VecDeque::from([hello]),
@@ -255,8 +279,15 @@ async fn subscribe(api: Arc<Api>, scope: Scope) -> Watch {
     }
 }
 
-/// What each stream shows, by its id: the projects it holds open (`PUT /v1/events/{stream}`), until it ends or shows others (cl-823).
-static SHOWN: LazyLock<Mutex<HashMap<String, Vec<project::Reader>>>> = LazyLock::new(Mutex::default);
+/// What each stream shows, by its id: the projects it holds open (`PUT /v1/events/{stream}`), until it ends or shows others (cl-823),
+/// and whether it shows a machine's view.
+static SHOWN: LazyLock<Mutex<HashMap<String, Shows>>> = LazyLock::new(Mutex::default);
+
+#[derive(Default)]
+struct Shows {
+    readers: Vec<project::Reader>,
+    machines: bool,
+}
 
 /// Closing storage releases the readers a still-connected page keeps alive. Drop outside SHOWN:
 /// the last reader closes SQLite and may itself publish a project-closed event.
@@ -264,12 +295,12 @@ pub(crate) fn release_project_readers(id: &str) {
     let mut gone = Vec::new();
     {
         let mut shown = SHOWN.lock().expect("shown lock");
-        for readers in shown.values_mut() {
-            let mut kept = Vec::with_capacity(readers.len());
-            for reader in std::mem::take(readers) {
+        for shows in shown.values_mut() {
+            let mut kept = Vec::with_capacity(shows.readers.len());
+            for reader in std::mem::take(&mut shows.readers) {
                 if reader.id() == id { gone.push(reader); } else { kept.push(reader); }
             }
-            *readers = kept;
+            shows.readers = kept;
         }
     }
     drop(gone);
@@ -287,13 +318,32 @@ fn stream_id() -> String {
 impl Showing {
     fn new() -> Self {
         let id = stream_id();
-        SHOWN.lock().expect("shown lock").insert(id.clone(), vec![]);
+        SHOWN.lock().expect("shown lock").insert(id.clone(), Shows::default());
         Self(id)
     }
 
     fn includes(&self, project: &str) -> bool {
         SHOWN.lock().expect("shown lock").get(&self.0)
-            .is_some_and(|readers| readers.iter().any(|reader| reader.id() == project))
+            .is_some_and(|shows| shows.readers.iter().any(|reader| reader.id() == project))
+    }
+
+    /// Whether this stream's page shows a machine's view.
+    fn machines(&self) -> bool {
+        SHOWN.lock().expect("shown lock").get(&self.0).is_some_and(|shows| shows.machines)
+    }
+
+    /// The projects this stream's page shows.
+    fn projects(&self) -> Vec<String> {
+        SHOWN.lock().expect("shown lock").get(&self.0).map(|shows| shows.readers.iter().map(|reader| reader.id().to_owned()).collect()).unwrap_or_default()
+    }
+
+    /// Whether this stream hears `run`: one of a project it shows, or one of no project's while it shows a machine's view. A project's
+    /// runs are its own, as its other events are (Paul: projects are firewalled).
+    fn hears(&self, run: &Run) -> bool {
+        match &run.project_id {
+            Some(project) => self.includes(project),
+            None => self.machines(),
+        }
     }
 }
 
@@ -305,8 +355,8 @@ impl Drop for Showing {
     }
 }
 
-/// `PUT /v1/events/{stream}` `{projects}`: what the page on `stream` shows now, each project held open while the stream lasts or
-/// until it shows others. The reply names those held and preserves each attempted ID's refusal. `404 stream_unknown` once the stream
+/// `PUT /v1/events/{stream}` `{projects, machines}`: what the page on `stream` shows now, each project held open while the stream lasts or
+/// until it shows others, and whether a machine's view. The reply names those held and preserves each attempted ID's refusal. `404 stream_unknown` once the stream
 /// has ended: the next one's `hello` names it.
 pub(crate) async fn show(
     State(api): State<Arc<Api>>,
@@ -331,11 +381,11 @@ pub(crate) async fn show(
                 reply.held.push(id.clone());
             }
             Err(crate::api::Refusal(error)) => {
-                reply.refused.insert(id.clone(), ProjectShowRefusal { status: error.kind.http_status(), error });
+                reply.refused.insert(id.clone(), ProjectShowRefusal { status: error.http_status(), error });
             }
         }
     }
-    let was = SHOWN.lock().expect("shown lock").get_mut(&stream).map(|held| std::mem::replace(held, readers));
+    let was = SHOWN.lock().expect("shown lock").get_mut(&stream).map(|held| std::mem::replace(held, Shows { readers, machines: shown.machines }));
     match was {
         Some(was) => {
             drop(was);
@@ -414,10 +464,13 @@ impl Watch {
     fn visible(&self, event: &StreamEvent) -> bool {
         let project_id = match event {
             StreamEvent::ProjectVault { .. } => return true,
+            // Out of the index by now: told to whoever shows it.
+            StreamEvent::ProjectGone { id, .. } => return self.showing.as_ref().is_some_and(|showing| showing.includes(id)),
             StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
-            StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
+            StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } | StreamEvent::Thumb { project, .. } => Some(project),
             StreamEvent::RunUpdated { run } => {
-                return self.api.calcifer.store().run(run.id.as_str()).ok().flatten().is_some_and(|row| project::vault::require_path(&row.out_dir).is_ok());
+                return self.showing.as_ref().is_none_or(|showing| showing.hears(run))
+                    && self.api.calcifer.run_store(run.id.as_str()).and_then(|store| store.run(run.id.as_str())).ok().flatten().is_some_and(|row| project::vault::require_path(&row.out_dir).is_ok());
             }
             _ => None,
         };
@@ -488,13 +541,14 @@ impl Watch {
     /// `id` as it is now; none when it is gone, or can't be read, which says `resync`.
     fn run(&mut self, id: &RunId) -> Option<StreamEvent> {
         let calcifer = &self.api.calcifer;
-        let run = match calcifer.store().run(id.as_str()) {
+        let run = match calcifer.run_store(id.as_str()).and_then(|store| store.run(id.as_str())) {
             Ok(Some(row)) if project::vault::require_path(&row.out_dir).is_ok() => calcifer.record(&row),
             Ok(Some(_)) => return None,
             Ok(None) => return None,
             Err(e) => Err(crate::Error::Store(e)),
         };
         match run {
+            Ok(run) if self.showing.as_ref().is_some_and(|showing| !showing.hears(&run)) => None,
             Ok(run) => Some(StreamEvent::RunUpdated { run: Box::new(run) }),
             Err(e) => {
                 warn!(run = %id, "the events stream cannot read the run: {e}");
@@ -506,7 +560,17 @@ impl Watch {
 
     /// Owes each machine that differs from the list as last told, and each that left it.
     async fn list_machines(&mut self) {
-        let now = match listed(&self.api.machines).await {
+        let _took = crate::took::Took::new("events_machines");
+        // What a machine does for the projects this page shows, unlocked, is theirs to see: never another's.
+        let projects: Vec<String> = self.showing.as_ref().map(Showing::projects).unwrap_or_default().into_iter()
+            .filter(|id| self.api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| project::vault::require_path(&known.path).is_ok()))
+            .collect();
+        for project in &projects {
+            if self.api.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0) {
+                self.api.machines.follow_project(project);
+            }
+        }
+        let now = match listed(&self.api.machines, &projects).await {
             Ok(now) => now,
             Err(e) => {
                 warn!("the events stream cannot list the machines: {}", e.message);
@@ -536,8 +600,8 @@ fn frame(event: &StreamEvent) -> sse::Event {
 }
 
 /// The machines a list shows now, by name, from what Calcifer holds (no Hub is asked).
-async fn listed(machines: &Arc<Machines>) -> Result<HashMap<String, Machine>, Error> {
-    let list = machines.list(false).await?;
+async fn listed(machines: &Arc<Machines>, projects: &[String]) -> Result<HashMap<String, Machine>, Error> {
+    let list = machines.list_for(false, projects).await?;
     Ok(list.machines.into_iter().map(|m| (m.name.clone(), m)).collect())
 }
 

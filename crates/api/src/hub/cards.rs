@@ -4,6 +4,7 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use platform::durable;
@@ -29,6 +30,11 @@ impl Card {
         self.document["summary"].as_str().unwrap_or_default()
     }
 
+    /// The release's digest (`types::release_digest`), as its Hub served it: none from a Hub before it, or a card kept before.
+    pub fn digest(&self) -> Option<&str> {
+        self.document["release"]["digest"].as_str().filter(|digest| !digest.is_empty())
+    }
+
     /// The package interface document, as the Hub answered it.
     pub fn interface_document(&self) -> &Value {
         &self.document["package_interface"]
@@ -41,18 +47,43 @@ impl Card {
 
 }
 
-/// Where `(hub, package)`'s cards live under `root`, the cozy home.
-fn dir(root: &Path, hub: &str, package: &str) -> PathBuf {
+/// Where `hub`'s cards live under `root`, the cozy home.
+fn hub_dir(root: &Path, hub: &str) -> PathBuf {
     let host = hub.split_once("://").map_or(hub, |(_, rest)| rest);
     let host: String = host
         .trim_end_matches('/')
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
         .collect();
-    let mut dir = root.join("packages").join(host);
+    root.join("packages").join(host)
+}
+
+/// Where `(hub, package)`'s cards live under `root`.
+fn dir(root: &Path, hub: &str, package: &str) -> PathBuf {
+    let mut dir = hub_dir(root, hub);
     dir.extend(package.split('/'));
     dir
 }
+
+/// Keeps what `hub` listed at its last whole read, each package with its newest release, beside their cards: a list asked before
+/// the Hub answers again, after a restart too, stands on it (cl-975).
+pub fn keep_listed(root: &Path, hub: &str, listed: &[(String, String)]) {
+    let dir = hub_dir(root, hub);
+    let read_at_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    let document = serde_json::json!({ "read_at_ms": read_at_ms, "packages": listed });
+    // One that cannot be kept is the next restart's to read again.
+    drop(durable::private_dir(&dir).and_then(|()| durable::replace(&dir.join(LISTED), document.to_string().as_bytes(), 0o600)));
+}
+
+/// What `hub` listed at its last whole read (`keep_listed`), and when.
+pub fn kept_listed(root: &Path, hub: &str) -> Option<(SystemTime, Vec<(String, String)>)> {
+    let document: Value = serde_json::from_slice(&std::fs::read(hub_dir(root, hub).join(LISTED)).ok()?).ok()?;
+    let at = UNIX_EPOCH + Duration::from_millis(document["read_at_ms"].as_u64()?);
+    Some((at, serde_json::from_value(document["packages"].clone()).ok()?))
+}
+
+/// The file `keep_listed` writes: not a card, nor an org's folder.
+const LISTED: &str = "listed.json";
 
 /// A failed Hub call as a refusal.
 pub fn refusal(error: crate::hub::Error) -> Error {
@@ -68,10 +99,12 @@ pub async fn card(
     package: &str,
     release: &str,
 ) -> Result<Card, Error> {
-    if let Some(card) = kept(root, hub, package, release) {
-        return Ok(card);
+    match kept(root, hub, package, release) {
+        Some(card) if card.digest().is_some() => Ok(card),
+        // Kept before its Hub served digests (xs-196): read once more for it, else as it stands.
+        Some(card) => Ok(from_hub(client, root, hub, package, release).await.ok().filter(|read| read.digest().is_some()).unwrap_or(card)),
+        None => from_hub(client, root, hub, package, release).await,
     }
-    from_hub(client, root, hub, package, release).await
 }
 
 /// The card of `release` with its requirements: one kept without them is read again and kept, or, with no Hub, stands as it is.
@@ -83,7 +116,7 @@ pub async fn card_requiring(
     release: &str,
 ) -> Result<Card, Error> {
     match kept(root, hub, package, release) {
-        Some(card) if card.requirements().is_some() => Ok(card),
+        Some(card) if card.requirements().is_some() && card.digest().is_some() => Ok(card),
         Some(card) => Ok(from_hub(client, root, hub, package, release).await.unwrap_or(card)),
         None => from_hub(client, root, hub, package, release).await,
     }
@@ -148,7 +181,7 @@ fn absent(error: Error, what: &str) -> Error {
 }
 
 /// The kept card of `release`.
-pub(crate) fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card> {
+pub fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card> {
     let path = file(&dir(root, hub, package), release);
     let document: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     read(&document).ok()

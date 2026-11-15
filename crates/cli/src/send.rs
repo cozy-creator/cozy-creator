@@ -2,9 +2,10 @@
 //! digest. What Calcifer holds is skipped, and a part it holds is resumed. A folder is its tree document (`api::tree`), sent after
 //! its files, and local code is its package's tree (`api::code`). Calcifer reads no path of this computer's.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::SeekFrom,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use api::{
@@ -33,8 +34,11 @@ struct Sending {
 }
 
 impl Sending {
-    fn new(ctx: &Context) -> Self {
-        let line = Transfer::stderr(ctx.term.stderr, "Sending files");
+    fn new(ctx: &Context, quiet: bool) -> Self {
+        let line = match quiet {
+            true => Transfer::on_terminal(ctx.term.stderr, "Sending files"),
+            false => Transfer::stderr(ctx.term.stderr, "Sending files"),
+        };
         let counts = TransferCounts {
             files_done: 0,
             files_total: None,
@@ -76,6 +80,12 @@ pub(crate) struct Sender<'a> {
     ctx: &'a Context,
     calcifer: Client,
     project: Option<String>,
+    /// An explicit export (a model installed from a file): it may name a project's file, said once.
+    export: bool,
+    /// No progress off a terminal: `said` is its one line.
+    quiet: bool,
+    /// The files that moved bytes, and the bytes.
+    sent: (AtomicU64, AtomicU64),
 }
 
 impl<'a> Sender<'a> {
@@ -84,6 +94,9 @@ impl<'a> Sender<'a> {
             ctx,
             calcifer: ctx.calcifer().await?,
             project: None,
+            export: false,
+            quiet: false,
+            sent: Default::default(),
         })
     }
 
@@ -92,18 +105,68 @@ impl<'a> Sender<'a> {
             ctx,
             calcifer: ctx.calcifer().await?,
             project: Some(project.to_owned()),
+            export: false,
+            quiet: false,
+            sent: Default::default(),
         })
     }
 
+    /// What a person exports on purpose: a project's own file goes too, outside its protection, with a warning.
+    pub(crate) async fn export(ctx: &'a Context) -> Result<Self, Error> {
+        Ok(Self { export: true, ..Self::new(ctx).await? })
+    }
+
+    /// Whether `path` (a folder: with its files) is independent of any project, else refused, or for an export warned.
+    async fn independent(&self, path: &Path, tree: bool) -> Result<bool, Error> {
+        if self.project.is_some() { return Ok(false); }
+        let owned = project_input(self.ctx, path, tree).await?;
+        if owned && !self.export {
+            return Err(Error::new(Kind::Forbidden, "project_source_scope", "This input belongs to a Cozy project and cannot be staged as independent maintenance data")
+                .remedy("Use it in a project-scoped run, or explicitly export an independent copy first"));
+        }
+        if owned { crate::output::warn("this copy leaves its project's protection: what it makes is this machine's, outside the project"); }
+        Ok(!owned)
+    }
+
+    /// The package at `path` as local code from here: in a project, that project's (its copy and generation are the project's);
+    /// outside any, the machine's, as a Hub package is (Paul 11-13: installed packages are machine-wide). The project, if any.
+    pub(crate) async fn local_code(ctx: &'a Context, path: &Path) -> Result<(LocalCode, Option<String>), Error> {
+        match crate::project::here(ctx).await? {
+            Some(project) => Ok((Self::for_project(ctx, &project).await?.code(path).await?, Some(project))),
+            None => Ok((Self::independent_code(ctx, path).await?, None)),
+        }
+    }
+
+    /// Maintenance may stage code only after every actual source path is proven outside a project.
+    pub(crate) async fn independent_code(ctx: &'a Context, path: &Path) -> Result<LocalCode, Error> {
+        let plan = source_plan(path).await?;
+        source_scope(ctx, &plan, CodeScope::Independent).await?;
+        let path = std::fs::canonicalize(path).map_err(|error| unreadable(path, error))?;
+        ctx.calcifer().await?.post("/v1/maintenance/source", &serde_json::json!({ "path": path }), None).await
+    }
+
+    /// No progress off a terminal; `said` says what it sent, once.
+    pub(crate) fn quiet(self) -> Self {
+        Self { quiet: true, ..self }
+    }
+
+    /// What it sent, in a line: `sent 2 files, 4.1 MiB`. None: nothing moved.
+    pub(crate) fn said(&self) -> Option<String> {
+        let (files, bytes) = (self.sent.0.load(Ordering::Relaxed), self.sent.1.load(Ordering::Relaxed));
+        (files > 0).then(|| format!("sent {files} file{}, {:.1} MiB", if files == 1 { "" } else { "s" }, bytes as f64 / 1_048_576.0))
+    }
+
     fn memo(&self) -> PathBuf {
-        self.ctx.home.root().join("cache").join("digests")
+        self.ctx.home.root().join("cache").join("independent-digests-v3")
     }
 
     /// The file at `path`, held by Calcifer: its digest.
     pub(crate) async fn file(&self, path: &Path) -> Result<Digest, Error> {
-        let mut progress = Sending::new(self.ctx);
+        // An exported project file keeps no global memo of its path.
+        let independent = self.independent(path, false).await?;
+        let mut progress = Sending::new(self.ctx, self.quiet);
         progress.line.phase("Checking file");
-        let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
+        let (at, memo) = (path.to_owned(), (self.project.is_none() && independent).then(|| self.memo()));
         let digest = tokio::task::spawn_blocking(move || api::digests::of(memo.as_deref(), &at))
             .await
             .map_err(|e| Error::internal("digest", e.to_string()))??;
@@ -117,9 +180,10 @@ impl<'a> Sender<'a> {
 
     /// The folder at `root`, each file and then its tree document held by Calcifer: the document's digest.
     pub(crate) async fn tree(&self, root: &Path) -> Result<Digest, Error> {
-        let mut progress = Sending::new(self.ctx);
+        let independent = self.independent(root, true).await?;
+        let mut progress = Sending::new(self.ctx, self.quiet);
         progress.line.phase("Checking folder");
-        let (at, memo) = (root.to_owned(), self.project.is_none().then(|| self.memo()));
+        let (at, memo) = (root.to_owned(), (self.project.is_none() && independent).then(|| self.memo()));
         let staged = tokio::task::spawn_blocking(move || api::stage::stage(&at, memo.as_deref()))
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
@@ -163,12 +227,19 @@ impl<'a> Sender<'a> {
     /// The package at `path` (a folder or a script) as local code: its tree, each file and then the document held by Calcifer
     /// (`api::code`). What never goes is said.
     pub(crate) async fn code(&self, path: &Path) -> Result<LocalCode, Error> {
-        let mut progress = Sending::new(self.ctx);
+        let Some(project) = self.project.as_deref() else {
+            return Err(code_scope_refused());
+        };
+        let plan = source_plan(path).await?;
+        source_scope(self.ctx, &plan, CodeScope::Project(project)).await?;
+        let staged = tokio::task::spawn_blocking(move || plan.stage(None))
+            .await.map_err(|error| Error::internal("stage", error.to_string()))??;
+        self.prepared_code(staged).await
+    }
+
+    async fn prepared_code(&self, staged: api::code::Staged) -> Result<LocalCode, Error> {
+        let mut progress = Sending::new(self.ctx, self.quiet);
         progress.line.phase("Checking local code");
-        let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
-        let staged = tokio::task::spawn_blocking(move || api::code::stage(&at, memo.as_deref()))
-            .await
-            .map_err(|e| Error::internal("stage", e.to_string()))??;
         if !staged.left.is_empty() {
             let warning = format!("left out of the code it sends: {}", staged.left.join(", "));
             progress.line.println(format!("warning: {warning}"));
@@ -223,6 +294,17 @@ impl<'a> Sender<'a> {
             "Sending {}",
             path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()
         ));
+        let moved = progress.counts.bytes_moved;
+        let answer = self.whole(path, digest, length, progress).await;
+        let delta = progress.counts.bytes_moved.saturating_sub(moved);
+        if delta > 0 {
+            self.sent.0.fetch_add(1, Ordering::Relaxed);
+            self.sent.1.fetch_add(delta, Ordering::Relaxed);
+        }
+        answer
+    }
+
+    async fn whole(&self, path: &Path, digest: Digest, length: u64, progress: &mut Sending) -> Result<(), Error> {
         for _ in 0..3 {
             let Some(held) = self
                 .calcifer
@@ -305,6 +387,78 @@ impl<'a> Sender<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum CodeScope<'a> { Independent, Project(&'a str) }
+
+fn code_scope_refused() -> Error {
+    Error::new(Kind::Forbidden, "project_source_scope", "This package source belongs to a Cozy project")
+        .remedy("Run it from that project, or export a separate package copy before installing or publishing")
+        .next("cozy run --help")
+}
+
+async fn source_plan(path: &Path) -> Result<api::code::SourcePlan, Error> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || api::code::plan(&path))
+        .await.map_err(|error| Error::internal("stage", error.to_string()))?
+}
+
+async fn source_scope(ctx: &Context, plan: &api::code::SourcePlan, scope: CodeScope<'_>) -> Result<(), Error> {
+    let mut directories = BTreeSet::new();
+    for path in plan.roots().chain(plan.files()) {
+        let canonical = std::fs::canonicalize(path).map_err(|error| unreadable(path, error))?;
+        let directory = if canonical.is_dir() { canonical } else {
+            canonical.parent().ok_or_else(code_scope_refused)?.to_owned()
+        };
+        directories.insert(directory);
+    }
+    let client = ctx.calcifer().await?;
+    for directory in directories {
+        let directory = directory.to_str().ok_or_else(|| Error::new(Kind::Usage, "project_path", "The source path is not UTF-8"))?;
+        let path = crate::calcifer_client::path(&["v1", "projects", directory, "address"]);
+        let owner = match client.get::<api::calcifer::project::Address>(&path).await {
+            Ok(owner) => Some(owner),
+            Err(error) if error.code == "project_not_found" => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(owner) = owner {
+            match scope {
+                CodeScope::Project(expected) if owner.id == expected => {},
+                _ => return Err(code_scope_refused()),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a file/tree is a project's own (by its path, an alias or any resolved source): an
+/// independent one must not create a global digest memo or CAS copy from it. Tree enumeration hashes nothing.
+async fn project_input(ctx: &Context, path: &Path, tree: bool) -> Result<bool, Error> {
+    let mut paths = vec![path.to_path_buf()];
+    if tree {
+        paths.extend(api::tree::walk(path, true)
+            .map_err(|error| Error::new(Kind::Usage, "tree_unreadable", error.to_string()))?.into_values());
+    }
+    let mut directories = BTreeSet::new();
+    for path in paths {
+        for path in [std::path::absolute(&path).map_err(|error| unreadable(&path, error))?,
+            std::fs::canonicalize(&path).map_err(|error| unreadable(&path, error))?] {
+            let directory = if path.is_dir() { path } else { path.parent().ok_or_else(code_scope_refused)?.to_owned() };
+            directories.insert(directory);
+        }
+    }
+    let client = ctx.calcifer().await?;
+    for directory in directories {
+        let directory = directory.to_str().ok_or_else(|| Error::new(Kind::Usage, "project_path", "The source path is not UTF-8"))?;
+        let route = crate::calcifer_client::path(&["v1", "projects", directory, "address"]);
+        match client.get::<api::calcifer::project::Address>(&route).await {
+            Ok(_) => return Ok(true),
+            Err(error) if error.code == "project_not_found" => {},
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
+}
+
 /// `raw`, when it is written as a path here: its file (a folder too, with `folders`) sent, `raw` its digest and `name` its name.
 pub(crate) async fn held(ctx: &Context, raw: &mut String, name: &mut Option<String>, folders: bool) -> Result<(), Error> {
     if !written_as_path(raw) {
@@ -312,7 +466,8 @@ pub(crate) async fn held(ctx: &Context, raw: &mut String, name: &mut Option<Stri
     }
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let path = spelled(raw, &cwd, &ctx.user_home);
-    let sender = Sender::new(ctx).await?;
+    // A model made from a file is an explicit export, a project's file too.
+    let sender = Sender::export(ctx).await?;
     let digest = match std::fs::metadata(&path) {
         Ok(meta) if meta.is_file() => sender.file(&path).await?,
         Ok(meta) if meta.is_dir() && folders => sender.tree(&path).await?,

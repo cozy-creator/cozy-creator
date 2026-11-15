@@ -174,13 +174,7 @@ impl Cache {
                 )
                 .into());
             }
-            owner.sample()?;
-            if owner.over(bytes) != 0 {
-                return Err(Error::OutOfMemory {
-                    requested_bytes: bytes,
-                }
-                .into());
-            }
+            owner.admit(bytes)?;
             for at in range.clone().step_by(self.page) {
                 let handle = match owner.driver().create(self.page) {
                     Ok(handle) => handle,

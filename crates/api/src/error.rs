@@ -52,6 +52,10 @@ pub struct Error {
     /// The originating component's own details of its refusal, verbatim (a Hub's `metadata`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// A peer's status where the kind's would misname it: its 429 (asked too soon) is `Unavailable` but answers 429.
+    /// Never in the body.
+    #[serde(skip)]
+    pub status: Option<u16>,
 }
 
 /// Calcifer's refusal while it stops (a restart): the ask was not carried out, or goes on under its key, so it is sent
@@ -77,6 +81,7 @@ impl Error {
             cause: None,
             retry_after_s: None,
             metadata: None,
+            status: None,
         }
     }
 
@@ -113,6 +118,11 @@ impl Error {
         Self::new(Kind::Internal, code, message)
     }
 
+    /// The HTTP status it answers with: a peer's 429 as it was, else its kind's.
+    pub fn http_status(&self) -> u16 {
+        self.status.unwrap_or_else(|| self.kind.http_status())
+    }
+
     /// The wait after this refusal: the stated one, else `otherwise`.
     pub fn wait_or(&self, otherwise: std::time::Duration) -> std::time::Duration {
         self.retry_after_s.map_or(otherwise, std::time::Duration::from_secs)
@@ -135,10 +145,10 @@ impl Error {
         self
     }
 
-    /// Whether asking again may be answered: a machine or the Hub gave no answer, a slow one, or failed on its side. Any
-    /// other refusal is final.
+    /// Whether asking again may be answered: a machine or the Hub gave no answer, a slow one, or failed on its side, or another
+    /// program holds a project's file (`file_held`, which the page waits out too). Any other refusal is final.
     pub fn transient(&self) -> bool {
-        matches!(self.code.as_str(), "machine_unreachable" | "hub_unreachable" | "hub_slow")
+        matches!(self.code.as_str(), "machine_unreachable" | "hub_unreachable" | "hub_slow" | "file_held")
             || (self.kind == Kind::Unavailable && self.cause.as_ref() == Some(&self.code))
     }
 

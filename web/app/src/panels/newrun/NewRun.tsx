@@ -12,6 +12,7 @@ import { DrawerFrame } from "../Drawer"
 import { DropZone, FileRow, useFiles } from "../FileDrop"
 import { shown } from "../format"
 import { OnMachine } from "../machines/OnMachine"
+import { runName } from "../runs/words"
 import { hideFiles, revealFiles } from "./fields"
 import { RunForm, UNREADABLE } from "./RunForm"
 
@@ -116,7 +117,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
 
   const done = ({ run, notes, replay }: Submitted) => {
     // One note for one run, whatever it has to say.
-    const lines = [replay ? `This was asked already: run ${run.number}.` : "", ...(notes ?? []).map((note) => note.message)].filter(Boolean)
+    const lines = [replay ? `This was asked already: run ${runName(run)}.` : "", ...(notes ?? []).map((note) => note.message)].filter(Boolean)
     if (lines.length) say(lines.join(" "))
     navigate(to(`runs/${run.number}`))
   }
@@ -135,7 +136,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
       {resolved.summary && <p className="muted">{resolved.summary}</p>}
       {entry?.description && <p className="muted">{entry.description}</p>}
       <p className="muted">
-        Release {resolved.release} ({resolved.release_from})
+        {resolved.release_from === "source" ? `From source: ${resolved.release}` : `Release ${resolved.release} (${resolved.release_from})`}
       </p>
       <div className="row tabs">
         <button type="button" className={`tab ${mode === "form" ? "on" : ""}`} onClick={() => mode !== "form" && toForm()}>
@@ -239,7 +240,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
         label="Run"
         disabled={files.moving || unreadable}
         quote={(ask) => client.runQuote(ask)}
-        ask={(ask, key) => client.submit(ask, key)}
+        ask={(ask, key) => client.submit(id, ask, key)}
         onDone={done}
       />
       {files.moving && <p className="muted">Waiting for its files to reach Calcifer.</p>}
@@ -257,9 +258,9 @@ export function NewRun() {
   const [picked, setPicked] = useState<string | null>(params.get("target"))
 
   const { data: asked, error: askedError } = useQuery({
-    queryKey: ["run", Number(again), "full", "again"],
-    queryFn: ({ signal }) => client.runFull(Number(again), signal),
-    enabled: Boolean(again),
+    queryKey: ["project-run", id, Number(again), "full", "again"],
+    queryFn: ({ signal }) => client.runFull({ project: id, run: Number(again) }, signal),
+    enabled: Boolean(id && again),
   })
   const askedTarget = asked?.request?.target
   useEffect(() => {

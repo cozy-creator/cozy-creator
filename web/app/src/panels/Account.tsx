@@ -11,15 +11,19 @@ import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { ShowNsfw, useShowNsfw } from "../ui/Tags"
 import { theme } from "../ui/theme"
-import { Confirm, Failure, KV, Section, useAsk } from "./common"
+import { Confirm, Failure, KV, Section, useAsk, useNow } from "./common"
 import { DrawerFrame } from "./Drawer"
 import { usd } from "./format"
 import { appearance, messages, signInClient } from "./signin"
 
-/** What's emailed goes out, and comes back once. Nothing here stays in the browser. */
+/** What's emailed goes out, and comes back once. Nothing here stays in the browser. Asked too soon with no code out, it counts
+ *  the Hub's wait down, and asking again waits for it. */
 function CodeEntry({ sent, onDone, onAgain }: { sent: Code; onDone: (code: string) => Promise<void>; onAgain: () => void }) {
   const ask = useAsk()
   const [code, setCode] = useState("")
+  const [until] = useState(() => Date.now() + (sent.retry_after_s ?? 0) * 1000)
+  const left = sent.id == null ? Math.max(0, Math.ceil((until - Date.now()) / 1000)) : 0
+  useNow(left > 0)
   return (
     <form
       className="stack"
@@ -28,16 +32,18 @@ function CodeEntry({ sent, onDone, onAgain }: { sent: Code; onDone: (code: strin
         void ask.run(() => onDone(code.trim()))
       }}
     >
-      <p className="muted">A code is on its way to {sent.email}.</p>
+      <p className="muted">
+        {sent.id != null ? `A code is on its way to ${sent.email}.` : left > 0 ? `The Hub sends ${sent.email} its next code in ${left} s.` : `You can ask for a code to ${sent.email} again.`}
+      </p>
       <label>
         Code
         <input className="field" autoFocus autoComplete="one-time-code" spellCheck={false} value={code} onChange={(event) => setCode(event.target.value)} />
       </label>
       <div className="row end">
-        <button type="button" className="tb" onClick={onAgain}>
-          Start over
+        <button type="button" className="tb" onClick={onAgain} disabled={left > 0}>
+          {left > 0 ? `Ask again in ${left} s` : "Start over"}
         </button>
-        <button type="submit" className="tb primary" disabled={ask.busy || !code.trim()}>
+        <button type="submit" className="tb primary" disabled={ask.busy || !code.trim() || sent.id == null}>
           Go on
         </button>
       </div>
@@ -149,6 +155,7 @@ function SignOut({ who, onDone }: { who: Who; onDone: () => void }) {
         sent={sent}
         onAgain={() => setSent(null)}
         onDone={async (code) => {
+          if (sent.id == null) return
           await client.proveCode(sent.id, code)
           onDone()
         }}

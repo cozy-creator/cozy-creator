@@ -26,9 +26,10 @@ pub(crate) async fn exec(
     previews: Option<&std::path::Path>,
 ) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
+    let address = crate::calcifer_client::RunAddress::current(ctx, id).await?;
     // `--full`: what it measured, its calls and what it was asked; a person's view and `--json` hold the rest.
     let detail: &[(&str, &str)] = if ctx.full { &[("detail", "full")] } else { &[] };
-    let mut run: Run = calcifer.get_query(&crate::calcifer_client::path(&["v1", "runs", id]), detail).await?;
+    let mut run: Run = calcifer.get_query(&address.path(), detail).await?;
     if !once && !follow::settled(&run) {
         let ended = super::previewed(ctx, run, previews).await?;
         if let Some(dir) = download {
@@ -37,7 +38,7 @@ pub(crate) async fn exec(
         if !ctx.json {
             return Ok(follow::exit_code(&ended));
         }
-        run = calcifer.get_query(&crate::calcifer_client::path(&["v1", "runs", ended.id.as_str()]), detail).await?;
+        run = calcifer.get_query(&crate::calcifer_client::RunAddress::of(&ended).path(), detail).await?;
         output::ndjson(&run);
         return Ok(follow::exit_code(&run));
     }
@@ -62,7 +63,7 @@ pub(crate) async fn exec(
         if !follow::settled(&run) {
             follow::next(ctx, &run);
         }
-        println!("its stages, memory, calls and log: cozy run watch {} --full", run.name());
+        println!("its stages, memory, calls and log: cozy run watch {} --full", super::handle(&run));
         return Ok(follow::exit_code(&run));
     }
     grid(&["STAGE", "TIME", "DETAIL"], measured, stage_rows).print(ctx, "stages");
@@ -109,7 +110,7 @@ pub(crate) async fn exec(
     }
     if follow::settled(&run) {
         // A settled run's stream replays its log and closes.
-        let mut events = calcifer.events(run.id.as_str(), 0);
+        let mut events = calcifer.events(&crate::calcifer_client::RunAddress::of(&run), 0);
         let mut lines = Vec::new();
         // Each stage the run entered, at its time since the run was accepted: what a run whose
         // machine was lost has to say about where it got to.

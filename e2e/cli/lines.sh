@@ -26,6 +26,8 @@ for name in a b c; do
 done
 cozy --json run ls --all --limit 40 > "$OUT/lines-runs.json" || check "lines: run ls failed"
 cozy machine logs local --since 2h > "$OUT/lines.tensord.log" || check "lines: machine logs local failed"
+# What each resolution pulled (`pull … header= tree=`): those objects are no job's download.
+cozy machine logs local tensorfs --lines 0 --since 2h > "$OUT/lines.tensorfs.log" 2>&1 || check "lines: machine logs local tensorfs failed"
 python3 "$here/lines.py" "$OUT" "$began" "$OUT/lines.tensord.log" a b c > "$OUT/lines.json" 2> "$OUT/lines.failed" || true
 cat "$OUT/lines.json"
 while read -r why; do check "lines: $why"; done < "$OUT/lines.failed"

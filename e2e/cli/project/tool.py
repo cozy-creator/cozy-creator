@@ -1,11 +1,11 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 """The tool cells' package: weightless tools as a canvas drops them. `still` makes a picture of one colour, `slow` too, saying how far
 it's got in steps, and `told` a picture from a prompt and its beats. `need` wants a video it may not get. `words` makes no media, so it's no
 tool, and `caption` answers what it's shown, as Calcifer's Caption asks a package's `caption`. `stepped` is no tool either: its stages and
-steps time a run as a model's do."""
+steps time a run as a model's do. `fetching` spends its first `download` seconds in the stage a machine's weight download is."""
 
 import os
 import time
@@ -44,14 +44,14 @@ class Picture(msgspec.Struct):
     prompt: str
 
 
-def _picture(out: Outputs) -> ImageFile:
-    return out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
+def _picture() -> ImageFile:
+    return ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
 
 
 @app.tool(label="A still", named="still")
-def still(payload: StillBox, out: Outputs) -> Picture:
+def still(payload: StillBox) -> Picture:
     """A still of one colour."""
-    return Picture(_picture(out), payload.instructions.text)
+    return Picture(_picture(), payload.instructions.text)
 
 
 class SlowBox(msgspec.Struct, kw_only=True):
@@ -61,13 +61,33 @@ class SlowBox(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="A slow still")
-def slow(ctx: Context, payload: SlowBox, out: Outputs, tel: Telemetry) -> Picture:
+def slow(ctx: Context, payload: SlowBox, tel: Telemetry) -> Picture:
     """A still that takes its time, saying how far it's got in steps."""
     with tel.stage("drawing"):
         for at in range(10):
             time.sleep(payload.seconds / 10)
             ctx.progress(at, 10)
-    return Picture(_picture(out), payload.instructions.text)
+    return Picture(_picture(), payload.instructions.text)
+
+
+class FetchingBox(msgspec.Struct, kw_only=True):
+    seconds: Annotated[float, Range(0, 600)] = 1.0
+    download: Annotated[float, Range(0, 600)] = 0.0
+
+
+@app.tool(label="A still that downloads first")
+def fetching(ctx: Context, payload: FetchingBox, tel: Telemetry) -> Picture:
+    """A still whose run first spends `download` seconds as a machine downloading weights does, then `seconds` drawing."""
+    if payload.download:
+        with tel.stage("downloading its weights"):
+            for at in range(10):
+                ctx.progress(at, 10)
+                time.sleep(payload.download / 10)
+    with tel.stage("drawing"):
+        for at in range(10):
+            time.sleep(payload.seconds / 10)
+            ctx.progress(at, 10)
+    return Picture(_picture(), "")
 
 
 class SteppedInput(msgspec.Struct, kw_only=True):
@@ -79,7 +99,7 @@ class SteppedInput(msgspec.Struct, kw_only=True):
 
 
 @app.entrypoint()
-def stepped(ctx: Context, payload: SteppedInput, out: Outputs, tel: Telemetry) -> Picture:
+def stepped(ctx: Context, payload: SteppedInput, tel: Telemetry) -> Picture:
     """A still made as a model makes one, weightless: its prompt encoded, its steps (the first slower, as a warm-up is), decoded."""
     with tel.stage("encoding prompt"):
         time.sleep(payload.step)
@@ -89,7 +109,7 @@ def stepped(ctx: Context, payload: SteppedInput, out: Outputs, tel: Telemetry) -
             ctx.progress(at, payload.steps)
     with tel.stage("decoding image"):
         time.sleep(payload.step)
-    return Picture(_picture(out), payload.prompt)
+    return Picture(_picture(), payload.prompt)
 
 
 class Beat(msgspec.Struct, kw_only=True):
@@ -108,9 +128,9 @@ class ToldBox(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="Told", named="told")
-def told(payload: ToldBox, out: Outputs) -> Picture:
+def told(payload: ToldBox) -> Picture:
     """A still of one colour, from a prompt and its beats."""
-    return Picture(_picture(out), payload.instructions.text)
+    return Picture(_picture(), payload.instructions.text)
 
 
 class NeedBox(msgspec.Struct, kw_only=True):

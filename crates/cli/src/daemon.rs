@@ -24,6 +24,23 @@ pub(crate) async fn restart(ctx: &Context) -> Result<bool, Error> {
 }
 
 #[derive(clap::Args, Debug)]
+pub(crate) struct Restart {}
+
+/// `cozy restart`: Calcifer stopped and started on the installed cozy, whoever uses it (cl-962). Runs on machines go on,
+/// pages reconnect, and the new Calcifer resumes what the old one owed.
+pub(crate) async fn restart_calcifer(ctx: &Context, _args: Restart) -> Result<ExitCode, Error> {
+    let restarted = restart(ctx).await?;
+    let holder = Client::connect(ctx).await?.ready().await?;
+    if ctx.json {
+        output::json(&json!({"restarted": restarted, "version": holder.version, "pid": holder.pid}));
+    } else {
+        let did = if restarted { "restarted" } else { "started" };
+        output::say(ctx, &format!("Calcifer {did} on cozy {} (pid {})", holder.version, holder.pid));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[derive(clap::Args, Debug)]
 pub(crate) struct Status {}
 
 /// The current project's health and actionable warnings.
@@ -42,11 +59,11 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
     let mut document = json!({
         "project": if ctx.full {
             json!({
-                "id": project.id, "code": project.code, "path": project.path, "assets": project.assets,
+                "id": project.id, "code": project.code, "key": project.key, "path": project.path, "assets": project.assets,
                 "missing": project.missing, "stale": project.stale, "orphans": project.orphans,
                 "absent": project.absent, "run_files": project.run_files, "machines": project.machines,
             })
-        } else { json!({"code": project.code, "path": project.path, "machines": project.machines}) },
+        } else { json!({"code": project.code, "key": project.key, "path": project.path, "machines": project.machines}) },
         "health": if attention { "needs_attention" } else { "ready" },
         "counts": {
             "unrendered_assets": project.missing.len(),
@@ -57,11 +74,21 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
         "warnings": project.warnings.iter().take(if ctx.full { usize::MAX } else { 10 }).collect::<Vec<_>>(),
         "next": next,
     });
+    // History from before projects kept their own (cl-984): imported into its journal, and still in Calcifer's store.
+    let legacy = crate::calcifer_client::path(&["v1", "projects", &project.id, "legacy"]);
+    if let Ok(history) = ctx.calcifer().await?.get::<api::calcifer::LegacyHistory>(&legacy).await
+        && (history.imported > 0 || history.pending > 0) {
+        document["legacy_history"] = json!(format!("{} runs imported, {} pending", history.imported, history.pending));
+    }
     if !project.unsent.is_empty() {
         document["counts"]["errors"] = json!(project.unsent.len());
         document["errors"] = json!(project.unsent.iter().take(if ctx.full { usize::MAX } else { 5 }).collect::<Vec<_>>());
     }
-    output::view(ctx, &document, &["project", "health", "counts", "warnings", "errors", "next"]);
+    // What a box's text mentions that its tool can't use: left out of its render, said once each, nothing to act on (cl-944).
+    if !project.notes.is_empty() {
+        document["notes"] = json!(project.notes.iter().map(|note| &note.message).collect::<Vec<_>>());
+    }
+    output::view(ctx, &document, &["project", "health", "counts", "legacy_history", "warnings", "errors", "notes", "next"]);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -175,11 +202,11 @@ fn print_log_line(ctx: &Context, machine: &str, log: LogName, line: &str) {
     }
 }
 
-/// Calcifer's log, read from its file: there whether or not Calcifer is, its newest `lines` from
-/// the last `since`. Followed, each line as it is written, woken by a watch on its directory
-/// (`tail -F`, across a rotation to `calcifer.log.1`).
+/// Calcifer's closed health log (`health.log`), read from its file: there whether or not Calcifer
+/// is, its newest `lines` from the last `since`. Followed, each line as it is written, woken by a
+/// watch on its directory (`tail -F`, across a rotation to `health.log.1`).
 async fn calcifer_log(ctx: &Context, q: &LogQuery) -> Result<ExitCode, Error> {
-    let path = ctx.home.calcifer_log();
+    let path = ctx.home.calcifer_health();
     if !path.exists() {
         return Err(Error::new(
             Kind::NotFound,
@@ -198,7 +225,7 @@ async fn calcifer_log(ctx: &Context, q: &LogQuery) -> Result<ExitCode, Error> {
             format!("{}: {e}", path.display()),
         )
     };
-    let log = Log::rotated(ctx.home.calcifer(), "calcifer.log");
+    let log = Log::rotated(ctx.home.calcifer(), "health.log");
     let start = Start::Last(q.lines as u64);
     // Lines before `since` are skipped up to the first one stamped at or after it.
     let mut cutoff = q
@@ -225,6 +252,8 @@ async fn calcifer_log(ctx: &Context, q: &LogQuery) -> Result<ExitCode, Error> {
             true => Error::new(Kind::Unavailable, "log_follow_unsupported", e.to_string()),
             false => unreadable(&e),
         })?;
+    // Dropped after `batches`: the follower, woken, finds no reader.
+    let _leave = follow.on_leave();
     let (sender, mut batches) = tokio::sync::mpsc::channel(16);
     let reading = tokio::task::spawn_blocking(move || {
         follow.run(

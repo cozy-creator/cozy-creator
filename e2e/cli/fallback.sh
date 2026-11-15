@@ -6,7 +6,7 @@ step "fall back (cl-920): a project's chosen machine ended; its renders go where
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] \
   || { echo "fall back: its stand-in is another user of a fresh GitHub runner"; return; }
 local P=$OUT/fallback tool=$here/project/waits.py/wait job='' said
-cozy --json machine show local > "$OUT/set-local.json" || { check "fall back: machine show local"; return; }
+cozy --json machine show local > "$OUT/set-local.json" || { check "fall back: machine show local: $(head -c 300 "$OUT/set-local.json")"; return; }
 stand_in stand-e || return
 cozy --json new --unencrypted "$P" > "$OUT/fallback-new.json" 2>&1 || { check "fall back: new: $(tail -c 300 "$OUT/fallback-new.json")"; return; }
 jq -n --arg tool "$tool" --arg r "$RANDOM" \

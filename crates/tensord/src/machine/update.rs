@@ -28,7 +28,7 @@ const OLDER_RUNTIME_BUILD: &str = "runtime-build";
 /// The service's exit status asking its parent to start the service again on the selected pair.
 pub(crate) const REPLACE_EXIT: i32 = 75;
 /// This binary's release, which an update's `from` and `to` name as `cozy`.
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = ::api::VERSION;
 const MAX_WHEEL_BYTES: u64 = 256 << 20;
 /// A dev binary's: a debug build with its debug info.
 const MAX_BINARY_BYTES: u64 = 2 << 30;
@@ -430,8 +430,10 @@ pub(crate) struct Updates {
     /// The latest updates that ended before the current one (`ended.json`), newest last: their
     /// callers still read their outcomes after the next one starts.
     ended: Mutex<Vec<Status>>,
-    /// The runs in flight, by number: what activating would end.
-    running: Box<dyn Fn() -> Vec<String> + Send + Sync>,
+    /// Its runs: those in flight are what activating would end, and their ends wake a drain.
+    engine: Arc<crate::execution::Engine>,
+    /// Bumped at each write of an update's record: its log's followers read it again.
+    written: tokio::sync::watch::Sender<()>,
     lifecycle: Option<Arc<super::lifecycle::Lifecycle>>,
     /// The downloader published wheels land through (`pypi::wheel`).
     machine: Option<Arc<Machine>>,
@@ -446,7 +448,7 @@ impl Updates {
         paths: Paths,
         uv: super::uv::Uv,
         python: String,
-        running: Box<dyn Fn() -> Vec<String> + Send + Sync>,
+        engine: Arc<crate::execution::Engine>,
         lifecycle: Option<Arc<super::lifecycle::Lifecycle>>,
         machine: Option<Arc<Machine>>,
     ) -> io::Result<Arc<Self>> {
@@ -471,12 +473,29 @@ impl Updates {
             status: Mutex::new(status),
             queued: Mutex::new(queued),
             ended: Mutex::new(ended),
-            running,
+            engine,
+            written: tokio::sync::watch::channel(()).0,
             lifecycle,
             machine,
             stop: Mutex::default(),
             toolchain: Mutex::default(),
         }))
+    }
+
+    /// Told at each write of an update's record.
+    pub(crate) fn written(&self) -> tokio::sync::watch::Receiver<()> {
+        self.written.subscribe()
+    }
+
+    /// `value` as the record `name`, and its followers told.
+    fn record<T: Serialize>(&self, name: &str, value: &T) -> io::Result<()> {
+        write_json(&self.paths.update(name), value)?;
+        self.written.send_replace(());
+        Ok(())
+    }
+
+    fn running(&self) -> Vec<String> {
+        self.engine.with_journal(|journal| journal.started()).unwrap_or_default()
     }
 
     /// The build toolchain, probed once and again after each install.
@@ -522,7 +541,7 @@ impl Updates {
                 notes: vec![],
             };
             // One already answered (installed, failed or queued) asks nothing.
-            let _ = self.request(fetch, true, |code| std::process::exit(code));
+            let _ = self.request(fetch, true, |code| super::supervise::leave(code));
         }
         verdicts
     }
@@ -583,7 +602,7 @@ impl Updates {
         // Keep the next request out until cleanup finishes; otherwise its new pending record
         // could be removed by this previous operation's cleanup.
         let mut current = self.status.lock().unwrap();
-        write_json(&self.paths.update("status.json"), &status)?;
+        self.record("status.json", &status)?;
         *current = Some(status);
         remove_pending(&self.paths)
     }
@@ -613,7 +632,7 @@ impl Updates {
                 waiting.status.enter("canceled");
             }
             let canceled = waiting.status.clone();
-            write_json(&self.paths.update("queued.json"), &*queued)?;
+            self.record("queued.json", &*queued)?;
             return Ok(canceled);
         }
         drop(queued);
@@ -633,9 +652,11 @@ impl Updates {
         let mut canceled = status.clone();
         canceled.error = "canceled by its owner".into();
         canceled.enter("canceled");
-        write_json(&self.paths.update("status.json"), &canceled)?;
+        self.record("status.json", &canceled)?;
         *status = canceled.clone();
         self.stop.lock().unwrap().cancel();
+        // A drain waiting on the runs in flight ends at once.
+        self.engine.notify_activity();
         Ok(canceled)
     }
 
@@ -719,7 +740,7 @@ impl Updates {
             };
             status.enter("queued");
             queued.push(Queued { request, status: status.clone() });
-            write_json(&self.paths.update("queued.json"), &*queued).map_err(server)?;
+            self.record("queued.json", &*queued).map_err(server)?;
             return Ok(status);
         }
         drop(queued);
@@ -739,7 +760,7 @@ impl Updates {
                 return;
             }
             let Queued { request, status } = queued.remove(0);
-            if let Err(error) = write_json(&self.paths.update("queued.json"), &*queued) {
+            if let Err(error) = self.record("queued.json", &*queued) {
                 tracing::warn!("queued updates: {error}");
             }
             drop(queued);
@@ -755,7 +776,7 @@ impl Updates {
                     failed.error = why;
                     failed.enter("failed");
                     self.end(current.take());
-                    if let Err(error) = write_json(&self.paths.update("status.json"), &failed) {
+                    if let Err(error) = self.record("status.json", &failed) {
                         tracing::warn!("update status: {error}");
                     }
                     *current = Some(failed);
@@ -771,7 +792,7 @@ impl Updates {
         ended.push(status);
         let over = ended.len().saturating_sub(16);
         ended.drain(..over);
-        if let Err(error) = write_json(&self.paths.update("ended.json"), &*ended) {
+        if let Err(error) = self.record("ended.json", &*ended) {
             tracing::warn!("ended updates: {error}");
         }
     }
@@ -797,7 +818,7 @@ impl Updates {
         };
         status.enter("waiting");
         self.end(current.take());
-        write_json(&self.paths.update("status.json"), &status).map_err(server)?;
+        self.record("status.json", &status).map_err(server)?;
         *current = Some(status.clone());
         *self.stop.lock().unwrap() = Stop::default();
         let updates = self.clone();
@@ -825,6 +846,7 @@ impl Updates {
                 updates.next(exit);
             })
             .map_err(server)?;
+        crate::activity::status_changed();
         Ok(status)
     }
 
@@ -836,7 +858,7 @@ impl Updates {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "the update was canceled"));
             }
             change(&mut status);
-            write_json(&self.paths.update("status.json"), &status)?;
+            self.record("status.json", &status)?;
             *current = Some(status);
         }
         Ok(())
@@ -925,7 +947,7 @@ impl Updates {
             dev: binary.as_ref().is_some_and(|b| b.dev),
         };
         let publication = (|| {
-            write_json(&self.paths.update("pending.json"), &pending)?;
+            self.record("pending.json", &pending)?;
             if let (Some(b), Some(staged)) = (&binary, staged) {
                 super::binary::swap(&b.launch, staged)?;
             }
@@ -1015,7 +1037,7 @@ impl Updates {
         };
         let grace = self.lifecycle.as_ref().map_or(super::lifecycle::IDLE_GRACE_MS, |l| l.grace);
         let minutes = (grace / 60_000).max(1);
-        let idle = match (self.running)().len() {
+        let idle = match self.running().len() {
             0 => format!("after {minutes} minutes idle (`cozy machine ls` shows when)"),
             1 => format!("{minutes} minutes after its run in flight ends"),
             runs => format!("{minutes} minutes after its {runs} runs in flight end"),
@@ -1076,7 +1098,9 @@ impl Updates {
         let admitted = || self.lifecycle.as_ref().map_or(0, |l| l.admitted());
         let (mut seen, mut total, mut closed) = (None, 0, false);
         loop {
-            let running = (self.running)();
+            // A run ending, an admission letting go (`Lifecycle::on_change`) or a cancel moves it.
+            let activity = self.engine.activity_epoch();
+            let running = self.running();
             if running.is_empty() && !closed {
                 activation.iter().for_each(super::lifecycle::Activation::close);
                 closed = true;
@@ -1103,7 +1127,7 @@ impl Updates {
             if self.status.lock().unwrap().as_ref().is_some_and(Status::terminal) {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "the update was canceled"));
             }
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            self.engine.wait_activity(activity, None);
         }
         // It waits for nothing more: its caller says so.
         self.set(|s| {
@@ -1157,7 +1181,7 @@ impl Updates {
     /// One that resolves none names `--tensorfs`.
     fn pair(&self, candidate: &Path, runtime: &Path) -> io::Result<()> {
         if let Ok(current) = existing_wheel(&self.paths.sdk(), "tensorfs") {
-            if self.compile(&[runtime.to_owned(), current.clone()])?.is_ok() {
+            if admits(runtime, &current) && self.compile(&[runtime.to_owned(), current.clone()])?.is_ok() {
                 return stage(candidate, &current, "tensorfs").map(drop);
             }
         }
@@ -1216,7 +1240,7 @@ impl Updates {
             let machine = self.machine.as_ref().ok_or_else(|| invalid("this machine fetches nothing"))?;
             let stop = self.stop.lock().unwrap().clone();
             let downloads = self.paths.update("downloads");
-            return super::pypi::wheel_at(&choice.url, &choice.sha256, &choice.file, &downloads, machine, &stop);
+            return super::pypi::wheel_at(&choice.url, &choice.sha256, &choice.file, &downloads, machine, crate::origin::priority::NOW, &stop);
         }
         if !choice.file.is_empty() {
             let path = self
@@ -1400,6 +1424,22 @@ fn build(path: &Path, sha256: &str) -> io::Result<String> {
 }
 
 /// `cozy_runtime-0.18.102-cp312-…whl` → ("cozy_runtime", "0.18.102").
+/// Whether the Runtime wheel `runtime`'s own requirement on TensorFS admits the TensorFS wheel `tensorfs`. One it refuses
+/// isn't asked of the index, which would wait minutes for a release it doesn't list yet (cl-952: 0.45.0's TensorFS under
+/// Runtime 0.45.2 waited 8 minutes). Unread: asked.
+fn admits(runtime: &Path, tensorfs: &Path) -> bool {
+    let read = || -> Option<bool> {
+        let (_, version) = wheel_name(tensorfs.file_name()?.to_str()?)?;
+        let (distribution, release) = wheel_name(runtime.file_name()?.to_str()?)?;
+        let mut archive = zip::ZipArchive::new(fs::File::open(runtime).ok()?).ok()?;
+        let mut metadata = String::new();
+        archive.by_name(&format!("{distribution}-{release}.dist-info/METADATA")).ok()?.read_to_string(&mut metadata).ok()?;
+        let requires = metadata.lines().filter_map(|line| line.strip_prefix("Requires-Dist:").map(str::trim));
+        Some(api::release::required(requires, "tensorfs")?.contains(&version.parse().ok()?))
+    };
+    read().unwrap_or(true)
+}
+
 fn wheel_name(file: &str) -> Option<(String, String)> {
     let stem = file.strip_suffix(".whl")?;
     let mut parts = stem.split('-');

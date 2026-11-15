@@ -58,14 +58,71 @@ fn picture(path: &Path) -> Option<&'static str> {
     })
 }
 
+thread_local! {
+    /// This thread is doing work no one waits on (`quietly`).
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `work`, no one waiting on it (a thumbnail, a file measured): each ffmpeg or ffprobe it starts runs at the OS's lowest priority, so what
+/// a person is doing stays smooth however many files land (Paul: a run never makes the computer unusable).
+pub(crate) fn quietly<R>(work: impl FnOnce() -> R) -> R {
+    struct Back(bool);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            QUIET.with(|quiet| quiet.set(self.0));
+        }
+    }
+    let _back = Back(QUIET.with(|quiet| quiet.replace(true)));
+    work()
+}
+
 /// One ffmpeg or ffprobe run, and the only way Calcifer starts either. What it reads is named by `input`, `joined` or `made`
 /// alone, so it reads that file and nothing the file names: a run's output is a package's bytes, and a playlist or a `concat`
 /// script in a video's name would have it read other files here, or open a URL.
 pub(crate) struct Media(Command);
 
 impl Media {
+    /// At the lowest priority when it's `quietly`.
     pub(crate) fn new(program: &Path) -> Self {
-        Self(Command::new(program))
+        match QUIET.with(std::cell::Cell::get) {
+            true => Self::lowest(program),
+            false => Self(Command::new(program)),
+        }
+    }
+
+    /// The OS's lowest: idle.
+    #[cfg(windows)]
+    fn lowest(program: &Path) -> Self {
+        use std::os::windows::process::CommandExt as _;
+        const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
+        let mut command = Command::new(program);
+        command.creation_flags(IDLE_PRIORITY_CLASS);
+        Self(command)
+    }
+
+    /// The OS's lowest: background QoS on macOS, nice 19 and idle I/O on Linux, nice 19 elsewhere.
+    #[cfg(not(windows))]
+    fn lowest(program: &Path) -> Self {
+        let found = |paths: &[&str]| paths.iter().map(Path::new).find(|path| path.is_file()).map(Path::to_owned);
+        let mut command = match (found(&["/usr/sbin/taskpolicy"]), found(&["/usr/bin/ionice", "/bin/ionice"])) {
+            (Some(taskpolicy), _) if cfg!(target_os = "macos") => {
+                let mut command = Command::new(taskpolicy);
+                command.arg("-b");
+                command
+            }
+            (_, Some(ionice)) if cfg!(target_os = "linux") => {
+                let mut command = Command::new(ionice);
+                command.args(["-c", "3", "nice", "-n", "19"]);
+                command
+            }
+            _ => {
+                let mut command = Command::new("nice");
+                command.args(["-n", "19"]);
+                command
+            }
+        };
+        command.arg(program);
+        Self(command)
     }
 
     /// At the lowest priority, where the OS has one.
@@ -205,6 +262,7 @@ async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Re
     let staging = tempfile::tempdir_in(parent).map_err(|e| failed(e.to_string()))?;
     for archive in archives {
         say(&format!("fetching {name}: {}", archive.url));
+        tracing::info!(target: "cozy.service_health", tool = name, "fetching a tool");
         let part = parent.join(format!(".{name}-{}.part", &archive.sha256[..12]));
         let (mut download, got) = tensorfs::fetch::get_pinned_into(archive.url, &part, &mut |_| {}).await.map_err(failed)?;
         if got != archive.sha256 {

@@ -1,5 +1,5 @@
-// An Edit as the box holds it: clips end to end on V1, every point a whole frame at the edit's rate. No gaps and no overlaps
-// can be written, since a clip has no place of its own: where it sits is the sum of what's before it.
+// An Edit as the box holds it: clips end to end on one track, every point a whole frame at the edit's rate. No gaps and no overlaps
+// can be written, since a clip has no place of its own: where it sits is the sum of what's before it. Time runs left to right at one scale.
 import type { Clip, ClipNow } from "../../api/calcifer"
 import type { CanvasStore } from "../CanvasStore"
 import { shownOf } from "../shown"
@@ -19,7 +19,7 @@ export interface Placed {
   /** Its source's frames, counting from 0, `out` exclusive, as OTIO and an EDL count. A still's is 0 to its duration. */
   in: number
   out: number
-  /** Left to right, in the box's own pixels. */
+  /** Left to right, in pixels: `at` and `frames` at the layout's scale. */
   x: number
   w: number
 }
@@ -27,12 +27,10 @@ export interface Placed {
 export interface Layout {
   placed: Placed[]
   frames: number
+  /** Pixels a frame. */
+  scale: number
   width: number
 }
-
-/** A clip too short to see still has handles to pull, and an offline one still says so. */
-export const NARROWEST = 22
-export const OFFLINE = 112
 
 export const isStill = (clip: ClipNow) => clip.field === "image"
 
@@ -47,17 +45,14 @@ export function span(clip: ClipNow, fps: number): { in: number; out: number } {
 
 export function lay(clips: ClipNow[], fps: number, scale: number): Layout {
   let at = 0
-  let x = 0
   const placed = clips.map((clip, index): Placed => {
     const held = span(clip, fps)
     const frames = held.out - held.in
-    const w = clip.missing ? OFFLINE : Math.max(NARROWEST, frames * scale)
-    const place = { clip, index, at, frames, ...held, x, w }
+    const place = { clip, index, at, frames, ...held, x: at * scale, w: frames * scale }
     at += frames
-    x += w
     return place
   })
-  return { placed, frames: at, width: x }
+  return { placed, frames: at, scale, width: at * scale }
 }
 
 /** The same cut at another rate: a clip's points are times, so their frames move with it. What no clip says stays unsaid. */
@@ -72,17 +67,11 @@ export function clipAt(layout: Layout, frame: number): Placed | undefined {
   return showing.find((place) => frame < place.at + place.frames) ?? showing.at(-1)
 }
 
-export const xOf = (layout: Layout, frame: number): number => {
-  const place = clipAt(layout, frame)
-  if (!place) return 0
-  return place.x + (Math.min(frame - place.at, place.frames) / place.frames) * place.w
-}
+export const xOf = (layout: Layout, frame: number): number => frame * layout.scale
 
 export function frameAt(layout: Layout, x: number): number {
-  const place = layout.placed.find((held) => x < held.x + held.w && held.frames > 0) ?? layout.placed.filter((held) => held.frames > 0).at(-1)
-  if (!place) return 0
-  const share = Math.max(0, Math.min(1, (x - place.x) / place.w))
-  return Math.min(place.at + Math.floor(share * place.frames), Math.max(0, layout.frames - 1))
+  if (!layout.frames || !layout.scale) return 0
+  return Math.max(0, Math.min(layout.frames - 1, Math.floor(x / layout.scale)))
 }
 
 /** Where a clip dropped or dragged at `x` goes: before the first clip whose middle is past it. */
@@ -113,13 +102,25 @@ export function trimmedOut(clip: ClipNow, fps: number, by: number): ClipNow {
   return { ...clip, in: held.in, out: to >= (clip.holds ?? Number.POSITIVE_INFINITY) ? undefined : to }
 }
 
+/** The clip under frame `frame` cut in two there: the same source, the first piece ending where the second begins. Null on a cut already. */
+export function split(clips: ClipNow[], fps: number, frame: number): { clips: ClipNow[]; index: number } | null {
+  const place = lay(clips, fps, 1).placed.find((held) => held.frames > 1 && frame > held.at && frame < held.at + held.frames)
+  if (!place) return null
+  const k = frame - place.at
+  const { clip } = place
+  const pieces: ClipNow[] = isStill(clip)
+    ? [{ ...clip, frames: k }, { ...clip, frames: place.frames - k }]
+    : [{ ...clip, in: place.in, out: place.in + k }, { ...clip, in: place.in + k, out: clip.out == null ? undefined : place.out }]
+  return { clips: [...clips.slice(0, place.index), ...pieces, ...clips.slice(place.index + 1)], index: place.index + 1 }
+}
+
 /** What `PATCH` writes: `<name>`, and only what says which part of it. Its place in the list is its place on the track. */
 export const wire = (clips: ClipNow[]) => ({
   tracks: [
     {
       clips: clips.map((clip): Clip => {
-        if (isStill(clip)) return { clip: clip.clip, ...(clip.frames === undefined ? {} : { frames: clip.frames }) }
-        return { clip: clip.clip, ...(clip.in ? { in: clip.in } : {}), ...(clip.out === undefined ? {} : { out: clip.out }) }
+        if (isStill(clip)) return { clip: clip.clip, ...(clip.frames == null ? {} : { frames: clip.frames }) }
+        return { clip: clip.clip, ...(clip.in ? { in: clip.in } : {}), ...(clip.out == null ? {} : { out: clip.out }) }
       }),
     },
   ],
@@ -131,6 +132,25 @@ export function timecode(frame: number, fps: number): string {
   const seconds = Math.floor(frame / rate)
   const pad = (value: number) => String(value).padStart(2, "0")
   return `${pad(Math.floor(seconds / 3600))}:${pad(Math.floor(seconds / 60) % 60)}:${pad(seconds % 60)}:${pad(frame % rate)}`
+}
+
+/** A ruler's marks: a label every `major` frames, at least `room` pixels apart, and a tick every `minor`. */
+export function marks(scale: number, fps: number, room = 96): { major: number; minor: number } {
+  const rate = Math.max(1, Math.round(fps))
+  // Within a second, steps that land on it; past one, whole seconds.
+  const within = Array.from({ length: rate - 1 }, (_, n) => n + 1).filter((step) => rate % step === 0)
+  const steps = [...within, ...[1, 2, 5, 10, 15, 30, 60, 120, 300, 600].map((seconds) => seconds * rate)]
+  const major = steps.find((step) => step * scale >= room) ?? steps.at(-1)!
+  const minor = [...steps].reverse().find((step) => step < major && major % step === 0 && step * scale >= 8) ?? major
+  return { major, minor }
+}
+
+/** A ruler's label: `m:ss` on a second, and `m:ss:ff` on a mark between seconds. */
+export function rulerLabel(frame: number, fps: number): string {
+  const rate = Math.max(1, Math.round(fps))
+  const seconds = Math.floor(frame / rate)
+  const said = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
+  return frame % rate ? `${said}:${String(frame % rate).padStart(2, "0")}` : said
 }
 
 /** What's known of an asset dropped in, until Calcifer has read the Edit that holds it. */

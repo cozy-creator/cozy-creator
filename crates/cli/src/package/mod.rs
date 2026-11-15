@@ -62,9 +62,6 @@ enum Command {
         /// Use the first-party root namespace (Hub admins only).
         #[arg(long)]
         root: bool,
-        /// Publish as yanked. Only exact version pins can install it.
-        #[arg(long)]
-        yanked: bool,
     },
     /// Permanently delete your package and all its releases from the Hub.
     Delete {
@@ -90,19 +87,27 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Command::Install { package, placement } => match local(ctx, &package)? {
             Some(path) => {
                 let on = placement.on()?;
-                let code = crate::send::Sender::new(ctx).await?.code(&path).await?;
-                machine::install(ctx, String::new(), Some(code), None, on).await
+                let (code, project) = crate::send::Sender::local_code(ctx, &path).await?;
+                machine::install(ctx, String::new(), Some(code), None, on, project).await
             }
             None => {
                 let named = PackageRef::parse(&package)?;
-                machine::install(ctx, named.package(), None, named.release, placement.on()?).await
+                machine::install(ctx, named.package(), None, named.release, placement.on()?, None).await
             }
         },
         Command::Uninstall {
             packages,
             placement,
-        } => machine::uninstall(ctx, &names(&packages)?, placement.on()?).await,
-        Command::Publish { root, yanked } => author::publish(ctx, root, yanked).await,
+        } => {
+            let names = names(&packages)?;
+            // A local package installed in a project leaves that project; outside any, the machine's.
+            let project = match names.iter().any(|name| name.starts_with("local/")) {
+                true => crate::project::here(ctx).await?,
+                false => None,
+            };
+            machine::uninstall(ctx, &names, placement.on()?, project).await
+        }
+        Command::Publish { root } => author::publish(ctx, root).await,
         Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
         Command::Yank { release, undo } => {
             author::yank(ctx, &PackageRef::parse(&release)?, undo).await

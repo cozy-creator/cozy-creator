@@ -34,7 +34,7 @@ assert.equal(cached.get("project-reference/project-canonical-id").code, project.
 
 const { QueryClient } = require("@tanstack/react-query")
 const queries = new QueryClient()
-const upgraded = { message: "project.yaml was format 3 and is format 4 now" }
+const upgraded = { message: "A warning a later read no longer says" }
 const stillPresent = { message: "Check the source file" }
 queriesModule.rememberProjectWarnings(queries, { ...project, warnings: [upgraded, stillPresent] })
 const state = { ...project, assets: [], warnings: [stillPresent] }

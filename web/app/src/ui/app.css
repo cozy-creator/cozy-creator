@@ -82,18 +82,44 @@ html.carrying * {
   cursor: grabbing !important;
 }
 
-.project-setup {
-  width: min(36rem, calc(100vw - 2rem));
-  max-height: calc(100vh - 2rem);
-  overflow: auto;
-  padding: 24px;
-  border: 1px solid var(--mute);
-  border-radius: 12px;
-  background: var(--bg);
-  color: var(--ink);
+/* At `/` with no project open, what to do, over the empty canvas; and a new project made in place, the + 's or a first drop's (cl-980). */
+.home-line {
+  margin: 0;
+  color: var(--mute);
+  font-size: var(--title);
 }
-.project-setup::backdrop {
-  background: rgb(0 0 0 / 0.65);
+.home {
+  position: fixed;
+  inset: var(--top) 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  pointer-events: none;
+  z-index: 30;
+}
+.new-project {
+  width: min(36rem, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 20px 24px;
+  border: 1px solid var(--line2);
+  border-radius: 14px;
+  background: var(--float);
+  box-shadow: 0 10px 40px var(--shadow);
+  color: var(--ink);
+  pointer-events: auto;
+}
+.new-project h2 {
+  margin: 0 0 4px;
+  font-size: var(--title);
+  font-weight: var(--w-title);
+}
+/* What's wrong with a field, one line, under it in its column. */
+.said-beside > .beside {
+  grid-column: 2;
+  color: var(--bad);
+  font-size: var(--body);
 }
 
 /* The five steps at a surface's size. The frame draws them at --ui; a drawer is zoomed, an open box's sheet and takes are drawn larger
@@ -168,7 +194,8 @@ code {
   gap: 12px;
   color: var(--mute);
 }
-.gate h1 {
+.gate h1,
+.gate h2 {
   margin: 0;
   font-size: var(--title);
   font-weight: var(--w-title);
@@ -216,8 +243,8 @@ code {
 .top > .brand {
   display: flex;
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: calc(30px * var(--ui));
+  height: calc(30px * var(--ui));
 }
 .top > .brand img {
   width: 100%;
@@ -353,6 +380,11 @@ code {
 }
 .picker {
   display: none;
+}
+/* The canvas stops at the app bar, and in Focus below its title row (`--canvas-top`, FocusedViewport.tsx): nothing of it, a box or its
+   name, is ever under or beside a control there, at any zoom (Paul, 11-12: nothing covers a control). Its paper (Sheet.tsx) goes on behind. */
+.react-flow__renderer {
+  clip-path: inset(var(--canvas-top, var(--top)) 0 0 0);
 }
 .react-flow {
   --xy-background-color: transparent;
@@ -632,6 +664,33 @@ code {
   border-radius: inherit;
   pointer-events: none;
 }
+/* A picture on its way here: its well pulses, faintly, until it's drawn (cl-982), as a render breathes at rest. */
+.thumb-wait {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.buffered-image[data-loading]::after,
+.thumb-wait::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--ink);
+  opacity: 0;
+  animation: loading-pulse 1.4s ease-in-out infinite alternate;
+}
+@keyframes loading-pulse {
+  to {
+    opacity: 0.08;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .buffered-image[data-loading]::after,
+  .thumb-wait::after {
+    animation: none;
+    opacity: 0.04;
+  }
+}
 .card.here > .media > .media-pixels {
   left: 50%;
   right: auto;
@@ -667,9 +726,24 @@ code {
     0 0 0 calc(3px * var(--unzoom, 1)) var(--select-gap),
     0 0 calc(24px * var(--unzoom, 1)) calc(10px * var(--unzoom, 1)) var(--select-glow);
 }
-/* Far out the ring outgrows the 12px under its name: the name row rises clear of it, never under it. */
-.react-flow__node.selected .card:not(.entity) > .head {
+/* At 45-50% the ring outgrows the 12px under its name: the name row rises clear of it, never under it. */
+.stage[data-lod="0"] .react-flow__node.selected .card:not(.entity) > .head {
   translate: 0 min(0px, calc(9px - 9px * var(--unzoom, 1)));
+}
+/* Further out it would outgrow the room above a box, where its name is (cl-885): it's drawn just inside the picture's edge, as wide on
+   screen, and its name stays where it is. */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node.selected :is(.media, .tl) {
+  outline-offset: calc(-6px * var(--unzoom, 1));
+  box-shadow: 0 0 calc(24px * var(--unzoom, 1)) calc(10px * var(--unzoom, 1)) var(--select-glow);
+}
+/* A picture's pixels are drawn over its outline: the ring is drawn again over them. */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node.selected .media::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  border: calc(6px * var(--unzoom, 1)) solid var(--select);
+  pointer-events: none;
 }
 .media.alpha {
   background-color: var(--check);
@@ -991,6 +1065,37 @@ code {
 .run-face.failed .face-state b {
   color: var(--bad);
 }
+/* A failed take picked (cl-954): its error is all its frame shows, whole and wrapped, on the card, its Copy under it. */
+.run-face.failed.whole {
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  border: 1px solid var(--bad);
+  background: var(--card);
+  font: var(--body) / 1.4 var(--sans);
+  text-shadow: none;
+}
+.run-face.failed.whole p {
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: 40em;
+  text-align: center;
+}
+.run-face.failed.whole b {
+  overflow: visible;
+  font-size: var(--title);
+}
+.run-face.failed.whole .face-words {
+  overflow: visible;
+  white-space: pre-wrap;
+}
+.run-face.failed.whole .copy-error {
+  min-height: 28px;
+  padding: 0 14px;
+}
 .run-face .face-cancel {
   flex: none;
   padding: 0 var(--s3);
@@ -1010,9 +1115,34 @@ code {
 .focus-viewport > .run-face.above {
   position: relative;
   flex: none;
+  /* Its two lines, the second as tall as its Cancel: Render and New take are lifted by this (FocusedViewport.css). */
+  height: 56px;
   padding: 0 4px;
   font-size: 17px;
+  text-shadow: var(--halo);
+}
+/* In Focus its Cancel follows its words, not the far side of the window. */
+.focus-viewport > .run-face.above .face-state b {
+  flex: 0 1 auto;
+}
+.focus-viewport > .run-face.above .face-cancel,
+.focus-card .run-face .copy-error {
+  min-height: 32px;
+  padding: 0 12px;
   text-shadow: none;
+}
+/* In Focus a failure says all it said, wrapped, at the frame's size; its Copy clear of the corner that shapes the frame. */
+.focus-card .run-face.failed {
+  padding-right: 36px;
+  font-size: var(--small);
+}
+.focus-card .run-face.failed .face-state {
+  align-items: flex-end;
+}
+.focus-card .run-face.failed .face-state b,
+.focus-card .run-face.failed .face-words {
+  overflow: visible;
+  white-space: normal;
 }
 /* At rest, how far the whole job is (cl-928): a thin meter along the top of its box (Paul, 11-12), line 1's numbers, drawn only once
    there's an estimate. Nothing pulses in it. */
@@ -1029,15 +1159,19 @@ code {
 }
 /* Under a box at rest, as Paul drew it (cl-932): its tool and its shape, then while it renders its two lines with Cancel, at
    the box's small step, in the room it keeps clear (shown.ts underOf). Only Cancel takes the pointer: a drag there pans. */
+/* Clear of a selected box's ring (3 of gap and 6 of line, kept on screen by --unzoom): it never covers the tool's words (cl-963). */
 .tile-under {
   position: absolute;
-  top: calc(100% + 2px);
+  top: calc(100% + 2px + 9px * var(--unzoom, 1));
   left: 0;
   right: 0;
+  /* Over the ring a rendering box breathes out, and haloed in the page's ground, so its words read through it. */
+  z-index: 5;
   display: flex;
   flex-direction: column;
   gap: 2px;
   pointer-events: none;
+  text-shadow: var(--halo);
 }
 .tile-line {
   display: flex;
@@ -1045,18 +1179,30 @@ code {
   gap: var(--s4);
   min-width: 0;
 }
+/* At the page's body size, as a label is (cl-963). */
 .card .tile-line .node-tool {
   flex: 0 1 auto;
-  font-size: calc(var(--t-small) * var(--ui));
+  font-size: calc(var(--t-body) * var(--ui));
 }
+/* Its shape, cut with an ellipsis where its box ends as a name is: "Auto · 1.6:1 from <hero_art>" is wider than a box 240 wide (cl-885). */
 .card .tile-line .ratio-rest {
   position: static;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: calc(var(--t-body) * var(--ui));
 }
+/* A render's lines at the body step, as the line over them (cl-958): read at the canvas's 100%, and its Cancel 28px. */
 .tile-under .run-face {
   position: relative;
   padding: 0;
-  text-shadow: none;
+  font-size: calc(var(--t-body) * var(--ui));
+  text-shadow: inherit;
+}
+.tile-under .run-face .face-cancel {
+  min-height: 28px;
+  padding: 0 10px;
 }
 .card .head .node-version-label {
   font: calc(var(--t-body) * var(--ui)) / 1.25 var(--mono);
@@ -1141,6 +1287,11 @@ code {
   inset: var(--head) 0 0;
   border-radius: 2px;
   pointer-events: none;
+  /* Its state dot's colour: blue running, grey queued (cl-958). */
+  --wave: var(--state-running);
+}
+.render-wave[data-state="queued"] {
+  --wave: var(--state-queued);
 }
 .render-wave::before,
 .render-wave::after {
@@ -1155,16 +1306,16 @@ code {
 }
 @keyframes render-wave {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--mak) 75%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--wave, var(--mak)) 75%, transparent);
   }
   100% {
-    box-shadow: 0 0 0 calc(24px * var(--unzoom, 1)) color-mix(in srgb, var(--mak) 0%, transparent);
+    box-shadow: 0 0 0 calc(24px * var(--unzoom, 1)) color-mix(in srgb, var(--wave, var(--mak)) 0%, transparent);
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .render-wave::before {
     animation: none;
-    box-shadow: 0 0 0 calc(4px * var(--unzoom, 1)) color-mix(in srgb, var(--mak) 60%, transparent);
+    box-shadow: 0 0 0 calc(4px * var(--unzoom, 1)) color-mix(in srgb, var(--wave, var(--mak)) 60%, transparent);
   }
   .render-wave::after {
     display: none;
@@ -1202,6 +1353,14 @@ code {
   width: 12px;
   height: 12px;
   align-self: center;
+}
+/* Each take on its way its own state, on its tile (cl-945): grey queued, blue rendering. */
+.take .state-dot {
+  position: absolute;
+  top: 9px;
+  left: 9px;
+  z-index: 2;
+  pointer-events: none;
 }
 .take .take-unseen {
   position: absolute;
@@ -1285,6 +1444,83 @@ video.preview.on {
   display: flex;
   flex-direction: column;
   z-index: 1;
+}
+/* A draft that goes on from a take says so across the top of its frame (cl-951): the kept part's last frame, what's kept and redone, and Cancel. */
+.lead-in {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+/* Its words start under it; the pictures behind them still fill the frame. */
+.media:has(.lead-in) .in-frame {
+  padding-top: 56px;
+}
+.lead-in-frame {
+  position: relative;
+  flex: none;
+  height: 44px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--well);
+}
+.lead-in-frame img.strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+}
+.lead-in-words {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lead-in-words b {
+  overflow: hidden;
+  font-size: var(--body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lead-in-line {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+}
+.lead-in-line .kept {
+  flex: var(--kept) 0 0;
+  border-radius: 3px;
+  background: var(--mute);
+}
+.lead-in-line .new {
+  flex: var(--new) 0 0;
+  border-radius: 3px;
+  background: var(--ember);
+}
+.lead-in-gone {
+  flex: none;
+  color: var(--warn, var(--ember));
+  font-size: var(--body);
+}
+/* A take that went on from another box's, on its tile: as its tool's name is. */
+.continues-rest {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mute);
+  font: calc(var(--t-body) * var(--ui)) / 1.25 var(--sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .in-frame .mention-text {
   flex: 1;
@@ -1394,8 +1630,8 @@ video.preview.on {
   border-radius: 6px;
 }
 .card .head .iconb .icon {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
 }
 .card .head .dot {
   width: 7px;
@@ -1560,6 +1796,14 @@ video.preview.on {
   border: 4px solid var(--ember);
   pointer-events: none;
 }
+/* A take that failed stays in the column (cl-954): red, saying so, until it's deleted. */
+.here-side .take.making.failed {
+  border-color: var(--bad);
+}
+.take-failed {
+  color: var(--bad);
+  font: 600 var(--title) / 1.2 var(--sans);
+}
 .here-side .take.making {
   background: var(--card);
   border: 1px solid var(--ember);
@@ -1687,19 +1931,20 @@ video.preview.on {
 .here-under .take.add.on {
   border-color: var(--ember);
 }
+/* A control on its own: 28 px, never smaller (Paul, 11-12). */
 .here-under .take-off,
 .here-side .take-off {
   display: inline-flex;
   top: 3px;
   right: 3px;
-  width: 20px;
-  height: 20px;
+  width: 28px;
+  height: 28px;
   color: #fff;
 }
 .here-under .take-off .icon,
 .here-side .take-off .icon {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 .mention-thumbs {
   display: flex;
@@ -1900,16 +2145,6 @@ video.preview.on {
 }
 .run:active {
   transform: scale(0.96);
-}
-/* Pick up from here: what's kept is marked, under the take it's picked up from. */
-.from-here {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.tc-inline {
-  font: var(--tiny) var(--mono);
-  color: var(--mute);
 }
 /* Its takes or versions, side by side. */
 .takes {
@@ -2134,6 +2369,21 @@ video.preview.on {
   width: 18px;
   height: 18px;
 }
+/* A box's name and its dot: at the title step on the canvas, and as the canvas zooms out at the body step on screen, held there by
+   --name-zoom up to what fits the room above a box (shown.ts nameZoomOf), then smaller with the canvas. One line, cut with an ellipsis
+   where its box ends, its whole name on hover (Paul, 11-13: "rather than just truncating"). */
+.react-flow__node .card:not(.here) > .head :is(.nm, .state-dot) {
+  font-size: max(calc(var(--t-title) * var(--ui)), calc(var(--t-body) * var(--ui) * var(--name-zoom, 1)));
+}
+/* Far out a box is its picture and its name (web-ui.md §2): its version and trash can, too small there to read or hit, go (cl-958). */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
+  display: none;
+}
+/* And what hangs under it, its tool, shape and a render's lines, drawn at the canvas's scale (7px on screen at 33%), set lower as a selected
+   ring grows: its dot says it renders. Its name rises into the room they keep. */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card:not(.here) > .tile-under {
+  display: none;
+}
 
 /* Drawers, and what floats over the canvas keeps clear of the rest by: the tools' width, the zoom's height, an open drawer's width as drawn,
    and where what sits beside the tools starts. */
@@ -2177,6 +2427,19 @@ video.preview.on {
   padding: 8px 10px;
   border-bottom: 1px solid var(--line);
   font-size: var(--body);
+}
+/* Back and close: as big to hit and see as the frame's other buttons. */
+.drawer-head .iconb,
+.model-picker-head .iconb,
+.tools .iconb {
+  width: 32px;
+  height: 32px;
+}
+.drawer-head .iconb .icon,
+.model-picker-head .iconb .icon,
+.tools .iconb .icon {
+  width: 18px;
+  height: 18px;
 }
 .drawer-head b {
   font-size: var(--title);
@@ -2294,6 +2557,32 @@ video.preview.on {
   flex: 1;
   min-width: 0;
 }
+/* Its × top right, big enough to hit; an error's words take their row whole, with Copy and what to run under them. */
+.note > .iconb {
+  width: 28px;
+  height: 28px;
+}
+.note > .iconb .icon {
+  width: 16px;
+  height: 16px;
+}
+.note .copy-error {
+  min-height: 28px;
+}
+.note:has(> .copy-error, > .copyable) {
+  align-items: flex-start;
+}
+.note:has(> .copy-error, > .copyable) > .line {
+  flex-basis: calc(100% - 40px);
+  padding-top: 3px;
+}
+.note:has(> .copy-error, > .copyable) > .iconb {
+  order: 1;
+}
+.note:has(> .copy-error, > .copyable) > .copy-error,
+.note:has(> .copy-error, > .copyable) > .note-act {
+  order: 3;
+}
 /* What a finished render made (cl-937): its take, small, before its words. */
 .note-picture {
   flex: none;
@@ -2377,6 +2666,17 @@ button:disabled {
 .dot.s-queued {
   background: var(--faint);
 }
+/* Every row keeps its dot's place, so the numbers line up; the dot is the state dot's size. */
+.runrow .dot {
+  width: 10px;
+  height: 10px;
+  margin: 0;
+}
+.runrow .dot.s-current,
+.runrow .dot.s-missing {
+  display: block;
+  visibility: hidden;
+}
 .rows {
   list-style: none;
   margin: 0;
@@ -2411,6 +2711,9 @@ button:disabled {
   color: var(--mute);
   white-space: normal;
   overflow-wrap: anywhere;
+}
+.runrow .under.fn {
+  font-family: var(--mono);
 }
 .runrow .under.warn {
   color: var(--ood);
@@ -2683,11 +2986,23 @@ button:disabled {
 }
 .stack label {
   display: grid;
-  grid-template-columns: 96px 1fr;
+  grid-template-columns: 10em 1fr;
   align-items: center;
   gap: 8px;
   color: var(--faint);
   font-size: var(--body);
+}
+/* A checkbox in the field's column, its words beside it. */
+.stack label:has(> input[type="checkbox"]) {
+  display: flex;
+  gap: 8px;
+  padding-left: calc(10em + 8px);
+  color: var(--ink);
+}
+.stack label > input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
 .heldrow {
   display: flex;
@@ -2807,6 +3122,9 @@ button:disabled {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.assetrow .asset-thumb + .nm {
+  margin-left: 18px;
 }
 .assetrow .nm {
   overflow: hidden;
@@ -3174,9 +3492,10 @@ a.tab:hover {
 .in-frame .mention-text .chip {
   text-shadow: none;
 }
+/* The number's column is as wide in every row (v1 as v16), measured in the number's own monospace face, so each row lines up. */
 .image-history .image-version-entry {
   display: grid;
-  grid-template-columns: 24px minmax(0, auto) 24px;
+  grid-template-columns: auto minmax(0, auto) 28px;
   gap: 6px;
   align-items: center;
 }
@@ -3186,7 +3505,9 @@ a.tab:hover {
   border-radius: 0;
   background: none;
   color: var(--mute);
-  font: 12px / 1.3 var(--mono);
+  font: calc(var(--t-body) * var(--ui)) / 1.3 var(--mono);
+  font-variant-numeric: tabular-nums;
+  min-width: 3ch;
   text-align: right;
 }
 .image-history .image-version-entry > .take-off {
@@ -3216,6 +3537,16 @@ a.tab:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* A first-party package from the dev home's packages checkout (xs-195). */
+.image-tool-source {
+  flex: none;
+  color: var(--mute);
+  white-space: nowrap;
+}
+.tools p.tool-source {
+  font-size: calc(var(--t-body) * var(--ui));
+  overflow-wrap: anywhere;
 }
 .tool-off {
   flex: none;
@@ -3442,6 +3773,15 @@ a.tab:hover {
   justify-content: flex-start;
 }
 .main-menu nav a:hover {
+  background: var(--tint);
+}
+/* One list, as the zoom menu is: no row drawn as a button of its own, the theme's switch too. */
+.main-menu nav .tb {
+  justify-content: flex-start;
+  border-color: transparent;
+  background: none;
+}
+.main-menu nav .tb:hover {
   background: var(--tint);
 }
 
@@ -3782,7 +4122,8 @@ input[type="checkbox"] {
   width: 100%;
   margin-top: 4px;
 }
-.chip.refused {
+/* A mention its tool can't use there: crossed out, its title says why, and no render sends it (cl-944). */
+.chip.unused {
   background: color-mix(in srgb, var(--ood) 13%, transparent);
   color: var(--ood);
   text-decoration: line-through;
@@ -3967,24 +4308,6 @@ input[type="checkbox"] {
   color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.beats-from input {
-  width: 72px;
-}
-.pickup-frame {
-  position: relative;
-  overflow: hidden;
-  border-radius: 4px;
-  background: var(--well);
-}
-.pickup-frame img.strip {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 800%;
-  max-width: none;
-  object-fit: fill;
 }
 .desc-row {
   display: flex;
@@ -4246,7 +4569,8 @@ input[type="checkbox"] {
   align-items: center;
   gap: calc(8px * var(--ui));
 }
-.ptabs {
+.ptabs,
+.ptabs-add {
   display: flex;
   align-items: stretch;
   gap: calc(2px * var(--ui));
@@ -4280,11 +4604,10 @@ input[type="checkbox"] {
 .ptab.more {
   flex: none;
 }
-.ptab.new {
+/* The + that makes a project, right after the tabs, in a strip of its own as tall as theirs. */
+.ptab.add {
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  padding: calc(4px * var(--ui)) calc(8px * var(--ui));
+  cursor: pointer;
 }
 /* What each tab takes at its full width, laid out where no one sees it: a row as wide as all of them, so a font arriving resizes it. */
 .ptabs-ghost {
@@ -4471,34 +4794,6 @@ p.warn.slow {
   visibility: visible;
 }
 
-.from-here .keeps {
-  flex: none;
-  width: 100%;
-  height: 10px;
-  margin: 0;
-  appearance: none;
-  border-radius: 5px;
-  background: linear-gradient(to right, var(--ember) var(--kept), var(--line) var(--kept));
-}
-.from-here .keeps::-webkit-slider-thumb {
-  appearance: none;
-  width: 6px;
-  height: 18px;
-  border-radius: 3px;
-  background: var(--ink);
-}
-.from-here .keeps::-moz-range-thumb {
-  width: 6px;
-  height: 18px;
-  border: 0;
-  border-radius: 3px;
-  background: var(--ink);
-}
-.from-here .row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
 /* A file looked at large: the one thing over the canvas. */
 .viewer {
   position: fixed;
@@ -4578,12 +4873,6 @@ p.warn.slow {
   border-top: 1px solid var(--line);
 }
 /* Where a project is, so a person can find it. */
-.project-path {
-  display: block;
-  color: var(--mute);
-  font: var(--small) var(--mono);
-  overflow-wrap: anywhere;
-}
 
 /* Zoom, in the canvas's bottom right corner (FigJam's): − the zoom +, sized like the top bar's buttons. The zoom opens its menu above it. */
 .zoom {
@@ -4724,6 +5013,13 @@ p.warn.slow {
   flex-wrap: wrap;
   gap: 4px 12px;
   margin-top: 4px;
+}
+/* "Prefer" with its checkbox, then Details, on one row (Paul 11-12). */
+.render-prefer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
 }
 .checks button.more {
   padding: 0;

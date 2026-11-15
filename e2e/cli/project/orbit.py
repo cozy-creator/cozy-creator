@@ -38,7 +38,6 @@ def turn(payload: TurnBox, out: Outputs) -> Turned:
         front = bool(np.cos(angle) > 0)
         frames[n][:, bar] = (230, 60, 40) if front else (40, 80, 220)
         frames[n][: HEIGHT * n // count, :4] = 255
-    # Runtime 0.45.0, which the type check pins, predates both: the candidate Runtime has them.
-    video = out.save_video(frames, fps=24, keyframe_interval=1)  # type: ignore[call-arg]
+    video = out.save_video(frames, fps=24, keyframe_interval=1)
     orbit = {"orbit": {"degrees": 360, "direction": payload.direction, "loops": True}}
-    return Turned(video.with_metadata(orbit))  # type: ignore[attr-defined]
+    return Turned(video.with_metadata(orbit))

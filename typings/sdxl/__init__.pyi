@@ -1,6 +1,6 @@
 # The parts of the sdxl package (packages repo) that the release-gate fixtures call: pause-twice, child-lora-stacks.
 import msgspec
-from cozy_runtime.author import Adjustments, App, Context, Model, Outputs, Telemetry
+from cozy_runtime.author import Adjustments, App, Context, Model, Telemetry
 from cozy_runtime.fields import Preflight
 from cozy_runtime.image import ImageRequest, ImageResult
 
@@ -21,6 +21,6 @@ app: App
 
 def resolve_generate(payload: GenerateInput) -> GenerateFacts: ...
 def generate(
-    ctx: Context, payload: GenerateInput, facts: Preflight[GenerateFacts], model: SdxlModel, out: Outputs, tel: Telemetry,
+    ctx: Context, payload: GenerateInput, facts: Preflight[GenerateFacts], model: SdxlModel, tel: Telemetry,
     adj: Adjustments,
 ) -> ImageResult: ...

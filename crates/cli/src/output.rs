@@ -283,6 +283,19 @@ pub(crate) fn at_most(flag: &str, value: u32, most: u32) -> u32 {
     held
 }
 
+/// A definite answer of nothing (`0 nodes`, `no changes`): a command never prints nothing. A JSON document says it itself.
+pub(crate) fn nothing(ctx: &Context, line: &str) {
+    if !ctx.json {
+        anstream::println!("{}", shown(line));
+    }
+}
+
+/// Whether a person is there to answer a question: stdin and stderr are terminals, and no `--json`. Off a terminal nothing asks:
+/// what a person would be asked is a one-line refusal naming the commands to run instead.
+pub(crate) fn can_ask(ctx: &Context) -> bool {
+    !ctx.json && ctx.term.stderr && std::io::stdin().is_terminal()
+}
+
 /// At most two commands to try next, for a person; a JSON document carries its own.
 pub(crate) fn next(ctx: &Context, commands: &[&str]) {
     if ctx.json {

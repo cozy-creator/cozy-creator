@@ -25,15 +25,18 @@ release_synthetic_checks() (
   }
   RUN_CLI=cozy
   . "$E2E/run.sh"
+  # A verb's cozy exits within RUN_EXIT_S of saying its run's terminal event (cl-992).
   watched() {
-    local name=$1; shift
-    [ -n "$(run_submit "$OUT" "$name" "$@")" ] && run_wait "$OUT" "$name" && [ "$(run_get "$OUT" "$name" .status)" = completed ]
+    local name=$1 code=0; shift
+    { [ -n "$(run_submit "$OUT" "$name" "$@")" ] && run_wait "$OUT" "$name" && [ "$(run_get "$OUT" "$name" .status)" = completed ]; } || code=1
+    [ ! -e "$OUT/$name.linger" ] || check "cozy $1 $2 did not exit within ${RUN_EXIT_S:-10} s of its run's terminal event: $(head -n 4 "$OUT/$name.linger" | tr '\n' ' ')"
+    return "$code"
   }
   cleanup_publication() {
     local status=$?
     step cleanup
     python3 "$E2E/delete-test-package.py" "$WHO/$pkg" > /dev/null || check "package fixture cleanup failed"
-    for model_name in "$model" "$model-copy" "$model-store" "$model-lora" "$model-h3-lora"; do
+    for model_name in "$model" "$model-copy" "$model-store" "$model-lora" "$model-lora-added" "$model-h3-lora" "$model-kept"; do
       if model_details "$model_name" > /dev/null 2>&1; then
         cozy --json model delete "$model_name" -y > /dev/null || check "cleanup failed for $model_name"
       fi
@@ -80,21 +83,33 @@ resolves() {  # the release an unversioned run of the throwaway takes
   grep -oE "\"target\": *\"[^\"]*$pkg[^\"]*\"" "$OUT/resolve-$1.ndjson" | head -1 || true
 }
 [[ $(resolves before) == *@0.2.0* ]] || check "the throwaway's unversioned run is not 0.2.0"
+# The card this computer keeps pins its release's files (xs-196): the Hub's release digest goes with every run, and the machine
+# holds the files it installs to it. A card that names other files is refused release_changed, and nothing runs.
+card=$(find "$HOME/.cozy/packages" -path "*/$WHO/$pkg/0.2.0.json" -print -quit 2> /dev/null)
+if [ -z "$card" ] || ! J '.release.digest | test("^sha256:[0-9a-f]{64}$")' "$card"; then
+  check "release digest: the kept card of $WHO/$pkg@0.2.0 holds no release digest: ${card:-no card}"
+else
+  cp "$card" "$OUT/card-0.2.0.json"
+  jq '.release.digest = "sha256:" + ("0" * 64)' "$OUT/card-0.2.0.json" > "$card"
+  ! watched pinned-wrong run "$WHO/$pkg/reverse@0.2.0" text=e2e --on "$ON" || check "release digest: a run pinned to other files completed"
+  grep -qs release_changed "$OUT"/pinned-wrong.{ndjson,err,json} \
+    || check "release digest: a run pinned to other files wasn't refused release_changed: $(tail -c 300 "$OUT/pinned-wrong.err" 2> /dev/null)"
+  cp "$OUT/card-0.2.0.json" "$card"
+fi
 cozy --json package yank "$WHO/$pkg@0.2.0" > "$OUT/yank.json" || check "package yank failed"
 [[ $(resolves yanked) == *@0.1.0* ]] || check "package yank: an unversioned run still takes 0.2.0"
 cozy --json package yank "$WHO/$pkg@0.2.0" --undo > "$OUT/unyank.json" || check "package yank --undo failed"
 [[ $(resolves unyanked) == *@0.2.0* ]] || check "package yank --undo: an unversioned run does not take 0.2.0 again"
-# A candidate: yanked in one Hub call, so the publisher's own next unversioned run keeps the newest (cl-732).
-sed -i.orig 's/^version = "0.2.0"/version = "0.3.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
-(cd "$dir" && cozy --json package publish --yanked > "$OUT/publish-3.json") || check "package publish --yanked 0.3.0 failed"
-J '.status == "published yanked"' "$OUT/publish-3.json" || check "package publish --yanked: $(jq -r .status "$OUT/publish-3.json")"
-[[ $(resolves candidate) == *@0.2.0* ]] || check "package publish --yanked: the publisher's next unversioned run took the candidate"
 # A release its machine still holds and the Hub no longer has, as after a renumbering (birefnet 0.5.3 over 0.1.3): never chosen (cl-748).
+# Deleted, its name publishes again, but a version it published never does, with any bytes (xs-196): 0.1.0 is refused release.retired.
 cozy --json package delete "$WHO/$pkg" --yes > "$OUT/pkg-renumber.json" || check "test package cleanup, to renumber, failed"
-sed -i.orig 's/^version = "0.3.0"/version = "0.1.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
-(cd "$dir" && cozy --json package publish > "$OUT/publish-4.json") || check "package publish 0.1.0 again failed"
+sed -i.orig 's/^version = "0.2.0"/version = "0.1.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
+! (cd "$dir" && cozy --json package publish > "$OUT/publish-retired.json" 2>&1) && grep -q 'release\.retired' "$OUT/publish-retired.json" \
+  || check "a deleted package's 0.1.0 published again, or wasn't refused release.retired: $(tail -c 300 "$OUT/publish-retired.json")"
+sed -i.orig 's/^version = "0.1.0"/version = "0.0.9"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
+(cd "$dir" && cozy --json package publish > "$OUT/publish-4.json") || check "package publish 0.0.9 after the delete failed"
 cozy --json package ls --on "$ON" | J --arg p "$WHO/$pkg" '.packages | any(.package == $p and .release == "0.2.0")' || check "the machine no longer holds 0.2.0, so this proves nothing"
-[[ $(resolves renumbered) == *@0.1.0* ]] || check "an unversioned run took a release the Hub no longer has: $(tail -c 300 "$OUT/resolve-renumbered.err")"
+[[ $(resolves renumbered) == *@0.0.9* ]] || check "an unversioned run took a release the Hub no longer has: $(tail -c 300 "$OUT/resolve-renumbered.err")"
 [ "$(run_get "$OUT" resolve-renumbered .status)" = completed ] || check "an unversioned run, with a release the Hub no longer has held: $(run_get "$OUT" resolve-renumbered '.reason.message' | head -c 300)"
 python3 "$here/../delete-test-package.py" "$WHO/$pkg" > "$OUT/pkg-delete.json" || check "test package cleanup failed"
 ! package_details "$WHO/$pkg" > /dev/null 2>&1 || check "test package cleanup: $WHO/$pkg still answers"
@@ -182,11 +197,12 @@ header += b" " * (-len(header) % 8)
 open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + bytes(32))
 PYLORA
 watched upload-lora lora upload "$OUT/tiny-lora.safetensors" "$model-lora" --lane f16 --source-format as-is --on "$ON" || check "LoRA upload failed"
-cozy --json lora edit "$model-lora" --family e2e-family --tag e2e-lora --trigger e2e --strength 0.8 > /dev/null \
-  && model_details "$model-lora" | J '.family == "e2e-family" and .tags == ["e2e-lora"] and .trigger == "e2e" and .strength == 0.8' \
+# cl-971: each --trigger is one entry, kept whole, commas and all.
+cozy --json lora edit "$model-lora" --family e2e-family --tag e2e-lora --trigger e2e --trigger 'keep its light, and its scene' --strength 0.8 > /dev/null \
+  && model_details "$model-lora" | J '.family == "e2e-family" and .tags == ["e2e-lora"] and .triggers == ["e2e", "keep its light, and its scene"] and .strength == 0.8' \
   || check "LoRA metadata was not set"
 cozy --json lora edit "$model-lora" --trigger '' --strength none > /dev/null \
-  && model_details "$model-lora" | J '.trigger == null and .strength == null' || check "LoRA metadata was not cleared"
+  && model_details "$model-lora" | J '(.triggers // []) == [] and .strength == null' || check "LoRA metadata was not cleared"
 # xs-173: its owner finds the unreleased LoRA, marked private: by its exact name under either verb, and by search text `org/`
 # at a Hub that matches `org/name` (the one with model reads).
 if curl -fsS "$COZY_HUB_URL/.well-known/oauth-protected-resource" | J '.authorization_details_types_supported | index("tensorhub_model_read")'; then
@@ -203,6 +219,31 @@ if cozy --json lora delete "$model-lora@$lora_checkpoint" -y > "$OUT/referenced-
   check "a retained private release did not protect its checkpoint from deletion"
 fi
 cozy --json lora delete "$model-lora" -y > /dev/null || check "LoRA fixture cleanup failed"
+# A LoRA's upload adds a file as a model's does (xs-183, the shared upload handler): the upload names it.
+watched upload-lora-added lora upload "$OUT/tiny-lora.safetensors" "$model-lora-added" --lane f16 --source-format as-is \
+  --add extra/added.json="$OUT/added.json" --on "$ON" || check "lora upload --add failed"
+grep -q '"added":\["extra/added.json"\]' "$OUT/upload-lora-added.ndjson" 2> /dev/null \
+  || check "lora upload --add: the result does not name extra/added.json: $(tail -c 300 "$OUT/upload-lora-added.ndjson")"
+cozy --json lora delete "$model-lora-added" -y > /dev/null || check "LoRA --add fixture cleanup failed"
+# A step-distilled LoRA (xs-183: H3 Turbo, Regenerate-2K): kohya's lora_down/lora_up pairs and a per-step table it keeps beside
+# them is a LoRA, not a component of some model.
+uv run -q --no-project python -I - "$OUT/tiny-kept.safetensors" <<'PYKEPT'
+import json, os, struct, sys
+shapes = {"blocks.0.attn.lora_down": [2, 4], "blocks.0.attn.lora_up": [4, 2], "blocks.0.adaln.table": [3, 4]}
+header, offset = {}, 0
+for key, shape in shapes.items():
+    n = 2 * shape[0] * shape[1]
+    header[key] = {"dtype": "F16", "shape": shape, "data_offsets": [offset, offset + n]}
+    offset += n
+raw = json.dumps(header).encode()
+raw += b" " * (-len(raw) % 8)
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + os.urandom(offset))
+PYKEPT
+watched upload-kept lora upload "$OUT/tiny-kept.safetensors" "$model-kept" --lane f16 --source-format as-is --on "$ON" \
+  || check "step-distilled LoRA upload failed"
+cozy --json model ls "$model-kept" > "$OUT/search-kept.json" && J --arg m "$model-kept" '.models | any(.model == $m and .kind == "lora")' "$OUT/search-kept.json" \
+  || check "a LoRA keeping a per-step table beside its lora_down/lora_up pairs is not listed as a LoRA: $(head -c 300 "$OUT/search-kept.json")"
+cozy --json lora delete "$model-kept" -y > /dev/null || check "step-distilled LoRA fixture cleanup failed"
 # se-116: an H3 LoRA as upstream musubi-tuner writes it (one fused QKV module, f8a1b037's metadata) records the DiT its
 # --task trained, never the h3.lora table's `transformer` (matlowai/orb360 was trained on Ref2VA and read as FL2VA).
 uv run -q --no-project python -I - "$OUT/tiny-h3-lora.safetensors" <<'PYH3'

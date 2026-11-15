@@ -21,7 +21,7 @@ pub struct ServiceSpec {
     pub name: String,
     pub program: PathBuf,
     pub args: Vec<OsString>,
-    /// Where its stdout and stderr append: what it says before its own log is open.
+    /// Where stdout and stderr append. `None` discards both streams, including before startup.
     pub log: Option<PathBuf>,
 }
 
@@ -66,8 +66,9 @@ impl Services {
     }
 
     /// Starts it now from the definition kept here, which only `install` and `ensure` write. One
-    /// already running is left as it is.
-    pub fn start(&self, spec: &ServiceSpec) -> Result<()> {
+    /// already running is left as it is. With no manager to start it (Windows), the process this
+    /// call started: its starter sees it exit.
+    pub fn start(&self, spec: &ServiceSpec) -> Result<Option<Detached>> {
         sys::start(&self.dir, spec)
     }
 

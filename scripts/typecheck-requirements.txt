@@ -2,11 +2,12 @@ annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.16.0
 ast-serialize==0.13.1
+av==19.0.2
 certifi==2026.10.23
 cffi==2.1.1
 charset-normalizer==3.5.2
 click==8.5.1
-cozy-runtime==0.45.0
+cozy-runtime @ git+https://github.com/cozy-creator/cozy-runtime.git@49ddb1969aaba8cb094ebdba6e3ee56ed1378dfd
 cryptography==50.0.2
 cuda-bindings==13.5.0
 cuda-core==1.2.2
@@ -16,10 +17,13 @@ diffusers==0.42.1
 filelock==4.2.10
 fsspec==2026.9.0
 h11==0.16.0
+h2==4.4.1
 hf-xet==1.8.0
+hpack==4.2.0
 httpcore2==2.16.0
 httpx2==2.16.0
 huggingface-hub==2.4.0
+hyperframe==6.1.0
 idna==3.20
 importlib-metadata==10.2.0
 jinja2==3.1.6
@@ -52,7 +56,7 @@ safetensors==0.8.0
 setuptools==84.2.1
 shellingham==1.5.4
 sympy==1.14.0
-tensorfs==0.24.0
+tensorfs==0.25.1
 tokenizers==0.23.3
 tomli-w==1.2.0
 torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl
@@ -65,4 +69,5 @@ types-pyyaml==6.0.12.20261103
 typing-extensions==4.16.0
 typing-inspection==0.4.5
 urllib3==2.8.0
+xxhash==4.1.0
 zipp==4.1.2

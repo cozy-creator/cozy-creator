@@ -9,7 +9,6 @@ import type {
   AssetPatched,
   AssetVersions,
   Browsed,
-  BrowserSession,
   CalciferStatus,
   Canvas,
   CanvasPatched,
@@ -21,7 +20,9 @@ import type {
   ErrorBody,
   Families,
   Fit,
+  HeldAnswer,
   HeldFile,
+  HeldRequest,
   History,
   HistoryStep,
   HistoryStepped,
@@ -49,6 +50,8 @@ import type {
   ProjectAddress,
   ProjectMachines,
   ProjectState,
+  ProjectView,
+  ProjectViewPatch,
   ProjectShowReply,
   Projects,
   Proven,
@@ -67,7 +70,6 @@ import type {
   Target,
   ToolList,
   ToolListChange,
-  ToolUi,
   Tools,
   Unpinned,
   Updating,
@@ -78,6 +80,7 @@ import type {
   VaultChanged,
   VaultEvent,
 } from "./calcifer"
+import { PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION } from "./calcifer"
 import { readEvents } from "./events"
 import type { MachineLogName, Rent } from "../types"
 import type { Transport } from "./transport"
@@ -107,8 +110,9 @@ const failureStatus: Record<ErrorBody["kind"], number> = {
 const unreachable = () =>
   new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy open"] })
 
-/** The page's own session is gone. Any other 401 is a Hub's word on a code or a key, which belongs where it happened. */
-export const sessionLost = (error: ApiError) => error.status === 401 && error.body.code === "unauthenticated"
+/** Calcifer won't answer this page: it isn't Calcifer's own page, or not its account's (design/calcifer-access.md). Any other 401
+ *  or 403 is a Hub's word on a code or a key, which belongs where it happened. */
+export const notAnswered = (error: ApiError) => error.status === 403 && ["not_own_page", "other_user"].includes(error.body.code)
 
 async function refusal(response: Response): Promise<ApiError> {
   const body = await response.json().catch(() => null)
@@ -164,7 +168,9 @@ export interface Hooks {
 
 const project = (id: string) => `/v1/projects/${encodeURIComponent(id)}`
 const vaultOperation = (id: string, operation: string) => `/v1/projects/${encodeURIComponent(id)}/vault/operations/${operation}`
-const run = (id: string | number) => `/v1/runs/${encodeURIComponent(id)}`
+const maintenanceRun = (id: string | number) => `/v1/runs/${encodeURIComponent(id)}`
+export type ProjectRun = { project: string; run: string | number }
+const run = (address: ProjectRun) => `/v1/projects/${encodeURIComponent(address.project)}/runs/${encodeURIComponent(address.run)}`
 const machine = (name: string) => `/v1/machines/${encodeURIComponent(name)}`
 // `org/name` on the wire; a first-party name has no owner, and its org is `_`.
 const orgOf = (name: string) => encodeURIComponent(name.includes("/") ? name.slice(0, name.indexOf("/")) : "_")
@@ -173,23 +179,55 @@ const pkg = (name: string) => `/v1/packages/${orgOf(name)}/${baseOf(name)}`
 const model = (name: string) => `/v1/models/${orgOf(name)}/${baseOf(name)}`
 
 export interface RunFilter {
-  project?: string
   status?: string
   machine?: string
 }
 
+/** A `POST` that only asks what Calcifer holds (`…/held`): a read, tried again as one, and no write of the page's. */
+const asks = (path: string) => path.split("?")[0].endsWith("/held")
+
 export class Client {
   readonly transport: Transport
   private hooks: Hooks
+  private frozen = false
+  private writes = 0
+  private readonly settledWrites = new Set<() => void>()
 
   constructor(transport: Transport, hooks: Hooks) {
     this.transport = transport
     this.hooks = hooks
   }
 
-  /** What can't reach Calcifer tries again where that's safe, saying each attempt, then gives up. */
+  retireProject(id: string) { this.transport.retireProject(id) }
+  allowProject(id: string) { this.transport.allowProject(id) }
+  freezeWrites() { this.frozen = true }
+  resumeWrites() { this.frozen = false }
+  /** Writes sent and not yet answered. */
+  unsentWrites() { return this.writes }
+  async savedWrites() {
+    while (this.writes) await new Promise<void>((done) => this.settledWrites.add(done))
+  }
+
   private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
-    const safe = init.method !== "POST" || new Headers(init.headers).has("Idempotency-Key")
+    // By segment, not route literal: scripts/web-routes.sh reads every `/v1/` string here as a call.
+    const [, , root] = path.split("?")[0].split("/")
+    const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && !(root === "down" && path.split("/").length === 3) && !asks(path)
+    if (writing && this.frozen && !options.action && root !== "events") {
+      throw new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving its edits before closing" })
+    }
+    if (writing) this.writes++
+    try { return await this.exchange(path, init, options) }
+    finally {
+      if (writing) { this.writes--; for (const done of this.settledWrites) done(); this.settledWrites.clear() }
+    }
+  }
+
+  /** What can't reach Calcifer tries again where that's safe, saying each attempt, then gives up. */
+  private async exchange(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
+    const headers = new Headers(init.headers)
+    headers.set(PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION)
+    init = { ...init, headers }
+    const safe = init.method !== "POST" || asks(path) || new Headers(init.headers).has("Idempotency-Key")
     const say = (attempt: number) => {
       this.hooks.attempt(attempt)
       options.onAttempt?.(attempt)
@@ -205,7 +243,7 @@ export class Client {
           return response
         }
         failure = await refusal(response)
-        if (sessionLost(failure)) this.hooks.signedOut()
+        if (notAnswered(failure)) this.hooks.signedOut()
         if (response.status !== 503 || options.once) {
           if (attempt > 1) say(0)
           throw failure
@@ -235,7 +273,7 @@ export class Client {
     const response = await this.transport.fetch(path, { signal, headers: { Accept: "text/event-stream" } })
     if (response.ok) return response
     const failure = await refusal(response)
-    if (sessionLost(failure)) this.hooks.signedOut()
+    if (notAnswered(failure)) this.hooks.signedOut()
     throw failure
   }
 
@@ -247,16 +285,6 @@ export class Client {
     return this.json(path, { method, headers, body: text }, options)
   }
 
-  // Session
-
-  redeem(code: string): Promise<BrowserSession> {
-    return this.write("POST", "/v1/session", { code })
-  }
-
-  async endSession(): Promise<void> {
-    await this.send("/v1/session", { method: "DELETE" })
-  }
-
   status(): Promise<CalciferStatus> {
     return this.json("/v1/status")
   }
@@ -266,9 +294,10 @@ export class Client {
     return this.transport.fetch("/v1/events", { signal, headers: { Accept: "text/event-stream" } })
   }
 
-  /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts. One that ended is told again on the next. */
-  async show(stream: string, projects: string[], signal: AbortSignal): Promise<ProjectShowReply | null> {
-    const body = JSON.stringify({ projects })
+  /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts, and whether one shows a machine's view: the stream
+   *  hears runs only of these. One that ended is told again on the next. */
+  async show(stream: string, projects: string[], machines: boolean, signal: AbortSignal): Promise<ProjectShowReply | null> {
+    const body = JSON.stringify({ projects, machines })
     const response = await this.send(`/v1/events/${encodeURIComponent(stream)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body }, { once: signal })
     // Older services confirm completion without saying which Readers they could install.
     return response.status === 204 ? null : response.json()
@@ -276,17 +305,18 @@ export class Client {
 
   // Files
 
-  /** `true` when held whole, else the ranges held, `[first, last]` inclusive. */
-  async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void, projectId?: string): Promise<true | [number, number][]> {
+  /** The ranges of the file `digest` Calcifer holds, `[start, end)`; `[0, length)` once it holds it whole. Asked as an answer either way
+   *  (`POST …/held`), never a `HEAD`'s 404, which a browser logs as an error. */
+  async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void, projectId?: string): Promise<[number, number][]> {
+    const asked = { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ digests: [digest] } satisfies HeldRequest), signal }
     const response = projectId === undefined
-      ? await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
-      : await this.send(`/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
-    if (response.ok) return true
-    // A pod's `Cozy-*` headers are hostile too: read as numbers, and a nonsense range is no range.
+      ? await this.send("/v1/files/held", { ...asked, method: "POST" }, { onAttempt })
+      : await this.send(`/v1/project-files/held?project=${encodeURIComponent(projectId)}`, { ...asked, method: "POST" }, { onAttempt })
+    const answer = (await response.json()) as HeldAnswer
+    // A pod's answer is hostile too: read as numbers, and a nonsense range is no range.
     const ranges: [number, number][] = []
-    for (const part of (response.headers.get("Cozy-Held") ?? "").split(",")) {
-      const [first, last] = part.split("-").map(Number)
-      if (Number.isSafeInteger(first) && Number.isSafeInteger(last) && first >= 0 && last >= first) ranges.push([first, last])
+    for (const [start, end] of answer.held?.find((row) => row.digest === digest)?.ranges ?? []) {
+      if (Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 0 && end > start) ranges.push([start, end])
     }
     return ranges
   }
@@ -315,6 +345,14 @@ export class Client {
     return this.json(`/v1/projects?limit=${limit}`)
   }
 
+  projectView(id: string, signal?: AbortSignal): Promise<ProjectView> {
+    return this.json(`${project(id)}/view`, { signal, cache: "no-store" })
+  }
+
+  patchProjectView(id: string, patch: ProjectViewPatch, write: Write = {}): Promise<ProjectView> {
+    return this.write("PATCH", `${project(id)}/view`, patch, undefined, write)
+  }
+
   async newProject(body: Open): Promise<Opened> {
     if (body.unencrypted) return this.write("POST", "/v1/projects", body, `project-${crypto.randomUUID()}`)
     if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open Cozy on this computer to enter encryption credentials" }))
@@ -335,7 +373,7 @@ export class Client {
     if (body.action === "activity") {
       return this.json(`${project(id)}/vault`, { method: "POST", headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(body), cache: "no-store", signal })
     }
-    const operation = crypto.randomUUID()
+    const operation = `p3_${crypto.randomUUID()}`
     const serialized = JSON.stringify(body)
     const incomplete = () => new ApiError(0, {
       kind: "unavailable", code: "vault_stream_incomplete",
@@ -343,43 +381,37 @@ export class Client {
     })
     const invalid = () => new ApiError(502, { kind: "internal", code: "vault_stream_invalid", message: "The project operation response could not be read. Check project protection before trying again." })
     const terminal: { changed?: VaultChanged; failure?: ApiError } = {}
-    let legacy = false
     let attempt = 0
     let acknowledged = false
     let progress = ""
     try {
       for (;;) {
         signal?.throwIfAborted()
-        const first = attempt++ === 0
+        attempt++
         const stop = new AbortController()
         const cancel = () => stop.abort(signal?.reason)
         signal?.addEventListener("abort", cancel, { once: true })
-        let heard = performance.now()
         let silent = false
+        let quiet: ReturnType<typeof setTimeout> | undefined
         // Same 45-second silence rule as the shared event stream. Comments are health, not progress.
-        const health = legacy ? undefined : setInterval(() => {
-          if (performance.now() - heard >= 45_000) {
+        const heard = () => {
+          clearTimeout(quiet)
+          quiet = setTimeout(() => {
             silent = true
             stop.abort()
-          }
-        }, 1000)
+          }, 45_000)
+        }
+        heard()
         try {
           const init: RequestInit = {
             headers: { "Content-Type": "application/json", Accept: "text/event-stream", "Cache-Control": "no-store" },
             body: serialized, cache: "no-store", signal: stop.signal,
           }
-          const response = legacy
-            ? await this.send(`${project(id)}/vault`, { ...init, method: "POST" }, { once: stop.signal })
-            : await this.send(vaultOperation(id, operation), { ...init, method: "PUT" }, { once: stop.signal })
+          const response = await this.send(vaultOperation(id, operation), { ...init, method: "PUT" }, { once: stop.signal })
           this.hooks.attempt(0)
-          heard = performance.now()
-          if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("text/event-stream")) {
-            if (!legacy) throw invalid()
-            let changed: VaultChanged
-            try { changed = await response.json() } catch { throw invalid() }
-            if (!changed?.vault) throw invalid()
-            terminal.changed = changed
-          } else {
+          heard()
+          if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("text/event-stream")) throw invalid()
+          {
             if (!response.body) throw incomplete()
             try {
               await readEvents(response.body, (data) => {
@@ -415,7 +447,7 @@ export class Client {
                     break
                   default: throw invalid()
                 }
-              }, () => { heard = performance.now() })
+              }, heard)
             } catch (error) {
               if (!terminal.changed && !terminal.failure) throw error
             }
@@ -426,17 +458,10 @@ export class Client {
         } catch (error) {
           signal?.throwIfAborted()
           if (terminal.failure || terminal.changed) throw error
-          // Only an initial, unambiguous unknown route may use old POST semantics.
-          // A later 404 could follow admission on the lost connection: never replay as a new operation.
-          if (first && !acknowledged && error instanceof ApiError && error.status === 404 && ["unknown_route", "http_404"].includes(error.body.code)) {
-            legacy = true
-            continue
-          }
           const lost = silent || error instanceof TypeError || (error instanceof ApiError && error.status === 0)
           if (!lost) throw error
-          if (legacy) throw incomplete()
         } finally {
-          if (health !== undefined) clearInterval(health)
+          clearTimeout(quiet)
           signal?.removeEventListener("abort", cancel)
           stop.abort()
         }
@@ -445,7 +470,7 @@ export class Client {
       }
     } finally {
       this.hooks.attempt(0)
-      if (!legacy && (terminal.changed || terminal.failure)) {
+      if (terminal.changed || terminal.failure) {
         // No secret in this cleanup request; losing it leaves expiry to the server.
         void this.transport.fetch(vaultOperation(id, operation), { method: "DELETE", cache: "no-store", headers: { "Cache-Control": "no-store" } })
           .then((response) => response.body?.cancel()).catch(() => {})
@@ -458,8 +483,8 @@ export class Client {
   }
 
   /** One asset as it is now: what a change of it costs, whatever else the project holds. */
-  asset(id: string, name: string): Promise<AssetVersions> {
-    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`)
+  asset(id: string, name: string, signal?: AbortSignal): Promise<AssetVersions> {
+    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { signal })
   }
 
   projectAddress(reference: string): Promise<ProjectAddress> {
@@ -469,10 +494,6 @@ export class Client {
   /** What's said of the project besides its assets. */
   projectHead(id: string): Promise<ProjectState> {
     return this.json(`${project(id)}?assets=false`)
-  }
-
-  async yaml(id: string, signal?: AbortSignal): Promise<string> {
-    return (await this.send(`${project(id)}/yaml`, { signal })).text()
   }
 
   import(id: string, key: string, body: Import, write: Write = {}): Promise<Imported> {
@@ -490,7 +511,7 @@ export class Client {
   }
 
   /** A new version of each of `names`, on these machines; none: Calcifer's to say (cl-894). A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
-  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated"> = {}, once?: AbortSignal): Promise<Asked> {
+  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated" | "takes"> = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
   }
 
@@ -544,8 +565,7 @@ export class Client {
     return this.write("PATCH", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { metadata }, undefined, write)
   }
 
-  /** This person looked at it: it leaves the box's `unseen`, in Calcifer's own state, never the project's (cl-928). No key: it's no edit
-   *  of the project, and saying it twice is saying it once. */
+  /** This version was looked at: it leaves the box's `unseen` in its project-owned activity journal (cl-928). No key: saying it twice is saying it once. */
   async seen(id: string, name: string, number: number, write: Write = {}): Promise<void> {
     await this.send(`${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}/seen`, { method: "POST" }, { once: write.once })
   }
@@ -586,15 +606,14 @@ export class Client {
     return this.json(`/v1/tools/browse?${asked}`, { signal })
   }
 
-  /** Where to import a tool's component from. `project`: local code it names can answer. */
-  toolUi(id: string, project: string | null): Promise<ToolUi> {
-    const asked = project ? `?${new URLSearchParams({ project })}` : ""
-    return this.json(`/v1/tools/${encodeURIComponent(id)}/ui${asked}`)
-  }
-
   /** These assets' queued work dropped and their runs canceled. */
   cancelRender(id: string, names: string[], once?: AbortSignal): Promise<unknown> {
     return this.write("POST", `${project(id)}/cancel`, { names }, undefined, { once })
+  }
+
+  /** These takes, by id, dropped from the queue or their runs canceled (cl-945). */
+  cancelTakes(id: string, takes: string[], once?: AbortSignal): Promise<unknown> {
+    return this.write("POST", `${project(id)}/cancel`, { names: [], takes }, undefined, { once })
   }
 
   rename(id: string, from: string, to: string, write: Write = {}): Promise<Renamed> {
@@ -610,9 +629,11 @@ export class Client {
     return this.write("PATCH", `${project(id)}/canvas`, { cards, ...(Object.keys(placed).length ? { placed } : {}) }, undefined, write)
   }
 
-  /** A poster, a strip of `strip` frames, a waveform, or a picture, `w` wide. */
-  thumb(id: string, sha256: string, w: number, strip?: number): string {
-    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?w=${w}${strip ? `&strip=${strip}` : ""}`
+  /** A picture or a poster as the canvas and every list draw it, kept in the project as its file landed (cl-982); with `w`, a strip of
+   *  `strip` frames or a waveform (a sound's, or with `wave` a video's) that wide. */
+  thumb(id: string, sha256: string, w?: number, strip?: number, wave?: boolean): string {
+    const asked = [w ? `w=${w}` : "", strip ? `strip=${strip}` : "", wave ? "wave=true" : ""].filter(Boolean).join("&")
+    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?${asked}`
   }
 
   /** A video's preview: a few seconds of it, small and silent. */
@@ -631,45 +652,76 @@ export class Client {
 
   // Runs
 
-  runs(filter: RunFilter, limit: number, signal?: AbortSignal): Promise<RunList> {
+  runs(id: string, filter: RunFilter, limit: number, signal?: AbortSignal): Promise<RunList> {
+    const query = new URLSearchParams({ limit: String(limit) })
+    for (const [name, value] of Object.entries(filter)) if (value) query.set(name, value)
+    return this.json(`${project(id)}/runs?${query}`, { signal })
+  }
+
+  maintenanceRuns(filter: RunFilter, limit: number, signal?: AbortSignal): Promise<RunList> {
     const query = new URLSearchParams({ limit: String(limit) })
     for (const [name, value] of Object.entries(filter)) if (value) query.set(name, value)
     return this.json(`/v1/runs?${query}`, { signal })
   }
 
-  run(id: string | number, signal?: AbortSignal): Promise<Run> {
-    return this.json(run(id), { signal })
+  run(address: ProjectRun, signal?: AbortSignal): Promise<Run> {
+    return this.json(run(address), { signal })
   }
 
   /** With its measurements, calls, report and what it was asked. */
-  runFull(id: string | number, signal?: AbortSignal): Promise<Run> {
-    return this.json(`${run(id)}?detail=full`, { signal })
+  runFull(address: ProjectRun, signal?: AbortSignal): Promise<Run> {
+    return this.json(`${run(address)}?detail=full`, { signal })
   }
 
-  cancelRun(id: string, once?: AbortSignal): Promise<Run> {
-    return this.write("POST", `${run(id)}/cancel`, {}, undefined, { once })
+  cancelRun(address: ProjectRun, once?: AbortSignal): Promise<Run> {
+    return this.write("POST", `${run(address)}/cancel`, {}, undefined, { once })
   }
 
   /** A run's log and events after a place in them, opened once: its reader resumes it. */
-  runEvents(id: string, after: number, signal: AbortSignal): Promise<Response> {
-    return this.opened(`${run(id)}/events${after ? `?starting_after=${after}` : ""}`, signal)
+  runEvents(address: ProjectRun, after: number, signal: AbortSignal): Promise<Response> {
+    return this.opened(`${run(address)}/events${after ? `?starting_after=${after}` : ""}`, signal)
   }
 
   /** Where an output's bytes are served, once they landed here. With `rev`, that revision's own address: a player loads a newer one afresh. */
-  output(id: string, name: string, index: number, rev?: number): string {
+  output(address: ProjectRun, name: string, index: number, rev?: number): string {
     const query = new URLSearchParams([...(index ? [["index", String(index)]] : []), ...(rev ? [["rev", String(rev)]] : [])]).toString()
-    return `${run(id)}/outputs/${encodeURIComponent(name)}${query ? `?${query}` : ""}`
+    return `${run(address)}/outputs/${encodeURIComponent(name)}${query ? `?${query}` : ""}`
   }
 
   /** A running run's newest picture of what it's making, from its machine (cr-282): asking is what keeps it making them. */
-  runPreview(id: string | number): string {
-    return `${run(id)}/preview`
+  runPreview(address: ProjectRun): string {
+    return `${run(address)}/preview`
   }
 
   /** How to play an output straight from its machine. */
-  play(id: string, name: string, index: number): Promise<Play> {
+  play(address: ProjectRun, name: string, index: number): Promise<Play> {
     const output = encodeURIComponent(index ? `${name}/${index}` : name)
-    return this.json(`${run(id)}/play?output=${output}`)
+    return this.json(`${run(address)}/play?output=${output}`)
+  }
+
+  maintenanceRun(id: string | number, signal?: AbortSignal): Promise<Run> {
+    return this.json(maintenanceRun(id), { signal })
+  }
+
+  maintenanceRunFull(id: string | number, signal?: AbortSignal): Promise<Run> {
+    return this.json(`${maintenanceRun(id)}?detail=full`, { signal })
+  }
+
+  cancelMaintenanceRun(id: string, once?: AbortSignal): Promise<Run> {
+    return this.write("POST", `${maintenanceRun(id)}/cancel`, {}, undefined, { once })
+  }
+
+  maintenanceRunEvents(id: string, after: number, signal: AbortSignal): Promise<Response> {
+    return this.opened(`${maintenanceRun(id)}/events${after ? `?starting_after=${after}` : ""}`, signal)
+  }
+
+  maintenanceOutput(id: string, name: string, index: number): string {
+    return `${maintenanceRun(id)}/outputs/${encodeURIComponent(name)}${index ? `?index=${index}` : ""}`
+  }
+
+  maintenancePlay(id: string, name: string, index: number): Promise<Play> {
+    const output = encodeURIComponent(index ? `${name}/${index}` : name)
+    return this.json(`${maintenanceRun(id)}/play?output=${output}`)
   }
 
   /** What a run of `target` would call: a package's functions, and a named function's request. Runs nothing. */
@@ -692,10 +744,16 @@ export class Client {
   }
 
   job(target: string, asked: object, key: string): Promise<Submitted> {
-    return this.submit(this.jobRequest(target, asked as Record<string, unknown>), key)
+    return this.maintenanceSubmit(this.jobRequest(target, asked as Record<string, unknown>), key)
   }
 
-  submit(request: RunRequest, key: string): Promise<Submitted> {
+  submit(id: string, request: RunRequest, key: string): Promise<Submitted> {
+    if (request.project != null && request.project !== id) throw new Error("The run belongs to another project")
+    return this.write("POST", `${project(id)}/runs/submit`, { ...request, project: id }, key)
+  }
+
+  maintenanceSubmit(request: RunRequest, key: string): Promise<Submitted> {
+    if (request.project != null) throw new Error("Project runs require their project's route")
     return this.write("POST", "/v1/runs", request, key)
   }
 
@@ -763,14 +821,12 @@ export class Client {
 
   // Models
 
-  /** The Hub's models: of `family` only when it's said, only those a tool's slot loads when `fits` (`<tool>:<slot>`, judged by their
-   *  headers; `project` finds local code) is, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
-  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; fits?: string; project?: string; noTag?: string } = {}): Promise<ModelSearch> {
+  /** The Hub's models: of `family` and `role` only when said, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
+  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; role?: "model" | "lora"; noTag?: string } = {}): Promise<ModelSearch> {
     const asked = new URLSearchParams({ limit: String(limit) })
     if (q) asked.set("q", q)
     if (only.family) asked.set("family", only.family)
-    if (only.fits) asked.set("fits", only.fits)
-    if (only.fits && only.project) asked.set("project", only.project)
+    if (only.role) asked.set("role", only.role)
     if (only.noTag) asked.set("no_tag", only.noTag)
     return this.json(`/v1/models?${asked}`, { signal })
   }

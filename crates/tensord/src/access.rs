@@ -47,6 +47,31 @@ pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<Checkpoint> {
     storage::checkpoint(store, id)
 }
 
+/// What a call reads of each model it waits on (`Fetch::ahead`'s `selected`), as a quote of its function counts its download
+/// anywhere (cl-967): its header, repository, those components and their bytes. One named whole, or not pulled from a Hub, is left
+/// out.
+pub(crate) fn reads(store: &Store, selected: &[(String, Vec<String>)]) -> Vec<crate::journal::FunctionRead> {
+    (selected.iter().filter(|(_, components)| !components.is_empty()))
+        .filter_map(|(header, components)| {
+            let checkpoint = checkpoint(store, header).ok()?;
+            let model = Pulled::of(store, checkpoint.id()).ok().flatten()?.model;
+            let bytes = storage::chunks(&checkpoint, components).iter().map(|o| o.length).sum();
+            Some(crate::journal::FunctionRead { checkpoint: header.clone(), model, components: components.clone(), bytes })
+        })
+        .collect()
+}
+
+/// Of what `read` names, the bytes not here now: all of them once its header is gone.
+pub(crate) fn missing(store: &Store, read: &crate::journal::FunctionRead) -> u64 {
+    if whole(store, &read.checkpoint, &read.components) {
+        return 0;
+    }
+    match checkpoint(store, &read.checkpoint) {
+        Ok(checkpoint) => storage::chunks(&checkpoint, &read.components).iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
+        Err(_) => read.bytes,
+    }
+}
+
 /// Whether every chunk of `components` of `header` is here (`downloaded`). Once true it is
 /// remembered (Status asks every second) until the store next evicts, in any process.
 pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool {
@@ -414,7 +439,7 @@ impl Fetch {
             }
             let states = self.machine.fetching(&remote, &absent);
             let mut by_phase: Vec<(String, usize)> = vec![];
-            let (mut reached, mut length, mut moved, mut unanswered) = (0u64, 0u64, 0u64, 0);
+            let (mut reached, mut length, mut moved, mut unanswered, mut hedged) = (0u64, 0u64, 0u64, 0, 0);
             for (object, state) in absent.iter().zip(&states) {
                 let phase = state.map_or_else(|| "not yet with the downloader".to_owned(), |s| s.phase.to_string());
                 match by_phase.iter_mut().find(|(p, _)| *p == phase) {
@@ -425,6 +450,7 @@ impl Fetch {
                 length += object.length;
                 moved = moved.max(state.map_or(0, |s| s.moved_unix_ms));
                 unanswered = unanswered.max(state.map_or(0, |s| s.unanswered));
+                hedged += state.map_or(0, |s| s.hedged);
             }
             let phases: Vec<String> = by_phase.iter().map(|(p, n)| format!("{n} {p}")).collect();
             let last = if moved == 0 { String::new() } else { format!(", last moved {}", clock(moved)) };
@@ -432,7 +458,12 @@ impl Fetch {
                 0 => String::new(),
                 unanswered => format!(", {unanswered} attempts in a row moved nothing (of {})", tensorfs::fetch::ATTEMPTS),
             };
-            format!("{label}: {} of {} chunks to fetch, {} of their {} received ({}){last}{attempt}",
+            let hedges = match hedged {
+                0 => String::new(),
+                1 => ", 1 slow request asked again on another connection".to_owned(),
+                hedged => format!(", {hedged} slow requests asked again on another connection"),
+            };
+            format!("{label}: {} of {} chunks to fetch, {} of their {} received ({}){last}{attempt}{hedges}",
                 absent.len(), objects.len(), gib(reached), gib(length), phases.join(", "))
         }).collect();
         Some(each.join("; "))
@@ -536,7 +567,7 @@ impl Fetch {
                 .map(|o| o.length)
                 .sum();
             if let Some(name) = guessed.filter(|_| taken + absent > free) {
-                lined.held_back.push(format!("{name}'s weights ({}) aren't fetched ahead: {} free beside what comes first", gib(absent), gib(free.saturating_sub(taken))));
+                lined.held_back.push(format!("{name}: weights of {} aren't fetched ahead, {} free beside what comes first", gib(absent), gib(free.saturating_sub(taken))));
                 continue;
             }
             taken += absent;

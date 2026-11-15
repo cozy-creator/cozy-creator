@@ -8,9 +8,9 @@ use std::{
     path::Path,
 };
 
-/// Where a browser reaches the listener: this computer's own interfaces, a provider's (or the
-/// launcher's) mapping of its port, or a mapping that could not be read, which stops playback
-/// alone.
+/// Where a browser reaches the listener: where it listens (each of this computer's interfaces
+/// when it listens on all), a provider's (or the launcher's) mapping of its port, or a mapping
+/// that could not be read, which stops playback alone.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) enum Reach {
     #[default]
@@ -19,14 +19,15 @@ pub(crate) enum Reach {
     Invalid(String),
 }
 
-/// The listener on every interface: its capability is bound to the viewer's DTLS certificate,
-/// while the control API stays where the grant puts it. A rental listens on its granted port;
-/// this computer's machine keeps the port it first took, so a play link survives restarts.
-pub(crate) fn listen(state: &Path, granted: Option<u16>, local: bool) -> io::Result<Option<TcpListener>> {
+/// The listener on the API's host (`Grant::listen_host`): a rental's every interface, and this
+/// computer's loopback until it authorizes another computer's controller. A session reads nothing
+/// before its hello's capability verifies (`cozy1`). A rental listens on its granted port; this
+/// computer's machine keeps the port it first took, so a play link survives restarts.
+pub(crate) fn listen(state: &Path, host: IpAddr, granted: Option<u16>, local: bool) -> io::Result<Option<TcpListener>> {
     if granted.is_none() && !local {
         return Ok(None);
     }
-    super::net::kept_listener(&state.join("webrtc-port"), Ipv4Addr::UNSPECIFIED.into(), granted).map(Some)
+    super::net::kept_listener(&state.join("webrtc-port"), host, granted).map(Some)
 }
 
 /// The launch environment's mapping of a granted port: `COZY_WEBRTC_PUBLIC_ADDRESS`, else
@@ -56,14 +57,15 @@ pub(crate) fn reach(granted: Option<u16>, env: &BTreeMap<String, String>) -> Rea
 
 /// Status's player endpoint: the listener's port, where it is reached, and the fingerprint of
 /// the certificate its DTLS presents.
-pub(crate) fn endpoint(port: u16, reach: &Reach, cert_der: &[u8]) -> v1::WebRtc {
+pub(crate) fn endpoint(bound: SocketAddr, reach: &Reach, cert_der: &[u8]) -> v1::WebRtc {
     let (addresses, unavailable_reason) = match reach {
         Reach::Mapped(address) => (vec![address.to_string()], String::new()),
         Reach::Invalid(reason) => (vec![], reason.clone()),
-        Reach::Interfaces => (interfaces(port), String::new()),
+        Reach::Interfaces if bound.ip().is_unspecified() => (interfaces(bound.port()), String::new()),
+        Reach::Interfaces => (vec![bound.to_string()], String::new()),
     };
     v1::WebRtc {
-        port: port.into(),
+        port: bound.port().into(),
         addresses,
         fingerprint: tensorfs::sha256::hex_digest(cert_der),
         unavailable_reason,

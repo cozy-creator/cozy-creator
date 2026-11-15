@@ -66,9 +66,16 @@ pub(crate) async fn authorize(ctx: &Context, key: &str, remove: bool) -> Result<
         let waiting = crate::progress::Transfer::stderr(ctx.term.stderr, "Waiting for local worker");
         waiting.phase("Waiting for its connection address");
         let readiness = async {
-            while !remove && answer.machine.reach.is_none() && !answer.image && began.elapsed() < std::time::Duration::from_secs(30) {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                answer.machine = calcifer.get("/v1/machines/local").await?;
+            // Subscribed before it reads again: the move it waits for comes as `local`'s update.
+            let mut changes = calcifer.changes().await?;
+            answer.machine = calcifer.get("/v1/machines/local").await?;
+            let deadline = tokio::time::Instant::from_std(began + std::time::Duration::from_secs(30));
+            while answer.machine.reach.is_none() && !answer.image {
+                match tokio::time::timeout_at(deadline, changes.change()).await {
+                    Ok(Some(api::calcifer::StreamEvent::MachineUpdated { machine })) if machine.name == "local" => answer.machine = *machine,
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => break,
+                }
             }
             Ok::<(), Error>(())
         }.await;

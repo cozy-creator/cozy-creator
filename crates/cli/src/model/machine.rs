@@ -39,6 +39,10 @@ fn made(ctx: &Context, run: &Run) {
     if let Some(added) = model["added"].as_array().filter(|a| !a.is_empty()) {
         record = record.field("added", added.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "));
     }
+    if let Some(adapters) = model["adapter"].as_object().filter(|a| !a.is_empty()) {
+        let shown: Vec<String> = adapters.iter().map(|(c, a)| format!("{c}: {}", a.as_str().unwrap_or_default())).collect();
+        record = record.field("adapter", shown.join(", "));
+    }
     // A Hub checkpoint made complete: what it took from its base.
     let took: Vec<&str> = (["components", "files"].iter())
         .flat_map(|key| model["took"][key].as_array().into_iter().flatten())
@@ -69,8 +73,8 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
 
 pub(super) async fn download_to(ctx: &Context, mut ask: ModelDownload, on: Option<api::calcifer::On>) -> Result<ExitCode, Error> {
     crate::send::held(ctx, &mut ask.model, &mut ask.name, false).await?;
-    let run = crate::run::job(ctx, job::MODEL_DOWNLOAD, &ask, on, None).await?;
-    let run = crate::run::follow(ctx, run).await?;
+    let run = crate::run::job(ctx, job::MODEL_DOWNLOAD, &ask, on, None, None).await?;
+    let run = crate::run::carry_out(ctx, run).await?;
     made(ctx, &run);
     Ok(crate::run::exit_code(&run))
 }
@@ -107,15 +111,21 @@ fn print_removed(ctx: &Context, removed: &api::calcifer::RemovedModel) {
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
     let on = args.placement.on()?;
     let from_run = args.source.starts_with("run:");
+    // A file here named with a `:` is that file.
+    let (source, components) = match std::path::Path::new(&args.source).exists() {
+        true => (args.source.as_str(), vec![]),
+        false => api::model_ref::components(&args.source),
+    };
     let mut ask = ModelUpload {
-        source: args.source.clone(),
+        source: source.to_owned(),
+        components,
         name: None,
         destination: args.destination,
         lane: args.lane,
         source_format: args.format,
         mirror: args.mirror,
         trained_on: args.trained_on,
-        trigger: args.trigger,
+        triggers: args.triggers,
         strength: args.strength,
         base: args.base,
         add: Default::default(),
@@ -132,13 +142,23 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
         ask.add.insert(at.to_owned(), held);
     }
     crate::send::held(ctx, &mut ask.source, &mut ask.name, true).await?;
-    let run = crate::run::job(ctx, job::MODEL_UPLOAD, &ask, on, None).await?;
+    // `run:N` names run N of the project here, as `cozy run watch N` does: sent as its `KEY-N`, which names it from any scope
+    // (cl-987), as the upload is no project's (cl-992: `run:6` read Calcifer's own run 6).
+    if let Some(reference) = ask.source.strip_prefix("run:") {
+        let (named, output) = reference.split_once('#').map_or((reference, None), |(run, output)| (run, Some(output)));
+        let address = crate::calcifer_client::RunAddress::current(ctx, named).await?;
+        if address.project.is_some() {
+            let found = ctx.calcifer().await?.run(&address).await?;
+            ask.source = format!("run:{}{}", crate::run::handle(&found), output.map(|o| format!("#{o}")).unwrap_or_default());
+        }
+    }
+    let run = crate::run::job(ctx, job::MODEL_UPLOAD, &ask, on, None, None).await?;
     // A Hub checkpoint is recorded there by Calcifer: no machine ran.
     if run.kind == RunKind::Here {
         recorded(ctx, &crate::run::done(ctx, run).await?);
         return Ok(ExitCode::SUCCESS);
     }
-    let run = crate::run::follow(ctx, run).await?;
+    let run = crate::run::carry_out(ctx, run).await?;
     if !from_run {
         made(ctx, &run);
     }
@@ -155,15 +175,15 @@ fn after(run: &Run) -> api::calcifer::hub::AfterRun {
     (run.result.as_ref()).and_then(|r| serde_json::from_value(r["after"].clone()).ok()).unwrap_or_default()
 }
 
-/// Says the trigger and strength the Hub took, or warns that it did not: the upload stands.
+/// Says the triggers and strength the Hub took, or warns that it did not: the upload stands.
 fn display(ctx: &Context, shown: &Displayed) {
     if let Some(error) = &shown.error {
-        output::warn(&format!("{}: the Hub did not take the trigger and strength: {error}", shown.model));
+        output::warn(&format!("{}: the Hub did not take the triggers and strength: {error}", shown.model));
         return;
     }
     let mut said = vec![];
-    if let Some(trigger) = &shown.trigger {
-        said.push(format!("trigger {trigger:?}"));
+    if !shown.triggers.is_empty() {
+        said.push(format!("triggers {:?}", shown.triggers));
     }
     if let Some(strength) = shown.strength {
         said.push(format!("recommended strength {strength}"));

@@ -1,5 +1,6 @@
 import { signal } from "../ui/signal"
-import { ApiError, sessionLost } from "./client"
+import type { AssetPatch } from "./calcifer"
+import { ApiError, notAnswered } from "./client"
 
 /** One thing a person did. The page already shows it; this is its way to Calcifer. */
 export interface Action<T = unknown> {
@@ -15,6 +16,9 @@ export interface Action<T = unknown> {
   landed?(error: ApiError): T | undefined
   /** As long as a run: its turn comes, and what's behind it goes on. */
   long?: boolean
+  /** The page's own view under this key (what's selected, where the canvas is), no change of the person's: it isn't counted as waiting or
+   *  kept for closing, and a later one with the key takes its place at the back. */
+  view?: string
 }
 
 /** What's on its way to Calcifer, as the top bar says it. */
@@ -37,7 +41,7 @@ const HELD = "file_held"
 
 /** A try that didn't reach Calcifer, or whose answer never came back: the same ask goes again. */
 export function lost(error: unknown): boolean {
-  return (error instanceof ApiError && (LOST.has(error.status) || sessionLost(error))) || (error instanceof DOMException && error.name === "AbortError")
+  return (error instanceof ApiError && (LOST.has(error.status) || notAnswered(error))) || (error instanceof DOMException && error.name === "AbortError")
 }
 
 /**
@@ -49,6 +53,8 @@ export type OutboxPort = Pick<Outbox, "add" | "owing" | "back" | "wait" | "owed"
 export class Outbox {
   readonly owed = signal<Owed>({ count: 0, slow: false })
   private queue: Action<any>[] = []
+  private frozen = false
+  private closeRefused = false
   /** What's on its way outside the queue: a file's bytes. */
   private outside = 0
   private going = false
@@ -60,11 +66,21 @@ export class Outbox {
   private active = new Map<Action<any>, AbortController>()
 
   /** The existing shared queue, with project ownership attached by its canvas. */
-  scoped(project: () => string | null): OutboxPort {
+  scoped(project: () => string | null, initial: string | null = null): OutboxPort {
+    let owner = initial
+    const current = () => {
+      const now = project()
+      if (now) owner = now
+      if (!now && owner) throw new DOMException("Project view retired", "AbortError")
+      return now
+    }
     return {
       owed: this.owed,
-      add: (action) => this.add({ ...action, project: project() }),
-      owing: () => this.owing(),
+      add: (action) => {
+        try { this.add({ ...action, project: current() }) }
+        catch (error) { action.refused?.(error) }
+      },
+      owing: () => { current(); return this.owing() },
       back: () => this.back(),
       wait: (tries, signal) => this.wait(tries, signal),
     }
@@ -90,15 +106,32 @@ export class Outbox {
 
   constructor() {
     addEventListener("beforeunload", (event) => {
-      if (this.queue.length + this.outside) event.preventDefault()
+      if (this.unsent()) event.preventDefault()
     })
   }
 
+  freeze() { this.frozen = true; this.closeRefused = false }
+  /** Edits not yet sent: queued, and files on their way. */
+  unsent() { return this.queue.filter((action) => !action.view).length + this.outside }
+  resume() { this.frozen = false }
+  async saved(): Promise<void> {
+    while (this.owed.get().count) {
+      if (this.closeRefused) throw new Error("A pending edit could not be saved")
+      await new Promise<void>((done) => { const stop = this.owed.subscribe(() => { stop(); done() }) })
+    }
+    if (this.closeRefused) throw new Error("A pending edit could not be saved")
+  }
+
   add<T>(action: Action<T>) {
+    if (this.frozen) {
+      action.refused?.(new ApiError(409, { kind: "conflict", code: "browser_closing", message: "The Cozy browser is saving its edits before closing" }))
+      return
+    }
     if (action.project && this.blocked.has(action.project)) {
       action.refused?.(new ApiError(423, { kind: "conflict", code: "project_locked", message: "Unlock the project before saving this change" }))
       return
     }
+    if (action.view) this.queue = this.queue.filter((held) => held.view !== action.view || this.active.has(held))
     this.queue.push(action)
     this.tell()
     void this.drain()
@@ -139,7 +172,7 @@ export class Outbox {
   }
 
   private tell(change: Partial<Owed> = {}) {
-    const now = { ...this.owed.get(), ...change, count: this.queue.length + this.outside }
+    const now = { ...this.owed.get(), ...change, count: this.unsent() + [...this.active.keys()].filter((action) => !action.view && !this.queue.includes(action)).length }
     const was = this.owed.get()
     if (now.count !== was.count || now.slow !== was.slow || now.held !== was.held) this.owed.set(now)
   }
@@ -185,13 +218,72 @@ export class Outbox {
         }
         const was = tries > 1 && error instanceof ApiError ? action.landed?.(error) : undefined
         this.active.delete(action)
+        if (this.frozen && was === undefined) this.closeRefused = true
+        this.tell()
         if (was === undefined) action.refused?.(error)
         else action.done?.(was)
         return
       }
       this.active.delete(action)
+      this.tell()
       if (!this.cancelled.has(action)) action.done?.(answer)
       return
     }
   }
+}
+
+/** A box's last word: its words typed or on their way, as one write, under the key it goes with. */
+export interface LastWord {
+  /** The box's node id. */
+  box: string
+  /** The box, as Calcifer calls it. */
+  name: string
+  body: AssetPatch
+  /** Its `Idempotency-Key`'s action: the same ask again is the same key, which Calcifer does once. */
+  action: string
+  at: number
+}
+
+/** Less than Calcifer keeps a write's answer under its key (a day): sent again after that, it could be done twice. */
+const LAST_WORD_KEPT_MS = 20 * 60 * 60 * 1000
+const lastWordsKey = (project: string) => `cozy.typed:${project}`
+
+function readLastWords(project: string): Record<string, LastWord> {
+  try {
+    const held: unknown = JSON.parse(sessionStorage.getItem(lastWordsKey(project)) ?? "{}")
+    if (!held || typeof held !== "object") return {}
+    return Object.fromEntries(Object.entries(held as Record<string, LastWord>).filter(([, word]) =>
+      typeof word?.box === "string" && typeof word.name === "string" && typeof word.action === "string" && typeof word.body === "object" && Date.now() - word.at < LAST_WORD_KEPT_MS))
+  } catch {
+    return {}
+  }
+}
+
+function writeLastWords(project: string, words: Record<string, LastWord>) {
+  try {
+    if (Object.keys(words).length) sessionStorage.setItem(lastWordsKey(project), JSON.stringify(words))
+    else sessionStorage.removeItem(lastWordsKey(project))
+  } catch {
+    // Storage refused: the keepalive write as the page goes is the only one.
+  }
+}
+
+/**
+ * What's typed in a plain project, written ahead (cl-973): each box's last word is kept in this tab as it's typed, by its key, replacing the one
+ * before it (`was`), so a reload at any instant sends it again, and Calcifer does it once whether or not it got out. Only for a project checked
+ * as unencrypted: an encrypted project's words never go into the browser's storage. Kept as the session is, through a reload, gone with the tab.
+ */
+export function keepLastWord(project: string, word: LastWord | null, was?: string) {
+  const words = readLastWords(project)
+  if (was) delete words[was]
+  if (word) words[word.action] = word
+  writeLastWords(project, words)
+}
+
+/** What this tab last kept of a project's typing, to send again. */
+export const lastWordsOf = (project: string): LastWord[] => Object.values(readLastWords(project))
+
+/** A project now encrypted: nothing of its words stays in the browser. */
+export function forgetLastWords(project: string) {
+  try { sessionStorage.removeItem(lastWordsKey(project)) } catch { /* nothing kept */ }
 }
