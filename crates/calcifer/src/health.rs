@@ -4,7 +4,7 @@ use std::{fs::OpenOptions, sync::Mutex};
 use platform::{durable, paths::Home};
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
-pub(crate) enum HealthEvent { Started, Stopping, Stopped, StartRefused, Panicked }
+pub(crate) enum HealthEvent { Started, Stopping, Stopped, StartRefused, Panicked, MountUnread }
 
 pub(crate) fn install(home: &Home, diagnostics: bool) -> Result<(), ::api::error::Error> {
     let failed = || ::api::error::Error::new(::api::error::Kind::Internal, "calcifer_health", "Calcifer cannot open its service health record");
@@ -48,6 +48,8 @@ pub(crate) fn service_health(event: HealthEvent) {
         HealthEvent::Stopped => "stopped",
         HealthEvent::StartRefused => "start_refused",
         HealthEvent::Panicked => "panicked",
+        // An encrypted project's mount state could not be read; its session was kept as mounted.
+        HealthEvent::MountUnread => "mount_unread",
     };
     tracing::info!(target: "cozy.service_health", event, pid = std::process::id(), version = env!("CARGO_PKG_VERSION"));
 }

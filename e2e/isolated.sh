@@ -22,7 +22,7 @@ shard='' packages='' published='' only=''
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
   case ${args[i]} in
-    --shard) shard=${args[i + 1]} ;;
+    --shard) shard=${args[i + 1]%@*} ;;  # `<shard>@<n>` repeats a shard (lib.sh)
     --packages) packages=$(cd "${args[i + 1]}" && pwd) ;;
     --only) only=${args[i + 1]} ;;
     --published) published=${args[i]} ;;

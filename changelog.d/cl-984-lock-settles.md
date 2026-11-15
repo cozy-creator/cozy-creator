@@ -1,0 +1,1 @@
+A lock that ended a project's runs waits for them to settle (up to 10 s) and then answers locking with what it ended, never `project_busy`; a mount state Calcifer cannot read keeps the session mounted instead of lapsing it, with `mount_unread` in health.log. An e2e dispatch can repeat a shard as `<shard>@<n>` (cl-984, e2e 43700377280).
