@@ -15,8 +15,9 @@ stuck_service() {
   parent=$(machine_pid) || return 1
   ps -o pid=,stat=,comm= --ppid "$parent" | awk '$3 == "tensord" && $2 !~ /^Z/ { print $1 }' | tail -1
 }
-# A thread of <pid> in the kernel (D).
-stuck_in_d() { grep -lqE '^[0-9]+ \(.*\) D ' /proc/"$1"/task/*/stat 2> /dev/null; }
+# A thread of <pid> not yet exited (its exit waits in the kernel: D, or S for the thread that called exit, whose kill the kernel drops).
+stuck_in_kernel() { grep -lqE '^[0-9]+ \(.*\) [DS] ' /proc/"$1"/task/*/stat 2> /dev/null; }
+stuck_states() { for t in /proc/"$1"/task/*; do echo "$(cut -d' ' -f3 "$t/stat" 2> /dev/null) $(cat "$t/wchan" 2> /dev/null)"; done | tr '\n' ' '; }
 # gone <pid> <seconds>: every thread of it exited (a zombie leader counts only once its last thread is gone), within that long.
 stuck_gone() {
   local t live
@@ -86,10 +87,11 @@ t0=$SECONDS
 cozy --json machine update local --gpu-memory-limit off -y > "$OUT/stuck-update.json" 2>&1 || check "stuck: the update failed: $(tail -c 300 "$OUT/stuck-update.json")"
 took=$((SECONDS - t0))
 grep -q "holding a flush" "$OUT/trapfs.log" || check "stuck: the filesystem held no flush from pid $first"
-stuck_in_d "$first" || check "stuck: pid $first, the service before, isn't in the kernel: $(ps -o pid,stat,wchan:30 -p "$first")"
+stuck_in_kernel "$first" || check "stuck: pid $first, the service before, isn't waiting in the kernel: $(stuck_states "$first")"
+echo "stuck: pid $first's threads: $(stuck_states "$first")"
 # 10 s to exit, 60 s with no progress, then the next service's boot.
 [ "$took" -le 200 ] || check "stuck: the update took ${took} s past a service that can't exit"
-stuck_log | grep -q "pid $first can't exit: thread .* is in the kernel" || check "stuck: TensorD's log doesn't say pid $first can't exit"
+stuck_log | grep -q "pid $first can't exit: thread " || check "stuck: TensorD's log doesn't say pid $first can't exit"
 stuck_ready 30 || check "stuck: the machine isn't ready after its update: $(tail -c 300 "$OUT/stuck-machine.json")"
 J --argjson pid "$first" 'any(.status.stuck[]?; .pid == $pid and .command == "the TensorD before this one")' "$OUT/stuck-machine.json" \
   || check "stuck: machine show local lists no stuck pid $first: $(jq -c .status.stuck "$OUT/stuck-machine.json")"
@@ -123,7 +125,7 @@ stuck_gone "$parent" 150 || check "stuck: the machine (pid $parent) runs 150 s a
 took=$((SECONDS - t0))
 # 10 s to exit, 60 s with no progress.
 [ "$took" -le 90 ] || check "stuck: a stop with a service that can't exit took ${took} s"
-stuck_in_d "$second" || check "stuck: pid $second isn't in the kernel after the stop"
+stuck_in_kernel "$second" || check "stuck: pid $second isn't waiting in the kernel after the stop: $(stuck_states "$second")"
 stuck_ready 120 || check "stuck: the machine didn't start beside pids $first and $second: $(tail -c 300 "$OUT/stuck-machine.json")"
 J '[.status.stuck[]? | select(.command == "the TensorD before this one")] | length == 2' "$OUT/stuck-machine.json" \
   || check "stuck: machine show local doesn't list both stuck TensorDs: $(jq -c .status.stuck "$OUT/stuck-machine.json")"

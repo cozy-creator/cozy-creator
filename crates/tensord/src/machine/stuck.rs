@@ -28,9 +28,11 @@ pub(crate) struct Stuck {
 }
 
 impl Stuck {
-    /// Its thread in the kernel (`D`), else its first.
+    /// Its thread in the kernel (`D`), else one waiting there (the thread that called exit sleeps interruptibly, its kill dropped),
+    /// else its first.
     pub(crate) fn thread(&self) -> Option<&Thread> {
-        self.threads.iter().find(|t| t.state == 'D').or(self.threads.first())
+        let waiting = || self.threads.iter().find(|t| !t.wchan.is_empty() && t.wchan != "0");
+        self.threads.iter().find(|t| t.state == 'D').or_else(waiting).or(self.threads.first())
     }
 
     pub(crate) fn wchan(&self) -> String {
@@ -44,6 +46,9 @@ impl Stuck {
             Some(t) if t.state == 'D' => {
                 let at = Some(&t.wchan).filter(|w| !w.is_empty()).map(|w| format!(" at {w}")).unwrap_or_default();
                 format!("pid {pid} can't exit: thread {} ({}) is in the kernel{at}", t.tid, t.name)
+            }
+            Some(t) if !t.wchan.is_empty() && t.wchan != "0" => {
+                format!("pid {pid} can't exit: thread {} ({}) waits in the kernel at {} (state {})", t.tid, t.name, t.wchan, t.state)
             }
             Some(t) => format!("pid {pid} can't exit: thread {} ({}) is in state {}", t.tid, t.name, t.state),
             None => format!("pid {pid} can't exit"),
