@@ -3262,10 +3262,6 @@ source?: string | null,
  */
 fields: Array<ToolField>,
 /**
- * The path in its package of a component that draws its box, where it ships one.
- */
-ui?: string | null,
-/**
  * It takes a pickup, which Pick up from here fills: the frames one may land on.
  */
 pickup?: Snap | null,
@@ -3414,15 +3410,6 @@ class?: string | null,
  * This slot reads raw weights rather than constructing a model.
  */
 weights?: boolean, };
-
-/**
- * `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
- */
-export type ToolUi = {
-/**
- * Its entry module on this computer's Calcifer, named by its hash.
- */
-module: string, };
 
 /**
  * The machine's build toolchain: CUDA's compiler and a host C/C++ compiler.

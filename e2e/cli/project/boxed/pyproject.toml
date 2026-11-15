@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "e2e-boxed"
 version = "0.1.0"
-description = "The web-package-ui cell's package: weightless tools whose boxes it draws itself"
+description = "Weightless tools for the from-source and Runtime-skew cells"
 requires-python = ">=3.12"
 dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
 

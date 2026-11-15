@@ -123,7 +123,20 @@ test('takes', async ({ page, project, api }) => {
     // Looked away from, at what's approved, before it's sent (43405964751: its fit took 1.3 s) or after: that's what stays looked at, and
     // its take lands not looked at.
     await tile(region, 'version', 3).click();
-    await expect.poll(async () => (await project.asset('a'))?.versions, { message: "a's new take", timeout: 120_000 }).toBe(4);
+    // No take looks done before it's here (Paul, 11-12): listed as its run ends, it's pending, its file absent, unsized and undrawn, and
+    // done once its file is here. Each look reads the page before Calcifer: a picture drawn of a take Calcifer still calls absent is done
+    // too soon (cl-885, web-versions').
+    const early = [];
+    await expect.poll(async () => {
+      const drawn = await tile(region, 'version', 4).locator('img').evaluateAll((imgs) => imgs.some((img) => img.complete && img.naturalWidth > 0));
+      const row = await project.asset('a');
+      const main = row?.prefixes?.find((version) => version.number === 4)?.main;
+      if (main?.absent && (main.width || main.height || drawn)) early.push({ drawn, main });
+      return row?.versions === 4 && !row.making?.length && Boolean(main && !main.absent);
+    }, { message: "a's new take, its file here", timeout: 120_000 }).toBe(true);
+    expect.soft(early.slice(0, 4), 'a take looks done only once here').toEqual([]);
+    const made = (await project.asset('a')).prefixes.find((version) => version.number === 4).main;
+    expect.soft((await api.raw('GET', project.at(`/${made.path}`))).status, `a done take is here: ${made.path}`).toBe(200);
     // Its mark first: the page has read it, so what Calcifer keeps of it is settled.
     await expect.soft(tile(region, 'version', 4).getByRole('img', { name: 'Not looked at yet', exact: true })).toBeVisible();
     const a = await project.asset('a');

@@ -139,7 +139,6 @@ fn main() {
     v.visit::<tool::ToolList>();
     v.visit::<tool::ToolListChange>();
     v.visit::<tool::Browsed>();
-    v.visit::<tool::ToolUi>();
     let twice: Vec<_> = v.decls.iter().filter(|(_, rust)| rust.len() > 1).collect();
     if !twice.is_empty() {
         for (name, rust) in twice {

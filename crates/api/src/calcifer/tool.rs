@@ -103,9 +103,6 @@ pub struct Tool {
     pub source: Option<String>,
     /// What its box asks for, in its struct's order.
     pub fields: Vec<ToolField>,
-    /// The path in its package of a component that draws its box, where it ships one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ui: Option<String>,
     /// It takes a pickup, which Pick up from here fills: the frames one may land on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickup: Option<Snap>,
@@ -138,14 +135,6 @@ pub struct ToolModel {
     /// This slot reads raw weights rather than constructing a model.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub weights: bool,
-}
-
-/// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct ToolUi {
-    /// Its entry module on this computer's Calcifer, named by its hash.
-    pub module: String,
 }
 
 /// The control a box draws for a field.
@@ -264,7 +253,6 @@ pub fn edit() -> Tool {
         local: false,
         installs: None,
         source: None,
-        ui: None,
         pickup: None,
         model: None,
         models: vec![],
@@ -335,7 +323,6 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
         installs: None,
         source: None,
         fields: drawn.filter_map(|field| field_of(field, default(field))).collect(),
-        ui: declared.ui.clone(),
         pickup: pickup(&callable.request),
         model: choices::main_model(&callable.models, &called).map(|slot| model_slot(&slot.param, slot)),
         models,

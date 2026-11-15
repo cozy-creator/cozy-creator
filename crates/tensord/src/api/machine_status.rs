@@ -294,8 +294,8 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
         disk: disk(&identity.store),
         models: models.models,
         models_bytes: models.bytes,
-        webrtc: identity.webrtc_port.map(|port| {
-            crate::machine::player::endpoint(port, &identity.player, &identity.cert_der)
+        webrtc: identity.webrtc_bound.map(|bound| {
+            crate::machine::player::endpoint(bound, &identity.player, &identity.cert_der)
         }),
         mode: identity.mode.into(),
         driver_floor: match identity.gpus.is_empty() {

@@ -199,13 +199,13 @@ case $key in
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
-  cli:ondemand) needs='packages birefnet' ;;
+  cli:ondemand) needs='packages birefnet downloads spare' ;;
   # Models & LoRAs, the VAE slot, the triggers of SDXL's, Ideogram 4's and Krea 2's LoRAs (`prompts`) and heavy.py's BiRefNet; macOS and
   # Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes prompts'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
   cli:env-cost) needs='packages birefnet' ;;
   cli:plan) needs='packages birefnet downloads' ;;
-  cli:) needs='packages birefnet downloads loras vaes fits parts' ;;
+  cli:) needs='packages birefnet downloads spare loras vaes fits parts prompts' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published asks about, and CI reads no production (xs-169).
@@ -342,6 +342,11 @@ if [ -n "$needs" ]; then
     mirror "$seed/qwen3.5-0.8b.safetensors" qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B --source-format as-is
     random_weights "$seed/fontbox.safetensors" 115
     mirror "$seed/fontbox.safetensors" lilylilith/fontbox bf16 0.1.0 https://huggingface.co/lilylilith/fontbox --source-format as-is
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" spare "* ]]; then
+    random_weights "$seed/pagebox.safetensors" 900
+    mirror "$seed/pagebox.safetensors" lilylilith/pagebox bf16 0.1.0 https://huggingface.co/lilylilith/pagebox --source-format as-is
     rm -f "$seed"/*.safetensors
   fi
   if [[ " $needs " == *" loras "* ]]; then

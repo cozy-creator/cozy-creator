@@ -83,8 +83,6 @@ pub(crate) struct Api {
     pub(crate) browser: crate::browser::OwnedBrowser,
     pub(crate) browser_address: std::sync::OnceLock<std::net::SocketAddr>,
     pub(crate) development_web: std::sync::OnceLock<std::net::SocketAddr>,
-    /// The components packages ship, as read for the page.
-    pub(crate) tool_uis: crate::tool_ui::Held,
     /// Who uses this Calcifer (`GET /v1/activity`).
     activity: Activity,
     bearer: [u8; 32],
@@ -122,7 +120,6 @@ impl Api {
             releases: Default::default(),
             listing: Default::default(),
             codes: Default::default(),
-            tool_uis: Default::default(),
             activity: Activity::default(),
             bearer: Sha256::digest(token).into(),
             stopping: Arc::new(RwLock::new(false)),
@@ -278,7 +275,6 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/tools", get(crate::toolbox::list))
         .route("/v1/tools/list", post(crate::toolbox::change))
         .route("/v1/tools/browse", get(crate::toolbox::browse))
-        .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
         .route("/v1/project-files/held", post(crate::runs::files::project_held_files))
         .route("/v1/files/held", post(crate::runs::files::held_files))
         .route(
@@ -300,7 +296,6 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
         .route("/v1/session", post(crate::sessions::start))
-        .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
         .merge(crate::page::routes())
         .fallback(crate::page::fallback)
         .method_not_allowed_fallback(unknown_route)

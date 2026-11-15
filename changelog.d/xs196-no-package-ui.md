@@ -1,0 +1,1 @@
+Package UI is gone (xs-196, Paul 11-15): a box is always drawn from its declared fields. `GET /v1/tools/{id}/ui` and the `ui` of `GET /v1/tools` are removed, and `cozy package publish` no longer reads a component from the wheel.

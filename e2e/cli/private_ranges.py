@@ -6,7 +6,6 @@ from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import time
@@ -81,14 +80,6 @@ class ToolRow(TypedDict):
 
 class Tools(TypedDict):
     tools: list[ToolRow]
-
-
-class Error(TypedDict):
-    code: str
-
-
-class Refusal(TypedDict, total=False):
-    error: Error
 
 
 class Queued(TypedDict):
@@ -191,15 +182,9 @@ def exercise(args: argparse.Namespace, home: Path, receipt: dict[str, object]) -
     script = view / 'need.py'
     fixture = Path(__file__).parent / 'project'
     source = (fixture / 'tool.py').read_text(encoding='utf-8')
-    decorator = '@app.tool(label="Keep a video")'
-    assert source.count(decorator) == 1, 'the range tool fixture changed its declaration'
-    source = source.replace(decorator, '@app.tool(label="Keep a video", ui="ui/private.js")')
     marker = f'XS160_TOOL_DISCOVERY_{uuid.uuid4().hex}'
     with script.open('x', encoding='utf-8') as target:
         target.write(source + f'\n# {marker}\n')
-    module = view / 'ui/private.js'
-    module.parent.mkdir()
-    shutil.copyfile(fixture / 'boxed/e2e_boxed/ui/shade.js', module)
     tool = str(script) + '/need'
     private_cache = view / '.vault-calcifer/clips'
     global_cache = home / 'cache/clips'
@@ -245,16 +230,13 @@ def exercise(args: argparse.Namespace, home: Path, receipt: dict[str, object]) -
     assert made['name'] == asset, 'the render fixture asset was not created'
     receipt['stage'] = 'cold_private_tool_discovery'
     tools = cast(Tools, api('GET', '/v1/tools?' + urlencode({'project': project_id})))['tools']  # cast: the tool list's JSON
-    assert any(row['id'] == tool and row.get('local') and row.get('ui') for row in tools), 'cold discovery did not return the private tool and its declared UI'
+    assert any(row['id'] == tool and row.get('local') for row in tools), 'cold discovery did not return the private tool'
     copies = view / '.vault-calcifer/code'
     shared_code = home / 'calcifer/code'
     markers = [marker.encode()]
     assert any(contains(path, markers) for path in copies.rglob('*.py')), 'private discovery did not stage the tool in its vault'
     assert not any(contains(path, markers) for path in shared_code.rglob('*.py')), 'private discovery copied source into the shared code cache'
-    module_route = '/v1/tools/' + quote(tool, safe='') + '/ui?' + urlencode({'project': project_id})
-    refused = cast(Refusal, api('GET', module_route, expected=404))  # cast: a refusal's JSON
-    assert refused.get('error', {}).get('code') == 'tool_ui_none', 'the private tool module did not select the declared-control fallback'
-    receipt['private_tool_discovery'] = {'staged_in_vault': True, 'shared_code_unchanged': True, 'module_refused': True}
+    receipt['private_tool_discovery'] = {'staged_in_vault': True, 'shared_code_unchanged': True}
     receipt['stage'] = 'canvas_range'
     asked = cast(Queued, api('POST', route + '/runs', {'names': [asset], 'on': ['local']}))  # cast: the queued render's JSON
     assert asked['id'] == project_id and asked['added'] == 1, 'the canvas did not queue one render'
