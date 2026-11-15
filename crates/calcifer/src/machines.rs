@@ -57,7 +57,7 @@ use crate::{
     Calcifer,
     api::{Api, Refusal, parse},
     link::{self, Link, LinkError},
-    rentals::{Hubs, Shape, Word},
+    rentals::{Hubs, Shape, Word, hub_refusal},
     store::{AskKind, Endpoint, MachineRow, RunRow, Store},
     took::Took,
 };
@@ -126,6 +126,18 @@ pub(crate) struct Seen {
     pub(crate) attempt: Option<wire::Attempt>,
     /// `local` is not running: it starts when something uses it.
     stopped: bool,
+    /// The boot this computer last vouched for to the rental's Hub, and when (cl-977).
+    vouched: Option<(String, tokio::time::Instant)>,
+}
+
+/// How often this computer vouches for a rental to its Hub while a run of its is live there (cl-977): a third of the Hub's 15-minute
+/// window, so two can be lost.
+const VOUCH_EVERY: Duration = Duration::from_secs(5 * 60);
+
+/// A ready machine's frame shows this computer's runs (or an update) queued or running there.
+fn working(frame: &v1::StatusFrame) -> bool {
+    let live = |state: &str| matches!(state, "queued" | "preparing" | "needs_access" | "starting" | "running");
+    frame.phase == "ready" && (frame.runs.iter().any(|run| live(&run.state)) || frame.update.as_ref().is_some_and(|u| live(&u.state)))
 }
 
 impl Machines {
@@ -796,7 +808,7 @@ impl Machines {
         }
         let (mut held, mut activity) = (vec![], vec![]);
         // Copied under the lock and worked out after it: a picture never holds up what a machine's Status says.
-        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), unreachable: seen.unreachable.clone(), silent: seen.silent.clone(), ..*seen });
+        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), unreachable: seen.unreachable.clone(), silent: seen.silent.clone(), vouched: seen.vouched.clone(), ..*seen });
         if let Some(seen) = seen {
             if seen.stopped {
                 machine.state = MachineState::Stopped;
@@ -1066,17 +1078,28 @@ impl Machines {
     }
 
     /// Reads the machine's Status frames until it says it released itself (`Ok`) or the stream
-    /// breaks. Any frame resets the pause.
-    async fn status_frames(&self, name: &str, pause: &mut Duration) -> Result<(), LinkError> {
+    /// breaks. Any frame resets the pause. While its frames show this computer's runs live there, a
+    /// rental's Hub is told so (`vouch`) at each frame and, with none coming, every `VOUCH_EVERY`.
+    async fn status_frames(self: &Arc<Self>, name: &str, pause: &mut Duration) -> Result<(), LinkError> {
         let link = (self.calcifer.link(name).map_err(LinkError::Unreachable)?)
             .ok_or_else(|| LinkError::Unreachable("it has no address".into()))?;
         let mut frames = link.watch().await?;
+        let mut busy = false;
         loop {
-            match frames.next().await {
+            let next = tokio::select! {
+                next = frames.next() => next,
+                _ = tokio::time::sleep(VOUCH_EVERY), if busy => {
+                    self.vouch(name);
+                    continue;
+                }
+            };
+            match next {
                 Some(Ok(frame)) => {
                     *pause = Duration::ZERO;
                     let released = frame.phase == "releasing";
+                    busy = working(&frame);
                     self.observe(name, frame);
+                    self.vouch(name);
                     if released {
                         return Ok(());
                     }
@@ -1131,6 +1154,43 @@ impl Machines {
             self.lists.seen(&machines, name);
         }
         self.calcifer.machine_changed();
+    }
+
+    /// Tells a rental's Hub that this computer's runs are live on it, on the boot its last frame names, at most every `VOUCH_EVERY`
+    /// for a boot: the Hub releases a ready machine that shows no sign of life, and this is one when it neither hears the machine
+    /// check in nor reaches it (cl-977). Nothing while no run of this computer's is live there.
+    fn vouch(self: &Arc<Self>, name: &str) {
+        let Ok(Some(row)) = self.store().machine(name) else { return };
+        let Some(rental) = row.rental_id.clone().filter(|_| row.kind == MachineKind::Rental && row.state != MachineState::Ended) else {
+            return;
+        };
+        let boot = {
+            let mut seen = lock(&self.seen);
+            let Some(seen) = seen.get_mut(name) else { return };
+            let Some(boot) = seen.frame.as_ref().filter(|frame| working(frame)).map(|frame| frame.boot_id.clone()) else { return };
+            let now = tokio::time::Instant::now();
+            if seen.vouched.as_ref().is_some_and(|(at_boot, at)| *at_boot == boot && now.duration_since(*at) < VOUCH_EVERY) {
+                return;
+            }
+            seen.vouched = Some((boot.clone(), now));
+            boot
+        };
+        let me = self.clone();
+        let name = name.to_owned();
+        self.spawn(async move {
+            let vouched = match me.hubs.client(&row.hub) {
+                Ok(client) => client.vouch_rental(&rental, &boot).await.map_err(|e| hub_refusal(&row.hub, e)),
+                Err(e) => Err(e),
+            };
+            match vouched {
+                Ok(()) => {}
+                // A Hub from before vouches (404) keeps rentals without them; one that hasn't reached this boot yet takes the next.
+                Err(e) if e.kind == Kind::NotFound || e.cause.as_deref() == Some("rental.boot_not_pinned") => {
+                    tracing::debug!(machine = name, "its Hub takes no vouch now: {}", e.message)
+                }
+                Err(e) => warn!(machine = name, "telling its Hub this computer's runs are live there: {}", e.message),
+            }
+        });
     }
 
     fn unreachable(&self, name: &str, reason: String) {

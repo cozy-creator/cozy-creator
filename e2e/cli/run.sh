@@ -42,6 +42,7 @@ parse "$@"
 . "$(dirname "$0")/envcost.sh"
 . "$(dirname "$0")/egress.sh"
 . "$(dirname "$0")/stuck.sh"
+. "$(dirname "$0")/rentalself.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -734,8 +735,13 @@ case $SHARD in
     rental_end
     logs
   " ;;
-  # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs (cl-977): about 10 min.
-  stuck) parts="stuck_exit logs" ;;
+  # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a
+  # stood-in Hub and provider (cl-977): about 12 min.
+  stuck) parts="
+    stuck_exit
+    rental_self
+    logs
+  " ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating
