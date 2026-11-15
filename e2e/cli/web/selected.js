@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, settled, signIn, STEP_MS, until, upload } = require('./page');
+const { holderToken, projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -49,11 +49,10 @@ const NAMES = ['light', 'dark', 'middle'];
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const canvas = page.url();
   const { id } = await projectFromPage(page);
-  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = async (path, method = 'GET', body) => {
     const answer = await fetch(base + path, {
       method,
-      headers: { Authorization: `Bearer ${session.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${holderToken()}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const value = await answer.json().catch(() => null);
@@ -69,7 +68,7 @@ const NAMES = ['light', 'dark', 'middle'];
     const path = join(pictures, `${name}.png`);
     const grey = [250, 8, 128][i];
     writeFileSync(path, png(0, 320, 200, false, () => [grey, grey, grey]));
-    await api(`${at}/imports`, 'POST', { source: await upload(session.token, path, id), name, exact: true, at: { x: i * 300, y: 0 } });
+    await api(`${at}/imports`, 'POST', { source: await upload(holderToken(), path, id), name, exact: true, at: { x: i * 300, y: 0 } });
   }
 
   const zoomOf = () => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);

@@ -1386,7 +1386,10 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
             let said = format!("{} is a project already", path.display());
             return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next("cozy status")));
         }
+        let made = !path.exists();
         std::fs::create_dir_all(&path).map_err(|e| Refusal(unmakeable(&path, e)))?;
+        // A folder Calcifer makes is its account's alone: a plain project is otherwise open to other accounts straight from disk.
+        if made { platform::durable::make_private_dir(&path).map_err(|e| Refusal(Error::new(Kind::Internal, "project_folder_private", e.to_string())))?; }
         let name = folder_name(&path);
         tokio::task::block_in_place(|| create_new(&api, &path, &name, open.starter, open.passphrase.take(), engine.as_ref())).map_err(Refusal)?
     };
@@ -1413,6 +1416,14 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     let next = vec!["cozy open".into()];
     let response = Json(Opened { next, said, recovery_secret, ..opened }).into_response();
     Ok(if open.unencrypted { response } else { vault::private(response) })
+}
+
+/// What's said of a project folder other accounts on this computer may open: one line, and what to do.
+pub(crate) fn loosened(dir: &FsPath) -> Option<String> {
+    platform::durable::others_may_open(dir).ok()?.then(|| {
+        let fix = if cfg!(windows) { "give only your account access to it".to_owned() } else { format!("chmod 700 {}", dir.display()) };
+        format!("other accounts on this computer can open {}: {fix}", dir.display())
+    })
 }
 
 /// A folder that can't be made, in a person's words: no permission there, or why not.
@@ -1606,6 +1617,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
     state.covered = covered;
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_project));
+    state.warnings.extend(loosened(&project.root).map(ProjectWarning::of_project));
     copy_told(&project.root);
     Ok(Json(state))
 }

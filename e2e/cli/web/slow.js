@@ -5,7 +5,7 @@
 // nodes.js. Prints what it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { join } = require('path');
-const { calcifer, launch, lastLook, lookAt, noStall, projectAction, projectFromPage, projectUrl, signIn, STEP_MS, until, watchBoxes } = require('./page');
+const { holderToken, calcifer, launch, lastLook, lookAt, noStall, projectAction, projectFromPage, projectUrl, signIn, STEP_MS, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -36,7 +36,7 @@ const HEAT = /GPU 0 ran throttled for heat 98% of its last run \(89 °C, \d+ of 
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const token = holderToken();
   const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
 
   // A run's bar is its own project's history (run history stays in its project): the box runs in the project of slow.sh's bar runs.

@@ -63,6 +63,11 @@ pub(crate) async fn serve(
     if project.is_none() && held.is_some_and(|held| held.split(',').any(|t| t.trim() == preview.tag)) {
         return Ok(private((StatusCode::NOT_MODIFIED, [(header::ETAG, tag)]).into_response()));
     }
+    // A preview is a raster picture, or none: the page shows previews as blob URLs, which carry the page's own CSP, so an SVG preview
+    // opened in a tab could run its script. SVG outputs, served from /v1 sandboxed with `script-src 'none'`, stay SVG.
+    if !preview.media_type.starts_with("image/") || preview.media_type.starts_with("image/svg") {
+        return none();
+    }
     let text = |value: &str| HeaderValue::from_str(value).unwrap_or(HeaderValue::from_static(""));
     let mut response = (StatusCode::OK, preview.body).into_response();
     let set = response.headers_mut();

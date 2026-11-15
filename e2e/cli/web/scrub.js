@@ -66,11 +66,10 @@ const SEAM = 6;
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
-  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
+  const api = (path, init = {}) => page.evaluate(async ({ path, init }) => {
+    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, init, token: held?.token });
+  }, { path, init });
   if (!(await api('/v1/status')).body?.local_usable) throw new Error('this computer runs no tools: the cell renders its own take here');
 
   await page.goto(`${base}/projects`);

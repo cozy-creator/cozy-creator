@@ -4,7 +4,7 @@ const { execFileSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { dirname, join } = require('path');
-const { projectFolder, calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt } = require('./page');
+const { holderToken, projectFolder, calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt } = require('./page');
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
 const createdFolders = [];
@@ -225,7 +225,7 @@ const newPage = async () => {
   page.on('pageerror', pageError);
   await authenticated.close();
   seen.initial_document_isolation = { auth_page_closed: authenticated.isClosed() };
-  // A session is its tab's: this one signs in on its own.
+  // This tab opens the page on its own.
   await signIn(page, `${href}/vault`);
   const body = page.locator('.drawer [data-vault-state]');
   await page.locator('.drawer [data-vault-state="plain"]').waitFor();
@@ -539,7 +539,7 @@ const newPage = async () => {
     if (captureOldStatus) {
       captureOldStatus = false;
       try {
-        const response = await route.fetch();
+        const response = await route.fetch({ headers: { ...route.request().headers(), authorization: `Bearer ${holderToken()}` } });
         oldStatus = { route, response, state: (await response.json()).state };
       } catch (error) { statusTransportError = error; }
     } else heldStatuses.push(route);
@@ -761,7 +761,7 @@ const newPage = async () => {
   let received;
   const heldCreate = async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
-    const answer = await route.fetch();
+    const answer = await route.fetch({ headers: { ...route.request().headers(), authorization: `Bearer ${holderToken()}` } });
     const created = await answer.json();
     delete created.recovery_secret;
     if (created.path) createdFolders.push(created.path);

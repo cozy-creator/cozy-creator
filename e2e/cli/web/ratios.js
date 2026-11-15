@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, png, settled, until, upload } = require('./page');
+const { holderToken, projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, png, settled, until, upload } = require('./page');
 
 const rounded = `${join(__dirname, '..', 'project', 'rounded.py')}/shot`;
 const draw = `${join(__dirname, '..', 'project', 'draw.py')}/draw`;
@@ -48,11 +48,11 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
-  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
+  const held = { token: holderToken() };
+  const api = (path, init = {}) => page.evaluate(async ({ path, init }) => {
+    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, init, token: held?.token });
+  }, { path, init });
 
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-ratios-${Date.now()}`));
