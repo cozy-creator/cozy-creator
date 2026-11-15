@@ -58,10 +58,13 @@ change does not promise a Torch-free platform environment; native execution is x
 The existing CLI e2e harness selects this cell with `--shard typed-calls`. Its normal
 start installs the candidate cohort in the default home and creates the project. The cell
 copies these three packages into `$OUT/typed-calls/fixture`, pins the exact `--runtime`
-wheel in each, locks the caller, and regenerates both reference modules with that wheel's
-public `cozy-runtime calls` command. It then runs the assertions below; all locks,
+and `--tensorfs` wheels in each, locks the caller, verifies both locked hashes, and
+regenerates both reference modules with that same pair's public `cozy-runtime calls`
+command. TensorFS is declared directly in the copies so its source participates in
+transitive resolution; the authored Runtime range and Runtime's TensorFS range still apply.
+It then runs the assertions below; all locks,
 generated modules, commands, watch records and outputs remain under `$OUT/typed-calls`.
-The shard needs Linux and a local candidate Runtime wheel. It rents no machine, downloads
+The shard needs Linux and both local candidate SDK wheels. It rents no machine, downloads
 no model weights, and creates only two tiny local F32 checkpoints.
 
 ```sh
