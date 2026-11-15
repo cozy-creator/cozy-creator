@@ -1,6 +1,7 @@
 // Zoom from the canvas's corner, as Figma's: − and + step along the page's zooms about the middle of what's visible, the zoom says what it
 // is, its menu fits everything and goes to 100%, and it isn't over Focus, which zooms its own picture. A box is drawn larger or smaller
-// alike, words and all (cl-890). 300 boxes panned at 70% and 11%, with it on the canvas, as see.js measures them.
+// alike, words and all (cl-890), but its name, which as the canvas zooms out keeps the page's body size on screen (Paul, 11-13: names
+// "at body size out to 25%"). 300 boxes panned at 70% and 11%, with it on the canvas, as see.js measures them.
 //   node zoom.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as see.js. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -192,7 +193,7 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
       const inCanvas = (r) => [r.left - base.left, r.top - base.top, r.width, r.height].map((v) => Math.round((v / zoom) * 10) / 10);
       return {
         zoom,
-        words: all.filter(own).map((el) => ({ at: pathOf(el), said: el.textContent.trim().slice(0, 24), part: el.getBoundingClientRect().height / base.height, font: getComputedStyle(el).fontSize })),
+        words: all.filter(own).map((el) => ({ at: pathOf(el), said: el.textContent.trim().slice(0, 24), part: el.getBoundingClientRect().height / base.height, font: getComputedStyle(el).fontSize, name: el.matches('.head .nm'), screen: parseFloat(getComputedStyle(el).fontSize) * zoom })),
         parts: all.map((el) => [pathOf(el), ...inCanvas(el.getBoundingClientRect())]),
         style: card.getAttribute('style'),
       };
@@ -205,10 +206,16 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     };
     const at = { 1: await zoomAt('Zoom to 100%'), 2: await zoomAt('Zoom to 200%'), 0.5: await zoomAt('Zoom to 50%') };
     const again = await zoomAt('Zoom to 100%');
-    seen.box_scales = Object.fromEntries(Object.entries(at).map(([zoom, held]) => [zoom, held && { zoom: held.zoom, words: held.words.map(({ said, part }) => [said, Math.round(part * 10000) / 10000]) }]));
+    seen.box_scales = Object.fromEntries(Object.entries(at).map(([zoom, held]) => [zoom, held && { zoom: held.zoom, words: held.words.map(({ said, part, screen }) => [said, Math.round(part * 10000) / 10000, Math.round(screen * 10) / 10]) }]));
+    // Every word on the box the same part of it at each zoom; its name too, but at 50%, where it's the body size on screen (12.5 x 1.35px),
+    // more of the box than at 100% and never less.
+    const BODY = 12.5 * 1.35;
     const sameParts = Object.values(at).every((held) => held && held.words.length >= 2 && held.words.length === at[1].words.length
-      && held.words.every((word, i) => word.at === at[1].words[i].at && Math.abs(word.part / at[1].words[i].part - 1) < 0.005));
-    check('box_words_scale_with_the_canvas', sameParts && near(at[0.5].zoom, 0.5) && at[1].zoom === 1 && near(at[2].zoom, 2), seen.box_scales);
+      && held.words.every((word, i) => word.at === at[1].words[i].at && (word.name && held === at[0.5]
+        ? word.screen >= BODY - 0.05 && word.part >= at[1].words[i].part
+        : Math.abs(word.part / at[1].words[i].part - 1) < 0.005)));
+    const named = Object.values(at).every((held) => held?.words.some((word) => word.name));
+    check('box_words_scale_with_the_canvas', sameParts && named && near(at[0.5].zoom, 0.5) && at[1].zoom === 1 && near(at[2].zoom, 2), seen.box_scales);
     const drift = again && at[1] && again.parts.length === at[1].parts.length
       ? again.parts.map((part, i) => (part[0] === at[1].parts[i][0] ? Math.max(...part.slice(1).map((v, j) => Math.abs(v - at[1].parts[i][j + 1]))) : Infinity))
       : [Infinity];
