@@ -299,6 +299,9 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         Some(frame) => frame,
         None => link.status().await.map_err(|e| e.to_string())?,
     };
+    if let Some(broken) = &frame.broken {
+        return Err(format!("it's broken: {}", broken.message));
+    }
     let own = this_release();
     if !same_minor(&frame.version, own) && !rc_version() {
         if !update {

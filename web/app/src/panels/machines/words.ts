@@ -51,9 +51,7 @@ export function brokenWords(machine: Machine): string {
   if (!broken || machine.state === "ended") return ""
   const then =
     machine.kind !== "rental"
-      ? broken.code === "stuck_in_driver"
-        ? "It takes no work until what's stuck exits; a reboot ends it."
-        : "It takes no work until its GPUs open: `cozy machine update local` checks them again."
+      ? "It takes no work, stops after 2 idle minutes, and its next use starts it and checks again."
       : machine.status?.phase === "releasing"
         ? "It's releasing itself."
         : broken.code === "silent_after_update" && machine.ordered !== false

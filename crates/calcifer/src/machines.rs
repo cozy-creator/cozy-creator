@@ -630,7 +630,12 @@ impl Machines {
     /// `local`'s TensorD exited: while another computer's controller is authorized to use it, it
     /// starts again at once (after `cozy update`, on the new binary).
     fn local_exited(self: &Arc<Self>) {
+        // Stopped broken (cl-977), it starts again at its next use, not at once: each start checks its GPUs again.
+        let broken = lock(&self.seen).get("local").and_then(|seen| seen.frame.as_ref()).is_some_and(|frame| frame.broken.is_some());
         self.local_stopped();
+        if broken {
+            return;
+        }
         // The old joined status/log task was just aborted. Machines owns the wake through readiness,
         // so canceling that watcher cannot drop its startup mutex while the detached child boots.
         let me = self.clone();
@@ -803,7 +808,7 @@ impl Machines {
                 let followed = lock(&self.project_activity);
                 activity.extend(projects.iter().filter_map(|project| followed.get(project)).flatten().cloned());
             }
-            machine.broken = broken_in(&seen).filter(|_| row.state != MachineState::Ended);
+            machine.broken = broken_in(&row.name, &seen).filter(|_| row.state != MachineState::Ended);
             machine.unreachable = seen.unreachable;
             machine.unreachable_since_ms = seen.since;
             machine.boot = seen.boot;
@@ -1162,7 +1167,7 @@ impl Machines {
 
     /// Why nothing can run on the machine (cl-977): its own word, else this computer's that it went silent after an update.
     pub(crate) fn broken(&self, name: &str) -> Option<v1::Broken> {
-        broken_in(lock(&self.seen).get(name)?)
+        broken_in(name, lock(&self.seen).get(name)?)
     }
 
     /// A rental silent since an update restarted it, past `UPDATE_RETURN_MS` (cl-977): broken by this computer's word, its runs
@@ -1427,7 +1432,7 @@ impl Machines {
             .filter(|row| row.kind == MachineKind::Rental && row.state != MachineState::Ended && self.ordered(row))
             .filter(|row| !ending.contains(&row.name))
             .filter(|row| self.offline_in(row, &seen).is_none())
-            .filter(|row| seen.get(&row.name).and_then(broken_in).is_none())
+            .filter(|row| seen.get(&row.name).and_then(|seen| broken_in(&row.name, seen)).is_none())
             .filter(|row| gpus == 0 || count(row).is_none_or(|n| n >= gpus))
             .min_by_key(|row| {
                 let (running, queued) = load.get(&row.name).copied().unwrap_or_default();
@@ -2249,9 +2254,11 @@ fn ended_refusal(name: &str, reason: &str) -> Error {
         .next("cozy machine ls")
 }
 
-/// Why `seen`'s machine is broken (cl-977): its own Status's word, else this computer's.
-fn broken_in(seen: &Seen) -> Option<v1::Broken> {
-    seen.frame.as_ref().and_then(|frame| frame.broken.clone()).or_else(|| seen.silent.clone())
+/// Why machine `name` is broken (cl-977): its own Status's word, else this computer's.
+fn broken_in(name: &str, seen: &Seen) -> Option<v1::Broken> {
+    // Stopped, this computer's machine's last word is not what it is now: its next start checks again.
+    let said = seen.frame.as_ref().filter(|_| !(seen.stopped && name == "local")).and_then(|frame| frame.broken.clone());
+    said.or_else(|| seen.silent.clone())
 }
 
 pub(crate) fn broken_refusal(name: &str, reason: &str) -> Error {

@@ -579,8 +579,7 @@ fn broken(m: &Machine) -> Option<String> {
         (MachineKind::Rental, _) if m.status.as_ref().is_some_and(|s| s.phase == "releasing") => "it is releasing itself",
         (MachineKind::Rental, true) if broken.code == "silent_after_update" => "this computer ends it",
         (MachineKind::Rental, _) => "it releases itself once nothing runs there",
-        _ if broken.code == "stuck_in_driver" => "it takes no work until what's stuck exits (a reboot ends it)",
-        _ => "it takes no work until its GPUs open: `cozy machine update local` checks them again",
+        _ => "it takes no work, stops after 2 idle minutes, and its next use starts it and checks again",
     };
     Some(format!("{} ({}); {then}", broken.message, broken.code))
 }

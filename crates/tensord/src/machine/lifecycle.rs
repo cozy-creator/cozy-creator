@@ -75,6 +75,9 @@ pub(crate) struct Lifecycle {
     broken: std::sync::OnceLock<String>,
 }
 
+/// How long this computer's machine stays up idle while broken (cl-977): long enough for whoever started it to hear why.
+const BROKEN_IDLE_MS: i64 = 2 * 60_000;
+
 /// Holds the release while a call that may queue a job is in flight.
 pub(crate) struct Admission(Arc<Lifecycle>);
 
@@ -180,11 +183,13 @@ impl Lifecycle {
         state.ledger.idle_since_ms.max(used) + self.window()
     }
 
-    /// The idle window now: none for a broken rental, which bills for nothing.
+    /// The idle window now. Broken (cl-977), none for a rental, which bills for nothing; this computer's machine stops after
+    /// `BROKEN_IDLE_MS`, so its next use starts it and checks its GPUs again: a broken verdict lasts one start, never longer.
     fn window(&self) -> i64 {
-        match self.rental && self.broken.get().is_some() {
-            true => 0,
-            false => self.grace,
+        match (self.broken.get().is_some(), self.rental) {
+            (true, true) => 0,
+            (true, false) => BROKEN_IDLE_MS.min(self.grace),
+            (false, _) => self.grace,
         }
     }
 
@@ -246,7 +251,11 @@ impl Lifecycle {
             ));
         }
         if let Some(why) = self.broken.get() {
-            return Err(Error::unavailable("machine_broken", format!("this machine is broken: {why}")));
+            let then = match self.rental {
+                true => "it releases itself",
+                false => "it stops after 2 idle minutes, and its next use starts it and checks again",
+            };
+            return Err(Error::unavailable("machine_broken", format!("this machine is broken: {why}; {then}")));
         }
         // This computer's machine past its deadline but not yet exiting takes the call.
         if state.ledger.released || (self.rental && self.due(&state, now_ms())) {
@@ -569,7 +578,7 @@ pub(crate) fn exit_when_idle(
             engine.wait_activity(seen, None);
             continue;
         };
-        let (now, grace) = (now_ms(), lifecycle.grace);
+        let (now, grace) = (now_ms(), lifecycle.window());
         // Authorized now, on loopback (or the reverse): it exits idle, and starts listening as its
         // controllers need (Calcifer starts it again while one is authorized).
         if rebind() {
@@ -587,7 +596,8 @@ pub(crate) fn exit_when_idle(
             release();
             released = Some(since);
         }
-        let held = kept();
+        // A broken machine serves no controller: it stops, and its next start checks again.
+        let held = kept() && lifecycle.broken.get().is_none();
         if lifecycle.kept.swap(held, Ordering::AcqRel) != held {
             crate::activity::status_changed();
         }

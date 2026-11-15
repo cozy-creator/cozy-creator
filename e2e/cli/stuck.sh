@@ -179,8 +179,27 @@ t0=$SECONDS
 [ -f "$OUT/stuck-silent-run.refused" ] || check "stuck: a run on a silent local wasn't refused saying it isn't answering"
 [ $((SECONDS - t0)) -le 30 ] || check "stuck: a run on a silent local took $((SECONDS - t0)) s to be refused"
 echo "stuck: a hung start refused after ${took} s"
+# A run with no --on is never placed back on the silent local: it waits for a machine (or is refused naming why), and goes there once
+# local serves.
+(cd "$RUN_PROJECT" && timeout 400 cozy --json run "$here/weightless/reverse" "text=any$RANDOM" > "$OUT/stuck-any.ndjson" 2> "$OUT/stuck-any.err"
+  echo $? > "$OUT/stuck-any.code") &
+local any=$! n
+sleep 20
+n=$(grep -oE '"number": *[0-9]+' "$OUT/stuck-any.ndjson" | head -1 | grep -oE '[0-9]+$' || true)
+if [ -n "$n" ]; then
+  cozy --json run watch "$n" --once > "$OUT/stuck-any.show.json" 2>&1 || true
+  J '.machine != "local" or .status == "failed"' "$OUT/stuck-any.show.json" \
+    || check "stuck: run $n (no --on) went to the silent local: $(jq -c '{machine, status, waiting}' "$OUT/stuck-any.show.json")"
+  echo "stuck: run $n while local is silent: $(jq -c '{machine, status, waiting}' "$OUT/stuck-any.show.json")"
+else
+  grep -q "isn't answering" "$OUT/stuck-any.ndjson" "$OUT/stuck-any.err" || check "stuck: a run with no --on, refused, doesn't say local isn't answering: $(tail -c 300 "$OUT/stuck-any.err")"
+fi
 step "stuck: released, the silent start serves"
 : > "$trap"
 stuck_ready 90 || check "stuck: the machine didn't serve once its log answered: $(tail -c 300 "$OUT/stuck-machine.json")"
 (cd "$here" && cell stuck-after-silent ./weightless/reverse "text=late$RANDOM") || check "stuck: no run went to the machine once it served"
+for _ in $(seq 120); do kill -0 "$any" 2> /dev/null || break; sleep 1; done
+kill "$any" 2> /dev/null || true
+wait "$any" 2> /dev/null || true
+echo "stuck: the run with no --on ended $(cat "$OUT/stuck-any.code" 2> /dev/null) once local served: $(tail -c 200 "$OUT/stuck-any.ndjson" | tr '\n' ' ')"
 }
