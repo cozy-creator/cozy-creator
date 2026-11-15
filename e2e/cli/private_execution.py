@@ -165,8 +165,7 @@ def target_history(cli: Path, output: Path, label: str, proof: TargetProof, *, l
         assert not rows and listed["older"] == 0, "locked private target history remained visible through the CLI"
         status, body = history(f"/v1/projects/{urllib.parse.quote(proof['project_id'], safe='')}/runs", {"package": prefix, "limit": 1})
         refusal = body.get("error")
-        # Locked, Calcifer keeps only the project's folder (Paul's invariant, cl-984): its id names nothing here.
-        assert status == 404 and isinstance(refusal, dict) and refusal.get("code") == "project_unknown" and "runs" not in body, "locked private target history remained visible through the API"
+        assert status == 409 and isinstance(refusal, dict) and refusal.get("code") == "project_locked" and "runs" not in body, "locked private target history remained visible through the API"
         return []
     ids = [row["id"] for row in rows]
     assert set(proof["ids"]).issubset(ids), "authorized private target history lost an original run"

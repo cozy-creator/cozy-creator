@@ -518,6 +518,12 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
         return Ok(indexed.swap_remove(at));
     }
+    // A locked project's id is no longer in the index (cl-984), only its folder: the id is read from the folder's own keybag.
+    if let Some(at) = indexed.iter().position(|entry| entry.id.starts_with("locked-") && vault::project_id(&entry.path).as_deref() == Some(text)) {
+        let mut entry = indexed.swap_remove(at);
+        entry.id = text.to_owned();
+        return Ok(entry);
+    }
     if let Some(code) = code::parse(text) {
         if let Some(at) = indexed.iter().position(|entry| entry.code == code) {
             return Ok(indexed.swap_remove(at));
