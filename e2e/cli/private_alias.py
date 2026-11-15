@@ -123,6 +123,8 @@ def main() -> None:
     locked = json.loads(command(args.cli, args.out, "lock", "vault", "lock", cwd=args.project))
     assert locked["vault"]["state"] == "locked", "fixture must close its first mounted view"
     target_history(args.cli, args.out, "locked-target-history", proof, locked=True)
+    # Paul's invariant (cl-984): a locked project leaves no trace outside it, its machine journal bindings included.
+    assert not installations(home, project_id), "a locked project's installation bindings stayed in the machine journal"
     unlocked = json.loads(command(args.cli, args.out, "unlock", "vault", "unlock",
                                   "--passphrase-file", str(args.passphrase_file), "--idle", "0", cwd=args.project))
     after_view = Path(unlocked["vault"]["view"]).resolve(strict=True)
@@ -148,8 +150,7 @@ def main() -> None:
     (folder / "target-proof.json").write_text(json.dumps(proof))
     after = installations(home, project_id)
     (args.out / "bindings-after.json").write_text(json.dumps(snapshot(after), indent=2))
-    assert before.issubset(after), "remount rewrote/deleted historical installation bindings"
-    assert len(after) > len(before), "the new physical mount did not receive its own installation binding"
+    assert after, "the new physical mount did not receive its own installation binding"
     markers = [source_canary.group(), payload_canary.encode(), proof["function"].encode()]
     store = Path(os.environ.get("TENSORFS_HOME", str(Path.home() / ".cache/tensorfs")))
     leaked, checked = scan([home, store], [home / "calcifer/vaults", args.out.resolve()], stamp, markers)
@@ -157,7 +158,7 @@ def main() -> None:
     assert not leaked, "remount exposed private content in global storage"
     (args.out / "receipt.json").write_text(json.dumps({
         "same_project": True, "same_source": True, "changed_physical_view": True,
-        "new_binding": True, "historical_bindings_retained": True,
+        "new_binding": True, "locked_bindings_retired": True,
         "actual_private_execution": True, "global_plaintext_scan": True,
         "target_hidden_when_locked": True, "target_filter_pagination": True,
         "global_store_free_of_project_runs": True,

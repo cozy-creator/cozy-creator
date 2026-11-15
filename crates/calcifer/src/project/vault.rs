@@ -94,6 +94,23 @@ pub(super) fn project_id(root: &FsPath) -> Option<String> {
     Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| keybag.info().project_id)
 }
 
+/// A locked project's id and public code, from its own keybag (cl-984): the index keeps neither.
+pub(crate) fn kept_in_keybag(root: &FsPath) -> Option<(String, String)> {
+    Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| { let info = keybag.info(); (info.project_id, info.code) })
+}
+
+/// An unlocked project's public code, kept in its keybag beside its id so a compact link finds it once locked (cl-984).
+pub(crate) fn keep_code(root: &FsPath, code: &str) -> Result<(), Error> {
+    let Some(session) = held(root) else { return Ok(()) };
+    let mut session = session.lock().expect("vault session");
+    if session.keybag.info().code == code { return Ok(()); }
+    let mut keybag = session.keybag.clone();
+    keybag.set_code(code).map_err(key)?;
+    keybag.save(&root.join(KEYBAG_FILE)).map_err(key)?;
+    session.keybag = keybag;
+    Ok(())
+}
+
 pub(crate) fn plain_project_id(root: &FsPath) -> Option<String> {
     if encrypted(root) { return None; }
     let metadata = fs::symlink_metadata(root.join(super::db::DB)).ok()?;
@@ -604,11 +621,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
     forget(api, root, transition)?;
     tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
     crate::runs::files::release_private(root)?;
-    if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) {
-        api.calcifer.retire_project(&id);
-        // Locked, its key and its runs' names stay only in its project.db, registered again as it opens (cl-987).
-        api.calcifer.maintenance_store().project_keys_forgotten(&id).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
-    }
+    if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) { api.calcifer.retire_project(&id); }
     let pending = api.calcifer.maintenance_store().migration_required()
         .map_err(|_| error("project_migration_pending", "legacy storage could not be checked before closing"))?;
     if !pending {
@@ -632,8 +645,13 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
         if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) {
             let state = reported_status(api, root);
             crate::events::project_vault(&keybag.info().project_id, &state.state);
-            if state.state != "locked" && !CONVERTING.lock().expect("vault conversions").contains(root) {
+            let converting = CONVERTING.lock().expect("vault conversions").contains(root);
+            if state.state != "locked" && !converting {
                 return Err(error("project_migration_pending", "the project is closed, but legacy data outside it still needs a verified storage update"));
+            }
+            // Locked, nothing of it stays here but its folder (cl-984): not its id, code or keys, so its KEY-N is unknown here (cl-987).
+            if !converting {
+                api.calcifer.store().project_locked(&keybag.info().project_id, root).map_err(|e| error("vault_index", e.to_string()))?;
             }
         }
     }
@@ -873,6 +891,10 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
     }
     if matches!(ask.action.as_str(), "decrypt" | "rotate" | "passphrase" | "recovery") && !encrypted(root) {
         return Err(Error::new(Kind::Usage, "project_plain", "this project is not encrypted"));
+    }
+    // Each needs its unlocked view. Locked, the index holds nothing of it to look up (cl-984): it is refused as locked first.
+    if matches!(ask.action.as_str(), "decrypt" | "rotate" | "passphrase" | "recovery") && held(root).is_none() {
+        return Err(locked(root));
     }
     if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate" | "passphrase" | "recovery") {
         let id = project_id(root).or_else(|| plain_project_id(root)).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
