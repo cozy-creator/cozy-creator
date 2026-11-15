@@ -495,13 +495,18 @@ mod sys {
         ptr,
     };
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use windows_sys::Win32::{
-        Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR},
+        Foundation::{ERROR_INSUFFICIENT_BUFFER, FILETIME, NO_ERROR},
         NetworkManagement::IpHelper::{
             GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
             TCP_TABLE_OWNER_PID_CONNECTIONS,
         },
-        System::Threading::PROCESS_QUERY_LIMITED_INFORMATION,
+        System::{
+            SystemInformation::GetSystemTimePreciseAsFileTime,
+            Threading::{GetProcessTimes, PROCESS_QUERY_LIMITED_INFORMATION},
+        },
     };
 
     use super::User;
@@ -516,16 +521,23 @@ mod sys {
         u16::from_be(value as u16)
     }
 
+    /// The words the last table took, so the next is read once, not first measured: the kernel lists every connection each call.
+    static WORDS: AtomicUsize = AtomicUsize::new(0);
+
     /// This computer's TCP connections of `family`, as `GetExtendedTcpTable` lists them with their owning processes.
     fn table(family: u32) -> Option<Vec<u64>> {
-        let mut buffer: Vec<u64> = Vec::new();
+        let last = WORDS.load(Ordering::Relaxed);
+        let mut buffer: Vec<u64> = if last == 0 { Vec::new() } else { vec![0; last + last / 8 + 64] };
         for _ in 0..8 {
             let mut size = u32::try_from(buffer.len() * 8).ok()?;
             let at = if buffer.is_empty() { ptr::null_mut() } else { buffer.as_mut_ptr().cast() };
             // SAFETY: `size` bytes at `at` (none at first, to learn the size), 8-aligned for the table.
             let result = unsafe { GetExtendedTcpTable(at, &mut size, 0, family, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) };
             match result {
-                NO_ERROR if !buffer.is_empty() => return Some(buffer),
+                NO_ERROR if !buffer.is_empty() => {
+                    WORDS.store((size as usize).div_ceil(8), Ordering::Relaxed);
+                    return Some(buffer);
+                }
                 // Connections come and go between the calls: room for a few more.
                 ERROR_INSUFFICIENT_BUFFER => buffer.resize((size as usize).div_ceil(8) + 64, 0),
                 _ => return None,
@@ -560,14 +572,29 @@ mod sys {
         }
     }
 
-    /// The owning process's token's user. Another account's process or token is closed to this one: none. The row is read again
-    /// once the process is open, whose handle holds its pid: a pid freed and reused between the two reads isn't this socket's.
+    fn filetime(time: FILETIME) -> u64 {
+        (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
+    }
+
+    /// The owning process's token's user. Another account's process or token is closed to this one: none. The process opened must
+    /// be older than the table read: its handle holds its pid from then on, and one made after the read (a pid freed and reused)
+    /// isn't the one whose row it was.
     pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Result<User, &'static str> {
+        let mut asked = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        // SAFETY: a writable FILETIME.
+        unsafe { GetSystemTimePreciseAsFileTime(&mut asked) };
         let pid = owning_pid(peer, local).ok_or("no_socket")?;
         let process = crate::ipc::open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION).map_err(|_| "process_closed")?;
-        if owning_pid(peer, local) != Some(pid) {
+        let handle = std::os::windows::io::AsRawHandle::as_raw_handle(&process);
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        // SAFETY: a live process handle and four writable FILETIMEs.
+        if unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+            return Err("process_closed");
+        }
+        if filetime(created) > filetime(asked) {
             return Err("process_changed");
         }
-        crate::ipc::token_user(std::os::windows::io::AsRawHandle::as_raw_handle(&process)).map(User).map_err(|_| "token_closed")
+        crate::ipc::token_user(handle).map(User).map_err(|_| "token_closed")
     }
 }

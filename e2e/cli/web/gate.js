@@ -1,6 +1,7 @@
 // What the gate costs (web.sh's web_gate_cost; Paul, 11-14), from Calcifer's Server-Timing ([calcifer] diagnostics): its checks on one
-// kept connection, and the peer lookup a new connection pays once; idle, then with <pairs> other loopback connections open in a newer
-// process (web/busy.js). This process is the older one, as a browser is, so a lookup that scans processes (macOS) passes busy.js first.
+// kept connection, and the peer lookup a new connection pays once; with <pairs> other loopback connections open in a newer process
+// (web/busy.js), then idle. This process is the older one, as a browser is, so a lookup that scans processes (macOS) passes busy.js
+// first; the very first lookup (`cold`) is that full scan, before macOS starts at the last holder.
 //   node gate.js <base URL> <bearer> <pairs>
 const http = require('http');
 const { spawn } = require('child_process');
@@ -25,17 +26,17 @@ const stats = (values) => {
 };
 
 async function measure() {
+  const cold = (await ask(new http.Agent({ keepAlive: false }))).peer;
   const fresh = [];
   for (let at = 0; at < 60; at++) fresh.push(await ask(new http.Agent({ keepAlive: false })));
   const kept = new http.Agent({ keepAlive: true, maxSockets: 1 });
   const held = [];
   for (let at = 0; at < 200; at++) held.push(await ask(kept));
   kept.destroy();
-  return { lookup_ms: stats(fresh.map((one) => one.peer)), checks_ms: stats(held.map((one) => one.guard)), admit_ms: stats(held.map((one) => one.admit)) };
+  return { cold_lookup_ms: cold, lookup_ms: stats(fresh.map((one) => one.peer)), checks_ms: stats(held.map((one) => one.guard)), admit_ms: stats(held.map((one) => one.admit)) };
 }
 
 (async () => {
-  const idle = await measure();
   const busy = spawn(process.execPath, [join(__dirname, 'busy.js'), pairs], { stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((done, failed) => {
     busy.stdout.on('data', (chunk) => { if (String(chunk).startsWith('ready')) done(); });
@@ -43,6 +44,8 @@ async function measure() {
   });
   const loaded = await measure();
   busy.kill();
+  await new Promise((done) => setTimeout(done, 1000));
+  const idle = await measure();
   console.log(JSON.stringify({ os: process.platform, sockets: 2 * Number(pairs), idle, busy: loaded }));
   process.exit(0);
 })().catch((error) => { console.error(error); process.exit(1); });
