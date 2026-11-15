@@ -62,14 +62,13 @@ class Trap(Operations):
         if held:
             print(f"answered a {what} from {tid}", flush=True)
 
-    def getattr(self, path: str, fh: int | None = None) -> dict[str, int | float]:
+    def getattr(self, path: str, fh: int | None = None) -> dict[str, float]:
         try:
             st = os.lstat(self._path(path))
         except OSError as error:
             raise FuseOSError(error.errno or errno.EIO)
-        # fusepy sets each on a C stat: times as seconds, the rest as integers (a float there is a TypeError).
-        times = {key: float(getattr(st, key)) for key in ("st_atime", "st_ctime", "st_mtime")}
-        return times | {key: int(getattr(st, key)) for key in ("st_gid", "st_mode", "st_nlink", "st_size", "st_uid")}
+        keys = ("st_atime", "st_ctime", "st_gid", "st_mode", "st_mtime", "st_nlink", "st_size", "st_uid")
+        return {key: float(getattr(st, key)) for key in keys}
 
     def readdir(self, path: str, fh: int) -> list[str]:
         return [".", ".."] + os.listdir(self._path(path))
