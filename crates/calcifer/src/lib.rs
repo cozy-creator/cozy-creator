@@ -962,8 +962,7 @@ impl Calcifer {
         let journal=self.row_store(row)?;
         let mut run=journal.record(row)?;
         let owned=match &journal {store::RunStore::Project(store)=>row.owner==store.project_id(),store::RunStore::Maintenance(_)=>true};
-        if let Some(dir) = project::of_landing(&row.out_dir) {
-            let (id, name) = project::identity(dir);
+        if let Some((id, name)) = project_of(row) {
             (run.project_id, run.project) = (Some(id), Some(name));
         }
         if owned { self.live_gpu(&mut run); }
@@ -2503,6 +2502,11 @@ fn finished(state: &str) -> bool {
 }
 
 /// Waiting for its turn: in the outbox, or in its machine's line.
+/// The project a run's outputs land in, its id and name: what every record of it names, GET's and its events' (cl-885).
+pub(crate) fn project_of(row: &RunRow) -> Option<(String, String)> {
+    project::of_landing(&row.out_dir).map(project::identity)
+}
+
 fn queued(run: &Run) -> bool {
     run.status == RunStatus::Queued
         || (run.status == RunStatus::InProgress && run.machine_state.as_deref() == Some("queued"))
