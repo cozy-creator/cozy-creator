@@ -299,14 +299,14 @@ export function CanvasSurface(props: Props) {
       touches.delete(event.pointerId)
       if (multitouch) { if (!touches.size) multitouch = false; clicked = null; pointerDown = touches.size > 0; interactions(); invalidate(); return }
       if (drag && drag.id !== event.pointerId) return
-      const held = drag, started = clicked?.id === event.pointerId ? clicked : null
+      const held = drag, boxed = Boolean(marquee), started = clicked?.id === event.pointerId ? clicked : null
       nativePan = null
       drag = null; marquee = null; clicked = null; pointerDown = false
       if (selection.current) selection.current.hidden = true
       if (held?.begun) {
         const nodes = held.nodes.map(n => controller.getNode(n.id)!).filter(Boolean)
         callbacks.current.onDragStop(event, nodes[0], nodes)
-      } else if (started && Math.hypot(event.clientX - started.x, event.clientY - started.y) < 4 && !nativeInput(event.target)) {
+      } else if (!boxed && started && Math.hypot(event.clientX - started.x, event.clientY - started.y) < 4 && !nativeInput(event.target)) {
         const node = started.node && controller.getNode(started.node.id)
         if (node) {
           callbacks.current.onNodeClick(event, node)
