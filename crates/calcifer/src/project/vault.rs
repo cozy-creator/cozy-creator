@@ -840,8 +840,11 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     // A lock waits for the project as the drain above does: for the requests let in before its view was revoked (each now
     // refused), and for what it ended, still settling (its runs' last writes hold the project a moment), else it answers
     // locking with what it ended, and the sweeper locks once it has settled.
+    // A decrypt reads the view it converts after its own close revoked it (a retried close revokes it first): the view must be
+    // open when it's asked.
+    if ask.action == "decrypt" && held(root).is_some() { view(root)?; }
     let settling = !ended.is_empty();
-    let gate = if settling || ask.action == "lock" { exclusive_within(api, &root, LOCK_DRAIN) } else { exclusive(&root) };
+    let gate = if settling || matches!(ask.action.as_str(), "lock" | "decrypt") { exclusive_within(api, &root, LOCK_DRAIN) } else { exclusive(&root) };
     let mut transition = match gate {
         Ok(transition) => transition,
         Err(busy) if settling && busy.code == "project_busy" => {
@@ -852,20 +855,22 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     };
     progress.phase("preparing");
     let draining = std::time::Instant::now() + LOCK_DRAIN;
+    let (drains, decrypting) = (matches!(ask.action.as_str(), "lock" | "decrypt"), ask.action == "decrypt");
+    let failed = |error: Error| if decrypting { decrypt_failed(root, error) } else { error };
     let mut changed = loop {
         match change(&api, &root, ask, progress, &transition, &mut browser) {
             // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
             Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended: vec![], skipped_files: vec![] },
-            // Its view is revoked, so nothing new opens it: what still holds it (a journal read, a measurement) is
-            // finishing. A lock waits for that a moment rather than refuse; Cozy's browser was asked already.
-            Err(busy) if ask.action == "lock" && busy.code == "project_busy" && std::time::Instant::now() < draining => {
-                say(root, "lock drain", || format!("its lock waits: {}", busy.message));
+            // Its view is revoked, so nothing new opens it: what still holds it (a request, a journal read, a measurement) is
+            // finishing. A lock or a decrypt waits for that a moment rather than refuse; Cozy's browser was asked already.
+            Err(busy) if drains && busy.code == "project_busy" && std::time::Instant::now() < draining => {
+                say(root, "drain", || format!("its {} waits: {}", ask.action, busy.message));
                 drop(transition);
                 // What refused it says nothing when it ends: a moment, then the project again, queued.
                 std::thread::sleep(Duration::from_millis(200));
-                transition = exclusive_within(api, &root, draining.saturating_duration_since(std::time::Instant::now()))?;
+                transition = exclusive_within(api, &root, draining.saturating_duration_since(std::time::Instant::now())).map_err(failed)?;
             }
-            changed => break changed?,
+            changed => break changed.map_err(failed)?,
         }
     };
     changed.ended = ended;
@@ -942,12 +947,14 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
     if matches!(ask.action.as_str(), "decrypt" | "rotate" | "passphrase" | "recovery") && held(root).is_none() {
         return Err(locked(root));
     }
-    if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate" | "passphrase" | "recovery") {
+    // Once an operation: a decrypt's retry finds its view revoked, which opens no project to admit a receipt into.
+    if !progress.prepared && matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate" | "passphrase" | "recovery") {
         let id = project_id(root).or_else(|| plain_project_id(root)).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.admit_receipt(&store)?;
         api.calcifer.maintenance_store().migrate_project_sealing(&store, &api.calcifer.inputs)
             .map_err(|_| error("project_migration_pending", "legacy project history must be verified before changing its storage"))?;
+        progress.prepared = true;
     }
     let mut recovery_secret = None;
     match ask.action.as_str() {
@@ -1557,7 +1564,8 @@ fn sync_plain_file(path: &FsPath) -> Result<(), Error> {
 fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &ProjectTransition, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
     // This makes a retry after a completed or recovered switch harmless.
     if !encrypted(root) { return Ok(()); }
-    let published = view(root)?;
+    // `operate` found its view open. A close this decrypt retries has revoked it since, so it reads the mount as work does.
+    let published = work_view(root)?;
     let session = held(root).ok_or_else(|| locked(root))?;
     let (secret, info) = {
         let session = session.lock().expect("vault session");
@@ -1627,6 +1635,15 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &
     crate::events::release_project_readers(&info.project_id);
     crate::events::project_vault(&info.project_id, "plain");
     Ok(())
+}
+
+/// A decrypt that failed after its close revoked the view leaves the project locking (its custody was being sealed, so the
+/// view isn't given back): it says so, and how to go on.
+fn decrypt_failed(root: &FsPath, failed: Error) -> Error {
+    let open = held(root).is_some_and(|session| !lapsed(&session.lock().expect("vault session")));
+    if !encrypted(root) || open { return failed; }
+    Error::new(failed.kind, failed.code.clone(), format!("{}; the project locked as decrypting closed it", failed.message))
+        .remedy("unlock the project, then decrypt it again").next("cozy vault unlock")
 }
 
 fn no_nested(api: &Api, root: &FsPath) -> Result<(), Error> {
