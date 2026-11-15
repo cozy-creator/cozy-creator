@@ -1,8 +1,10 @@
 /** A matched media-card scene. x/y are world coordinates; camera x/y are screen translations. */
-export interface Card { id: string; x: number; y: number; width: number; height: number; asset: number; label: string; status: string }
+export interface Card { id: string; x: number; y: number; width: number; height: number; asset: number; label: string; status: string; version?: number; tool?: string; state?: "ready" | "rendering" | "error"; kind?: "image" | "video"; progress?: number }
 export interface Camera { x: number; y: number; zoom: number }
 export interface BenchOptions {
   cards: Card[];
+  /** Interactive prototype only; the benchmark default is unchanged. */
+  appearance?: "benchmark" | "creator";
   camera: Camera;
   width: number;
   height: number;
@@ -20,8 +22,15 @@ export interface BenchOptions {
 export interface Adapter {
   /** init resolves when renderer constructed, not necessarily all thumbnails loaded. */
   setCamera(camera: Camera): void;
+  resize?(width: number, height: number): void;
   setSelected(id: string | null): void;
   moveCard(id: string, x: number, y: number): void;
+  /** Optional prototype editing operations. */
+  moveCards?(moves: {id: string; x: number; y: number}[]): void;
+  setSelection?(ids: string[]): void;
+  updateCard?(id: string, patch: Partial<Card>): void;
+  addCard?(card: Card): void;
+  removeCard?(id: string): void;
   /** Must report backend truthfully and source/image/texture counters where available. */
   stats(): Record<string, unknown>;
   /** Current loaded-and-displayed images divided by currently visible cards. */

@@ -1,0 +1,3599 @@
+{
+  "generated": "2026-11-15T08:43:02.453Z",
+  "directories": [
+    "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000",
+    "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000"
+  ],
+  "nonrecursive": true,
+  "qualification": "status pass + initial/after-tour readiness + displayed-photo pixel pass + bounded source admission + explicitly headless canonical working-floor controls + recorded source provenance",
+  "expectedSamples": {
+    "1000": 1,
+    "5000": 3
+  },
+  "expectedModes": [
+    "reactflow",
+    "react-dom",
+    "pixi",
+    "leafer",
+    "pixi-webgpu",
+    "gpucanvas"
+  ],
+  "matrixComplete": true,
+  "provenance": {
+    "consistent": true,
+    "commitConsistent": true,
+    "hashSetConsistent": true,
+    "commits": {
+      "6e49cf6163f3fd69ad4254932b28610100c45b4c": 24
+    },
+    "hashSetDigests": {
+      "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d": 24
+    },
+    "perFileHashes": {
+      "gpu-stats.mjs": {
+        "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31": 24
+      },
+      "hardware.mjs": {
+        "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b": 24
+      },
+      "package.json": {
+        "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa": 24
+      },
+      "pnpm-lock.yaml": {
+        "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b": 24
+      },
+      "run.mjs": {
+        "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2": 24
+      },
+      "src/dom.ts": {
+        "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912": 24
+      },
+      "src/gpucanvas.ts": {
+        "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68": 24
+      },
+      "src/leafer.ts": {
+        "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270": 24
+      },
+      "src/main.ts": {
+        "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518": 24
+      },
+      "src/pixi.ts": {
+        "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a": 24
+      },
+      "src/react-dom.tsx": {
+        "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32": 24
+      },
+      "src/reactflow.tsx": {
+        "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac": 24
+      },
+      "src/style.css": {
+        "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070": 24
+      },
+      "src/types.ts": {
+        "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233": 24
+      }
+    },
+    "differingFiles": [],
+    "scope": "Only the source hashes recorded in receipts; not a new hash of the current worktree or fixture/browser binaries."
+  },
+  "workloadConsistent": true,
+  "workloadVariants": {
+    "{\"config\":\"intel-coherent\",\"dpr\":1,\"height\":900,\"query\":\"floor=256&view=working&retention=budget&rfLayer=1\",\"tourMs\":8000,\"width\":1600}": 24
+  },
+  "metricDefinitions": {
+    "activeCpuCores": "one-core equivalents",
+    "idleCpuCores": "one-core equivalents",
+    "frameP95Ms": "ms",
+    "frameP99Ms": "ms",
+    "traversalPssMiB": "MiB",
+    "gpuResidentClientAggregateMiB": "MiB",
+    "gpuSharedClientAggregateMiB": "MiB",
+    "gpuPrivateResidentLowerBoundMiB": "MiB",
+    "gpuRenderEngineDutyPercent": "% summed recorded render-engine duty",
+    "coldReadyMs": "ms",
+    "initialUniqueThumbnailRequests": "distinct source URLs",
+    "initialVisible": "cards",
+    "initialLiveDomNodes": "elements in document",
+    "initialCdpNodes": "CDP nodes, including detached nodes",
+    "traversalCdpNodes": "CDP nodes, including detached nodes",
+    "finalLiveDomNodes": "elements in document",
+    "finalCdpNodes": "CDP nodes, including detached nodes",
+    "destroyedCdpNodes": "CDP nodes, including detached nodes"
+  },
+  "notes": [
+    "CPU cores = recorded cpuOneCorePercent / 100, summing browser-owned process CPU; not percent of all system cores.",
+    "Headless 60 Hz frame intervals and p95/p99 scheduling intervals are not maximum FPS, physical presentation time, or input-to-photon latency.",
+    "Each table entry aggregates per-run statistics; a median of run p95/p99 values is not a pooled percentile.",
+    "Traversal memory is after tour readiness and the recorded post-traversal pause, before interaction/editor/model demonstrations.",
+    "Browser PSS and DRM GPU resident/shared-client accounting overlap on integrated/shared-memory hardware: do not add them. Shared GPU buffers may appear in more than one client aggregate.",
+    "Private-resident lower bound is max(0, resident-client aggregate minus shared-client aggregate), not exact physical VRAM or an upper bound.",
+    "GPU render duty sums the recorded :render engine entries. It is not a universal GPU utilization or shader-cost measure and can exceed 100% across devices.",
+    "CDP node counts can include detached nodes; document element counts are reported separately. Missing metrics remain null, not zero.",
+    "Primary 5,000-card groups expect three qualified repeats per mode; 1,000-card groups expect one observation, not a replicated performance estimate.",
+    "React Flow here is optimized uncontrolled + measured empty-port metadata + explicit layer hint. GPUCanvas uses budget source retention with the default 4096×4096×5 atlas."
+  ],
+  "groups": [
+    {
+      "n": 1000,
+      "mode": "reactflow",
+      "samples": 1,
+      "expectedSamples": 1,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-reactflow-n1000-dpr1-r1.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 1,
+          "median": 0.510659395141299,
+          "min": 0.510659395141299,
+          "max": 0.510659395141299
+        },
+        "idleCpuCores": {
+          "count": 1,
+          "median": 0.059084194977843424,
+          "min": 0.059084194977843424,
+          "max": 0.059084194977843424
+        },
+        "frameP95Ms": {
+          "count": 1,
+          "median": 16.700000000000728,
+          "min": 16.700000000000728,
+          "max": 16.700000000000728
+        },
+        "frameP99Ms": {
+          "count": 1,
+          "median": 16.800000000000182,
+          "min": 16.800000000000182,
+          "max": 16.800000000000182
+        },
+        "traversalPssMiB": {
+          "count": 1,
+          "median": 463.3232421875,
+          "min": 463.3232421875,
+          "max": 463.3232421875
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 1,
+          "median": 225.7265625,
+          "min": 225.7265625,
+          "max": 225.7265625
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 1,
+          "median": 0.01953125,
+          "min": 0.01953125,
+          "max": 0.01953125
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 1,
+          "median": 225.70703125,
+          "min": 225.70703125,
+          "max": 225.70703125
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 1,
+          "median": 5.561339414972732,
+          "min": 5.561339414972732,
+          "max": 5.561339414972732
+        },
+        "coldReadyMs": {
+          "count": 1,
+          "median": 232,
+          "min": 232,
+          "max": 232
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 1,
+          "median": 363,
+          "min": 363,
+          "max": 363
+        },
+        "initialCdpNodes": {
+          "count": 1,
+          "median": 547,
+          "min": 547,
+          "max": 547
+        },
+        "traversalCdpNodes": {
+          "count": 1,
+          "median": 2137,
+          "min": 2137,
+          "max": 2137
+        },
+        "finalLiveDomNodes": {
+          "count": 1,
+          "median": 167,
+          "min": 167,
+          "max": 167
+        },
+        "finalCdpNodes": {
+          "count": 1,
+          "median": 2399,
+          "min": 2399,
+          "max": 2399
+        },
+        "destroyedCdpNodes": {
+          "count": 1,
+          "median": 2399,
+          "min": 2399,
+          "max": 2399
+        }
+      }
+    },
+    {
+      "n": 1000,
+      "mode": "react-dom",
+      "samples": 1,
+      "expectedSamples": 1,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-react-dom-n1000-dpr1-r1.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 1,
+          "median": 0.4121151936444886,
+          "min": 0.4121151936444886,
+          "max": 0.4121151936444886
+        },
+        "idleCpuCores": {
+          "count": 1,
+          "median": 0.034482758620689676,
+          "min": 0.034482758620689676,
+          "max": 0.034482758620689676
+        },
+        "frameP95Ms": {
+          "count": 1,
+          "median": 16.799999999999272,
+          "min": 16.799999999999272,
+          "max": 16.799999999999272
+        },
+        "frameP99Ms": {
+          "count": 1,
+          "median": 16.80000000000109,
+          "min": 16.80000000000109,
+          "max": 16.80000000000109
+        },
+        "traversalPssMiB": {
+          "count": 1,
+          "median": 429.12109375,
+          "min": 429.12109375,
+          "max": 429.12109375
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 1,
+          "median": 219.1796875,
+          "min": 219.1796875,
+          "max": 219.1796875
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 1,
+          "median": 0.01953125,
+          "min": 0.01953125,
+          "max": 0.01953125
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 1,
+          "median": 219.16015625,
+          "min": 219.16015625,
+          "max": 219.16015625
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 1,
+          "median": 5.260430635551142,
+          "min": 5.260430635551142,
+          "max": 5.260430635551142
+        },
+        "coldReadyMs": {
+          "count": 1,
+          "median": 159,
+          "min": 159,
+          "max": 159
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 1,
+          "median": 304,
+          "min": 304,
+          "max": 304
+        },
+        "initialCdpNodes": {
+          "count": 1,
+          "median": 486,
+          "min": 486,
+          "max": 486
+        },
+        "traversalCdpNodes": {
+          "count": 1,
+          "median": 1917,
+          "min": 1917,
+          "max": 1917
+        },
+        "finalLiveDomNodes": {
+          "count": 1,
+          "median": 136,
+          "min": 136,
+          "max": 136
+        },
+        "finalCdpNodes": {
+          "count": 1,
+          "median": 2171,
+          "min": 2171,
+          "max": 2171
+        },
+        "destroyedCdpNodes": {
+          "count": 1,
+          "median": 2171,
+          "min": 2171,
+          "max": 2171
+        }
+      }
+    },
+    {
+      "n": 1000,
+      "mode": "pixi",
+      "samples": 1,
+      "expectedSamples": 1,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-pixi-n1000-dpr1-r1.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 1,
+          "median": 0.5493412875963212,
+          "min": 0.5493412875963212,
+          "max": 0.5493412875963212
+        },
+        "idleCpuCores": {
+          "count": 1,
+          "median": 0.09401286491835728,
+          "min": 0.09401286491835728,
+          "max": 0.09401286491835728
+        },
+        "frameP95Ms": {
+          "count": 1,
+          "median": 16.799999999999272,
+          "min": 16.799999999999272,
+          "max": 16.799999999999272
+        },
+        "frameP99Ms": {
+          "count": 1,
+          "median": 16.80000000000109,
+          "min": 16.80000000000109,
+          "max": 16.80000000000109
+        },
+        "traversalPssMiB": {
+          "count": 1,
+          "median": 490.9296875,
+          "min": 490.9296875,
+          "max": 490.9296875
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 1,
+          "median": 259.50390625,
+          "min": 259.50390625,
+          "max": 259.50390625
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 1,
+          "median": 34.109375,
+          "min": 34.109375,
+          "max": 34.109375
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 1,
+          "median": 225.39453125,
+          "min": 225.39453125,
+          "max": 225.39453125
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 1,
+          "median": 15.825940193885161,
+          "min": 15.825940193885161,
+          "max": 15.825940193885161
+        },
+        "coldReadyMs": {
+          "count": 1,
+          "median": 505,
+          "min": 505,
+          "max": 505
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 1,
+          "median": 27,
+          "min": 27,
+          "max": 27
+        },
+        "initialCdpNodes": {
+          "count": 1,
+          "median": 70,
+          "min": 70,
+          "max": 70
+        },
+        "traversalCdpNodes": {
+          "count": 1,
+          "median": 41,
+          "min": 41,
+          "max": 41
+        },
+        "finalLiveDomNodes": {
+          "count": 1,
+          "median": 27,
+          "min": 27,
+          "max": 27
+        },
+        "finalCdpNodes": {
+          "count": 1,
+          "median": 223,
+          "min": 223,
+          "max": 223
+        },
+        "destroyedCdpNodes": {
+          "count": 1,
+          "median": 223,
+          "min": 223,
+          "max": 223
+        }
+      }
+    },
+    {
+      "n": 1000,
+      "mode": "leafer",
+      "samples": 1,
+      "expectedSamples": 1,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-leafer-n1000-dpr1-r1.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 1,
+          "median": 0.968944099378882,
+          "min": 0.968944099378882,
+          "max": 0.968944099378882
+        },
+        "idleCpuCores": {
+          "count": 1,
+          "median": 0.029571217348447525,
+          "min": 0.029571217348447525,
+          "max": 0.029571217348447525
+        },
+        "frameP95Ms": {
+          "count": 1,
+          "median": 16.700000000000728,
+          "min": 16.700000000000728,
+          "max": 16.700000000000728
+        },
+        "frameP99Ms": {
+          "count": 1,
+          "median": 16.80000000000109,
+          "min": 16.80000000000109,
+          "max": 16.80000000000109
+        },
+        "traversalPssMiB": {
+          "count": 1,
+          "median": 438.1337890625,
+          "min": 438.1337890625,
+          "max": 438.1337890625
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 1,
+          "median": 165.97265625,
+          "min": 165.97265625,
+          "max": 165.97265625
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 1,
+          "median": 0.01953125,
+          "min": 0.01953125,
+          "max": 0.01953125
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 1,
+          "median": 165.953125,
+          "min": 165.953125,
+          "max": 165.953125
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 1,
+          "median": 12.40381450931677,
+          "min": 12.40381450931677,
+          "max": 12.40381450931677
+        },
+        "coldReadyMs": {
+          "count": 1,
+          "median": 216,
+          "min": 216,
+          "max": 216
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 1,
+          "median": 13,
+          "min": 13,
+          "max": 13
+        },
+        "initialCdpNodes": {
+          "count": 1,
+          "median": 154,
+          "min": 154,
+          "max": 154
+        },
+        "traversalCdpNodes": {
+          "count": 1,
+          "median": 234,
+          "min": 234,
+          "max": 234
+        },
+        "finalLiveDomNodes": {
+          "count": 1,
+          "median": 13,
+          "min": 13,
+          "max": 13
+        },
+        "finalCdpNodes": {
+          "count": 1,
+          "median": 393,
+          "min": 393,
+          "max": 393
+        },
+        "destroyedCdpNodes": {
+          "count": 1,
+          "median": 393,
+          "min": 393,
+          "max": 393
+        }
+      }
+    },
+    {
+      "n": 1000,
+      "mode": "pixi-webgpu",
+      "samples": 1,
+      "expectedSamples": 1,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-pixi-webgpu-n1000-dpr1-r1.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 1,
+          "median": 0.636713416904555,
+          "min": 0.636713416904555,
+          "max": 0.636713416904555
+        },
+        "idleCpuCores": {
+          "count": 1,
+          "median": 0.06893156080748394,
+          "min": 0.06893156080748394,
+          "max": 0.06893156080748394
+        },
+        "frameP95Ms": {
+          "count": 1,
+          "median": 16.80000000000109,
+          "min": 16.80000000000109,
+          "max": 16.80000000000109
+        },
+        "frameP99Ms": {
+          "count": 1,
+          "median": 66.60000000000036,
+          "min": 66.60000000000036,
+          "max": 66.60000000000036
+        },
+        "traversalPssMiB": {
+          "count": 1,
+          "median": 505.6845703125,
+          "min": 505.6845703125,
+          "max": 505.6845703125
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 1,
+          "median": 358.47265625,
+          "min": 358.47265625,
+          "max": 358.47265625
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 1,
+          "median": 28.34765625,
+          "min": 28.34765625,
+          "max": 28.34765625
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 1,
+          "median": 330.125,
+          "min": 330.125,
+          "max": 330.125
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 1,
+          "median": 14.552357800670224,
+          "min": 14.552357800670224,
+          "max": 14.552357800670224
+        },
+        "coldReadyMs": {
+          "count": 1,
+          "median": 693,
+          "min": 693,
+          "max": 693
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 1,
+          "median": 27,
+          "min": 27,
+          "max": 27
+        },
+        "initialCdpNodes": {
+          "count": 1,
+          "median": 69,
+          "min": 69,
+          "max": 69
+        },
+        "traversalCdpNodes": {
+          "count": 1,
+          "median": 41,
+          "min": 41,
+          "max": 41
+        },
+        "finalLiveDomNodes": {
+          "count": 1,
+          "median": 27,
+          "min": 27,
+          "max": 27
+        },
+        "finalCdpNodes": {
+          "count": 1,
+          "median": 217,
+          "min": 217,
+          "max": 217
+        },
+        "destroyedCdpNodes": {
+          "count": 1,
+          "median": 217,
+          "min": 217,
+          "max": 217
+        }
+      }
+    },
+    {
+      "n": 1000,
+      "mode": "gpucanvas",
+      "samples": 1,
+      "expectedSamples": 1,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-gpucanvas-n1000-dpr1-r1.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 1,
+          "median": 0.546448087431694,
+          "min": 0.546448087431694,
+          "max": 0.546448087431694
+        },
+        "idleCpuCores": {
+          "count": 1,
+          "median": 0.004904364884747429,
+          "min": 0.004904364884747429,
+          "max": 0.004904364884747429
+        },
+        "frameP95Ms": {
+          "count": 1,
+          "median": 16.800000000000182,
+          "min": 16.800000000000182,
+          "max": 16.800000000000182
+        },
+        "frameP99Ms": {
+          "count": 1,
+          "median": 100,
+          "min": 100,
+          "max": 100
+        },
+        "traversalPssMiB": {
+          "count": 1,
+          "median": 498.294921875,
+          "min": 498.294921875,
+          "max": 498.294921875
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 1,
+          "median": 608.57421875,
+          "min": 608.57421875,
+          "max": 608.57421875
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 1,
+          "median": 28.3359375,
+          "min": 28.3359375,
+          "max": 28.3359375
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 1,
+          "median": 580.23828125,
+          "min": 580.23828125,
+          "max": 580.23828125
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 1,
+          "median": 13.01518604073522,
+          "min": 13.01518604073522,
+          "max": 13.01518604073522
+        },
+        "coldReadyMs": {
+          "count": 1,
+          "median": 1748,
+          "min": 1748,
+          "max": 1748
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 1,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 1,
+          "median": 6027,
+          "min": 6027,
+          "max": 6027
+        },
+        "initialCdpNodes": {
+          "count": 1,
+          "median": 9067,
+          "min": 9067,
+          "max": 9067
+        },
+        "traversalCdpNodes": {
+          "count": 1,
+          "median": 9067,
+          "min": 9067,
+          "max": 9067
+        },
+        "finalLiveDomNodes": {
+          "count": 1,
+          "median": 6027,
+          "min": 6027,
+          "max": 6027
+        },
+        "finalCdpNodes": {
+          "count": 1,
+          "median": 9249,
+          "min": 9249,
+          "max": 9249
+        },
+        "destroyedCdpNodes": {
+          "count": 1,
+          "median": 9984,
+          "min": 9984,
+          "max": 9984
+        }
+      }
+    },
+    {
+      "n": 5000,
+      "mode": "reactflow",
+      "samples": 3,
+      "expectedSamples": 3,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r1.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r2.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r3.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 3,
+          "median": 0.48704920064444157,
+          "min": 0.4760724026779071,
+          "max": 0.5321397488499316
+        },
+        "idleCpuCores": {
+          "count": 3,
+          "median": 0.039623576027736536,
+          "min": 0.03938946331856231,
+          "max": 0.0491642084562439
+        },
+        "frameP95Ms": {
+          "count": 3,
+          "median": 16.700000000000728,
+          "min": 16.700000000000728,
+          "max": 16.799999999999272
+        },
+        "frameP99Ms": {
+          "count": 3,
+          "median": 16.800000000000182,
+          "min": 16.800000000000182,
+          "max": 16.80000000000109
+        },
+        "traversalPssMiB": {
+          "count": 3,
+          "median": 476.287109375,
+          "min": 475.6357421875,
+          "max": 476.494140625
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 3,
+          "median": 223.71875,
+          "min": 221.71875,
+          "max": 225.72265625
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 3,
+          "median": 0.015625,
+          "min": 0.015625,
+          "max": 0.01953125
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 3,
+          "median": 223.703125,
+          "min": 221.69921875,
+          "max": 225.70703125
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 3,
+          "median": 5.326938704463509,
+          "min": 5.298208402528195,
+          "max": 5.450479990081824
+        },
+        "coldReadyMs": {
+          "count": 3,
+          "median": 151,
+          "min": 139,
+          "max": 153
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 3,
+          "median": 363,
+          "min": 363,
+          "max": 363
+        },
+        "initialCdpNodes": {
+          "count": 3,
+          "median": 547,
+          "min": 547,
+          "max": 547
+        },
+        "traversalCdpNodes": {
+          "count": 3,
+          "median": 2137,
+          "min": 2137,
+          "max": 2137
+        },
+        "finalLiveDomNodes": {
+          "count": 3,
+          "median": 167,
+          "min": 167,
+          "max": 167
+        },
+        "finalCdpNodes": {
+          "count": 3,
+          "median": 2399,
+          "min": 2399,
+          "max": 2399
+        },
+        "destroyedCdpNodes": {
+          "count": 3,
+          "median": 2399,
+          "min": 2399,
+          "max": 2399
+        }
+      }
+    },
+    {
+      "n": 5000,
+      "mode": "react-dom",
+      "samples": 3,
+      "expectedSamples": 3,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r1.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r2.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r3.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 3,
+          "median": 0.44935451837140034,
+          "min": 0.4422360248447204,
+          "max": 0.4644538023284618
+        },
+        "idleCpuCores": {
+          "count": 3,
+          "median": 0.03944773175542404,
+          "min": 0.034499753573188775,
+          "max": 0.04446640316205532
+        },
+        "frameP95Ms": {
+          "count": 3,
+          "median": 16.700000000000728,
+          "min": 16.700000000000728,
+          "max": 16.700000000000728
+        },
+        "frameP99Ms": {
+          "count": 3,
+          "median": 16.800000000000182,
+          "min": 16.800000000000182,
+          "max": 16.800000000000182
+        },
+        "traversalPssMiB": {
+          "count": 3,
+          "median": 437.9111328125,
+          "min": 437.7236328125,
+          "max": 438.353515625
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 3,
+          "median": 217.171875,
+          "min": 213.16796875,
+          "max": 219.17578125
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 3,
+          "median": 0.015625,
+          "min": 0.015625,
+          "max": 0.01953125
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 3,
+          "median": 217.15625,
+          "min": 213.1484375,
+          "max": 219.16015625
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 3,
+          "median": 5.224479245283018,
+          "min": 5.180229180084221,
+          "max": 5.340981366459627
+        },
+        "coldReadyMs": {
+          "count": 3,
+          "median": 171,
+          "min": 162,
+          "max": 174
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 3,
+          "median": 304,
+          "min": 304,
+          "max": 304
+        },
+        "initialCdpNodes": {
+          "count": 3,
+          "median": 486,
+          "min": 486,
+          "max": 486
+        },
+        "traversalCdpNodes": {
+          "count": 3,
+          "median": 1917,
+          "min": 1917,
+          "max": 1917
+        },
+        "finalLiveDomNodes": {
+          "count": 3,
+          "median": 136,
+          "min": 136,
+          "max": 136
+        },
+        "finalCdpNodes": {
+          "count": 3,
+          "median": 2171,
+          "min": 2171,
+          "max": 2171
+        },
+        "destroyedCdpNodes": {
+          "count": 3,
+          "median": 2171,
+          "min": 2171,
+          "max": 2171
+        }
+      }
+    },
+    {
+      "n": 5000,
+      "mode": "pixi",
+      "samples": 3,
+      "expectedSamples": 3,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r1.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r2.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r3.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 3,
+          "median": 0.6091370558375635,
+          "min": 0.5768515072571642,
+          "max": 0.6570790974460698
+        },
+        "idleCpuCores": {
+          "count": 3,
+          "median": 0.0736377025036819,
+          "min": 0.049554013875123905,
+          "max": 0.09354997538158544
+        },
+        "frameP95Ms": {
+          "count": 3,
+          "median": 16.700000000000728,
+          "min": 16.700000000000728,
+          "max": 16.700000000000728
+        },
+        "frameP99Ms": {
+          "count": 3,
+          "median": 16.800000000000182,
+          "min": 16.800000000000182,
+          "max": 16.800000000000182
+        },
+        "traversalPssMiB": {
+          "count": 3,
+          "median": 494.4658203125,
+          "min": 491.025390625,
+          "max": 496.8251953125
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 3,
+          "median": 265.3515625,
+          "min": 261.9765625,
+          "max": 286.10546875
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 3,
+          "median": 34.109375,
+          "min": 34.109375,
+          "max": 45.4375
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 3,
+          "median": 231.2421875,
+          "min": 227.8671875,
+          "max": 240.66796875
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 3,
+          "median": 15.32340467995543,
+          "min": 14.723055253690609,
+          "max": 15.829965583932557
+        },
+        "coldReadyMs": {
+          "count": 3,
+          "median": 379,
+          "min": 360,
+          "max": 386
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 3,
+          "median": 27,
+          "min": 27,
+          "max": 27
+        },
+        "initialCdpNodes": {
+          "count": 3,
+          "median": 70,
+          "min": 70,
+          "max": 70
+        },
+        "traversalCdpNodes": {
+          "count": 3,
+          "median": 41,
+          "min": 41,
+          "max": 41
+        },
+        "finalLiveDomNodes": {
+          "count": 3,
+          "median": 27,
+          "min": 27,
+          "max": 27
+        },
+        "finalCdpNodes": {
+          "count": 3,
+          "median": 223,
+          "min": 208,
+          "max": 223
+        },
+        "destroyedCdpNodes": {
+          "count": 3,
+          "median": 223,
+          "min": 208,
+          "max": 223
+        }
+      }
+    },
+    {
+      "n": 5000,
+      "mode": "leafer",
+      "samples": 3,
+      "expectedSamples": 3,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r1.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r2.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r3.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 3,
+          "median": 0.9491230252518971,
+          "min": 0.7763010806111041,
+          "max": 0.9870871616588031
+        },
+        "idleCpuCores": {
+          "count": 3,
+          "median": 0.019841269841269858,
+          "min": 0.014734774066797655,
+          "max": 0.04453240969816919
+        },
+        "frameP95Ms": {
+          "count": 3,
+          "median": 16.700000000000728,
+          "min": 16.700000000000728,
+          "max": 16.700000000000728
+        },
+        "frameP99Ms": {
+          "count": 3,
+          "median": 16.80000000000109,
+          "min": 16.80000000000109,
+          "max": 16.80000000000109
+        },
+        "traversalPssMiB": {
+          "count": 3,
+          "median": 449.87890625,
+          "min": 446.822265625,
+          "max": 451.3408203125
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 3,
+          "median": 164.703125,
+          "min": 161.96484375,
+          "max": 173.8671875
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 3,
+          "median": 0.01953125,
+          "min": 0.015625,
+          "max": 0.01953125
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 3,
+          "median": 164.68359375,
+          "min": 161.94921875,
+          "max": 173.84765625
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 3,
+          "median": 12.08669302210082,
+          "min": 11.88218823236721,
+          "max": 12.313166612843125
+        },
+        "coldReadyMs": {
+          "count": 3,
+          "median": 216,
+          "min": 211,
+          "max": 265
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 3,
+          "median": 13,
+          "min": 13,
+          "max": 13
+        },
+        "initialCdpNodes": {
+          "count": 3,
+          "median": 154,
+          "min": 154,
+          "max": 154
+        },
+        "traversalCdpNodes": {
+          "count": 3,
+          "median": 226,
+          "min": 225,
+          "max": 234
+        },
+        "finalLiveDomNodes": {
+          "count": 3,
+          "median": 13,
+          "min": 13,
+          "max": 13
+        },
+        "finalCdpNodes": {
+          "count": 3,
+          "median": 393,
+          "min": 392,
+          "max": 393
+        },
+        "destroyedCdpNodes": {
+          "count": 3,
+          "median": 393,
+          "min": 392,
+          "max": 393
+        }
+      }
+    },
+    {
+      "n": 5000,
+      "mode": "pixi-webgpu",
+      "samples": 3,
+      "expectedSamples": 3,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r1.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r2.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r3.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 3,
+          "median": 0.5947955390334573,
+          "min": 0.44455482428908477,
+          "max": 0.6241469164908798
+        },
+        "idleCpuCores": {
+          "count": 3,
+          "median": 0.08407517309594463,
+          "min": 0.04863813229571986,
+          "max": 0.09322865554465165
+        },
+        "frameP95Ms": {
+          "count": 3,
+          "median": 16.800000000000182,
+          "min": 16.800000000000182,
+          "max": 16.800000000000182
+        },
+        "frameP99Ms": {
+          "count": 3,
+          "median": 50,
+          "min": 33.30000000000018,
+          "max": 66.60000000000036
+        },
+        "traversalPssMiB": {
+          "count": 3,
+          "median": 509.513671875,
+          "min": 509.0400390625,
+          "max": 512.3662109375
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 3,
+          "median": 350.78515625,
+          "min": 344.7734375,
+          "max": 352.5859375
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 3,
+          "median": 22.6796875,
+          "min": 22.6796875,
+          "max": 28.34765625
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 3,
+          "median": 324.23828125,
+          "min": 322.09375,
+          "max": 328.10546875
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 3,
+          "median": 14.06865581337635,
+          "min": 14.028909888475837,
+          "max": 15.542171712405315
+        },
+        "coldReadyMs": {
+          "count": 3,
+          "median": 747,
+          "min": 672,
+          "max": 753
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 3,
+          "median": 27,
+          "min": 27,
+          "max": 27
+        },
+        "initialCdpNodes": {
+          "count": 3,
+          "median": 69,
+          "min": 69,
+          "max": 69
+        },
+        "traversalCdpNodes": {
+          "count": 3,
+          "median": 41,
+          "min": 41,
+          "max": 41
+        },
+        "finalLiveDomNodes": {
+          "count": 3,
+          "median": 27,
+          "min": 27,
+          "max": 27
+        },
+        "finalCdpNodes": {
+          "count": 3,
+          "median": 223,
+          "min": 223,
+          "max": 223
+        },
+        "destroyedCdpNodes": {
+          "count": 3,
+          "median": 223,
+          "min": 223,
+          "max": 223
+        }
+      }
+    },
+    {
+      "n": 5000,
+      "mode": "gpucanvas",
+      "samples": 3,
+      "expectedSamples": 3,
+      "rejectedSamples": 0,
+      "status": "complete",
+      "files": [
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r1.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r2.json",
+        "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r3.json"
+      ],
+      "sourceCommits": [
+        "6e49cf6163f3fd69ad4254932b28610100c45b4c"
+      ],
+      "sourceHashSetDigests": [
+        "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d"
+      ],
+      "missingMetrics": [],
+      "metrics": {
+        "activeCpuCores": {
+          "count": 3,
+          "median": 0.6479187314172448,
+          "min": 0.543262058677275,
+          "max": 0.6700583198908053
+        },
+        "idleCpuCores": {
+          "count": 3,
+          "median": 0.009881422924901139,
+          "min": 0.009876543209876498,
+          "max": 0.02463054187192121
+        },
+        "frameP95Ms": {
+          "count": 3,
+          "median": 16.80000000000109,
+          "min": 16.80000000000109,
+          "max": 16.80000000000109
+        },
+        "frameP99Ms": {
+          "count": 3,
+          "median": 366.60000000000036,
+          "min": 266.7000000000007,
+          "max": 400
+        },
+        "traversalPssMiB": {
+          "count": 3,
+          "median": 535.9072265625,
+          "min": 534.76953125,
+          "max": 537.1748046875
+        },
+        "gpuResidentClientAggregateMiB": {
+          "count": 3,
+          "median": 702.43359375,
+          "min": 668.296875,
+          "max": 702.43359375
+        },
+        "gpuSharedClientAggregateMiB": {
+          "count": 3,
+          "median": 28.3359375,
+          "min": 28.3359375,
+          "max": 28.3359375
+        },
+        "gpuPrivateResidentLowerBoundMiB": {
+          "count": 3,
+          "median": 674.09765625,
+          "min": 639.9609375,
+          "max": 674.09765625
+        },
+        "gpuRenderEngineDutyPercent": {
+          "count": 3,
+          "median": 12.119072200198215,
+          "min": 11.09876992182653,
+          "max": 12.904337195425162
+        },
+        "coldReadyMs": {
+          "count": 3,
+          "median": 2169,
+          "min": 1902,
+          "max": 2456
+        },
+        "initialUniqueThumbnailRequests": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialVisible": {
+          "count": 3,
+          "median": 48,
+          "min": 48,
+          "max": 48
+        },
+        "initialLiveDomNodes": {
+          "count": 3,
+          "median": 30077,
+          "min": 30077,
+          "max": 30077
+        },
+        "initialCdpNodes": {
+          "count": 3,
+          "median": 45117,
+          "min": 45117,
+          "max": 45117
+        },
+        "traversalCdpNodes": {
+          "count": 3,
+          "median": 45086,
+          "min": 45086,
+          "max": 45086
+        },
+        "finalLiveDomNodes": {
+          "count": 3,
+          "median": 30077,
+          "min": 30077,
+          "max": 30077
+        },
+        "finalCdpNodes": {
+          "count": 3,
+          "median": 45262,
+          "min": 45262,
+          "max": 45262
+        },
+        "destroyedCdpNodes": {
+          "count": 3,
+          "median": 46002,
+          "min": 46002,
+          "max": 46002
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-gpucanvas-n1000-dpr1-r1.json",
+      "key": "intel-coherent-gpucanvas-n1000-dpr1-r1",
+      "mode": "gpucanvas",
+      "n": 1000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "gpucanvas-webgpu-html-in-canvas",
+        "sourceRetentionPolicy": "budget",
+        "nominalAtlasDimensions": [
+          4096,
+          4096,
+          5
+        ]
+      },
+      "metrics": {
+        "activeCpuCores": 0.546448087431694,
+        "idleCpuCores": 0.004904364884747429,
+        "frameP95Ms": 16.800000000000182,
+        "frameP99Ms": 100,
+        "traversalPssMiB": 498.294921875,
+        "gpuResidentClientAggregateMiB": 608.57421875,
+        "gpuSharedClientAggregateMiB": 28.3359375,
+        "gpuPrivateResidentLowerBoundMiB": 580.23828125,
+        "gpuRenderEngineDutyPercent": 13.01518604073522,
+        "coldReadyMs": 1748,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 6027,
+        "initialCdpNodes": 9067,
+        "traversalCdpNodes": 9067,
+        "finalLiveDomNodes": 6027,
+        "finalCdpNodes": 9249,
+        "destroyedCdpNodes": 9984
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 13.01518604073522,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-leafer-n1000-dpr1-r1.json",
+      "key": "intel-coherent-leafer-n1000-dpr1-r1",
+      "mode": "leafer",
+      "n": 1000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "leafer-canvas2d",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.968944099378882,
+        "idleCpuCores": 0.029571217348447525,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.80000000000109,
+        "traversalPssMiB": 438.1337890625,
+        "gpuResidentClientAggregateMiB": 165.97265625,
+        "gpuSharedClientAggregateMiB": 0.01953125,
+        "gpuPrivateResidentLowerBoundMiB": 165.953125,
+        "gpuRenderEngineDutyPercent": 12.40381450931677,
+        "coldReadyMs": 216,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 13,
+        "initialCdpNodes": 154,
+        "traversalCdpNodes": 234,
+        "finalLiveDomNodes": 13,
+        "finalCdpNodes": 393,
+        "destroyedCdpNodes": 393
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 12.40381450931677,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-pixi-n1000-dpr1-r1.json",
+      "key": "intel-coherent-pixi-n1000-dpr1-r1",
+      "mode": "pixi",
+      "n": 1000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "pixi-webgl",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.5493412875963212,
+        "idleCpuCores": 0.09401286491835728,
+        "frameP95Ms": 16.799999999999272,
+        "frameP99Ms": 16.80000000000109,
+        "traversalPssMiB": 490.9296875,
+        "gpuResidentClientAggregateMiB": 259.50390625,
+        "gpuSharedClientAggregateMiB": 34.109375,
+        "gpuPrivateResidentLowerBoundMiB": 225.39453125,
+        "gpuRenderEngineDutyPercent": 15.825940193885161,
+        "coldReadyMs": 505,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 27,
+        "initialCdpNodes": 70,
+        "traversalCdpNodes": 41,
+        "finalLiveDomNodes": 27,
+        "finalCdpNodes": 223,
+        "destroyedCdpNodes": 223
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 15.825940193885161,
+        "i915:0000:00:02.0:copy": 0.06219254287844892,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-pixi-webgpu-n1000-dpr1-r1.json",
+      "key": "intel-coherent-pixi-webgpu-n1000-dpr1-r1",
+      "mode": "pixi-webgpu",
+      "n": 1000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "pixi-webgpu",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.636713416904555,
+        "idleCpuCores": 0.06893156080748394,
+        "frameP95Ms": 16.80000000000109,
+        "frameP99Ms": 66.60000000000036,
+        "traversalPssMiB": 505.6845703125,
+        "gpuResidentClientAggregateMiB": 358.47265625,
+        "gpuSharedClientAggregateMiB": 28.34765625,
+        "gpuPrivateResidentLowerBoundMiB": 330.125,
+        "gpuRenderEngineDutyPercent": 14.552357800670224,
+        "coldReadyMs": 693,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 27,
+        "initialCdpNodes": 69,
+        "traversalCdpNodes": 41,
+        "finalLiveDomNodes": 27,
+        "finalCdpNodes": 217,
+        "destroyedCdpNodes": 217
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 14.552357800670224,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-react-dom-n1000-dpr1-r1.json",
+      "key": "intel-coherent-react-dom-n1000-dpr1-r1",
+      "mode": "react-dom",
+      "n": 1000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "Virtualized React DOM / CSS compositor transforms; no XYFlow"
+      },
+      "metrics": {
+        "activeCpuCores": 0.4121151936444886,
+        "idleCpuCores": 0.034482758620689676,
+        "frameP95Ms": 16.799999999999272,
+        "frameP99Ms": 16.80000000000109,
+        "traversalPssMiB": 429.12109375,
+        "gpuResidentClientAggregateMiB": 219.1796875,
+        "gpuSharedClientAggregateMiB": 0.01953125,
+        "gpuPrivateResidentLowerBoundMiB": 219.16015625,
+        "gpuRenderEngineDutyPercent": 5.260430635551142,
+        "coldReadyMs": 159,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 304,
+        "initialCdpNodes": 486,
+        "traversalCdpNodes": 1917,
+        "finalLiveDomNodes": 136,
+        "finalCdpNodes": 2171,
+        "destroyedCdpNodes": 2171
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 5.260430635551142,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-reactflow-n1000-dpr1-r1.json",
+      "key": "intel-coherent-reactflow-n1000-dpr1-r1",
+      "mode": "reactflow",
+      "n": 1000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "React Flow uncontrolled store / mounted-card display context / DOM transforms",
+        "rfMode": "optimized",
+        "rfLayer": 1,
+        "rfHandles": "empty"
+      },
+      "metrics": {
+        "activeCpuCores": 0.510659395141299,
+        "idleCpuCores": 0.059084194977843424,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.800000000000182,
+        "traversalPssMiB": 463.3232421875,
+        "gpuResidentClientAggregateMiB": 225.7265625,
+        "gpuSharedClientAggregateMiB": 0.01953125,
+        "gpuPrivateResidentLowerBoundMiB": 225.70703125,
+        "gpuRenderEngineDutyPercent": 5.561339414972732,
+        "coldReadyMs": 232,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 363,
+        "initialCdpNodes": 547,
+        "traversalCdpNodes": 2137,
+        "finalLiveDomNodes": 167,
+        "finalCdpNodes": 2399,
+        "destroyedCdpNodes": 2399
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 5.561339414972732,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r1.json",
+      "key": "intel-coherent-gpucanvas-n5000-dpr1-r1",
+      "mode": "gpucanvas",
+      "n": 5000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "gpucanvas-webgpu-html-in-canvas",
+        "sourceRetentionPolicy": "budget",
+        "nominalAtlasDimensions": [
+          4096,
+          4096,
+          5
+        ]
+      },
+      "metrics": {
+        "activeCpuCores": 0.543262058677275,
+        "idleCpuCores": 0.009876543209876498,
+        "frameP95Ms": 16.80000000000109,
+        "frameP99Ms": 266.7000000000007,
+        "traversalPssMiB": 534.76953125,
+        "gpuResidentClientAggregateMiB": 702.43359375,
+        "gpuSharedClientAggregateMiB": 28.3359375,
+        "gpuPrivateResidentLowerBoundMiB": 674.09765625,
+        "gpuRenderEngineDutyPercent": 12.904337195425162,
+        "coldReadyMs": 1902,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 30077,
+        "initialCdpNodes": 45117,
+        "traversalCdpNodes": 45086,
+        "finalLiveDomNodes": 30077,
+        "finalCdpNodes": 45262,
+        "destroyedCdpNodes": 46002
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 12.904337195425162,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r2.json",
+      "key": "intel-coherent-gpucanvas-n5000-dpr1-r2",
+      "mode": "gpucanvas",
+      "n": 5000,
+      "repeat": 2,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "gpucanvas-webgpu-html-in-canvas",
+        "sourceRetentionPolicy": "budget",
+        "nominalAtlasDimensions": [
+          4096,
+          4096,
+          5
+        ]
+      },
+      "metrics": {
+        "activeCpuCores": 0.6479187314172448,
+        "idleCpuCores": 0.009881422924901139,
+        "frameP95Ms": 16.80000000000109,
+        "frameP99Ms": 400,
+        "traversalPssMiB": 535.9072265625,
+        "gpuResidentClientAggregateMiB": 702.43359375,
+        "gpuSharedClientAggregateMiB": 28.3359375,
+        "gpuPrivateResidentLowerBoundMiB": 674.09765625,
+        "gpuRenderEngineDutyPercent": 12.119072200198215,
+        "coldReadyMs": 2169,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 30077,
+        "initialCdpNodes": 45117,
+        "traversalCdpNodes": 45086,
+        "finalLiveDomNodes": 30077,
+        "finalCdpNodes": 45262,
+        "destroyedCdpNodes": 46002
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 12.119072200198215,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r3.json",
+      "key": "intel-coherent-gpucanvas-n5000-dpr1-r3",
+      "mode": "gpucanvas",
+      "n": 5000,
+      "repeat": 3,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "gpucanvas-webgpu-html-in-canvas",
+        "sourceRetentionPolicy": "budget",
+        "nominalAtlasDimensions": [
+          4096,
+          4096,
+          5
+        ]
+      },
+      "metrics": {
+        "activeCpuCores": 0.6700583198908053,
+        "idleCpuCores": 0.02463054187192121,
+        "frameP95Ms": 16.80000000000109,
+        "frameP99Ms": 366.60000000000036,
+        "traversalPssMiB": 537.1748046875,
+        "gpuResidentClientAggregateMiB": 668.296875,
+        "gpuSharedClientAggregateMiB": 28.3359375,
+        "gpuPrivateResidentLowerBoundMiB": 639.9609375,
+        "gpuRenderEngineDutyPercent": 11.09876992182653,
+        "coldReadyMs": 2456,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 30077,
+        "initialCdpNodes": 45117,
+        "traversalCdpNodes": 45086,
+        "finalLiveDomNodes": 30077,
+        "finalCdpNodes": 45262,
+        "destroyedCdpNodes": 46002
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 11.09876992182653,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r1.json",
+      "key": "intel-coherent-leafer-n5000-dpr1-r1",
+      "mode": "leafer",
+      "n": 5000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "leafer-canvas2d",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.9491230252518971,
+        "idleCpuCores": 0.014734774066797655,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.80000000000109,
+        "traversalPssMiB": 451.3408203125,
+        "gpuResidentClientAggregateMiB": 173.8671875,
+        "gpuSharedClientAggregateMiB": 0.01953125,
+        "gpuPrivateResidentLowerBoundMiB": 173.84765625,
+        "gpuRenderEngineDutyPercent": 11.88218823236721,
+        "coldReadyMs": 265,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 13,
+        "initialCdpNodes": 154,
+        "traversalCdpNodes": 225,
+        "finalLiveDomNodes": 13,
+        "finalCdpNodes": 392,
+        "destroyedCdpNodes": 392
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 11.88218823236721,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r2.json",
+      "key": "intel-coherent-leafer-n5000-dpr1-r2",
+      "mode": "leafer",
+      "n": 5000,
+      "repeat": 2,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "leafer-canvas2d",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.9870871616588031,
+        "idleCpuCores": 0.04453240969816919,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.80000000000109,
+        "traversalPssMiB": 446.822265625,
+        "gpuResidentClientAggregateMiB": 161.96484375,
+        "gpuSharedClientAggregateMiB": 0.015625,
+        "gpuPrivateResidentLowerBoundMiB": 161.94921875,
+        "gpuRenderEngineDutyPercent": 12.08669302210082,
+        "coldReadyMs": 216,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 13,
+        "initialCdpNodes": 154,
+        "traversalCdpNodes": 226,
+        "finalLiveDomNodes": 13,
+        "finalCdpNodes": 393,
+        "destroyedCdpNodes": 393
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 12.08669302210082,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r3.json",
+      "key": "intel-coherent-leafer-n5000-dpr1-r3",
+      "mode": "leafer",
+      "n": 5000,
+      "repeat": 3,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "leafer-canvas2d",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.7763010806111041,
+        "idleCpuCores": 0.019841269841269858,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.80000000000109,
+        "traversalPssMiB": 449.87890625,
+        "gpuResidentClientAggregateMiB": 164.703125,
+        "gpuSharedClientAggregateMiB": 0.01953125,
+        "gpuPrivateResidentLowerBoundMiB": 164.68359375,
+        "gpuRenderEngineDutyPercent": 12.313166612843125,
+        "coldReadyMs": 211,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 13,
+        "initialCdpNodes": 154,
+        "traversalCdpNodes": 234,
+        "finalLiveDomNodes": 13,
+        "finalCdpNodes": 393,
+        "destroyedCdpNodes": 393
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 12.313166612843125,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r1.json",
+      "key": "intel-coherent-pixi-n5000-dpr1-r1",
+      "mode": "pixi",
+      "n": 5000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "pixi-webgl",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.5768515072571642,
+        "idleCpuCores": 0.049554013875123905,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.800000000000182,
+        "traversalPssMiB": 494.4658203125,
+        "gpuResidentClientAggregateMiB": 286.10546875,
+        "gpuSharedClientAggregateMiB": 45.4375,
+        "gpuPrivateResidentLowerBoundMiB": 240.66796875,
+        "gpuRenderEngineDutyPercent": 14.723055253690609,
+        "coldReadyMs": 379,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 27,
+        "initialCdpNodes": 70,
+        "traversalCdpNodes": 41,
+        "finalLiveDomNodes": 27,
+        "finalCdpNodes": 208,
+        "destroyedCdpNodes": 208
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 14.723055253690609,
+        "i915:0000:00:02.0:copy": 0.057464483314725215,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r2.json",
+      "key": "intel-coherent-pixi-n5000-dpr1-r2",
+      "mode": "pixi",
+      "n": 5000,
+      "repeat": 2,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "pixi-webgl",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.6091370558375635,
+        "idleCpuCores": 0.09354997538158544,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.800000000000182,
+        "traversalPssMiB": 496.8251953125,
+        "gpuResidentClientAggregateMiB": 265.3515625,
+        "gpuSharedClientAggregateMiB": 34.109375,
+        "gpuPrivateResidentLowerBoundMiB": 231.2421875,
+        "gpuRenderEngineDutyPercent": 15.32340467995543,
+        "coldReadyMs": 360,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 27,
+        "initialCdpNodes": 70,
+        "traversalCdpNodes": 41,
+        "finalLiveDomNodes": 27,
+        "finalCdpNodes": 223,
+        "destroyedCdpNodes": 223
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 15.32340467995543,
+        "i915:0000:00:02.0:copy": 0.05884620527423549,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r3.json",
+      "key": "intel-coherent-pixi-n5000-dpr1-r3",
+      "mode": "pixi",
+      "n": 5000,
+      "repeat": 3,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "pixi-webgl",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.6570790974460698,
+        "idleCpuCores": 0.0736377025036819,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.800000000000182,
+        "traversalPssMiB": 491.025390625,
+        "gpuResidentClientAggregateMiB": 261.9765625,
+        "gpuSharedClientAggregateMiB": 34.109375,
+        "gpuPrivateResidentLowerBoundMiB": 227.8671875,
+        "gpuRenderEngineDutyPercent": 15.829965583932557,
+        "coldReadyMs": 386,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 27,
+        "initialCdpNodes": 70,
+        "traversalCdpNodes": 41,
+        "finalLiveDomNodes": 27,
+        "finalCdpNodes": 223,
+        "destroyedCdpNodes": 223
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 15.829965583932557,
+        "i915:0000:00:02.0:copy": 0.06446684849987602,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r1.json",
+      "key": "intel-coherent-pixi-webgpu-n5000-dpr1-r1",
+      "mode": "pixi-webgpu",
+      "n": 5000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "pixi-webgpu",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.44455482428908477,
+        "idleCpuCores": 0.09322865554465165,
+        "frameP95Ms": 16.800000000000182,
+        "frameP99Ms": 33.30000000000018,
+        "traversalPssMiB": 512.3662109375,
+        "gpuResidentClientAggregateMiB": 350.78515625,
+        "gpuSharedClientAggregateMiB": 22.6796875,
+        "gpuPrivateResidentLowerBoundMiB": 328.10546875,
+        "gpuRenderEngineDutyPercent": 15.542171712405315,
+        "coldReadyMs": 672,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 27,
+        "initialCdpNodes": 69,
+        "traversalCdpNodes": 41,
+        "finalLiveDomNodes": 27,
+        "finalCdpNodes": 223,
+        "destroyedCdpNodes": 223
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 15.542171712405315,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r2.json",
+      "key": "intel-coherent-pixi-webgpu-n5000-dpr1-r2",
+      "mode": "pixi-webgpu",
+      "n": 5000,
+      "repeat": 2,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "pixi-webgpu",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.6241469164908798,
+        "idleCpuCores": 0.08407517309594463,
+        "frameP95Ms": 16.800000000000182,
+        "frameP99Ms": 50,
+        "traversalPssMiB": 509.0400390625,
+        "gpuResidentClientAggregateMiB": 344.7734375,
+        "gpuSharedClientAggregateMiB": 22.6796875,
+        "gpuPrivateResidentLowerBoundMiB": 322.09375,
+        "gpuRenderEngineDutyPercent": 14.06865581337635,
+        "coldReadyMs": 753,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 27,
+        "initialCdpNodes": 69,
+        "traversalCdpNodes": 41,
+        "finalLiveDomNodes": 27,
+        "finalCdpNodes": 223,
+        "destroyedCdpNodes": 223
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 14.06865581337635,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r3.json",
+      "key": "intel-coherent-pixi-webgpu-n5000-dpr1-r3",
+      "mode": "pixi-webgpu",
+      "n": 5000,
+      "repeat": 3,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "pixi-webgpu",
+        "cacheSourceBudgetBytes": 67108864
+      },
+      "metrics": {
+        "activeCpuCores": 0.5947955390334573,
+        "idleCpuCores": 0.04863813229571986,
+        "frameP95Ms": 16.800000000000182,
+        "frameP99Ms": 66.60000000000036,
+        "traversalPssMiB": 509.513671875,
+        "gpuResidentClientAggregateMiB": 352.5859375,
+        "gpuSharedClientAggregateMiB": 28.34765625,
+        "gpuPrivateResidentLowerBoundMiB": 324.23828125,
+        "gpuRenderEngineDutyPercent": 14.028909888475837,
+        "coldReadyMs": 747,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 27,
+        "initialCdpNodes": 69,
+        "traversalCdpNodes": 41,
+        "finalLiveDomNodes": 27,
+        "finalCdpNodes": 223,
+        "destroyedCdpNodes": 223
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 14.028909888475837,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r1.json",
+      "key": "intel-coherent-react-dom-n5000-dpr1-r1",
+      "mode": "react-dom",
+      "n": 5000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "Virtualized React DOM / CSS compositor transforms; no XYFlow"
+      },
+      "metrics": {
+        "activeCpuCores": 0.4644538023284618,
+        "idleCpuCores": 0.034499753573188775,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.800000000000182,
+        "traversalPssMiB": 437.9111328125,
+        "gpuResidentClientAggregateMiB": 219.17578125,
+        "gpuSharedClientAggregateMiB": 0.015625,
+        "gpuPrivateResidentLowerBoundMiB": 219.16015625,
+        "gpuRenderEngineDutyPercent": 5.180229180084221,
+        "coldReadyMs": 171,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 304,
+        "initialCdpNodes": 486,
+        "traversalCdpNodes": 1917,
+        "finalLiveDomNodes": 136,
+        "finalCdpNodes": 2171,
+        "destroyedCdpNodes": 2171
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 5.180229180084221,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r2.json",
+      "key": "intel-coherent-react-dom-n5000-dpr1-r2",
+      "mode": "react-dom",
+      "n": 5000,
+      "repeat": 2,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "Virtualized React DOM / CSS compositor transforms; no XYFlow"
+      },
+      "metrics": {
+        "activeCpuCores": 0.4422360248447204,
+        "idleCpuCores": 0.03944773175542404,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.800000000000182,
+        "traversalPssMiB": 438.353515625,
+        "gpuResidentClientAggregateMiB": 213.16796875,
+        "gpuSharedClientAggregateMiB": 0.01953125,
+        "gpuPrivateResidentLowerBoundMiB": 213.1484375,
+        "gpuRenderEngineDutyPercent": 5.340981366459627,
+        "coldReadyMs": 174,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 304,
+        "initialCdpNodes": 486,
+        "traversalCdpNodes": 1917,
+        "finalLiveDomNodes": 136,
+        "finalCdpNodes": 2171,
+        "destroyedCdpNodes": 2171
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 5.340981366459627,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r3.json",
+      "key": "intel-coherent-react-dom-n5000-dpr1-r3",
+      "mode": "react-dom",
+      "n": 5000,
+      "repeat": 3,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "Virtualized React DOM / CSS compositor transforms; no XYFlow"
+      },
+      "metrics": {
+        "activeCpuCores": 0.44935451837140034,
+        "idleCpuCores": 0.04446640316205532,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.800000000000182,
+        "traversalPssMiB": 437.7236328125,
+        "gpuResidentClientAggregateMiB": 217.171875,
+        "gpuSharedClientAggregateMiB": 0.015625,
+        "gpuPrivateResidentLowerBoundMiB": 217.15625,
+        "gpuRenderEngineDutyPercent": 5.224479245283018,
+        "coldReadyMs": 162,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 304,
+        "initialCdpNodes": 486,
+        "traversalCdpNodes": 1917,
+        "finalLiveDomNodes": 136,
+        "finalCdpNodes": 2171,
+        "destroyedCdpNodes": 2171
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 5.224479245283018,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r1.json",
+      "key": "intel-coherent-reactflow-n5000-dpr1-r1",
+      "mode": "reactflow",
+      "n": 5000,
+      "repeat": 1,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "React Flow uncontrolled store / mounted-card display context / DOM transforms",
+        "rfMode": "optimized",
+        "rfLayer": 1,
+        "rfHandles": "empty"
+      },
+      "metrics": {
+        "activeCpuCores": 0.48704920064444157,
+        "idleCpuCores": 0.039623576027736536,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.800000000000182,
+        "traversalPssMiB": 476.287109375,
+        "gpuResidentClientAggregateMiB": 223.71875,
+        "gpuSharedClientAggregateMiB": 0.015625,
+        "gpuPrivateResidentLowerBoundMiB": 223.703125,
+        "gpuRenderEngineDutyPercent": 5.298208402528195,
+        "coldReadyMs": 151,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 363,
+        "initialCdpNodes": 547,
+        "traversalCdpNodes": 2137,
+        "finalLiveDomNodes": 167,
+        "finalCdpNodes": 2399,
+        "destroyedCdpNodes": 2399
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 5.298208402528195,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r2.json",
+      "key": "intel-coherent-reactflow-n5000-dpr1-r2",
+      "mode": "reactflow",
+      "n": 5000,
+      "repeat": 2,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "React Flow uncontrolled store / mounted-card display context / DOM transforms",
+        "rfMode": "optimized",
+        "rfLayer": 1,
+        "rfHandles": "empty"
+      },
+      "metrics": {
+        "activeCpuCores": 0.5321397488499316,
+        "idleCpuCores": 0.03938946331856231,
+        "frameP95Ms": 16.799999999999272,
+        "frameP99Ms": 16.80000000000109,
+        "traversalPssMiB": 475.6357421875,
+        "gpuResidentClientAggregateMiB": 221.71875,
+        "gpuSharedClientAggregateMiB": 0.01953125,
+        "gpuPrivateResidentLowerBoundMiB": 221.69921875,
+        "gpuRenderEngineDutyPercent": 5.326938704463509,
+        "coldReadyMs": 139,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 363,
+        "initialCdpNodes": 547,
+        "traversalCdpNodes": 2137,
+        "finalLiveDomNodes": 167,
+        "finalCdpNodes": 2399,
+        "destroyedCdpNodes": 2399
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 5.326938704463509,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r3.json",
+      "key": "intel-coherent-reactflow-n5000-dpr1-r3",
+      "mode": "reactflow",
+      "n": 5000,
+      "repeat": 3,
+      "qualified": true,
+      "reasons": [],
+      "status": "pass",
+      "admissionPass": true,
+      "sourceCommit": "6e49cf6163f3fd69ad4254932b28610100c45b4c",
+      "sourceHashes": {
+        "src/main.ts": "38febcfb8e833f3e0a017ec5836b6c095099b492fbb4f53f870fb15f62a9e518",
+        "src/types.ts": "c9aa3178adc15be47cd1217ca57cc7c342e6b722a01acc6e7dcca033b0d9e233",
+        "src/style.css": "243e380f7c6b3b18b8784620b5dfcc6f8b05de0ab6bebf05800550e4ac4e1070",
+        "src/reactflow.tsx": "3b0fccceadda9668c9ef18e728830dff91a56104c24cce54558ba858945eb2ac",
+        "src/react-dom.tsx": "ae82aaf42d477a27215cebd23b1f8a13f771bfb271d3a1b29e8f49562863ff32",
+        "src/dom.ts": "3d0c244a74e0289341ee9e3ff95707a8ac93014b1a99e05e5aa3a60a0059c912",
+        "src/pixi.ts": "941a95da9c3606582cf81c349d20248b4cdbca6016862d844b0f6f73f2a1c16a",
+        "src/leafer.ts": "afdd4fc41535112faca22465fac67377489e0bfdcde799683e7b102065595270",
+        "src/gpucanvas.ts": "a56b62d49ab68bb4917cb545db4a01eff8cd00a90b17cc0b1aec66ce6df32a68",
+        "run.mjs": "954e38e5ba9c06854b507aa6b16d3dd75033d92885004d23f7ae814d5f7bb1a2",
+        "hardware.mjs": "cd61ae68f05eb4f9d140d818a25e9c222add1c0364defa25df77df648111ba0b",
+        "gpu-stats.mjs": "958fb592bcb081c9c7db25d4632b145988f5ddf3ec58c9e7c60c3601b11a1f31",
+        "package.json": "bb22867b14a1ca4110c63bc5b6de67eeabbae303fb86951f12389ebd0013effa",
+        "pnpm-lock.yaml": "e1425153e5055eb669d30e096659f0815eb658c3a0f4594256b02d4c2c420e9b"
+      },
+      "sourceHashSetDigest": "a06a870fc2d319f07fbf99ff2a5bfb2c67795b6d4f3374005a204f5294ed663d",
+      "workload": {
+        "config": "intel-coherent",
+        "dpr": 1,
+        "query": "floor=256&view=working&retention=budget&rfLayer=1",
+        "tourMs": 8000,
+        "width": 1600,
+        "height": 900
+      },
+      "adapter": {
+        "backend": "React Flow uncontrolled store / mounted-card display context / DOM transforms",
+        "rfMode": "optimized",
+        "rfLayer": 1,
+        "rfHandles": "empty"
+      },
+      "metrics": {
+        "activeCpuCores": 0.4760724026779071,
+        "idleCpuCores": 0.0491642084562439,
+        "frameP95Ms": 16.700000000000728,
+        "frameP99Ms": 16.800000000000182,
+        "traversalPssMiB": 476.494140625,
+        "gpuResidentClientAggregateMiB": 225.72265625,
+        "gpuSharedClientAggregateMiB": 0.015625,
+        "gpuPrivateResidentLowerBoundMiB": 225.70703125,
+        "gpuRenderEngineDutyPercent": 5.450479990081824,
+        "coldReadyMs": 153,
+        "initialUniqueThumbnailRequests": 48,
+        "initialVisible": 48,
+        "initialLiveDomNodes": 363,
+        "initialCdpNodes": 547,
+        "traversalCdpNodes": 2137,
+        "finalLiveDomNodes": 167,
+        "finalCdpNodes": 2399,
+        "destroyedCdpNodes": 2399
+      },
+      "missingMetrics": [],
+      "gpuEngineDutyPercent": {
+        "i915:0000:00:02.0:render": 5.450479990081824,
+        "i915:0000:00:02.0:copy": 0,
+        "i915:0000:00:02.0:video": 0,
+        "i915:0000:00:02.0:video-enhance": 0
+      },
+      "pageErrors": [],
+      "consoleErrors": [],
+      "error": null
+    }
+  ],
+  "rejected": [],
+  "ignored": [
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-gpucanvas-n1000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-gpucanvas-n1000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-leafer-n1000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-leafer-n1000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-pixi-n1000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-pixi-n1000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-pixi-webgpu-n1000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-pixi-webgpu-n1000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-react-dom-n1000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-react-dom-n1000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-reactflow-n1000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/intel-coherent-reactflow-n1000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000/summary.json",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r2-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r2-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r3-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-gpucanvas-n5000-dpr1-r3-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r2-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r2-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r3-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-leafer-n5000-dpr1-r3-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r2-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r2-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r3-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-n5000-dpr1-r3-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r2-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r2-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r3-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-pixi-webgpu-n5000-dpr1-r3-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r2-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r2-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r3-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-react-dom-n5000-dpr1-r3-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r1-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r1-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r2-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r2-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r3-detail.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/intel-coherent-reactflow-n5000-dpr1-r3-fit.png",
+      "reason": "not a direct case JSON file"
+    },
+    {
+      "file": "/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working5000/summary.json",
+      "reason": "not a direct case JSON file"
+    }
+  ],
+  "issues": []
+}

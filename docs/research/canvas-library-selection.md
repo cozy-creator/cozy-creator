@@ -1,12 +1,13 @@
 # Creator WebUI canvas library selection
 
-Status: source review complete, 2026-11-14; benchmarking pending; no application renderer change.
+Status: source review and 24 qualified headless working-view benchmark cases complete, 2026-11-15; separate Fit all/zoom-out observations recorded; the reported permanent freeze was not reproduced; production renderer unchanged.
 
 ## Scope and priorities
 
 Select Creator's WebUI canvas architecture from a fresh comparison, prioritizing interaction speed, memory, CPU/GPU work,
 and idle cost. Existing React Flow adoption is not a reason to retain it. Compare actual media cards and editor behavior;
 large counts of plain rectangles or sprites do not establish performance for Creator.
+Fit all with thousands of simultaneously visible media cards is a required interaction, alongside the ordinary working view.
 
 ## Research workspace
 
@@ -19,17 +20,74 @@ large counts of plain rectangles or sprites do not establish performance for Cre
 
 ## Evidence boundary
 
-The findings below distinguish inspected source, vendor measurements, arithmetic estimates, and architectural inference. This source-review stage produced no measured results; matched prototype benchmarking is now authorized and in progress. Creator references are pinned to the base above; external documentation was checked on 2026-11-14. Adapter readiness requires the requested thumbnail tier to be decoded and included in a draw, even if an older tier remains visible during loading. Pixi WebGPU's draw callback measures CPU render submission without a GPU completion fence or presentation guarantee.
+The findings distinguish inspected source, vendor claims, arithmetic estimates, and measured prototype behavior. Creator references are pinned to the base above. The accepted benchmark uses source commit `6e49cf6163f3fd69ad4254932b28610100c45b4c`; its 24 receipts have identical runtime source hashes and workload settings. The later interactive Creator-style demo is a separate prototype revision. Results describe the renderer harness, not full production app latency, model execution, thumbnail generation, or an uncapped throughput maximum.
 
 ## Decision
 
-**Provisional choice: PixiJS v8 core for the passive overview, with an imperative renderer, a spatial index, screen-size LOD,
-and byte-budgeted thumbnails. Keep the React shell and focused DOM editor.** This is the best architectural fit found
-for thousands of media cards, not proof of universally fastest rendering or lowest memory. A minimal virtualized DOM
-viewport may win at realistic small visible counts; Leafer is a credible challenger. Both deserve matched measurements.
+**Recommend PixiJS WebGL for the overview, with React DOM for focused editing and active media controls, and an optional Three.js layer for 3D.** Keep the existing project/application model independent of rendering. The required overview includes Fit all with 5,000 simultaneously visible media cards; a viewport that is efficient with roughly 48 visible cards must also remain usable there.
 
-Pixi makes batching and resource ownership explicit without requiring us to build a graphics backend. Its scene graph and CPU image sources can still cost memory; duplicate overview/focused assets, per-string text textures, masks, and many unique thumbnail textures can erase the expected advantage. Selection depends on the complete architecture.
-Use [PixiJS v8.23.0](https://github.com/pixijs/pixijs/releases/tag/v8.23.0), the current release inspected, as a candidate pin.
+This decision incorporates the user's interactive review of the richer Creator-style prototype: all three implementations felt similar at 1,000 cards, but after zooming out/Fit all at 5,000 the user reported DOM variants becoming unresponsive while Pixi remained usable. Subsequent headless tests did **not** reproduce a permanent freeze: instantaneous Fit all loaded all 5,000 cards and Home worked in all three. A separate gradual wheel-zoom observation produced substantially longer frame-interval tails in the DOM variants at about 2,970 visible cards. These bounded observations support Pixi for the required wider zoom range; they do not establish a universal DOM failure or a profiled cause of the user's hang.
+
+The accepted working-view results remain valid and favor virtualized React DOM's resource use. Optimized React Flow's median CPU was 0.49 cores against 0.45 for React DOM, with process PSS 476 versus 438 MiB; Pixi WebGL used 0.61 cores and 495 MiB. Their similar working-view frame intervals do not promise a visible speed improvement from migration. The new choice prioritizes the required all-visible interaction, accepting that ordinary working-view CPU/RAM may be higher. Preserve these measured tradeoffs rather than replacing them with an unmeasured universal GPU advantage. [Working-view receipts and validation](../../benchmarks/canvas-selection/evidence/summary.json), [comparison CSV](../../benchmarks/canvas-selection/evidence/summary.csv).
+
+React DOM remains the resource-efficient working-view baseline and the natural focused-editor surface. Graph connection features are unused in current Creator. GPUCanvas has narrower fast-path browser support, retained DOM, material GPU allocation and observed unattended-video constraints. Dessn's published compiler/renderer claim has neither been contradicted nor reproduced here. No production migration has been made; this choice does not establish that DOM generally fails or that Pixi universally wins.
+
+### Decision criteria and evidence boundaries
+
+| Evidence or requirement | Current conclusion | Remaining qualification |
+| --- | --- | --- |
+| Qualified working view: 5,000 total cards, initially 48 visible/admitted | The 24 accepted cases at `6e49cf6163f3fd69ad4254932b28610100c45b4c` establish the CPU/RAM/frame-interval tradeoffs below. Virtualized React DOM has a resource advantage there. | Full production card state, neighboring versions, transport and supported-browser integration remain separate. |
+| User review and separate headless prototype observations | Instantaneous Fit all worked for all three; gradual zoom-out showed longer DOM frame-interval tails. Broader zoom responsiveness is decisive for selection. | One observation per backend/path, different browser pipelines and loading/wait-inclusive timing; permanent freeze not reproduced and root cause not profiled. |
+| Required overview behavior | Fit all, then pan/zoom/select/edit without needing refresh; correct photographs, labels and selection at equal thumbnail floor, DPR and visual detail. | Record responsiveness and pixel proof in the Creator-style scene, including return to the ordinary working view and cache cleanup. |
+| Focused editing and optional 3D | Keep native DOM text/IME/media controls and existing document/history/clipboard behavior; Three may be layered independently. | Qualify accessible focus, projected input when tilted, model/video output, idle pause, browser support and context recovery. |
+
+DOM cards can be GPU-composited while still incurring browser style/layout, paint, image and layer/surface costs. Visible-only mounting stops reducing the visible DOM count when Fit all exposes every card. Pixi can batch passive card textures and geometry through an explicit GPU scene while keeping the application DOM small; decoding, uploads and GPU residency still require budgets. This explains a plausible architectural difference, not a profile of the reported freeze. [React Flow performance guidance][flow-perf], [Pixi performance guidance][pixi-perf].
+
+## Measured working-view comparison
+
+Headless Chrome for Testing 157.0.8103.78; Intel integrated RPL-S graphics, Mesa 25.2.8; i9-13950HX; 1600×900, DPR 1. The same seeded photographic assets, layout, 256px thumbnail floor, adaptive 512px tier, camera trajectory, 64px overscan, native focus editor and video checks are used. There are 5,000 total cards and initially 48 admitted cards including overscan. This is not the 5,000-visible-card Fit all workload. An eight-second tour runs after readiness; process memory is sampled after the tour settles for one second. Timing runs have no periodic process-memory sampling. Three fresh-browser samples per implementation are summarized by medians below.
+
+| Implementation | CPU cores | Browser PSS MiB | GPU resident-client MiB | Frame p95 ms | Frame p99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| React Flow, optimized | 0.49 | 476 | 224 | 16.7 | 16.8 |
+| Virtualized React DOM | **0.45** | **438** | 217 | 16.7 | 16.8 |
+| PixiJS WebGL | 0.61 | 495 | 265 | 16.7 | 16.8 |
+| LeaferJS | 0.95 | 450 | **165** | 16.7 | 16.8 |
+| PixiJS WebGPU | 0.59 | 510 | 351 | 16.8 | 50.0 |
+| GPUCanvas WebGPU | 0.65 | 536 | 702 | 16.8 | 366.6 |
+
+CPU cores are browser-owned CPU seconds per wall second; 1.0 means one fully used logical core. PSS and GPU buffers are separate accounting domains and must not be added. DRM GPU figures deduplicate device/client IDs but can count buffers shared across clients; raw shared totals and lower bounds are in the evidence. They include resident caches, not a proven minimum working set. The callback-based frame intervals are paced around 60 Hz and are not hardware input-to-photon latency. The tail intervals matter even when p95 is similar.
+
+All 24 accepted cases passed displayed-photo pixel gates, requested-tier readiness, initial source-admission checks, and common trusted-browser selection/drag/wheel/text/video/cleanup checks. The 1,000-card cohort has one sample per implementation; the 5,000-card cohort has three. Detailed ranges, GPU engine duty, cold-browser readiness, source hashes and validation are in [summary JSON](../../benchmarks/canvas-selection/evidence/summary.json) and [CSV](../../benchmarks/canvas-selection/evidence/summary.csv). Local raw receipts remain under `/home/fidika/cozy_v2/outputs/canvas-library-selection/qualified-working1000` and `qualified-working5000`.
+
+### Important corrections to exploratory results
+
+- The early controlled React Flow adapter omitted measurement metadata during tier updates. React Flow then treated offscreen handles as unknown and force-mounted nodes, causing thousands of requests. Those numbers are excluded. The corrected public-API configuration admits 48 sources for 48 initial cards.
+- The experimental headed NVIDIA/Vulkan configuration failed plain accelerated Canvas2D pixels. Leafer appeared ready while displaying a blank canvas, and GPUCanvas parsed colors as black. That whole cohort is excluded. Accepted results use a separately pixel-qualified headless Intel path, including real non-fallback WebGPU.
+- Early all-fit and 64px-source tours are not the primary production-like workload. These results do not establish a winner for thousands of simultaneously visible full app screens.
+- The harness uses one selected image per card. Production's neighboring-version buffers, full card UI, project events and remote transport require separate integration qualification.
+
+### Live video observation
+
+A separate headless GPUCanvas probe verified moving source frames while recording displayed pixels before invoking fresh snapshots. In the unattended phase the source had six distinct frames but the displayed region remained one frame. Hovered and focused phases each displayed six distinct frames. This reproduces a narrow unattended-video cache issue in this tested pipeline; it is not a universal statement about all media or versions. Use a native active-video overlay or qualify explicit invalidation before adopting snapshot rendering for Creator's live previews. Receipt: `/home/fidika/cozy_v2/outputs/canvas-library-selection/video-proof/result.json`.
+
+### Interactive review
+
+The prototype is served locally at `http://127.0.0.1:5197/?demo=1&mode=react-dom&n=1000`. Keys 1/2/3 switch virtualized React DOM, PixiJS WebGL and optimized React Flow. One backend is active at a time; card poses, camera, selection and edits remain in shared in-memory state. Count, fit, zoom, drag, focus, local sample rendering, version navigation, uploads, tilt and a 3D model viewer are available. It is styled after Creator's current dark canvas rather than the simplified benchmark cards. Sample generation is local and starts no model jobs. The benchmark card styling and this richer interactive prototype are not interchangeable performance claims.
+
+The user reports comparable behavior across the three at 1,000 cards, then unresponsiveness requiring refresh in both DOM variants after zooming out/Fit all at 5,000, with Pixi still usable. This user observation and the following headless observations are separate from the qualified working-view table.
+
+### Separate Fit all and gradual zoom-out observations
+
+In headless Chrome 157, instantaneous Fit all in the actual Creator-style demo loaded all 5,000 cards and Home worked for every implementation. Pixi became ready in 16.26 s with 1.35 GiB browser PSS; React DOM in 8.73 s with 1.14 GiB; React Flow in 8.66 s with 1.19 GiB. Idle RAF intervals were about 16.8 ms, which does not measure active interaction performance. These observations do not reproduce the reported permanent freeze. Receipts: [Pixi](/home/fidika/cozy_v2/outputs/canvas-library-selection/fit-all-original/pixi-original.json), [React DOM](/home/fidika/cozy_v2/outputs/canvas-library-selection/fit-all-original/react-dom-original.json), [React Flow](/home/fidika/cozy_v2/outputs/canvas-library-selection/fit-all-original/reactflow-original.json).
+
+A separate headless system Chrome 151 / Intel Vulkan run applied 13 Ctrl-wheel events of delta 50, starting at zoom 0.85 around cursor (950, 500). Cursor anchoring left about **2,970 of 5,000 cards visible**, not all 5,000. Observed frame intervals were:
+
+- Pixi: p95 66.6 ms, p99 66.7 ms, maximum 150 ms; Home about 302 ms.
+- React DOM: p95 216.7 ms, p99 499.9 ms, maximum 1,249.9 ms; Home about 311 ms.
+- React Flow: p95 250.1 ms, p99 1,066.7 ms, maximum 2,199.9 ms; Home about 469 ms.
+
+All three returned Home. The frame instrumentation includes loading and wait periods, sample counts differ, and there is only one run per backend: this is an observational tail-responsiveness check, not controlled steady-state throughput or input-to-photon measurement. The 24-case working-view table remains the primary quantitative comparison; these later observations support Pixi's responsiveness at larger visible counts while retaining the DOM memory/startup tradeoff. Receipts: [Pixi](/home/fidika/cozy_v2/outputs/canvas-library-selection/zoom-out-chrome151/pixi.json), [React DOM](/home/fidika/cozy_v2/outputs/canvas-library-selection/zoom-out-chrome151/react-dom.json), [React Flow](/home/fidika/cozy_v2/outputs/canvas-library-selection/zoom-out-chrome151/reactflow.json).
 
 ## What Creator actually needs
 
@@ -53,8 +111,8 @@ Use [PixiJS v8.23.0](https://github.com/pixijs/pixijs/releases/tag/v8.23.0), the
 
 | Category | Option | Assessment for this workload |
 | --- | --- | --- |
-| Provisional choice | PixiJS core + DOM editor | Batched GPU media/chrome with explicit lifetimes and manual redraw. Own camera, selection, hit testing policy, LOD, and accessibility. [MIT][pixi-license]. |
-| Required baseline | Minimal virtualized DOM viewport | React shell, indexed visible cards, CSS transforms, native media/text/forms. Serious option for smaller visible sets; avoids React Flow's graph machinery. Implemented as a benchmark baseline; valid measurements pending. |
+| Recommended overview architecture | PixiJS WebGL + focused DOM editor | Batched passive media/chrome with explicit lifetimes and manual redraw. Selected for the required broader zoom range, supported by separate observational tail results; instantaneous Fit all also worked for DOM. Own camera, selection, hit testing policy, LOD and accessibility. [MIT][pixi-license]. |
+| Working-view baseline / focused editor | Virtualized React DOM viewport | React cards, visible-only mounting, native media/text/forms. Lowest CPU and process PSS in the qualified working view; faster startup and lower PSS in the single instantaneous Fit all observation too. Keep as a control and editing surface, preserving these advantages in the tradeoff. |
 | Required baseline | Optimized React Flow | Native HTML nodes, SVG edges/ports, keyboard/ARIA facilities; current visibility rendering is already enabled. Complex visible DOM remains a potential cost. [Performance][flow-perf], [API][flow-api], [a11y][flow-a11y], [MIT][flow-license]. |
 | Credible challenger | LeaferJS | Canvas2D scene graph with partial/layered rendering and lazy images. Suitable static-board challenger; future WebGL/WebGPU plans are not current backends. [Source][leafer-source], [docs/license][leafer-core]. |
 | Credible challenger | Konva / react-konva | Canvas2D scene graph, hit testing, caching, dirty layer redraw. Extra scene/hit canvases and caches affect memory; DOM overlays still needed for editing. [Performance][konva-perf], [MIT][konva-license]. |
@@ -67,10 +125,10 @@ Use [PixiJS v8.23.0](https://github.com/pixijs/pixijs/releases/tag/v8.23.0), the
 
 DOM/SVG and Canvas2D can use browser GPU acceleration; the distinction is retained browser layout/paint versus an explicit GPU scene graph, not a claim that every alternative is CPU-only. Vendor FPS, element counts, and memory figures are not comparable across different content, versions, hardware, zooms, visual fidelity, or cache states.
 
-## Recommended rendering and media ownership
+## Media ownership and explicit-GPU implementation considerations
 
 1. Keep the document/model independent of rendering. React owns application UI, focused forms, and native editing.
-   Update Pixi objects imperatively during pan/zoom/drag; avoid React reconciliation for every display object each frame.
+   If adopting Pixi, update its objects imperatively during pan/zoom/drag; avoid React reconciliation for every display object each frame.
    Maintain a world-space spatial index and cached screen transforms for visibility, picking, selection, and overlays.
 2. Render visible cards plus measured overscan. At small screen sizes, simplify chrome, labels, and decorations.
    Pixi's built-in culling is disabled by default and can hurt CPU-bound workloads; compare it with indexed app culling.
@@ -147,13 +205,26 @@ CanvasKit batches WebGL work on surface flush and supplies paragraph shaping, bu
 tldraw's culling hides DOM shapes rather than unmounting them; asset LOD is useful, but media release remains a separate policy. Its workflow kit has ports/bindings if those become necessary. [Culling][tldraw-culling], [LOD][tldraw-perf], [workflow][tldraw-workflow].
 Rete core is mostly MIT with noncommercial advanced-package exceptions; its GPU LOD example is marked Pro. Do not infer commercial module rights from the site footer. [Licensing][rete-license], [example][rete-lod].
 
+## Proposed library stack
+
+- **PixiJS 8.23.0 WebGL** renders the passive overview; existing React components own focused forms, native text/IME and active media controls. Keep cache and per-frame graphics updates imperative. [Pixi renderer][pixi-renderers].
+- **pixi-viewport 7.0.3** supplies camera drag/pan, pinch, wheel, deceleration, zoom limits and optional snap/follow behavior; its declared peer supports Pixi 8 and it is MIT licensed. Viewport dragging pans the world; application card dragging and multi-selection still need Creator's interaction semantics. [Official API][pixi-viewport], [package][pixi-viewport-package].
+- Use the viewport's **`noTicker` option and manual updates** for the intended demand-driven scheduler. Continue updates while wheel smoothing/inertia is active, then stop after movement/zoom completion; validate this lifecycle before claiming zero idle work. [Official noTicker option][pixi-viewport-noticker].
+- **@pixi/react 8.0.5 is optional**, with declared Pixi 8 / React 19 support and an MIT license. It is a React binding, not an editor. Profile coarse React scene ownership against the already-built imperative prototype; avoid reconciling the whole scene on every camera frame. [Official documentation][pixi-react], [package][pixi-react-package].
+- Keep Creator's state, history, clipboard, focus and native forms. Add only the required card dragging/marquee integration. `@pixi-essentials/transformer` 3.0.4 declares Pixi 7 peers and is not a Pixi 8 drop-in. The newer `@q1998763/pixi-transformer` declares Pixi 8 support and multi-target transform handles, but is an unqualified optional helper, unnecessary for the initial card-drag scope. [Pixi 7 transformer metadata][pixi-transformer-v7], [Pixi 8 candidate][pixi-transformer-v8].
+
+This is the proposed implementation stack, not a claim that these additional packages have passed end-to-end qualification.
+The existing benchmark and interactive demo use their own shared camera/input harness; their receipts do not validate
+pixi-viewport, the optional React binding or transformer packages. Three remains an independent optional layer as described below.
+
 ## Migration boundary
 
 [CanvasStore's `Flow` type][creator-store] is a `ReactFlowInstance`; node mutation, world bounds, selection, and
-`screenToFlowPosition` are integration points across CanvasHost, Card, and Sheet. Replacing the renderer also means
-replacing camera/geometry/hit testing, box and multi-selection, drag/drop, touch/pinch, keyboard, and clipboard/history
-integration. Preserve existing project/transport/store business behavior and focused editing. This is implementation
-ownership to plan and qualify separately; selecting a library does not authorize that migration.
+`screenToFlowPosition` are integration points across CanvasHost, Card, and Sheet. The migration scope is an overview
+camera, card dragging, multi-selection and focus, integrated with existing project/state/history and native forms.
+Preserve existing placement, transport, clipboard, keyboard, touch and accessible editing behavior. Graph ports and
+execution are unused; the goal is this application surface, not a replacement generic graph editor or history engine.
+This report records selection and qualification evidence; no production migration has been performed.
 
 ## Browser and operational boundary
 
@@ -162,15 +233,15 @@ Safari 26 ships WebGPU, but older Safari and OS combinations still matter. Do no
 If a native webview embedding is introduced later, qualify its own engine/version; no current Tauri dependency was established here. [Safari][webkit-safari], [webview differences][tauri-webview].
 The app owns context loss/recovery, resource cleanup, stale decode cancellation, and background/idle behavior regardless of library. A custom backend becomes justified only when profiling shows a material limitation in the chosen renderer.
 
-## Matched qualification plan
+## Remaining matched qualification and integration criteria
 
-First compare optimized React Flow, minimal indexed/virtualized DOM, and the proposed Pixi hybrid; add Leafer or Konva
-as challengers when a real scene warrants them. Keep rendering backend and media-policy effects independently attributable.
-Run the current media policy and a shared bounded/LOD policy so a thumbnail improvement is not mislabeled a renderer win.
+The accepted 24-case working-view comparison is complete, with separate Creator-style Fit all and wheel-zoom observations
+recorded above. Remaining work is repeated, matched broader-zoom qualification and production integration. Keep renderer,
+appearance and media-policy effects attributable; a lower source tier or reduced visual detail must not manufacture a win.
 
 | Dimension | Required evidence |
 | --- | --- |
-| Scene | 100 / 1,000 / 5,000 cards from the same actual files; identical positions, aspect ratios, labels, controls, progress, and selected state. Record total and visible counts separately. |
+| Scene | Record total and visible counts separately. Retain the accepted ordinary working view, and separately qualify 5,000 simultaneously visible Creator-style cards with identical photographs, positions, labels, controls, progress and selection. |
 | Display | Same hardware, OS, browser build, viewport, DPR, refresh rate, zoom path, and visual quality. Chrome, Firefox, and Safari on their supported target OSs. |
 | Interaction | Physical pointer/trackpad pan, pinch/wheel zoom, fit-to-all, drag/multiselect, context menu, version churn, focused forms, native text selection, clipboard, IME, and keyboard/a11y. |
 | Timing | Input latency and frame-time p50/p95/p99, long tasks, missed frames; cold/warm scene readiness and focus/version-switch latency. Define each timing boundary and sample count. |
@@ -181,7 +252,7 @@ Run the current media policy and a shared bounded/LOD policy so a thumbnail impr
 Separate zero-video, hover preview, active playback, and live-output cases with equal concurrent media and formats.
 Do not lower DPR, resolution, fidelity, or active previews to manufacture a win. Report cold/warm cache states, failures,
 and cleanup behavior, including memory after returning to the starting view; account for intended cache retention explicitly.
-Publish the exact renderer version/commit, scene manifest, settings, raw observations, and measured tradeoffs before claiming fastest/lowest-memory operation. This report authorizes no migration and records no passing benchmark.
+Publish the exact renderer version/commit, scene manifest, settings, raw observations and measured tradeoffs. This report records 24 qualified working-view cases and separate single-run broader-zoom observations, not a production-release gate, and makes no universal fastest/lowest-memory claim. No production migration has been performed by this work.
 
 ## Feature and ownership matrix
 
@@ -239,8 +310,8 @@ Working tours still cross 256/512 tiers; report which detail sources are cold an
 
 The common harness isolates renderer/viewport costs, but does not benchmark built-in graph editing, clipboard/history,
 collaboration, transport updates, dynamic progress, native IME, or accessibility completeness. Input-to-second-RAF and
-animation-frame intervals are scheduling proxies, not physical presentation timestamps. Sampled peak PSS uses periodic
-known-process observations; it can miss brief peaks/new processes and does not measure resident VRAM. Nominal texture
+animation-frame intervals are scheduling proxies, not physical presentation timestamps. Accepted table memory values are
+post-tour snapshots, not peak-memory claims; exploratory periodic samples can miss brief peaks/new processes. Nominal texture
 bytes, browser process memory and GPU/energy counters must retain their separate labels.
 
 The original forced NVIDIA Vulkan cohort is excluded: ordinary Canvas2D failed solid and photograph drawing even before
@@ -319,3 +390,10 @@ the invalid cohort or claim completed tilt/3D/Safari/Firefox/context-loss tests 
 [bench-three]: ../../benchmarks/canvas-selection/src/three-demo.ts
 [bench-leafer-probe]: ../../benchmarks/canvas-selection/leafer-probe.mjs
 [bench-leafer]: ../../benchmarks/canvas-selection/src/leafer.ts
+[pixi-viewport]: https://viewport.pixijs.io/api/
+[pixi-viewport-package]: https://www.npmjs.com/package/pixi-viewport/v/7.0.3
+[pixi-viewport-noticker]: https://viewport.pixijs.io/api/interfaces/IViewportOptions.html#noticker
+[pixi-react]: https://react.pixijs.io/
+[pixi-react-package]: https://www.npmjs.com/package/@pixi/react/v/8.0.5
+[pixi-transformer-v7]: https://www.npmjs.com/package/@pixi-essentials/transformer/v/3.0.4
+[pixi-transformer-v8]: https://www.npmjs.com/package/@q1998763/pixi-transformer

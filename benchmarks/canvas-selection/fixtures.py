@@ -38,3 +38,12 @@ if not video.exists(): subprocess.run(video_args,check=True)
 manifest['model']={'url':duck_url,'sha256':hashlib.sha256(duck.read_bytes()).hexdigest(),'attribution':'Khronos glTF Sample Assets Duck; see upstream Models/Duck/README.md for model licensing.'}
 manifest['video']={'recipe':video_args[:-1]+['motion.mp4'],'sha256':hashlib.sha256(video.read_bytes()).hexdigest()}
 (a.out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+
+# Assets for the local interactive review route.
+import shutil
+demo=a.out/'demo';demo.mkdir(exist_ok=True)
+for size in [256,512]:
+ poster=demo/f'video{size}.webp'
+ if not poster.exists():subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-ss','0.7','-i',str(video),'-frames:v','1','-vf',f'scale={size}:{round(size*9/16)}','-c:v','libwebp',str(poster)],check=True)
+logo=Path(__file__).resolve().parents[2]/'web/app/public/assets/apple-touch-icon.png'
+if logo.exists():shutil.copyfile(logo,demo/'cozy-icon.png')

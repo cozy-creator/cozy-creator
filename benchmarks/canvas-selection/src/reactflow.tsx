@@ -3,19 +3,22 @@ import { createRoot } from 'react-dom/client';
 import { ReactFlow, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { Adapter, BenchOptions, Camera, Card } from './types';
+import { CreatorCardSurface } from './react-dom';
 
 type MediaData = {
   card: Card;
   source: string;
   lod: 0 | 1 | 2;
   selected: boolean;
+  appearance?: BenchOptions['appearance'];
   registerImage(id: string, image: HTMLImageElement | null): void;
   imageLoaded(): void;
 };
 type MediaNode = Node<MediaData, 'media'>;
 
-function useMediaCardElement({ card, source, lod, selected, registerImage, imageLoaded }: MediaData) {
+function useMediaCardElement({ card, source, lod, selected, appearance, registerImage, imageLoaded }: MediaData) {
   const imageRef = React.useCallback((image: HTMLImageElement | null) => registerImage(card.id, image), [card.id, registerImage, source]);
+  if (appearance === 'creator') return <CreatorCardSurface card={card} source={source} lod={lod} selected={selected} imageRef={imageRef} imageLoaded={imageLoaded} />;
   return <div data-bench-card={card.id} data-card-id={card.id} data-lod={lod}
     className={`bench-card${selected ? ' bench-selected' : ''}`}
     style={{ width: card.width, height: card.height }}>
@@ -40,6 +43,8 @@ interface DisplaySettings {
   tier: number;
   lod: 0 | 1 | 2;
   selected: string | null;
+  selection: ReadonlySet<string>;
+  appearance?: BenchOptions['appearance'];
   assetUrl: BenchOptions['assetUrl'];
   generation: number;
 }
@@ -49,7 +54,7 @@ const MountedMediaCard = React.memo(function MountedMediaCard({ data }: NodeProp
   if (!display) throw new Error('React Flow card is missing its display provider');
   return useMediaCardElement({
     ...data, source: display.assetUrl(data.card.asset, display.tier), lod: display.lod,
-    selected: data.card.id === display.selected,
+    selected: display.selection.has(data.card.id), appearance: display.appearance,
   });
 });
 const mountedNodeTypes = { media: MountedMediaCard };
@@ -77,7 +82,8 @@ async function createUncontrolledReactFlowAdapter(host: HTMLElement, options: Be
   });
   host.appendChild(view);
   const root = createRoot(view);
-  const cards = new Map(options.cards.map(card => [card.id, { ...card }]));
+  const normalizeCard = (card: Card): Card => ({ ...card, height: options.appearance === 'creator' ? 32 + Math.round(card.width * 9 / 16) + 40 : card.height });
+  const cards = new Map(options.cards.map(card => [card.id, normalizeCard(card)]));
   const images = new Map<string, HTMLImageElement>();
   const requestedSources = new Set<string>();
   const layerHintRequested = new URLSearchParams(location.search).get('rfLayer') === '1';
@@ -85,10 +91,12 @@ async function createUncontrolledReactFlowAdapter(host: HTMLElement, options: Be
   let layerHintApplied = false;
   let camera = { ...options.camera }, tier = options.tier(camera), lod = options.lod(camera);
   let selected: string | null = null;
+  let selection = new Set<string>();
   let destroyed = false, draws = 0, displayCommits = 0, displayUpdates = 0, movedNodeUpdates = 0;
   let displayGeneration = 0, committedDisplayGeneration = -1;
   let flow: ReactFlowInstance<StoredMediaNode> | undefined;
   let updateDisplay: (display: DisplaySettings) => void = () => {};
+  let updateViewport: (size: { width: number; height: number }) => void = () => {};
   let initialized!: () => void;
   const ready = new Promise<void>(resolve => { initialized = resolve; });
 
@@ -101,7 +109,7 @@ async function createUncontrolledReactFlowAdapter(host: HTMLElement, options: Be
     if (image) { images.set(id, image); requestedSources.add(image.src); }
     else images.delete(id);
   };
-  const initialNodes: StoredMediaNode[] = [...cards.values()].map(card => ({
+  const nodeForCard = (card: Card): StoredMediaNode => ({
     id: card.id, type: 'media', position: { x: card.x, y: card.y },
     width: card.width, height: card.height, initialWidth: card.width, initialHeight: card.height,
     // Known card bounds and absent ports permit culling before any offscreen DOM mounts.
@@ -109,19 +117,20 @@ async function createUncontrolledReactFlowAdapter(host: HTMLElement, options: Be
     handles: explicitEmptyHandles ? [] : undefined,
     style: { width: card.width, height: card.height },
     data: { card, registerImage, imageLoaded: drawn },
-  }));
+  });
+  const initialNodes = [...cards.values()].map(nodeForCard);
   const viewport = (at: Camera) => ({ x: at.x + OVERSCAN, y: at.y + OVERSCAN, zoom: at.zoom });
-  const initialDisplay: DisplaySettings = { tier, lod, selected, assetUrl: options.assetUrl, generation: 0 };
+  const initialDisplay: DisplaySettings = { tier, lod, selected, selection, appearance: options.appearance, assetUrl: options.assetUrl, generation: 0 };
 
   // This exact element is retained across display-band changes. Context reaches mounted
   // cards without recreating the Flow element or copying every document node's data.
-  const flowElement = <ReactFlow<StoredMediaNode>
+  const makeFlowElement = (width: number, height: number) => <ReactFlow<StoredMediaNode>
     defaultNodes={initialNodes}
     defaultEdges={edges}
     nodeTypes={mountedNodeTypes}
     defaultViewport={viewport(camera)}
-    width={options.width + OVERSCAN * 2}
-    height={options.height + OVERSCAN * 2}
+    width={width}
+    height={height}
     minZoom={0.01}
     maxZoom={8}
     onlyRenderVisibleElements
@@ -152,7 +161,10 @@ async function createUncontrolledReactFlowAdapter(host: HTMLElement, options: Be
 
   function Scene() {
     const [display, setDisplay] = React.useState(initialDisplay);
+    const [size, setSize] = React.useState({ width: options.width + OVERSCAN * 2, height: options.height + OVERSCAN * 2 });
     updateDisplay = setDisplay;
+    updateViewport = setSize;
+    const flowElement = React.useMemo(() => makeFlowElement(size.width, size.height), [size.width, size.height]);
     React.useLayoutEffect(() => {
       committedDisplayGeneration = display.generation;
       displayCommits++;
@@ -163,7 +175,38 @@ async function createUncontrolledReactFlowAdapter(host: HTMLElement, options: Be
   function publishDisplay() {
     displayUpdates++;
     displayGeneration++;
-    updateDisplay({ tier, lod, selected, assetUrl: options.assetUrl, generation: displayGeneration });
+    updateDisplay({ tier, lod, selected, selection, appearance: options.appearance, assetUrl: options.assetUrl, generation: displayGeneration });
+  }
+  function setSelection(ids: string[]) {
+    if (destroyed) return;
+    const next = new Set(ids.filter(id => cards.has(id)));
+    if (next.size === selection.size && [...next].every(id => selection.has(id))) return;
+    selection = next;
+    selected = [...next][0] ?? null;
+    publishDisplay();
+  }
+  function moveCards(moves: { id: string; x: number; y: number }[]) {
+    if (destroyed) return;
+    const changes = new Map<string, Card>();
+    for (const { id, x, y } of moves) {
+      const previous = cards.get(id);
+      if (!previous || (previous.x === x && previous.y === y)) continue;
+      const card = { ...previous, x, y };
+      cards.set(id, card);
+      changes.set(id, card);
+    }
+    if (!changes.size) return;
+    if (changes.size === 1) {
+      const [id, card] = [...changes][0];
+      flow?.updateNode(id, node => ({ position: { x: card.x, y: card.y }, data: { ...node.data, card } }));
+    } else {
+      flow?.setNodes(nodes => nodes.map(node => {
+        const card = changes.get(node.id);
+        return card ? { ...node, position: { x: card.x, y: card.y }, data: { ...node.data, card } } : node;
+      }));
+    }
+    movedNodeUpdates += changes.size;
+    drawn();
   }
   root.render(<Scene />);
   await ready;
@@ -176,19 +219,43 @@ async function createUncontrolledReactFlowAdapter(host: HTMLElement, options: Be
       if (tier !== nextTier || lod !== nextLod) { tier = nextTier; lod = nextLod; publishDisplay(); }
       void flow?.setViewport(viewport(camera), { duration: 0 }).then(drawn);
     },
-    setSelected(id) {
-      if (destroyed || selected === id) return;
-      selected = id;
-      publishDisplay();
-    },
-    moveCard(id, x, y) {
+    setSelected(id) { setSelection(id === null ? [] : [id]); },
+    setSelection,
+    moveCard(id, x, y) { moveCards([{ id, x, y }]); },
+    moveCards,
+    updateCard(id, patch) {
       if (destroyed) return;
       const previous = cards.get(id);
-      if (!previous || (previous.x === x && previous.y === y)) return;
-      const card = { ...previous, x, y };
+      if (!previous) return;
+      const card = normalizeCard({ ...previous, ...patch, id });
       cards.set(id, card);
-      flow?.updateNode(id, node => ({ position: { x, y }, data: { ...node.data, card } }));
-      movedNodeUpdates++;
+      flow?.updateNode(id, node => ({ position: { x: card.x, y: card.y }, width: card.width, height: card.height,
+        measured: { width: card.width, height: card.height }, style: { ...node.style, width: card.width, height: card.height }, data: { ...node.data, card } }));
+      drawn();
+    },
+    addCard(input) {
+      if (destroyed || cards.has(input.id)) return;
+      const card = normalizeCard(input);
+      cards.set(card.id, card);
+      flow?.addNodes(nodeForCard(card));
+      drawn();
+    },
+    removeCard(id) {
+      if (destroyed || !cards.delete(id)) return;
+      flow?.setNodes(nodes => nodes.filter(node => node.id !== id));
+      if (selection.has(id)) setSelection([...selection].filter(chosen => chosen !== id));
+      drawn();
+    },
+    resize(width, height) {
+      if (destroyed) return;
+      options.width = width;
+      options.height = height;
+      view.style.width = `${width + OVERSCAN * 2}px`;
+      view.style.height = `${height + OVERSCAN * 2}px`;
+      updateViewport({ width: width + OVERSCAN * 2, height: height + OVERSCAN * 2 });
+      tier = options.tier(camera);
+      lod = options.lod(camera);
+      publishDisplay();
       drawn();
     },
     readyFraction() {
@@ -205,6 +272,7 @@ async function createUncontrolledReactFlowAdapter(host: HTMLElement, options: Be
     stats() {
       return {
         backend: 'React Flow uncontrolled store / mounted-card display context / DOM transforms',
+        appearance: options.appearance ?? 'benchmark', selection: [...selection],
         rfMode: 'optimized', rfLayer: Number(layerHintRequested), viewportLayerHintApplied: layerHintApplied,
         rfHandles: explicitEmptyHandles ? 'empty' : 'unknown', initialBoundsMeasured: true,
         emptyHandlesOptimization: 'explicit no-port metadata; additional to current Creator measured bounds',
@@ -273,7 +341,7 @@ export async function createControlledReactFlowAdapter(host: HTMLElement, option
       width: card.width, height: card.height,
       initialWidth: card.width, initialHeight: card.height,
       style: { width: card.width, height: card.height },
-      data: { card, source: source(card), lod, selected: false, registerImage, imageLoaded: drawn },
+      data: { card, source: source(card), lod, selected: false, appearance: options.appearance, registerImage, imageLoaded: drawn },
     };
   });
   const viewport = (at: Camera) => ({ x: at.x + OVERSCAN, y: at.y + OVERSCAN, zoom: at.zoom });

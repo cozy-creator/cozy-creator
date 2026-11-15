@@ -85,3 +85,15 @@ runs reset measurement metadata and generated offscreen request floods; those do
 GPU snapshots also record [Linux DRM fdinfo](https://www.kernel.org/doc/html/latest/gpu/drm-usage-stats.html) for owned browser processes, deduplicating device/client IDs. Resident/shared client aggregates and engine duty are separate from PSS; shared buffers can still appear in multiple clients. These are driver counters, not a portable VRAM-total query.
 
 Primary latency runs do not read process memory during the camera tour. This avoids periodic `/proc/*/smaps_rollup` observer effects; optional peak-memory profiling must be labeled separately.
+
+## Interactive Creator-style review
+
+Open `http://127.0.0.1:5197/?demo=1&mode=react-dom&n=1000` after the same build/serve commands.
+Keys1/2/3 switch ReactDOM/PixiWebGL/ReactFlow in place, preserving the shared camera and card layout.
+The demo includes100/1000/5000-card datasets, drag/multi-selection, undo/redo, native focused editing,
+version browsing, sample progress, local file imports, hover video, tilt and a separate glTF viewer.
+It mutates only in-memory sample state. No model job or production project mutation is started.
+
+The accepted measurement source is commit `6e49cf6163f3fd69ad4254932b28610100c45b4c`.
+The interactive prototype has richer Creator styling and editing APIs added later; use its live A/B
+for interaction review and the pinned receipts for quantitative comparisons.
