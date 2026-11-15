@@ -53,7 +53,8 @@ def main() -> int:
             return
         with path.open("rb") as source:
             digest = "sha256:" + hashlib.file_digest(source, "sha256").hexdigest()
-        upload(base, headers, digest, path.read_bytes())
+        # A run of a project reads its files from the project's own store.
+        upload(base, headers, digest, path.read_bytes(), args.project.resolve())
         paths[written] = {"file": digest}
 
     def input_paths(value: object) -> None:
