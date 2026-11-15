@@ -1,10 +1,11 @@
 // account-rent (cl-973 core cell 24, solo): the account and renting, as a person does them in the page. Signed out by Account's inline
 // confirm, Rent says to sign in; a wrong code stays in the form in plain words, the code the isolated Hub logs signs in, and nothing of
 // the Hub's is in the browser. On localfit's GPU stand-in (a proxy in front of the isolated Hub that sells an rtx-4090 and places runs on
-// it), a box this computer would render poorly asks on itself, Rent a GPU first: Run here anyway renders here and is kept, and Rent opens
-// Machines with the card chosen, rendering nothing. Then the docker provider's cpu, rented from Machines at its quoted price, listed as the
-// CLI lists it, made the project's machine and ended: nothing of it left running. Never paid: that provider starts a container here that
-// never gets ready (e2e/cli/rental.sh).
+// it), a box this computer would render poorly asks on itself, Rent a GPU first: Run here anyway renders here and is kept (canceled as it
+// waits on its fresh install, that install ends with it, and the next Render installs again), and Rent opens Machines with the card chosen,
+// rendering nothing. Then the docker provider's cpu, rented from Machines at its quoted price, listed as the CLI lists it, made the
+// project's machine and ended: nothing of it left running. Never paid: that provider starts a container here that never gets ready
+// (e2e/cli/rental.sh).
 // $E2E_HUB_EMAIL and $E2E_HUB_LOG (e2e/isolated.sh): the suite's account, and the isolated Hub's log of the codes it would mail.
 const { execFile, spawn } = require('child_process');
 const { appendFileSync, readFileSync, readdirSync } = require('fs');
@@ -123,6 +124,9 @@ function hubTokens() {
 
 /** This project's calls of function `fn`, as `GET …/runs` lists them: not the warm run that installs its local code (`install local/heavy`). */
 const runsOf = async (project, fn) => ((await project.api.get(project.at('/runs?limit=100'))).runs ?? []).filter((one) => one.kind === 'call' && new RegExp(`/${fn}(@\\S+)?$`).test(one.target ?? ''));
+/** This project's warm runs that install heavy.py's code on a machine (`install local/heavy`), as `GET …/runs` lists them, oldest first. */
+const installsOf = async (project) => ((await project.api.get(project.at('/runs?limit=100'))).runs ?? [])
+  .filter((one) => one.kind === 'warm' && /^(install|sync) local\/heavy\b/.test(one.target ?? '')).sort((a, b) => a.number - b.number);
 
 async function zoomToFit(page) {
   await page.getByRole('button', { name: /more zoom options$/ }).click();
@@ -263,6 +267,12 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       const canceled = await runsOf(project, 'heavy');
       const takes = (await project.asset('heavy')).versions ?? 0;
       expect.soft({ runs: canceled.filter((one) => one.status !== 'canceled').map((one) => `#${one.number} ${one.status}`), takes }, 'Cancel stops its render: no run of it but canceled, no take').toEqual({ runs: [], takes: 0 });
+      // Canceled while it waited on its fresh install (the Hub switched, so heavy.py is locked and installed anew), which no other run
+      // or job waited on: no call of it is made, and the install ends with it (cl-973) rather than running on for no one.
+      expect.soft(canceled.map((one) => `#${one.number} ${one.status}`), 'no call of heavy made').toEqual([]);
+      await expect.poll(async () => (await installsOf(project)).every((one) => ended.includes(one.status)), { message: "heavy's install settled", timeout: 60_000 }).toBe(true);
+      const dropped = await installsOf(project);
+      expect.soft(dropped.map((one) => `${one.target}: ${one.status}`), 'its install, which only the canceled render waited on, canceled with it').toEqual(['install local/heavy: canceled']);
       expect.soft((await api.post(project.at('/fit'), { names: ['heavy'] })).tools, 'Run here anyway, kept by Calcifer').toMatchObject([{ here: true }]);
 
       /** Render, asking nothing: sent to this computer, and one more take lands. */
@@ -275,6 +285,8 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
         await expect.poll(async () => (await project.asset('heavy')).versions ?? 0, { message: `${what}: heavy's take ${had + 1}`, timeout: 120_000 }).toBe(had + 1);
       };
       await again('Render again');
+      const installed = (await installsOf(project)).filter((one) => !dropped.some((was) => was.number === one.number));
+      expect.soft(installed.map((one) => `${one.status} on ${one.machine}`), 'Render again installs heavy again, and that install completes').toEqual(['completed on local']);
       await page.reload();
       region = page.getByRole('region', { name: 'Focused asset' });
       await expect(region).toHaveAttribute('data-focused-asset', 'heavy');
