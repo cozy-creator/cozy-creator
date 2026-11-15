@@ -4,10 +4,11 @@ import sys
 from typing import Annotated
 
 import msgspec
-from sympy import isprime
-from cozy_runtime.author import App, InvalidRequest, Outputs, Weights
+from cozy_runtime.author import App, Outputs, Weights, call
 from cozy_runtime.fields import FileBound
 from cozy_runtime.media import ImageFile
+
+from .leaf_calls import PrimeRequest, judge
 
 app = App()
 
@@ -20,14 +21,14 @@ class Result(msgspec.Struct, kw_only=True):
     image: Annotated[ImageFile, FileBound(max_bytes=1 << 20)]
     prime: bool
     python: str
+    descendant_python: str
 
 @app.entrypoint(accelerator=False)
-def shade(payload: Request, out: Outputs) -> Result:
-    if payload.fail:
-        raise InvalidRequest("the requested child failure", code="typed_fixture_failure")
+async def shade(payload: Request, out: Outputs) -> Result:
+    decision = await call(judge, PrimeRequest(number=payload.number, fail=payload.fail))
     image = payload.image.read().convert("RGBA")
     image.putpixel((0, 0), (7, 11, 19, 95))
-    return Result(image=out.save_image(image, format="png"), prime=bool(isprime(payload.number)), python=sys.executable)
+    return Result(image=out.save_image(image, format="png"), prime=decision.prime, python=sys.executable, descendant_python=decision.python)
 
 class WeightRequest(msgspec.Struct, kw_only=True):
     pass

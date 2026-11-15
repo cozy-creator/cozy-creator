@@ -18,6 +18,7 @@ class Result(msgspec.Struct, kw_only=True, frozen=True):
     image: Annotated[ImageFile, FileBound(max_bytes=1048576)]
     prime: bool
     python: str
+    descendant_python: str
 
 class WeightRequest(msgspec.Struct, kw_only=True, frozen=True):
     pass
@@ -29,7 +30,7 @@ class WeightResult(msgspec.Struct, kw_only=True, frozen=True):
 
 shade: Operation[Request, Result] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='shade',
-    declaration='sha256:7d9a050cd98e553b4e299998abe893190a070f92af44e59a1f3628b476fdad71', request=Request, result=Result,
+    declaration='sha256:cac2106f26f01a624f6f9fa15d396be42f0b82c244e8daa41b474bce899ca010', request=Request, result=Result,
     models=(),
 )
 

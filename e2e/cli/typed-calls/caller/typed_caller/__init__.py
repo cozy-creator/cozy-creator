@@ -19,6 +19,7 @@ class Answer(msgspec.Struct, kw_only=True):
     child_request: str = ""
     python: str = ""
     child_python: str = ""
+    descendant_python: str = ""
     value: float = 0
     checkpoint: str = ""
     child_installed: bool = False
@@ -38,5 +39,5 @@ async def run(payload: Ask, out: Outputs) -> Answer:
     except ChildCallError as error:
         return Answer(error=error.code, child_request=error.child_request_id, python=sys.executable,
                       child_installed=child_installed, compute_installed=compute_installed)
-    return Answer(image=result.image, prime=result.prime, python=sys.executable, child_python=result.python,
+    return Answer(image=result.image, prime=result.prime, python=sys.executable, child_python=result.python, descendant_python=result.descendant_python,
                   child_installed=child_installed, compute_installed=compute_installed)
