@@ -167,7 +167,11 @@ hub_check() {
     sleep 1
   done
   [ -n "$addr" ] || fail "hubcheck did not start: $(cat "$OUT/hubcheck.log")"
-  mkdir -p ~/.cozy && printf 'hub_url = "http://%s"\n' "$addr" >> ~/.cozy/config.toml
+  # The Hub behind it, its ingress and store, the egress cell's redirector (E2E_REDIRECT) and the commands cell's other Hub
+  # (http://127.0.0.1:9, where none listens) are declared local: no other loopback or private address is fetched.
+  E2E_REDIRECT=http://127.0.0.1:$((20000 + RANDOM % 20000))
+  export E2E_REDIRECT COZY_LOCAL_ORIGINS=$hub${COZY_LOCAL_ORIGINS:+,$COZY_LOCAL_ORIGINS},$E2E_REDIRECT,http://127.0.0.1:9
+  mkdir -p ~/.cozy && printf 'hub_url = "http://%s"\nlocal_origins = "%s"\n' "$addr" "$COZY_LOCAL_ORIGINS" >> ~/.cozy/config.toml
   export COZY_HUB_URL=http://$addr
   echo "cozy reaches $hub through hubcheck at $addr"
 }

@@ -27,10 +27,10 @@ use futures_util::stream::{FuturesUnordered, TryStreamExt};
 
 pub(crate) use endpoint::streaming_writer;
 pub use endpoint::{upload_checkpoint, Endpoint, Hardware, Payload, Resolved, Stream, UploadControl, Uploaded};
-pub use net::{http, pem_roots, Client, STALL};
+pub use net::{http, pem_roots, shown, Client, STALL};
 pub(crate) use net::GetError;
 pub use origin::{Boxed, Location, Origin};
-pub use policy::{is_loopback_origin, SourcePolicy};
+pub use policy::{declare_local, is_local, local_origins, SourcePolicy};
 pub use token::{bearer, HeaderMap, Request, SigV4, TokenProvider};
 pub use volume::VolumeOrigin;
 
@@ -40,13 +40,13 @@ pub use ask::{Backoff, ATTEMPTS};
 pub use download::{Fetching, GiveWay, Phase};
 use download::{Shared, Task};
 
-/// GET `url` from byte `from` into `sink`, for bytes the caller holds to a digest: any public host,
-/// redirects followed. A weather answer or a transport failure is asked again from the byte reached,
+/// GET `url` from byte `from` into `sink`, for bytes the caller holds to a digest: any public host
+/// (or a declared local origin), redirects followed and each hop checked again. A weather answer or a transport failure is asked again from the byte reached,
 /// until the retry rule ends it `HUB_UNREACHABLE` ([`ask::get`]). `sink` takes each
 /// body frame with the byte it starts at (0 again when a server restarts the body). A `from` at or past
 /// the end (416) has nothing left to get: the caller's digest judges what it holds.
 pub async fn get_pinned(url: &str, from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
-    let policy = SourcePolicy { any_host: true, allow_local: policy::is_loopback_origin(url), max_redirects: 5, ..Default::default() };
+    let policy = SourcePolicy { any_host: true, max_redirects: 5, ..Default::default() };
     get_body(policy, url, &[], from, sink).await
 }
 
@@ -55,7 +55,7 @@ pub async fn get_pinned(url: &str, from: u64, sink: &mut (dyn FnMut(u64, &[u8]) 
 /// PEM roots beyond the public ones.
 pub async fn length_pinned(url: &str, roots: Option<&[u8]>) -> Result<u64> {
     let display_url = net::shown(url);
-    let policy = SourcePolicy { any_host: true, allow_local: policy::is_loopback_origin(url), max_redirects: 5, ..Default::default() };
+    let policy = SourcePolicy { any_host: true, max_redirects: 5, ..Default::default() };
     let client = match roots {
         Some(pem) => Client::with_roots(policy, pem)?,
         None => Client::new(policy),
@@ -94,7 +94,7 @@ pub async fn get_pinned_into(url: &str, part: &Path, moved: &mut (dyn FnMut(u64)
     let failed = |e: std::io::Error| format!("{}: {e}", part.display());
     let mut file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(part).map_err(failed)?;
     if !platform::lock::try_claim(&file).map_err(|e| e.to_string())? {
-        return Err(format!("another cozy command is fetching {url} now; run this again once it has"));
+        return Err(format!("another cozy command is fetching {} now; run this again once it has", net::shown(url)));
     }
     let (from, mut at) = (file.metadata().map_err(failed)?.len(), 0);
     moved(from);
@@ -120,7 +120,7 @@ pub async fn get_pinned_into(url: &str, part: &Path, moved: &mut (dyn FnMut(u64)
 }
 
 /// GET a link a person wrote into `sink`, for a caller that judges what it gets itself: http or https, a public
-/// address at every hop, 5 redirects at most, asked as [`get_pinned`] asks. Nothing makes it local.
+/// address (or a declared local origin) at every hop, 5 redirects at most, asked as [`get_pinned`] asks.
 pub async fn get_link(url: &str, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
     let policy = SourcePolicy { any_host: true, plaintext: true, max_redirects: 5, ..Default::default() };
     get_body(policy, url, &[], 0, sink).await
@@ -132,8 +132,8 @@ async fn get_body(policy: SourcePolicy, url: &str, headers: &[(String, String)],
     match got.map_err(GetError::refusal)? {
         Ok(_) => Ok(()),
         Err(416) if from > 0 => Ok(()),
-        Err(status @ (404 | 410)) => refuse(Code::REF_NOT_FOUND, format!("{url}: HTTP {status}")),
-        Err(status) => refuse(Code::ORIGIN_REFUSED, format!("{url}: HTTP {status}")),
+        Err(status @ (404 | 410)) => refuse(Code::REF_NOT_FOUND, format!("{}: HTTP {status}", net::shown(url))),
+        Err(status) => refuse(Code::ORIGIN_REFUSED, format!("{}: HTTP {status}", net::shown(url))),
     }
 }
 

@@ -2243,7 +2243,7 @@ async fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
         // A refusal's first sentence says it; the rest is for whoever reads the policy.
         Ok(Err(refused)) => {
             let why = refused.detail.split(". ").next().unwrap_or_default();
-            Err(why.strip_prefix(&format!("{url}: ")).unwrap_or(why).to_owned())
+            Err(why.strip_prefix(&format!("{}: ", tensorfs::fetch::shown(url))).unwrap_or(why).to_owned())
         }
         Ok(Ok(())) => Ok(bytes),
     }

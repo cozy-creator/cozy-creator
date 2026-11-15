@@ -166,6 +166,7 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
     };
     let models = choices(spec.models)?;
     for source in models.iter().flat_map(|choice| std::iter::once(choice.source.as_str()).chain(choice.adapters.iter().map(|adapter| adapter.source.as_str()))) {
+        crate::published::named_source(source).map_err(|(code, message)| Error::validation(code, message))?;
         crate::private_io::check_model_source(source)
             .map_err(|error| Error::validation("private_model_import_unsupported", error.to_string()))?;
     }

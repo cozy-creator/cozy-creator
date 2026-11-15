@@ -309,6 +309,11 @@ impl Seal {
         if let Some(root) = &self.tensorfs_home {
             imposed.insert("TENSORFS_HOME".into(), path(root.clone()));
         }
+        // The origins this machine's operator declared local, and no others, for the executor's fetches.
+        let local = tensorfs::fetch::local_origins();
+        if !local.is_empty() {
+            imposed.insert("TENSORFS_LOCAL_ORIGINS".into(), local.join(","));
+        }
         if self.group {
             imposed.insert("NCCL_NVLS_ENABLE".into(), "0".into());
         }

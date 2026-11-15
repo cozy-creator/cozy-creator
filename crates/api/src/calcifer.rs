@@ -1938,7 +1938,7 @@ pub struct Ended {
 
 /// `GET /v1/runs/{id}/play?output=<name[/i]>&expires_s=N`: how a browser plays one run output
 /// straight from its machine over WebRTC.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Play {
     /// `host:port` the browser dials.
@@ -2298,17 +2298,47 @@ pub struct SessionCode {
 }
 
 /// `POST /v1/session`'s body.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedeemCode {
     pub code: String,
 }
 
 /// `POST /v1/session`: `token` for `Authorization`, `media` for the `?media=` of a file's URL.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BrowserSession {
     pub token: String,
     pub media: String,
+}
+
+// Credentials are never printed.
+impl fmt::Debug for Play {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Play").field("address", &self.address).field("expires_s", &self.expires_s).finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for RedeemCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedeemCode").finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for BrowserSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BrowserSession").finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for Holder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Holder")
+            .field("address", &self.address)
+            .field("pid", &self.pid)
+            .field("version", &self.version)
+            .field("started_at_ms", &self.started_at_ms)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The file in Calcifer's directory (`~/.cozy/calcifer`) that says, as an `error::Envelope`, why
@@ -2318,7 +2348,7 @@ pub const REFUSED: &str = "refused.json";
 /// What a serving Calcifer publishes beside its lock (`calcifer.lock.holder`, 0600, one JSON
 /// line): where its API listens and the bearer it wants, fresh at every start. Absent while the
 /// lock is held: Calcifer is still opening its store.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Holder {
     pub address: SocketAddr,
     pub token: String,
