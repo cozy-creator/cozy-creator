@@ -290,7 +290,10 @@ async function candidate(context, origin) {
     if (byName.size !== project.count || prepared.files.slice(0, project.count).some(file => byName.get(NAME(file.index))?.sha256 !== `sha256:${file.sha256}`)) throw new Error('prepared project asset hashes changed');
     if (Object.entries(project.cards).some(([name, box]) => ['x', 'y', 'w'].some(key => rows[name]?.[key] !== box[key]))) throw new Error('prepared project positions changed');
     const opened = cli(['open', '--json'], project.folder, STEP), link = new URL(opened.url);
-    if (link.origin !== origin || link.hash || link.search || link.pathname !== `/projects/${encodeURIComponent(project.id)}`) throw new Error('CLI open did not return this project plain Calcifer URL');
+    if (typeof state.code !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{9}$/.test(state.code)) throw new Error('prepared project has no canonical code');
+    const canonical = `/p/${encodeURIComponent(state.code)}`;
+    if (link.origin !== origin || link.hash || link.search || ![canonical, `/projects/${encodeURIComponent(project.id)}`].includes(link.pathname)) throw new Error('CLI open did not return this project plain Calcifer URL');
+    link.pathname = canonical;
     const nativeStorage = await api('/v1/project-storage');
     if (nativeStorage.version !== 3 || typeof nativeStorage.daemon_birth !== 'string' || !nativeStorage.daemon_birth || !String(nativeStorage.principal ?? '').startsWith('user:')) throw new Error('Calcifer did not prove the native project-storage principal');
     // The page itself must prove storage over the real same-origin connection, without a bearer or session.
