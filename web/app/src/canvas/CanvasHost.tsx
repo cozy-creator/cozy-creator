@@ -803,6 +803,7 @@ function Canvas({
   useEffect(() => {
     if (!active) return
     const key = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
       // Bubbling up to here: a name field or the names offered in a text has taken its own Esc, and a menu goes first.
       if (store.viewing.get()) return
       const here = store.inPlace?.name

@@ -129,7 +129,12 @@ export function CanvasSurface(props: Props) {
     const announceSelection = () => {
       const nodes = controller.getNodes().filter(node => node.selected)
       const key = nodes.map(node => node.id).join(" ")
-      if (key !== drawnSelection) { drawnSelection = key; callbacks.current.onSelectionChange({ nodes }) }
+      if (key !== drawnSelection) {
+        drawnSelection = key
+        const name = nodes.find(node => node.data.name === accessibleRef.current)?.data.name ?? nodes[0]?.data.name ?? null
+        accessibleRef.current = name; setAccessible(name)
+        callbacks.current.onSelectionChange({ nodes })
+      }
     }
     const positionOverlay = () => {
       const view = controller.getViewport()
@@ -229,10 +234,11 @@ export function CanvasSurface(props: Props) {
       if (!visible() || callbacks.current.locked || event.button > 1) return
       stopHoverPreview()
       if (nativeInput(event.target)) return
+      element.focus({ preventScroll: true })
       if (event.pointerType === "touch") {
         touches.add(event.pointerId)
         if (touches.size > 1) {
-          multitouch = true; clicked = null
+          multitouch = true; clicked = null; lastTap = null
           callbacks.current.onDragCancel(drag?.begun ? drag.nodes : [])
           drag = null; marquee = null; interactions(); nativeTouchDown(event); invalidate(); return
         }
@@ -268,6 +274,7 @@ export function CanvasSurface(props: Props) {
     }
     const move = (event: PointerEvent) => {
       if (callbacks.current.locked) return
+      if (clicked && Math.hypot(event.clientX - clicked.x, event.clientY - clicked.y) >= 4) lastTap = null
       if (nativePan) { void controller.setViewport({ ...nativePan.camera, x: nativePan.camera.x + event.clientX - nativePan.point.x, y: nativePan.camera.y + event.clientY - nativePan.point.y }); return }
       if (touches.size > 1) return
       if (drag && drag.id !== event.pointerId) return
@@ -321,7 +328,7 @@ export function CanvasSurface(props: Props) {
             else if (take) store.cancelTake(node.data.name, { id: take.id, run: take.run })
             else store.cancelRender(node.data.name)
           }
-          else if (started.touch) { const at = performance.now(); if (lastTap?.name === node.data.name && at - lastTap.at < 500) callbacks.current.onNodeDoubleClick(event, node); lastTap = { name: node.data.name, at, x: event.clientX, y: event.clientY } }
+          else if (started.touch) { const at = performance.now(); if (lastTap?.name === node.data.name && at - lastTap.at < 500 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 16) callbacks.current.onNodeDoubleClick(event, node); lastTap = { name: node.data.name, at, x: event.clientX, y: event.clientY } }
         } else if (!event.shiftKey && !event.ctrlKey && !event.metaKey) { controller.select([]); callbacks.current.onPaneClick() }
       }
       interactions(); settle = 2; invalidate()
@@ -331,7 +338,7 @@ export function CanvasSurface(props: Props) {
       for (const id of new Set([...touches, drag?.id, marquee?.id, clicked?.id, nativePan?.id])) if (id !== undefined && element.hasPointerCapture(id)) element.releasePointerCapture(id)
       callbacks.current.onDragCancel(drag?.begun ? drag.nodes : [])
       controller.cancelInteraction()
-      touches.clear(); multitouch = false; nativePan = null; space = false; element.style.cursor = ""
+      touches.clear(); multitouch = false; nativePan = null; lastTap = null; space = false; element.style.cursor = ""
       drag = null; marquee = null; clicked = null; pointerDown = false
       if (selection.current) selection.current.hidden = true
       interactions(); invalidate()
@@ -343,10 +350,16 @@ export function CanvasSurface(props: Props) {
       if (!visible() || isDisabled.current || nativeInput(event.target)) return
       if (event.code === "Space") { space = true; element.style.cursor = "grab"; event.preventDefault() }
       if (event.target !== element || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Enter"].includes(event.key)) return
-      const nodes = controller.getNodes(), index = nodes.findIndex(n => n.data.name === accessibleRef.current)
-      if (event.key === "Enter") { const node = nodes[index]; if (node) store.openHere(node.data.name); return }
+      const nodes = controller.getNodes(), selected = nodes.filter(node => node.selected)
+      const anchor = selected.find(node => node.data.name === accessibleRef.current) ?? selected[0]
+      const index = nodes.findIndex(node => node === anchor)
+      if (event.key === "Enter") {
+        if (anchor) { event.preventDefault(); event.stopImmediatePropagation(); store.openHere(anchor.data.name) }
+        return
+      }
+      event.preventDefault(); event.stopImmediatePropagation()
       const next = nodes[Math.max(0, Math.min(nodes.length - 1, index + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1)))]
-      if (next) { event.preventDefault(); controller.select([next.id]); setAccessible(next.data.name); void controller.fitView({ bounds: [next.bounds], maxZoom: controller.getViewport().zoom }) }
+      if (next) { controller.select([next.id]); void controller.fitView({ bounds: [next.bounds], maxZoom: controller.getViewport().zoom }) }
     }
     const keyUp = (event: KeyboardEvent) => { if (event.code === "Space") { space = false; element.style.cursor = "" } }
     const wheel = (event: WheelEvent) => {
