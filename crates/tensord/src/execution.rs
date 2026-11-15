@@ -1441,6 +1441,22 @@ impl Engine {
         fs::create_dir_all(&root)?;
         Ok(root)
     }
+    /// Run `id`'s own folder inside its project (the machine's for a run of none): its call's temporary files, working
+    /// directory, home and output (`Invoke.scratch`, cl-984), there until its call is done (`drop_scratch`).
+    pub(crate) fn scratch(&self, id: &str) -> io::Result<PathBuf> {
+        let root = self.custody_root(id)?.join("scratch");
+        fs::create_dir_all(&root)?;
+        platform::durable::set_mode(&root, 0o700)?;
+        Ok(root.join(id))
+    }
+    /// Run `id`'s call is done: its folder goes. One its project took away with it (locked, deleted) is already gone.
+    pub(crate) fn drop_scratch(&self, id: &str) {
+        let Ok(root) = self.custody_root(id) else { return };
+        match fs::remove_dir_all(root.join("scratch").join(id)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => tracing::warn!(run = %id, "its scratch was not removed: {error}"),
+            _ => {}
+        }
+    }
     /// Take the result's verified files into custody without publishing a terminal. A pooled
     /// executor returns to its idle pool before its caller can observe completion and call again.
     pub(crate) fn managed_result_record(

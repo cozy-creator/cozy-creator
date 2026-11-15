@@ -9,6 +9,7 @@ stand_as() {
   local name=$1
   shift
   (cd / && sudo -u "cozy-$name" -H env ${SSL_CERT_FILE:+SSL_CERT_FILE="$SSL_CERT_FILE"} ${COZY_HUB_URL:+COZY_HUB_URL="$COZY_HUB_URL"} \
+    ${COZY_LOCAL_ORIGINS:+COZY_LOCAL_ORIGINS="$COZY_LOCAL_ORIGINS"} \
     "/opt/cozy-$name/cozy" "$@" < /dev/null 2>> "$OUT/$name.err")
 }
 

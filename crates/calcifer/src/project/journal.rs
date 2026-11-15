@@ -48,6 +48,7 @@ impl RunOwner {
     pub(crate) fn open(&self, attached: bool, known: bool) -> OpenProject { OpenProject { project: Arc::downgrade(&self.project), controller: self.controller.clone(), attached, known } }
     pub(crate) fn same_view(&self, other:&Self)->bool { Arc::ptr_eq(&self.project,&other.project) }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
+    pub(crate) fn key(&self) -> String { self.project.key() }
     pub(crate) fn root(&self) -> &std::path::Path { &self.project.root }
     pub(crate) fn store(&self) -> store::Result<ProjectStore> {
         let view = vault::try_admit_work(&self.project).map_err(project_error)?;

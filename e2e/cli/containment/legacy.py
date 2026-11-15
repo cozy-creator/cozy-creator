@@ -233,7 +233,7 @@ def read_db(path: Path) -> Iterator[sqlite3.Connection]:
 
 
 # project.db's current schema (db.rs VERSION): what Calcifer migrates a released project to.
-PROJECT_SCHEMA = 5
+PROJECT_SCHEMA = 6
 
 
 def read_schema(path: Path) -> int:

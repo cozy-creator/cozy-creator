@@ -148,7 +148,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
     let notes = rows.iter().flat_map(|row| row.unused.iter().map(|unused| api::calcifer::project::Warning::of(&row.name, unused.line(&row.name)))).collect();
-    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), path: folder.dir.clone(), assets: vec![], heads, queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, notes, next, board: None, unsent: vec![], machines: vec![] };
+    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads, queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, notes, next, board: None, unsent: vec![], machines: vec![] };
     Ok(Model { rev, heard, doc, lock, head, rows, stand, ids })
 }
 
@@ -158,7 +158,7 @@ fn cuts_of(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing]) -> Vec<C
 
 /// A row with what's going this moment on it, and what of it this person hasn't looked at. A render moves in the walk's file, which this is
 /// never read again for.
-fn overlaid(row: &mut Row, rendering: &BTreeMap<String, f64>, making: &HashMap<String, Vec<u64>>, takes: &HashMap<String, Vec<TakeNow>>, ids: &HashMap<String, String>, unseen: &Unseen) {
+fn overlaid(row: &mut Row, key: &str, rendering: &BTreeMap<String, f64>, making: &HashMap<String, Vec<u64>>, takes: &HashMap<String, Vec<TakeNow>>, ids: &HashMap<String, String>, unseen: &Unseen) {
     row.unseen = unseen_in(row, ids.get(&name_key(&row.name)).and_then(|id| unseen.get(id)));
     row.rendering = rendering.get(&row.name).copied();
     if row.rendering.is_some() {
@@ -179,8 +179,8 @@ fn overlaid(row: &mut Row, rendering: &BTreeMap<String, f64>, making: &HashMap<S
         row.standing = RowStanding::Making;
         row.failure = None;
         row.status = match runs.as_slice() {
-            [run] => format!("making (run {run})"),
-            runs => format!("making (runs {})", runs.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")),
+            [run] => format!("making (run {key}-{run})"),
+            runs => format!("making (runs {})", runs.iter().map(|run| format!("{key}-{run}")).collect::<Vec<_>>().join(", ")),
         };
     }
 }
@@ -194,6 +194,7 @@ impl Model {
             state.warnings.insert(0, api::calcifer::project::Warning::of_project(super::not_saved(&why)));
         }
         state.busy = *project.walking.lock().expect("walking lock");
+        state.key = project.key();
         state.machines = project.folder.machines();
         state.board = board_of(project);
         let walk = project.folder.walk_now().unwrap_or_default();
@@ -205,7 +206,8 @@ impl Model {
             let (making, takes) = (making_now(&walk), takes_now(project, &walk));
             let unseen = project.unseen.lock().expect("unseen lock");
             state.assets = self.rows.clone();
-            state.assets.iter_mut().for_each(|row| overlaid(row, &rendering, &making, &takes, &self.ids, &unseen));
+            let key = project.key();
+            state.assets.iter_mut().for_each(|row| overlaid(row, &key, &rendering, &making, &takes, &self.ids, &unseen));
         }
         state
     }
@@ -220,7 +222,7 @@ impl Model {
         let mut row = self.rows[i].clone();
         let walk = project.folder.walk_now().unwrap_or_default();
         let (making, takes) = (making_now(&walk), takes_now(project, &walk));
-        overlaid(&mut row, &project.rendering.lock().expect("rendering lock"), &making, &takes, &self.ids, &project.unseen.lock().expect("unseen lock"));
+        overlaid(&mut row, &project.key(), &project.rendering.lock().expect("rendering lock"), &making, &takes, &self.ids, &project.unseen.lock().expect("unseen lock"));
         row
     }
 }

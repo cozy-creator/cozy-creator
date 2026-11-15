@@ -210,8 +210,10 @@ require_test_hub "$HUB" || die isolation "the fixture Hub did not verify as loca
 export COZY_TEST_HUB_CA=$WORK/ca.pem
 export COZY_TEST_HUB_REQUEST_LOG=$WORK/requests.jsonl
 
-# The client, as its release installs it; every cozy process reads config.toml's hub_url.
-mkdir -p ~/.cozy && printf 'hub_url = "%s"\n' "$HUB" >> ~/.cozy/config.toml
+# The client, as its release installs it; every cozy process reads config.toml's hub_url. Its ingress and store are on
+# loopback too: declared local (`local_origins`), as no URL a run or a Hub answer names ever is.
+export COZY_LOCAL_ORIGINS=$ORIGIN,$S3
+mkdir -p ~/.cozy && printf 'hub_url = "%s"\nlocal_origins = "%s"\n' "$HUB" "$COZY_LOCAL_ORIGINS" >> ~/.cozy/config.toml
 export COZY_HUB_URL=$HUB
 if [ -n "$BIN" ]; then
   mkdir -p "$HOME/.cozy/bin" && install -m 0755 "$BIN" "$HOME/.cozy/bin/cozy$EXE" || die client "could not install the candidate CLI"

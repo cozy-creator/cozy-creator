@@ -303,7 +303,7 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         }
         match machines.current(&row.name).await.map_err(|e| e.message)? {
             None => {}
-            Some(run) => return Err(format!("updating it to cozy {own} first (run {})", run.number)),
+            Some(run) => return Err(format!("updating it to cozy {own} first (run {})", run.name)),
         }
     }
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![] })

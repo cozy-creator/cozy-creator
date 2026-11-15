@@ -37,21 +37,11 @@ pub(crate) fn origin_key(origin: &str) -> Option<String> {
     Some(format!("{scheme}://{}:{port}", host.to_ascii_lowercase()))
 }
 
-fn loopback_host(key: &str) -> bool {
-    let host = key
-        .split_once("://")
-        .and_then(|(_, rest)| rest.rsplit_once(':'))
-        .map(|(host, _)| host)
-        .unwrap_or_default();
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
-}
-
-/// An HTTPS origin, or plaintext HTTP on loopback only.
+/// An HTTPS origin, or plaintext HTTP to one this machine's operator declared local (`local_origins`):
+/// never a loopback one a request names on its own.
 pub(crate) fn valid_origin(origin: &str) -> bool {
     match origin_key(origin) {
-        Some(key) => {
-            key.starts_with("https://") || key.starts_with("http://") && loopback_host(&key)
-        }
+        Some(key) => key.starts_with("https://") || key.starts_with("http://") && tensorfs::fetch::is_local(&key),
         None => false,
     }
 }

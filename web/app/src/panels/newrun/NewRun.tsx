@@ -12,6 +12,7 @@ import { DrawerFrame } from "../Drawer"
 import { DropZone, FileRow, useFiles } from "../FileDrop"
 import { shown } from "../format"
 import { OnMachine } from "../machines/OnMachine"
+import { runName } from "../runs/words"
 import { hideFiles, revealFiles } from "./fields"
 import { RunForm, UNREADABLE } from "./RunForm"
 
@@ -116,7 +117,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
 
   const done = ({ run, notes, replay }: Submitted) => {
     // One note for one run, whatever it has to say.
-    const lines = [replay ? `This was asked already: run ${run.number}.` : "", ...(notes ?? []).map((note) => note.message)].filter(Boolean)
+    const lines = [replay ? `This was asked already: run ${runName(run)}.` : "", ...(notes ?? []).map((note) => note.message)].filter(Boolean)
     if (lines.length) say(lines.join(" "))
     navigate(to(`runs/${run.number}`))
   }

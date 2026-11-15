@@ -22,7 +22,7 @@ const WARM = process.platform === 'linux' ? [
   ['../web/heavy.py/heavy', 'instructions=warm'],
 ] : [];
 /** What isolated.sh publishes at the root for every web job. */
-const SEED = ['qwen-image-2', 'minimax-h3', 'sdxl', 'birefnet', 'moss-image', 'e2e-boxed'];
+const SEED = ['qwen-image-2', 'minimax-h3', 'sdxl', 'birefnet', 'moss-image'];
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite sets it`); })();
 

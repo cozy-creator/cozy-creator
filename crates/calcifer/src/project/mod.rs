@@ -26,6 +26,7 @@ mod web_seed_tests;
 pub(crate) mod host;
 mod jobs;
 pub(crate) mod journal;
+pub(crate) mod key;
 pub(crate) use journal::{OpenProject, ProjectRef, ProjectStore, RunOwner};
 mod keyed;
 pub(crate) mod legacy_worker;
@@ -139,6 +140,8 @@ struct Heard {
 pub(crate) struct Project {
     id: String,
     code: String,
+    /// What its runs are named by, `KEY-N` (cl-987).
+    key: Mutex<String>,
     /// Immutable owner. A recycled physical mount path must never choose another project's root.
     root: PathBuf,
     /// Cache ownership follows the physical mount, not a replaceable viewer authorization.
@@ -246,6 +249,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/vault", get(vault::read).post(vault::write))
         .route("/v1/projects/{id}/vault/operations/{operation}", axum::routing::put(vault_operation::write).delete(vault_operation::acknowledge))
         .route("/v1/projects/{id}/address", get(address))
+        .route("/v1/projects/{id}/key", get(key::read).put(key::change))
 }
 
 /// Watches the plain project `id`'s folder `dir`, for what changes with no write of Calcifer's: a file into or out of `files/` (one
@@ -329,33 +333,38 @@ impl Projects {
         let mount_id = vault::mount_identity(&root);
         let physical = current_view(&root)?;
         let dir = physical.as_path();
-        let (folder, (id, name, code)) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
-            let (id, name, code) = identify_loaded(api, dir, folder)?;
+        let (folder, Identified { id, name, code, key }) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
+            let identified = identify_loaded(api, dir, folder)?;
+            let id = &identified.id;
             // Validate a move before inherited local work can be unbound or resumed. A
             // rendering project keeps its original physical folder until its runs land.
-            let moved = self.open.lock().expect("projects lock").get(&id).and_then(Weak::upgrade)
+            let moved = self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)
                 .filter(|open| open.root != root || open.mount_id != mount_id || open.folder.dir != dir);
             if let Some(open) = moved {
                 if *open.walking.lock().expect("walking lock") {
                     let said = format!("{id} moved from {} while it renders: move it back, or once its runs land", open.folder.dir.display());
                     return Err(Error::new(Kind::Conflict, "project_busy", said));
                 }
-                self.open.lock().expect("projects lock").remove(&id);
+                self.open.lock().expect("projects lock").remove(id);
             }
-            Ok((id, name, code))
+            Ok(identified)
         }))?;
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
         let project = match open.get(&id).and_then(Weak::upgrade)
             .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir) {
-            Some(project) => project,
+            Some(project) => {
+                *project.key.lock().expect("key lock") = key;
+                project
+            }
             None => {
                 let unseen=unseen::read(&folder,&id)?;
                 let watch = (!vault::encrypted(&root)).then(|| watch(&id, dir)).flatten();
                 let project = Arc::new(Project {
                     id: id.clone(),
                     code,
+                    key: Mutex::new(key),
                     root,
                     mount_id,
                     folder,
@@ -762,7 +771,21 @@ fn folder_name(dir: &FsPath) -> String {
 
 /// The current native project in `dir`, its canonical identity recorded in the index. A copy
 /// another folder still holds takes a new id; a name another project has takes `_2`.
-fn identify(api: &Api, dir: &FsPath) -> Result<(String, String, String), Error> {
+/// A project's folder identified: its id, name, public code and key.
+struct Identified {
+    id: String,
+    name: String,
+    code: String,
+    key: String,
+}
+
+/// What identifying a folder keeps in its project.db: its identity, or its key (`fresh`: the keys it held go, a copy's original's).
+enum Keep<'a> {
+    Identity { id: &'a str, name: &'a str, code: &'a str },
+    Key { key: &'a str, fresh: bool },
+}
+
+fn identify(api: &Api, dir: &FsPath) -> Result<Identified, Error> {
     let path = dir.join(db::DB);
     if !path.is_file() {
         return Err(Folder::not_a_project(dir));
@@ -770,14 +793,21 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String, String), Error> 
     let mut conn = db::open(&path)?;
     let kept = db::identity(&conn);
     let code = db::meta(&conn, "code");
-    identify_with(api, dir, kept, code, |id, name, code| db::set_identity(&mut conn, &path, id, name, Some(code)))
+    let keys = db::keys(&conn);
+    identify_with(api, dir, kept, code, keys, |keep| match keep {
+        Keep::Identity { id, name, code } => db::set_identity(&mut conn, &path, id, name, Some(code)),
+        Keep::Key { key, fresh } => db::set_key(&conn, &path, key, fresh),
+    })
 }
 
-fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<(String, String, String), Error> {
-    identify_with(api, dir, folder.canonical_identity()?, folder.public_code()?, |id, name, code| folder.set_identity(id, name, code))
+fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<Identified, Error> {
+    identify_with(api, dir, folder.canonical_identity()?, folder.public_code()?, folder.keys()?, |keep| match keep {
+        Keep::Identity { id, name, code } => folder.set_identity(id, name, code),
+        Keep::Key { key, fresh } => folder.set_key(key, fresh),
+    })
 }
 
-fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_code: Option<String>, keep: impl FnOnce(&str, &str, &str) -> Result<(), Error>) -> Result<(String, String, String), Error> {
+fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_code: Option<String>, kept_keys: Vec<String>, mut keep: impl FnMut(Keep<'_>) -> Result<(), Error>) -> Result<Identified, Error> {
     let store = api.calcifer.store();
     let logical = vault::logical(dir);
     refuse_own_folder(&logical)?;
@@ -816,10 +846,16 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
     let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and(kept_code);
     let code = reserve_code(store, &id, &name, &logical, kept_code.as_deref())?;
     if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
-        keep(&id, &name, &code)?;
+        keep(Keep::Identity { id: &id, name: &name, code: &code })?;
+    }
+    // A copy's keys are its original's.
+    let kept_keys = if kept.as_ref().is_some_and(|(held, _)| held == &id) { kept_keys } else { vec![] };
+    let key = key::keyed(api, &id, &name, &kept_keys)?;
+    if kept_keys.last() != Some(&key) {
+        keep(Keep::Key { key: &key, fresh: kept_keys.is_empty() })?;
     }
     vault::register_plain_root(&logical, &id)?;
-    Ok((id, name, code))
+    Ok(Identified { id, name, code, key })
 }
 
 /// What the first open of a folder found to be a copy tells, once: its new identity, and the project it was a copy of.
@@ -1068,6 +1104,9 @@ struct Walker {
     quotables: HashMap<String, placement::Job>,
     /// Ready jobs whose quote waits for their package's install, off their turn (`Done::Quoted`), by key.
     quoting: HashSet<String>,
+    /// Jobs waiting for another's output whose quote reads their package statically, off the plan (`Done::Foreseen`), by key: asked
+    /// once while they wait, however long that takes; one that failed is asked again at its turn.
+    foreseeing: HashSet<String>,
     /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
     starts: HashMap<String, (i64, Vec<String>)>,
     /// What each machine is told to have ready for each job, by machine and job key: its Hub, item and function; none: nothing.
@@ -1343,21 +1382,21 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     // opened here.
     let unread = match dir.join(db::DB).is_file() {
         true => {
-            let (id, _, code) = tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?;
-            api.projects.open_now(&id).is_none().then_some((id, code))
+            let identified = tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?;
+            api.projects.open_now(&identified.id).is_none().then_some(identified)
         },
         false => None,
     };
-    let (id, code, said) = match unread {
-        Some((id, code)) => (id, code, copy_told(&dir).into_iter().collect()),
+    let (id, code, key, said) = match unread {
+        Some(Identified { id, code, key, .. }) => (id, code, key, copy_told(&dir).into_iter().collect()),
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
             copy_told(&project.root);
-            (project.id.clone(), project.code.clone(), said)
+            (project.id.clone(), project.code.clone(), project.key(), said)
         }
     };
-    let opened = opened(id, code, &dir);
+    let opened = opened(id, code, key, &dir);
     api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()), Some(&opened.code))?;
     let next = vec!["cozy open".into()];
     let response = Json(Opened { next, said, recovery_secret, ..opened }).into_response();
@@ -1373,8 +1412,8 @@ fn unmakeable(path: &FsPath, e: std::io::Error) -> Error {
 }
 
 /// The project `id`, in `dir`, as an answer gives it.
-fn opened(id: String, code: String, dir: &FsPath) -> Opened {
-    Opened { id, code, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![], recovery_secret: None }
+fn opened(id: String, code: String, key: String, dir: &FsPath) -> Opened {
+    Opened { id, code, key, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![], recovery_secret: None }
 }
 
 /// A new project called `name` in `dir`, with a new id, holding the starter film or nothing: its `project.db`, made whole and then
@@ -1495,6 +1534,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
             used_at_ms: entry.used_at_ms,
             id: entry.id,
             code: entry.code,
+            key: entry.key,
         })
         .collect();
     Ok(Json(Listed { projects, older }))
@@ -1504,7 +1544,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
 async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> Result<Json<api::calcifer::project::Address>, Refusal> {
     if api::target::written_as_path(reference.trim()) {
         let project = api.projects.get(&api, &reference)?;
-        return Ok(Json(api::calcifer::project::Address { id: project.id.clone(), code: project.code.clone(), gone: None }));
+        return Ok(Json(api::calcifer::project::Address { id: project.id.clone(), code: project.code.clone(), key: project.key(), gone: None }));
     }
     let entry = match known(&api, &reference) {
         Ok(entry) => entry,
@@ -1512,12 +1552,12 @@ async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> 
         Err(error) => {
             let code = code::parse(&reference).unwrap_or_default();
             return match api.calcifer.store().project_gone(&reference, &code) {
-                Ok(Some(gone)) => Ok(Json(api::calcifer::project::Address { id: gone.id, code: gone.code, gone: Some(gone.path.to_string_lossy().into_owned()) })),
+                Ok(Some(gone)) => Ok(Json(api::calcifer::project::Address { id: gone.id, code: gone.code, key: String::new(), gone: Some(gone.path.to_string_lossy().into_owned()) })),
                 _ => Err(Refusal(error)),
             };
         }
     };
-    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code, gone: None }))
+    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code, key: entry.key, gone: None }))
 }
 
 /// Where its rows differ from its document (cl-885): nowhere, always. What e2e checks after each write.
@@ -1544,7 +1584,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], notes: vec![], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder) }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], notes: vec![], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder) }));
         }
     };
     // What a reader now holds is what any change from here is told against.
@@ -2817,13 +2857,18 @@ async fn keep_file(folder: &Folder, source: &str) -> Result<folder::Kept, Refusa
         _ => None,
     });
     let source = whole.as_deref().unwrap_or(source);
-    let Some(digest) = held_name(source)? else {
-        return folder.import(source).await.map_err(|why| import_failed(source, why));
+    let mut kept = match held_name(source)? {
+        None => folder.import(source).await.map_err(|why| import_failed(source, why))?,
+        Some(digest) => match crate::runs::files::held_for(&folder.dir, &digest) {
+            Some(at) => tokio::task::block_in_place(|| folder.take_held(&at, &digest.to_string())).map_err(|why| import_failed(source, why))?,
+            None => folder.own(&digest.to_string()).ok_or_else(|| not_held(source))?,
+        },
     };
-    match crate::runs::files::held_for(&folder.dir, &digest) {
-        Some(at) => tokio::task::block_in_place(|| folder.take_held(&at, &digest.to_string())).map_err(|why| import_failed(source, why)),
-        None => folder.own(&digest.to_string()).ok_or_else(|| not_held(source)),
+    // A picture's size from its header now, so its box is drawn at its shape from the first read (`Folder::keep_shapes`).
+    if kept.field == "image" && kept.file.width == 0 && let Some((width, height)) = tools::shape_of(&folder.path(&kept.file.path)) {
+        (kept.file.width, kept.file.height, kept.file.shape_only) = (width, height, true);
     }
+    Ok(kept)
 }
 
 /// The digest `source` names, if it names one.
@@ -2837,7 +2882,8 @@ fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
 
 fn import_failed(source: &str, why: String) -> Refusal {
     // A hash is no one's to read: a person dropped a file, and is told of it by its name.
-    let said = if source.starts_with("sha256:") { why } else { format!("{source}: {why}") };
+    // A link is shown without its query, which a presigned one's credential is.
+    let said = if source.starts_with("sha256:") { why } else { format!("{}: {why}", tensorfs::fetch::shown(source)) };
     Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("import a picture, video or sound"))
 }
 
@@ -2887,6 +2933,7 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::
             (row.sha256, row.path, row.here) = (file.file.sha256.clone(), file.file.path.clone(), true);
             number.set(lock.joined(&name, file.field, Files::from([(file.field.to_owned(), file.file.sha256.clone())])).0);
         })?;
+        folder.keep_shapes([&file])?;
         folder.edit(|written| {
             written.selected(&name, number.get(), &file.file.sha256)?;
             if api::calcifer::tool::MEDIA.contains(&file.field) {
@@ -3223,8 +3270,17 @@ const HELD_UP: std::time::Duration = std::time::Duration::from_secs(1);
 /// What a send refused for a machine that went meanwhile says (`Machines::reach`): the job is placed again (cl-920), this many times.
 pub(crate) const GONE: [&str; 3] = ["machine_ended", "machine_offline", "machine_ending"];
 const PLACED_AGAIN: u32 = 3;
-/// How long a job's package may take to say what it calls, and its models' cards what they weigh, before its machines are asked without.
-const QUOTE_LATE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How a job's quote reads its package (`Walk::quotable`).
+#[derive(Clone, Copy, Debug)]
+enum PackageRead {
+    /// As its turn would, not waiting for its install: none while that's going (`host::Wait::Quote`).
+    Now,
+    /// Once its install is done (`host::Wait::Job`).
+    Installed,
+    /// Statically, its install neither asked for nor waited on (`Host::foreseen`): a job waiting for another's output.
+    Foreseen,
+}
 
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
 fn unplanned(walker: &mut Walker, dir: &str, key: &str, why: String) {
@@ -3244,6 +3300,8 @@ enum Done {
     Ahead,
     /// A ready job's quote, once its package's install was done (`Walker::quoting`).
     Quoted { key: String, quotable: Result<Option<placement::Job>, String> },
+    /// A waiting job's quote, its package read statically (`Walker::foreseeing`).
+    Foreseen { key: String, quotable: Result<Option<placement::Job>, String> },
 }
 
 /// What a queued job's machine can fetch before its turn: a function as its text names it, on the machine the plan placed it on.
@@ -3600,7 +3658,11 @@ impl Walk {
         let (mut first, mut followed) = (None, HashSet::new());
         let mut work: FuturesUnordered<BoxFuture<'_, Done>> = FuturesUnordered::new();
         // No quote is going yet: one an earlier walk left ended with it.
-        self.project.walker.lock().expect("walker lock").quoting.clear();
+        {
+            let mut walker = self.project.walker.lock().expect("walker lock");
+            walker.quoting.clear();
+            walker.foreseeing.clear();
+        }
         // A project's revision moved (this Calcifer's commit, or another program's its folder watch saw): what was deleted stops.
         let mut edits = crate::events::edits();
         // A machine's Status moved (a run started or ended, bytes came, a machine came or went): a job held for a machine is placed again.
@@ -3629,7 +3691,8 @@ impl Walk {
             }
             // What waits for another's output is placed too, so its machine fetches ahead for it.
             if !self.project.walker.lock().expect("walker lock").graph.has_ready() {
-                drop(self.plan(false).await);
+                let unquoted = self.plan(false).await;
+                self.quote_later(unquoted, &mut work);
             }
             // What the jobs not sent will run with goes to the machines they're planned on, as each one's upcoming list (cl-967).
             let ahead = self.ahead_jobs();
@@ -3644,7 +3707,8 @@ impl Walk {
                 }
                 let (key, wanted) = (key.clone(), wanted.clone());
                 work.push(async move {
-                    let item = match self.item(&key, &wanted).await {
+                    let made = self.item(&key, &wanted).await;
+                    let item = match made {
                         Ok(item) => item,
                         Err(error) => {
                             warn!("{}: what {key} needs ahead on {}: {}", self.folder().dir.display(), wanted.machine, error.message);
@@ -3769,12 +3833,9 @@ impl Walk {
 
     /// What `wanted`'s machine has ready for job `key` (`PUT /v1/upcoming`): the function its text names, else the first of its package
     /// that makes this kind, with its model choices; and the function, as its row says it. None: its package makes nothing of the kind.
-    /// Local code is installed there first, as a call's is.
+    /// Local code is installed there first, as a call's is. A project's published code and its models are the machine's, as every
+    /// project's are (Paul, 11-13); an encrypted project's local code goes with the run that calls it.
     async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
-        // A machine-wide list is no project's: what a project's job will read comes with its own run, in its own storage.
-        if crate::private_io::of_path(&self.folder().dir)?.is_some() {
-            return Ok(None);
-        }
         let Wanted { machine, hub, with, kind, made } = wanted;
         let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), host::Wait::Job(key, None)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
@@ -3791,54 +3852,57 @@ impl Walk {
         let source = match &renderer.local {
             None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
             Some(path) => {
-                // A private project's code goes with the run that calls it.
-                if crate::private_io::of_path(&self.folder().dir)?.is_some() {
+                // Staged in its project's storage scope, as its call's are; an encrypted project's code goes with the run that calls it.
+                let scope = crate::private_io::of_path(&self.folder().dir)?;
+                if scope.as_ref().is_some_and(|scope| !scope.storage.ordinary) {
                     return Ok(None);
                 }
-                v1::Source::Local(self.host.ready(path, machine, hub, host::Wait::Job(key, None)).await?.source)
+                v1::Source::Local(crate::private_io::context(scope, self.host.ready(path, machine, hub, host::Wait::Job(key, None))).await?.source)
             }
         };
         let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
         Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
     }
 
-    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices; else why not. `late`: how long its package
-    /// may take to say what it calls, and its models' cards what they weigh (none: as long as they take). `waits`: whether it waits for
-    /// its package's install; none when it doesn't, and that install is going.
-    #[allow(clippy::too_many_arguments)]
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>, waits: bool) -> Result<Option<placement::Job>, String> {
-        let api = self.host.api();
-        let limit = late.unwrap_or(std::time::Duration::MAX);
-        let wait = match waits {
-            true => host::Wait::Job(&key, None),
-            false => host::Wait::Quote(&key),
-        };
-        let package = match tokio::time::timeout(limit, self.host.package(hub, with, &self.folder().dir, &on, wait)).await {
-            Err(_) => return Err(format!("{with} didn't say within {} s what it calls", limit.as_secs())),
-            Ok(Err(e)) if e.code == host::INSTALLING => return Ok(None),
-            Ok(Err(e)) => return Err(format!("{with}: {}", e.message)),
-            Ok(Ok(package)) => package,
-        };
-        let renderer = match package.maker() {
-            Ok(Some(renderer)) => renderer,
-            Ok(None) => return Err(format!("{with} names no function")),
-            Err(e) => return Err(format!("{with}: {}", e.message)),
-        };
-        let models = tokio::time::timeout(limit, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
-        let size = v1::JobSize::of(&Value::Object(made));
-        let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
-            interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
-        });
-        Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on }))
+    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices, its package read as `read` says; else why
+    /// not. None: its install is going, and `read` doesn't wait for it.
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, String> {
+        let quoted = async {
+            let api = self.host.api();
+            let dir = &self.folder().dir;
+            let package = match read {
+                PackageRead::Now => self.host.package(hub, with, dir, &on, host::Wait::Quote(&key)).await,
+                PackageRead::Installed => self.host.package(hub, with, dir, &on, host::Wait::Job(&key, None)).await,
+                PackageRead::Foreseen => self.host.foreseen(hub, with, dir, &on).await,
+            };
+            let package = match package {
+                Err(e) if e.code == host::INSTALLING => return Ok(None),
+                Err(e) => return Err(format!("{with}: {}", e.message)),
+                Ok(package) => package,
+            };
+            let renderer = match package.maker() {
+                Ok(Some(renderer)) => renderer,
+                Ok(None) => return Err(format!("{with} names no function")),
+                Err(e) => return Err(format!("{with}: {}", e.message)),
+            };
+            let models = fit::checkpoints(&api, hub, &package, &renderer.function, &made).await;
+            let size = v1::JobSize::of(&Value::Object(made));
+            let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
+                interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
+            });
+            Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on }))
+        }.await;
+        quoted
     }
 
     /// Places the jobs not sent yet, the nearest `plan::PLANNED` of them (cl-967): every machine pictured from the Status it pushed, each
     /// job beginning once what it reads ends, ahead of it on each machine the runs sent there that it hasn't accepted yet. A ready job's
-    /// place is where it goes at its turn; one waiting for another's output, where its weights are fetched ahead. A ready job waits for its
-    /// package to say what it calls; one waiting, `QUOTE_LATE` at most. Neither waits for its package's install, which would hold every
-    /// job of the turn (owner, cl-973): the ready jobs whose install is going are returned, to be quoted once it's done. Each ready job's
-    /// line says where it goes and why, or why no machine was planned: then it goes to the first of its machines that takes it. `update`:
-    /// as `placement::pictures`.
+    /// place is where it goes at its turn; one waiting for another's output, where its weights are fetched ahead, else the first of its
+    /// machines, as a ready one goes at its turn. A ready job waits for its package to say what it calls, but not for its install, which
+    /// would hold every job of the turn (owner, cl-973). Returned to be quoted in the walk's work (`quote_later`): the ready jobs whose
+    /// install is going, and the waiting jobs not quoted yet, whose package is read statically (cl-905: its install neither holds its
+    /// quote nor waits for a wake to place it). Each ready job's line says where it goes and why, or why no machine was planned: then it
+    /// goes to the first of its machines that takes it. `update`: as `placement::pictures`.
     async fn plan(&self, update: bool) -> Vec<Unsent> {
         let Ok(walk) = self.folder().walk_now() else { return vec![] };
         let dir = self.folder().dir.display().to_string();
@@ -3871,14 +3935,18 @@ impl Walk {
         if unsent.is_empty() {
             return vec![];
         }
-        // What each asks of a machine, read once.
-        let known: HashSet<String> = {
+        // What each asks of a machine, read once: a ready job's here, a waiting one's in the walk's work.
+        let (known, foresee): (HashSet<String>, HashSet<String>) = {
             let walker = self.project.walker.lock().expect("walker lock");
-            walker.quotables.keys().chain(&walker.quoting).cloned().collect()
+            let known = walker.quotables.keys().chain(&walker.quoting).cloned().collect();
+            let foresee = (unsent.iter().filter(|unsent| !unsent.ready))
+                .filter(|unsent| !walker.quotables.contains_key(&unsent.key) && !walker.foreseeing.contains(&unsent.key))
+                .map(|unsent| unsent.key.clone())
+                .collect();
+            (known, foresee)
         };
-        let read = unsent.iter().filter(|unsent| !known.contains(&unsent.key)).map(|unsent| async move {
-            let late = (!unsent.ready).then_some(QUOTE_LATE);
-            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), late, false).await)
+        let read = unsent.iter().filter(|unsent| unsent.ready && !known.contains(&unsent.key)).map(|unsent| async move {
+            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), PackageRead::Now).await)
         });
         let mut unread: HashMap<String, String> = HashMap::new();
         let mut installing: HashSet<String> = HashSet::new();
@@ -3959,17 +4027,25 @@ impl Walk {
             api::estimate::learn_reads(&frames, &mut job.ask);
         }
         let placed = plan::plan(&pictures, &planned, now);
+        let said = |offers: &[Offer]| offers.iter().map(|offer| placement::said(offer, now)).collect::<Vec<_>>().join("; ");
         let mut walker = self.project.walker.lock().expect("walker lock");
-        for ((at, _), placement) in jobs.iter().zip(placed) {
+        for ((at, job), placement) in jobs.iter().zip(placed) {
             let unsent = &unsent[*at];
+            // Where a waiting job is fetched ahead.
+            let ahead = |walker: &mut Walker, on: &On| drop(walker.foreseen.insert(unsent.key.clone(), Some(on.clone())));
             let Some((_, chosen)) = placement.chosen else {
                 walker.placed.remove(&unsent.key);
-                walker.foreseen.remove(&unsent.key);
                 walker.starts.remove(&unsent.key);
+                // A waiting job none of its machines was planned for goes where a ready one would at its turn: the first of them, which
+                // fetches ahead for it.
+                match job.on.first().filter(|_| !unsent.ready) {
+                    Some(first) => ahead(&mut walker, first),
+                    None => drop(walker.foreseen.remove(&unsent.key)),
+                }
                 if unsent.ready {
                     let why = match placement.offers.is_empty() {
                         true => "none of its machines answered".to_owned(),
-                        false => placement.offers.iter().map(|offer| placement::said(offer, now)).collect::<Vec<_>>().join("; "),
+                        false => said(&placement.offers),
                     };
                     unplanned(&mut walker, &dir, &unsent.key, why);
                 }
@@ -3978,13 +4054,13 @@ impl Walk {
             let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
             walker.starts.insert(unsent.key.clone(), (chosen.start_at_ms, fits));
             if !unsent.ready {
-                walker.foreseen.insert(unsent.key.clone(), Some(chosen.machine.clone()));
+                ahead(&mut walker, &chosen.machine);
                 continue;
             }
             // Where each job goes, said when that changes: what placement weighed, for anyone asking why a job went where it did.
             if walker.placed.get(&unsent.key).is_none_or(|was| was.soonest.machine != chosen.machine) {
-                let quoted: Vec<String> = placement.offers.iter().map(|offer| placement::said(offer, now)).collect();
-                info!("{dir}: {} goes to {}: {}", unsent.key, chosen.machine, quoted.join("; "));
+                let quoted = said(&placement.offers);
+                info!("{dir}: {} goes to {}: {quoted}", unsent.key, chosen.machine);
             }
             walker.unplanned.remove(&unsent.key);
             walker.placed.insert(unsent.key.clone(), Placed { offers: placement.offers, soonest: chosen });
@@ -4000,8 +4076,29 @@ impl Walk {
         walker.foreseen.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.starts.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.items.retain(|(_, key), _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.foreseeing.retain(|key| unsent.iter().any(|unsent| unsent.key == *key));
         drop(walker);
-        unsent.into_iter().filter(|unsent| unsent.ready && installing.contains(&unsent.key)).collect()
+        unsent.into_iter().filter(|unsent| if unsent.ready { installing.contains(&unsent.key) } else { foresee.contains(&unsent.key) }).collect()
+    }
+
+    /// Quotes `unquoted` in the walk's work, each once (`plan`): a ready job's once its package's install is done (`Walker::quoting`),
+    /// a waiting job's from its package read statically (`Walker::foreseeing`). The plan after each places it.
+    fn quote_later<'a>(&'a self, unquoted: Vec<Unsent>, work: &mut FuturesUnordered<BoxFuture<'a, Done>>) {
+        for unsent in unquoted {
+            {
+                let mut walker = self.project.walker.lock().expect("walker lock");
+                let going = if unsent.ready { &mut walker.quoting } else { &mut walker.foreseeing };
+                going.insert(unsent.key.clone());
+            }
+            work.push(async move {
+                let read = if unsent.ready { PackageRead::Installed } else { PackageRead::Foreseen };
+                let quotable = self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made, read).await;
+                match unsent.ready {
+                    true => Done::Quoted { key: unsent.key, quotable },
+                    false => Done::Foreseen { key: unsent.key, quotable },
+                }
+            }.boxed());
+        }
     }
 
     /// Of `on`, where job `job` goes, as the last plan placed it (`pick`).
@@ -4114,14 +4211,10 @@ impl Walk {
         if !self.project.walker.lock().expect("walker lock").graph.has_ready() {
             return Ok(false);
         }
-        // Their quotes wait for their packages' installs off this turn: each has its turn once its quote is in (owner, cl-973).
-        for unsent in self.plan(true).await {
-            self.project.walker.lock().expect("walker lock").quoting.insert(unsent.key.clone());
-            work.push(async move {
-                let quotable = self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made, None, true).await;
-                Done::Quoted { key: unsent.key, quotable }
-            }.boxed());
-        }
+        // Their quotes wait for their packages' installs off this turn: each has its turn once its quote is in (owner, cl-973). A
+        // waiting job's is read statically meanwhile, so its machine fetches ahead (cl-905).
+        let unquoted = self.plan(true).await;
+        self.quote_later(unquoted, work);
         let held = self.folder().lock()?;
         self.measuring(&held);
         self.measure()?;
@@ -4349,6 +4442,15 @@ impl Walk {
                     walker.quotables.insert(key, job);
                 }
             }
+            // Read: the next plan places it, and its machine fetches ahead; one its turn read already stands. Not: it isn't asked again
+            // while it waits, and its turn reads it as any.
+            Done::Foreseen { key, quotable } => match quotable {
+                Ok(Some(job)) => {
+                    self.project.walker.lock().expect("walker lock").quotables.entry(key).or_insert(job);
+                }
+                Ok(None) => {}
+                Err(_) => {}
+            },
             Done::Sent { id, key, ask, name, kind, inputs, result } => match result {
                 Ok(()) => {
                     let mut walker = self.project.walker.lock().expect("walker lock");

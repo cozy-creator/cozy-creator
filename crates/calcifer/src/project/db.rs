@@ -29,9 +29,11 @@ pub(crate) const DB: &str = "project.db";
 /// Its write-ahead log, where a commit lands first.
 pub(crate) const WAL: &str = "project.db-wal";
 /// This schema's `user_version`: 4's (cl-904's rows, each box's stable id on its row so the rows alone say what the document does,
-/// cl-885), with the project's run journal beside them. A database of another isn't read; an older one from 2 is migrated (`migrate`).
-/// A new schema is this number and its step in `migrate`.
-pub(super) const VERSION: i64 = 5;
+/// cl-885), with the project's run journal beside them (5) and the keys its runs are named by (6, cl-987). A database of another isn't
+/// read; an older one from 2 is migrated (`migrate`). A new schema is this number and its step in `migrate`.
+pub(super) const VERSION: i64 = 6;
+/// The keys its runs were named by, `KEY-N` (cl-987), in the order it took them: the last is its key now. It travels with the folder.
+const KEYS: &str = "CREATE TABLE IF NOT EXISTS project_keys (key TEXT PRIMARY KEY, ord INTEGER NOT NULL) STRICT;";
 const SCHEMA: &str = "
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
     CREATE TABLE head (key TEXT PRIMARY KEY, ord INTEGER NOT NULL, value TEXT NOT NULL) STRICT;
@@ -241,8 +243,9 @@ fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
 /// alone (cl-904, Paul 11-12: the CRDT is for node state, never files): the document's are written to the rows once, which then
 /// stand, and the document's next change leaves them out. Schema 4 reads a project from its rows (cl-885): it adds each box's id to its
 /// row, and `rows_at` and `conflicts` to `meta`, and changes no row 3 has. Schema 5 adds the project's run journal beside them. A 3
-/// with the journal and no rows, from a candidate of 5, takes the rows too. One transaction from any older schema; the project as it was
-/// is kept beside it once, `project.db.pre-schema5`, never read.
+/// with the journal and no rows, from a candidate of 5, takes the rows too. Schema 6 adds `project_keys` (cl-987), and nothing else: a
+/// 5 takes it in place. One transaction from any older schema; the project as it was is kept beside it once,
+/// `project.db.pre-schema6`, never read.
 fn migrate(path: &Path) -> Result<(), Error> {
     let e = |error| sql(path, error);
     let version = |conn: &Connection| conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0));
@@ -250,6 +253,16 @@ fn migrate(path: &Path) -> Result<(), Error> {
     let checked = connect(path, true)?;
     if !older(version(&checked).map_err(e)?) {
         return Ok(());
+    }
+    if version(&checked).map_err(e)? == 5 {
+        drop(checked);
+        let mut conn = connect(path, false)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
+        if version(&tx).map_err(e)? == 5 {
+            tx.execute_batch(KEYS).map_err(e)?;
+            tx.pragma_update(None, "user_version", VERSION).map_err(e)?;
+        }
+        return tx.commit().map_err(e);
     }
     // A 4 with the journal is a candidate's of 5, never released: refused as it is rather than read as #3198's 4.
     if version(&checked).map_err(e)? == 4 && has_table(&checked, "runs").map_err(e)? {
@@ -283,6 +296,7 @@ fn migrate(path: &Path) -> Result<(), Error> {
     } else if !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name = 'attempt')", [], |row| row.get::<_, bool>(0)).map_err(e)? {
         tx.execute_batch("ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1").map_err(e)?;
     }
+    tx.execute_batch(KEYS).map_err(e)?;
     tx.pragma_update(None, "user_version", VERSION).map_err(e)?;
     tx.commit().map_err(e)
 }
@@ -433,6 +447,24 @@ pub(crate) fn set_meta(conn: &Connection, at: &Path, key: &str, value: Option<&s
         None => conn.execute("DELETE FROM meta WHERE key = ?1", [key]),
     };
     done.map(drop).map_err(|e| sql(at, e))
+}
+
+/// The keys its runs were named by (cl-987), in the order it took them: its key now is the last. None before schema 6.
+pub(crate) fn keys(conn: &Connection) -> Vec<String> {
+    let Ok(mut rows) = conn.prepare("SELECT key FROM project_keys ORDER BY ord") else { return vec![] };
+    rows.query_map([], |row| row.get(0)).map(|rows| rows.flatten().collect()).unwrap_or_default()
+}
+
+/// Keeps `key` as its key now, after those it had; `fresh`, those go first (a copy's were its original's). `seq` doesn't move.
+pub(crate) fn set_key(conn: &Connection, at: &Path, key: &str, fresh: bool) -> Result<(), Error> {
+    let e = |error| sql(at, error);
+    let tx = Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate).map_err(e)?;
+    if fresh {
+        tx.execute("DELETE FROM project_keys", []).map_err(e)?;
+    }
+    tx.execute("INSERT INTO project_keys (key, ord) VALUES (?1, (SELECT COALESCE(MAX(ord), 0) + 1 FROM project_keys))
+        ON CONFLICT (key) DO UPDATE SET ord = excluded.ord", [key]).map_err(e)?;
+    tx.commit().map_err(e)
 }
 
 /// How many of its transactions changed it, read alone: for a project nothing holds open.
@@ -791,6 +823,7 @@ fn initialize_current(conn: &mut Connection, at: &Path, key:Option<&(String,Stri
     tx.execute_batch(SCHEMA).map_err(|error| sql(at, error))?;
     tx.execute_batch(CRDT_SCHEMA).map_err(|error| sql(at, error))?;
     tx.execute_batch(super::journal::SCHEMA).map_err(|error| sql(at, error))?;
+    tx.execute_batch(KEYS).map_err(|error| sql(at, error))?;
     if let Some((key,digest))=key { tx.execute("INSERT INTO request_keys(key,digest,at_ms) VALUES(?1,?2,?3)",params![key,digest,super::now_ms()]).map_err(|error|sql(at,error))?; }
     tx.execute("INSERT INTO meta VALUES ('seq', '0')", []).map_err(|error| sql(at, error))?;
     let mut doc = crdt::Document::new(at);

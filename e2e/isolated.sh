@@ -206,6 +206,8 @@ case $key in
   cli:env-cost) needs='packages birefnet' ;;
   cli:plan) needs='packages birefnet downloads' ;;
   cli:) needs='packages birefnet downloads spare loras vaes fits parts prompts' ;;
+  # shared_scratch's probe and its warm BiRefNet (cl-984).
+  cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published asks about, and CI reads no production (xs-169).
@@ -313,10 +315,32 @@ if [ -n "$needs" ]; then
   done
   publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
+  [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944).
   case $key in cli: | cli:web-suite) publish "$packages/moss-image" ;; esac
-  # The package-ui cell's own package (e2e/cli/project/boxed) as a release: a component that draws one field.
-  [ "$key" != cli:web-suite ] || publish "$here/cli/project/boxed"
+  # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
+  # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
+  if [[ " $needs " == *" catalog "* ]]; then
+    sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
+    systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
+    for dir in "$packages"/*/; do
+      dir=${dir%/} && case ${dir##*/} in qwen-image-2 | minimax-h3 | sdxl | birefnet) continue ;; esac
+      grep -q '^\[project.entry-points."cozy.application"\]' "$dir/pyproject.toml" 2> /dev/null || continue
+      publish "$dir" || log "${dir##*/} not published: $(tail -c 300 "$seed/publish-${dir##*/}.json" | tr '\n' ' ')"
+    done
+    # A release locked to the Runtime before this one, as flux-3-klein 0.7.0 is on production (run 46790): the palette leaves it out.
+    old=$seed/e2e-runtime-044
+    rm -rf "$old" && cp -r "$here/cli/project/boxed" "$old"
+    sed -e 's/^name = "e2e-boxed"/name = "e2e-runtime-044"/' -e 's/"cozy-runtime\[media\]>=[^"]*"/"cozy-runtime[media]>=0.44.0,<0.45"/' "$old/pyproject.toml" > "$old/pyproject.next" && mv "$old/pyproject.next" "$old/pyproject.toml"
+    publish "$old" || log "e2e-runtime-044 not published: $(tail -c 300 "$seed/publish-e2e-runtime-044.json" | tr '\n' ' ')"
+    # And one needing the Runtime after this shard's Hub pin (0.45.0, e2e.yaml), as every 0.25 release did on a laptop still on 0.45.0
+    # (cl-975): a machine on the pin moves up for it, so the palette offers it.
+    next=$seed/e2e-runtime-046
+    rm -rf "$next" && cp -r "$here/cli/project/boxed" "$next"
+    sed -e 's/^name = "e2e-boxed"/name = "e2e-runtime-046"/' -e 's/"cozy-runtime\[media\]>=[^"]*"/"cozy-runtime[media]>=0.46.0,<0.47"/' "$next/pyproject.toml" > "$next/pyproject.next" && mv "$next/pyproject.next" "$next/pyproject.toml"
+    publish "$next" || log "e2e-runtime-046 not published: $(tail -c 300 "$seed/publish-e2e-runtime-046.json" | tr '\n' ' ')"
+  fi
   case $shard in
     local-code | '')
       # Its lock reads the Hub's index, under the Hub's own CA: Calcifer's uv takes the system's bundle once restarted.
