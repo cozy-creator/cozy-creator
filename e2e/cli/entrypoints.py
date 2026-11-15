@@ -34,6 +34,7 @@ PUBLIC = {
     "update",
     "restart",
     "doctor",
+    "config",
     "completion",
     "login",
     "logout",
