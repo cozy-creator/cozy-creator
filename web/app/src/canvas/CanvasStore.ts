@@ -377,8 +377,8 @@ export class CanvasStore {
   /** A position of ours that the stream hasn't echoed: it wins until then. */
   private masks = new Map<string, Card>()
   private gliding = new Map<string, ReturnType<typeof setTimeout>>()
-  /** Boxes to clear of what they lie on, as soon as this turn's changes are in: true for one whose size is its own, which doesn't shrink. */
-  private unsettled = new Set<string>()
+  /** Boxes to clear of what they lie on, as soon as this turn's changes are in, and why: placed by another writer, or grown. */
+  private unsettled = new Map<string, "placed" | "grown">()
   /** When each of this page's moves was answered, by name. */
   private movedAt = new Map<string, number>()
   /** Rows to write, by node id. */
@@ -883,7 +883,7 @@ export class CanvasStore {
       if (row) {
         this.rows.set(name, row)
         this.applyRow(name, row)
-        if (!this.masks.has(name)) this.unsettle(name)
+        if (!this.masks.has(name)) this.unsettle(name, "placed")
       } else if (name === served) {
         this.rows.delete(name)
       }
@@ -1079,7 +1079,7 @@ export class CanvasStore {
       this.onFirstRead?.(present.size > 0)
       this.separate()
     } else {
-      for (const { name } of fresh) this.unsettle(name)
+      for (const { name } of fresh) this.unsettle(name, "placed")
     }
     this.names.set(this.names.get() + 1)
   }
@@ -1229,7 +1229,7 @@ export class CanvasStore {
     // as any box's: a picture placed before it was measured (16:9 until then) pushes aside what it now lies on (cl-885).
     const picture = view.asset?.kind === "image" && !view.hereWords && shownOf(view)
     const resized = before?.slice(before.indexOf(":")) !== shape.slice(shape.indexOf(":"))
-    if (!picture || resized) this.unsettle(key)
+    if (!picture || resized) this.unsettle(key, "grown")
   }
 
   // Keeping clear: no box lies on another
@@ -1332,40 +1332,50 @@ export class CanvasStore {
     }
   }
 
-  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. */
-  private giveWay(name: string, field: Field, box: Box, give: Give): Box {
-    const { pushed, ...fitted } = fit(box, field, give)
+  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. With `bare`, the boxes
+   *  themselves without the room each keeps: where nowhere near has its room but the box itself lies on none of them, it stays, closer than
+   *  its room, not sent beside everything, off past a crowd's edge. */
+  private giveWay(name: string, field: Field, box: Box, give: Give, bare?: Field): Box {
+    const { pushed, beside, ...fitted } = fit(box, field, give)
+    const itself = beside && bare ? this.boxOf(name, true) : null
+    if (itself && !bare!.under(itself).size) return box
     this.push(field, pushed)
     if (fitted.x === box.x && fitted.y === box.y && fitted.w === box.w) return box
     this.slide(name, fitted)
     return fitted
   }
 
-  private unsettle(name: string) {
+  /** `name` to settle: `placed` by another writer (it wins its spot), or `grown` where it was. Placed and grown, it's placed. */
+  private unsettle(name: string, why: "placed" | "grown") {
     if (!this.seen) return
     if (!this.unsettled.size) queueMicrotask(() => this.settle())
-    this.unsettled.add(name)
+    if (this.unsettled.get(name) !== "placed") this.unsettled.set(name, why)
   }
 
   /**
-   * What arrived lying on something, put there by another writer or grown there, keeps where it was put (Paul, 11-06: "the placement
-   * position of the new object should be primary, and then other objects should move around it"; cl-800: a placement never overwrites an
-   * `at`), and what it lies on is pushed aside, by name order, so every tab does the same. What arrived with it is never pushed by it, and
-   * where what it lies on can't be pushed (held in a drag, open, still being made), it stays all the same. What's held in a drag, or by its
-   * corner, waits to be let go.
+   * What arrived lying on something, put there by another writer or grown there, keeps where it was put and pushes aside what it lies on
+   * (Paul, 11-06: "the placement position of the new object should be primary, and then other objects should move around it"; cl-800),
+   * what arrived or grew with it too, one by one: what was placed first, so it wins its spot, then what grew, each in name order, so every
+   * tab does the same. Where what it lies on can't be pushed (held in a drag, open, still being made), it gives way itself: no box ever lies
+   * on another. What's held in a drag, or by its corner, waits to be let go.
    */
   private settle() {
-    const batch = [...this.unsettled].filter((name) => this.ids.has(name) && !this.dragging.has(name) && name !== this.pulling?.name).sort()
+    const batch = [...this.unsettled]
+      .filter(([name]) => this.ids.has(name) && !this.dragging.has(name) && name !== this.pulling?.name)
+      .sort(([a, why], [b, other]) => (why === other ? (a < b ? -1 : 1) : why === "placed" ? -1 : 1))
+      .map(([name]) => name)
     this.unsettled.clear()
     if (!batch.length) return
-    const names = new Set(batch)
-    const field = this.field(names)
-    const may = this.pushable(names)
+    const [field, bare] = [this.field(), this.field(undefined, true)]
     for (const name of batch) {
       const box = this.boxOf(name)
       if (!box) continue
-      if (field.under(box).size) this.push(field, pushAside(box, field, may))
-      field.add(name, box)
+      field.remove(name)
+      bare.remove(name)
+      const placed = this.giveWay(name, field, box, { pushes: this.pushable(new Set([name])) }, bare)
+      field.add(name, placed)
+      const itself = this.boxOf(name, true)
+      if (itself) bare.add(name, itself)
     }
   }
 
@@ -3084,7 +3094,7 @@ export class CanvasStore {
     }
     this.gesture = null
     this.reshape(key)
-    this.unsettle(key)
+    this.unsettle(key, "grown")
   }
 
   /** What the pull pushed aside and no longer does goes back where it is. */
