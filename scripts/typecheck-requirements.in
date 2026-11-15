@@ -4,10 +4,12 @@
 mypy
 cryptography
 h2
-cozy-runtime==0.45.0
+cozy-runtime @ git+https://github.com/cozy-creator/cozy-runtime.git@58748689d930b75c219fa51ab7a00c291f4744b4
 msgspec
 numpy
 pillow
+av
+xxhash
 torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl
 triton
 diffusers

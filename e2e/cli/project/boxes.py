@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 """The tools cells' every-type fixture (web/tools.js, and the binder's weightless cell 1): weightless tools whose boxes hold every type the SDK
 has, groups two deep, so the page draws each and each reaches the function as typed. `shot` makes a video of its plate's bytes, or of the take it picks up from, shows each segment as it ends, and says in
@@ -136,6 +136,6 @@ class Picture(msgspec.Struct):
 
 
 @app.tool(label="A still", named="still")
-def still(payload: StillBox, out: Outputs) -> Picture:
+def still(payload: StillBox) -> Picture:
     """A still of one colour."""
-    return Picture(out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"))
+    return Picture(ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"))

@@ -16,9 +16,51 @@ import sys
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from typing import TypedDict, cast
 
 import av
 from PIL import Image
+
+
+class Reason(TypedDict, total=False):
+    code: str
+    message: str
+
+
+class OutputItem(TypedDict, total=False):
+    url: str
+    export_error: str
+    media_type: str
+    sha256: str
+    length: int
+    width: int
+    height: int
+
+
+class ChildCall(TypedDict, total=False):
+    function: str
+    status: str
+    run: str
+    reason: Reason
+
+
+class Run(TypedDict, total=False):
+    kind: str
+    id: str
+    name: str
+    number: int
+    status: str
+    calls: list[ChildCall]
+    reason: Reason
+    output: list[OutputItem]
+    result: dict[str, object]
+
+
+class Event(TypedDict, total=False):
+    type: str
+    run: Run
+    call: ChildCall
+    item: OutputItem
 
 
 @dataclass(frozen=True)
@@ -33,6 +75,8 @@ class Case:
     pixel: tuple[int, ...] = (15, 63, 127, 95)
     metadata: bool = True
     child: str = ""
+    child_function: str = "generate"
+    forwarded: bool = False
 
 
 CASES = (
@@ -54,8 +98,8 @@ CASES = (
         message="Image size exceeds WebP limit",
     ),
     Case("nested", "nested", size=(2, 2), pixel=(7, 11, 19), metadata=False),
-    Case("child-forward", "child_forward", child="succeeded"),
-    Case("child-nested", "child_nested", child="succeeded"),
+    Case("child-forward", "child_forward", child="succeeded", forwarded=True),
+    Case("child-nested", "child_nested", child="succeeded", forwarded=True),
     Case(
         "child-failure",
         "child_failure",
@@ -74,8 +118,8 @@ CASES = (
         message="over its declared 1-byte bound",
     ),
     Case(
-        "legacy-encoded-bound",
-        "legacy_encoded_bound",
+        "encoded-bound-copy",
+        "encoded_bound_copy",
         error="result_custody_failed",
         message="over its declared 1-byte bound",
     ),
@@ -85,6 +129,19 @@ CASES = (
     Case("empty-format", "empty_format", error="encoder_unavailable"),
     Case("aliased-return", "aliased_return", error="duplicate_handle"),
     Case("aliased-child", "aliased_child", error="duplicate_handle", child="succeeded"),
+    Case("api-removed", "api_removed"),
+    Case(
+        "child-input", "child_input", child="succeeded", child_function="inspect_image"
+    ),
+    Case(
+        "child-input-label",
+        "child_input_label",
+        child="succeeded",
+        child_function="inspect_image",
+    ),
+    Case("pending-probe", "pending_probe"),
+    Case("publish-copy", "publish_copy"),
+    Case("duplicate-label", "duplicate_label", error="duplicate_handle"),
 )
 
 
@@ -98,17 +155,20 @@ def file_digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def assets(value: object) -> list[dict]:
+def assets(value: object) -> list[dict[str, object]]:
     if isinstance(value, dict):
-        if "asset_ref" in value:
-            return [value]
-        return [asset for child in value.values() for asset in assets(child)]
+        record = cast(dict[str, object], value)  # JSON object keys are strings.
+        if "asset_ref" in record:
+            return [record]
+        return [asset for child in record.values() for asset in assets(child)]
     if isinstance(value, list):
         return [asset for child in value for asset in assets(child)]
     return []
 
 
-def verify(case: Case, code: int, events: list[dict], exported: Path) -> dict:
+def verify(
+    case: Case, code: int, events: list[Event], exported: Path
+) -> dict[str, object]:
     terminals = [
         event["run"]
         for event in events
@@ -130,11 +190,14 @@ def verify(case: Case, code: int, events: list[dict], exported: Path) -> dict:
         child = [
             call
             for call in calls
-            if call.get("function", "").endswith("generate")
+            if call.get("function", "").endswith(case.child_function)
             and call.get("status") == case.child
             and call.get("run")
         ]
-        require(bool(child), f"no identified generate child with status {case.child}")
+        require(
+            bool(child),
+            f"no identified {case.child_function} child with status {case.child}",
+        )
         if case.child == "failed":
             require(
                 any(
@@ -143,7 +206,7 @@ def verify(case: Case, code: int, events: list[dict], exported: Path) -> dict:
                 ),
                 "child failed for another reason",
             )
-    summary = {
+    summary: dict[str, object] = {
         "run_id": run["id"],
         "run_name": run.get("name"),
         "number": run.get("number"),
@@ -218,9 +281,10 @@ def verify(case: Case, code: int, events: list[dict], exported: Path) -> dict:
         and leaf.get("media_type") == media_type,
         "result file reference/type differs from custody",
     )
-    if case.child == "succeeded":
+    if case.forwarded:
         require(
-            leaf["asset_ref"] == f"sha256:{digest}" and leaf.get("size_bytes") == length,
+            leaf["asset_ref"] == f"sha256:{digest}"
+            and leaf.get("size_bytes") == length,
             "forwarded child grant lost its canonical reference or encoded length",
         )
     if item.get("width") is not None or item.get("height") is not None:
@@ -241,9 +305,16 @@ def verify(case: Case, code: int, events: list[dict], exported: Path) -> dict:
                 and all((frame.width, frame.height) == case.size for frame in frames),
                 "stream frame count/geometry changed",
             )
+            timestamps = []
+            for frame in frames:
+                require(
+                    frame.pts is not None and frame.time_base is not None,
+                    "stream frame has no clock",
+                )
+                assert frame.pts is not None and frame.time_base is not None
+                timestamps.append(frame.pts * frame.time_base)
             require(
-                [frame.pts * frame.time_base for frame in frames]
-                == [Fraction(i, 24) for i in range(3)],
+                timestamps == [Fraction(i, 24) for i in range(3)],
                 "stream frame clock changed",
             )
         require(
@@ -271,6 +342,40 @@ def verify(case: Case, code: int, events: list[dict], exported: Path) -> dict:
             require(
                 (result.get("width"), result.get("height")) == case.size,
                 "result geometry differs from exported pixels",
+            )
+        result = run.get("result") or {}
+        if case.name == "api-removed":
+            require(
+                result.get("save_image_absent") is True,
+                "removed save_image API remains callable",
+            )
+        if case.name in (
+            "child-input",
+            "child-input-label",
+            "pending-probe",
+            "publish-copy",
+        ):
+            require(
+                result.get("probed") == list(case.size),
+                "pending probe lost captured geometry",
+            )
+        if case.name in ("child-input", "child-input-label", "publish-copy"):
+            require(
+                result.get("original_digest") == f"sha256:{digest}",
+                "original value cannot read adopted copy bytes",
+            )
+        if case.name in ("child-input", "child-input-label"):
+            observed = result.get("seen")
+            require(isinstance(observed, dict), "child returned no image facts")
+            seen = cast(dict[str, object], observed)
+            require(
+                seen.get("digest") == f"sha256:{digest}",
+                "child saw different encoded bytes",
+            )
+            require(
+                (seen.get("width"), seen.get("height")) == case.size
+                and seen.get("pixel") == list(case.pixel),
+                "child decoded different image pixels",
             )
         if case.metadata:
             require(
@@ -324,12 +429,11 @@ def main() -> int:
     args = parser.parse_args()
     require("COZY_HOME" not in os.environ, "use the default Cozy home; unset COZY_HOME")
     cli = shutil.which(args.cozy)
-    require(cli is not None, f"CLI not found: {args.cozy}")
-    project, fixture, out = (
-        args.project.resolve(),
-        args.fixture.resolve(),
-        args.out.resolve(),
-    )
+    if cli is None:
+        raise AssertionError(f"CLI not found: {args.cozy}")
+    project: Path = args.project.resolve()
+    fixture: Path = args.fixture.resolve()
+    out: Path = args.out.resolve()
     require(project.is_dir(), "choose an existing normal Cozy project")
     require((fixture / "uv.lock").is_file(), "copy and lock the fixture before running")
     require(
@@ -358,7 +462,7 @@ def main() -> int:
         )
         + "\n"
     )
-    summary = []
+    summary: list[dict[str, object]] = []
     for case in CASES:
         exported = out / "exports" / case.name
         command = [
@@ -374,7 +478,11 @@ def main() -> int:
             str(exported),
         ]
         print(json.dumps({"case": case.name, "command": command}), flush=True)
-        record = {"case": case.name, "command": command, "expected_error": case.error}
+        record: dict[str, object] = {
+            "case": case.name,
+            "command": command,
+            "expected_error": case.error,
+        }
         with (
             (out / f"{case.name}.ndjson").open("w") as stdout,
             (out / f"{case.name}.stderr").open("w") as stderr,
@@ -385,7 +493,7 @@ def main() -> int:
         record["exit_code"] = completed.returncode
         try:
             events = [
-                json.loads(line)
+                cast(Event, json.loads(line))
                 for line in (out / f"{case.name}.ndjson").read_text().splitlines()
                 if line.strip()
             ]

@@ -18,18 +18,18 @@ class Measured(msgspec.Struct, frozen=True):
 @app.entrypoint(accelerator=False)
 async def attention_inventory(ctx: Context) -> Measured:
     """This card's hardware class, its attention kernels, and the sets of them that can share one process."""
-    return Measured((await call(bench.attention_inventory)).detail)
+    return Measured((await call(bench.attention_inventory, bench.EmptyRequest())).detail)
 
 
 @app.entrypoint(accelerator=False)
 async def attention_speed(ctx: Context, *, kernels: str = "", points: str = "", seed: int = 171, corpus: str = "") -> Measured:
     """`kernels` (comma-separated) timed over the grid, interleaved; SDPA joins every set. With `corpus` (the captures'
     directory on this machine) the sparse points run on captured Q/K/V."""
-    return Measured((await call(bench.attention_speed, kernels=kernels, points=points, seed=seed, corpus=corpus)).detail)
+    return Measured((await call(bench.attention_speed, bench.AttentionSpeedRequest(kernels=kernels, points=points, seed=seed, corpus=corpus))).detail)
 
 
 @app.entrypoint(accelerator=False)
 async def attention_quality(ctx: Context, *, kernel: str, seed: int = 171, corpus: str = "") -> Measured:
     """`kernel`'s worst-head error against FP32 attention on every site: with `corpus`, every captured site at or below
     its level too."""
-    return Measured((await call(bench.attention_quality, kernel=kernel, seed=seed, corpus=corpus)).detail)
+    return Measured((await call(bench.attention_quality, bench.AttentionQualityRequest(kernel=kernel, seed=seed, corpus=corpus))).detail)

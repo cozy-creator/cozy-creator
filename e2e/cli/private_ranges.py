@@ -109,7 +109,7 @@ class Queued(TypedDict):
 # A still shown as it's saved, its run going on after: its file lands before the run ends.
 LANDED_FIRST = '''# /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 import os
 import time
@@ -131,7 +131,7 @@ class Still(msgspec.Struct):
 
 @app.tool(label="A still shown first")
 def first(payload: Box, out: Outputs) -> Still:
-    image = out.save_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png")
+    image = ImageFile.from_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png")
     out.publish("image", image)
     time.sleep(payload.seconds)
     return Still(image)

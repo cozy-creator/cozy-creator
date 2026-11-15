@@ -41,9 +41,11 @@ uv run --script e2e/cli/returned-media/run.py \
 The runner preserves each command, stdout NDJSON, stderr, exports, input file hashes, CLI
 hash, SDK identity label, run IDs and verification result. `--sdk-identity` is the build
 owner's provenance label; the runner does not infer a source commit from a package version.
-It invokes all 21 cases sequentially, without a timeout or retries, and exits nonzero if any
+It invokes all 27 cases sequentially, without a timeout or retries, and exits nonzero if any
 case fails verification. Existing receipt directories are refused rather than overwritten.
-Source description or an import is not process/custody evidence.
+Source description or an import is not process/custody evidence. This fixture uses the
+combined image and call hard cuts: `call(target, request)` and `ImageFile.from_image` only.
+The old `save_image` method is checked for absence rather than invoked.
 
 | Case | Expected outcome |
 |---|---|
@@ -61,13 +63,19 @@ Source description or an import is not process/custody evidence.
 | duplicate | Failed `duplicate_handle` |
 | decoded-bound | Failed `result_decoded_bound` |
 | encoded-bound | Failed `result_custody_failed`; declared one-byte encoded bound diagnostic |
-| legacy-encoded-bound | Same failure for explicit `Outputs.save_image` |
+| encoded-bound-copy | Same encoded bound enforced for a labeled pending image |
 | invalid-shape | Failed `frame_shape` |
 | invalid-kind | Failed `frame_type` |
 | foreign | Failed `foreign_handle` |
 | empty-format | Failed `encoder_unavailable`; only `None` selects defaults |
 | aliased-return | Failed `duplicate_handle` through a reused nested container |
 | aliased-child | Failed `duplicate_handle` through a reused child-result container |
+| api-removed | Completed; public `Outputs.save_image` is absent |
+| child-input | Completed; child reads a pending image without an output service |
+| child-input-label | Completed; child consumes a labeled copy and the original reads those bytes |
+| pending-probe | Completed; captured dimensions are available before encoding |
+| publish-copy | Completed; publication consumes a pending copy and the original reads those bytes |
+| duplicate-label | Failed `duplicate_handle` for two copies of one pending image |
 
 Every success must have a completed terminal call, a landed final output, and one exported
 file whose SHA256 matches the custody receipt and result digest, and whose byte length
@@ -80,6 +88,10 @@ returned value, so these checks also exercise snapshot immutability. File metada
 survive ordinary and child-returned results. Streaming output is decoded with PyAV to check
 its codec, frame count, dimensions and presentation timestamps; lossy video pixels are not
 required to equal the input pixels.
+
+Pending-input cases also compare the child's decoded geometry/pixel and encoded digest
+with the original's readable bytes and the final export. A labeled copy must share one
+adopted file, including the duplicate-handle rejection when both copies are returned.
 
 Every negative case must produce a failed terminal **call** with its exact reason code,
 a nonzero CLI exit, and no final media result or exported bytes. Setup/installation errors

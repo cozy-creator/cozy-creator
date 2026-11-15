@@ -22,7 +22,7 @@ const FIRST_RUN_MS = 300_000;
 // A still made in slow steps, so its tile is seen rendering at both zooms; it's canceled from its tile.
 const TOOL = `# /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 """The tiles cell's picture tool: a weightless still of one random colour, made in slow steps."""
 
@@ -30,9 +30,10 @@ import os
 import time
 
 import msgspec
-from cozy_runtime.author import Adjustments, App, Context, ImageFrame, Outputs, Seed, Telemetry
+from cozy_runtime.author import Adjustments, App, Context, ImageFrame, Seed, Telemetry
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.image import ImageRequest, ImageResult, Sizes
+from cozy_runtime.media import ImageFile
 
 app = App()
 SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
@@ -45,14 +46,14 @@ class Drawing(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="Tiles", named="tiles", accelerator=False)
-def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Telemetry) -> ImageResult:
+def draw(ctx: Context, payload: Drawing, adj: Adjustments, tel: Telemetry) -> ImageResult:
     width, height = ImageRequest(payload.instructions.text, None, None, payload.seed).size(adj, None, SIZES, megapixels=0.25)
     # As H3's last part decodes, the longest words a box says beside its count (cl-953).
     with tel.scope("Segment 2 of 2"), tel.stage("decode_video"):
         for frame in range(30):
             time.sleep(payload.pace)
             ctx.progress(frame, 30)
-    image = out.save_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
+    image = ImageFile.from_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
     return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
 `;
 

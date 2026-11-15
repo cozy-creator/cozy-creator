@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.45", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 """The cli suite's composition script (xs-190): `model` reads the `transformer` of e2e/parts, a pipeline of a transformer and
 a VAE, and `vae` reads a `vae` from whatever checkpoint names one: the pipeline's own by default, or a model of that component
@@ -11,7 +11,7 @@ import struct
 
 import msgspec
 import torch
-from cozy_runtime.author import App, Config, ImageFrame, Loader, Model, Outputs, uses_components
+from cozy_runtime.author import App, Config, ImageFrame, Loader, Model, uses_components
 from cozy_runtime.media import ImageFile
 
 app = App()
@@ -77,9 +77,9 @@ class Composed(msgspec.Struct):
 
 @app.entrypoint(accelerator=False, defaults={"model": PIPELINE, "vae": PIPELINE},
                 components={"model": ("transformer",), "vae": ("vae",)})
-def compose(payload: Ask, model: Transformer, vae: Vae, out: Outputs) -> Composed:
+def compose(payload: Ask, model: Transformer, vae: Vae) -> Composed:
     """What `model` and `vae` read, and a picture of it: its bytes are the two sums."""
     transformer, decoder = model.read(), vae.read()
     pixels = struct.pack("<dd", transformer.sum, decoder.sum)
-    picture = out.save_image(ImageFrame(16, 1, (pixels * 3)[:48]), format="png")
+    picture = ImageFile.from_image(ImageFrame(16, 1, (pixels * 3)[:48]), format="png")
     return Composed(transformer, decoder, picture)

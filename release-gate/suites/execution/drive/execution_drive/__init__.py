@@ -19,25 +19,25 @@ class Report(msgspec.Struct, frozen=True):
 @app.entrypoint(accelerator=False)
 async def kernel_ready(ctx: Context, *, mode: str, seed: int = 202610270201) -> Report:
     """Kernel readiness publication under two real openers of one kernel, on the CPU; fails when it publishes wrong."""
-    return Report((await call(bench.kernel_ready, mode=mode, seed=seed)).detail)
+    return Report((await call(bench.kernel_ready, bench.KernelReadyRequest(mode=mode, seed=seed))).detail)
 
 
 @app.entrypoint(accelerator=False)
 async def child_wire(ctx: Context) -> Report:
     """Child calls whose wire lies about what the attempt holds, as a package could send them; fails unless TensorD
     refuses each."""
-    return Report((await call(bench.child_wire)).detail)
+    return Report((await call(bench.child_wire, bench.EmptyRequest())).detail)
 
 
 @app.entrypoint(accelerator=False)
 async def overlay_replay(ctx: Context, *, seed: int = 331, variant: str = "replay") -> Report:
     """Qwen-Image-Edit-2511's DiT with the Lightning LoRA armed as packages arm it, through the Runtime's graphs against
     graphs bypassed; fails when they differ."""
-    return Report((await call(bench.overlay_replay, payload=bench.OverlayProbe(seed=seed, variant=variant))).detail)
+    return Report((await call(bench.overlay_replay, bench.OverlayProbe(seed=seed, variant=variant))).detail)
 
 
 @app.entrypoint(accelerator=False)
 async def lora_overlay_refill(ctx: Context, *, seed: int = 4242) -> Report:
     """The LoRA armed in its DiT's own forward through baked int8 pages under a ballast; fails when a warm call differs
     from its reference."""
-    return Report((await call(bench.lora_overlay_refill, payload=bench.RefillProbe(seed=seed))).detail)
+    return Report((await call(bench.lora_overlay_refill, bench.RefillProbe(seed=seed))).detail)

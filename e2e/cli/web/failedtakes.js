@@ -13,7 +13,7 @@ const { projectFolder, addBoxes, calcifer, lastLook, launch, lookAt, noStall, op
 const FIRST_RUN_MS = 300_000;
 const TOOL = `# /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 """The failedtakes cell's picture tool: a weightless still of one random colour, made in steps; asked to, it fails."""
 
@@ -21,9 +21,10 @@ import os
 import time
 
 import msgspec
-from cozy_runtime.author import Adjustments, App, Context, ImageFrame, Outputs, Seed, Telemetry
+from cozy_runtime.author import Adjustments, App, Context, ImageFrame, Seed, Telemetry
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.image import ImageRequest, ImageResult, Sizes
+from cozy_runtime.media import ImageFile
 
 app = App()
 SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
@@ -37,7 +38,7 @@ class Drawing(msgspec.Struct, kw_only=True):
 
 
 @app.tool(label="Failed takes", named="failedtakes", accelerator=False)
-def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Telemetry) -> ImageResult:
+def draw(ctx: Context, payload: Drawing, adj: Adjustments, tel: Telemetry) -> ImageResult:
     width, height = ImageRequest(payload.instructions.text, None, None, payload.seed).size(adj, None, SIZES, megapixels=0.25)
     with tel.stage("denoise"):
         for step in range(8):
@@ -45,7 +46,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
             ctx.progress(step, 8)
     if payload.fail:
         raise RuntimeError("asked to fail, as the cell wants")
-    image = out.save_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
+    image = ImageFile.from_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
     return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
 `;
 const failures = [];

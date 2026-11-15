@@ -1,5 +1,6 @@
 """CPU author handlers exercised only through the public Cozy CLI."""
 
+import hashlib
 from collections.abc import Iterator
 from fractions import Fraction
 from typing import Annotated, Literal, cast
@@ -44,7 +45,9 @@ def generate(payload: Request) -> Result:
 
 @app.entrypoint(accelerator=False)
 def intermediate(payload: Request, out: Outputs) -> Result:
-    earlier = out.save_image(ImageFrame(2, 2, bytes([255, 0, 0]) * 4), format="png")
+    earlier = ImageFile.from_image(
+        ImageFrame(2, 2, bytes([255, 0, 0]) * 4), format="png"
+    )
     out.publish("image", earlier)
     return generate(payload)
 
@@ -120,18 +123,18 @@ def streaming(payload: Request, out: Outputs) -> VideoResult:
 
 @app.entrypoint(accelerator=False)
 async def child_forward(payload: Request) -> Result:
-    return await call(generate, payload=payload)
+    return await call(generate, payload)
 
 
 @app.entrypoint(accelerator=False)
 async def child_nested(payload: Request) -> NestedResult:
-    child = await call(generate, payload=payload)
+    child = await call(generate, payload)
     return NestedResult(Nested([child.image]))
 
 
 @app.entrypoint(accelerator=False)
 async def child_failure(payload: Request) -> Result:
-    return await call(generate, payload=Request(width=16384, height=1, format="webp"))
+    return await call(generate, Request(width=16384, height=1, format="webp"))
 
 
 class EncodedBoundResult(msgspec.Struct):
@@ -146,10 +149,11 @@ def encoded_bound(payload: Request) -> EncodedBoundResult:
 
 
 @app.entrypoint(accelerator=False)
-def legacy_encoded_bound(payload: Request, out: Outputs) -> EncodedBoundResult:
-    return EncodedBoundResult(
-        out.save_image(ImageFrame(2, 2, bytes([7, 11, 19]) * 4), format="webp")
+def encoded_bound_copy(payload: Request) -> EncodedBoundResult:
+    image = ImageFile.from_image(
+        ImageFrame(2, 2, bytes([7, 11, 19]) * 4), format="webp"
     )
+    return EncodedBoundResult(image.with_label("bounded copy"))
 
 
 @app.entrypoint(accelerator=False)
@@ -189,6 +193,108 @@ def aliased_return(payload: Request) -> AliasedResult:
 
 @app.entrypoint(accelerator=False)
 async def aliased_child(payload: Request) -> AliasedResult:
-    child = await call(generate, payload=payload)
+    child = await call(generate, payload)
     shared = Nested([child.image])
     return AliasedResult(shared, shared)
+
+
+class ImageRequest(msgspec.Struct):
+    image: ImageFile
+
+
+class ImageFacts(msgspec.Struct):
+    digest: str
+    width: int
+    height: int
+    pixel: tuple[int, int, int, int]
+
+
+@app.entrypoint(private=True, accelerator=False)
+def inspect_image(payload: ImageRequest) -> ImageFacts:
+    data = payload.image.read_bytes()
+    decoded = payload.image.read(mode="RGBA")
+    return ImageFacts(
+        "sha256:" + hashlib.sha256(data).hexdigest(),
+        decoded.width,
+        decoded.height,
+        cast(tuple[int, int, int, int], decoded.getpixel((0, 0))),
+    )
+
+
+class ChildInputResult(Result):
+    original_digest: str
+    seen: ImageFacts
+    probed: tuple[int, int]
+
+
+async def inspect_pending(payload: Request, *, labeled: bool) -> ChildInputResult:
+    made = generate(payload)
+    geometry = made.image.probe()
+    offered = made.image.with_label("Picture 1") if labeled else made.image
+    seen = await call(inspect_image, ImageRequest(offered))
+    # The original must resolve the file adopted through a labeled copy as well.
+    digest = "sha256:" + hashlib.sha256(made.image.read_bytes()).hexdigest()
+    return ChildInputResult(
+        made.image,
+        made.width,
+        made.height,
+        digest,
+        seen,
+        (geometry.width, geometry.height),
+    )
+
+
+@app.entrypoint(accelerator=False)
+async def child_input(payload: Request) -> ChildInputResult:
+    return await inspect_pending(payload, labeled=False)
+
+
+@app.entrypoint(accelerator=False)
+async def child_input_label(payload: Request) -> ChildInputResult:
+    return await inspect_pending(payload, labeled=True)
+
+
+class ProbedResult(Result):
+    probed: tuple[int, int]
+
+
+@app.entrypoint(accelerator=False)
+def pending_probe(payload: Request) -> ProbedResult:
+    made = generate(payload)
+    geometry = made.image.probe()
+    return ProbedResult(
+        made.image, made.width, made.height, (geometry.width, geometry.height)
+    )
+
+
+class PublishedResult(ProbedResult):
+    original_digest: str
+
+
+@app.entrypoint(accelerator=False)
+def publish_copy(payload: Request, out: Outputs) -> PublishedResult:
+    made = generate(payload)
+    geometry = made.image.probe()
+    out.publish("image", made.image.with_label("Picture 1"))
+    digest = "sha256:" + hashlib.sha256(made.image.read_bytes()).hexdigest()
+    return PublishedResult(
+        made.image, made.width, made.height, (geometry.width, geometry.height), digest
+    )
+
+
+class ApiResult(Result):
+    save_image_absent: bool
+
+
+@app.entrypoint(accelerator=False)
+def api_removed(payload: Request) -> ApiResult:
+    made = generate(payload)
+    return ApiResult(
+        made.image, made.width, made.height, not hasattr(Outputs, "save_image")
+    )
+
+
+@app.entrypoint(accelerator=False)
+def duplicate_label(payload: Request) -> DuplicateResult:
+    image = ImageFile.from_image(ImageFrame(2, 2, bytes([7, 11, 19]) * 4))
+    return DuplicateResult(image, image.with_label("same value"))

@@ -16,18 +16,22 @@ app = App()
 SIDE = 16
 
 
-def _still(out: Outputs, level: int) -> ImageFile:
-    return out.save_image(ImageFrame(SIDE, SIDE, bytes([level]) * 3 * SIDE**2), format="png")
+def _still(level: int) -> ImageFile:
+    return ImageFile.from_image(ImageFrame(SIDE, SIDE, bytes([level]) * 3 * SIDE**2), format="png")
 
 
 class Tinted(msgspec.Struct):
     image: ImageFile
 
 
+class TintInput(msgspec.Struct):
+    image: ImageFile
+
+
 @app.entrypoint(private=True, accelerator=False)
-async def tint(ctx: Context, *, image: ImageFile, out: Outputs) -> Tinted:
+async def tint(ctx: Context, payload: TintInput) -> Tinted:
     """A lighter still, for a page that came out dark."""
-    return Tinted(_still(out, 200))
+    return Tinted(_still(200))
 
 
 class Compose(msgspec.Struct, kw_only=True):
@@ -58,7 +62,7 @@ async def composed(ctx: Context, payload: Compose, out: Outputs) -> Composed:
         raise NotYet(f"{payload.fails_until} isn't there yet")
     page = shaded.image
     if shaded.dark:
-        page = (await call(tint, image=page)).image
+        page = (await call(tint, TintInput(image=page))).image
         out.publish("image", page, label="Lightened")
     if payload.enlarge:
         page = (await call(enlarge, payload=EnlargeInput(image=page))).image

@@ -16,7 +16,7 @@ const FIRST_RUN_MS = 300_000;
 const WARNED = 'a CUDA graph was refused at capture';
 const TOOL = `# /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
 # ///
 """The toasts cell's tool: a still of one random colour that warns, in its log and its result, as a handled fallback does; asked to,
 it fails."""
@@ -25,7 +25,7 @@ import os
 import time
 
 import msgspec
-from cozy_runtime.author import App, Context, ImageFrame, Outputs, Seed, Telemetry
+from cozy_runtime.author import App, Context, ImageFrame, Seed, Telemetry
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.media import ImageFile
 
@@ -46,7 +46,7 @@ class Warned(msgspec.Struct):
 
 
 @app.tool(label="Toasts", named="toasts", accelerator=False)
-def draw(ctx: Context, payload: Drawing, out: Outputs, tel: Telemetry) -> Warned:
+def draw(ctx: Context, payload: Drawing, tel: Telemetry) -> Warned:
     with tel.stage("denoise"):
         for step in range(4):
             time.sleep(0.3)
@@ -54,7 +54,7 @@ def draw(ctx: Context, payload: Drawing, out: Outputs, tel: Telemetry) -> Warned
     if payload.fail:
         raise RuntimeError("asked to fail, as the cell wants")
     tel.log("${WARNED} (2x), and it ran without one", level="warn")
-    image = out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
+    image = ImageFile.from_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
     return Warned(image, payload.instructions.text, ["${WARNED} (2x), and it ran without one"])
 `;
 const failures = [];
