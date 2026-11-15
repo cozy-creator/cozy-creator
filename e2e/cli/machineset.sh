@@ -202,6 +202,8 @@ if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$(web_path "
   STANDS=stand-p web_proof prepares "$chrome" "$pw" ''
   jq -c '.seen.timeline // empty' "$OUT/web-prepares.json" 2> /dev/null || true
   # Where its walk placed each box, and what it quoted, fetched ahead and waited on (web_proof keeps the project's log).
+  [ -s "$OUT/web-prepares-walk.log" ] && grep -q ' ahead on ' "$OUT/web-prepares-walk.log" \
+    || check "web-prepares: the project's walk log says no fetch-ahead, with diagnostics on: $(tail -c 300 "$OUT/web-prepares-walk.log" 2> /dev/null)"
   tail -n 80 "$OUT/web-prepares-walk.log" 2> /dev/null || true
 else
   check "web-prepares: no Chrome or playwright here (${chrome:-none}): $(tail -c 300 "$OUT/web-npm.log" 2> /dev/null)"

@@ -46,18 +46,19 @@ pub(crate) fn cache(scope: Option<&Scope>, ordinary: PathBuf, name: &str) -> Res
     Ok(dir)
 }
 
-/// Tests only (`calcifer.diagnostics`): `line`, timed, at the end of its project's own log, `.vault-calcifer/diagnostics/walk.log` in
-/// its storage (a plain project's folder, an encrypted one's readable view): the current project's, else the one `at` is in. Never
-/// Calcifer's log, where a locked project leaves nothing of itself; a locked view keeps nothing.
-pub(crate) fn diagnose(at: &Path, line: impl FnOnce() -> String) {
+/// Tests only (`calcifer.diagnostics`): `line`, timed, at the end of its project's own log, `.vault-calcifer/diagnostics/walk.log` under
+/// `storage`, its folder's `dir` (a plain project's folder, an encrypted one's readable view). Never Calcifer's log, where a locked
+/// project leaves nothing of itself; a locked view takes nothing.
+pub(crate) fn diagnose(storage: &Path, line: impl FnOnce() -> String) {
     use std::io::Write as _;
-    if !crate::health::diagnostics() {
+    if !crate::health::diagnostics() || crate::project::vault::require_path(storage).is_err() {
         return;
     }
-    let Some(scope) = current().or_else(|| of_path(at).ok().flatten()) else { return };
-    let Ok(dir) = cache(Some(&scope), PathBuf::new(), "diagnostics") else { return };
+    let dir = storage.join(".vault-calcifer").join("diagnostics");
     let line = format!("{:.3} {}\n", jiff::Timestamp::now(), line());
-    let _ = fs::OpenOptions::new().create(true).append(true).open(dir.join("walk.log")).and_then(|mut file| file.write_all(line.as_bytes()));
+    let _ = fs::create_dir_all(&dir)
+        .and_then(|()| fs::OpenOptions::new().create(true).append(true).open(dir.join("walk.log")))
+        .and_then(|mut file| file.write_all(line.as_bytes()));
 }
 
 #[derive(Clone)]
