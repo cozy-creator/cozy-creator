@@ -883,6 +883,16 @@ impl Publisher {
 
     /// The installation a request names. An unnamed release is the newest this signer holds, so
     /// a machine holding one asks the Hub nothing.
+    /// The installation the request's alias names for this signer, unless the run pinned a release digest other than the one its
+    /// files were checked against (xs-196): then none, and the release is read again at its Hub, which must have the pinned files.
+    fn held_by_alias(&self, service: &Service, actor: &str, request: &Request) -> io::Result<Option<Installation>> {
+        let held = service.engine.installation(actor, &self.alias(service, actor, request)?)?;
+        let pinned = |held: &Installation| {
+            request.installed.is_some() || request.digest.is_empty() || kept_card(&service.catalog.root().join(&held.generation)).is_some_and(|card| card.digest == request.digest)
+        };
+        Ok(held.filter(pinned))
+    }
+
     fn alias(&self, service: &Service, actor: &str, request: &Request) -> io::Result<String> {
         if let Some(installed) = &request.installed {
             return Ok(installed.alias.clone());
@@ -988,7 +998,7 @@ impl Publisher {
     ) -> io::Result<Option<Prepared>> {
         let held = match &request.installed {
             Some(installed) => Some(installed.clone()),
-            None => service.engine.installation(actor, &self.alias(service, actor, request)?)?,
+            None => self.held_by_alias(service, actor, request)?,
         };
         let Some(installation) = held else {
             return Ok(None);
@@ -1053,10 +1063,7 @@ impl Publisher {
     ) -> Result<Prepared, Failure> {
         let held = match &request.installed {
             Some(installed) => Some(installed.clone()),
-            None => service
-                .engine
-                .installation(actor, &self.alias(service, actor, request).map_err(io_failure)?)
-                .map_err(io_failure)?,
+            None => self.held_by_alias(service, actor, request).map_err(io_failure)?,
         };
         let installation = match held {
             Some(held) if service.catalog.resolve(&held.generation).is_ok() => held,
@@ -1203,9 +1210,8 @@ impl Publisher {
 
     /// The installation of the request's release this signer holds, its environment here; none: one installs.
     pub(crate) fn held_installation(&self, service: &Service, actor: &str, request: &Request) -> io::Result<Option<Installation>> {
-        let held = service.engine.installation(actor, &self.alias(service, actor, request)?)?;
-        let pinned = |held: &Installation| request.digest.is_empty() || kept_card(&service.catalog.root().join(&held.generation)).is_some_and(|card| card.digest == request.digest);
-        Ok(held.filter(|held| service.catalog.resolve(&held.generation).is_ok() && pinned(held)))
+        let held = self.held_by_alias(service, actor, request)?;
+        Ok(held.filter(|held| service.catalog.resolve(&held.generation).is_ok()))
     }
 
     /// The installation the request's release will be, before its environment is built (cl-966): its card is its static
