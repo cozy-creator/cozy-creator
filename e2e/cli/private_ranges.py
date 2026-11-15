@@ -38,6 +38,24 @@ class Named(TypedDict):
 class AssetRow(TypedDict, total=False):
     duration_ms: int
     failure: object
+    making: list[int]
+
+
+class ProjectFile(TypedDict):
+    path: str
+    sha256: str
+    absent: NotRequired[bool]
+
+
+class LandedVersion(TypedDict):
+    number: int
+    runs: list[int]
+    files: dict[str, ProjectFile]
+
+
+class LandedAnswer(TypedDict):
+    asset: AssetRow
+    versions: list[LandedVersion]
 
 
 class Version(TypedDict):
@@ -62,6 +80,7 @@ class Output(TypedDict):
     name: str
     status: str
     sha256: NotRequired[str]
+    url: NotRequired[str]
 
 
 class RunDetail(TypedDict, total=False):
@@ -85,6 +104,38 @@ class Tools(TypedDict):
 class Queued(TypedDict):
     id: str
     added: int
+
+
+# A still shown as it's saved, its run going on after: its file lands before the run ends.
+LANDED_FIRST = '''# /// script
+# requires-python = ">=3.12"
+# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
+# ///
+import os
+import time
+
+import msgspec
+from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.media import ImageFile
+
+app = App()
+
+
+class Box(msgspec.Struct, kw_only=True):
+    seconds: float = 6.0
+
+
+class Still(msgspec.Struct):
+    image: ImageFile
+
+
+@app.tool(label="A still shown first")
+def first(payload: Box, out: Outputs) -> Still:
+    image = out.save_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png")
+    out.publish("image", image)
+    time.sleep(payload.seconds)
+    return Still(image)
+'''
 
 
 def digest(path: Path) -> str:
@@ -257,6 +308,44 @@ def exercise(args: argparse.Namespace, home: Path, receipt: dict[str, object]) -
     call = observed_run(cli('run', tool, 'video=<vault_range_source:24-48>', '--on', 'local'))
     after_cli, cli_name = check_clip('standalone', before_cli, call['number'])
     assert cli_name != canvas_name and after_cli.get(canvas_name) == before_cli[canvas_name], 'the second binding did not retain a distinct private clip'
+
+    # A take whose file landed before its run ended is kept by its hash in the vault, as one that lands after: never "saved no file".
+    receipt['stage'] = 'landed_first'
+    script = view / 'first.py'
+    with script.open('x', encoding='utf-8') as target:
+        target.write(LANDED_FIRST)
+    first = 'vault_landed_first'
+    made = cast(Named, api('POST', route + '/assets', {'tool': str(script) + '/first', 'name': first, 'kind': 'image', 'exact': True, 'fields': {}}))  # cast: the new asset's JSON
+    assert made['name'] == first, 'the landed-first asset was not created'
+    asked = cast(Queued, api('POST', route + '/runs', {'names': [first], 'on': ['local']}))  # cast: the queued render's JSON
+    assert asked['added'] == 1, 'the canvas did not queue the landed-first render'
+
+    def first_state() -> LandedAnswer:
+        state = cast(LandedAnswer, api('GET', route + '/assets/' + first))  # cast: the asset's JSON
+        failure = state['asset'].get('failure')
+        assert not failure, f'the landed-first render failed: {json.dumps(failure)[:1500]}'
+        return state
+
+    number, = wait_for(lambda: first_state()['asset'].get('making', []), bool, 'the landed-first render never ran')
+
+    def first_run() -> RunDetail:
+        return cast(RunDetail, api('GET', f'{route}/runs/{number}?detail=full'))  # cast: the run's JSON
+
+    def here(run: RunDetail) -> bool:
+        return any(item['name'] == 'image' and item.get('url') for item in run.get('output', []))
+
+    seen = wait_for(first_run, lambda run: here(run) or run.get('status') in ('completed', 'failed', 'canceled'), 'the landed-first run never ended')
+    cell: dict[str, object] = {'run': number, 'status_as_it_landed': seen.get('status')}
+    receipt['landed_first'] = cell
+    assert here(seen) and seen.get('status') == 'in_progress', 'its still did not land while its run went on'
+    landed_first = wait_for(first_state, lambda state: bool(state['versions']), 'the landed-first take never landed')
+    taken, = landed_first['versions']
+    image = taken['files']['image']
+    output, = [item for item in first_run()['output'] if item['name'] == 'image']
+    kept = view / image['path']
+    cell.update(version=taken['number'], absent=image.get('absent', False), kept=kept.is_file())
+    assert image['sha256'] == output.get('sha256') and not image.get('absent'), 'the take does not hold the file its run landed'
+    assert kept.is_file() and 'sha256:' + digest(kept) == image['sha256'], "the take's file is not in the vault"
     receipt['passed'] = True
 
 
