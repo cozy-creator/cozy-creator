@@ -10,6 +10,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, projectFromPage, projectAction, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, addBoxes, settled } = require('./page');
 
+const { canvasBox, canvasView, hoverBox, screenshotPixels, fitCanvas } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -56,83 +58,74 @@ const WATCH = () => {
     })().catch(() => {});
     return new Response(theirs, { status: answer.status, statusText: answer.statusText, headers: answer.headers });
   };
-  const box = (name) => [...document.querySelectorAll('.react-flow__node')].find((node) => node.querySelector('.nm')?.textContent === name);
-  window.boxOf = box;
-  /** What the pointer did and where the page was, for a box that doesn't open. First at the window, so it hears a click d3-drag then swallows. */
-  window.clicks = [];
-  for (const type of ['pointerdown', 'pointerup', 'click', 'dblclick']) {
-    window.addEventListener(type, ({ target }) => window.clicks.push(`${type} ${target.tagName}.${target.className} ${location.pathname}`.slice(0, 160)), true);
+  const inspection=()=>document.querySelector('.canvas-root')?.canvasInspection;
+  const box=name=>inspection()?.card(name) ?? null;
+  window.boxOf=box;
+  window.clicks=[];
+  for(const type of ['pointerdown','pointerup','click','dblclick']) {
+    window.addEventListener(type,({target})=>window.clicks.push(`${type} ${target.tagName}.${target.className} ${location.pathname}`.slice(0,160)),true);
   }
-  // An open box is Focus over the canvas (cl-893): what it says is there, and its node on the canvas only keeps its place.
-  const focusedBox = (name) => document.querySelector(`[data-focused-asset="${CSS.escape(name)}"]`);
-  /** All it says, at rest or open. */
-  const wordsOf = (name) => (focusedBox(name) ?? box(name))?.textContent ?? '';
-  const placeOf = (node) => {
-    const m = new DOMMatrix(getComputedStyle(node).transform);
-    return { x: m.e, y: m.f };
+  const focusedBox=name=>document.querySelector(`[data-focused-asset="${CSS.escape(name)}"]`);
+  const wordsOf=name=>{
+    const focus=focusedBox(name);
+    if(focus)return focus.textContent ?? '';
+    const drawn=box(name)?.rendered;
+    return drawn ? [drawn.words,...Object.values(drawn.labels).map(label=>label.fullText ?? label.text)].filter(Boolean).join(' ') : '';
   };
-  const holds = (spec) => {
-    if (spec.all) return spec.all.every(holds);
-    if (spec.gone) return !box(spec.gone) && !focusedBox(spec.gone);
-    const node = box(spec.name) ?? (spec.x === undefined && spec.w === undefined ? focusedBox(spec.name) : null);
-    if (!node) return false;
-    if (spec.has !== undefined && !wordsOf(spec.name).includes(spec.has)) return false;
-    if (spec.lacks !== undefined && wordsOf(spec.name).includes(spec.lacks)) return false;
-    if (spec.x !== undefined && (Math.abs(placeOf(node).x - spec.x) > 0.5 || Math.abs(placeOf(node).y - spec.y) > 0.5)) return false;
-    if (spec.w !== undefined && Math.abs(node.offsetWidth - spec.w) > 0.5) return false;
-    // Its state dot (cl-932): `busy`, queued or running; `none`, nothing to say.
-    if (spec.dot === 'busy' && !node.querySelector('.state-dot.queued, .state-dot.running')) return false;
-    if (spec.dot === 'none' && node.querySelector('.state-dot')) return false;
-    if (spec.picture !== undefined && Boolean(node.querySelector('.media img')) !== spec.picture) return false;
+  const holds=spec=>{
+    if(spec.all)return spec.all.every(holds);
+    if(spec.gone)return !box(spec.gone) && !focusedBox(spec.gone);
+    const card=box(spec.name),focus=focusedBox(spec.name),drawn=card?.rendered;
+    if(!drawn && !focus)return false;
+    if(spec.has!==undefined && !wordsOf(spec.name).includes(spec.has))return false;
+    if(spec.lacks!==undefined && wordsOf(spec.name).includes(spec.lacks))return false;
+    if(spec.x!==undefined && (!card?.position || Math.abs(card.position.x-spec.x)>0.5 || Math.abs(card.position.y-spec.y)>0.5))return false;
+    if(spec.w!==undefined && (!card || Math.abs(card.bounds.width/inspection().camera().zoom-spec.w)>0.5))return false;
+    const busy=focus ? Boolean(focus.querySelector('.state-dot.queued,.state-dot.running')) : Boolean(drawn.stateDot && ['queued','running'].includes(drawn.state));
+    const dot=focus ? Boolean(focus.querySelector('.state-dot')) : Boolean(drawn.stateDot);
+    if(spec.dot==='busy' && !busy)return false;
+    if(spec.dot==='none' && dot)return false;
+    const picture=focus ? [...focus.querySelectorAll('.media img')].some(image=>image.complete && image.naturalWidth>0 && image.naturalHeight>0) : Boolean(drawn.media.ready);
+    if(spec.picture!==undefined && picture!==spec.picture)return false;
     return true;
   };
-  /** When `spec` first holds, by the page's own frames, and whether its box was landing then. */
-  window.shown = (spec) => new Promise((done) => {
-    const look = () => {
-      if (!holds(spec)) return requestAnimationFrame(look);
-      const node = spec.name && box(spec.name);
-      done({ when: Date.now(), landing: Boolean(node?.querySelector('.card.landing')) });
+  /** Frame timing reads actual retained display state. Arrival comes only from the renderer's real animation diagnostic. */
+  window.shown=spec=>new Promise(done=>{
+    const look=()=>{
+      if(!holds(spec))return requestAnimationFrame(look);
+      done({when:Date.now(),landing:spec.name ? box(spec.name)?.rendered?.landing?.active===true : false});
     };
     look();
   });
-  /** What of `spec` doesn't hold, as the page has it. */
-  window.unshown = (spec) => (spec.all ?? [spec]).filter((one) => !holds(one)).map((one) => {
-    const node = box(one.name ?? one.gone);
-    return { wanted: one, drawn: Boolean(node), text: node?.textContent.slice(0, 160), place: node && placeOf(node) };
+  window.unshown=spec=>(spec.all ?? [spec]).filter(one=>!holds(one)).map(one=>{
+    const card=box(one.name ?? one.gone);
+    return {wanted:one,drawn:Boolean(card?.rendered),text:wordsOf(one.name ?? one.gone).slice(0,160),place:card?.position};
   });
-  /** Each place its progress reached, until it has none. At rest how far the whole job is, is the meter along its top (cl-928, cl-932);
-   *  its lines say the stage. */
-  window.progressOf = (name) => new Promise((done) => {
-    const places = [];
-    window.progressSaid = [];
-    const look = () => {
-      const bar = box(name)?.querySelector('.prog');
-      const meter = box(name)?.querySelector('.tile-meter i');
-      if (bar || meter) {
-        const place = meter?.style.transform || 'unknown';
-        if (places.at(-1) !== place) places.push(place);
-        const says = bar?.querySelector('.face-stage')?.textContent || bar?.querySelector('b')?.textContent;
-        if (says && window.progressSaid.at(-1) !== says) window.progressSaid.push(says);
+  window.progressOf=name=>new Promise(done=>{
+    const places=[];window.progressSaid=[];
+    const look=()=>{
+      const drawn=box(name)?.rendered,progress=drawn?.progress,meter=drawn?.meter;
+      if(!drawn)return requestAnimationFrame(look);
+      if(progress || meter) {
+        const fraction=progress?.fraction,place=meter && Number.isFinite(fraction) ? `scaleX(${fraction})` : 'unknown';
+        if(places.at(-1)!==place)places.push(place);
+        const says=progress ? [progress.state,progress.count].filter(Boolean).join(' ') : '';
+        if(says && window.progressSaid.at(-1)!==says)window.progressSaid.push(says);
       }
-      if (!bar && !meter && places.length) done(places);
-      else requestAnimationFrame(look);
+      if(!progress && !meter && places.length && drawn.media.ready)done(places);else requestAnimationFrame(look);
     };
     look();
   });
-  /** Frame times, and each text `name` showed, until `window.stopWatching`. */
-  window.watching = (name) => {
-    const [frames, texts] = [[], []];
-    let last = performance.now();
-    const step = (now) => {
-      frames.push(now - last);
-      last = now;
-      const text = box(name)?.textContent;
-      if (text && texts.at(-1) !== text) texts.push(text);
-      if (window.stopWatching) window.stopWatching({ frames, texts });
-      else requestAnimationFrame(step);
+  window.watching=name=>{
+    const frames=[],texts=[];let last=performance.now();
+    const step=now=>{
+      frames.push(now-last);last=now;
+      const text=wordsOf(name);if(text && texts.at(-1)!==text)texts.push(text);
+      if(window.stopWatching)window.stopWatching({frames,texts});else requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
   };
+
 };
 
 function summary(frames) {
@@ -282,15 +275,15 @@ function replaceFile(at, text) {
   const spotInView = async () => {
     const clear = clearOf(Object.values((await rows()) ?? {}));
     const view = await page.evaluate(() => {
-      const at = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-      const pane = document.querySelector('.react-flow').getBoundingClientRect();
-      return { x: -at.e / at.a, y: -at.f / at.a, w: pane.width / at.a, h: pane.height / at.a };
+      const root=document.querySelector('.canvas-root'),at=root.canvasInspection.camera(),pane=root.getBoundingClientRect();
+      return {x:-at.x/at.zoom,y:-at.y/at.zoom,w:pane.width/at.zoom,h:pane.height/at.zoom};
     });
     for (let y = Math.ceil(view.y); y + 400 <= view.y + view.h; y += 20) for (let x = Math.ceil(view.x); x + 360 <= view.x + view.w; x += 20) if (clear(x, y)) return { x, y };
     throw new Error(`no clear spot in view: ${JSON.stringify(view)}`);
   };
   const overlaps = () => page.evaluate(() => {
-    const rects = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.nm')?.textContent, rect: node.getBoundingClientRect() }));
+    const inspection=document.querySelector('.canvas-root').canvasInspection;
+    const rects=inspection.names().map(name=>({name,card:inspection.card(name)})).filter(({card})=>card?.rendered).map(({name,card:{bounds:b}})=>({name,rect:{left:b.x,top:b.y,right:b.x+b.width,bottom:b.y+b.height}}));
     const over = [];
     rects.forEach((a, i) => rects.slice(i + 1).forEach((b) => {
       if (a.rect.left < b.rect.right - 1 && b.rect.left < a.rect.right - 1 && a.rect.top < b.rect.bottom - 1 && b.rect.top < a.rect.bottom - 1) over.push(`${a.name}/${b.name}`);
@@ -298,9 +291,28 @@ function replaceFile(at, text) {
     return over;
   });
   const onScreen = (name) => page.evaluate((asked) => {
-    const rect = window.boxOf(asked)?.getBoundingClientRect();
-    return Boolean(rect) && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
+    const card=window.boxOf(asked),rect=card?.bounds;
+    return Boolean(card?.rendered) && rect.x>=0 && rect.y>=0 && rect.x+rect.width<=innerWidth && rect.y+rect.height<=innerHeight;
   }, name);
+
+  // Pixel receipts are outside timed propagation/burst spans, and use screenshots rather than the renderer's metadata.
+  const pixelsSeen=(seen.pixels={});
+  const capture=async (name,label)=>{
+    await page.mouse.move(2,500);
+    await until('native overlay off',()=>page.locator('.canvas-node').count(),n=>n===0);
+    const card=await until(`${name} displayed`,()=>canvasBox(page,name),card=>Boolean(card?.rendered));
+    const bytes=await page.screenshot();
+    if(process.env.SHOT && label)writeFileSync(`${process.env.SHOT}-${label}.png`,bytes);
+    return {card,read:screenshotPixels(bytes),dpr:await page.evaluate(()=>devicePixelRatio),camera:await canvasView(page)};
+  };
+  const imageSamples=(shot,points)=>points.map(([x,y])=>shot.read((shot.card.body.x+shot.card.body.width*x)*shot.dpr,(shot.card.body.y+shot.card.body.height*y)*shot.dpr));
+  const matchesImage=(rgb,[x,y])=>Math.abs(rgb[0]-77)<=18 && Math.abs(rgb[1]-x*255)<=20 && Math.abs(rgb[2]-y*255)<=20;
+  const picturePixels=async(name,label,points=[[0.25,0.25],[0.75,0.25],[0.25,0.75],[0.75,0.75]])=>{
+    const result=await until(`${name} actual PNG pixels`,async()=>{
+      const shot=await capture(name,label);return {ready:shot.card.rendered.media.ready,actual:imageSamples(shot,points)};
+    },value=>value.ready && value.actual.every((rgb,i)=>matchesImage(rgb,points[i])));
+    pixelsSeen[label]={points,...result};check(label,true);return points;
+  };
 
   // The empty hint is published only after the first canonical reconciliation.
   await page.locator('.empty-canvas').waitFor();
@@ -314,9 +326,25 @@ function replaceFile(at, text) {
   check('add_lands', added.landing);
   check('add_in_the_status', (await held('live_a'))?.kind === 'text');
 
-  // Its text.
+  // Its text. Let the actual arrival animation finish before taking the independent pixel baseline.
+  await until('arrival animation finished',()=>canvasBox(page,'live_a'),card=>Boolean(card?.rendered) && !card.rendered.landing?.active);
+  await settled(page);
+  const textBefore=await capture('live_a','text-before');
   await timed('set_text', { name: 'live_a', has: 'Second words' }, () => project('set', 'live_a', 'text=Second words'));
   check('set_in_the_status', (await held('live_a')).fields?.text === 'Second words');
+  const textAfter=await capture('live_a','text-after');
+  const beforeWords=textBefore.card.rendered.labels.words,afterWords=textAfter.card.rendered.labels.words;
+  let changed=0;
+  if(beforeWords && afterWords && JSON.stringify(textBefore.camera)===JSON.stringify(textAfter.camera)) {
+    const x=Math.min(beforeWords.x,afterWords.x),y=Math.min(beforeWords.y,afterWords.y),right=Math.max(beforeWords.x+beforeWords.width,afterWords.x+afterWords.width),bottom=Math.max(beforeWords.y+beforeWords.height,afterWords.y+afterWords.height);
+    for(let py=y;py<bottom;py++)for(let px=x;px<right;px++){
+      const a=textBefore.read(px*textBefore.dpr,py*textBefore.dpr),b=textAfter.read(px*textAfter.dpr,py*textAfter.dpr);
+      if(a.some((value,i)=>Math.abs(value-b[i])>=25))changed++;
+    }
+  }
+  pixelsSeen.changed_text={changed,before:beforeWords,after:afterWords};
+  check('text_update_changes_actual_pixels',changed>=8 && (afterWords?.fullText ?? afterWords?.text)==='Second words',pixelsSeen.changed_text);
+
 
   // A picture.
   const picture = join(scratch, 'Live Picture.png');
@@ -354,13 +382,18 @@ function replaceFile(at, text) {
   // Approved by a command: it turns into that picture. Unapproved: back. Out of date has no dot now (Paul, 11-05): what shows is the picture.
   // Its imported picture must be usable before timing state propagation, clear of first-cold media setup.
   await page.waitForFunction((name) => {
-    const image = window.boxOf(name)?.querySelector('.media img');
-    return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+    const media=window.boxOf(name)?.rendered?.media;
+    return media?.ready && media.width>0 && media.height>0;
   }, 'live_pic', { timeout: FIRST_RUN_MS });
+  await picturePixels('live_pic','imported_picture_pixels');
   await timed('approve', { name: 'live_tool', picture: true }, () => project('approve', 'live_tool', hash));
   check('approve_in_the_status', (await held('live_tool')).pinned === true);
+  const approvedPoints=await picturePixels('live_tool','approved_picture_pixels',[[0.25,0.1],[0.75,0.1],[0.25,0.25],[0.75,0.25]]);
   await timed('unapprove', { name: 'live_tool', picture: false }, () => project('unapprove', 'live_tool'));
   check('unapprove_in_the_status', !(await held('live_tool')).pinned);
+  const unapproved=await capture('live_tool','unapproved-picture'),leftPixels=imageSamples(unapproved,approvedPoints);
+  pixelsSeen.unapproved_picture={actual:leftPixels};
+  check('unapprove_removes_actual_picture_pixels',!unapproved.card.rendered.media.ready && leftPixels.filter((rgb,i)=>!matchesImage(rgb,approvedPoints[i])).length>=2,leftPixels);
 
   // Moved and made wider by a command.
   place = await spot();
@@ -369,7 +402,7 @@ function replaceFile(at, text) {
 
   // Renamed by a command: the same box, where it was, landing on nothing.
   const renamed = await timed('rename', { all: [{ name: 'live_b', x: place.x, y: place.y }, { gone: 'live_a' }] }, () => project('rename', 'live_a', 'live_b'));
-  check('rename_does_not_land', !(await page.evaluate(() => Boolean(window.boxOf('live_b')?.querySelector('.card.landing')))), renamed);
+  check('rename_does_not_land', !(await page.evaluate(() => window.boxOf('live_b')?.rendered?.landing?.active === true)), renamed);
 
   // Deleted by a command, which prints the command that undoes it. That brings it back where it was.
   const deleted = await timed('delete', { gone: 'live_b' }, () => project('delete', 'live_b'));
@@ -451,7 +484,7 @@ function replaceFile(at, text) {
   };
   // Measured at rest: a box worked on has the canvas drawn in on it, and leaving it moves everything back.
   await away();
-  const moved = await box('live_b').locator('.nm').boundingBox();
+  const moved = (await canvasBox(page,'live_b')).title;
   const canvasBefore = (await rows()).live_b;
   await page.mouse.move(moved.x + 5, moved.y + 5);
   await page.mouse.down();
@@ -475,8 +508,9 @@ function replaceFile(at, text) {
   await readsBack('rename', () => held('live_c'), Boolean);
   await away();
   // An Edit is wide, and back at rest its X, at its right, can be past the window: F brings it all in, as for a person.
-  await page.keyboard.press('f');
+  await fitCanvas(page);
   await page.waitForTimeout(400);
+  await hoverBox(page,'live_c');
   await pointAt(page, box('live_c').locator('.nm'));
   await box('live_c').locator('.head [aria-label=Delete]').click();
   await readsBack('delete', () => held('live_c'), (asset) => !asset);
@@ -506,13 +540,13 @@ function replaceFile(at, text) {
     // The machine estimates the overall bar from prior runs of this size.
     // Match the measured work while priming that estimate, then observe the next run.
     await project('add', `${TOOL}/slow`, 'live_shot', `at=${place.x},${place.y},260`, 'instructions=A slow still', 'seconds:=14');
-    await box('live_shot').waitFor();
+    await until('live_shot on the canvas', () => canvasBox(page,'live_shot'), Boolean);
     await project('render', 'live_shot', '--on', 'local');
     await timed('a_first_render', { name: 'live_shot', picture: true }, async () => ({ at: Date.now() }));
     await project('set', 'live_shot', 'seconds:=14');
     // The first render over on the page too: its picture can show from its run before its take lands, and until the page reads that it's
     // landed, its box shows that run whole. Progress sampled from here is the next render's alone.
-    await until('the first render over on the page', () => page.evaluate((name) => !window.boxOf(name)?.querySelector('.prog'), 'live_shot'), Boolean);
+    await until('the first render over on the page', () => page.evaluate((name) => Boolean(window.boxOf(name)?.rendered) && !window.boxOf(name).rendered.progress, 'live_shot'), Boolean);
     const moving = bounded(page.evaluate((name) => window.progressOf(name), 'live_shot'), FIRST_RUN_MS, () => 'its progress never ended');
     await timed('render_starts', { name: 'live_shot', dot: 'busy' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
     const landed = until('two takes', async () => (await held('live_shot')).versions, (versions) => versions === 2, FIRST_RUN_MS).then(() => Date.now());
@@ -531,7 +565,7 @@ function replaceFile(at, text) {
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);
-    check('render_lands_a_second_take', (await box('live_shot').locator('.state-dot.queued, .state-dot.running').count()) === 0);
+    check('render_lands_a_second_take', !['queued','running'].includes((await canvasBox(page,'live_shot'))?.rendered?.state));
     await timed('approve_a_take', { name: 'live_shot', picture: true }, () => project('approve', 'live_shot', '2'));
     check('approve_a_take_in_the_status', (await held('live_shot')).approved === 2);
     await project('unapprove', 'live_shot');
@@ -590,11 +624,11 @@ function replaceFile(at, text) {
   // Fitted to all of them: a box that comes after a fit is drawn for a moment, then not, off the screen (macOS, 41955999465).
   try {
     await until('the boxes for the burst', async () => {
-      await page.keyboard.press('f');
+      await fitCanvas(page);
       await page.waitForTimeout(250);
       return page.evaluate((names) => names.every((name) => {
-        const at = window.boxOf(name)?.getBoundingClientRect();
-        return at && at.bottom <= innerHeight && at.right <= innerWidth;
+        const card=window.boxOf(name),at=card?.bounds;
+        return card?.rendered && at.x>=0 && at.y>=0 && at.y+at.height<=innerHeight && at.x+at.width<=innerWidth;
       }), fixed);
     }, Boolean);
   } catch (error) {
@@ -607,11 +641,10 @@ function replaceFile(at, text) {
       rows: Object.fromEntries(Object.entries(cards).filter(([name]) => name.startsWith('burst_'))),
       page: await page.evaluate((names) => ({
         focused: document.activeElement?.tagName,
-        viewport: document.querySelector('.react-flow__viewport')?.style.transform,
+        viewport: document.querySelector('.canvas-root')?.canvasInspection?.camera(),
         boxes: names.map((name) => {
           const node = window.boxOf(name);
-          const rect = node?.getBoundingClientRect();
-          return { name, id: node?.getAttribute('data-id'), transform: node?.style.transform, rect: rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+          return {name,position:node?.position,rendered:Boolean(node?.rendered),rect:node?.bounds};
         }),
       }), fixed),
     };
@@ -687,9 +720,9 @@ function replaceFile(at, text) {
   check('burst_all_arrived', arrived.length === 40, arrived.length);
   // Fitted to what's there as the last of them find their places.
   await until('every box placed and shown', async () => {
-    await page.keyboard.press('f');
+    await fitCanvas(page);
     await page.waitForTimeout(250);
-    return page.evaluate(() => [...document.querySelectorAll('.nm')].filter((name) => name.textContent.startsWith('arrived_')).length);
+    return page.evaluate(() => {const i=document.querySelector('.canvas-root')?.canvasInspection;return i?.names().filter(name=>name.startsWith('arrived_') && i.card(name)?.rendered).length ?? 0;});
   }, (count) => count === 40);
   await page.waitForTimeout(400);
   await shot('burst');
@@ -704,7 +737,7 @@ function replaceFile(at, text) {
   const streamsBefore = streams;
   const canvasBefore2 = reads.canvas;
   // Somewhere clear in view: the canvas draws only the boxes in view, so a move past its edge would never show.
-  await page.keyboard.press('f');
+  await fitCanvas(page);
   await settled(page);
   const clearOfAll = await spotInView();
   await cdp.send('Debugger.enable');
@@ -741,8 +774,8 @@ function replaceFile(at, text) {
   check('fell_behind_for_real', behind.resyncs >= 1, behind);
   check('fell_behind_on_one_stream', behind.streams === 0, behind);
   check('fell_behind_read_again', behind.canvas_reads >= 1, behind);
-  await page.keyboard.press('f');
-  await until('what was made while behind', () => box('made_while_behind').count(), (count) => count === 1);
+  await fitCanvas(page);
+  await until('what was made while behind', async () => (await canvasBox(page,'made_while_behind'))?.rendered, Boolean);
   check('fell_behind_nothing_lost', (await held(fixed[0])).fields?.text === 'SAID-WHILE-BEHIND' && (await held('made_while_behind'))?.fields?.description === 'Made while behind');
   // The stream is live again: a command shows as before.
   await timed('live_after_falling_behind', { name: fixed[0], has: 'AND-LIVE-AGAIN' }, () => project('set', fixed[0], 'text=AND-LIVE-AGAIN'));
@@ -758,9 +791,9 @@ function replaceFile(at, text) {
 
   // A read of what's there isn't an arrival.
   await page.reload();
-  await page.waitForSelector('.nm');
-  await until('its boxes', () => page.locator('.nm').count(), (count) => count > 10);
-  check('a_reload_lands_nothing', (await page.locator('.card.landing').count()) === 0);
+  await until('its displayed boxes', () => page.evaluate(() => {const i=document.querySelector('.canvas-root')?.canvasInspection;return i?.names().filter(name=>i.card(name)?.rendered).length ?? 0;}), count=>count>10);
+  const arrivals=await page.evaluate(()=>{const i=document.querySelector('.canvas-root').canvasInspection;return i.names().filter(name=>i.card(name)?.rendered?.landing?.active===true);});
+  check('a_reload_lands_nothing', arrivals.length===0,arrivals);
   rmSync(scratch, { recursive: true, force: true });
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
