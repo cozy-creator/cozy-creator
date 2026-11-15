@@ -132,7 +132,7 @@ pub fn main() -> ExitCode {
         Ok(loaded) => loaded,
         Err(error) => return output::refuse(cli.json, &error),
     };
-    if let Err(error) = dev::admit(&matches, loaded.config.dev) {
+    if let Err(error) = dev::admit(&matches, loaded.config.dev).and_then(|()| loaded.config.declare_local()) {
         return output::refuse(cli.json, &error);
     }
     let warnings = loaded.warnings.clone();

@@ -9,7 +9,7 @@ use std::{
 
 use tensorfs::{
     err::{Code, Refusal, Result},
-    fetch::{is_loopback_origin, Boxed, Location, Origin},
+    fetch::{Boxed, Location, Origin},
     format::ObjectRef,
 };
 
@@ -112,12 +112,12 @@ pub(crate) fn wheel_at(url: &str, sha256: &str, file: &str, dir: &Path, machine:
     let failed = |e: Refusal| match e.code {
         Code::OBJECT_ID_MISMATCH => io::Error::other(super::update::Coded {
             code: "wheel_digest_mismatch",
-            message: format!("{file} from {url}: {}", e.detail),
+            message: format!("{file} from {}: {}", tensorfs::fetch::shown(url), e.detail),
         }),
         _ => {
             let network = tensorfs::Failure::from(e.clone()).kind == tensorfs::Kind::Network;
             let kind = if network { io::ErrorKind::NotConnected } else { io::ErrorKind::Other };
-            io::Error::new(kind, format!("{file} from {url}: {e}"))
+            io::Error::new(kind, format!("{file} from {}: {e}", tensorfs::fetch::shown(url)))
         }
     };
     let blob = object_at(machine, url, sha256, None, bundle, order, stop).map_err(failed)?;
@@ -140,7 +140,7 @@ pub(crate) fn object_at(machine: &Machine, url: &str, sha256: &str, length: Opti
 
 /// One object from one URL, through the store.
 fn fetch(machine: &Machine, url: &str, object: &ObjectRef, trust: Option<Arc<Vec<u8>>>, order: u64, stop: &Stop) -> Result<PathBuf> {
-    let remote = Remote { origin: Arc::new(Url(url.into())), trust, local: is_loopback_origin(url) };
+    let remote = Remote { origin: Arc::new(Url(url.into())), trust };
     machine.objects(&remote, std::slice::from_ref(object), order, stop)?;
     machine.store().path(object).map_err(|e| e.refusal())
 }
@@ -172,7 +172,7 @@ pub(crate) fn text(machine: &Machine, stop: &Stop, url: String) -> Result<String
         .await
         .map(|()| bytes)
     })?;
-    String::from_utf8(bytes).map_err(|e| Refusal { code: Code::ORIGIN_REFUSED, detail: format!("{url}: {e}") })
+    String::from_utf8(bytes).map_err(|e| Refusal { code: Code::ORIGIN_REFUSED, detail: format!("{}: {e}", tensorfs::fetch::shown(url)) })
 }
 
 fn land(blob: &Path, dir: &Path, file: &str) -> io::Result<PathBuf> {

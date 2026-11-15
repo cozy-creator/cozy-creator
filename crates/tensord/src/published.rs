@@ -177,14 +177,22 @@ fn unresolved(named: &Named) -> Failure {
 }
 
 /// The caller's provider tokens; empty reads public sources anonymously.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Providers {
     pub huggingface: String,
     pub civitai: String,
 }
 
+/// The tokens are never printed.
+impl std::fmt::Debug for Providers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Providers").finish_non_exhaustive()
+    }
+}
+
 /// Checkpoints by header, each with the components read (`access::Selected`).
 type Selected = Vec<(String, Vec<String>)>;
+
 /// Where a preparation's stage and bytes are reported as they change.
 pub(crate) type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
 
@@ -248,6 +256,26 @@ impl Drop for Within<'_> {
 }
 
 pub(crate) type Failure = (&'static str, String);
+
+/// What a model is made from: a source a run names, or a file written to this machine
+/// (`object://`), the only way a local file reaches it.
+#[derive(Clone, Copy)]
+pub(crate) enum ModelSource<'a> {
+    Named(&'a str),
+    Written(&'a Path),
+}
+
+/// A source a run names: `hf://`, `civitai://`, an https URL, or a file written to this machine
+/// (`object://`, `input://`). A path on the machine is refused: no request reads a machine's files.
+pub(crate) fn named_source(source: &str) -> Result<(), Failure> {
+    let local = !source.trim().is_empty() && matches!(tensorfs::import::remote::parse(source), Ok(tensorfs::import::remote::Spec::Local(_)));
+    if local && !source.starts_with("object://") && !source.starts_with("input://") {
+        return Err(("local_model_path_refused", format!(
+            "{source:?} is a path on the machine, and a run never names a machine's file as a model: \
+             upload the file (`cozy model upload <file> <name>`), which sends its bytes as an object:// input")));
+    }
+    Ok(())
+}
 
 /// A preparation its run's cancel stopped.
 pub(crate) const CANCELED: &str = "preparation_canceled";
@@ -504,7 +532,7 @@ impl Publisher {
             ));
         }
         let import = crate::activity::Import::new(&choice.source, &job.caller);
-        let made = self.make(&choice.source, &choice.profiles, &choice.trained_on, providers, job.stop.as_ref(), &|stage, moved, total| {
+        let made = self.make(ModelSource::Named(&choice.source), &choice.profiles, &choice.trained_on, providers, job.stop.as_ref(), &|stage, moved, total| {
             import.moved(stage, moved, total);
             job.set(format!("{stage} for {path}"), moved, total)
         })?;
@@ -569,10 +597,10 @@ impl Publisher {
         &self.machine
     }
 
-    /// A provider source made into a local model (`make_source`), as a run's refusal.
+    /// A provider source or a written file made into a local model (`make_source`), as a run's refusal.
     pub(crate) fn make_source(
         &self,
-        source: &str,
+        source: ModelSource<'_>,
         profiles: &[String],
         trained_on: &str,
         providers: &Providers,
@@ -583,11 +611,19 @@ impl Publisher {
             .map_err(|(code, message)| Refused { code, message })
     }
 
-    /// A provider source made into a local model (`make_source`), one maker per source.
-    fn make(&self, source: &str, profiles: &[String], trained_on: &str, providers: &Providers,
+    /// A provider source or a written file made into a local model (`make_source`), one maker per source.
+    fn make(&self, source: ModelSource<'_>, profiles: &[String], trained_on: &str, providers: &Providers,
         stop: Option<&Stop>, progress: &(dyn Fn(&str, u64, u64) + Sync),
     ) -> Result<Made, Failure> {
         let _inventory = crate::held_models::ModelChange;
+        let source = match source {
+            ModelSource::Named(named) if named.starts_with("object://") || named.starts_with("input://") => {
+                return Err(("invalid_request", format!("{named} is a written file, which only a model upload makes into a model")));
+            }
+            ModelSource::Named(named) => named_source(named).map(|()| named.to_owned())?,
+            ModelSource::Written(file) => file.display().to_string(),
+        };
+        let source = source.as_str();
         crate::private_io::check_model_source(source).map_err(|error| ("private_model_import_unsupported", error.to_string()))?;
         let mut sorted = profiles.to_vec();
         sorted.sort();
@@ -1695,7 +1731,7 @@ fn make_source(
     };
     let held = crate::storage::local(store, &format!("local/{name}")).map_err(io_failure)?;
     if let Some(local) = held.filter(|local| store.holds(&local.header)) {
-        crate::storage::transport(store, "import", source, &format!("header={} reused", local.header.id()));
+        crate::storage::transport(store, "import", tensorfs::fetch::shown(source), &format!("header={} reused", local.header.id()));
         return Ok(made(local.header));
     }
     let stop = || cancellation.as_ref().is_some_and(Stop::is_cancelled);
@@ -1720,7 +1756,7 @@ fn make_source(
     };
     let started = Instant::now();
     let (header, files) = tensorfs::import::into_store(store, &request, Some(&name)).map_err(|e| {
-        crate::storage::transport(store, "import-failed", source, &e.to_string());
+        crate::storage::transport(store, "import-failed", tensorfs::fetch::shown(source), &e.to_string());
         match stop() {
             true => canceled(),
             false => refused("model_source_failed", e),
@@ -1735,7 +1771,7 @@ fn make_source(
         downloaded.load(std::sync::atomic::Ordering::Relaxed),
         started.elapsed().as_secs_f64()
     );
-    crate::storage::transport(store, "import", source, &detail);
+    crate::storage::transport(store, "import", tensorfs::fetch::shown(source), &detail);
     crate::storage::set_local(store, &name, &header, &files, "").map_err(io_failure)?;
     Ok(made(header))
 }
@@ -1861,7 +1897,7 @@ fn apply_adapters(
         } else {
             // A provider-source LoRA (civitai://, hf://) is made here, normalized at ingest.
             let import = crate::activity::Import::new(&adapter.source, &job.caller);
-            let made = publisher.make(&adapter.source, &adapter.profiles, "", providers, job.stop.as_ref(), &|stage, moved, total| {
+            let made = publisher.make(ModelSource::Named(&adapter.source), &adapter.profiles, "", providers, job.stop.as_ref(), &|stage, moved, total| {
                 import.moved(stage, moved, total);
                 job.set(format!("{stage} for an adapter of {}", grant.slot), moved, total)
             })?;

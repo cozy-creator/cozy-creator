@@ -25,7 +25,7 @@ use serde_json::Value;
 use super::ask::{self, Backoff};
 use super::net::{join, same_origin, shown, Body, Client, GetError, HeaderMap, Pulse};
 use super::origin::{Boxed, Location, Origin};
-use super::policy::is_loopback_origin;
+use super::policy::is_local;
 use super::token::{default_for, s3_base, Request, TokenProvider};
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{is_digest, model_name, Header, ObjectRef, Model, Tree};
@@ -132,7 +132,7 @@ struct Ask<'a> {
 }
 
 impl Endpoint {
-    /// The endpoint at `url`: `https://…`, `http://` on loopback, `s3://<bucket>[/<prefix>]`
+    /// The endpoint at `url`: `https://…`, `http://` on a declared local origin, `s3://<bucket>[/<prefix>]`
     /// (SigV4), or a directory (`file:///dir` or a path). With no `token`, the default chain's
     /// provider for it, if any.
     pub fn new(client: &Client, url: &str, token: Option<Arc<dyn TokenProvider>>) -> Result<Endpoint> {
@@ -142,15 +142,15 @@ impl Endpoint {
                 true => s3_base(&url)?,
                 false => url.clone(),
             };
-            if base.starts_with("http://") && !is_loopback_origin(&base) {
-                return refuse(Code::SOURCE_NOT_ALLOWED, format!("{base}: plain http only on loopback"));
+            if base.starts_with("http://") && !is_local(&base) {
+                return refuse(Code::SOURCE_NOT_ALLOWED, format!("{base}: plain http only to an origin this computer's operator declared local (`local_origins`)"));
             }
             client.policy().admit(&base)?;
             At::Http(base)
         } else {
             let path = url.strip_prefix("file://").unwrap_or(&url);
             if !path.starts_with('/') {
-                return refuse(Code::SOURCE_NOT_ALLOWED, format!("{url}: not an https://, loopback http:// or file:/// endpoint"));
+                return refuse(Code::SOURCE_NOT_ALLOWED, format!("{url}: not an https://, declared-local http:// or file:/// endpoint"));
             }
             At::Dir(PathBuf::from(path), OnceLock::new())
         };

@@ -2874,7 +2874,8 @@ fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
 
 fn import_failed(source: &str, why: String) -> Refusal {
     // A hash is no one's to read: a person dropped a file, and is told of it by its name.
-    let said = if source.starts_with("sha256:") { why } else { format!("{source}: {why}") };
+    // A link is shown without its query, which a presigned one's credential is.
+    let said = if source.starts_with("sha256:") { why } else { format!("{}: {why}", tensorfs::fetch::shown(source)) };
     Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("import a picture, video or sound"))
 }
 

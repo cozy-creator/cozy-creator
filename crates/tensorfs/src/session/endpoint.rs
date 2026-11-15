@@ -46,7 +46,6 @@ impl Endpoint {
         };
         let policy = SourcePolicy {
             any_host: true,
-            allow_local: fetch::policy::is_loopback_origin(url),
             max_redirects: 5,
             ..SourcePolicy::default()
         };

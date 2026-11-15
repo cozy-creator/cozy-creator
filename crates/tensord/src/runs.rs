@@ -24,6 +24,7 @@ use tensorfs::format::ObjectRef;
 use std::{
     collections::HashMap,
     io,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -332,7 +333,7 @@ pub(crate) fn upload(
     }
     let commit = tensorfs::format::Tree::of(lane, header.clone(), files).map_err(|e| refused("invalid_request", e.to_string()))?;
     let tree = store.put_tree(&commit).map_err(|e| failed(e.to_string()))?;
-    let policy = SourcePolicy { any_host: true, allow_local: true, max_redirects: 8, ..Default::default() };
+    let policy = SourcePolicy { any_host: true, max_redirects: 8, ..Default::default() };
     let client = match options.ca_der.is_empty() {
         true => Ok(Client::new(policy)),
         false => Client::with_roots(policy, hub::pem(&options.ca_der).as_bytes()),
@@ -620,10 +621,10 @@ impl Runs {
     /// repository at the run's TensorFS endpoint.
     /// A written file (`object://sha256:<hex>/<name>`, `cozy model upload ./model.safetensors`) as the
     /// import reads it: the signer's stored object, linked under its file's name (the name is its
-    /// format to the import). Any other source is the import's as it is.
-    fn written_source(&self, actor: &str, source: &str) -> Result<String, Refused> {
+    /// format to the import). None: `source` is no written file.
+    fn written(&self, actor: &str, source: &str) -> Result<Option<PathBuf>, Refused> {
         let Some(rest) = source.strip_prefix("object://") else {
-            return Ok(source.to_string());
+            return Ok(None);
         };
         let (digest, name) = rest.split_once('/').unwrap_or((rest, ""));
         let name = unescape(name);
@@ -638,7 +639,7 @@ impl Runs {
         if !file.is_file() {
             std::fs::hard_link(&object, &file).or_else(|_| std::fs::copy(&object, &file).map(drop))?;
         }
-        Ok(file.display().to_string())
+        Ok(Some(file))
     }
 
     fn warm_models(
@@ -799,7 +800,10 @@ impl Runs {
                     let Some((component, path)) = at.split_once('/') else {
                         return Err(refused("model_add_invalid", format!("{at}: name it <component>/<path>")));
                     };
-                    let bytes = std::fs::read(self.written_source(actor, &add.source)?)?;
+                    let file = self.written(actor, &add.source)?.ok_or_else(|| {
+                        refused("model_add_invalid", format!("{}: an added file is one written to this machine (object://)", add.source))
+                    })?;
+                    let bytes = std::fs::read(file)?;
                     let object = publisher.store().put_bytes(&bytes).map_err(|e| refused("model_add_invalid", e.to_string()))?;
                     added.push((component.to_owned(), path.to_owned(), object));
                 }
@@ -873,9 +877,13 @@ impl Runs {
             let row = json!({"parameter": choice.parameter, "source": choice.source, "tree": folder.tree.id()});
             (folder.header.clone(), Some(folder.tree.clone()), row)
         } else if !choice.source.is_empty() {
-            let source = self.written_source(actor, &choice.source)?;
+            let written = self.written(actor, &choice.source)?;
+            let source = match &written {
+                Some(file) => crate::published::ModelSource::Written(file),
+                None => crate::published::ModelSource::Named(&choice.source),
+            };
             let import = crate::activity::Import::new(&choice.source, &self.service.engine.caller_id(id));
-            let made = publisher.make_source(&source, &choice.profiles, &choice.trained_on, &spec.providers, stop, &|stage, done, total| {
+            let made = publisher.make_source(source, &choice.profiles, &choice.trained_on, &spec.providers, stop, &|stage, done, total| {
                 import.moved(stage, done, total);
                 observe(stage, done, total)
             })?;
