@@ -18,7 +18,11 @@
 #             side by side ([]: one arm, the session's cozy and `update`)
 #   reset     true: before each arm, the pod's TensorFS store is emptied and its executors ended, over `cozy machine ssh` (no
 #             verb empties a rented machine's store: `cozy model uninstall` is this computer's only), so each arm starts cold;
-#             projects share the machine's store of public weights
+#             projects share the machine's store of public weights; and the picture's and video's packages uninstalled
+#             (`cozy package uninstall`), so each arm installs them afresh: a later arm would otherwise update the first's
+#             environments in a second (43683143359)
+#   sample    true: the pod's disk (each device's bytes read and written), I/O and memory pressure and page cache every 0.5 s
+#             for the session, over SSH (samples.jsonl in each arm): what a running call's loads met while downloads wrote
 #   link_mbit the pod's download link shaped to this many Mbit/s for the whole session (tc police on its ingress, over SSH);
 #             a pod that refuses it is said and runs unshaped ("": as rented)
 . "$(dirname "$0")/lib.sh"
@@ -66,16 +70,16 @@ for ARM in "${names[@]}"; do
   run_page boxes "$OUT/boxes.json" > "$D/boxes.txt" 2>&1 || fail "${ARM:+arm $ARM: }the project's boxes: $(tail -3 "$D/boxes.txt")"
 done
 say "the session's cozy: $(cozy --version)"
-RESET=$(param reset false) LINK=$(param link_mbit '')
+RESET=$(param reset false) LINK=$(param link_mbit '') SAMPLE=$(param sample false)
 [[ -z $LINK || $LINK =~ ^[0-9]+$ ]] || fail "link_mbit $LINK"
-if [ "$RESET" = true ] || [ -n "$LINK" ]; then
+if [ "$RESET" = true ] || [ -n "$LINK" ] || [ "$SAMPLE" = true ]; then
   [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
   RENT_ARGS=--ssh
 fi
 quote "$(param need_s $((2700 * ${#names[@]})))"
 rent
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
-if [ "$RESET" = true ] || [ -n "$LINK" ]; then
+if [ "$RESET" = true ] || [ -n "$LINK" ] || [ "$SAMPLE" = true ]; then
   for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
 fi
 if [ -n "$LINK" ]; then
@@ -87,6 +91,34 @@ if [ -n "$LINK" ]; then
   else
     say "the pod refused the shaped link: $(tail -c 200 "$OUT/link.txt"); it runs as rented"; LINK=''
   fi
+fi
+SAMPLE_PY=$(cat <<'PY'
+import json, os, time
+out = open("/tmp/samples.jsonl", "a")
+while not os.path.exists("/tmp/sample.stop"):
+    row = {"t": round(time.time(), 3), "disk": {}, "psi": {}, "mem": {}}
+    for line in open("/proc/diskstats"):
+        f = line.split()
+        if not f[2].startswith(("loop", "ram")) and int(f[3]) + int(f[7]):
+            row["disk"][f[2]] = [int(f[5]) * 512, int(f[9]) * 512]
+    for res in ("io", "memory"):
+        try:
+            row["psi"][res] = {l.split()[0]: float(l.split()[1].split("=")[1]) for l in open(f"/proc/pressure/{res}")}
+        except (OSError, IndexError, ValueError):
+            pass
+    for line in open("/proc/meminfo"):
+        k, v = line.split(":", 1)
+        if k in ("MemAvailable", "Cached", "Dirty", "Writeback"):
+            row["mem"][k] = int(v.split()[0]) * 1024
+    out.write(json.dumps(row) + "\n"); out.flush()
+    time.sleep(0.5)
+PY
+)
+if [ "$SAMPLE" = true ]; then
+  # Held by an SSH call of its own for the session, as cold-start's is (one started detached never wrote a row).
+  T=60 pod "rm -f /tmp/sample.stop /tmp/samples.jsonl" < /dev/null || fail "the sampler's files"
+  (printf '%s' "$SAMPLE_PY" | T=9000 pod "cat > /tmp/sample.py && python3 /tmp/sample.py 2> /tmp/sample.err" > /dev/null 2>&1) &
+  say "sampling the pod's disk, pressure and page cache"
 fi
 # The pod's TensorFS store emptied (each root its processes name, every file but its format) and its executors ended.
 RESET_PY=$(cat <<'PY'
@@ -128,6 +160,7 @@ for ARM in "${names[@]}"; do
   if [ "$RESET" = true ]; then
     printf '%s' "$RESET_PY" | T=600 pod "cat > /tmp/reset.py && python3 /tmp/reset.py" > "$D/reset.json" 2>&1 || fail "${ARM:+arm $ARM: }the pod's store wasn't emptied: $(tail -c 300 "$D/reset.json")"
     say "${ARM:+arm $ARM: }the pod's store emptied: $(tail -c 400 "$D/reset.json")"
+    step "uninstall$TAG" package uninstall "${PICTURE%%/*}" "${VIDEO%%/*}" --on "$NAME" -y || say "${ARM:+arm $ARM: }the packages weren't uninstalled"
   fi
   step "tensord$TAG" machine update "$NAME" --tensord "${TENSORD[$ARM]}" -y || fail "the pod refused ${ARM:-the session}'s TensorD"
   v=$(cozy machine show "$NAME" --json | jq -r .status.version)
@@ -154,6 +187,7 @@ for ARM in "${names[@]}"; do
   cozy machine show "$NAME" --json > "$D/show-after.json" 2>&1
   cozy machine logs local calcifer --lines 20000 > "$D/calcifer.log" 2>&1 || true
   for b in pier walk; do run_page asset "$b" > "$D/asset-$b.json" 2>&1; done
+  [ "$SAMPLE" != true ] || T=120 pod "cat /tmp/samples.jsonl" > "$D/samples.jsonl" 2> /dev/null < /dev/null || say "the samples weren't read"
   python3 "$(dirname "$0")/prepare-ahead.py" "$D" "$ASK" "${PICTURE%%/*}" "${VIDEO%%/*}" > "$D/timeline.json" 2> "$D/timeline.failed"
   cat "$D/timeline.json" >> "$R"
   # The next arm runs either way: its numbers are the comparison.

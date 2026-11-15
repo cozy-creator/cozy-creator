@@ -44,7 +44,7 @@ def compare(dirs: list[Path]) -> None:
         "expander load (loading expander)": ("picture_stages", "loading expander"), "upsampling prompt": ("picture_stages", "upsampling prompt"),
         "video fetch ahead": ("seconds_from_ask", "video_ahead", "download"), "video prepared": ("seconds_from_ask", "video_ahead", "prepared"),
         "guesses": ("seconds_from_ask", "video_ahead", "guesses"), "video's own download": ("seconds_from_ask", "video", "own_download"),
-        "emergencies": ("emergencies",), "floors": ("floors",),
+        "emergencies": ("emergencies",), "floors": ("floors",), "loads": ("loads",),
     }
     arms = {d.name.removeprefix("arm-"): cast(Json, json.loads((d / "timeline.json").read_text())) if (d / "timeline.json").exists() else None
             for d in dirs}
@@ -245,6 +245,35 @@ def stages(record: Row) -> dict[str, Json]:
     return {text(stage.get("name")): round(float(cast(float, stage.get("ms") or 0)) / 1000, 1) for stage in measured}
 
 
+def loads(record: Row) -> dict[str, Json]:
+    """Each of a run's loading stages (`… / loading <model>`, its record's attribution) against what the pod's disk did meanwhile
+    (samples.jsonl): MB/s written and read, the mean I/O pressure, the page cache, and what downloads landed then (MB)."""
+    stages = row(row(row(record.get("measurements")).get("attribution")).get("stages"))
+    rows = [cast(Row, json.loads(line)) for line in (out / "samples.jsonl").read_text().splitlines() if line.strip()] if (out / "samples.jsonl").exists() else []
+    seen: dict[str, Json] = {}
+    for name, stage in stages.items():
+        stage = row(stage)
+        begun, ended = num(stage.get("started_unix_ms")), num(stage.get("ended_unix_ms"))
+        if "loading" not in name or begun is None or ended is None or ended <= begun:
+            continue
+        inside = [r for r in rows if begun / 1000 <= cast(float, r.get("t") or 0) <= ended / 1000]
+        def moved(column: int) -> float | None:
+            if len(inside) < 2:
+                return None
+            def total(r: Row) -> int:
+                return sum(cast(list[int], v)[column] for v in row(r.get("disk")).values())
+            span = cast(float, inside[-1]["t"]) - cast(float, inside[0]["t"])
+            return round((total(inside[-1]) - total(inside[0])) / max(span, 1e-3) / 1e6, 1)
+        pressure = [cast(float, row(row(r.get("psi")).get("io")).get("some") or 0.0) for r in inside]
+        cached = [cast(int, row(r.get("mem")).get("Cached") or 0) for r in inside]
+        landed = sum(size for seen_objects in objects.values() for at, size in seen_objects.landed if begun <= at <= ended)
+        seen[name] = {"seconds": round((ended - begun) / 1000, 1), "write_mb_s": moved(1), "read_mb_s": moved(0),
+                      "io_pressure_some": round(sum(pressure) / len(pressure), 1) if pressure else None,
+                      "cached_gb": [round(cached[0] / 1e9, 1), round(cached[-1] / 1e9, 1)] if cached else None,
+                      "downloads_landed_mb": round(landed / 1e6)}
+    return seen
+
+
 def one(kind: str, tool: str) -> Row:
     return next((full[num(r.get("number"))] for r in runs if r.get("kind") == kind and package(r.get("target")) == tool), {})
 
@@ -315,6 +344,7 @@ timeline: dict[str, Json] = {
                     for e in emergencies],
     "emergency_objects": len([u for u in urgent if u[1] == "landed"]),
     "guesses_by_job": {str(job): download([(kind, job)]).seconds() for kind, job in objects if kind == "guess"},
+    "loads": loads(picture),
 }
 failed: list[str] = []
 
