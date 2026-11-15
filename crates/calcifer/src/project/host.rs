@@ -216,19 +216,28 @@ impl Host {
         format!("project-local-{}-{}", self.walk, &hex::encode(at)[..16])
     }
 
-    /// The project's local code at `path` made ready `on` a machine for a call, the install it needs waited for: read into a copy
-    /// as a client's is sent. For job `job`, until it's canceled: then an install nothing else waits on ends with it (`Installs`).
-    pub(crate) async fn ready(&self, path: &Path, on: &On, hub: &str, job: Option<&str>) -> Result<local_code::Prepared, Error> {
+    /// The project's local code at `path` made ready `on` a machine for a call, the install it needs waited for as `wait` says: read
+    /// into a copy as a client's is sent.
+    pub(crate) async fn ready(&self, path: &Path, on: &On, hub: &str, wait: Wait<'_>) -> Result<local_code::Prepared, Error> {
         let scope = crate::private_io::current().or(crate::private_io::of_path(path)?);
         crate::private_io::context(scope, async {
             let code = local_code::own(&self.api, path)?;
             let key = self.key(path, on);
+            let (job, member) = match wait {
+                Wait::Plain => (None, None),
+                Wait::Job(job, member) => (Some(job), member),
+                Wait::Quote(job) => (Some(job), None),
+            };
             loop {
                 if job.is_some_and(|job| self.installs.canceled(job)) {
                     return Err(canceled());
                 }
                 let prepared = local_code::prepare(&self.api, &code, on, hub, false, &key, None, &|run| self.installs.ended(run)).await?;
                 let Some(run) = &prepared.install else { return Ok(prepared) };
+                if let Wait::Quote(job) = wait {
+                    self.installs.asked(&self.api, &run.id, job)?;
+                    return Err(Error::new(Kind::Unavailable, INSTALLING, format!("its install, run {}, is going", run.number)));
+                }
                 let mut told = self.installs.told.subscribe();
                 let _waiting = match job {
                     Some(job) => match self.installs.wait(&self.api, &run.id, job)? {
@@ -238,6 +247,10 @@ impl Host {
                     },
                     None => None,
                 };
+                // What its turn sends together goes without it: they can start now (owner, cl-973).
+                if let Some(member) = member {
+                    member.leave();
+                }
                 let canceled_meanwhile = async {
                     if let Some(job) = job {
                         while told.changed().await.is_ok() {
@@ -258,19 +271,19 @@ impl Host {
     }
 
     /// The package `with` names: local code (`./dir` from the project's `folder`, `~/…`, an absolute path), described on the first of
-    /// `on`'s machines; else `[org/]package[@release]` as `hub` (empty: the default one) has it. Local code is made ready for job `job`
+    /// `on`'s machines; else `[org/]package[@release]` as `hub` (empty: the default one) has it. Local code is made ready as `wait` says
     /// (`ready`).
-    pub(crate) async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On], job: Option<&str>) -> Result<Package, Error> {
+    pub(crate) async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On], wait: Wait<'_>) -> Result<Package, Error> {
         let scope = crate::private_io::of_path(folder)?;
-        crate::private_io::context(scope, self.package_scoped(hub, with, folder, on, job)).await
+        crate::private_io::context(scope, self.package_scoped(hub, with, folder, on, wait)).await
     }
 
-    async fn package_scoped(&self, hub: &str, with: &str, folder: &Path, on: &[On], job: Option<&str>) -> Result<Package, Error> {
+    async fn package_scoped(&self, hub: &str, with: &str, folder: &Path, on: &[On], wait: Wait<'_>) -> Result<Package, Error> {
         let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
         if let Some(found) = local_code::target(with, Some(folder), &home) {
             let (path, named) = found?;
             let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
-            let prepared = self.ready(&path, &on, hub, job).await?;
+            let prepared = self.ready(&path, &on, hub, wait).await?;
             let Some(document) = prepared.interface else {
                 let said = format!("{with} is not described on {on:?} yet: its first render installs it");
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
@@ -486,6 +499,21 @@ fn refused(error: crate::Error) -> Error {
     Refusal::from(error).0
 }
 
+/// How making local code ready waits for the install it needs (`Host::ready`).
+#[derive(Clone, Copy)]
+pub(crate) enum Wait<'a> {
+    /// It waits, for no job.
+    Plain,
+    /// It waits for job `job`, until that's canceled (`Installs`), out of the runs its turn sends together meanwhile (`Member::leave`).
+    Job(&'a str, Option<&'a Member>),
+    /// It doesn't: `INSTALLING` answers, and the install ends with job `job` as one it waited on would (`Installs::asked`). A plan's
+    /// quote, which every job of its turn waits on.
+    Quote(&'a str),
+}
+
+/// What local code made ready without waiting (`Wait::Quote`) answers while its install is going.
+pub(crate) const INSTALLING: &str = "renderer_installing";
+
 /// What a job waiting on its install answers once it was canceled (`Installs`): it sends nothing, and fails nothing.
 pub(crate) const CANCELED: &str = "render_canceled";
 
@@ -493,10 +521,10 @@ fn canceled() -> Error {
     Error::new(Kind::Conflict, CANCELED, "canceled while it waited for its install")
 }
 
-/// The installs a project's walk asks for its local code (`Host::ready`), and the jobs waiting on each. An install that only canceled
-/// jobs waited on ends with the last of them, unless a run of its package that hasn't begun goes to its machine too (owner, cl-973):
-/// an install a person asked for is their own run, under their own key, which no job waits on. Its installs are keyed by the walk,
-/// so a walk starts it empty.
+/// The installs a project's walk asks for its local code (`Host::ready`), and the jobs waiting on each or whose quotes asked for it. An
+/// install that only canceled jobs wanted ends with the last of them, unless a run of its package that hasn't begun goes to its machine
+/// too (owner, cl-973): an install a person asked for is their own run, under their own key, which no job waits on. Its installs are
+/// keyed by the walk, so a walk starts it empty.
 #[derive(Default)]
 pub(crate) struct Installs {
     waits: Mutex<Waits>,
@@ -513,6 +541,15 @@ struct Waits {
     canceled: HashSet<String>,
     /// The installs ended for want of waiters: one asked again installs again (`local_code::install_through`).
     ended: HashSet<RunId>,
+    /// The install each job's quote found going, and didn't wait on (`Wait::Quote`).
+    asked: HashMap<String, RunId>,
+}
+
+impl Waits {
+    /// Whether a job waits on install `run`, or its quote asked for it.
+    fn wanted(&self, run: &RunId) -> bool {
+        self.waiting.contains_key(run) || self.asked.values().any(|asked| asked == run)
+    }
 }
 
 /// A job's wait on an install, until it drops.
@@ -561,7 +598,7 @@ impl Installs {
             return Ok(None);
         }
         if waits.canceled.contains(job) {
-            let alone = !waits.waiting.contains_key(run);
+            let alone = !waits.wanted(run);
             drop(waits);
             if alone {
                 self.end(api, run);
@@ -574,23 +611,42 @@ impl Installs {
         Ok(Some(Waiting { installs: self, run: run.clone(), token }))
     }
 
-    /// Jobs `jobs` canceled (`stop_jobs`): none waits again, and each install only they waited on ends with them.
+    /// Job `job`'s quote found install `run` going, and didn't wait on it: it ends with the job, as one the job waited on would. A job
+    /// canceled meanwhile asked for nothing, and the install ends unless something else waits on it.
+    fn asked(&self, api: &Api, run: &RunId, job: &str) -> Result<(), Error> {
+        let mut waits = self.lock();
+        if !waits.canceled.contains(job) {
+            waits.asked.insert(job.to_owned(), run.clone());
+            return Ok(());
+        }
+        let alone = !waits.wanted(run);
+        drop(waits);
+        if alone {
+            self.end(api, run);
+        }
+        Err(canceled())
+    }
+
+    /// Jobs `jobs` canceled (`stop_jobs`): none waits again, and each install only they waited on, or their quotes asked for, ends with
+    /// them.
     pub(crate) fn cancel(&self, api: &Api, jobs: &[String]) {
         if jobs.is_empty() {
             return;
         }
-        let alone: Vec<RunId> = {
+        let alone: HashSet<RunId> = {
             let mut waits = self.lock();
             waits.canceled.extend(jobs.iter().cloned());
-            let mut alone = vec![];
+            let mut theirs = HashSet::new();
             waits.waiting.retain(|run, waiters| {
+                let before = waiters.len();
                 waiters.retain(|(_, job)| !jobs.contains(job));
-                if waiters.is_empty() {
-                    alone.push(run.clone());
+                if waiters.len() < before {
+                    theirs.insert(run.clone());
                 }
                 !waiters.is_empty()
             });
-            alone
+            theirs.extend(jobs.iter().filter_map(|job| waits.asked.remove(job)));
+            theirs.into_iter().filter(|run| !waits.wanted(run)).collect()
         };
         self.told.send_modify(|told| *told += 1);
         for run in &alone {
@@ -606,7 +662,7 @@ impl Installs {
         }
         {
             let mut waits = self.lock();
-            if waits.waiting.contains_key(run) {
+            if waits.wanted(run) {
                 return;
             }
             waits.ended.insert(run.clone());
@@ -658,13 +714,13 @@ type Submitted = (String, SubmitRun, tokio::sync::oneshot::Sender<Result<Run, Er
 /// What a member's submit answers when the runs it went with were dropped unsent.
 pub(crate) const UNSENT: &str = "run_unsent";
 
-/// One run's place among those that go together.
-pub(crate) struct Member(Option<Arc<Together>>);
+/// One run's place among those that go together, until it submits or leaves.
+pub(crate) struct Member(Mutex<Option<Arc<Together>>>);
 
 impl Together {
     pub(crate) fn member(self: &Arc<Self>) -> Member {
         self.members.lock().expect("members lock").left += 1;
-        Member(Some(self.clone()))
+        Member(Mutex::new(Some(self.clone())))
     }
 
     /// One member submitted `run`, or left: the last sends what was submitted.
@@ -689,24 +745,34 @@ impl Together {
 }
 
 impl Member {
-    /// The machine its run goes to with the others.
-    pub(crate) fn on(&self) -> Option<&On> {
-        self.0.as_ref().map(|together| &together.on)
+    fn take(&self) -> Option<Arc<Together>> {
+        self.0.lock().expect("member lock").take()
+    }
+
+    /// The machine its run goes to with the others; none once it left them.
+    pub(crate) fn on(&self) -> Option<On> {
+        self.0.lock().expect("member lock").as_ref().map(|together| together.on.clone())
+    }
+
+    /// Leaves the others, which go without it: it waits for an install, and is sent alone once that's done (owner, cl-973).
+    pub(crate) fn leave(&self) {
+        if let Some(together) = self.take() {
+            together.left(None);
+        }
     }
 
     /// Submits `run` under `key` with the others: its run, once they all have.
-    pub(crate) async fn submit(mut self, key: &str, run: SubmitRun) -> Result<Run, Error> {
-        let together = self.0.take().expect("a member submits once");
+    pub(crate) async fn submit(self, key: &str, run: SubmitRun) -> Result<Run, Error> {
+        let unsent = || Error::new(Kind::Unavailable, UNSENT, "the runs it went with were dropped before they were sent");
+        let Some(together) = self.take() else { return Err(unsent()) };
         let (answer, answered) = tokio::sync::oneshot::channel();
         together.left(Some((key.to_owned(), run, answer)));
-        answered.await.unwrap_or_else(|_| Err(Error::new(Kind::Unavailable, UNSENT, "the runs it went with were dropped before they were sent")))
+        answered.await.unwrap_or_else(|_| Err(unsent()))
     }
 }
 
 impl Drop for Member {
     fn drop(&mut self) {
-        if let Some(together) = self.0.take() {
-            together.left(None);
-        }
+        self.leave();
     }
 }

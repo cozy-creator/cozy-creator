@@ -1066,6 +1066,8 @@ struct Walker {
     unplanned: HashMap<String, String>,
     /// What each job not sent asks of a machine, by its key, once its package and its models' cards said.
     quotables: HashMap<String, placement::Job>,
+    /// Ready jobs whose quote waits for their package's install, off their turn (`Done::Quoted`), by key.
+    quoting: HashSet<String>,
     /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
     starts: HashMap<String, (i64, Vec<String>)>,
     /// What each machine is told to have ready for each job, by machine and job key: its Hub, item and function; none: nothing.
@@ -3240,6 +3242,8 @@ enum Done {
     /// All that was on its way here from a run came, or won't.
     Arrived { name: Option<String>, result: Result<(), Error> },
     Ahead,
+    /// A ready job's quote, once its package's install was done (`Walker::quoting`).
+    Quoted { key: String, quotable: Result<Option<placement::Job>, String> },
 }
 
 /// What a queued job's machine can fetch before its turn: a function as its text names it, on the machine the plan placed it on.
@@ -3277,6 +3281,8 @@ enum Act {
     Send { id: usize, key: String, ask: Arc<Ask>, doc: Arc<Doc>, stand: Arc<Vec<Standing>>, lock: Arc<Lock>, next: Next },
     /// Its machines are all busy: it waits here for one.
     Held { id: usize },
+    /// Its package is being installed: it has its turn once its quote is in (`Done::Quoted`).
+    Installing { id: usize },
     Tool { id: usize, ask: Arc<Ask>, doc: Arc<Doc>, stand: Arc<Vec<Standing>>, lock: Arc<Lock>, i: usize },
 }
 
@@ -3593,6 +3599,8 @@ impl Walk {
     async fn go(&self, following: &tokio::task::JoinHandle<()>) -> Result<(), Error> {
         let (mut first, mut followed) = (None, HashSet::new());
         let mut work: FuturesUnordered<BoxFuture<'_, Done>> = FuturesUnordered::new();
+        // No quote is going yet: one an earlier walk left ended with it.
+        self.project.walker.lock().expect("walker lock").quoting.clear();
         // A project's revision moved (this Calcifer's commit, or another program's its folder watch saw): what was deleted stops.
         let mut edits = crate::events::edits();
         // A machine's Status moved (a run started or ended, bytes came, a machine came or went): a job held for a machine is placed again.
@@ -3621,7 +3629,7 @@ impl Walk {
             }
             // What waits for another's output is placed too, so its machine fetches ahead for it.
             if !self.project.walker.lock().expect("walker lock").graph.has_ready() {
-                self.plan(false).await;
+                drop(self.plan(false).await);
             }
             // What the jobs not sent will run with goes to the machines they're planned on, as each one's upcoming list (cl-967).
             let ahead = self.ahead_jobs();
@@ -3768,7 +3776,7 @@ impl Walk {
             return Ok(None);
         }
         let Wanted { machine, hub, with, kind, made } = wanted;
-        let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), Some(key)).await?;
+        let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), host::Wait::Job(key, None)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
         let mut payload = Map::new();
         for field in ["models", "lora"] {
@@ -3787,7 +3795,7 @@ impl Walk {
                 if crate::private_io::of_path(&self.folder().dir)?.is_some() {
                     return Ok(None);
                 }
-                v1::Source::Local(self.host.ready(path, machine, hub, Some(key)).await?.source)
+                v1::Source::Local(self.host.ready(path, machine, hub, host::Wait::Job(key, None)).await?.source)
             }
         };
         let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
@@ -3795,12 +3803,19 @@ impl Walk {
     }
 
     /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices; else why not. `late`: how long its package
-    /// may take to say what it calls, and its models' cards what they weigh (none: as long as they take).
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Result<placement::Job, String> {
+    /// may take to say what it calls, and its models' cards what they weigh (none: as long as they take). `waits`: whether it waits for
+    /// its package's install; none when it doesn't, and that install is going.
+    #[allow(clippy::too_many_arguments)]
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>, waits: bool) -> Result<Option<placement::Job>, String> {
         let api = self.host.api();
         let limit = late.unwrap_or(std::time::Duration::MAX);
-        let package = match tokio::time::timeout(limit, self.host.package(hub, with, &self.folder().dir, &on, Some(key.as_str()))).await {
+        let wait = match waits {
+            true => host::Wait::Job(&key, None),
+            false => host::Wait::Quote(&key),
+        };
+        let package = match tokio::time::timeout(limit, self.host.package(hub, with, &self.folder().dir, &on, wait)).await {
             Err(_) => return Err(format!("{with} didn't say within {} s what it calls", limit.as_secs())),
+            Ok(Err(e)) if e.code == host::INSTALLING => return Ok(None),
             Ok(Err(e)) => return Err(format!("{with}: {}", e.message)),
             Ok(Ok(package)) => package,
         };
@@ -3814,16 +3829,18 @@ impl Walk {
         let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
             interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
         });
-        Ok(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
+        Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on }))
     }
 
     /// Places the jobs not sent yet, the nearest `plan::PLANNED` of them (cl-967): every machine pictured from the Status it pushed, each
     /// job beginning once what it reads ends, ahead of it on each machine the runs sent there that it hasn't accepted yet. A ready job's
     /// place is where it goes at its turn; one waiting for another's output, where its weights are fetched ahead. A ready job waits for its
-    /// package to say what it calls (its send would anyway); one waiting, `QUOTE_LATE` at most. Each ready job's line says where it goes
-    /// and why, or why no machine was planned: then it goes to the first of its machines that takes it. `update`: as `placement::pictures`.
-    async fn plan(&self, update: bool) {
-        let Ok(walk) = self.folder().walk_now() else { return };
+    /// package to say what it calls; one waiting, `QUOTE_LATE` at most. Neither waits for its package's install, which would hold every
+    /// job of the turn (owner, cl-973): the ready jobs whose install is going are returned, to be quoted once it's done. Each ready job's
+    /// line says where it goes and why, or why no machine was planned: then it goes to the first of its machines that takes it. `update`:
+    /// as `placement::pictures`.
+    async fn plan(&self, update: bool) -> Vec<Unsent> {
+        let Ok(walk) = self.folder().walk_now() else { return vec![] };
         let dir = self.folder().dir.display().to_string();
         let (unsent, ends, foreseen) = {
             let walker = self.project.walker.lock().expect("walker lock");
@@ -3852,21 +3869,26 @@ impl Walk {
             (unsent, ends, walker.foreseen.clone())
         };
         if unsent.is_empty() {
-            return;
+            return vec![];
         }
         // What each asks of a machine, read once.
-        let known: HashSet<String> = self.project.walker.lock().expect("walker lock").quotables.keys().cloned().collect();
+        let known: HashSet<String> = {
+            let walker = self.project.walker.lock().expect("walker lock");
+            walker.quotables.keys().chain(&walker.quoting).cloned().collect()
+        };
         let read = unsent.iter().filter(|unsent| !known.contains(&unsent.key)).map(|unsent| async move {
             let late = (!unsent.ready).then_some(QUOTE_LATE);
-            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), late).await)
+            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), late, false).await)
         });
         let mut unread: HashMap<String, String> = HashMap::new();
+        let mut installing: HashSet<String> = HashSet::new();
         let quotables = {
             let read = futures_util::future::join_all(read).await;
             let mut walker = self.project.walker.lock().expect("walker lock");
             for (key, quotable) in read {
                 match quotable {
-                    Ok(job) => drop(walker.quotables.insert(key, job)),
+                    Ok(Some(job)) => drop(walker.quotables.insert(key, job)),
+                    Ok(None) => drop(installing.insert(key)),
                     Err(why) => drop(unread.insert(key, why)),
                 }
             }
@@ -3978,6 +4000,8 @@ impl Walk {
         walker.foreseen.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.starts.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.items.retain(|(_, key), _| unsent.iter().any(|unsent| unsent.key == *key));
+        drop(walker);
+        unsent.into_iter().filter(|unsent| unsent.ready && installing.contains(&unsent.key)).collect()
     }
 
     /// Of `on`, where job `job` goes, as the last plan placed it (`pick`).
@@ -4090,7 +4114,14 @@ impl Walk {
         if !self.project.walker.lock().expect("walker lock").graph.has_ready() {
             return Ok(false);
         }
-        self.plan(true).await;
+        // Their quotes wait for their packages' installs off this turn: each has its turn once its quote is in (owner, cl-973).
+        for unsent in self.plan(true).await {
+            self.project.walker.lock().expect("walker lock").quoting.insert(unsent.key.clone());
+            work.push(async move {
+                let quotable = self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made, None, true).await;
+                Done::Quoted { key: unsent.key, quotable }
+            }.boxed());
+        }
         let held = self.folder().lock()?;
         self.measuring(&held);
         self.measure()?;
@@ -4213,9 +4244,22 @@ impl Walk {
                 }
             }
         }
+        // What can start now goes without a job whose package is being installed: that one goes once it's done, with what's ready then
+        // (owner, cl-973).
+        {
+            let walker = self.project.walker.lock().expect("walker lock");
+            for act in &mut acts {
+                if let Act::Send { id, key, .. } = act
+                    && walker.quoting.contains(key.as_str())
+                {
+                    let id = *id;
+                    *act = Act::Installing { id };
+                }
+            }
+        }
         // Only what moved counts: a job held for a machine that isn't free yet waits for the next wake, not for another turn now, which
         // would come round again at once, forever, with nothing it sent ever followed.
-        let moved = acts.iter().any(|act| !matches!(act, Act::Held { .. }));
+        let moved = acts.iter().any(|act| !matches!(act, Act::Held { .. } | Act::Installing { .. }));
         self.project.walker.lock().expect("walker lock").held = acts.iter().any(|act| matches!(act, Act::Held { .. }));
         // What goes to one machine goes together, as its quote packed it (cl-816).
         let mut together = HashMap::new();
@@ -4261,7 +4305,7 @@ impl Walk {
                 }
                 end(id, End::Failed);
             }
-            Act::Held { id } => self.project.walker.lock().expect("walker lock").graph.put_back(id),
+            Act::Held { id } | Act::Installing { id } => self.project.walker.lock().expect("walker lock").graph.put_back(id),
             Act::Send { id, key, ask, doc, stand, lock, next } => {
                 let (name, kind, inputs) = (doc.assets[next.i].name.clone(), doc.assets[next.i].kind.clone(), stand[next.i].inputs.clone());
                 // Where its quote sent it, else its one machine.
@@ -4297,6 +4341,14 @@ impl Walk {
         };
         match done {
             Done::Ahead => {}
+            // Quoted: the next plan places it, and it has its turn. Not: that plan asks again, and says why.
+            Done::Quoted { key, quotable } => {
+                let mut walker = self.project.walker.lock().expect("walker lock");
+                walker.quoting.remove(&key);
+                if let Ok(Some(job)) = quotable {
+                    walker.quotables.insert(key, job);
+                }
+            }
             Done::Sent { id, key, ask, name, kind, inputs, result } => match result {
                 Ok(()) => {
                     let mut walker = self.project.walker.lock().expect("walker lock");
@@ -4583,7 +4635,7 @@ impl Walk {
                 }
             }
             let with = doc.target(i);
-            let package = self.again(|| self.host.package(&target.hub, &with, &self.folder().dir, &target.on, Some(key.as_str()))).await?;
+            let package = self.again(|| self.host.package(&target.hub, &with, &self.folder().dir, &target.on, host::Wait::Job(&key, Some(&member)))).await?;
             if let Some(moved) = &package.moved {
                 self.say(match moved.level {
                     api::calcifer::NoteLevel::Warning => Told::Warning { message: moved.message.clone(), name: None },
@@ -4882,7 +4934,7 @@ impl Walk {
             Some(path) => {
                 let prepared = self.again(|| async {
                     let scope = crate::private_io::of_path(&self.folder().dir)?;
-                    crate::private_io::context(scope, self.host.ready(path, &placed, &hub, Some(key))).await
+                    crate::private_io::context(scope, self.host.ready(path, &placed, &hub, host::Wait::Job(key, Some(&member)))).await
                 }).await.map_err(named)?;
                 staged.extend(prepared.files);
                 warnings.extend(prepared.from.map(|from| Warning { code: api::calcifer::FROM_SOURCE.into(), message: from.line() }));
@@ -4924,7 +4976,8 @@ impl Walk {
         if stopped {
             return Ok(());
         }
-        let sent = match member.on() == Some(&submit.on) {
+        // With the others, unless it left them to wait for an install.
+        let sent = match member.on().as_ref() == Some(&submit.on) {
             true => match member.submit(key, submit.clone()).await {
                 // Its batch never reached Calcifer's record, or met a moment's outage: sent alone, under the same key, as often as that takes.
                 Err(e) if e.transient() || e.code == host::UNSENT => {
