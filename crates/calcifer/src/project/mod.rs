@@ -1066,6 +1066,9 @@ struct Walker {
     unplanned: HashMap<String, String>,
     /// What each job not sent asks of a machine, by its key, once its package and its models' cards said.
     quotables: HashMap<String, placement::Job>,
+    /// Jobs waiting for another's output whose quote was asked in the walk's own work (`Done::Quoted`), by key: once, however long
+    /// it takes (a local tool's waits for its code to be ready on a machine); one that failed isn't asked again while it waits.
+    quoting: HashSet<String>,
     /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
     starts: HashMap<String, (i64, Vec<String>)>,
     /// What each machine is told to have ready for each job, by machine and job key: its Hub, item and function; none: nothing.
@@ -3223,8 +3226,28 @@ const LOCAL_LANDING: std::time::Duration = std::time::Duration::from_secs(10);
 /// What a send refused for a machine that went meanwhile says (`Machines::reach`): the job is placed again (cl-920), this many times.
 pub(crate) const GONE: [&str; 3] = ["machine_ended", "machine_offline", "machine_ending"];
 const PLACED_AGAIN: u32 = 3;
-/// How long a job's package may take to say what it calls, and its models' cards what they weigh, before its machines are asked without.
-const QUOTE_LATE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The jobs not sent, the nearest `plan::PLANNED` of them, each with what it asks and whether its turn is next.
+fn unsent_of(walker: &Walker, walk: &folder::WalkFile) -> Vec<Unsent> {
+    let graph = &walker.graph;
+    let ready: HashSet<usize> = graph.ready(usize::MAX).into_iter().collect();
+    (graph.open_jobs().into_iter())
+        .filter(|&id| graph.jobs[id].state == walker::State::Waiting)
+        .filter_map(|id| {
+            let job = &graph.jobs[id];
+            if job.node == usize::MAX || matches!(job.kind, JobKind::Free { .. }) {
+                return None;
+            }
+            let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
+            let target = ask.takes.iter().find(|take| take.key == job.key).map_or(&ask.target, |take| &take.target);
+            let reading = walker.readings.get(&ask.digest)?;
+            let asset = reading.doc.assets.get(job.node)?;
+            let (with, made) = (reading.doc.target(job.node), asset.made.clone());
+            Some(Unsent { id, key: job.key.clone(), ask: ask.id.clone(), target: target.clone(), with, made, needs: job.needs.clone(), ready: ready.contains(&id) })
+        })
+        .take(plan::PLANNED)
+        .collect()
+}
 
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
 fn unplanned(walker: &mut Walker, dir: &str, key: &str, why: String) {
@@ -3242,6 +3265,8 @@ enum Done {
     /// All that was on its way here from a run came, or won't.
     Arrived { name: Option<String>, result: Result<(), Error> },
     Ahead,
+    /// A waiting job's quote came, or why it can't.
+    Quoted { key: String, quoted: Result<placement::Job, String> },
 }
 
 /// What a queued job's machine can fetch before its turn: a function as its text names it, on the machine the plan placed it on.
@@ -3621,7 +3646,14 @@ impl Walk {
                     work.push(async move { Done::Landed { job, landed: self.follow(key).await } }.boxed());
                 }
             }
-            // What waits for another's output is placed too, so its machine fetches ahead for it.
+            // What waits for another's output is placed too, so its machine fetches ahead for it: its quote comes in this walk's
+            // work, and the plan places it once it has.
+            for unsent in self.unquoted() {
+                work.push(async move {
+                    let quoted = self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone()).await;
+                    Done::Quoted { key: unsent.key, quoted }
+                }.boxed());
+            }
             if !self.project.walker.lock().expect("walker lock").graph.has_ready() {
                 self.plan(false).await;
             }
@@ -3794,22 +3826,31 @@ impl Walk {
         Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
     }
 
-    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices; else why not. `late`: how long its package
-    /// may take to say what it calls, and its models' cards what they weigh (none: as long as they take).
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Result<placement::Job, String> {
+    /// The jobs waiting for another's output whose quote isn't known or asked: each taken as asked now (`Walker::quoting`).
+    fn unquoted(&self) -> Vec<Unsent> {
+        let Ok(walk) = self.folder().walk_now() else { return vec![] };
+        let mut walker = self.project.walker.lock().expect("walker lock");
+        let wanted: Vec<Unsent> = (unsent_of(&walker, &walk).into_iter())
+            .filter(|unsent| !unsent.ready && !walker.quotables.contains_key(&unsent.key) && !walker.quoting.contains(&unsent.key))
+            .collect();
+        walker.quoting.extend(wanted.iter().map(|unsent| unsent.key.clone()));
+        wanted
+    }
+
+    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices; else why not. It waits for its package
+    /// to say what it calls (a local tool's code to be ready on a machine) and its models' cards what they weigh.
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>) -> Result<placement::Job, String> {
         let api = self.host.api();
-        let limit = late.unwrap_or(std::time::Duration::MAX);
-        let package = match tokio::time::timeout(limit, self.host.package(hub, with, &self.folder().dir, &on, Some(key.as_str()))).await {
-            Err(_) => return Err(format!("{with} didn't say within {} s what it calls", limit.as_secs())),
-            Ok(Err(e)) => return Err(format!("{with}: {}", e.message)),
-            Ok(Ok(package)) => package,
+        let package = match self.host.package(hub, with, &self.folder().dir, &on, Some(key.as_str())).await {
+            Err(e) => return Err(format!("{with}: {}", e.message)),
+            Ok(package) => package,
         };
         let renderer = match package.maker() {
             Ok(Some(renderer)) => renderer,
             Ok(None) => return Err(format!("{with} names no function")),
             Err(e) => return Err(format!("{with}: {}", e.message)),
         };
-        let models = tokio::time::timeout(limit, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
+        let models = fit::checkpoints(&api, hub, &package, &renderer.function, &made).await;
         let size = v1::JobSize::of(&Value::Object(made));
         let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
             interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
@@ -3820,7 +3861,8 @@ impl Walk {
     /// Places the jobs not sent yet, the nearest `plan::PLANNED` of them (cl-967): every machine pictured from the Status it pushed, each
     /// job beginning once what it reads ends, ahead of it on each machine the runs sent there that it hasn't accepted yet. A ready job's
     /// place is where it goes at its turn; one waiting for another's output, where its weights are fetched ahead. A ready job waits for its
-    /// package to say what it calls (its send would anyway); one waiting, `QUOTE_LATE` at most. Each ready job's line says where it goes
+    /// package to say what it calls (its send would anyway); one waiting is placed once its quote came in the walk's work (`unquoted`), however
+    /// long a local tool's code takes to be ready. Each ready job's line says where it goes
     /// and why, or why no machine was planned: then it goes to the first of its machines that takes it. `update`: as `placement::pictures`.
     async fn plan(&self, update: bool) {
         let Ok(walk) = self.folder().walk_now() else { return };
@@ -3828,23 +3870,7 @@ impl Walk {
         let (unsent, ends, foreseen) = {
             let walker = self.project.walker.lock().expect("walker lock");
             let graph = &walker.graph;
-            let ready: HashSet<usize> = graph.ready(usize::MAX).into_iter().collect();
-            let unsent: Vec<Unsent> = (graph.open_jobs().into_iter())
-                .filter(|&id| graph.jobs[id].state == walker::State::Waiting)
-                .filter_map(|id| {
-                    let job = &graph.jobs[id];
-                    if job.node == usize::MAX || matches!(job.kind, JobKind::Free { .. }) {
-                        return None;
-                    }
-                    let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
-                    let target = ask.takes.iter().find(|take| take.key == job.key).map_or(&ask.target, |take| &take.target);
-                    let reading = walker.readings.get(&ask.digest)?;
-                    let asset = reading.doc.assets.get(job.node)?;
-                    let (with, made) = (reading.doc.target(job.node), asset.made.clone());
-                    Some(Unsent { id, key: job.key.clone(), ask: ask.id.clone(), target: target.clone(), with, made, needs: job.needs.clone(), ready: ready.contains(&id) })
-                })
-                .take(plan::PLANNED)
-                .collect();
+            let unsent = unsent_of(&walker, &walk);
             // When the jobs they read that went already end, as their machines were quoted.
             let ends: HashMap<usize, i64> = (unsent.iter().flat_map(|unsent| unsent.needs.iter().copied()))
                 .filter_map(|need| Some((need, walker.sent.get(&graph.jobs[need].key)?.finish_at_ms)))
@@ -3854,11 +3880,10 @@ impl Walk {
         if unsent.is_empty() {
             return;
         }
-        // What each asks of a machine, read once.
+        // What each ready job asks of a machine, read once, as its send would; a waiting one's comes in the walk's work (`unquoted`).
         let known: HashSet<String> = self.project.walker.lock().expect("walker lock").quotables.keys().cloned().collect();
-        let read = unsent.iter().filter(|unsent| !known.contains(&unsent.key)).map(|unsent| async move {
-            let late = (!unsent.ready).then_some(QUOTE_LATE);
-            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), late).await)
+        let read = unsent.iter().filter(|unsent| unsent.ready && !known.contains(&unsent.key)).map(|unsent| async move {
+            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone()).await)
         });
         let mut unread: HashMap<String, String> = HashMap::new();
         let quotables = {
@@ -3978,6 +4003,7 @@ impl Walk {
         walker.foreseen.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.starts.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.items.retain(|(_, key), _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.quoting.retain(|key| unsent.iter().any(|unsent| unsent.key == *key));
     }
 
     /// Of `on`, where job `job` goes, as the last plan placed it (`pick`).
@@ -4297,6 +4323,16 @@ impl Walk {
         };
         match done {
             Done::Ahead => {}
+            Done::Quoted { key, quoted } => {
+                let mut walker = self.project.walker.lock().expect("walker lock");
+                match quoted {
+                    Ok(job) => {
+                        walker.quoting.remove(&key);
+                        walker.quotables.insert(key, job);
+                    }
+                    Err(why) => warn!("{}: {key} isn't fetched ahead: {why}", self.folder().dir.display()),
+                }
+            }
             Done::Sent { id, key, ask, name, kind, inputs, result } => match result {
                 Ok(()) => {
                     let mut walker = self.project.walker.lock().expect("walker lock");
