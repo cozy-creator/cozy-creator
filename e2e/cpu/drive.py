@@ -351,6 +351,10 @@ class Executor:
                 self.items.append({"output": got.get("output", ""), "repo_id": got.get("repo_id", ""),
                                    "revision": got.get("revision", "")})
                 self.send({"event": "answer", "seq": got.get("seq", 0), "ok": True, "code": "", "detail": ""})
+            elif got.get("event") == "request" and got.get("kind") == "model_need":
+                # A model the call reads now (cl-966): its weights are all in the throwaway store and came from no Hub, so
+                # TensorD has nothing to fetch and answers at once (`Runs::need`).
+                self.send({"event": "answer", "seq": got.get("seq", 0), "ok": True, "code": "", "detail": ""})
             elif got.get("event") == "request" and self.broker is not None and got.get("kind", "") in Broker.KINDS:
                 self.send(self.broker.answer(got))
             elif got.get("event") == "request":
