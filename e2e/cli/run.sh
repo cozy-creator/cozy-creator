@@ -550,6 +550,8 @@ case $SHARD in
   # A box from Render to its take, each phase of its face kept as a picture (cl-921).
   web-activity) export DB_WEB=activity; parts="tools_read db_existing_web logs" ;;
   web-core) parts="tools_read web_core page_resend logs" ;;
+  # cl-982's opens on a busy computer: 3,000 other loopback connections open (web/busy.js), as the gate's lookups meet them (cl-985).
+  web-opens-busy) export DB_WEB=opens BUSY_SOCKETS=3000; parts="tools_read db_existing_web logs" ;;
   web-firefox) parts="tools_read web_firefox logs" ;;
   # The palette against a Hub holding every first-party package (e2e/isolated.sh), and with none (cl-896).
   web-palette) export DB_WEB=palette; parts="tools_read db_existing_web logs" ;;
