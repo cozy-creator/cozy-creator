@@ -115,10 +115,9 @@ async function candidate(context, origin, directory) {
   const placed = async name => (await api(`${at}/canvas`)).cards[name];
   const opened = cli(['open', '--json'], folder);
   const link = new URL(opened.url);
-  const code = new URLSearchParams(link.hash.slice(1)).get('code');
-  if (!code) throw new Error('cozy open did not return a one-use sign-in code');
-  secrets.push(code);
-  if (link.origin !== origin) throw new Error('cozy open returned a different origin');
+  if (link.origin !== origin || link.hash || link.search || link.pathname !== `/projects/${encodeURIComponent(made.id)}`) throw new Error("cozy open did not return this project's plain Calcifer URL");
+  const nativeStorage = await api('/v1/project-storage');
+  if (nativeStorage.version !== 3 || typeof nativeStorage.daemon_birth !== 'string' || !nativeStorage.daemon_birth || !String(nativeStorage.principal ?? '').startsWith('user:')) throw new Error('Calcifer did not prove the native project-storage principal');
   const extra = JSON.parse(process.env.CHROME_ARGS ?? '[]');
   if (!Array.isArray(extra) || extra.some(arg => typeof arg !== 'string' || /swiftshader|llvmpipe|lavapipe|disable-gpu(?:$|=)/i.test(arg))) throw new Error('CHROME_ARGS must select a hardware renderer');
   seen.browser_args = ['--enable-gpu', '--disable-software-rasterizer', ...extra];
@@ -128,17 +127,28 @@ async function candidate(context, origin, directory) {
   page = await context.newPage();
   page.setDefaultTimeout(STEP);
   page.setDefaultNavigationTimeout(STEP);
-  const errors = [], violations = [], apiOrigins = new Set();
+  const errors = [], violations = [], apiOrigins = new Set(), browserCredentials = [];
   seen.pageErrors = errors; seen.cspViolations = violations;
   page.on('pageerror', error => errors.push(clean(error.message)));
   page.on('console', message => { if (message.type() === 'error') errors.push(clean(message.text())); });
-  page.on('request', request => { const url = new URL(request.url()); if (url.pathname.startsWith('/v1')) apiOrigins.add(url.origin); });
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/v1')) {
+      apiOrigins.add(url.origin);
+      if (request.headers().authorization || url.pathname.startsWith('/v1/session')) browserCredentials.push(url.pathname);
+    }
+  });
   await page.exposeFunction('recordCspViolation', value => violations.push(value));
   await page.addInitScript(() => { document.addEventListener('securitypolicyviolation', event => window.recordCspViolation({ directive: event.violatedDirective, disposition: event.disposition })); });
   await candidate(context, origin, process.env.CANDIDATE_DIST);
-  const session = page.waitForResponse(response => new URL(response.url()).pathname === '/v1/session' && response.request().method() === 'POST');
+  // Observe the page's own transport proof. No header, credential, or synthetic response is injected into its API requests.
+  const proving = page.waitForResponse(response => { const url = new URL(response.url()); return url.origin === origin && url.pathname === '/v1/project-storage' && response.request().method() === 'GET'; });
   const document = await page.goto(link.href);
-  check('real_session_redeemed', (await session).ok());
+  const proof = await proving, storage = proof.ok() ? await proof.json() : null;
+  const proven = proof.ok() && !proof.request().headers().authorization && storage?.version === 3 && storage.principal === nativeStorage.principal && storage.daemon_birth === nativeStorage.daemon_birth;
+  seen.page_storage = { status: proof.status(), version: storage?.version, principal: storage?.principal, daemon_birth: storage?.daemon_birth, credential_free: !proof.request().headers().authorization };
+  check('real_page_storage_proven', proven, seen.page_storage);
+  if (!proven) throw new Error('the page did not prove project storage for this Calcifer user and process');
   check('document_keeps_csp', Boolean(document.headers()['content-security-policy']) && document.headers()['referrer-policy'] === 'no-referrer');
   await page.getByRole('region', { name: 'Project canvas', exact: true }).waitFor();
   const canvas = page.getByRole('region', { name: 'Project canvas', exact: true });
@@ -346,6 +356,7 @@ async function candidate(context, origin, directory) {
   page.off('request', approval);
   await page.keyboard.press('Escape'); await page.locator('[data-focused-asset]').waitFor({ state: 'detached' }); await passive(); await settled();
   check('all_api_requests_same_origin', apiOrigins.size === 1 && apiOrigins.has(origin), [...apiOrigins]);
+  check('page_uses_no_bearer_or_session', browserCredentials.length === 0, browserCredentials);
   check('no_csp_violations', violations.length === 0, violations);
   check('no_page_errors', errors.length === 0, errors);
   seen.resources = await inspect('resources');

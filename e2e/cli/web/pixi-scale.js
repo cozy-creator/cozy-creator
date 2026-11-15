@@ -203,9 +203,9 @@ async function candidate(context, origin) {
   seen.browser = browser.version();
   const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: dpr, serviceWorkers: 'block' });
   page = await context.newPage(); page.setDefaultTimeout(STEP); page.setDefaultNavigationTimeout(STEP);
-  const errors = [], violations = [], origins = new Set(), thumbWidths = new Set();
+  const errors = [], violations = [], origins = new Set(), thumbWidths = new Set(), browserCredentials = [];
   page.on('pageerror', error => errors.push(clean(error.message)));
-  page.on('request', request => { const url = new URL(request.url()); if (url.pathname.startsWith('/v1')) origins.add(url.origin); if (url.pathname.includes('/thumbs/')) thumbWidths.add(Number(url.searchParams.get('w')) || 0); });
+  page.on('request', request => { const url = new URL(request.url()); if (url.pathname.startsWith('/v1')) { origins.add(url.origin); if (request.headers().authorization || url.pathname.startsWith('/v1/session')) browserCredentials.push(url.pathname); } if (url.pathname.includes('/thumbs/')) thumbWidths.add(Number(url.searchParams.get('w')) || 0); });
   await page.exposeFunction('pixiScaleCsp', directive => violations.push(directive));
   await page.addInitScript(() => document.addEventListener('securitypolicyviolation', event => window.pixiScaleCsp(event.violatedDirective)));
   await candidate(context, origin);
@@ -289,11 +289,16 @@ async function candidate(context, origin) {
     const byName = new Map(state.assets.map(asset => [asset.name, asset]));
     if (byName.size !== project.count || prepared.files.slice(0, project.count).some(file => byName.get(NAME(file.index))?.sha256 !== `sha256:${file.sha256}`)) throw new Error('prepared project asset hashes changed');
     if (Object.entries(project.cards).some(([name, box]) => ['x', 'y', 'w'].some(key => rows[name]?.[key] !== box[key]))) throw new Error('prepared project positions changed');
-    const opened = cli(['open', '--json'], project.folder, STEP), link = new URL(opened.url), code = new URLSearchParams(link.hash.slice(1)).get('code');
-    if (!code || link.origin !== origin) throw new Error('CLI open did not return this Calcifer session'); secrets.push(code);
-    const session = page.waitForResponse(response => new URL(response.url()).pathname === '/v1/session' && response.request().method() === 'POST');
+    const opened = cli(['open', '--json'], project.folder, STEP), link = new URL(opened.url);
+    if (link.origin !== origin || link.hash || link.search || link.pathname !== `/projects/${encodeURIComponent(project.id)}`) throw new Error('CLI open did not return this project plain Calcifer URL');
+    const nativeStorage = await api('/v1/project-storage');
+    if (nativeStorage.version !== 3 || typeof nativeStorage.daemon_birth !== 'string' || !nativeStorage.daemon_birth || !String(nativeStorage.principal ?? '').startsWith('user:')) throw new Error('Calcifer did not prove the native project-storage principal');
+    // The page itself must prove storage over the real same-origin connection, without a bearer or session.
+    const proving = page.waitForResponse(response => { const url = new URL(response.url()); return url.origin === origin && url.pathname === '/v1/project-storage' && response.request().method() === 'GET'; });
     const coldStart = performance.now(), document = await page.goto(link.href);
-    if (!(await session).ok() || !document.headers()['content-security-policy'] || document.headers()['referrer-policy'] !== 'no-referrer') throw new Error('real session/CSP verification failed');
+    const proof = await proving, storage = proof.ok() ? await proof.json() : null;
+    if (!proof.ok() || proof.request().headers().authorization || storage?.version !== 3 || storage.principal !== nativeStorage.principal || storage.daemon_birth !== nativeStorage.daemon_birth || !document.headers()['content-security-policy'] || document.headers()['referrer-policy'] !== 'no-referrer') throw new Error('real page storage/CSP verification failed');
+    (seen.page_storage ??= []).push({ project: project.id, status: proof.status(), version: storage.version, principal: storage.principal, daemon_birth: storage.daemon_birth, credential_free: true });
     await until('canvas ready', camera, Boolean);
     const gpu = await page.locator('canvas.canvas-pixels').evaluate(element => { const gl = element.getContext('webgl2') || element.getContext('webgl'), ext = gl?.getExtension('WEBGL_debug_renderer_info'); return ext ? { vendor: gl.getParameter(ext.UNMASKED_VENDOR_WEBGL), renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL), version: gl.getParameter(gl.VERSION), dpr: devicePixelRatio } : null; });
     if (!gpu || /swiftshader|llvmpipe|lavapipe|softpipe|software|swrast/i.test(gpu.renderer)) throw new Error('actual production canvas hardware WebGL not established');
@@ -332,6 +337,7 @@ async function candidate(context, origin) {
     }
   }
   check('all-api-real-origin', origins.size === 1 && origins.has(origin), [...origins]);
+  check('page-uses-no-bearer-or-session', browserCredentials.length === 0, browserCredentials);
   check('thumbnail-source-floor', [...thumbWidths].every(width => width === 0 || width >= 256), [...thumbWidths]);
   check('no-page-errors', errors.length === 0, errors); check('no-csp-violations', violations.length === 0, violations);
   check('candidate-delivery', !seen.candidate || seen.candidate.errors.length === 0, seen.candidate?.errors);
