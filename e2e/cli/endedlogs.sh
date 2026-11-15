@@ -70,7 +70,7 @@ grep -qE 'readiness|executor cores|kernel boot' "$OUT/ended-kept.ndjson" || chec
 echo "ended logs: $(wc -l < "$OUT/ended-kept.ndjson") kept line(s) of $name, $(wc -l < "$OUT/ended-live.txt") live"
 code=0
 cozy --json machine logs "$name" tensorfs > "$OUT/ended-tensorfs.json" 2>&1 || code=$?
-[ "$code" != 0 ] && J --arg n "$name" '.error.code == "machine_ended" and (.error.next | index("cozy machine logs " + $n))' "$OUT/ended-tensorfs.json" \
+[ "$code" != 0 ] && J --arg n "$name" '.error.code == "machine_log_not_kept" and (.error.next | index("cozy machine logs " + $n))' "$OUT/ended-tensorfs.json" \
   || check "ended logs: machine logs $name tensorfs, ended: exit $code, not a refusal naming its TensorD log: $(head -c 300 "$OUT/ended-tensorfs.json")"
 
 step "locked: the project's run is in no file outside it"
@@ -91,7 +91,9 @@ for root in roots:
                 continue
             seen.add(path)
             try:
-                if path.stat().st_mtime_ns < since or not path.is_file():
+                stat = path.stat()
+                # The stand-in's own files are its computer's, not this one's.
+                if stat.st_mtime_ns < since or stat.st_uid != os.getuid() or not path.is_file():
                     continue
                 checked += 1
                 if contains(path, [marker]):

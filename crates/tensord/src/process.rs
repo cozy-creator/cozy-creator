@@ -215,7 +215,7 @@ pub(crate) fn keep_cores() {
                     let prefix = name.to_string_lossy().split('%').next().unwrap_or_default().to_string();
                     let _ = CORES.set((dir.to_path_buf(), prefix));
                 }
-                Err(error) => tracing::info!("executor cores: {} not made: {error}", dir.display()),
+                Err(error) => tracing::info!(target: crate::config::MACHINE, "executor cores: {} not made: {error}", dir.display()),
             }
         }
         let cap: u64 = free.map_or(32 << 30, |free| (free / 2).min(32 << 30));
@@ -224,7 +224,7 @@ pub(crate) fn keep_cores() {
             limit.current = Some(cap);
             let _ = setrlimit(Resource::Core, limit);
         }
-        tracing::info!(
+        tracing::info!(target: crate::config::MACHINE,
             "executor cores: core_pattern {}, at most {} MiB each",
             pattern.trim(),
             getrlimit(Resource::Core).current.map_or(u64::MAX, |bytes| bytes >> 20)
@@ -242,7 +242,7 @@ pub(crate) fn kept_core(status: &ExitStatus) {
             return;
         }
         let Some((dir, prefix)) = CORES.get().filter(|(_, prefix)| !prefix.is_empty()) else {
-            return tracing::warn!("an executor left a core where core_pattern sends it");
+            return tracing::warn!(target: crate::config::MACHINE, "an executor left a core where core_pattern sends it");
         };
         let mut cores: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
             .into_iter()
