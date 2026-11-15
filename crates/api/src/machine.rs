@@ -278,8 +278,9 @@ pub struct OutputTarget {
 }
 
 /// `POST /v1/objects/held`: which of these objects (`sha256:<hex>`) the machine holds for this
-/// signer.
+/// signer. Calcifer's `POST /v1/files/held` and `/v1/project-files/held` take it too.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct HeldRequest {
     pub digests: Vec<String>,
@@ -288,6 +289,7 @@ pub struct HeldRequest {
 /// What the machine holds of each object asked, in the order asked; a stored object is held
 /// whole, and asking renews it, as a `HEAD` does.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct HeldAnswer {
     pub held: Vec<HeldObject>,
@@ -295,6 +297,7 @@ pub struct HeldAnswer {
 
 /// One object asked: the byte ranges of `digest` the machine holds.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct HeldObject {
     pub digest: String,
