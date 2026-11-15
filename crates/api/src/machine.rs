@@ -1364,6 +1364,10 @@ pub struct Broken {
     pub message: String,
 }
 
+/// `StuckProcess::command` of the TensorD before a machine's own that can't exit (cl-977): a word of TensorD's, not a process's, so
+/// it is shown where commands aren't.
+pub const STUCK_TENSORD: &str = "the TensorD before this one";
+
 /// A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network
 /// filesystem): it exits once that wait ends.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

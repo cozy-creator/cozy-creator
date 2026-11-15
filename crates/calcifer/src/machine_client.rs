@@ -3,7 +3,10 @@
 //! HTTP/1.1 connections of their own, so parts and ranges move side by side on separate TCP connections. Nothing here
 //! judges the machine by its silence: a busy one answers late, never wrongly. Every connection
 //! carries TCP keepalive, which the peer's kernel answers however busy its process is, so only a
-//! host or path that is gone ends one; bulk callers judge their lanes by measured progress.
+//! host or path that is gone ends one; bulk callers judge their lanes by measured progress. With a
+//! stream open, an HTTP/2 PING its server's connection task answers (however busy its work is):
+//! a TensorD that can't exit (cl-977) leaves its connections open in the kernel, and only an
+//! unanswered PING ends them, so its runs are attached again at the service after it.
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -544,6 +547,8 @@ fn builder(pin: [u8; 32], alpn: &[&[u8]]) -> reqwest::ClientBuilder {
         .tcp_keepalive(PROBE)
         .tcp_keepalive_interval(PROBE)
         .tcp_keepalive_retries(PROBES)
+        .http2_keep_alive_interval(PROBE)
+        .http2_keep_alive_timeout(PROBE * PROBES)
         .no_proxy()
 }
 

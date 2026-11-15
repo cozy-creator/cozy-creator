@@ -849,7 +849,7 @@ impl Machines {
         }
         visible.warm = self.calcifer.maintenance_warm(name, std::mem::take(&mut visible.warm));
         visible.kernels.clear();
-        for process in &mut visible.stuck {
+        for process in visible.stuck.iter_mut().filter(|process| process.command != v1::STUCK_TENSORD) {
             process.command.clear();
         }
         visible.toolchain.detail.clear();

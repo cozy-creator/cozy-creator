@@ -317,7 +317,7 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
             })
             .chain(identity.stuck.now().iter().map(|s| v1::StuckProcess {
                 pid: s.birth.pid,
-                command: "the TensorD before this one".into(),
+                command: ::api::machine::STUCK_TENSORD.into(),
                 wchan: s.wchan(),
                 since_unix_ms: s.killed_unix_ms,
                 ..Default::default()
