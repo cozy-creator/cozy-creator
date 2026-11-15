@@ -259,6 +259,9 @@ function watchBoxes() {
   }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'data-moving', 'aria-selected'], attributeOldValue: true });
 }
 
+/** WebKit's words for a fetch of the page's event stream that failed, its reason masked. */
+const CUT_STREAM = /\/v1\/events due to access control checks\.$/;
+
 const test = base.extend({
   /** This job's Calcifer, from its lock record ($HOLDER), read once a worker. */
   calcifer: [async ({}, use) => {
@@ -282,10 +285,12 @@ const test = base.extend({
 
   /** Calcifer stopped, started, killed or put on another Hub (CalciferControl): the solo project's alone, as every other cell shares this
    *  Calcifer. Put back as it was after the cell, however it ended. */
-  calciferControl: async ({ calcifer, api }, use, testInfo) => {
+  calciferControl: async ({ calcifer, api, guards }, use, testInfo) => {
     if (testInfo.project.name !== 'solo') throw new Error(`calciferControl is the solo project's: ${testInfo.project.name}'s cells share this Calcifer`);
     const control = new CalciferControl(calcifer, api);
     await use(control);
+    // Put back with the cell over: what its pages say as Calcifer restarts is this teardown's doing.
+    guards.over();
     await control.restore();
   },
 
@@ -316,7 +321,16 @@ const test = base.extend({
         await context.exposeBinding('__cozyGuard', (_, line) => say(line));
         await context.addInitScript(guardPage);
         const watch = (page) => {
-          page.on('pageerror', (error) => say(`page error: ${error.message}`));
+          // From a main-frame navigation until the next document's DOMContentLoaded, the last document is ending. WebKit says its event
+          // stream's fetch, cut as it ends (and caught by the page), as a page error in its masked words: only that is the document's end.
+          // Anywhere else in a document's life it fails the cell (run 43730578847: `open`'s goto from a project to /).
+          let ending = false;
+          page.on('request', (request) => { if (request.isNavigationRequest() && request.frame() === page.mainFrame()) ending = true; });
+          page.on('domcontentloaded', () => { ending = false; });
+          page.on('pageerror', (error) => {
+            if (ending && CUT_STREAM.test(error.message) && (error.stack ?? '').startsWith('Fetch API cannot load ')) return;
+            say(`page error: ${error.message}`);
+          });
           page.on('console', (message) => { if (message.type() === 'error') say(`console error: ${message.text()} ${message.location().url}`); });
         };
         context.pages().forEach(watch);
@@ -353,10 +367,12 @@ const test = base.extend({
   },
 
   /** A tab open at the cell's project, its canvas up. The box log is attached when the cell fails. */
-  page: async ({ page, project, signIn }, use, testInfo) => {
+  page: async ({ page, project, signIn, guards }, use, testInfo) => {
     await signIn(page, project.url());
     await expect(page.locator('.stage')).toBeVisible();
     await use(page);
+    // Torn down before the context, which closes this page: the cell is over from here.
+    guards.over();
     if (testInfo.status !== testInfo.expectedStatus && !page.isClosed()) {
       const said = await page.evaluate(() => ({ url: location.href, log: window.boxLog?.slice(-60), focus: `${document.activeElement?.tagName}.${document.activeElement?.className}` }));
       await testInfo.attach('boxes', { body: JSON.stringify(said, null, 2), contentType: 'application/json' });
