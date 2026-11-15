@@ -319,7 +319,7 @@ impl Host {
             let manifest = local_code::source(hubs.home(), &code, hubs, &Origin::parse(&hub)?).await?.source.manifest;
             let (name, document) = local_code::describe(&self.api, &code, &first, &hub).await?;
             let release = manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            Ok(Package { name, release, local: Some(path), manifest, moved: None, named, document })
+            Ok(Package { name, release, local: Some(path), manifest, moved: None, named, digest: String::new(), document })
         }).await
     }
 
