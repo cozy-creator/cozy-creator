@@ -149,9 +149,13 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     await page.goto(`${api.origin}/`);
     await expect(page.locator('.home-line')).toBeVisible();
     expect.soft(await page.locator('.home-line').innerText()).toBe(HOME_LINE);
-    const tabs = await page.locator('nav.ptabs a.ptab').evaluateAll((links) => links.map((link) => link.getAttribute('href')));
+    // Read once the strip has its list: it comes after the line does.
+    let tabs = [];
     const at = (row) => tabs.indexOf(`/p/${row.code}`);
-    expect.soft(at(project) >= 0 && at(b) >= 0, `the strip lists both: ${tabs.join(' ')}`).toBe(true);
+    await expect.configure({ soft: true }).poll(async () => {
+      tabs = await page.locator('nav.ptabs a.ptab').evaluateAll((links) => links.map((link) => link.getAttribute('href')));
+      return at(project) >= 0 && at(b) >= 0;
+    }, { message: 'the strip lists both' }).toBe(true);
     const listed = await index(api);
     const rank = (row) => listed.findIndex((one) => one.code === row.code);
     expect.soft(listed.every((row, i) => i === 0 || listed[i - 1].used_at_ms >= row.used_at_ms), 'the index, most recently opened first').toBe(true);

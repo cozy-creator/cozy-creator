@@ -219,7 +219,8 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     };
     await menu(/^Runs/);
     await expect(drawer.locator('.drawer-head')).toContainText('Runs');
-    const rowOf = (number) => drawer.locator('li.runrow').filter({ has: page.locator('b', { hasText: new RegExp(`^#${number}$`) }) });
+    // A row names its run KEY-N, its project's key and its number there (cl-987).
+    const rowOf = (number) => drawer.locator('li.runrow').filter({ has: page.locator('b', { hasText: new RegExp(`^[A-Z][A-Z0-9]*-${number}$`) }) });
     const log = drawer.locator('section.sect', { has: page.getByRole('heading', { name: 'Log', exact: true }) }).locator('pre.log');
 
     // A real run the terminal asks for, followed by the CLI to its end: listed and followed live, with no reload.
