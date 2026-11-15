@@ -2,7 +2,7 @@ import { CanvasTextMetrics, Container, Graphics, Rectangle, Sprite, Text, Textur
 import type { Client } from "../../api/client"
 import type { CanvasStore } from "../CanvasStore"
 import type { Box } from "../graph"
-import { bandOf, HEAD, nameZoomOf, SUB_ROW } from "../shown"
+import { bandOf, HEAD, nameZoomOf, SUB_ROW, hexOf } from "../shown"
 import { MediaCache, MIN_TEXTURE_WIDTH, THUMB_SOURCE_WIDTH, type MediaHandle, type MediaRequest } from "./MediaCache"
 import { pictureBox, present, type EntitySlot, type Presentation, type SceneNode, type ScenePicture } from "./presentation"
 
@@ -443,8 +443,11 @@ export class PixiScene {
       held.pending?.release()
       held.pending = undefined
       held.wanted = key
+      const hash = source.sha256 && hexOf(source.sha256)
+      const preview = drawn.node.view.preview
+      if (hash && held.local && preview?.sha256 === hash && held.displayed === preview.url) held.displayed = hash
       held.local = Boolean(request.local)
-      held.content = source.sha256 ?? source.url ?? request.path
+      held.content = hash ?? source.url ?? request.path
       held.failed = false
       if (held.current?.key !== key) held.pending = this.cache.acquire(request, () => this.showPicture(drawn, held, true))
     }
