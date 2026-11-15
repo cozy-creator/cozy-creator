@@ -848,6 +848,51 @@ echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.nam
 # row and rows_at and conflicts to meta, changes no row 3 has, and keeps the project as it was beside it once; its rows then stand at
 # the document, so a read takes them, and adds the project's run journal and keys beside them. Schema 3 is this cozy's project, Calcifer
 # stopped, with what 4 to 6 added taken off.
+# Paul's projects are verified fully migrated before the 0.27 hard cut by these (cl-984): a project's `cozy status` says its legacy
+# history, imported and pending, and `cozy doctor` says the old project runs Calcifer's store still holds, by folders here and gone.
+# A 0.24.0 store's runs: 3 landing in a project here, 2 in a folder that is gone; this cozy's first start fences them (v7 -> v8),
+# and the project's open imports its 3.
+db_legacy() {
+step "legacy history: cozy status and cozy doctor count what is imported and what is left"
+local D=$OUT/legacy now=$OUT/cozy-now old P G pid
+old=$(cozy_0240) || { check "legacy: 0.24.0's archive"; return; }
+[ -f "$now" ] || cp "$COZY" "$now"
+in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "legacy: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
+P=$D/here G=$D/gone
+mkdir -p "$P"
+boxes_in "$P" <<< '[{"name": "notes", "fields": {"text": "A project 0.24.0 ran in."}}]' || { check "legacy: 0.24.0 made no project"; in_cozy "$now"; return; }
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null) || pid=''
+[ -z "$pid" ] || term_calcifer "$pid" || { in_cozy "$now"; return; }
+python3 - "$HOME/.cozy/calcifer/state.db" "$P" "$G" <<'PY' || { check "legacy: runs into 0.24.0's store"; in_cozy "$now"; return; }
+import json, sqlite3, sys
+path, here, gone = sys.argv[1:4]
+db = sqlite3.connect(path, isolation_level=None)
+assert db.execute("PRAGMA user_version").fetchone()[0] == 7, "not a 0.24 store"
+done = json.dumps({"status": "succeeded", "result": {}, "outputs": [], "execution_ms": 1000, "measurements": {"observations": []}})
+first = (db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1
+for i, root in enumerate([here, here, here, gone, gone]):
+    db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, created_at, settled_at) "
+               "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', NULL, 0, X'7B7D', ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?)",
+               (f"run-legacy{i:020d}", first + i, f"legacy-{i}", root + "/.runs", done, 1700000000000 + i, 1700000000000 + i))
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PY
+# This cozy on that store, not the one put aside: its first start fences it.
+cp "$now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer \
+  || { check "legacy: this cozy on 0.24.0's store"; in_cozy "$now"; return; }
+cozy --json doctor > "$OUT/legacy-doctor.json" 2> "$OUT/legacy-doctor.err" || true
+J --arg here "$P" --arg gone "$G" '.legacy == {existing: [{path: $here, runs: 3}], gone: [{path: $gone, runs: 2}], unreadable: 0}' "$OUT/legacy-doctor.json" \
+  || check "legacy: doctor before the open: $(jq -c .legacy "$OUT/legacy-doctor.json" 2> /dev/null || tail -c 300 "$OUT/legacy-doctor.err")"
+jq -r '.checks[] | select(.check == "legacy history") | .state' "$OUT/legacy-doctor.json" | grep -q '3 old runs of 1 project folders here' \
+  || check "legacy: doctor's line: $(jq -c '.checks' "$OUT/legacy-doctor.json" 2> /dev/null | head -c 400)"
+in_project "$P" --json status > "$OUT/legacy-status.json" 2> "$OUT/legacy-status.err" || check "legacy: status: $(tail -c 300 "$OUT/legacy-status.err")"
+J '.legacy_history == "3 runs imported, 0 pending"' "$OUT/legacy-status.json" || check "legacy: status says $(jq -c .legacy_history "$OUT/legacy-status.json" 2> /dev/null)"
+cozy --json doctor > "$OUT/legacy-doctor-after.json" 2> /dev/null || true
+J --arg gone "$G" '.legacy == {existing: [], gone: [{path: $gone, runs: 2}], unreadable: 0}' "$OUT/legacy-doctor-after.json" \
+  || check "legacy: doctor after the open: $(jq -c .legacy "$OUT/legacy-doctor-after.json" 2> /dev/null)"
+echo "legacy: $(jq -r .legacy_history "$OUT/legacy-status.json"); store after: $(jq -c .legacy "$OUT/legacy-doctor-after.json")"
+in_cozy "$now" || check "legacy: this cozy back on its own store"
+}
+
 db_migrate_large() {
 step "project.db: a 5,000-box project of schema 3 migrates with nothing lost"
 local L=$OUT/migrate-large K=$OUT/migrate-large-kept n=5000 pid was began
