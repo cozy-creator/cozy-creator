@@ -118,8 +118,10 @@ impl Local {
     /// Wakes `woke` as TensorD writes where it serves.
     fn watch(&self, woke: impl FnMut() + Send + 'static) -> Result<Watcher, Error> {
         let dir = self.ready().parent().expect("a file has a directory").to_owned();
-        Watcher::new("local-answer", &[(&dir, Writes::Named(&["api-ready.json"]))], woke)
-            .map_err(|e| Error::new(Kind::Internal, "watch_failed", e.to_string()))
+        let failed = |e: String| Error::new(Kind::Internal, "watch_failed", format!("{}: {e}", dir.display()));
+        // Before its first start the directory isn't there yet.
+        std::fs::create_dir_all(&dir).map_err(|e| failed(e.to_string()))?;
+        Watcher::new("local-answer", &[(&dir, Writes::Named(&["api-ready.json"]))], woke).map_err(|e| failed(e.to_string()))
     }
 
     /// A start that hasn't answered past `START` (cl-977), judged now: still silent, its refusal; once it served or exited, none.
