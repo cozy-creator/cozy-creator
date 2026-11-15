@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -38,6 +39,9 @@ def main() -> int:
 
     payload = json.loads(args.input.read_text())
     paths: dict[str, dict[str, str]] = {}
+    project = str(args.project.resolve(strict=True))
+    # An input is project data: into the project's own content store, as the CLI sends it (`PUT /v1/project-files/<digest>`).
+    held = base + "/v1/project-files/{}?project=" + urllib.parse.quote(project, safe="")
 
     def attach(written: str, directory: Path, required: bool = False) -> None:
         path = Path(written).expanduser()
@@ -53,7 +57,9 @@ def main() -> int:
             return
         with path.open("rb") as source:
             digest = "sha256:" + hashlib.file_digest(source, "sha256").hexdigest()
-        upload(base, headers, digest, path.read_bytes())
+        data = path.read_bytes()
+        urllib.request.urlopen(urllib.request.Request(held.format(digest), data=data, method="PUT", headers={
+            **headers, "Content-Type": "application/octet-stream", "Content-Length": str(len(data))})).close()
         paths[written] = {"file": digest}
 
     def input_paths(value: object) -> None:
@@ -76,7 +82,7 @@ def main() -> int:
         files.append({"name": name, "file": file})
     request = {"target": staged["target"], "code": staged["code"], "input": payload,
                "files": files, "paths": paths, "on": ["local"], "hub": hub,
-               "project": str(args.project.resolve(strict=True))}
+               "project": project}
     key = str(uuid.uuid4())
     followed: set[str] = set()
     while True:
