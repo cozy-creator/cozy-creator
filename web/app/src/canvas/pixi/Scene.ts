@@ -975,7 +975,7 @@ export class PixiScene {
     this.dropLatent(drawn)
     for (const picture of drawn.pictures.values()) this.dropPicture(picture)
     drawn.pictures.clear()
-    drawn.container.destroy({ children: true })
+    drawn.container.destroy({ children: true, context: true })
   }
 
   destroy() {
