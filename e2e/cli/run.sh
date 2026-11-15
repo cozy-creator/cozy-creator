@@ -44,6 +44,7 @@ parse "$@"
 . "$(dirname "$0")/stuck.sh"
 . "$(dirname "$0")/rentalself.sh"
 . "$(dirname "$0")/reports.sh"
+. "$(dirname "$0")/endedlogs.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -704,8 +705,11 @@ case $SHARD in
     projectvault
     vault_leftovers
     vault_swapped
+    ended_logs
     logs
   " ;;
+  # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
+  projectvault-ended-logs) parts="ended_logs logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   # Dispatch-only: a large 0.24 home's first start here, and 100 project reads after it (containmentscale.sh).
   containment-scale) parts="containment_scale logs" ;;
