@@ -178,7 +178,9 @@ class Bridge {
       const heads = Object.fromEntries(read.flatMap((row) => (row?.heads?.length ? [[row.asset.name, row.heads]] : [])))
       if (this.privateBlocked.has(id) || (this.privacyEpoch.get(id) ?? 0) !== epoch) return
       const asked = rows.flatMap((row) => row ?? [])
-      const left = [...gone, ...names.filter((_, at) => !rows[at])]
+      // One not found went after the stream said it changed: renamed or deleted, as the stream says next. Taken off now, a rename would
+      // come as another box, and its Focus and what's typed in it would go.
+      const left = gone
       if (asked.length || left.length || said) this.queries.setQueryData<Project>(key, (state) => state && { ...withAssets(state, asked, left, said, heads), began })
     } catch {
       // Whatever kept it from reading those, the next says why, of all of it.

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import type { ReactNode } from "react"
+import { type ReactNode, useState } from "react"
 import type { Machine } from "../../api/calcifer"
 import { projectQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
@@ -26,7 +26,7 @@ export function useRenderMachines() {
   const toggle = (name: string) => {
     const held = id ? queries.getQueryData<Project>(["project", id]) : undefined
     // Not read yet, what it holds isn't known: a click would replace it.
-    if (!id || !held) return
+    if (!id || !held) return false
     const now = held.machines ?? []
     const next = now.includes(name) ? now.filter((other) => other !== name) : [...now, name]
     const mine = ++asked
@@ -38,6 +38,7 @@ export function useRenderMachines() {
         say("Couldn't choose where this project renders", error)
       },
     )
+    return true
   }
   return { project: id, known: data !== undefined, chosen, toggle }
 }
@@ -46,6 +47,10 @@ export function useRenderMachines() {
  *  go here too, and it's green; several can be checked, the project's preferred machines; none is automatic. */
 export function RenderCheck({ name, called = name }: { name: string; called?: string }) {
   const { project, known, chosen, toggle } = useRenderMachines()
+  const on = chosen.includes(name)
+  // The press, shown in its own render: the cache tells its readers a task later, and a controlled box springs back meanwhile.
+  const [press, setPress] = useState<{ from: boolean; to: boolean } | null>(null)
+  if (press && press.from !== on) setPress(null)
   if (!project) return null
   return (
     <label className="render-prefer" title="This project renders here (any checked machine, whichever finishes first)">
@@ -54,8 +59,10 @@ export function RenderCheck({ name, called = name }: { name: string; called?: st
         className="render-check"
         disabled={!known}
         aria-label={`Render on ${called}`}
-        checked={chosen.includes(name)}
-        onChange={() => toggle(name)}
+        checked={press ? press.to : on}
+        onChange={(event) => {
+          if (toggle(name)) setPress({ from: on, to: event.target.checked })
+        }}
       />
       Prefer
     </label>
