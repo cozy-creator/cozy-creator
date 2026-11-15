@@ -852,6 +852,12 @@ export class CanvasStore {
     this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: pose.w }, position: { x: pose.x, y: pose.y }, width: drawn.w, height: undefined, origin, measured: { width: drawn.w, height: drawn.h } }))
   }
 
+  /** What names run `number` of this project (cl-987): `KEY-N`, by its project's key; its number before the project is read. */
+  runName(number: number): string {
+    const key = this.state?.key
+    return key ? `${key}-${number}` : (this.runs.get(number)?.name || String(number))
+  }
+
   // From Calcifer
 
   applyState(state: Project) {
@@ -2163,7 +2169,7 @@ export class CanvasStore {
     // One that failed is deleted by its id (cl-954); one sent, its run is stopped; one queued is dropped by its id.
     const run = take.failure ? undefined : take.run
     const send = run !== undefined ? (_: string, write: Write) => this.client.cancelRun({ project, run }, write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(project, [take.id], write.once).then(() => ({}))
-    this.over(name, making, send, take.failure ? "delete a failed take of" : run !== undefined ? `cancel run ${run} of` : "cancel a take of", undefined)
+    this.over(name, making, send, take.failure ? "delete a failed take of" : run !== undefined ? `cancel run ${this.runName(run)} of` : "cancel a take of", undefined)
   }
 
   /** Its render stops, wherever it is: what's queued leaves, its runs are canceled (as `cozy run cancel`), and it says Cancelling… until

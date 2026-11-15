@@ -241,7 +241,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
         const state = failed !== undefined ? "failed" : take.run !== undefined ? "running" : "queued"
         return (
           <span key={take.id} className="take-at">
-            <button type="button" className={`take making ${state === "failed" ? "failed" : ""} ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} data-state={state} title={failed !== undefined ? `Didn't render: ${failed}` : take.run !== undefined ? `Run ${take.run}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
+            <button type="button" className={`take making ${state === "failed" ? "failed" : ""} ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} data-state={state} title={failed !== undefined ? `Didn't render: ${failed}` : take.run !== undefined ? `Run ${store.runName(take.run)}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
               <span className={`state-dot ${state}`} role="img" aria-label={state === "failed" ? "Failed" : state === "running" ? "Rendering" : "Queued"} />
               {failed !== undefined ? <span className="take-failed">Failed</span> : take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
             </button>
@@ -250,7 +250,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
                 <Icon name="trash" />
               </button>
             ) : (
-              <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
+              <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
                 <Icon name="close" />
               </button>
             )}
@@ -259,10 +259,10 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       })}
       {making.map((run) => (
         <span key={run} className="take-at">
-          <button type="button" className="take making" title={`Run ${run}`}>
+          <button type="button" className="take making" data-run={run} title={`Run ${store.runName(run)}`}>
             <TakeProgress view={view} run={run} />
           </button>
-          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelTake(name, { id: "", run })}>
+          <button type="button" className="take-off" aria-label={`Cancel run ${store.runName(run)}`} title={`Cancel run ${store.runName(run)}`} onClick={() => store.cancelTake(name, { id: "", run })}>
             <Icon name="close" />
           </button>
         </span>
