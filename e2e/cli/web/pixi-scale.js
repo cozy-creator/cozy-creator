@@ -15,6 +15,7 @@ const { extname, join, resolve } = require('node:path');
 
 const COUNTS = [100, 1000, 5000], WIDTH = 1600, HEIGHT = 1000, REPEATS = 3;
 const STEP = Number(process.env.STEP_MS ?? 30_000), LOAD = Number(process.env.LOAD_MS ?? 900_000), PREPARE = Number(process.env.PREPARE_MS ?? 1_800_000);
+const PREPARE_READ = Number(process.env.PREPARE_READ_MS ?? 120_000);
 const FFMPEG = process.env.FFMPEG ?? 'ffmpeg', NAME = i => `photo_${String(i).padStart(5, '0')}`;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const pause = ms => new Promise(done => setTimeout(done, ms));
@@ -86,7 +87,7 @@ async function candidate(context, origin) {
 (async () => {
   if (!process.env.COZY || !process.env.PIXI_OUT || !['prepare', 'measure'].includes(process.env.PIXI_PHASE)) throw new Error('COZY, PIXI_OUT and PIXI_PHASE=prepare|measure are required');
   if (process.env.COZY_HOME || process.env.PAGE_ORIGIN || process.env.HOLDER) throw new Error('use the existing default-home Calcifer, without home/origin/holder overrides');
-  for (const value of [STEP, LOAD, PREPARE]) if (!Number.isFinite(value) || value <= 0) throw new Error('protocol budgets must be positive');
+  for (const value of [STEP, LOAD, PREPARE, PREPARE_READ]) if (!Number.isFinite(value) || value <= 0) throw new Error('protocol budgets must be positive');
   mkdirSync(resolve(process.env.PIXI_OUT), { recursive: true });
   out = mkdtempSync(join(resolve(process.env.PIXI_OUT), `pixi-scale-${process.env.PIXI_PHASE}-`));
   const record = join(homedir(), '.cozy/calcifer/calcifer.lock.holder'), holder = JSON.parse(readFileSync(record, 'utf8'));
@@ -96,7 +97,8 @@ async function candidate(context, origin) {
   const sameService = () => { const next = JSON.parse(readFileSync(record, 'utf8')); if (next.pid !== holder.pid || next.address !== holder.address) throw new Error('Calcifer changed; receipt retained'); };
   const api = async (path, body) => {
     sameService();
-    const response = await fetch(origin + path, { method: body ? 'PATCH' : 'GET', headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', ...(body ? { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(STEP) });
+    const budget = process.env.PIXI_PHASE === 'prepare' ? PREPARE_READ : STEP;
+    const response = await fetch(origin + path, { method: body ? 'PATCH' : 'GET', headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', ...(body ? { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(budget) }).catch(error => { throw new Error(`${body ? 'PATCH' : 'GET'} ${path}: ${budget}ms setup/request budget: ${error.message}`); });
     if (!response.ok) throw new Error(`API ${body ? 'PATCH' : 'GET'} status ${response.status}`);
     const value = await response.json(); sameService(); return value;
   };
@@ -108,6 +110,7 @@ async function candidate(context, origin) {
   };
   seen.backend = { pid: holder.pid, version: (await api('/v1/status')).version };
   if (process.env.PIXI_PHASE === 'prepare') {
+    seen.protocol.prepare_read_ms = PREPARE_READ;
     during = 'verify 5000 distinct source files';
     const priorPath = process.env.PREPARED ? realpathSync(process.env.PREPARED) : null;
     const priorBytes = priorPath ? readFileSync(priorPath) : null, prior = priorBytes ? JSON.parse(priorBytes) : null;
@@ -146,8 +149,10 @@ async function candidate(context, origin) {
       return byName;
     };
     // A resume never discovers another person's edits only after modifying an earlier project in the cohort.
+    const verified = new Map();
     for (const project of manifest.projects) {
       const existing = await readOwned(project);
+      verified.set(project.count, existing);
       const confirmed = (project.imports ?? []).flatMap(batch => batch.names ?? files.slice(batch.first, batch.first + batch.count).map(file => NAME(file.index)));
       if (confirmed.some(name => !existing.has(name))) throw new Error(`project ${project.count} lost a previously confirmed asset; nothing recreated`);
       if (project.cards) {
@@ -159,6 +164,7 @@ async function candidate(context, origin) {
     for (const count of COUNTS) {
       during = `prepare ${count}`;
       let project = manifest.projects.find(project => project.count === count);
+      if (project?.cards) { process.stderr.write(`[pixi-scale] verified completed ${count}-card project\n`); continue; }
       if (!project) {
         const folder = join(out, `project-${count}`), made = cli(['new', '--unencrypted', '--json', folder], out);
         if (!made.created || !made.id) throw new Error('cozy new did not create the owned project');
@@ -166,14 +172,18 @@ async function candidate(context, origin) {
         manifest.projects.push(project); manifest.projects.sort((a, b) => a.count - b.count); save('prepared.json', manifest);
       }
       project.imports ??= []; project.references ??= {};
+      let existing = verified.get(count) ?? await readOwned(project);
       for (let first = 0; first < count; first += 100) {
-        const existing = await readOwned(project), missing = files.slice(first, Math.min(count, first + 100)).filter(file => !existing.has(NAME(file.index)));
+        const missing = files.slice(first, Math.min(count, first + 100)).filter(file => !existing.has(NAME(file.index)));
         if (!missing.length) continue;
+        during = `prepare ${count}: import ${first}..${Math.min(count, first + 100) - 1}`;
         const path = join(out, `apply-${count}-${first}.json`), input = Object.fromEntries(missing.map(file => [NAME(file.index), { kind: 'image', takes: [{ file: file.file }] }]));
         writeFileSync(path, JSON.stringify(input));
         const input_sha256 = hash(readFileSync(path)); cli(['apply', '-f', path, '--json'], project.folder);
         project.imports.push({ first, count: missing.length, names: Object.keys(input), receipt: out, input_sha256, after_sha256: hash(readFileSync(path)) });
         save('prepared.json', manifest);
+        existing = await readOwned(project);
+        process.stderr.write(`[pixi-scale] ${count}: verified ${existing.size} imported assets\n`);
       }
       const path = `/v1/projects/${encodeURIComponent(project.id)}`, byName = await readOwned(project);
       if (byName.size !== count || files.slice(0, count).some(file => byName.get(NAME(file.index))?.sha256 !== `sha256:${file.sha256}`)) throw new Error('public CLI imported assets differ from verified source set');
