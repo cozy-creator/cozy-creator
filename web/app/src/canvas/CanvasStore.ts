@@ -1,7 +1,7 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
 import { flushSync } from "react-dom"
 import { ApiError, type Client, type Write } from "../api/client"
-import { type Action, lost, type OutboxPort } from "../api/outbox"
+import { type Action, keepLastWord, type LastWord, lastWordsOf, lost, type OutboxPort } from "../api/outbox"
 import { nextProjectOrder } from "../api/projectOrder"
 import type {
   Ahead,
@@ -43,7 +43,7 @@ import { comingOff, goingOn, holdsPictures, type ToolStep, wontGoOn } from "./to
 import type { Operation } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 import { mergeValue, same, spliceOf, wordsChanged } from "./words"
-import { answered, keepLeft, type Left, leftOver } from "./left"
+import { plainProject } from "../app/view"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
 export type ElementData = { name: string; width: number }
@@ -222,6 +222,8 @@ const NOT_YET = Number.POSITIVE_INFINITY
 type Also = { pickup?: Pickup; take?: string }
 export const UNDO_MS = 10_000
 const TYPING_PAUSE_MS = 300
+/** Whether a write can go on past the page (`keepalive`): a browser keeps at most 64 KiB of them on their way. */
+const lasts = (body: AssetPatch) => JSON.stringify(body).length < 48_000
 /** How long after the last take landed what landed is said: several at once are one note (cl-937). */
 const LANDED_MS = 1200
 const CLEAR_OF_FRAME = 24
@@ -374,6 +376,9 @@ export class CanvasStore {
   private typedFrom = new Map<string, Map<string, { value: unknown; heads: string[]; sent?: unknown }>>()
   /** The page has gone (`pagehide`): what's typed went in its last flush. */
   private gone = false
+  /** Each box's last word, by node id, as it stands: what goes as the page goes, and, in a plain project, what this tab keeps as it's typed for
+   *  a reload at any instant to send again under the same key (cl-973). */
+  private lastWords = new Map<string, LastWord>()
   private nextId = 0
   private state: Project | null = null
   private began = 0
@@ -436,9 +441,10 @@ export class CanvasStore {
     this.history = new PageHistory(client, () => this.projectId)
     this.selected = new Set(selected)
     this.moreOpen = new Set(moreOpen)
-    // What's typed goes as the tab is hidden, and once more as the page goes, which is its last word (cl-904). Back from the browser's cache, it
-    // goes on.
-    document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && this.flush())
+    // What's typed goes as the tab is hidden, as the page is about to go (`beforeunload`: Firefox ends what's in flight as soon as it starts to
+    // navigate, before `pagehide`), and once more as it goes, which is its last word (cl-904, cl-973). Back from the browser's cache, it goes on.
+    document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && this.flush(true))
+    addEventListener("beforeunload", () => this.flush(true))
     addEventListener("pagehide", () => this.leaving())
     addEventListener("pageshow", (event) => {
       if (event.persisted) this.gone = false
@@ -1100,7 +1106,7 @@ export class CanvasStore {
       this.seen = true
       this.onFirstRead?.(present.size > 0)
       this.separate()
-      this.sendLeft()
+      this.sendLastWords()
     } else {
       for (const { name } of fresh) this.unsettle(name, "placed")
     }
@@ -2300,7 +2306,7 @@ export class CanvasStore {
   /** A write of `fields` of box `id`: what of its words changed as splices on what they began from, wherever they are in it; the rest as it is.
    *  A field with a write already on its way from there goes whole: the same splices twice would land twice (the last flush as the page goes, and
    *  the save its text's blur asks after it). */
-  private body(id: string, fields: Record<string, unknown>, view?: ElementView): AssetPatch {
+  private body(id: string, fields: Record<string, unknown>, view?: ElementView, asking = true): AssetPatch {
     const from = this.typedFrom.get(id)
     const plain: Record<string, unknown> = {}
     const typed: Record<string, Splice[]> = {}
@@ -2310,7 +2316,7 @@ export class CanvasStore {
       const base = from?.get(field)
       const local = view?.sent && field in view.sent ? view.sent[field] : value
       const changed = base && base.sent === undefined && (!heads || heads.join() === base.heads.join()) ? wordsChanged(base.value, local) : null
-      if (base) base.sent = local
+      if (base && asking) base.sent = local
       if (!base || !changed) {
         plain[field] = value
         continue
@@ -2365,62 +2371,78 @@ export class CanvasStore {
   setDraft(name: string, field: string, value: unknown) {
     const view = this.get(name)
     if (!view) return
-    this.begin(this.resolveName(name), field)
+    const key = this.resolveName(name)
+    this.begin(key, field)
     this.patch(name, { drafts: { ...view.drafts, [field]: value } })
+    this.keepWords(this.ids.get(key))
     clearTimeout(this.pauses.get(name))
     this.pauses.set(name, setTimeout(() => void this.save(name), TYPING_PAUSE_MS))
   }
 
-  /** Everything typed is written now, not at its pause. */
-  flush() {
-    for (const [name, view] of this.views) if (view.drafts) void this.save(name)
+  /** Everything typed is written now, not at its pause; `going`, the page may be going, and each write goes on past it (`keepalive`). */
+  flush(going = false) {
+    for (const [name, view] of this.views) if (view.drafts) void this.save(name, going)
+  }
+
+  /** Box `id`'s last word, as it stands now: its words typed or on their way, as one write, with nothing marked as asked. None when nothing's owed. */
+  private wordsNow(id: string): AssetPatch | null {
+    const view = this.views.get(this.namesById.get(id) ?? "")
+    if (!view?.asset || !(view.drafts || view.writing)) return null
+    return this.body(id, { ...view.sent, ...view.drafts }, undefined, false)
+  }
+
+  /** Box `id`'s last word kept up to date, under a key of its own each time it changes: in a plain project, in this tab's storage too. */
+  private keepWords(id: string | undefined) {
+    const project = this.projectId
+    if (!project || !id) return
+    const body = this.wordsNow(id)
+    const was = this.lastWords.get(id)
+    const name = this.served.get(id) ?? this.namesById.get(id)
+    if (body && name && was?.name === name && JSON.stringify(was.body) === JSON.stringify(body)) return
+    const word = body && name ? { box: id, name, body, action: crypto.randomUUID(), at: Date.now() } : null
+    if (word) this.lastWords.set(id, word)
+    else this.lastWords.delete(id)
+    if (word || was) keepLastWord(project, word && plainProject(project) ? word : null, was?.action)
   }
 
   /**
-   * The page goes: each box's words typed or on their way go once more, one write a box, which goes on past the page (`keepalive`). What was on its way
-   * may not have reached Calcifer, and what waited its turn never would. The same words twice change nothing. Each is kept for the next load too,
-   * which sends it again under its key (`left.ts`): a write that didn't get out as the page went still lands.
+   * The page goes: each box's last word goes once more, one write a box, which goes on past the page (`keepalive`). What was on its way may not have
+   * reached Calcifer, and what waited its turn never would. It goes under the key it's kept by, so the next load's send of it is the same ask.
    */
   private leaving() {
     const project = this.projectId
     if (!project || this.gone) return
     this.gone = true
-    const left: Left[] = []
-    for (const [name, view] of this.views) {
-      const id = this.ids.get(name)
-      if (!view.asset || !id || !(view.drafts || view.writing)) continue
-      const write = { name: this.served.get(id) ?? name, body: this.body(id, { ...view.sent, ...view.drafts }), action: crypto.randomUUID(), at: Date.now() }
-      left.push(write)
-      void this.client.patchAsset(project, write.name, write.body, { keepalive: true, action: write.action }).catch(() => {})
-    }
-    keepLeft(project, left)
+    for (const id of new Set([...this.lastWords.keys(), ...[...this.views.keys()].map((name) => this.ids.get(name) ?? "")])) this.keepWords(id)
+    for (const word of this.lastWords.values()) void this.client.patchAsset(project, word.name, word.body, { keepalive: lasts(word.body), action: word.action }).catch(() => {})
   }
 
-  /** What this tab wrote as it last went, each sent again in its turn under its key: Calcifer does it once, whether or not the first reached it. */
-  private sendLeft() {
+  /** What this tab kept of what was typed before it last went, each sent again in its turn under its key: Calcifer does it once, whether or not it
+   *  got out then. */
+  private sendLastWords() {
     const project = this.projectId
     if (!project) return
-    for (const left of leftOver(project)) {
+    for (const word of lastWordsOf(project)) {
       this.outbox.add({
-        send: (once) => this.client.patchAsset(project, left.name, left.body, { once, action: left.action }),
-        done: () => answered(project, left.action),
+        send: (once) => this.client.patchAsset(project, word.name, word.body, { once, action: word.action }),
+        done: () => keepLastWord(project, null, word.action),
         refused: (error) => {
-          answered(project, left.action)
-          say(`Couldn't save what was typed in ${left.name} as the page went`, error)
+          keepLastWord(project, null, word.action)
+          say(`Couldn't save what was typed in ${word.name}`, error)
         },
       })
     }
   }
 
   /** Writes what's typed. Whether it stands: a refusal leaves it typed. Once the page has gone, its last flush said it all. */
-  save(name: string): Promise<boolean> {
+  save(name: string, going = false): Promise<boolean> {
     clearTimeout(this.pauses.get(name))
     this.pauses.delete(name)
     if (this.gone) return Promise.resolve(true)
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.drafts) return Promise.resolve(true)
-    return this.write(key, view.drafts, `save ${view.name}`, { typed: true })
+    return this.write(key, view.drafts, `save ${view.name}`, { typed: true, going })
   }
 
   /** The edit a write of `fields` is: `typed`, what goes on being typed in the same fields of the same box is the one it began, else a step of its own. */
@@ -2436,19 +2458,26 @@ export class CanvasStore {
    * `fields`, shown as written now, go in their turn, under `edit` (else a step of their own), over whatever those fields hold then: the other fields stay
    * as anyone left them. Whether they stand: refused, they're typed again.
    */
-  private write(key: string, fields: Record<string, unknown>, what: string, opts: { edit?: string; typed?: boolean } = {}): Promise<boolean> {
+  private write(key: string, fields: Record<string, unknown>, what: string, opts: { edit?: string; typed?: boolean; going?: boolean } = {}): Promise<boolean> {
     const view = this.views.get(key)
     const id = this.ids.get(key)
     if (!view?.asset || !id) return Promise.resolve(true)
     const edit = opts.edit ?? this.writeStep(key, fields, opts.typed)
     const drafts = Object.fromEntries(Object.entries(view.drafts ?? {}).filter(([field]) => !(field in fields)))
     this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields }, writing: (view.writing ?? 0) + 1 })
+    this.keepWords(id)
     const now = () => this.views.get(this.namesById.get(id) ?? "")
     let asked: AssetPatch | undefined
     return new Promise((settled) => {
       this.act(key, {
         // Made once: a try again after a lost answer (a restart) is the same ask, which Calcifer answers once.
-        send: (served, write) => this.client.patchAsset(this.projectId!, served, (asked ??= this.body(id, fields, now())), write),
+        send: (served, write) => {
+          if (!asked) {
+            asked = this.body(id, fields, now())
+            this.keepWords(id)
+          }
+          return this.client.patchAsset(this.projectId!, served, asked, opts.going ? { ...write, keepalive: lasts(asked) } : write)
+        },
         edit,
         done: (answer) => {
           this.typedAnswered(id, answer)
@@ -2457,6 +2486,7 @@ export class CanvasStore {
             this.wrote(held.name, answer)
             this.patch(held.name, { writing: (held.writing ?? 1) - 1 || undefined })
           }
+          this.keepWords(id)
           settled(true)
         },
         refused: (error) => {
@@ -2467,6 +2497,7 @@ export class CanvasStore {
             this.patch(held.name, { drafts: { ...fields, ...held.drafts }, sent, writing: (held.writing ?? 1) - 1 || undefined })
             say(`Couldn't ${what}`, error)
           }
+          this.keepWords(id)
           this.history.forget(edit)
           settled(false)
         },
@@ -2504,6 +2535,7 @@ export class CanvasStore {
     if (!view?.drafts) return
     const { [field]: _, ...drafts } = view.drafts
     this.patch(name, { drafts: Object.keys(drafts).length ? drafts : undefined })
+    this.keepWords(this.ids.get(this.resolveName(name)))
   }
 
   /** What makes it, among those of its kind: its fields stay. */
