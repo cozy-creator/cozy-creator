@@ -18,6 +18,7 @@ const SECOND = 'A lighthouse at dawn.';
 const BEFORE = 'Typed through a restart:';
 const AFTER = ' one two three four five six seven eight';
 const AT_ONCE = { timeout: 1_000 };
+const canvasIdentities = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.identities() ?? []);
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
 /** What project.db holds, read past Calcifer (read only): its revision, each box's fields, and each box's place on the canvas. */
@@ -183,6 +184,10 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await expect(page.getByRole('textbox', { name: 'Name' })).toBeFocused();
     await page.keyboard.press('Enter');
     await expect.configure({ soft: true }).poll(() => canvasVisible(page, 'late'), { message: 'the drop shows at once', ...AT_ONCE }).toBe(true);
+    const pendingRows = (await canvasIdentities(page)).filter(one => one.name === 'late');
+    expect.soft(pendingRows, 'the displayed pending name identifies one actual node').toHaveLength(1);
+    const pending = pendingRows[0];
+    expect(pending?.id, 'the pending import has a stable node id').toBeTruthy();
 
     // On a picture box it's that box's next version, no box of its own: its step and its turn are taken as it's dropped.
     await drop(page, 'joined.png', JOINED, await canvasPoint(page, 'renamed'));
@@ -201,7 +206,9 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await reach(other);
     await reach(project);
     await expect.poll(() => canvasVisible(page, 'shot'), {  }).toBe(true);
-    const names = (await canvasNames(page)).sort();
+    const identities = await canvasIdentities(page);
+    const names = identities.map(one => one.name).sort();
+    expect.soft(identities.find(one => one.id === pending.id), 'the same pending node and public name survive the tab round-trip').toEqual(pending);
     expect.soft(names, 'a tab away and back keeps every box').toEqual(['late', 'renamed', 'shot', 'spare', 'still', 'words']);
     expect.soft(await placeOf(page, 'shot'), 'and the move').toEqual(moved);
     await expect.configure({ soft: true }).poll(() => canvasText(page, 'words'), { message: 'and the words',  }).toContain(SECOND);

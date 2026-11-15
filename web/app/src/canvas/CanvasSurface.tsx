@@ -431,6 +431,7 @@ export function CanvasSurface(props: Props) {
       },
       selectedNames: () => controller.getNodes().filter(n => n.selected).map(n => n.data.name),
       names: () => controller.getNodes().map(n => n.data.name),
+      identities: () => controller.getNodes().map(n => ({ id: n.id, key: n.data.name, name: store.get(n.data.name)?.name ?? n.data.name })),
       card: (name: string) => {
         const node = controller.getNodes().find(n => n.data.name === name)
         if (!node) return null
@@ -440,7 +441,7 @@ export function CanvasSurface(props: Props) {
         const bodyAt = controller.worldToScreen(body)
         const drawn = scene?.inspect(name)
         const project = <T extends { x: number; y: number; width: number; height: number }>(box: T | null) => box && { ...box, ...controller.worldToScreen(box), width: box.width * zoom, height: box.height * zoom }
-        const rendered = drawn ? { ...drawn, references: drawn.references.map(reference => project(reference)!), chips: drawn.chips.map(chip => project(chip)!), stateDot: project(drawn.stateDot), meter: project(drawn.meter), wave: project(drawn.wave), controls: drawn.controls.map(control => ({ ...control, ...controller.worldToScreen(control), width: control.width * zoom, height: control.height * zoom })), body: { ...drawn.body, ...controller.worldToScreen(drawn.body), width: drawn.body.width * zoom, height: drawn.body.height * zoom }, labels: Object.fromEntries(Object.entries(drawn.labels).map(([key, label]) => [key, { ...label, ...controller.worldToScreen(label), width: label.width * zoom, height: label.height * zoom }])) } : null
+        const rendered = drawn ? { ...drawn, references: drawn.references.map(reference => project(reference)!), chips: drawn.chips.map(chip => project(chip)!), stateDot: project(drawn.stateDot), meter: project(drawn.meter), wave: project(drawn.wave), controls: drawn.controls.map(control => ({ ...control, ...controller.worldToScreen(control), width: control.width * zoom, height: control.height * zoom, paint: project(control.paint) })), body: { ...drawn.body, ...controller.worldToScreen(drawn.body), width: drawn.body.width * zoom, height: drawn.body.height * zoom }, labels: Object.fromEntries(Object.entries(drawn.labels).map(([key, label]) => [key, { ...label, ...controller.worldToScreen(label), width: label.width * zoom, height: label.height * zoom }])) } : null
         return { rendered, position: { ...node.position }, bounds: { x: a.x, y: a.y, width: box.w * zoom, height: box.h * zoom }, body: { x: bodyAt.x, y: bodyAt.y, width: body.w * zoom, height: body.h * zoom }, title: { x: a.x, y: a.y, width: box.w * zoom, height: HEAD * zoom } }
       },
       resources: () => scene ? { ...scene.resourceStats(), graphics, frames: renderFrames, scheduledFrame: Boolean(frame), automaticTicker: false } : null,

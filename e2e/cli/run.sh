@@ -440,6 +440,7 @@ in_project "$RUN_PROJECT" --json package uninstall local/one_script --on local >
 WEB_1=(
   video
   render
+  references
   upload
   mention
   box-actions

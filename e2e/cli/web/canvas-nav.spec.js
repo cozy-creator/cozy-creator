@@ -5,7 +5,7 @@
 // the layout keeps them, zoomed by − from 100% to the farthest and back by +, then by the wheel: each box where it was, each name one line,
 // cut with an ellipsis where its box ends and whole under the pointer, on no box, no other name and not its own picture; so too at 100%,
 // 45%, 25% and the farthest, at 1440×900 and 1920×1080, paper and dark.
-const { test, expect, canvasNames, canvasIdle, hoverBox, middle: middleOf, openPoint, png, screenshotPixels } = require('./fixtures');
+const { test, expect, canvasNames, canvasIdle, hoverBox, middle: middleOf, openPoint, png, screenshotPixels, pointerOffCanvas } = require('./fixtures');
 const { camera, colours, sameCamera } = require('./geometry');
 
 const COUNT = 300;
@@ -85,7 +85,7 @@ function audit(names) {
 }
 
 async function passive(page) {
-  await page.mouse.move(2, 500);
+  await pointerOffCanvas(page);
   await expect(page.locator('.canvas-node')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.resources()?.scheduledFrame), { message: 'the passive scene is presented and idle' }).toBe(false);
 }

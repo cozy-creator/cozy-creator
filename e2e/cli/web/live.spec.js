@@ -4,7 +4,7 @@
 // Machines lists what `cozy machine ls` does; tabs share one `GET /v1/events`, which the second takes on when the first closes. The CLI has
 // no verb that renames or moves a box (a node file holds kind, description, text, approved, takes and rev): those two are the API's.
 const { mkdirSync, writeFileSync } = require('fs');
-const { test, expect, canvasIdle, focus, fixtureTool, png, TEXT_END, canvasCard, canvasText, canvasLabel, screenshotPixels } = require('./fixtures');
+const { test, expect, canvasIdle, focus, fixtureTool, png, TEXT_END, canvasCard, canvasText, canvasLabel, screenshotPixels, pointerOffCanvas } = require('./fixtures');
 
 /** Polls whose miss leaves the cell going, as `expect.soft` does. */
 const softly = expect.configure({ soft: true });
@@ -129,7 +129,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     rev = await revOf(cli, 'cli_pic');
     await timed(page, `cozy apply: take ${other} approved`, { name: 'cli_pic', label: `v${other}` }, () => apply(cli, nodes, { cli_pic: { rev, approved: other } }));
     expect.soft((await project.asset('cli_pic')).approved, 'cozy apply approved it').toBe(other);
-    await page.mouse.move(2, 500);
+    await pointerOffCanvas(page);
     const approved = await project.asset('cli_pic');
     const wanted = String(approved.prefixes.find(version => version.number === other).main.sha256).replace(/^sha256:/, '');
     await expect.poll(async () => { const shown = (await canvasCard(page, 'cli_pic'))?.rendered; return shown?.media.ready && !shown.landing ? shown.media.sha : null; }, { message: 'the approved take is decoded and presented' }).toBe(wanted);

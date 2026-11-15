@@ -71,7 +71,7 @@ interface Drawn {
   fullTexts: Map<string, string>
   chips: { text: string; box: Box; missing: boolean }[]
   checker?: TilingSprite
-  hits: { box: Box; part: HitPart }[]
+  hits: { box: Box; part: HitPart; paint?: Box }[]
   presentation: Presentation
   signature: string
   tools: unknown
@@ -373,12 +373,17 @@ export class PixiScene {
       if (show.version) this.label(drawn, labels, "version", show.version, node.box.w - 72, HEAD - 12 - BODY * 1.25 + rise, 38, BODY, colors.mute, true)
       if (node.view.asset || node.view.landed || node.view.placing) {
         const x = node.box.w - 26, top = HEAD - 40 + rise
+        const stroke = 1.7
+        let paint: Box
         if (node.view.placing) {
-          ink.moveTo(x + 6, top + 9).lineTo(x + 18, top + 21).moveTo(x + 18, top + 9).lineTo(x + 6, top + 21).stroke({ width: 1.7, color: colors.mute })
+          ink.moveTo(x + 6, top + 9).lineTo(x + 18, top + 21).moveTo(x + 18, top + 9).lineTo(x + 6, top + 21).stroke({ width: stroke, color: colors.mute })
+          paint = { x: x + 6 - stroke / 2, y: top + 9 - stroke / 2, w: 12 + stroke, h: 12 + stroke }
         } else {
-          ink.moveTo(x + 5, top + 10).lineTo(x + 19, top + 10).moveTo(x + 9, top + 7).lineTo(x + 15, top + 7).moveTo(x + 7, top + 12).lineTo(x + 8, top + 23).lineTo(x + 16, top + 23).lineTo(x + 17, top + 12).stroke({ width: 1.7, color: colors.mute })
+          ink.moveTo(x + 5, top + 10).lineTo(x + 19, top + 10).moveTo(x + 9, top + 7).lineTo(x + 15, top + 7).moveTo(x + 7, top + 12).lineTo(x + 8, top + 23).lineTo(x + 16, top + 23).lineTo(x + 17, top + 12).stroke({ width: stroke, color: colors.mute })
+          paint = { x: x + 5 - stroke / 2, y: top + 7 - stroke / 2, w: 14 + stroke, h: 16 + stroke }
         }
-        drawn.hits.push({ box: { x: x - 2, y: top, w: 30, h: 30 }, part: node.view.placing ? "cancel" : "delete" })
+        // Stroke extents describe the ink; the larger pointer target intentionally remains separate.
+        drawn.hits.push({ box: { x: x - 2, y: top, w: 30, h: 30 }, part: node.view.placing ? "cancel" : "delete", paint })
       }
     }
   }
@@ -457,9 +462,10 @@ export class PixiScene {
     this.label(drawn, labels, "count", progress.count ?? "", node.box.w - cancel - countWidth, y + 3, countWidth, BODY, colors.ink, false, true)
     if (progress.cancel) {
       const x = node.box.w - 70
-      drawn.ink.roundRect(x, y, 70, 28, 5).fill(colors.card).stroke({ width: 1, color: colors.line })
+      const stroke = 1
+      drawn.ink.roundRect(x, y, 70, 28, 5).fill(colors.card).stroke({ width: stroke, color: colors.line })
       this.label(drawn, labels, "cancel", "Cancel", x + 10, y + 3, 52, BODY, colors.ink)
-      drawn.hits.push({ box: { x, y, w: 70, h: 28 }, part: "cancel" })
+      drawn.hits.push({ box: { x, y, w: 70, h: 28 }, part: "cancel", paint: { x: x - stroke / 2, y: y - stroke / 2, w: 70 + stroke, h: 28 + stroke } })
     }
   }
 
@@ -612,11 +618,16 @@ export class PixiScene {
         const scale = Math.max(picture.box.w / texture.width, picture.box.h / texture.height)
         const width = picture.box.w / scale, height = picture.box.h / scale
         const frame = new Rectangle((texture.width - width) / 2, (texture.height - height) / 2, width, height)
-        if (!picture.crop || picture.crop.source !== texture.source || !picture.crop.frame.equals(frame)) {
-          picture.crop?.destroy()
-          picture.crop = new Texture({ source: texture.source, frame })
+        let crop = picture.crop
+        // Rectangle.equals is installed only by the optional pixi.js/math-extras import.
+        if (!crop || crop.source !== texture.source
+          || crop.frame.x !== frame.x || crop.frame.y !== frame.y
+          || crop.frame.width !== frame.width || crop.frame.height !== frame.height) {
+          crop?.destroy()
+          crop = new Texture({ source: texture.source, frame })
+          picture.crop = crop
         }
-        drawnTexture = picture.crop
+        drawnTexture = crop
       }
       picture.sprite.texture = drawnTexture
       const fit = Math.min(picture.box.w / drawnTexture.width, picture.box.h / drawnTexture.height)
@@ -979,7 +990,7 @@ export class PixiScene {
       state: drawn.presentation.state, unseen: drawn.presentation.unseen,
       progress: drawn.presentation.progress ? { ...drawn.presentation.progress, fraction: drawn.meter?.fraction ?? drawn.presentation.progress.fraction } : null,
       stateDot: world(drawn.stateDot), meter: world(drawn.meterBox),
-      controls: drawn.hits.filter(hit => hit.part === "delete" || hit.part === "cancel").map(hit => ({ part: hit.part, ...world(hit.box)! })),
+      controls: drawn.hits.filter(hit => hit.part === "delete" || hit.part === "cancel").map(hit => ({ part: hit.part, ...world(hit.box)!, paint: world(hit.paint) })),
       wave: drawn.wave ? { active: true, ...paintedBody, animation: this.reducedMotion.matches ? "none" : "render-wave", alpha: drawn.wave.alpha * drawn.container.alpha, spread: drawn.wave.spread * scaleX, spreadY: drawn.wave.spread * scaleY, cycleMs: 2400, reducedMotion: this.reducedMotion.matches } : null,
       loadingPulse: drawn.loadingPulse ? { active: true, alpha: drawn.loadingPulse.alpha, cycleMs: 2800, reducedMotion: this.reducedMotion.matches } : null,
       landing: drawn.landing ? { active: true, scale: drawn.landing.scale, alpha: drawn.landing.alpha, durationMs: 260 } : null,

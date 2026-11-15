@@ -415,8 +415,12 @@ const canvasCard = (page, name) => page.evaluate((name) => document.querySelecto
 const canvasNames = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.names() ?? []);
 const selectedNames = (page) => page.evaluate(() => [...(document.querySelector('.canvas-root')?.canvasInspection?.selectedNames() ?? [])].sort());
 const canvasVisible = (page, name) => page.evaluate((name) => {
-  const root = document.querySelector('.canvas-root'), card = root?.canvasInspection?.card(name);
-  const native = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}]`);
+  const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
+  const identities = inspection?.identities() ?? [];
+  const publicMatches = identities.filter(one => one.name === name);
+  const identity = identities.find(one => one.key === name) ?? (publicMatches.length === 1 ? publicMatches[0] : undefined);
+  const card = inspection?.card(identity?.key ?? name);
+  const native = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(identity?.name ?? name)}]`);
   if (!root || !card || (!card.rendered && !native?.checkVisibility())) return false;
   const r = native?.getBoundingClientRect() ?? card.bounds, view = root.getBoundingClientRect();
   return r.width > 0 && r.height > 0 && r.x + r.width > view.left && r.y + r.height > view.top && r.x < view.right && r.y < view.bottom;
@@ -470,6 +474,27 @@ async function hoverBox(page, name) {
   await page.mouse.move(point.x, point.y);
   await expect(box(page, name)).toBeVisible();
   return box(page, name);
+}
+
+/** Put the physical pointer on actual application chrome outside the canvas, without clicking or changing selection.
+ * Two verified adjacent points also produce a real move when the pointer was already resting there. */
+async function pointerOffCanvas(page) {
+  const point = await page.evaluate(() => {
+    const root = document.querySelector('.canvas-root'), header = document.querySelector('header.top');
+    if (!root || !header) throw new Error('canvas and header must exist before moving the pointer away');
+    const r = header.getBoundingClientRect();
+    const clear = (x, y) => {
+      const target = document.elementFromPoint(x, y);
+      return target && header.contains(target) && !root.contains(target);
+    };
+    for (const v of [0.5, 0.25, 0.75]) for (const u of [0.5, 0.25, 0.75, 0.1, 0.9]) {
+      const x = r.x + r.width * u, y = r.y + r.height * v;
+      if (clear(x, y) && clear(x + 1, y)) return { x, y };
+    }
+    throw new Error('no unoccluded header point outside the canvas');
+  });
+  await page.mouse.move(point.x + 1, point.y);
+  await page.mouse.move(point.x, point.y);
 }
 
 /** The canvas's scale now. */
@@ -586,4 +611,4 @@ const TEXT_END = process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End
 /** A local fixture tool (e2e/cli/project/<file>/<function>), as a box or `cozy run` names it. */
 const fixtureTool = (path) => join(__dirname, '..', 'project', path);
 
-module.exports = { test, expect, canvasCard, canvasNames, canvasText, canvasLabel, canvasPoint, canvasVisible, selectedNames, hoverBox, screenshotPixels, box, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, TEXT_END, TEXT_START, DARK_OPEN, MP4, photo, png, wav };
+module.exports = { test, expect, pointerOffCanvas, canvasCard, canvasNames, canvasText, canvasLabel, canvasPoint, canvasVisible, selectedNames, hoverBox, screenshotPixels, box, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, TEXT_END, TEXT_START, DARK_OPEN, MP4, photo, png, wav };
