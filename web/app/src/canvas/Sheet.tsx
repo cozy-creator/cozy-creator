@@ -1,7 +1,19 @@
 import { useStoreApi } from "@xyflow/react"
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useSignal } from "../ui/signal"
 import { landscape, theme } from "../ui/theme"
+import { useCanvasStore } from "./context"
+// The landscape's pictures, as paper.css has them (its package exports only that, so by path): decoded here before they're put on.
+import hills from "../../node_modules/@cozy-creator/paper/landscape-hills.webp"
+import hillsFill from "../../node_modules/@cozy-creator/paper/landscape-hills-fill.webp"
+import meadow from "../../node_modules/@cozy-creator/paper/landscape-meadow.webp"
+import meadowFill from "../../node_modules/@cozy-creator/paper/landscape-meadow-fill.webp"
+import mountains from "../../node_modules/@cozy-creator/paper/landscape-mountains.webp"
+import mountainsFill from "../../node_modules/@cozy-creator/paper/landscape-mountains-fill.webp"
+import sky from "../../node_modules/@cozy-creator/paper/landscape-sky.webp"
+import clouds from "../../node_modules/@cozy-creator/paper/sky-clouds.webp"
+
+const ART = [clouds, sky, mountains, mountainsFill, hills, hillsFill, meadow, meadowFill]
 
 /** What the paper's tiles all repeat on, so wrapping by it can't be seen. */
 const PERIOD = 2048
@@ -81,7 +93,9 @@ function World({ washed }: { washed: boolean }) {
  */
 function Landscape() {
   const flow = useStoreApi()
+  const store = useCanvasStore()
   const land = useRef<HTMLDivElement>(null)
+  const art = useArtAfterBoxes(flow, store)
   useEffect(() => {
     const whole = land.current
     if (!whole) return
@@ -143,13 +157,58 @@ function Landscape() {
     }
   }, [flow])
   return (
-    <div ref={land} className="paper-landscape" aria-hidden="true">
+    <div ref={land} className="paper-landscape" data-art={art || undefined} aria-hidden="true">
       <div className="paper-landscape-sky" />
       <div className="paper-landscape-mountains" />
       <div className="paper-landscape-hills" />
       <div className="paper-landscape-meadow" />
     </div>
   )
+}
+
+/**
+ * The boxes come first: the landscape's pictures are decoded once the boxes' first frame is drawn (or the project's first read found none), off
+ * that frame's way, and only then put on, fading in over the cream (paper.css). Decoded and rastered with the boxes, they held the boxes' first
+ * frame back some 90 ms (e2e 43691308549: ~150 ms of decoding and ~150 ms of raster on the raster threads).
+ */
+function useArtAfterBoxes(flow: ReturnType<typeof useStoreApi>, store: ReturnType<typeof useCanvasStore>): boolean {
+  const [shown, setShown] = useState(false)
+  useEffect(() => {
+    let [over, frame, waiting] = [false, 0, true]
+    // No project, nothing to wait for; else its first read is in, and a box of it is measured, which React Flow draws, or it has none.
+    const measured = () => {
+      const { nodeLookup } = flow.getState()
+      if (!nodeLookup.size) return true
+      for (const node of nodeLookup.values()) if (node.measured.width) return true
+      return false
+    }
+    const boxesDrawn = () => !store.projectId || (store.hasRead && measured())
+    const begin = () => {
+      if (!waiting || !boxesDrawn()) return
+      waiting = false
+      stop()
+      // The frame they're in is drawn by the second frame from here.
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          const decoded = ART.map((src) => {
+            const image = new Image()
+            image.src = src
+            return image.decode().catch(() => {})
+          })
+          void Promise.all(decoded).then(() => over || setShown(true))
+        })
+      })
+    }
+    const stops = [store.names.subscribe(begin), flow.subscribe(begin)]
+    const stop = () => stops.forEach((one) => one())
+    begin()
+    return () => {
+      over = true
+      stop()
+      cancelAnimationFrame(frame)
+    }
+  }, [flow, store])
+  return shown
 }
 
 /**

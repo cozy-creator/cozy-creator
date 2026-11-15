@@ -45,13 +45,13 @@ J '[.warnings[]?.code] | index("gpu_throttled") and index("slow_run")' "$OUT/slo
   || check "slow: run $n's record has no gpu_throttled and slow_run warnings: $(jq -c .warnings "$OUT/slow-hot.json")"
 said=$(jq -r '.warnings[]? | select(.code == "slow_run") | .message' "$OUT/slow-hot.json")
 grep -q 'throttled for heat' <<< "$said" || check "slow: run $n's slow_run names no heat: $said"
-grep -q "run $n has run" <<< "$said" || check "slow: run $n's slow_run was not said while it ran: $said"
+grep -qE "run [A-Z][A-Z0-9]*-$n has run" <<< "$said" || check "slow: run $n's slow_run was not said while it ran: $said"
 # Said as it went: an in-progress event of its own already carries both.
 grep '^{' "$OUT/slow-hot.ndjson" | jq -en 'any(inputs; .run.status? == "in_progress" and ([.run.warnings[]?.code] | index("slow_run") and index("gpu_throttled")))' > /dev/null \
   || check "slow: run $n's events never carried its warnings while it ran"
 grep -q 'GPU 0 ran throttled for heat 98% of this run' "$OUT/slow-hot.ndjson" || check "slow: run $n's log never said GPU 0's heat"
 cozy run watch "$n" --once > "$OUT/slow-hot.txt" 2>&1 || true
-grep -q "warning: run $n has run" "$OUT/slow-hot.txt" || check "slow: cozy run watch $n does not say it was slow: $(tail -c 400 "$OUT/slow-hot.txt")"
+grep -qE "warning: run [A-Z][A-Z0-9]*-$n has run" "$OUT/slow-hot.txt" || check "slow: cozy run watch $n does not say it was slow: $(tail -c 400 "$OUT/slow-hot.txt")"
 
 step "slow: the machine marked, in cozy machine show"
 cozy --json machine show local > "$OUT/slow-machine.json" 2>&1 || check "slow: machine show local failed"

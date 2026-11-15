@@ -70,6 +70,7 @@ fn main() {
     v.visit::<project::Open>();
     v.visit::<project::Opened>();
     v.visit::<project::Address>();
+    v.visit::<project::Key>();
     v.visit::<project::ProjectView>();
     v.visit::<project::ProjectViewPatch>();
     v.visit::<project::VaultStatus>();

@@ -83,6 +83,9 @@ pub(crate) fn ordinary_storage(view: &FsPath) -> bool {
 
 pub(crate) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() || SESSIONS.lock().expect("vault sessions").contains_key(root) }
 
+/// An encrypted project with no open view: Calcifer keeps only its folder.
+pub(crate) fn locked_now(root: &FsPath) -> bool { encrypted(root) && held(root).is_none() }
+
 /// The canonical id is available without opening the project's content database.
 pub(super) fn project_id(root: &FsPath) -> Option<String> {
     if let Some(session) = held(root) {
@@ -628,7 +631,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
             if state.state != "locked" && !converting {
                 return Err(error("project_migration_pending", "the project is closed, but legacy data outside it still needs a verified storage update"));
             }
-            // Locked, nothing of it stays here but its folder (cl-984).
+            // Locked, nothing of it stays here but its folder (cl-984): not its id, code or keys, so its KEY-N is unknown here (cl-987).
             if !converting {
                 api.calcifer.store().project_locked(&keybag.info().project_id, root).map_err(|e| error("vault_index", e.to_string()))?;
             }

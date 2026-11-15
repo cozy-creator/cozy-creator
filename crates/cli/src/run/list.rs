@@ -11,15 +11,15 @@ use serde::Serialize;
 use super::{follow, live};
 use crate::{Context, output, tui};
 
-pub(crate) const HEADERS: [&str; 7] = ["#", "TARGET", "PROJECT", "MACHINE", "STATUS", "PROGRESS", "TIME"];
+pub(crate) const HEADERS: [&str; 7] = ["RUN", "TARGET", "PROJECT", "MACHINE", "STATUS", "PROGRESS", "TIME"];
 /// The newest runs a list shows unless `--limit` says otherwise.
 const SHOWN: u64 = 20;
 /// What `--json` keeps of a run in a list (`--full`: all of it): the table's facts, by the record's names.
 pub(crate) const FIELDS: &[&str] = &[
-    "older", "machine", "unreadable", "runs.id", "runs.number", "runs.kind", "runs.target", "runs.project", "runs.project_id", "runs.machine",
+    "older", "machine", "unreadable", "runs.id", "runs.number", "runs.name", "runs.kind", "runs.target", "runs.project", "runs.project_id", "runs.machine",
     "runs.status", "runs.queue_position", "runs.waiting", "runs.progress", "runs.stalled", "runs.reason.code",
     "runs.reason.message", "runs.created_at_ms", "runs.accepted_at_ms", "runs.started_at_ms", "runs.settled_at_ms",
-    "runs.execution_ms", "others.id", "others.machine_number", "others.target", "others.machine", "others.status",
+    "runs.execution_ms", "others.id", "others.name", "others.machine_number", "others.target", "others.machine", "others.status",
     "others.machine_state", "others.waiting", "others.reason.code", "others.reason.message", "others.accepted_at_ms",
     "others.started_at_ms", "others.settled_at_ms",
 ];
@@ -45,7 +45,6 @@ pub(crate) struct Query {
 }
 
 pub(crate) async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Error> {
-    super::note_folder(ctx).await;
     let limit = query.limit.unwrap_or(SHOWN);
     query.limit = (limit > 0).then_some(limit);
     if !ctx.json && ctx.term.stdout {

@@ -66,7 +66,7 @@ launch held silent seconds:=60 || return 0
 local line=''
 for _ in $(seq 30); do
   cozy machine show local > "$OUT/held.machine.txt" 2>&1 || true
-  line=$(grep -E "run $n\b" "$OUT/held.machine.txt" | head -1)
+  line=$(grep -E "run [A-Z][A-Z0-9]*-$n\b" "$OUT/held.machine.txt" | head -1)
   grep -q 'waiting silently' <<< "$line" && break
   sleep 1
 done

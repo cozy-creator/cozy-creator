@@ -82,6 +82,8 @@ enum Command {
     Render(render::Args),
     /// Show the current project's health and warnings.
     Status(daemon::Status),
+    /// Show or change the current project's key: its runs are KEY-N.
+    Key(project::KeyArgs),
     /// Encrypt, lock or recover the current project.
     Vault(project::vault::Args),
     /// Local, rented and added machines.
@@ -198,6 +200,7 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Lora(args) => model::lora_exec(ctx, args).await,
         Command::New(args) => project::create(ctx, args).await,
         Command::Status(args) => daemon::status(ctx, args).await,
+        Command::Key(args) => project::key(ctx, args).await,
         Command::Vault(args) => project::vault::exec(ctx, args).await,
         Command::Open(args) => open::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,

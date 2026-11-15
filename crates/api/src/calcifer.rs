@@ -437,6 +437,10 @@ pub struct Run {
     pub id: RunId,
     /// This controller's number for it; 0 for one another client sent.
     pub number: u64,
+    /// What names it to a person from any folder (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's
+    /// own; its id for one another client sent.
+    #[serde(default)]
+    pub name: String,
     /// One another client of this account sent, as the machine it runs on numbers it: read there,
     /// never held here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -521,16 +525,6 @@ pub struct Run {
     /// Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placed: Option<Placed>,
-}
-
-impl Run {
-    /// What names it to a person: its number, or `<machine>/<number>` for one another client sent.
-    pub fn name(&self) -> String {
-        match self.machine_number {
-            Some(_) => self.id.to_string(),
-            None => self.number.to_string(),
-        }
-    }
 }
 
 /// A video's verified segment plan and the completed prefix, in absolute shot frames.
