@@ -515,7 +515,8 @@ export function CanvasSurface(props: Props) {
   }, [controller, store, projectId, client, queries, projectEpoch, loggedOut])
 
   const node = hovered ? controller.getNodes().find(n => n.data.name === store.resolveName(hovered)) : undefined
-  const native = active && node && focused !== node.data.name ? node : null
+  // A box being named keeps its field under a cover (a project's lock read, say): unmounting it accepts the name (NameField).
+  const native = node && focused !== node.data.name && (active || store.get(node.data.name)?.draft !== undefined) ? node : null
   const view = native && store.get(native.data.name)
   return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby={helpId}>
     {props.children}
