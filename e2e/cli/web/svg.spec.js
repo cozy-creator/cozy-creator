@@ -1,54 +1,49 @@
 // svg (Paul, 11-14: "we can use SVGs, but also block scripts"; cl-985): a tool's picture that is an SVG holding a <script> and an onload
-// (project/svg.py, as a package may make one), rendered, is drawn as its take on the canvas and in Focus, and neither its
-// script nor its onload asks for anything.
-const { test, expect, canvasCard, canvasVisible, focus, fixtureTool, screenshotPixels } = require('./fixtures');
+// (project/svg.py, as a package may make one) is drawn in its run's drawer as its picture; opened by itself it's sandboxed, with
+// `script-src 'none'` and nosniff; and neither its script nor its onload asks for anything. (The canvas takes no SVG: an import of one is
+// refused, and a tool whose output is a file is no canvas tool.) web/access.js keeps the same by hand; this is the rule's cell on the RC.
+const { test, expect, fixtureTool, screenshotPixels } = require('./fixtures');
 
 const SVG = fixtureTool('svg.py/svg');
-const NAME = 'drawing';
 const RED = [204, 51, 51];
-const RUN_MS = 120_000;
 
-/** How many of a 5×5 grid over the middle of `rect` are the SVG's red (#c33). */
-function redShare(read, rect) {
-  let red = 0;
-  for (let i = 1; i <= 5; i++) for (let j = 1; j <= 5; j++) {
-    const pixel = read(rect.x + (rect.width * (0.2 + 0.1 * i)), rect.y + (rect.height * (0.2 + 0.1 * j)));
-    if (pixel.every((value, k) => Math.abs(value - RED[k]) <= 40)) red++;
-  }
-  return red / 25;
-}
-
-test('svg', async ({ page, project, api, cli }) => {
+test('svg', async ({ page, context, project, cli }) => {
   const asked = [];
-  page.context().on('request', (request) => { if (request.url().includes('svg=')) asked.push(request.url()); });
-  await project.add({ name: NAME, tool: SVG, kind: 'image', at: { x: 0, y: 0 } });
-  await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.some((tool) => tool.local && tool.id === SVG), { message: 'the project lists its local tool' }).toBe(true);
-  await expect.poll(() => canvasVisible(page, NAME), { message: 'its box on the canvas' }).toBe(true);
-
-  await test.step('rendered (cozy render)', async () => {
-    const rendered = await cli('--json', 'render', NAME, '--on', 'local');
-    expect(rendered.code, `cozy render: ${rendered.stderr.slice(-400)}`).toBe(0);
-    await expect.poll(async () => (await project.asset(NAME))?.versions ?? 0, { message: 'its take', timeout: RUN_MS }).toBe(1);
+  context.on('request', (request) => { if (request.url().includes('svg=')) asked.push(request.url()); });
+  let made;
+  await test.step('made by `cozy run`', async () => {
+    const ran = await cli('--json', 'run', SVG, '--on', 'local');
+    expect(ran.code, `cozy run: ${ran.stderr.slice(-400)}`).toBe(0);
+    made = (await project.api.get(project.at('/runs?limit=10'))).runs.find((run) => run.target?.endsWith('/svg') && run.status === 'completed');
+    expect(made, 'its run, completed').toBeTruthy();
   });
 
-  await test.step('drawn on the canvas as its take', async () => {
-    await page.mouse.move(4, 600);
-    await expect.poll(async () => {
-      const media = (await canvasCard(page, NAME))?.rendered?.media;
-      return media ? { ready: media.ready, failed: media.failed } : null;
-    }, { message: 'its picture decoded and drawn', timeout: 30_000 }).toEqual({ ready: true, failed: false });
-    const body = (await canvasCard(page, NAME)).rendered.body;
-    expect.soft(redShare(screenshotPixels(await page.screenshot()), body), 'its red on the screen').toBeGreaterThanOrEqual(0.8);
+  await test.step("drawn in its run's drawer", async () => {
+    await page.goto(project.url(`runs/${made.number}`));
+    const picture = page.locator('img[alt="picture"]').first();
+    await expect.poll(() => picture.evaluate((img) => img.complete && img.naturalWidth > 0).catch(() => false), { message: 'its picture drawn' }).toBe(true);
+    const r = await picture.boundingBox();
+    const read = screenshotPixels(await page.screenshot());
+    const middle = read(r.x + r.width / 2, r.y + r.height / 2);
+    expect.soft(middle.every((value, k) => Math.abs(value - RED[k]) <= 40), `its red, not ${middle}`).toBe(true);
   });
 
-  await test.step('in Focus too', async () => {
-    const region = await focus(page, NAME);
-    const picture = region.locator('.media img').first();
-    await expect.poll(() => picture.evaluate((img) => img.complete && img.naturalWidth > 0).catch(() => false), { message: 'its picture in Focus' }).toBe(true);
-    expect.soft(redShare(screenshotPixels(await page.screenshot()), await picture.boundingBox()), 'its red in Focus').toBeGreaterThanOrEqual(0.8);
+  await test.step('opened by itself: sandboxed, no script', async () => {
+    const answered = page.waitForResponse((response) => response.url().includes('/outputs/picture') && response.request().resourceType() === 'document');
+    // Followed from the page, as a person opens it (same origin), not typed in.
+    await page.evaluate((src) => { location.href = src; }, `/v1/projects/${project.id}/runs/${encodeURIComponent(made.id)}/outputs/picture`);
+    const answer = await answered;
+    const headers = answer.headers(), policy = headers['content-security-policy'] ?? '';
+    expect.soft(answer.status(), 'served').toBe(200);
+    expect.soft(headers['content-type'] ?? '', 'as an SVG').toMatch(/^image\/svg/);
+    expect.soft(policy, 'sandboxed').toMatch(/(^|;)\s*sandbox(\s|;|$)/);
+    expect.soft(policy, 'its script blocked').toContain("script-src 'none'");
+    expect.soft(headers['x-content-type-options'], 'not sniffed').toBe('nosniff');
   });
 
   await test.step('its script and onload asked for nothing', async () => {
+    // Its onload and script would ask as it loads; a beat for a late one.
+    await page.waitForTimeout(1000);
     expect(asked).toEqual([]);
   });
 });
