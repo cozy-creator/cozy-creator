@@ -67,7 +67,8 @@ calcifer_halt() {
 # in_files <project> <sha256:hex or hex>: a file of that hash is in the project's files/.
 in_files() { local hex=${2#sha256:}; find "$1/files" -name "$hex*" 2> /dev/null | grep -q .; }
 # derived <project> <sha256:hex or hex>: what Calcifer made of that file and keeps by its hash (thumbnails, posters, clips), wherever.
-derived() { local hex=${2#sha256:}; find "$HOME/.cozy/cache" "$1/.vault-calcifer" \( -name "$hex-*" -o -name "$hex.*" \) 2> /dev/null; }
+# cl-982 keeps thumbnails, posters and previews in the project's own `.thumbs`; clips stay in the caches.
+derived() { local hex=${2#sha256:}; find "$HOME/.cozy/cache" "$1/.vault-calcifer" "$1/.thumbs" \( -name "$hex-*" -o -name "$hex.*" \) 2> /dev/null; }
 # entry_of <project> <words>: the newest history entry with those words, not undone.
 entry_of() { project_api "$1" '/history?limit=50' | jq -r --arg w "$2" '[.entries[] | select(.words == $w and (.undone | not))][0].id // empty'; }
 # place_of <project> <box>: where its card is, `x,y`.
@@ -81,6 +82,11 @@ box_kept() { asset_of "$1" "$2" | J '(.sha256 // null) == null and ((.versions /
 # Undo brings it back within the window (config.toml's calcifer.undo_seconds, cut to 40 s), and once the window ends its file and what
 # Calcifer made of it leave the project, unless another box holds the same file; Undo then brings the box back without them, saying so.
 # One deleted while Calcifer is stopped across its window is gone once Calcifer starts. The page's own half is the delete-undo cell.
+# closes_busy <id a> <id b>: whether each project's render is going, `true false`, by the projects' list, which opens none.
+closes_busy() {
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$lock")/v1/projects?limit=1000" \
+    | jq -r --arg a "$1" --arg b "$2" '[([.projects[] | select(.id == $a)][0].busy // false), ([.projects[] | select(.id == $b)][0].busy // false)] | map(tostring) | join(" ")' || true
+}
 db_deleted_gc() {
 step "deleted boxes: resolve nowhere, Undo in the window, their files gone after it, across a stopped Calcifer too (cl-919)"
 local lock=$HOME/.cozy/calcifer/calcifer.lock.holder P=$OUT/deleted-gc window=40 pic twin late entry began code=0 said='' before after c
@@ -96,6 +102,8 @@ pic=$(asset_of "$P" pic | jq -r .sha256) twin=$(asset_of "$P" twin_b | jq -r .sh
 in_files "$P" "$pic" && in_files "$P" "$twin" || check "deleted gc: the imports aren't in files/"
 # A thumbnail made, as the page asks one: its going is checked below.
 project_api "$P" "/thumbs/${pic#sha256:}" -o /dev/null || check "deleted gc: no thumbnail of pic"
+# The first ask answers `202 thumb_pending` and draws it next (cl-982): wait until it's drawn.
+for _ in $(seq 60); do [ -z "$(derived "$P" "$pic")" ] || break; sleep 0.5; done
 [ -n "$(derived "$P" "$pic")" ] || check "deleted gc: pic's thumbnail isn't kept by its hash, so its going proves nothing"
 
 # Deleted: it resolves nowhere. A render of what mentions it, and the CLI's run of it, fail free, naming it.
@@ -279,8 +287,7 @@ for _ in $(seq 240); do
   h1=0 h2=0
   ! closes_open "$first" || h1=1
   ! closes_open "$second" || h2=1
-  busy=$(curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$lock")/v1/projects?limit=1000" \
-    | jq -r --arg a "$a" --arg b "$b" '[([.projects[] | select(.id == $a)][0].busy // false), ([.projects[] | select(.id == $b)][0].busy // false)] | map(tostring) | join(" ")' || true)
+  busy=$(closes_busy "$a" "$b")
   look=$(project_api "$second" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | "\(.status)/\(.machine_state // "")"' || true)
   [[ " ${looks[*]} " == *" ${look:-none} "* ]] || looks+=("${look:-none}")
   [ "${busy% *}" != true ] || [ "$h1" = 1 ] || dropped+=("first while it ran")
