@@ -857,7 +857,7 @@ pub struct RentalBoot {
     pub expected_samples: Option<u32>,
 }
 
-/// A function's recent run times on rented cards (`GET /v1/run-times`), as their renters reported them.
+/// A function's recent run times on each GPU (`GET /v1/run-times`), from every cozy's anonymous run reports.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RunTimes {
@@ -866,7 +866,7 @@ pub struct RunTimes {
     pub skus: Vec<SkuRunTimes>,
 }
 
-/// One product at one GPU count: its newest runs of the function.
+/// One GPU at one count: its newest runs of the function. `sku` is the product the Hub sells it as, else the GPU's own name.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct SkuRunTimes {
@@ -876,27 +876,133 @@ pub struct SkuRunTimes {
     pub runs: Vec<RunTime>,
 }
 
-/// One run of a published function on a rental (`POST /v1/rentals/{id}/run-times`).
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+/// One run of a published function.
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RunTime {
-    /// `org/package/function`
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub function: String,
     pub release: String,
     /// The GPUs it ran on.
     pub width: u32,
     pub size: crate::machine::JobSize,
     /// Its callable's time.
     pub execution_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub measured_at: Option<String>,
 }
 
-/// Runs of a rental, reported to its Hub.
+/// Runs reported to the Hub (`POST /v1/run-reports`, cl-1006): sent with no credential, kept with nothing naming who sent them.
 #[derive(Clone, Debug, Default, Serialize)]
-pub struct RunTimesReport {
-    pub runs: Vec<RunTime>,
+pub struct RunReports {
+    pub runs: Vec<RunReport>,
+}
+
+/// One run: what ran, on what, how big and how long. Never its inputs, outputs, names or keys.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct RunReport {
+    /// `org/package/function`
+    pub function: String,
+    pub release: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ReportedModel>,
+    pub software: ReportedSoftware,
+    /// `os/arch`
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub os: String,
+    /// None: it ran on no GPU.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<ReportedGpu>,
+    /// The GPUs it ran on.
+    pub width: u32,
+    pub size: ReportedSize,
+    pub timing: ReportedTiming,
+    /// The kernels it served, by name.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kernels: Vec<String>,
+    /// `succeeded`, `failed` or `canceled`.
+    pub outcome: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub error_code: String,
+}
+
+/// A model slot the run loaded: its Hub model and release, lane and precision, and the LoRAs on it (`org/name@release`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ReportedModel {
+    pub slot: String,
+    pub model: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub release: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub lane: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub precision: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub adapters: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ReportedSoftware {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cozy: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tensord: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub runtime: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tensorfs: String,
+}
+
+/// The machine's GPUs: as their driver names them, how many, each one's memory.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ReportedGpu {
+    pub name: String,
+    pub count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_gib: Option<u32>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub driver: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub family: String,
+}
+
+/// What the run made, in whichever measures its request has.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ReportedSize {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub megapixels: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frames: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+}
+
+/// How long it took: its callable in all, its models' load onto the GPUs, its steps.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ReportedTiming {
+    pub total_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step1_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steady_ms: Option<f64>,
+    /// Its models were held and built before it started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warm: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peak_vram_gib: Option<f64>,
+}
+
+/// How many runs of a report the Hub kept.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct RunReportsKept {
+    pub kept: u32,
 }
 
 /// The image pull as the provider's boot log measured it: the layers in flight, not the image.

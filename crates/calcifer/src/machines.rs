@@ -101,6 +101,8 @@ pub(crate) struct Machines {
     pub(crate) lists: crate::ahead::Lists,
     /// Moves when a machine becomes ready or ends: what plans re-plan on (cl-967).
     pub(crate) arrivals: tokio::sync::watch::Sender<u64>,
+    /// Anonymous performance data: whether it's sent, and the reports waiting (cl-1006).
+    pub(crate) reports: crate::reports::Reports,
 }
 
 /// How long a rental may say nothing after an update restarted it before this computer calls it broken (cl-977). Its own
@@ -184,6 +186,7 @@ impl Machines {
             rc_ready: Notify::new(),
             lists: crate::ahead::Lists::default(),
             arrivals: tokio::sync::watch::channel(0).0,
+            reports: crate::reports::Reports::new(config),
             calcifer,
         });
         me.calcifer.serve_with(&me);

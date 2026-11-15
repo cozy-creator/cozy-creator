@@ -89,6 +89,11 @@ pub struct CalciferConfig {
     /// A packages checkout whose first-party packages run from source instead of the Hub (xs-195). Read only with `dev = true` on
     /// an RC build.
     pub packages: Option<PathBuf>,
+    /// Anonymous performance data (cl-1006): each run's function, package, versions, GPU, size and times go to the Hub, never
+    /// its inputs or outputs and nothing naming who ran it. Absent: on. `false`: nothing is sent.
+    pub send_performance_data: Option<bool>,
+    /// Tests only: a shorter wait than the fixed 10 minutes from a run's report to its sending.
+    pub report_seconds: Option<u32>,
 }
 
 /// `[machine]`: this computer's machine (TensorD, `cozy machine serve`), which judges these. A
@@ -228,6 +233,17 @@ pub fn set_calcifer_port(home: &Home, port: Option<u16>) -> Result<Option<u16>, 
     if port == Some(0) {
         return Err(Error::new(Kind::Usage, "calcifer_port", "Calcifer's port must be between 1 and 65535"));
     }
+    set_calcifer(home, "port", port.map(|port| toml_edit::value(i64::from(port))), |config| config.calcifer.port)
+}
+
+/// Persist whether anonymous performance data is sent (`calcifer.send_performance_data`). Returns the previous setting.
+pub fn set_send_performance_data(home: &Home, send: bool) -> Result<Option<bool>, Error> {
+    set_calcifer(home, "send_performance_data", Some(toml_edit::value(send)), |config| config.calcifer.send_performance_data)
+}
+
+/// Writes one `[calcifer]` key (`None`: removes it), unless it already reads as asked, and answers what it read before. Other
+/// settings, unknown fields and authored comments stay in the config file.
+fn set_calcifer<T: PartialEq>(home: &Home, key: &str, value: Option<toml_edit::Item>, read: impl Fn(&Config) -> Option<T>) -> Result<Option<T>, Error> {
     let path = home.config();
     let shown = path.display().to_string();
     let io = |error: platform::Error| Error::new(Kind::Unavailable, "config_write", error.to_string());
@@ -239,27 +255,25 @@ pub fn set_calcifer_port(home: &Home, port: Option<u16>) -> Result<Option<u16>, 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(invalid(&shown, "", &error.to_string())),
     };
-    let previous = Config::parse(&text, &shown)?.0.calcifer.port;
-    if previous == port {
-        return Ok(previous);
-    }
+    let previous = read(&Config::parse(&text, &shown)?.0);
     let mut document: toml_edit::DocumentMut = text.parse().map_err(|error| invalid(&shown, "", &format!("{error}")))?;
-    match port {
-        Some(port) => {
+    match value {
+        Some(value) => {
             if !document.contains_key("calcifer") {
                 document["calcifer"] = toml_edit::table();
             }
-            document["calcifer"].as_table_like_mut().expect("validated Calcifer table")
-                .insert("port", toml_edit::value(i64::from(port)));
+            document["calcifer"].as_table_like_mut().expect("validated Calcifer table").insert(key, value);
         }
         None => {
             if let Some(table) = document.get_mut("calcifer").and_then(toml_edit::Item::as_table_like_mut) {
-                table.remove("port");
+                table.remove(key);
             }
         }
     }
     let text = document.to_string();
-    Config::parse(&text, &shown)?;
+    if read(&Config::parse(&text, &shown)?.0) == previous {
+        return Ok(previous);
+    }
     platform::durable::replace(&path, text.as_bytes(), 0o600).map_err(io)?;
     Ok(previous)
 }

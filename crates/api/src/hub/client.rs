@@ -569,17 +569,15 @@ impl Client {
             .await
     }
 
-    /// What `function` (`org/package/function`) took on the rented cards it ran on.
+    /// What `function` (`org/package/function`) took on each GPU, from every cozy's anonymous reports.
     pub async fn run_times(&self, function: &str) -> Result<RunTimes, Error> {
         self.json(self.at(Method::GET, "/v1/run-times", &[]).query(&[("function", function)]))
             .await
     }
 
-    /// Tells the rental's Hub what its runs took, for others' placement on its card.
-    pub async fn report_run_times(&self, id: &str, report: &RunTimesReport) -> Result<(), Error> {
-        self.send(self.at(Method::POST, "/v1/rentals/{id}/run-times", &[id]).json(report))
-            .await
-            .map(drop)
+    /// Reports runs to the Hub anonymously (cl-1006); answers how many it kept.
+    pub async fn report_runs(&self, reports: &RunReports) -> Result<RunReportsKept, Error> {
+        self.json(self.at(Method::POST, "/v1/run-reports", &[]).json(reports)).await
     }
 
     /// Tells the rental's Hub that this client's runs are live on its machine, on `boot_id`, now: a sign of the machine's life when

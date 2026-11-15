@@ -181,8 +181,8 @@ impl Hubs {
         Some(OnItsWay { ready_at_ms, sku, card: rental.requested_accelerator_model.clone(), gpus })
     }
 
-    /// What `function` (`org/package/function`) took on the cards `origin` rents, as it said within the last minutes; none from a
-    /// Hub that keeps none or didn't answer in time.
+    /// What `function` (`org/package/function`) took on each GPU, as `origin` said within the last minutes from every cozy's
+    /// anonymous reports; none from a Hub that keeps none or didn't answer in time. Asked with no credential.
     pub(crate) async fn run_times(&self, origin: &str, function: &str) -> Option<types::RunTimes> {
         let key = (origin.to_owned(), function.to_owned());
         if let Some((at, said)) = lock(&self.run_times).get(&key)
@@ -190,7 +190,7 @@ impl Hubs {
         {
             return said.clone();
         }
-        let asked = async { self.reader(origin).ok()?.run_times(function).await.ok() };
+        let asked = async { self.anonymous(origin).ok()?.run_times(function).await.ok() };
         let said = tokio::time::timeout(RUN_TIMES_LATE, asked).await.ok().flatten();
         lock(&self.run_times).insert(key, (std::time::Instant::now(), said.clone()));
         said
@@ -942,36 +942,6 @@ impl Machines {
             boot_ms: placed.boot_ms.unwrap_or(BOOT_MS),
             weight_bytes: placed.weight_bytes,
         })
-    }
-
-    /// Tells a rental's Hub what a published function's run took there (cl-915), so placement elsewhere knows its card's times
-    /// before a machine of it has run anything. Said in the background; a Hub that keeps none is left be.
-    pub(crate) fn report_run(self: &Arc<Self>, row: &RunRow, outcome: &v1::Outcome) {
-        let Some(machine) = row.machine.as_deref() else { return };
-        let Ok(Some(rental)) = self.store().machine(machine) else { return };
-        let Some(id) = rental.rental_id.clone().filter(|_| rental.kind == MachineKind::Rental) else { return };
-        let Some(v1::Source::Release(release)) = &row.spec.source else { return };
-        if outcome.status != "succeeded" || outcome.memoized || outcome.execution_ms == 0 || row.kind != api::calcifer::Kind::Call {
-            return;
-        }
-        let measured: serde_json::Value = outcome.measurements.as_ref().and_then(|m| serde_json::from_str(m.get()).ok()).unwrap_or_default();
-        let width = measured["execution"]["degree"].as_u64().and_then(|d| u32::try_from(d).ok()).unwrap_or(1).max(1);
-        let payload: serde_json::Value = row.spec.payload.as_ref().and_then(|p| serde_json::from_str(p.get()).ok()).unwrap_or_default();
-        let run = types::RunTime {
-            function: format!("{}/{}", release.package, row.spec.entrypoint),
-            release: release.release.clone(),
-            width,
-            size: v1::JobSize::of(&payload),
-            execution_ms: outcome.execution_ms,
-            measured_at: None,
-        };
-        let (me, hub) = (self.clone(), rental.hub.clone());
-        self.spawn(async move {
-            let said = async { me.hubs.client(&hub)?.report_run_times(&id, &types::RunTimesReport { runs: vec![run] }).await.map_err(|e| hub_refusal(&hub, e)) };
-            if let Err(e) = said.await {
-                tracing::debug!(rental = id, "telling its Hub a run's time: {}", e.message);
-            }
-        });
     }
 
     /// Asks again what a Calcifer that stopped had asked a Hub and not heard back. A run asked

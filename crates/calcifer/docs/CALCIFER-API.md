@@ -182,6 +182,11 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 
 ### Status
 - `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, encrypted_project_creation, home}`. `home` is this person's home folder, where the page suggests a first project's folder. Clients must require `encrypted_project_creation: true` before sending encrypted-creation credentials or requests; older controllers omit it. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
+- `GET /v1/settings`: `{send_performance_data}`, this computer's settings Calcifer holds (config.toml's `[calcifer]`); `PUT` sends them
+  whole, written to config.toml first. `send_performance_data` (default true, cl-1006): each published function's run on any
+  machine is reported to the Hub (`POST /v1/run-reports`) with no credential: its function, release, models, versions, OS, GPU,
+  size, times, kernels and outcome, never its inputs, outputs, names or keys. Reports wait in memory and go 64 at once or 10 min after
+  the first; a batch the Hub doesn't take is dropped. Off: nothing waits or goes.
 - `GET /v1/legacy`: `{existing, gone, unreadable}`, the old project runs (from before projects kept their own) Calcifer's store still holds: `existing` and `gone` list `{path, runs}` by the project folder each names, here or gone; `unreadable` counts records it can't read. `cozy doctor` says it (cl-984).
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
   without asking the Hub (`GET /v1/account` does).
@@ -319,9 +324,9 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
   `boot.expected_ready_at`, from its provider and card's recent boots and the phase it's in; else 4 min from its attempt's start; not before
   its image's pull can end; once overdue, as long again as it's late, at least 30 s; an order its Hub has had no pod for a minute isn't
   quoted), then quoted as a machine that holds nothing (`placement::Picture`), the runs already sent to it ahead of the jobs asked, each
-  timed by this computer's runs on its card, else its Hub's (`GET /v1/run-times`), else a minute. Its quote's `ready_ms` says when.
-  A job held for one says so on the board: `why` `waits for pluto, ready in about 2 min`, `machine` pluto. A run on a rental that
-  completes tells its Hub what it took (`POST /v1/rentals/{id}/run-times`), so the next machine of that card is quoted before it runs.
+  timed by this computer's runs on its card, else its Hub's from every cozy's anonymous run reports (`GET /v1/run-times`, asked with
+  no credential), else a minute. Its quote's `ready_ms` says when.
+  A job held for one says so on the board: `why` `waits for pluto, ready in about 2 min`, `machine` pluto.
 - A machine that can't run it at all (`fits: false`: its weights too big for the disk, its GPUs out of service) has no finish
   and is never chosen. Of the rest the soonest finish wins; within 2% (or 1 s), a machine that serves before one on its way, one whose
   quote stands on its own measured runs before one that doesn't, then a rental before `local`. `local` takes nothing it would do poorly (as `fit` judges) while another can, unless its
@@ -792,6 +797,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy delete NAME…` | `GET /v1/projects/{id}`, then `DELETE /v1/projects/{id}/assets/{name}` each, under one `Cozy-Edit` |
 | `cozy render NAME… [--on M,…] [-n N] [--new] [--outdated] [--pickup '<NAME.N>@FRAME']` | `GET /v1/projects/{id}`; `--pickup`, `GET /v1/projects/{id}/assets/{name}` and `GET /v1/tools?project=` for the frames it lands on; on `local` alone, `POST /v1/projects/{id}/fit` first (off a terminal a poor fit refuses, naming `--on local` or `cozy machine rent`); `GET /v1/events` showing the project (`PUT /v1/events/{stream}`), then `POST /v1/projects/{id}/runs`, followed until the board's `ended` names its ask. Stopping it never cancels the render |
 | `cozy key [KEY]` | current directory, `GET /v1/projects/{id}/address`, `GET` (`PUT`) `/v1/projects/{id}/key` |
+| `cozy config [list\|get KEY\|set KEY VALUE]` | `GET /v1/settings`; `set`, then `PUT /v1/settings` |
 <!-- each PR adds its verbs' rows -->
 | `machine use [MACHINE,...]` | current directory, `GET /v1/projects/{id}/address`, `PUT /v1/projects/{id}/machines` |
 | `machine ls` | `GET /v1/machines?refresh=true`; on a terminal, `GET /v1/events`, then `GET /v1/machines` |

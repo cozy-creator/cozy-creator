@@ -46,6 +46,7 @@ pub(crate) mod private_io;
 mod play;
 mod project;
 mod rentals;
+mod reports;
 mod runs;
 pub mod serve;
 mod slow;
@@ -2341,7 +2342,7 @@ impl Calcifer {
                     let events = self.with_run_store(id.as_str(), |store| store.settle(id.as_str(), &outcome, durable))?;
                     let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
                     self.publish(id, events);
-                    // What it took on a rented card, for its Hub's placement of runs on that card (cl-915).
+                    // What it took, anonymously, unless this computer turned performance data off (cl-1006).
                     if let (Some(machines), Ok(Some(row))) = (self.machines(), self.with_run_store(id.as_str(), |store| store.run(id.as_str()))) {
                         machines.report_run(&row, &outcome);
                     }

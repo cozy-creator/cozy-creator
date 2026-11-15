@@ -65,6 +65,7 @@ import type {
   RunQuote,
   RunRequest,
   Runs,
+  Settings,
   SignedOut,
   Submitted,
   Target,
@@ -287,6 +288,14 @@ export class Client {
 
   status(): Promise<CalciferStatus> {
     return this.json("/v1/status")
+  }
+
+  settings(signal?: AbortSignal): Promise<Settings> {
+    return this.json("/v1/settings", { signal })
+  }
+
+  changeSettings(settings: Settings): Promise<Settings> {
+    return this.write("PUT", "/v1/settings", settings)
   }
 
   /** The one stream, opened once: `EventStream` does its own reconnecting. */

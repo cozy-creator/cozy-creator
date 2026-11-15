@@ -3071,6 +3071,16 @@ export type Said = { level: NoteLevel, message: string, names?: Array<string>, }
 export type Sent = { "file": Digest } | { "tree": Digest };
 
 /**
+ * `GET` and `PUT /v1/settings`: this computer's settings Calcifer holds, in config.toml's `[calcifer]`.
+ */
+export type Settings = {
+/**
+ * Each run's function, package, versions, GPU, size and times go to the Hub anonymously: never its prompts, inputs,
+ * outputs or names, and nothing that says who ran it (cl-1006).
+ */
+send_performance_data: boolean, };
+
+/**
  * `DELETE /v1/account`, or a finished `SignOutEverywhere`: this computer's key is erased,
  * whatever the Hub answered its revocation (`notes` say when it did not confirm).
  */
