@@ -10,9 +10,9 @@
 // Interaction thresholds are reported separately from those liveness deadlines. CPU/PSS and screenshots are sampled OUTSIDE frame timing.
 const { execFileSync } = require('node:child_process');
 const { createHash, randomUUID } = require('node:crypto');
-const { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } = require('node:fs');
 const { homedir, cpus, loadavg, release, totalmem } = require('node:os');
-const { extname, join, resolve } = require('node:path');
+const { join, resolve } = require('node:path');
 
 const COUNTS = [100, 1000, 5000], WIDTH = 1600, HEIGHT = 1000, REPEATS = 3;
 const STEP = Number(process.env.STEP_MS ?? 30_000), LOAD = Number(process.env.LOAD_MS ?? 900_000), PREPARE = Number(process.env.PREPARE_MS ?? 1_800_000);
@@ -59,30 +59,10 @@ function representatives(count, columns) {
   return [...found];
 }
 
-// Only built static UI bytes are replaced; document security headers and all APIs/media remain the real Calcifer's.
+// Static candidate bytes only; CDP matching excludes every API/media URL and leaves HTTP cache behavior unchanged.
 async function candidate(context, origin) {
   if (!process.env.CANDIDATE_DIST) return;
-  const dist = realpathSync(process.env.CANDIDATE_DIST), files = new Map();
-  const walk = (folder, prefix = '') => { for (const entry of readdirSync(folder, { withFileTypes: true })) { const name = `${prefix}/${entry.name}`, file = join(folder, entry.name); if (entry.isDirectory()) walk(file, name); else if (entry.isFile()) files.set(name, readFileSync(file)); else throw new Error('non-regular candidate file'); } };
-  walk(dist);
-  const index = files.get('/index.html');
-  if (!index || /@vite\/client|__COZY_DEVELOPMENT_NONCE__/.test(index.toString())) throw new Error('candidate must be a built UI');
-  seen.candidate = { dist, files: [...files].map(([path, body]) => ({ path, sha256: hash(body) })) };
-  const mime = { '.js': 'text/javascript', '.css': 'text/css', '.webp': 'image/webp', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.woff': 'font/woff', '.wasm': 'application/wasm', '.json': 'application/json', '.ico': 'image/x-icon' };
-  let security;
-  await context.route(`${origin}/**`, async route => {
-    const request = route.request(), url = new URL(request.url());
-    if (request.method() !== 'GET' || url.pathname.startsWith('/v1')) return route.continue();
-    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
-      const response = await route.fetch(), headers = response.headers();
-      if (!response.ok() || !headers['content-type']?.includes('text/html') || !headers['content-security-policy']) return route.fulfill({ response });
-      security = Object.fromEntries(Object.entries(headers).filter(([key]) => ['content-security-policy', 'referrer-policy', 'x-content-type-options', 'cross-origin-opener-policy', 'cross-origin-embedder-policy'].includes(key)));
-      for (const key of ['content-length', 'content-encoding', 'etag', 'last-modified', 'transfer-encoding']) delete headers[key];
-      return route.fulfill({ response, headers: { ...headers, 'cache-control': 'no-store' }, body: index });
-    }
-    const body = files.get(decodeURIComponent(url.pathname));
-    return body && security ? route.fulfill({ status: 200, headers: { ...security, 'content-type': mime[extname(url.pathname)] ?? 'application/octet-stream', 'cache-control': 'no-store' }, body }) : route.continue();
-  });
+  seen.candidate = await require('./candidate-cdp').candidateCDP(page, origin, process.env.CANDIDATE_DIST);
 }
 
 (async () => {
@@ -354,11 +334,13 @@ async function candidate(context, origin) {
   check('all-api-real-origin', origins.size === 1 && origins.has(origin), [...origins]);
   check('thumbnail-source-floor', [...thumbWidths].every(width => width === 0 || width >= 256), [...thumbWidths]);
   check('no-page-errors', errors.length === 0, errors); check('no-csp-violations', violations.length === 0, violations);
+  check('candidate-delivery', !seen.candidate || seen.candidate.errors.length === 0, seen.candidate?.errors);
   seen.errors = errors; seen.csp = violations; seen.thumbnail_widths = [...thumbWidths]; sameService();
 })().catch(async error => {
   failures.push({ during, error: clean(error.stack ?? error) });
   if (page && out) { await page.screenshot({ path: join(out, 'failure.png'), timeout: 5000 }).catch(() => {}); seen.failed_resources = await page.locator('.canvas-root').evaluate(element => element.canvasInspection?.resources()).catch(() => null); }
 }).finally(async () => {
+  await seen.candidate?.dispose?.().catch(() => {});
   await browser?.close().catch(() => {});
   if (out) save('result.json', { failures, seen, receipt: out });
   process.stdout.write(`${clean(JSON.stringify({ failures, receipt: out, prepared: seen.prepared }, null, 2))}\n`);

@@ -154,39 +154,39 @@ export function CanvasSurface(props: Props) {
       if (moved) settle = 2
       const version = revision, refresh = version !== painted
       if (refresh) {
-      const names: SceneNode[] = []
-      const offering = element.closest(".stage")?.hasAttribute("data-offering") ?? false
-      sceneWork = false
-      const machines = queries.getQueryData(machinesQuery(client).queryKey)?.machines ?? []
-      for (const node of controller.getNodes()) {
-        const view = store.get(node.data.name)
-        if (!view) continue
-        let run = view.run
-        const box = node.bounds
-        const onscreen = box.x * camera.zoom + camera.x < width && (box.x + box.w) * camera.zoom + camera.x > 0 && box.y * camera.zoom + camera.y < height && (box.y + box.h) * camera.zoom + camera.y > 0
-        const rendering = view.asset?.standing === "making" || view.queued || view.asked !== undefined || Boolean(view.glimpse)
-        if (onscreen && rendering) sceneWork = true
-        if (run && store.projectId && onscreen && rendering) {
-          const query = runFullQuery(client, store.projectId, run.number, 0)
-          const full = queries.getQueryData(query.queryKey)
-          if (full) run = { ...full, ...run, request: full.request }
-          else if (!requestedRuns.has(run.number)) {
-            requestedRuns.add(run.number)
-            void queries.ensureQueryData(query).then(invalidate, () => {})
+        const names: SceneNode[] = []
+        const offering = element.closest(".stage")?.hasAttribute("data-offering") ?? false
+        sceneWork = false
+        const machines = queries.getQueryData(machinesQuery(client).queryKey)?.machines ?? []
+        for (const node of controller.getNodes()) {
+          const view = store.get(node.data.name)
+          if (!view) continue
+          let run = view.run
+          const box = node.bounds
+          const onscreen = box.x * camera.zoom + camera.x < width && (box.x + box.w) * camera.zoom + camera.x > 0 && box.y * camera.zoom + camera.y < height && (box.y + box.h) * camera.zoom + camera.y > 0
+          const rendering = view.asset?.standing === "making" || view.queued || view.asked !== undefined || Boolean(view.glimpse)
+          if (onscreen && rendering) sceneWork = true
+          if (run && store.projectId && onscreen && rendering) {
+            const query = runFullQuery(client, store.projectId, run.number, 0)
+            const full = queries.getQueryData(query.queryKey)
+            if (full) run = { ...full, ...run, request: full.request }
+            else if (!requestedRuns.has(run.number)) {
+              requestedRuns.add(run.number)
+              void queries.ensureQueryData(query).then(invalidate, () => {})
+            }
           }
+          const machine = run?.machine ? machines.find(m => m.name === run.machine) : undefined
+          const on = run ? waitsOnOf(ownActivity(machine, store.projectId), run) : undefined
+          const tool = view.asset?.tool ? store.tools.get().get(view.asset.tool) : undefined
+          const pkg = tool?.installs ?? tool?.package
+          const installing = !run && pkg ? machines.flatMap(m => ownActivity(m, store.projectId)).find(o => o.kind === "install" && o.subject === pkg) : undefined
+          const dragging = store.isDragging(node.data.name)
+          names.push({ id: node.id, name: node.data.name, box, view, selected: Boolean(node.selected), gliding: node.gliding, dragging, offering: dragging && offering, runContext: run || installing ? { run, machine, on, installing } : undefined })
         }
-        const machine = run?.machine ? machines.find(m => m.name === run.machine) : undefined
-        const on = run ? waitsOnOf(ownActivity(machine, store.projectId), run) : undefined
-        const tool = view.asset?.tool ? store.tools.get().get(view.asset.tool) : undefined
-        const pkg = tool?.installs ?? tool?.package
-        const installing = !run && pkg ? machines.flatMap(m => ownActivity(m, store.projectId)).find(o => o.kind === "install" && o.subject === pkg) : undefined
-        const dragging = store.isDragging(node.data.name)
-        names.push({ id: node.id, name: node.data.name, box, view, selected: Boolean(node.selected), gliding: node.gliding, dragging, offering: dragging && offering, runContext: run || installing ? { run, machine, on, installing } : undefined })
-      }
-      const hiddenNames = new Set<string>()
-      if (nativeName.current) hiddenNames.add(nativeName.current)
-      if (store.focusedName.get() && !store.focusEntering.get()) hiddenNames.add(store.focusedName.get()!)
-      scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenNames })
+        const hiddenNames = new Set<string>()
+        if (nativeName.current) hiddenNames.add(nativeName.current)
+        if (store.focusedName.get() && !store.focusEntering.get()) hiddenNames.add(store.focusedName.get()!)
+        scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenNames })
       }
       const wasAnimating = animating
       if (refresh || animating) animating = scene.advance(now)
