@@ -63,15 +63,17 @@ pub(crate) async fn serve(
     if project.is_none() && held.is_some_and(|held| held.split(',').any(|t| t.trim() == preview.tag)) {
         return Ok(private((StatusCode::NOT_MODIFIED, [(header::ETAG, tag)]).into_response()));
     }
-    // A preview is a raster picture, or none: the page shows previews as blob URLs, which carry the page's own CSP, so an SVG preview
-    // opened in a tab could run its script. SVG outputs, served from /v1 sandboxed with `script-src 'none'`, stay SVG.
-    if !preview.media_type.starts_with("image/") || preview.media_type.starts_with("image/svg") {
+    // A preview is a raster picture of a kind every browser draws, or none: the page shows previews as blob URLs, which carry the
+    // page's own CSP, so an SVG (or any other) preview opened in a tab could run its script. Its type is read as a browser reads it:
+    // case-blind, its parameters off. SVG outputs, served from /v1 sandboxed with `script-src 'none'`, stay SVG.
+    let media = preview.media_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+    if !matches!(media.as_str(), "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/avif") {
         return none();
     }
     let text = |value: &str| HeaderValue::from_str(value).unwrap_or(HeaderValue::from_static(""));
     let mut response = (StatusCode::OK, preview.body).into_response();
     let set = response.headers_mut();
-    set.insert(header::CONTENT_TYPE, text(&preview.media_type));
+    set.insert(header::CONTENT_TYPE, text(&media));
     set.insert(header::ETAG, tag);
     set.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     set.insert(v1::PREVIEW_STEP, text(&preview.step));
