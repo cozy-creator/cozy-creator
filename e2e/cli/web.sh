@@ -369,7 +369,7 @@ answers "the page's own request" 200 - "${page[@]}" -H "Origin: $base" "$base/v1
 answers "another site's request" 403 not_own_page -H 'Sec-Fetch-Site: cross-site' -H 'Sec-Fetch-Mode: no-cors' "$base/v1/status"
 answers "another site's request, with the bearer" 403 not_own_page "${B[@]}" -H 'Sec-Fetch-Site: cross-site' -H 'Sec-Fetch-Mode: cors' "$base/v1/status"
 answers "another port's page (same-site)" 403 not_own_page -H 'Sec-Fetch-Site: same-site' -H 'Sec-Fetch-Mode: cors' "$base/v1/status"
-# A sandboxed frame with no same-origin, as a package's UI will run (xs-196): an opaque origin, `Origin: null`, cross-site.
+# A sandboxed frame with no same-origin: an opaque origin, `Origin: null`, cross-site.
 answers "an opaque origin (a sandboxed frame)" 403 origin_not_allowed -H 'Origin: null' -H 'Sec-Fetch-Site: cross-site' -H 'Sec-Fetch-Mode: cors' "$base/v1/status"
 answers "an opaque origin's <img>" 403 not_own_page -H 'Sec-Fetch-Site: cross-site' -H 'Sec-Fetch-Mode: no-cors' -H 'Sec-Fetch-Dest: image' "$base/v1/status"
 answers "an extension's fetch (none, not a navigation)" 403 not_own_page -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: cors' "$base/v1/status"
