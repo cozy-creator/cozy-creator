@@ -2,7 +2,10 @@
 name = "xs198-typed-child"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.47.0.dev0", "sympy>=1.14"]
+dependencies = ["cozy-runtime>=0.47.0.dev0"]
+
+[project.optional-dependencies]
+cozy-calls = ["xs198-typed-leaf[cozy-calls]"]
 
 [project.entry-points."cozy.application"]
 default = "typed_child:app"
@@ -13,3 +16,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["typed_child"]
+
+[tool.uv.sources]
+xs198-typed-leaf = { path = "../leaf" }

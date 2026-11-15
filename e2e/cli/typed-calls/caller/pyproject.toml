@@ -4,11 +4,12 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = ["cozy-runtime>=0.47.0.dev0"]
 
-[dependency-groups]
-cozy-calls = ["xs198-typed-child"]
+[project.optional-dependencies]
+cozy-calls = ["xs198-typed-child[cozy-calls]"]
 
 [tool.uv.sources]
 xs198-typed-child = { path = "../child" }
+xs198-typed-leaf = { path = "../leaf" }
 
 [project.entry-points."cozy.application"]
 default = "typed_caller:app"

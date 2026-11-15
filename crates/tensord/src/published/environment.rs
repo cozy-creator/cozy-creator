@@ -21,7 +21,7 @@ use std::{
 /// What one environment is built from.
 #[derive(Clone, Copy)]
 pub(crate) struct Project<'a> {
-    /// This build installs the locked managed-call dependency group.
+    /// This build installs the locked managed-call optional extra.
     pub managed_calls: bool,
     /// Its pyproject.toml's directory (and its uv.lock's, when `locked`).
     pub dir: &'a Path,
@@ -97,15 +97,15 @@ impl Publisher {
         let said = |reason: Option<String>| job.waiting(reason);
         let _turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
         let layer = self.layer(job, None)?;
-        let built = self.build_group(env, project, job, layer.as_deref())?;
+        let built = self.build_selected(env, project, job, layer.as_deref())?;
         if !project.managed_calls && has_managed_calls(project.dir) {
             let managed = Project { managed_calls: true, fetch: None, ..*project };
-            self.build_group(&env.join(MANAGED_CALLS), &managed, job, layer.as_deref())?;
+            self.build_selected(&env.join(MANAGED_CALLS), &managed, job, layer.as_deref())?;
         }
         Ok(built)
     }
 
-    fn build_group(&self, env: &Path, project: &Project, job: &Job, layer: Option<&Layer>) -> Result<Built, Failure> {
+    fn build_selected(&self, env: &Path, project: &Project, job: &Job, layer: Option<&Layer>) -> Result<Built, Failure> {
         let missed = match self.build_on(env, project, job, layer, &[]) {
             Err((TORCH_MISSED, missed)) => missed,
             built => return built,
@@ -157,7 +157,7 @@ impl Publisher {
         let sync = |locked: &Locked, over: bool| -> Result<(), Failure> {
             let mut args = vec!["sync", "--frozen", "--inexact", "--no-dev", "--no-editable", "--no-install-project",
                 "--project", &dir, "--python", &py];
-            if has_managed_calls(project.dir) { args.extend([if project.managed_calls { "--group" } else { "--no-group" }, "cozy-calls"]); }
+            if has_managed_calls(project.dir) { args.extend([if project.managed_calls { "--extra" } else { "--no-extra" }, "cozy-calls"]); }
             let held = carried.iter().map(|(name, _)| name.as_str()).chain(project.skip.iter().map(String::as_str))
                 .chain(SDK.into_iter().filter(|name| over && locked.packages.contains_key(*name)))
                 .chain(locked.torch.iter().map(String::as_str).filter(|_| layer.is_some()));
@@ -1024,7 +1024,7 @@ const MANAGED_CALLS: &str = ".cozy-calls";
 fn has_managed_calls(project: &Path) -> bool {
     fs::read_to_string(project.join("pyproject.toml")).ok()
         .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
-        .and_then(|doc| doc.get("dependency-groups")?.get("cozy-calls")?.as_array().cloned())
+        .and_then(|doc| doc.get("project")?.get("optional-dependencies")?.get("cozy-calls")?.as_array().cloned())
         .is_some_and(|group| !group.is_empty())
 }
 
