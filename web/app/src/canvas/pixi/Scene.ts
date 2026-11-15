@@ -2,7 +2,7 @@ import { CanvasTextMetrics, Color, Container, Graphics, Rectangle, Sprite, Text,
 import type { Client } from "../../api/client"
 import type { CanvasStore } from "../CanvasStore"
 import type { Box } from "../graph"
-import { bandOf, HEAD, nameZoomOf, SUB_ROW, hexOf } from "../shown"
+import { bandOf, HEAD, nameZoomOf, SUB_ROW, hexOf, shownOf } from "../shown"
 import { chipWords, withMentions } from "../text"
 import { MediaCache, MIN_TEXTURE_WIDTH, THUMB_SOURCE_WIDTH, type MediaHandle, type MediaRequest } from "./MediaCache"
 import { pictureBox, present, type EntitySlot, type Presentation, type SceneNode, type ScenePicture } from "./presentation"
@@ -825,6 +825,29 @@ export class PixiScene {
     const { camera, screen } = this.input!
     const zoom = Math.max(0.0001, camera.zoom)
     return intersects(drawn.node.box, { x: -camera.x / zoom, y: -camera.y / zoom, w: screen.width / zoom, h: screen.height / zoom })
+  }
+
+  /** Called only after the host actually renders. A requested new version cannot be acknowledged while an older texture stands in. */
+  didRender() {
+    if (this.stopped || !this.visible || !this.input || !this.options.store.active) return
+    const { camera, screen } = this.input
+    const zoom = Math.max(0.0001, camera.zoom)
+    const viewport = { x: -camera.x / zoom, y: -camera.y / zoom, w: screen.width / zoom, h: screen.height / zoom }
+    const digest = (value?: string) => value?.replace(/^sha256:/, "").toLowerCase()
+    for (const drawn of this.records.values()) {
+      const view = drawn.node.view
+      const shown = shownOf(view)
+      if (!shown || shown.number === undefined || !view.asset?.unseen?.includes(shown.number) || drawn.container.alpha <= 0 || this.options.store.get(drawn.node.name) !== view) continue
+      const world = (box: Box): Box => ({ x: drawn.container.x + box.x * drawn.container.scale.x, y: drawn.container.y + box.y * drawn.container.scale.y, w: box.w * drawn.container.scale.x, h: box.h * drawn.container.scale.y })
+      const body = pictureBox(drawn.node)
+      if (!intersects(world({ x: body.x - drawn.node.box.x, y: body.y - drawn.node.box.y, w: body.w, h: body.h }), viewport)) continue
+      const main = drawn.pictures.get("main")
+      const sameFile = digest(main?.displayed) === digest(shown.sha256)
+        || Boolean(view.preview && main?.displayed === view.preview.url && digest(view.preview.sha256) === digest(shown.sha256))
+      const media = main?.sprite.visible && main.current?.texture && sameFile
+      const text = shown.field === "text" && [...drawn.texts].some(([key, label]) => key.startsWith("words") && label.text.trim() && intersects(world({ x: label.x, y: label.y, w: label.width, h: label.height }), viewport))
+      if (media || text) this.options.store.markSeen(drawn.node.name, shown.number)
+    }
   }
 
   hitTest(point: { x: number; y: number }): SceneHit | null {
