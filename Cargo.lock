@@ -729,6 +729,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "cozy"
 version = "0.26.0-dev"
 dependencies = [
+ "api",
  "calcifer",
  "cli",
  "mimalloc",

@@ -50,9 +50,10 @@ class Bridge {
   private privacyEpoch = new Map<string, number>()
   /** The boxes the stream has said are gone from each project, until it says they're back: no read asks for one, which could only 404. */
   private gone = new Map<string, Set<string>>()
-  /** The boxes this page has taken off itself (a delete, an Undo of a paste, a Redo of a delete), until the stream says they're gone or the
-   *  page says they're back. The stream saying one changed doesn't: it may say so of before the page took it off, and a read of it 404s. */
-  private taken = new Map<string, Set<string>>()
+  /** The boxes this page has taken off itself (a delete, an Undo of a paste, a Redo of a delete), until the stream says they're gone, the
+   *  page says they're back, or the stream says one changed after Calcifer answered its taking off: another writer's add, which always shows.
+   *  Before that answer, a change it says may be of before the page took it off, and a read of it 404s. By name: whether it's answered. */
+  private taken = new Map<string, Map<string, boolean>>()
 
   allowProject(id: string) { this.privateBlocked.delete(id); this.client.allowProject(id) }
 
@@ -91,16 +92,18 @@ class Bridge {
     // What's said last of a box is what's read: changed, then gone, it's gone, and no read asks for it; gone, then back, it's read.
     let gone = this.gone.get(id)
     if (!gone) this.gone.set(id, (gone = new Set()))
+    const taken = this.taken.get(id)
     for (const name of change.assets ?? []) {
       slot.names.add(name)
       slot.gone.delete(name)
       gone.delete(name)
+      if (taken?.get(name)) taken.delete(name)
     }
     for (const name of change.gone ?? []) {
       slot.gone.add(name)
       slot.names.delete(name)
       gone.add(name)
-      this.taken.get(id)?.delete(name)
+      taken?.delete(name)
     }
     slot.head ||= Boolean(change.head)
     if (!change.assets) {
@@ -125,13 +128,19 @@ class Bridge {
    *  could only 404. */
   forget(id: string, names: string[]) {
     let taken = this.taken.get(id)
-    if (!taken) this.taken.set(id, (taken = new Set()))
+    if (!taken) this.taken.set(id, (taken = new Map()))
     const slot = this.owed.get(id)
     for (const name of names) {
-      taken.add(name)
+      taken.set(name, false)
       slot?.names.delete(name)
       slot?.reading.get(name)?.abort()
     }
+  }
+
+  /** Calcifer answered the taking off of these: from now a change the stream says of one is another writer's, and it's read. */
+  forgotten(id: string, names: string[]) {
+    const taken = this.taken.get(id)
+    for (const name of names) if (taken?.has(name)) taken.set(name, true)
   }
 
   private go(id: string, held: Owed) {

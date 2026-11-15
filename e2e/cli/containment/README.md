@@ -64,6 +64,10 @@ it must not substitute a second browser and call that an OwnedBrowser pass.
    browser lease is an additional volatile allowance. After retirement it must be absent.
    After locking A, its former mounted view is not an exclusion. B's still-unlocked view is
    excluded only by its exact provider root and is scanned after B locks.
+   Paul's invariant (cl-984): once a project is locked, nothing of it stays outside its folder
+   except that folder's path. Its id and name (a unique folder name) are searched for everywhere
+   outside the folder, with the path itself cut out first. Its prompt, input digest, outputs, runs
+   and logs are searched for everywhere, its own encrypted folder included.
 7. Save one deliberate export through the browser's actual download prompt to a selected
    external destination. Record its hash separately; never exempt it from the automatic-copy
    scan without naming that deliberate export. Bookmarks inside the owned volatile profile
