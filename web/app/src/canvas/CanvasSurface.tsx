@@ -87,6 +87,7 @@ export function CanvasSurface(props: Props) {
     if (!element) return
     let graphicsLost = false
     let stopped = false, frame = 0, settle = 0, renderer: WebGLRenderer | null = null, stage: Container | null = null, viewport: PixiViewport | null = null
+    let revision = 0, painted = -1, animating = false
     let scene: ReturnType<typeof createPixiScene> | null = null
     let unbind = () => {}, resize: ResizeObserver | null = null
     const stops: (() => void)[] = []
@@ -151,6 +152,8 @@ export function CanvasSurface(props: Props) {
       const camera = controller.getViewport()
       const moved = was.x !== camera.x || was.y !== camera.y || was.zoom !== camera.zoom
       if (moved) settle = 2
+      const version = revision, refresh = version !== painted
+      if (refresh) {
       const names: SceneNode[] = []
       const offering = element.closest(".stage")?.hasAttribute("data-offering") ?? false
       sceneWork = false
@@ -184,16 +187,23 @@ export function CanvasSurface(props: Props) {
       if (nativeName.current) hiddenNames.add(nativeName.current)
       if (store.focusedName.get() && !store.focusEntering.get()) hiddenNames.add(store.focusedName.get()!)
       scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenNames })
-      const animating = scene.advance(now)
-      renderer.render({ container: stage })
-      if (renderer.context.isLost) return
-      scene.didRender()
-      renderFrames++
-      if (!controller.hasDrawn && ((store.hasRead && store.empty) || scene.resourceStats().visibleCards > 0)) controller.markDrawn()
-      positionOverlay()
-      if (animating || moved || settle-- > 0) invalidate()
+      }
+      const wasAnimating = animating
+      if (refresh || animating) animating = scene.advance(now)
+      if (refresh || animating || wasAnimating) {
+        renderer.render({ container: stage })
+        if (renderer.context.isLost) return
+        scene.didRender()
+        renderFrames++
+        painted = version
+        if (!controller.hasDrawn && ((store.hasRead && store.empty) || scene.resourceStats().visibleCards > 0)) controller.markDrawn()
+        positionOverlay()
+      }
+      // Viewport needs a settling tick to emit moved-end; an unchanged tick does not need another full scene paint.
+      if (animating || moved || settle-- > 0 || revision !== painted) schedule()
     }
-    const invalidate = () => { if (!stopped && !frame && visible()) frame = requestAnimationFrame(draw) }
+    const schedule = () => { if (!stopped && !frame && visible()) frame = requestAnimationFrame(draw) }
+    const invalidate = () => { revision++; schedule() }
     update.current = invalidate
     store.canvasAt = (x, y) => {
       if (!visible()) return null
