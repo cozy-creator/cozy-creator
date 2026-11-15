@@ -639,11 +639,14 @@ async function died(error) {
   await completedPlayer.waitFor({ state: 'visible' });
   // Hold the one-second fixture on a decoded frame while its view controls are checked.
   await completedPlayer.evaluate((element) => { element.loop = true; });
-  await until('the imported completed video can actually play', () => completedPlayer.evaluate((element) => {
-    const loaded = element.readyState >= 2 && element.videoWidth > 0;
-    if (loaded) element.pause();
-    return loaded;
-  }), Boolean);
+  const playbackStart = await completedPlayer.evaluate(element => ({ time: element.currentTime, frames: element.getVideoPlaybackQuality?.().totalVideoFrames ?? null }));
+  const playback = await until('the imported completed video advances decoded frames', () => completedPlayer.evaluate(element => ({
+    loaded: element.readyState >= 2 && element.videoWidth > 0, paused: element.paused, time: element.currentTime,
+    frames: element.getVideoPlaybackQuality?.().totalVideoFrames ?? null,
+  })), value => value.loaded && !value.paused && (Math.abs(value.time - playbackStart.time) > 0.05 || (value.frames !== null && playbackStart.frames !== null && value.frames > playbackStart.frames + 1)));
+  check('completed_video_advances_playback', true, { before: playbackStart, after: playback });
+  seen.completed_video_playback = { before: playbackStart, after: playback };
+  await completedPlayer.evaluate(element => element.pause());
   const completedGeometry = await videoFocus.locator('.focus-viewer').boundingBox();
   check('completed_video_has_a_prominent_view_only_face', completedGeometry.width > videoRoom.width * 0.5 && completedGeometry.height > 120 && !await summaryPrompt.isVisible() && !await beatPrompt.isVisible() && await videoFocus.locator('.mention-text:visible').count() === 0, { completedGeometry, videoRoom });
   // An imported take has no run to say its seams, so no segment is offered to redo (cl-951): web-scrub's rendered take is.

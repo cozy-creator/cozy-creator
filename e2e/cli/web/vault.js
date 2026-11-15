@@ -4,7 +4,7 @@ const { execFileSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { dirname, join } = require('path');
-const { projectFolder, calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt, hoverBox } = require('./page');
+const { projectFolder, calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt, hoverBox, canvasBox, screenshotPixels } = require('./page');
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
 const createdFolders = [];
@@ -267,12 +267,49 @@ const newPage = async () => {
   check('one_time_secret_dismissed', await page.locator('[aria-label="Save recovery secret"]').count() === 0);
   stage = 'encrypted canvas after conversion';
   const readyCanvas = async () => {
-    await page.getByText('private_vault_picture', { exact: true }).first().waitFor();
+    await until('private picture has rendered geometry', async () => (await canvasBox(page, 'private_vault_picture'))?.rendered, Boolean, 45000);
     await settled(page);
+  };
+  const rememberPrivateCanvas = async (tab, label) => {
+    if (!new URL(tab.url()).pathname.startsWith(new URL(href).pathname)) throw new Error('private probe is on another project');
+    await tab.bringToFront();
+    await fitCanvas(tab);
+    await tab.mouse.move(4,4);
+    await until('private native overlay released', () => tab.locator('.canvas-node').count(), count => count === 0, 45000);
+    const pixels = await until('known private GPU picture pixels', async () => {
+      const card=await canvasBox(tab,'private_vault_picture');
+      if (!card?.rendered?.media.ready) return null;
+      const body=card.body,dpr=await tab.evaluate(()=>devicePixelRatio),read=screenshotPixels(await tab.screenshot());
+      const points=[0.2,0.4,0.6,0.8].flatMap(y=>[0.2,0.4,0.6,0.8].map(x=>({x:body.x+body.width*x,y:body.y+body.height*y,expected:[23,Math.floor(x*255),Math.floor(y*255)]})));
+      if(points.some(point=>point.x<0 || point.y<0 || point.x*dpr>=read.width || point.y*dpr>=read.height))return null;
+      const actual=points.map(point=>read(point.x*dpr,point.y*dpr));
+      return {points,actual,matches:actual.every((rgb,i)=>rgb.every((value,c)=>Math.abs(value-points[i].expected[c])<=20))};
+    }, value=>value?.matches,45000);
+    const before=await tab.evaluate(points=>{
+      const owner=document.querySelector('.canvas-root'),inspection=owner.canvasInspection;
+      if(!inspection.names().includes('private_vault_picture'))throw new Error('private scene not present');
+      window.__privateResourceProbe={owner,inspection,points,surface:owner.querySelector('canvas.canvas-pixels'),videos:[]};
+      return inspection.resources();
+    },pixels.points);
+    if(!before || before.textures<1 || before.textureBytes<=0)throw new Error('private resource baseline is empty');
+    (seen.private_gpu_baselines??=[]).push({label,pixels:pixels.actual,resources:before});
+  };
+  const concealedPrivateCanvas = async (tab,label,retired=false) => {
+    await tab.bringToFront();
+    const sample=await until('private canvas boundary reached',()=>tab.evaluate(()=>{
+      const probe=window.__privateResourceProbe;if(!probe)throw new Error('missing private resource baseline');
+      return {connected:probe.owner.isConnected,surfaceConnected:Boolean(probe.surface?.isConnected),sameInspection:probe.owner.canvasInspection===probe.inspection,resources:probe.inspection.resources(),points:probe.points,videos:probe.videos.map(video=>({paused:video.paused,sourceCleared:!video.getAttribute('src'),readyState:video.readyState}))};
+    }),value=>!retired || (!value.surfaceConnected && !value.sameInspection && value.videos.every(video=>video.paused && video.sourceCleared && video.readyState===0) && value.resources && ['textures','textureBytes','decodedBytes','sourceBlobBytes','pinnedBytes','unusedBytes','loading','queued','labels','estimatedLabelBytes','totalCards','visibleCards','loadedCards','latentBytes','activeLatents','activeDecoders'].every(key=>value.resources[key]===0)),45000);
+    const dpr=await tab.evaluate(()=>devicePixelRatio),read=screenshotPixels(await tab.screenshot());
+    const actual=sample.points.map(point=>read(point.x*dpr,point.y*dpr));
+    const matches=actual.filter((rgb,i)=>rgb.every((value,c)=>Math.abs(value-sample.points[i].expected[c])<=20)).length;
+    check(`${label}_conceals_actual_private_pixels`,matches===0);
+    if(retired)check(`${label}_retires_that_projects_renderer`,!sample.surfaceConnected && !sample.sameInspection);
+    (seen.private_gpu_boundaries??=[]).push({label,retired,matching_private_samples:matches,pixels:actual,connected:sample.connected,surfaceConnected:sample.surfaceConnected,sameInspection:sample.sameInspection,videos:sample.videos,resources:sample.resources});
   };
   await goto(page, href);
   await readyCanvas();
-  check('unlocked_canvas', await page.getByText('private_vault_picture', { exact: true }).count() > 0);
+  check('unlocked_canvas', Boolean((await canvasBox(page, 'private_vault_picture'))?.rendered));
   stage = 'initial private upload';
   const privateBytes = Buffer.concat([png(24), require('crypto').randomBytes(32)]);
   const imported = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v1/projects/${id}/imports` && response.ok());
@@ -282,7 +319,8 @@ const newPage = async () => {
   await page.locator('.nm-field').waitFor();
   await page.keyboard.press('Enter');
   await imported;
-  await until('encrypted upload landed', () => page.locator('body').innerText(), (text) => text.includes('private_after_encryption'), 45000);
+  await page.mouse.move(4,4);
+  await until('encrypted upload landed', () => canvasBox(page, 'private_after_encryption'), box => Boolean(box?.rendered?.media.ready), 45000);
   check('private_upload_uses_project_route', fileWrites.length > 0 && fileWrites.every((write) => write.path.startsWith('/v1/project-files/') && write.project === id));
   const stored = await page.evaluate(() => JSON.stringify(Object.fromEntries(Object.keys(localStorage).map((key) => [key, localStorage.getItem(key)]))));
   check('no_private_browser_persistence', !stored.includes(recovery) && !stored.includes('synthetic browser passphrase') && !stored.includes('private_vault_picture') && !stored.includes('private_after_encryption'));
@@ -292,6 +330,21 @@ const newPage = async () => {
   const [saved] = await Promise.all([page.waitForEvent('download'), page.locator('.asset-menu').getByRole('menuitem', { name: 'Download', exact: true }).click()]);
   const savedBytes = readFileSync(await saved.path());
   check('private_download_is_its_file', saved.suggestedFilename() === 'private_after_encryption.png' && savedBytes.equals(privateBytes), { name: saved.suggestedFilename(), bytes: savedBytes.length, wanted: privateBytes.length });
+
+  // The passive GPU image has no DOM text. Check real concealment independently before testing the pending native editor below.
+  stage='private GPU cover';
+  await rememberPrivateCanvas(page,'before-offline-cover');
+  await context.setOffline(true);
+  peer=await newPage();await goto(peer,'about:blank');await peer.bringToFront();
+  await until('private image tab hidden',()=>page.evaluate(()=>document.visibilityState),state=>state==='hidden',10000);
+  await page.locator('.gate').waitFor();
+  await concealedPrivateCanvas(page,'offline_gpu_cover');
+  check('gpu_cover_keeps_project_unlocked',JSON.parse(vault(folder,'status')).state==='unlocked');
+  await context.setOffline(false);
+  await page.locator('.gate').waitFor({state:'detached'});
+  await readyCanvas();
+  await rememberPrivateCanvas(page,'after-offline-cover');
+  await peer.close();peer=null;
 
   // Real browser network loss must cover private content without destroying its
   // in-memory pending edit. Hiding and showing the same tab adds no lock authority.
@@ -394,7 +447,8 @@ const newPage = async () => {
   // looping, while an idle-only deadline still locks the project.
   stage = 'autoplay preview on the exposed canvas';
   await fitCanvas(page);
-  const preview = page.locator('.card[data-asset="private_loop_movie"] .media').first();
+  await rememberPrivateCanvas(page,'before-preview-idle-lock');
+  const preview = (await hoverBox(page, 'private_loop_movie')).locator('.media').first();
   await preview.waitFor();
   await until('private preview exposed', async () => {
     const rect = await preview.boundingBox();
@@ -403,9 +457,11 @@ const newPage = async () => {
   }, Boolean, 45000);
   await pointAt(page, preview);
   await until('automatic private preview playing', () => page.evaluate(() => [...document.querySelectorAll('video')].some((el) => el.loop && !el.paused && el.currentTime > 0.05)), Boolean, 45000);
+  await page.evaluate(()=>{const probe=window.__privateResourceProbe;probe.videos=[...probe.owner.querySelectorAll('video')];if(!probe.videos.some(video=>!video.paused))throw new Error('no owned active private decoder');});
   execFileSync(process.env.COZY, ['--json', 'vault', 'unlock', '--recovery-file', '-', '--idle', '2', '--max-duration', '0'], { cwd: folder, input: `${recovery}\n`, encoding: 'utf8', timeout: 180000 });
   await page.locator('[data-vault-state="locked"]').waitFor();
   check('autoplay_preview_does_not_extend_idle_unlock', await page.locator('.canvas-root').count() === 0);
+  await concealedPrivateCanvas(page,'preview_idle_lock',true);
   await page.getByLabel('Unlock with').selectOption('recovery');
   await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
   await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
@@ -413,14 +469,17 @@ const newPage = async () => {
 
   // A second actual tab shares the real SSE connection. Locking from the CLI must
   // conceal both pages without relying on the active tab's one-second status poll.
+  await rememberPrivateCanvas(page,'before-external-lock-main');
   peer = await newPage();
   peer.on('pageerror', (error) => errors.push(error.message));
   await signIn(peer, href);
   await peer.locator('.canvas-root').waitFor();
+  await rememberPrivateCanvas(peer,'before-external-lock-peer');
   requestLock(folder);
   for (const tab of [page, peer]) {
     await until('external lock concealed a tab', () => tab.locator('body').innerText(), (text) => !text.includes('private_vault_picture') && !text.includes('private_after_encryption'), 20000);
     check(`external_lock_tab_${tab === page ? 'first' : 'second'}`, await tab.locator('.canvas-root').count() === 0);
+    await concealedPrivateCanvas(tab,`external_lock_${tab===page?'main':'peer'}`,true);
   }
   await drainedLock(folder);
   // A fresh document has no remembered address. The compact link must still
@@ -437,6 +496,7 @@ const newPage = async () => {
   // Chromium's actual page lifecycle suspends JavaScript while the CLI locks the
   // project. Resuming the hidden tab must verify protection before showing its canvas.
   if (!process.env.ENGINE || process.env.ENGINE === 'chromium') {
+    await rememberPrivateCanvas(page,'before-frozen-lock');
     const lifecycle = await context.newCDPSession(page);
     peer = await newPage();
     await goto(peer, 'about:blank');
@@ -448,6 +508,7 @@ const newPage = async () => {
     await page.bringToFront();
     await page.locator('[data-vault-state="locked"]').waitFor();
     check('frozen_tab_resume_keeps_locked_data_hidden', await page.locator('.canvas-root').count() === 0 && !(await page.locator('body').innerText()).includes('private_vault_picture'));
+    await concealedPrivateCanvas(page,'frozen_lock',true);
     await drainedLock(folder);
     await lifecycle.detach();
     await peer.close(); peer = null;
@@ -459,6 +520,7 @@ const newPage = async () => {
 
   // Leaving A stops its selected-project status observer. Keep the same document
   // and query cache, lock A while B is shown, then watch every DOM mutation on return.
+  await rememberPrivateCanvas(page,'before-private-project-navigation');
   await page.evaluate(() => { window.__vaultDocument = 'same-document'; });
   await navigate(other);
   await until('ordinary project canvas visible', () => page.evaluate(() => Boolean(document.querySelector('.canvas-root')) && !document.body.innerText.includes('private_vault_picture')), Boolean, 45000);
@@ -477,6 +539,7 @@ const newPage = async () => {
   await until('private project covered', () => page.evaluate(() => Boolean(document.querySelector('.gate')) && !document.querySelector('.canvas-root')), Boolean, 45000);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   check('offline_reselection_hides_cached_private_data', await page.evaluate(() => window.__privatePaints.length === 0));
+  await concealedPrivateCanvas(page,'offline_reselection',true);
   await context.setOffline(false);
   await page.locator('[data-vault-state="locked"]').waitFor();
   check('project_reselection_verifies_before_paint', await page.evaluate(() => window.__vaultDocument === 'same-document' && window.__privatePaints.length === 0));

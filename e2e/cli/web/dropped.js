@@ -8,6 +8,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if
 // anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
+const { createHash } = require('node:crypto');
 const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, drop, lastLook, launch, lookAt, noStall, photo, png, settled, until, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const failures = [];
@@ -37,8 +38,8 @@ function turned(turn) {
 // Each picture and the shape it's drawn at.
 const PICTURES = [
   ...[[320, 200], [200, 320], [640, 480], [300, 300], [900, 300], [300, 750], [800, 450], [256, 512], [1024, 576], [480, 640], [500, 200], [210, 297], [333, 222, true], [128, 128, true], [1200, 900]]
-    .map(([w, h, alpha], i) => ({ name: `p${String(i + 1).padStart(2, '0')}`, type: 'image/png', ext: 'png', bytes: png(20 + i * 12, w, h, Boolean(alpha)), aspect: w / h })),
-  ...[1, 3, 6, 8, 5].map((turn, i) => ({ name: `p${16 + i}`, type: 'image/jpeg', ext: 'jpg', bytes: turned(turn), aspect: turn >= 5 ? 64 / 96 : 96 / 64, turn })),
+    .map(([w, h, alpha], i) => ({ name: `p${String(i + 1).padStart(2, '0')}`, type: 'image/png', ext: 'png', bytes: png(20 + i * 12, w, h, Boolean(alpha)), width: w, height: h, aspect: w / h })),
+  ...[1, 3, 6, 8, 5].map((turn, i) => ({ name: `p${16 + i}`, type: 'image/jpeg', ext: 'jpg', bytes: turned(turn), width: turn >= 5 ? 64 : 96, height: turn >= 5 ? 96 : 64, aspect: turn >= 5 ? 64 / 96 : 96 / 64, turn })),
 ];
 
 (async () => {
@@ -51,8 +52,16 @@ const PICTURES = [
   const errors = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
-  const thumbs = [];
-  page.on('request', (request) => { if (new URL(request.url()).pathname.includes('/thumbs/')) thumbs.push(request.url()); });
+  const sources=PICTURES.map(picture=>({name:picture.name,sha256:createHash('sha256').update(picture.bytes).digest('hex'),width:picture.width,height:picture.height,decodedBytes:picture.width*picture.height*4}));
+  const thumbs=[],sourceReads=[];
+  page.on('request',request=>{
+    if(request.method()!=='GET')return;
+    const url=new URL(request.url());
+    if(url.pathname.includes('/thumbs/'))thumbs.push(url.pathname);
+    const target=decodeURIComponent(url.pathname)+' '+(url.searchParams.get('path') ?? '');
+    const source=sources.find(source=>target.includes(source.sha256) || target.includes(source.sha256.slice(0,12)));
+    if(source)sourceReads.push({name:source.name,kind:url.pathname.includes('/thumbs/')?'thumbnail':'file'});
+  });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
 
   await signIn(page);
@@ -87,7 +96,7 @@ const PICTURES = [
 
   // Display-object diagnostics catch transient placement/resource changes; independent screenshots below establish actual pixels.
   await page.evaluate(() => {
-    const boxes = (window.dropWatch = { first: {}, changes: [], bad: [], loads: [], frames: 0, stop: false });
+    const boxes = (window.dropWatch = { first: {}, changes: [], bad: [], loads: [], ready: {}, frames: 0, stop: false });
     const tick = () => {
       if (boxes.stop) return;
       boxes.frames++;
@@ -100,11 +109,13 @@ const PICTURES = [
           mw: render.body.width / zoom, mh: render.body.height / zoom, srcs: render.media.local ? 'local' : render.media.resolution,
           drawn: render.media.ready, head: render.labels.title?.text, visible: true };
         const first = boxes.first[name];
-        if (!first) { boxes.first[name] = { ...now, at: Math.round(performance.now()) }; if (now.drawn) boxes.loads.push({ id: name, src: now.srcs }); }
+        if (now.drawn && !boxes.ready[name]) boxes.loads.push({ id:name,src:now.srcs,at:Math.round(performance.now()) });
+        boxes.ready[name]=now.drawn;
+        if (!first) { boxes.first[name] = { ...now, at: Math.round(performance.now()) }; }
         else if (['pos', 'srcs', 'head'].some(key => first[key] !== now[key]) || ['w','h','mw','mh'].some(key => Math.abs(first[key] - now[key]) > 0.5)) {
           if (boxes.changes.length < 60) boxes.changes.push({ id: name, first, now });
         }
-        const wrong = [render.progress && 'progress', ['queued', 'running'].includes(render.state) && 'state dot'].filter(Boolean);
+        const wrong = [render.progress && 'progress', ['queued', 'running'].includes(render.state) && 'state dot', render.landing?.active && 'landing animation'].filter(Boolean);
         if (wrong.length && boxes.bad.length < 60) boxes.bad.push({ id: name, wrong });
       }
       requestAnimationFrame(tick);
@@ -132,6 +143,8 @@ const PICTURES = [
     return color.every((channel, c) => Math.abs(channel - expected[c]) <= 20);
   }));
 
+  const resources=()=>page.evaluate(()=>document.querySelector('.canvas-root')?.canvasInspection?.resources());
+  const beforeDecode=await until('empty scene decode counter',resources,stats=>Number.isFinite(stats?.decodedTotalBytes));
   const files = PICTURES.map(({ name, type, ext, bytes }) => ({ name: `${name}.${ext}`, type, bytes }));
   const dropped = Date.now();
   await drop(page, files, 700, 160);
@@ -166,7 +179,7 @@ const PICTURES = [
   check('each_box_first_drawn_with_its_picture', ids.every((id) => watched.first[id].drawn), ids.filter((id) => !watched.first[id].drawn).map((id) => watched.first[id]));
   check('each_box_first_drawn_with_its_own_file', ids.every((id) => watched.first[id].srcs === 'local'), ids.map((id) => watched.first[id].srcs));
   check('nothing_moves_resizes_or_swaps_after_it_is_drawn', watched.changes.length === 0, watched.changes.slice(0, 6));
-  check('no_progress_dot_landing_or_glide', watched.bad.length === 0, watched.bad.slice(0, 6));
+  check('no_progress_dot_landing_or_glide', watched.bad.length === 0 && !watched.changes.some(change=>change.first.pos!==change.now.pos), watched.bad.slice(0, 6));
   const xy = (pos) => JSON.parse(pos ?? '[]');
   const kept = Object.keys(placed).length === PICTURES.length && Object.entries(placed).every(([id, box]) => {
     const [a, b] = [xy(box.pos), xy(later[id]?.pos)];
@@ -174,7 +187,16 @@ const PICTURES = [
   });
   check('placed_and_ten_seconds_later_the_same', kept, { placed, later });
   const loads = Object.groupBy(watched.loads, (load) => load.id);
-  check('each_picture_loaded_once', ids.every((id) => (loads[id] ?? []).length <= 1 && (loads[id] ?? []).every((load) => load.src === watched.first[id].srcs)), loads);
+  const afterDecode=await until('scene decodes settled',resources,stats=>stats?.loading===0 && stats?.queued===0 && stats?.loadedCards===PICTURES.length);
+  const distinct=new Map(sources.map(source=>[source.sha256,source]));
+  const expectedDecodedBytes=[...distinct.values()].reduce((sum,source)=>sum+source.decodedBytes,0);
+  const decodedBytes=afterDecode.decodedTotalBytes-beforeDecode.decodedTotalBytes;
+  seen.source_decode_evidence={sources:[...distinct.values()],expectedDecodedBytes,decodedBytes,before:beforeDecode,after:afterDecode,readyTransitions:loads,sourceReads};
+  // Aggregate decoded-byte work is independent of first-card observations. Alongside one ready transition per distinct source,
+  // stable local identity and zero file/thumbnail GETs, it detects repeated raw decodes in this fixed all-visible workload.
+  // It does not claim to count driver uploads or the browser's separate import-decoding step.
+  check('each_picture_loaded_once',distinct.size===PICTURES.length && decodedBytes===expectedDecodedBytes && afterDecode.failed===0 && ids.every(id=>(loads[id]??[]).length===1 && loads[id][0].src===watched.first[id].srcs),seen.source_decode_evidence);
+  check('fresh_sources_are_not_fetched_again',sourceReads.length===0 && afterDecode.fetchedBytes===beforeDecode.fetchedBytes,sourceReads);
   check('no_thumbnail_asked', thumbs.length === 0, thumbs.slice(0, 5));
   // Each at its own shape: its picture's box is as the file is drawn, a turned JPEG standing up.
   const byName = Object.fromEntries(ids.map((id) => [watched.first[id].name, watched.first[id]]));

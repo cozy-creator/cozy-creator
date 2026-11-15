@@ -6,7 +6,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, until } = require('./page');
+const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, until, canvasBox, hoverBox } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -62,7 +62,7 @@ const OWN = '.media, .tl, .focus-heading, .run-face, .here-side, .here-under, .i
   if (!qwen) throw new Error(`the Hub lists no Qwen Image tool: ${JSON.stringify(searched.map((tool) => tool.id))}`);
   const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: qwen.id, kind: 'image', name: 'words', exact: true, fields: { instructions: 'a lighthouse at dusk, waves breaking white on black rocks, gulls over the lamp' }, at: { x: 100, y: 100 } }) });
   if (made.status >= 300) throw new Error(`the box: ${JSON.stringify(made)}`);
-  await boxOf(page, 'words').waitFor();
+  await until('words has canvas geometry', () => canvasBox(page, 'words'), Boolean);
   await fitCanvas(page);
 
   /** A press at `from`, carried to `to` and let go there. */
@@ -122,7 +122,7 @@ const OWN = '.media, .tl, .focus-heading, .run-face, .here-side, .here-under, .i
   const menu = page.locator('.asset-menu[role=menu]');
   await surface('box_menu', {
     open: async () => {
-      const box = await boxOf(page, 'words').locator('.card').boundingBox();
+      const box = await (await hoverBox(page, 'words')).locator('.card').boundingBox();
       await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: 'right' });
     },
     shown: menu,
