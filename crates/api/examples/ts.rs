@@ -50,6 +50,8 @@ fn main() {
     v.visit::<calcifer::Event>();
     v.visit::<calcifer::RunList>();
     v.visit::<calcifer::File>();
+    v.visit::<calcifer::HeldRequest>();
+    v.visit::<calcifer::HeldAnswer>();
     v.visit::<calcifer::RunRequest>();
     v.visit::<calcifer::Submitted>();
     v.visit::<calcifer::Target>();

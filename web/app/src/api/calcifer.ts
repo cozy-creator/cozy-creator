@@ -877,6 +877,12 @@ run: string, at_unix_ms: number,
 replayed: boolean, };
 
 /**
+ * What the machine holds of each object asked, in the order asked; a stored object is held
+ * whole, and asking renews it, as a `HEAD` does.
+ */
+export type HeldAnswer = { held: Array<HeldObject>, };
+
+/**
  * `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.
  */
 export type HeldFile = { digest: Digest, length: number, media_type: string, };
@@ -903,6 +909,15 @@ complete?: boolean | null, bytes: number,
 shared_bytes: number, };
 
 /**
+ * One object asked: the byte ranges of `digest` the machine holds.
+ */
+export type HeldObject = { digest: string,
+/**
+ * Byte ranges `[start, end)`; none: nothing held.
+ */
+ranges: Array<[number, number]>, };
+
+/**
  * One package a machine holds.
  */
 export type HeldPackage = { machine: string, package: string, release: string,
@@ -919,6 +934,12 @@ source: string,
  * and why); empty for nothing.
  */
 warning: string, };
+
+/**
+ * `POST /v1/objects/held`: which of these objects (`sha256:<hex>`) the machine holds for this
+ * signer. Calcifer's `POST /v1/files/held` and `/v1/project-files/held` take it too.
+ */
+export type HeldRequest = { digests: Array<string>, };
 
 /**
  * `GET /v1/projects/{id}/history`: newest first, and the entries undo and redo would take now.
