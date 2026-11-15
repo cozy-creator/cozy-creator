@@ -235,27 +235,48 @@ async function candidate(context, origin) {
     const at = performance.now(), { processInfo } = await cdp.send('SystemInfo.getProcessInfo');
     return { at, host_load: loadavg(), processes: processInfo.map(process => { let memory = null; try { const text = readFileSync(`/proc/${process.id}/smaps_rollup`, 'utf8'); memory = { pss_kib: Number(text.match(/^Pss:\s+(\d+)/m)?.[1]), rss_kib: Number(text.match(/^Rss:\s+(\d+)/m)?.[1]) }; } catch { /* Explicitly unavailable on other OSs or exited processes. */ } return { id: process.id, type: process.type, cpu_seconds: process.cpuTime, memory }; }) };
   };
+  const cpuSample = async () => { const start = performance.now(), { processInfo } = await cdp.send('SystemInfo.getProcessInfo'); return { at: performance.now(), sampling_ms: performance.now() - start, processes: processInfo.map(p => ({ id: p.id, type: p.type, cpu_seconds: p.cpuTime })) }; };
   const canvas = page.getByRole('region', { name: 'Project canvas', exact: true });
   const inspect = (method, arg) => canvas.evaluate((element, { method, arg }) => element.canvasInspection?.[method]?.(arg) ?? null, { method, arg });
   const camera = () => inspect('camera'), resources = () => inspect('resources');
-  const cameraCenter = async () => { const box = await canvas.boundingBox(); if (!box) throw new Error('canvas bounds unavailable'); await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); };
+  const cameraCenter = async project => {
+    const a = (await inspect('card', NAME(0))).bounds, b = (await inspect('card', NAME(project.columns - 1))).bounds, c = (await inspect('card', NAME(project.count - 1))).bounds;
+    await page.mouse.move((a.x + b.x + b.width) / 2, (a.y + c.y + c.height) / 2);
+  };
   const settled = async () => { let before, same = 0; return until('camera settle', camera, value => { const next = JSON.stringify(value); same = value && next === before ? same + 1 : 0; before = next; return same >= 3; }); };
   const passive = async () => { await page.mouse.move(15, 15); await until('native overlay released', () => page.locator('.canvas-node').count(), count => count === 0); };
   const fit = async () => { await page.getByRole('button', { name: /, more zoom options$/ }).click(); await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click(); await passive(); await settled(); };
-  const working = async () => { await canvas.focus(); await page.keyboard.press('ControlOrMeta+0'); await passive(); await settled(); };
-  const ready = async count => { const start = performance.now(), value = await until('visible textures loaded', resources, value => value && value.totalCards === count && value.visibleCards > 0 && value.loadedCards === value.visibleCards && value.loading === 0 && value.failed === 0, LOAD); return { milliseconds: performance.now() - start, resources: value }; };
-  const pan = async () => { await page.mouse.move(WIDTH * .6, HEIGHT * .55); for (let n = 0; n < 12; n++) { await page.mouse.wheel(n < 6 ? 28 : -28, 0); await pause(35); } await passive(); await settled(); };
+  const working = async () => { await canvas.focus(); await page.keyboard.press('ControlOrMeta+0'); await passive(); await settled(); if (Math.abs((await camera()).zoom - 1) > .001) throw new Error('working view did not reach 100%'); };
+  const ready = async count => {
+    const start = performance.now(); let reported = start;
+    const value = await until('visible textures loaded', async () => {
+      const value = await resources();
+      if (value?.failed) throw new Error(`visible media entered permanent failure: ${JSON.stringify(value)}`);
+      if (value && performance.now() - reported > 5000) { reported = performance.now(); process.stderr.write(`[pixi-scale] ${count}: loaded ${value.loadedCards}/${value.visibleCards}; loading ${value.loading}, queued ${value.queued}\n`); }
+      return value;
+    }, value => value && value.totalCards === count && value.visibleCards > 0 && value.loadedCards === value.visibleCards && value.loading === 0 && value.failed === 0, LOAD);
+    return { milliseconds: performance.now() - start, resources: value };
+  };
+  const pan = async () => {
+    const before = await camera(), positions = []; await page.mouse.move(WIDTH * .6, HEIGHT * .55);
+    for (let n = 0; n < 12; n++) { await page.mouse.wheel(n < 6 ? 28 : -28, 0); await pause(35); positions.push(await camera()); }
+    await passive(); await settled();
+    const excursion = Math.max(...positions.map(p => Math.hypot(p.x - before.x, p.y - before.y)));
+    if (excursion < 100 || new Set(positions.map(p => `${p.x},${p.y}`)).size < 4) throw new Error(`pan did not visibly move the camera: ${JSON.stringify({ before, positions })}`);
+    return { before, after: await camera(), excursion_px: excursion, positions };
+  };
   const quantile = (values, q) => { const sorted = [...values].sort((a, b) => a - b); return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? null; };
   const timed = async (result, stage, action, warm = null) => {
     const beforeResources = await resources(), before = await processes();
+    const cpuBefore = await cpuSample();
     await page.evaluate(() => { const run = window.__pixiScale = { start: performance.now(), last: null, frames: [], handle: 0 }; const step = now => { if (run.last !== null) run.frames.push(now - run.last); run.last = now; run.handle = requestAnimationFrame(step); }; run.handle = requestAnimationFrame(step); });
-    const start = performance.now(); let sample;
-    try { await action(); } finally { sample = await page.evaluate(() => { const run = window.__pixiScale; cancelAnimationFrame(run.handle); delete window.__pixiScale; return { frames: run.frames, duration_ms: performance.now() - run.start }; }); }
-    const duration_ms = performance.now() - start, after = await processes(), previous = new Map(before.processes.map(process => [process.id, process.cpu_seconds]));
-    const cpu_seconds = after.processes.reduce((sum, process) => sum + Math.max(0, process.cpu_seconds - (previous.get(process.id) ?? 0)), 0);
+    const start = performance.now(); let sample, interaction;
+    try { interaction = await action(); } finally { sample = await page.evaluate(() => { const run = window.__pixiScale; cancelAnimationFrame(run.handle); delete window.__pixiScale; return { frames: run.frames, duration_ms: performance.now() - run.start }; }); }
+    const duration_ms = performance.now() - start, cpuAfter = await cpuSample(), after = await processes(), previous = new Map(cpuBefore.processes.map(process => [process.id, process.cpu_seconds]));
+    const cpu_seconds = cpuAfter.processes.reduce((sum, process) => sum + Math.max(0, process.cpu_seconds - (previous.get(process.id) ?? 0)), 0);
     const frame = { samples: sample.frames.length, p95_ms: quantile(sample.frames, .95), p99_ms: quantile(sample.frames, .99), max_ms: Math.max(0, ...sample.frames), raw_ms: sample.frames };
     const target = warm === 'working' ? { p95_ms: 20, p99_ms: 33.4 } : warm === 'all-visible' ? { p95_ms: 33.4, p99_ms: 100 } : null;
-    const cell = { stage, cache_phase: warm ?? 'transition', target, duration_ms, frame, cpu_seconds, browser_cpu_cores: cpu_seconds / ((after.at - before.at) / 1000), process_before: before, process_after: after, resources_before: beforeResources, resources_after: await resources() };
+    const cell = { stage, cache_phase: warm ?? 'transition', target, duration_ms, frame, interaction, cpu_seconds, cpu_sample_ms: cpuAfter.at - cpuBefore.at, browser_cpu_cores: cpu_seconds / ((cpuAfter.at - cpuBefore.at) / 1000), cpu_before: cpuBefore, cpu_after: cpuAfter, process_before: before, process_after: after, resources_before: beforeResources, resources_after: await resources() };
     result.stages.push(cell); save('runs.json', seen.runs);
     check(`${result.count}/${result.repeat}/${stage}/${target ? 'warm-frame-target' : 'frame-samples'}`, frame.samples > 0 && (!target || (frame.p95_ms <= target.p95_ms && frame.p99_ms <= target.p99_ms)), { p95: frame.p95_ms, p99: frame.p99_ms, samples: frame.samples, target });
     return cell;
@@ -315,11 +336,11 @@ async function candidate(context, origin) {
       result.selection_ms = performance.now() - selectStart; check(`${project.count}/${repeat}/selection-response`, result.selection_ms <= 1000, result.selection_ms);
       await passive(); await timed(result, 'pan', pan, 'all-visible');
       await working(); result.gradual_initial_load = await ready(project.count);
-      await timed(result, 'gradualzoom', async () => { await cameraCenter(); await page.keyboard.down('Control'); try { for (let n = 0; n < 26; n++) { await page.mouse.wheel(0, 35); await pause(40); } } finally { await page.keyboard.up('Control'); } await passive(); await settled(); });
+      await timed(result, 'gradualzoom', async () => { await cameraCenter(project); await page.keyboard.down('Control'); try { for (let n = 0; n < 26; n++) { await page.mouse.wheel(0, 35); await pause(40); } } finally { await page.keyboard.up('Control'); } await passive(); await settled(); });
       result.gradual_load = await ready(project.count);
       result.gradual_camera = await camera();
       check(`${project.count}/${repeat}/gradual-all-visible`, result.gradual_load.resources.visibleCards === project.count && result.gradual_load.resources.loadedCards === project.count, result.gradual_load.resources);
-      await timed(result, 'gradualzoom-in', async () => { await cameraCenter(); await page.keyboard.down('Control'); try { for (let n = 0; n < 26; n++) { await page.mouse.wheel(0, -35); await pause(40); } } finally { await page.keyboard.up('Control'); } await passive(); await settled(); });
+      await timed(result, 'gradualzoom-in', async () => { await cameraCenter(project); await page.keyboard.down('Control'); try { for (let n = 0; n < 26; n++) { await page.mouse.wheel(0, -35); await pause(40); } } finally { await page.keyboard.up('Control'); } await passive(); await settled(); });
       result.zoomed_in_load = await ready(project.count);
       await page.mouse.wheel(80, 50); await settled();
       const home = await timed(result, 'Home', async () => { await canvas.focus(); await page.keyboard.press('f'); await passive(); await settled(); });
