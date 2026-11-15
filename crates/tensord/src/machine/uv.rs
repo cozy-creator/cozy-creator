@@ -60,8 +60,6 @@ impl Uv {
         Ok(command)
     }
 
-    pub(crate) fn executable(&self) -> &Path { &self.path }
-    pub(crate) fn in_project(&self, root: &Path) -> Self { Self { path: self.path.clone(), cache: Cache::Machine(root.join(api::machine::project_area::UV_CACHE)), pythons: root.join(api::machine::project_area::PYTHON) } }
     /// The cache the machine manages: its own or an image's.
     pub(crate) fn cache(&self) -> &Path {
         match &self.cache {

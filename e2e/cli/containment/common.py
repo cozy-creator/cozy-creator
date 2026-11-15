@@ -146,7 +146,7 @@ class RawOptions(TypedDict, total=False):
 
 # Closed fixture case codes only; never serialize a free-form exception message.
 _FAILURE_CODES = frozenset({
-    "managed_execution_failed", "managed_path_outside_project", "managed_cache_contents", "managed_core_limit",
+    "managed_execution_failed", "managed_path_outside_project", "managed_environment_in_project", "managed_cache_contents", "managed_core_limit",
     'a_lock_after_b_saved', 'a_lock_unexpected_refusal', 'actual_private_browser_flags',
     'actual_private_browser_redirects', 'b_edit_not_persisted', 'born_encrypted',
     'browser_birth_reused', 'browser_durable_storage', 'browser_edit_not_visible',

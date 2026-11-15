@@ -219,20 +219,19 @@ impl Seal {
             Ok(path)
         };
         fs::create_dir_all(root)?;
-        use api::machine::project_area as area;
-        for boundary in [area::HOME, area::KERNELS, area::JIT] {
+        for boundary in ["home", "kernels", "jit"] {
             boundary_directory(&root.join(boundary))?;
         }
-        boundary_directory(&root.join(area::JIT).join(incarnation))?;
-        let jit = owned(root.join(area::JIT).join(incarnation).join(generation))?;
+        boundary_directory(&root.join("jit").join(incarnation))?;
+        let jit = owned(root.join("jit").join(incarnation).join(generation))?;
         // On a low disk the persistent kernel store is an optional write: compiled kernels
         // then live in this run's JIT scope, removed with it.
         let (kernels, kernel_hold) = if crate::reclaim::measure(root)?.short().is_some() {
             (owned(jit.join("kernels"))?, None)
         } else {
-            let hold = crate::reclaim::kernel_hold(&root.join(area::KERNELS), &namespace)?;
+            let hold = crate::reclaim::kernel_hold(&root.join("kernels"), &namespace)?;
             hold.lock_shared()?; // waits out a sweep deleting in this namespace
-            let kernels = owned(root.join(area::KERNELS).join(&namespace))?;
+            let kernels = owned(root.join("kernels").join(&namespace))?;
             (kernels, Some(Arc::new(hold)))
         };
         owned(kernels.join(format!("torch-kernels.{generation}")))?;
@@ -240,7 +239,7 @@ impl Seal {
             devices: devices.into(),
             tensorfs_home: None,
             group: false,
-            home: owned(root.join(area::HOME).join(&namespace))?,
+            home: owned(root.join("home").join(&namespace))?,
             jit,
             kernels,
             kernel_hold,
@@ -326,7 +325,7 @@ impl Seal {
 /// JIT scopes belong to one machine run (Runtime: one worker boot); the executors of
 /// earlier runs are gone before a new one starts, so their scopes are unowned.
 pub(crate) fn remove_stale_jit(root: &Path, incarnation: &str) {
-    let Ok(entries) = fs::read_dir(root.join(api::machine::project_area::JIT)) else {
+    let Ok(entries) = fs::read_dir(root.join("jit")) else {
         return;
     };
     for entry in entries.flatten() {
@@ -358,26 +357,4 @@ fn boundary_directory(path: &Path) -> io::Result<()> {
         ));
     }
     Ok(platform::durable::set_mode(path, 0o711)?)
-}
-
-/// Trusted capability/trampoline modules start without authored .pth/sitecustomize files.
-/// Actual project executors use normal isolated environment startup for editable modules.
-pub(crate) const MODULE_BOOTSTRAP: &str = "import pathlib,runpy,sys;root=pathlib.Path(sys.executable).absolute().parent.parent;sys.path[:0]=[str(p) for p in (*(root/'lib').glob('python*/site-packages'),root/'Lib'/'site-packages') if p.is_dir()];sys.argv=sys.argv[1:];runpy.run_module(sys.argv[0],run_name='__main__')";
-
-pub(crate) fn module(python: &Path, module: &str) -> io::Result<Command> {
-    let mut command = interpreter(python)?;
-    command.args(["-I", "-S", "-c", MODULE_BOOTSTRAP, module]);
-    Ok(command)
-}
-
-#[cfg(unix)]
-pub(crate) fn private_trampoline(python: &Path, scope: Option<&platform::contain::Scope>) -> io::Result<Command> {
-    let mut command = module(python, "cozy_runtime.internal.trampoline")?;
-    command.args(["--expect-parent", &std::process::id().to_string(), "--oom-adj", "1000"]);
-    command.args(scope.map_or_else(|| vec!["--scope-backend".into(), "inherit".into()], platform::contain::Scope::trampoline_args)).arg("--").arg(python).process_group(0);
-    Ok(command)
-}
-#[cfg(windows)]
-pub(crate) fn private_trampoline(_: &Path, _: Option<&platform::contain::Scope>) -> io::Result<Command> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "protected Runtime launch requires the native Linux backend"))
 }
