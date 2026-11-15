@@ -4,7 +4,9 @@
     gate.sh's `cell` writes). Every image must clear FLOOR: noise, a flat field, a broken decode or a text encoder
     that ignores the prompt lands far under any real render. A video scores 0.17-0.23 against its long motion prompt
     (every H3 gate since 0.34.5) and noise 0.16-0.18, so no fixed floor separates them: a video is held against the
-    last passed gate's score on the same prompt and seed (seeds.tsv; products.sh fixes H3's request), MARGIN under it;
+    last passed gate's score on the same prompt and seed (seeds.tsv; products.sh fixes H3's request), MARGIN under it.
+    A mention reads as the prompt of the cell that made its picture (the run's request names each reference's file):
+    `<Scene> in bright morning sun` alone names nothing CLIP can see (a correct turbo edit scored 0.228);
   - sharpness: CLIP-IQA's "A sharp image." against "A blurry image.". Single renders vary too much to judge alone (a
     transparent object on grey reads soft), so the gate's median must hold against the last passed gates' medians.
 Never a same-seed pixel diff: a kernel swap moves the pixels (26 dB) without changing the quality.
@@ -56,6 +58,47 @@ def judge(ims: list[Image.Image], prompt: str) -> list[tuple[float, float]]:
     return [(round(float(a), 4), round(float(s), 4)) for a, s in zip(adherence, sharp)]
 
 
+def sources(out: str, names: list[str]) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Which cell made each output file (its digest), and each cell's references (mention -> file digest), from the run
+    records: a reference anywhere in a request is `{"key": <mention>, "file": "sha256:..."}`."""
+    made: dict[str, str] = {}
+    refs: dict[str, dict[str, str]] = {}
+
+    def walk(value: object, into: dict[str, str]) -> None:
+        if isinstance(value, dict):
+            for ref in value.get('references') or []:
+                if isinstance(ref, dict) and isinstance(ref.get('key'), str) and isinstance(ref.get('file'), str):
+                    into.setdefault(ref['key'], ref['file'])
+            for item in value.values():
+                walk(item, into)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, into)
+
+    for name in names:
+        try:
+            rec = json.load(open(os.path.join(out, name + '.json')))
+        except (OSError, ValueError):
+            continue
+        for o in rec.get('output') or []:
+            if isinstance(o, dict) and o.get('sha256'):
+                made.setdefault(o['sha256'], name)
+        walk(rec.get('request'), refs.setdefault(name, {}))
+    return made, refs
+
+
+def judged(name: str, prompts: dict[str, str], made: dict[str, str], refs: dict[str, dict[str, str]],
+           seen: tuple[str, ...] = ()) -> str:
+    """The prompt `name` is judged against: each `<mention>` whose picture a cell of this gate made reads as that cell's
+    own (judged) prompt; any other stays as written."""
+    text = prompts[name]
+    for key, digest in (refs.get(name) or {}).items():
+        maker = made.get(digest)
+        if maker in prompts and maker != name and maker not in seen:
+            text = text.replace(f'<{key}>', judged(maker, prompts, made, refs, (*seen, name)))
+    return text
+
+
 def rgb(path: str) -> Image.Image:
     im: Image.Image = Image.open(path)
     if im.mode in ('RGBA', 'LA'):  # transparency: judge the render on mid-grey, not on its alpha
@@ -95,6 +138,8 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
             flat = [round(float(np.asarray(im, dtype=np.float32).std()), 2) for im in ims]
             if flat and min(flat) < 2.0:
                 fails.append(f'pixels {name}: {os.path.basename(f)} is flat (std {min(flat)}): a failed or non-finite decode')
+    names = [line.split('\t')[0] for line in open(os.path.join(out, 'cells.tsv'))]
+    made, refs = sources(out, names)
     for line in open(os.path.join(out, 'cells.tsv')):
         name, _, number = line.rstrip('\n').split('\t')[:3]
         if name not in prompts or not number.isdigit() or name.split('-')[0] in SKIP:
@@ -104,7 +149,10 @@ def check(gate: GateHistory) -> tuple[list[str], list[str]]:
         ims = [rgb(f) for f in files if f.endswith(('.png', '.webp', '.jpg'))] + [fr for f in files if f.endswith('.mp4') for fr in frames(f)]
         if not ims:
             continue
-        cells[name] = judge(ims, prompts[name])
+        text = judged(name, prompts, made, refs)
+        if text != prompts[name]:
+            notes.append(f'quality {name}: judged against "{text}"')
+        cells[name] = judge(ims, text)
         worst = min(a for a, _ in cells[name])
         if not any(f.endswith('.mp4') for f in files):
             floor = FLOORS.get(name, FLOOR)
