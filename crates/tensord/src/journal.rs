@@ -748,13 +748,6 @@ impl Journal {
             CREATE UNIQUE INDEX IF NOT EXISTS executions_actor_request ON executions(actor,request_id) WHERE actor IS NOT NULL;
             CREATE UNIQUE INDEX IF NOT EXISTS executions_actor_submission ON executions(actor,submission_id) WHERE actor IS NOT NULL;
             CREATE INDEX IF NOT EXISTS executions_actor_order ON executions(actor,id) WHERE actor IS NOT NULL; COMMIT;").map_err(db_error)?;
-        // A journal an older build wrote without `secure_delete` keeps older copies of its rows in free space: rewritten
-        // once, in RAM, so a deletion from here on leaves nothing (cl-984).
-        let secure: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM machine_metadata WHERE key='secure_delete')", [], |row| row.get(0)).map_err(db_error)?;
-        if !secure {
-            connection.execute_batch("PRAGMA temp_store=MEMORY; VACUUM; INSERT OR REPLACE INTO machine_metadata(key,value) VALUES('secure_delete','1');").map_err(db_error)?;
-            let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get::<_, i64>(0));
-        }
         let existing: Option<String> = connection
             .query_row(
                 "SELECT value FROM machine_metadata WHERE key='workspace_id'",
@@ -770,6 +763,8 @@ impl Journal {
                     [crate::uuid::hyphenated()],
                 )
                 .map_err(db_error)?;
+            // Born with `secure_delete`: no older copy of any row is in its free space (`compact`).
+            connection.execute("INSERT OR IGNORE INTO machine_metadata(key,value) VALUES('secure_delete','1')", []).map_err(db_error)?;
         }
         connection
             .execute(
@@ -884,7 +879,8 @@ impl Journal {
             tx.execute(&format!("DELETE FROM {table} WHERE substr({column},1,length(?1))=?1"), [&prefix]).map_err(db_error)?;
         }
         tx.commit().map_err(db_error)?;
-        self.truncate_wal();
+        let secure: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM machine_metadata WHERE key='secure_delete')", [], |row| row.get(0)).map_err(db_error)?;
+        if secure { self.truncate_wal() } else { self.compact() }
         Ok(())
     }
 
@@ -947,12 +943,14 @@ impl Journal {
     }
 
     /// The journal rewritten whole, its WAL emptied before and after: `secure_delete` zeroes a deleted cell, but not the older
-    /// copies of its rows a build without it left in free space (0.24's), which only a rewrite overwrites. Its scratch copy
-    /// stays in RAM.
+    /// copies of its rows a build without it (0.24, 0.25) left in free space, which only a rewrite overwrites. Run after a
+    /// retirement, never at start; atomic (a crash leaves the journal as it was); its scratch copy stays in RAM. Once done,
+    /// the journal holds no such copy and a lock's retirement no longer rewrites it.
     fn compact(&self) {
         self.truncate_wal();
-        if let Err(error) = self.connection.execute_batch("PRAGMA temp_store=MEMORY; VACUUM;") {
-            tracing::warn!("the machine journal could not be rewritten after a retirement: {error}");
+        match self.connection.execute_batch("PRAGMA temp_store=MEMORY; VACUUM; INSERT OR REPLACE INTO machine_metadata(key,value) VALUES('secure_delete','1');") {
+            Ok(()) => {}
+            Err(error) => tracing::warn!("the machine journal could not be rewritten after a retirement: {error}"),
         }
         self.truncate_wal();
     }
