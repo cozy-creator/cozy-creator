@@ -11,7 +11,8 @@ const NAMES = Object.keys(PLACES);
 let baseline;
 const near = (a, b, tolerance = 28) => a.every((value, i) => Math.abs(value - b[i]) <= tolerance);
 
-/** Fractional native hover strokes are judged by device-pixel coverage against the same-camera bare screenshot.
+/** Fractional native hover strokes are judged by device-pixel coverage against adjacent pixels in this screenshot.
+ * The native card's paper shadow is part of that local background; a bare GPU screenshot does not contain it.
  * Even the 0.25 px stroke must visibly change a channel by at least 3; projection residuals remain bounded to 8 RGB levels. */
 function hoverCoverage(read, body, color, dpr, zoom = 1) {
   const noise=8,width=zoom,offset=2*zoom;
@@ -25,7 +26,7 @@ function hoverCoverage(read, body, color, dpr, zoom = 1) {
     let visible=false;
     for(let coordinate=start;coordinate<=end;coordinate++) {
       const observed=pixel(coordinate),steps=(coordinate-outside)*inward;
-      const background=baseline ? (horizontal ? baseline(coordinate,Math.round(across*dpr)) : baseline(Math.round(across*dpr),coordinate)) : near.map((value,c)=>value+(value-far[c])*steps),toward=color.map((value,c)=>value-background[c]);
+      const background=near.map((value,c)=>value+(value-far[c])*steps),toward=color.map((value,c)=>value-background[c]);
       const square=toward.reduce((sum,value)=>sum+value*value,0);
       const alpha=square?observed.reduce((sum,value,c)=>sum+(value-background[c])*toward[c],0)/square:NaN;
       const expected=Math.min(coordinate+1,high)-Math.max(coordinate,low);
