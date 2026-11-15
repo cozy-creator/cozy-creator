@@ -5,7 +5,7 @@
 // five where they were.
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box } = require('./fixtures');
+const { test, expect, box, observeStill } = require('./fixtures');
 const { carry, drawn, onCanvas, rows, rowsOf } = require('./geometry');
 
 const NODES = ['image', 'video', 'audio', 'text'];
@@ -148,10 +148,14 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     await expect(menu).toHaveCount(0);
 
     const all = Object.values(names);
+    // Looked at once nothing slides: a box the image tool's taller box pushed aside may still be on its way.
+    const still = (when) => expect.poll(() => observeStill(page, 300), { message: `the canvas at rest ${when}` }).toEqual([]);
+    await still('before the reload');
     const [held, shown] = [await rows(project), await drawn(page)];
     await page.reload();
     await expect(page.locator('.stage')).toBeVisible();
     for (const name of all) await expect(box(page, name), `${name} after the reload`).toBeVisible();
+    await still('after the reload');
     expect.soft(Object.fromEntries(all.map((name) => [name, held[name]])), 'the rows as they were').toEqual(Object.fromEntries(Object.entries(await rows(project)).filter(([name]) => all.includes(name))));
     const again = await drawn(page);
     for (const name of all) {
