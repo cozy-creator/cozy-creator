@@ -203,14 +203,26 @@ def verify(case: Case, code: int, events: list[dict], exported: Path) -> dict:
     require(len(leaves) == 1, "result does not contain exactly one file reference")
     leaf = leaves[0]
     require(
-        leaf.get("size_bytes") == length and leaf.get("digest") == f"sha256:{digest}",
-        "result file bytes differ from exported bytes",
+        leaf.get("digest") == f"sha256:{digest}",
+        "result file digest differs from exported bytes",
+    )
+    # Root results retain their opaque output handle. Deferred frames may omit
+    # size_bytes; the landed output item is authoritative for the encoded length.
+    require(
+        "size_bytes" not in leaf or leaf["size_bytes"] == length,
+        "reported result length differs from exported bytes",
     )
     require(
-        leaf.get("asset_ref") == f"sha256:{digest}"
+        isinstance(leaf.get("asset_ref"), str)
+        and bool(leaf["asset_ref"])
         and leaf.get("media_type") == media_type,
-        "result file identity/type differs from custody",
+        "result file reference/type differs from custody",
     )
+    if case.child == "succeeded":
+        require(
+            leaf["asset_ref"] == f"sha256:{digest}" and leaf.get("size_bytes") == length,
+            "forwarded child grant lost its canonical reference or encoded length",
+        )
     require(
         (item.get("width"), item.get("height")) == case.size,
         "stored output geometry differs from pixels",

@@ -70,7 +70,10 @@ Source description or an import is not process/custody evidence.
 | aliased-child | Failed `duplicate_handle` through a reused child-result container |
 
 Every success must have a completed terminal call, a landed final output, and one exported
-file whose SHA256 and byte length match both the custody receipt and result reference.
+file whose SHA256 matches the custody receipt and result digest, and whose byte length
+matches the custody receipt and any reported result length. Root result references remain
+opaque handles; deferred frames may omit their encoded length from the result document.
+Forwarded child grants must retain their canonical SHA256 reference and encoded length.
 Images are decoded with Pillow: container format, geometry, alpha mode and every pixel must
 match. The generating handler overwrites its original PIL image after constructing the
 returned value, so these checks also exercise snapshot immutability. File metadata must
