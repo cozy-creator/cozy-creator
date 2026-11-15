@@ -35,6 +35,28 @@ impl Drop for Running {
 }
 fn error(why:impl std::fmt::Display)->io::Error { io::Error::new(io::ErrorKind::PermissionDenied,format!("project tool custody unavailable: {why}")) }
 
+/// Linux (an inherited token) and Windows (a Job Object, which ends with its last handle) scope a tool's processes under the
+/// project's namespace, so a lock finds a prior Calcifer's helpers. macOS has no such scope: a tool is its process group, ended
+/// before the tool returns, and leaves no namespace.
+const SCOPED:bool=cfg!(any(target_os="linux",windows));
+
+fn tool_scope(namespace:&str)->io::Result<platform::contain::Scope> {
+    // Linux descendants take their ownership token before their very first exec.
+    #[cfg(target_os="linux")]
+    return platform::contain::Scope::inherited(namespace).map_err(error);
+    #[cfg(not(target_os="linux"))]
+    platform::contain::Scope::create(namespace).map_err(error)
+}
+
+/// `file` is the one `path` names, inside the project `root`: what a tool's stdio is backed by, read the same on every OS.
+fn held(root:&Path,path:&Path,file:&File)->io::Result<()> {
+    let at=platform::durable::canonical(path).map_err(error)?;
+    if !at.starts_with(root) || platform::durable::FileId::of(file).map_err(error)?!=platform::durable::FileId::at(&at).map_err(error)? {
+        return Err(error("a tool's stdio is not the project's own file"));
+    }
+    Ok(())
+}
+
 #[derive(serde::Serialize,serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProcessNamespace {version:u8,namespace:String,root_id:[u64;2]}
@@ -112,7 +134,8 @@ pub(crate) fn retire(root:&Path)->Result<(),api::error::Error> {
     if active(root) {return Err(Error::new(Kind::Conflict,"project_busy","owned controller tools are still retiring"));}
     let pending=||Error::new(Kind::Conflict,"project_tool_retirement_pending","the project's retained controller tool custody is not yet verified");
     let view=crate::project::vault::resolve_path(root)?;
-    let Some(namespace)=namespace(&view,false).map_err(|_|pending())? else {
+    let namespace=if SCOPED { namespace(&view,false).map_err(|_|pending())? } else { None };
+    let Some(namespace)=namespace else {
         match fs::read_dir(view.join(".vault-calcifer/processes")) {
             Ok(mut entries)=>{if entries.next().is_some() {return Err(pending());}return Ok(());},
             Err(why) if why.kind()!=io::ErrorKind::NotFound=>return Err(pending()),
@@ -140,7 +163,7 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     let Some(scope)=scope else { return command.output(); };
     let root=scope.storage.view_root;
     let admission=crate::project::vault::try_admit_root(&crate::project::vault::logical(&root)).map_err(error)?;
-    let cwd=fs::canonicalize(command.get_current_dir().ok_or_else(||error("a project tool needs an owned working directory"))?)?;
+    let cwd=platform::durable::canonical(command.get_current_dir().ok_or_else(||error("a project tool needs an owned working directory"))?).map_err(error)?;
     if !cwd.starts_with(&root) { return Err(error("the tool working directory is outside the project")); }
     // This guard covers processes, captured output, and every policy/native handle.
     // A failed cleanup retains the guard below so storage cannot report closed.
@@ -150,15 +173,13 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     for dir in ["processes","tmp","uv-cache","uv-tools","python","cache","data","config","state","bytecode"] {
         platform::durable::private_dir(&scratch.join(dir)).map_err(error)?;
     }
-    let namespace=namespace(&root,true)?.ok_or_else(||error("the process namespace is unavailable"))?;
     let temporary=tempfile::Builder::new().prefix("tool-").tempdir_in(scratch.join("processes"))?;
     let input_path=temporary.path().join("stdin"); fs::write(&input_path,[])?;
-    let stdin=File::open(input_path)?;
+    let stdin=File::open(&input_path)?;
     let stdout=tempfile::NamedTempFile::new_in(temporary.path())?;
     let stderr=tempfile::NamedTempFile::new_in(temporary.path())?;
-    let project_handle=File::open(&root)?;
-    for file in [&stdin,stdout.as_file(),stderr.as_file()] {
-        platform::private_exec::validate_project_descriptor(&project_handle,file).map_err(error)?;
+    for (file,path) in [(&stdin,input_path.as_path()),(stdout.as_file(),stdout.path()),(stderr.as_file(),stderr.path())] {
+        held(&root,path,file)?;
     }
     let program=executable(command)?;
     let mut owned=Command::new(&program);
@@ -171,25 +192,24 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
         .env("TEMP",scratch.join("tmp")).env("TMP",scratch.join("tmp"))
         .env("PYTHONPYCACHEPREFIX",scratch.join("bytecode")).env("PYTHONDONTWRITEBYTECODE","1")
         .stdin(Stdio::from(stdin.try_clone()?)).stdout(Stdio::from(stdout.as_file().try_clone()?)).stderr(Stdio::from(stderr.as_file().try_clone()?));
-    // These are direct tools, without the worker's cgroup trampoline. Give
-    // Linux descendants their ownership token before their very first exec.
-    #[cfg(target_os="linux")]
-    let process_scope=platform::contain::Scope::inherited(&namespace).map_err(error)?;
-    #[cfg(not(target_os="linux"))]
-    let process_scope=platform::contain::Scope::create(&namespace).map_err(error)?;
-    if let Some((name,value))=process_scope.environment() {owned.env(name,value);}
+    // These are direct tools, without the worker's cgroup trampoline.
+    let process_scope=match SCOPED {
+        true=>Some(tool_scope(&namespace(&root,true)?.ok_or_else(||error("the process namespace is unavailable"))?)?),
+        false=>None,
+    };
+    if let Some((name,value))=process_scope.as_ref().and_then(platform::contain::Scope::environment) {owned.env(name,value);}
     // Only 0/1/2 cross exec, each backed by the verified project files above.
     // The native helper suppresses requested cores and unrelated inherited FDs;
     // it makes no OS filesystem or arbitrary custom-Python sandbox claim.
     platform::private_exec::prepare_managed_child(&mut owned,Vec::new()).map_err(error)?;
     if running.cancelled.load(Ordering::Acquire) {
-        process_scope.end().map_err(error)?;
+        if let Some(scope)=&process_scope { scope.end().map_err(error)?; }
         return Err(io::Error::new(io::ErrorKind::Interrupted,"project tool cancelled for lock"));
     }
     let mut tree=platform::process::spawn(owned).map_err(error)?;
     running.release=false;
     #[cfg(not(target_os="linux"))]
-    process_scope.adopt(tree.pid()).map_err(error)?;
+    if let Some(scope)=&process_scope { scope.adopt(tree.pid()).map_err(error)?; }
     let birth=platform::process::Birth::of(tree.pid()).map_err(error)?;
     // Preserve exact process births while the leader is alive. Reap only after
     // its group is ended; a reused PID can never authorize another process kill.
@@ -206,9 +226,11 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     }
     let closed=(|| {
         tree.kill().map_err(error)?;
-        process_scope.end().map_err(error)?;
-        if !platform::private_exec::project_scope_quiescent(&process_scope).map_err(error)? {
-            return Err(error("tool descendants still hold the project"));
+        if let Some(scope)=&process_scope {
+            scope.end().map_err(error)?;
+            if !platform::private_exec::project_scope_quiescent(scope).map_err(error)? {
+                return Err(error("tool descendants still hold the project"));
+            }
         }
         let followers=followers.into_values().collect::<Vec<_>>();
         platform::process::end_tree(&followers).map_err(error)?;
@@ -222,7 +244,8 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
         std::mem::forget(running);
         return closed;
     }
-    drop(tree); drop(stdout); drop(stderr); temporary.close()?;
+    // Every handle closed first: Windows removes no folder a file in it is still open in.
+    drop(tree); drop(stdin); drop(stdout); drop(stderr); temporary.close()?;
     let cancelled=running.cancelled.load(Ordering::Acquire);
     running.release=true;
     drop(running);

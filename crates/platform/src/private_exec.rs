@@ -330,8 +330,9 @@ mod imp {
     pub(super) fn validate(_: &File, _: &File) -> Result<()> {
         Err(unsupported())
     }
-    pub(super) fn prepare(_: &mut Command, _: Vec<PrivateDescriptor>) -> Result<()> {
-        Err(unsupported())
+    pub(super) fn prepare(_: &mut Command, inherited: Vec<PrivateDescriptor>) -> Result<()> {
+        // A child gets only its stdio handles from std here, and Windows writes no core of it.
+        if inherited.is_empty() { Ok(()) } else { Err(unsupported()) }
     }
     pub(super) fn own_cores() -> Result<()> {
         Err(unsupported())
@@ -339,7 +340,7 @@ mod imp {
     pub(super) fn limit_cores(_: &mut Command) -> Result<()> {
         Err(unsupported())
     }
-    pub(super) fn quiescent(_: &crate::contain::Scope) -> Result<bool> {
-        Err(unsupported())
+    pub(super) fn quiescent(scope: &crate::contain::Scope) -> Result<bool> {
+        Ok(scope.processes()? == 0)
     }
 }
