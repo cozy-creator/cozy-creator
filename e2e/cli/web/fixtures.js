@@ -107,6 +107,8 @@ class CalciferControl {
     this.kept = readFileSync(this.config, 'utf8');
     this.suite = need('COZY_HUB_URL');
     this.on = this.suite;
+    // This computer's machine (TensorD, `cozy machine serve`): its lock record says its pid.
+    this.machine = join(homedir(), '.cozy', 'machine', 'var', 'lib', 'cozy', 'machine', 'agent.lock.holder');
   }
 
   /** SIGTERM, a clean exit, which systemd's on-failure and launchd's KeepAlive leave down: once it's gone and nothing listens. */
@@ -134,13 +136,39 @@ class CalciferControl {
     return this.start();
   }
 
-  /** On `url`'s Hub, else the suite's: config.toml's top-level `hub_url` (first, as after a [table] it would be that table's), restarted. */
+  /** On `url`'s Hub, else the suite's: config.toml's top-level `hub_url` and its origin among `local_origins` (first, as after a [table]
+   *  they would be that table's), Calcifer and this computer's machine restarted. A machine declares its local origins once, as it
+   *  starts (xs-196 D), and refuses a run naming a loopback Hub it wasn't told of: `invalid_hub_origin`. */
   async hub(url = this.suite) {
-    const rest = readFileSync(this.config, 'utf8').split('\n').filter((line) => !/^hub_url\s*=/.test(line));
-    writeFileSync(this.config, url === this.suite ? this.kept : [`hub_url = "${url}"`, ...rest].join('\n'));
+    const lines = readFileSync(this.config, 'utf8').split('\n');
+    const declared = lines.find((line) => /^local_origins\s*=/.test(line))?.replace(/^local_origins\s*=\s*"?|"?\s*$/g, '') ?? '';
+    const rest = lines.filter((line) => !/^(hub_url|local_origins)\s*=/.test(line));
+    const origins = [new URL(url).origin, ...declared.split(',').filter(Boolean)].join(',');
+    writeFileSync(this.config, url === this.suite ? this.kept : [`hub_url = "${url}"`, `local_origins = "${origins}"`, ...rest].join('\n'));
     this.on = url;
     await this.stop();
+    await this.stopMachine();
     await this.start();
+    await this.startMachine();
+  }
+
+  /** This computer's machine stopped (SIGTERM): it reads config.toml again as Calcifer next starts it. None running: nothing to do. */
+  async stopMachine() {
+    let pid;
+    try { pid = JSON.parse(readFileSync(this.machine, 'utf8')).pid; } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    if (!pid || !alive(pid)) return;
+    process.kill(pid, 'SIGTERM');
+    await expect.poll(() => alive(pid), { message: `this computer's machine (pid ${pid}) stopped`, timeout: 60_000 }).toBe(false);
+  }
+
+  /** `cozy machine show local` starts this computer's machine (e2e/lib.sh's machine_ready): once it says it's ready. */
+  async startMachine() {
+    await expect.poll(() => new Promise((done) => {
+      if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, '--json\x1fmachine\x1fshow\x1flocal\x1f\x1e');
+      execFile(need('COZY'), ['--json', 'machine', 'show', 'local'], { timeout: 120_000 }, (error, stdout) => {
+        try { done(JSON.parse(stdout).state ?? `exit ${error?.code ?? 0}`); } catch { done(`exit ${error?.code ?? 0}: ${String(stdout).slice(-200)}`); }
+      });
+    }), { message: "this computer's machine ready", timeout: 180_000, intervals: [2_000, 5_000] }).toBe('ready');
   }
 
   /** A new Calcifer than `was`, answering: its lock record read into `calcifer` and `api`. */
@@ -166,8 +194,10 @@ class CalciferControl {
       writeFileSync(this.config, this.kept);
       this.on = this.suite;
       if (up) await this.stop();
+      await this.stopMachine();
     }
     if (moved || !up) await this.start();
+    if (moved) await this.startMachine();
   }
 }
 
