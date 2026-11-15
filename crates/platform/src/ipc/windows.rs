@@ -593,7 +593,7 @@ fn event() -> io::Result<OwnedHandle> {
     owned(unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) })
 }
 
-fn open_process(pid: u32, access: u32) -> io::Result<OwnedHandle> {
+pub(crate) fn open_process(pid: u32, access: u32) -> io::Result<OwnedHandle> {
     // SAFETY: a plain call; a null handle is the failure.
     owned(unsafe { OpenProcess(access, 0, pid) })
 }
@@ -670,7 +670,7 @@ pub(crate) fn this_user() -> io::Result<String> {
 }
 
 /// The user `process` runs as, as an SID string, from its token.
-fn token_user(process: HANDLE) -> io::Result<String> {
+pub(crate) fn token_user(process: HANDLE) -> io::Result<String> {
     let mut token: HANDLE = ptr::null_mut();
     // SAFETY: a live process handle and a writable token handle.
     if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {

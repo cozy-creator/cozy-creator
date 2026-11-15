@@ -5,7 +5,7 @@
 # BiRefNet removal on the CPU from a YAML request, run ls/show, a second executor (the machine restarted)
 # with an --file input, a stuck Calcifer that cozy doctor restarts, and removal as the README says. Where the OS
 # runs no models itself (macOS, Windows: lib.sh's LOCAL), what needs no machine, every local verb refused, and the
-# rest of that list but the machine. On every OS, the page Calcifer serves (page_http, and web.sh's suite in its own shards).
+# rest of that list but the machine. On every OS, the page Calcifer serves (web_serves, and web.sh's suite in its own shards).
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
@@ -541,7 +541,7 @@ case $SHARD in
     agent_api
     ignored_inputs
     orbit_metadata
-    page_http
+    web_serves
     queued_download
     machines
     local_idle
@@ -613,7 +613,7 @@ case $SHARD in
     agent_api
     ignored_inputs
     orbit_metadata
-    page_http
+    web_serves
     install_retries
     logs
   " ;;
@@ -626,6 +626,10 @@ case $SHARD in
   web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
   web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
+  # cl-982's opens on a busy computer: 3,000 other loopback connections open (web/busy.js), as the gate's lookups meet them (cl-985).
+  web-opens-busy) export BUSY_SOCKETS=3000; web_cells=(opens); parts="web_lane logs" ;;
+  # The page as Calcifer's own and what the access rule refuses (cl-985), alone.
+  web-serves) parts="tools_read web_serves logs" ;;
   # A project cozy 0.24.0 made keeps every take under this cozy, and a take asked by id lands as that version (cl-945).
   old-takes) parts="old_takes logs" ;;
   follow) parts="
@@ -745,12 +749,12 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault) ;;
+    entrypoints | projectvault | web-serves) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints
       refusals
-      page_http
+      web_serves
       completions
       homebrew
       calcifer_faults

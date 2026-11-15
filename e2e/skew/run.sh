@@ -244,6 +244,9 @@ skew_refused() {
 }
 # Sign-in: the email's code, as the Hub logs it, typed into `cozy login` on stdin; then the account's name.
 log "cozy login ci@skew.test: the code from the Hub's log, typed on stdin"
+# Ten minutes at most, on every OS: coreutils' timeout where there is one, else perl's alarm (macOS has no timeout of its own).
+bound=$(command -v timeout || command -v gtimeout || true)
+[ -n "$bound" ] || bound="perl -e alarm(shift);exec(@ARGV)"
 # Its stdin a pipe, written once the Hub has logged the code (or not, after two minutes): an ended pipe is an answer, so a
 # question this harness doesn't answer can't hang the job.
 {
@@ -253,7 +256,7 @@ log "cozy login ci@skew.test: the code from the Hub's log, typed on stdin"
     grep -q '"error"' login.out 2>/dev/null && break  # refused before a code: nothing to type
     sleep 1
   done
-} | cozy --json login ci@skew.test > login.out 2>&1
+} | { [ -z "$PUBLICATION_LOG" ] || { printf '%s\x1f' --json login ci@skew.test; printf '\x1e'; } >> "$PUBLICATION_LOG"; ${bound:+$bound 600} "$COZY_BIN" --json login ci@skew.test; } > login.out 2>&1
 login=${PIPESTATUS[1]}
 code=$(grep -h 'development device enrollment code' hub.log | grep -o '"code":"[^"]*"' | tail -1 | cut -d'"' -f4)
 if [ -n "$REFUSE" ]; then

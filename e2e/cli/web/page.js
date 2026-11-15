@@ -1,5 +1,5 @@
-// What the cells outside the web suite share (web.sh's web_alone: look, scale, pageidle; idle.sh's idle.js): a
-// timeout on every wait, a tab signed in, and the project API. The suite's cells use fixtures.js.
+// What the cells outside the web suite share (web.sh's web_alone: look, scale, pageidle, access; web_serves's serves.js; idle.sh's
+// idle.js): a timeout on every wait, the page opened, and the project API. The suite's cells use fixtures.js.
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, writeFileSync, readdirSync, readlinkSync, realpathSync } = require('fs');
 const { homedir } = require('os');
@@ -170,24 +170,15 @@ async function upload(token, path, project) {
   return digest;
 }
 
-/** Sign this tab in with a fresh session code, opening `to` (a URL on this Calcifer), else its home. The session is the tab's (sessionStorage):
- *  a reload or another page in the tab keeps it, and another tab or context signs in again. The code lives 15 minutes. */
+/** Open the page at `to` (a URL on this Calcifer), else its home. The page holds no session (cl-980): Calcifer answers it as its own
+ *  page, for the user it runs as, which this runner's is. */
 async function signIn(page, to, options) {
   if (typeof to === 'object') [to, options] = [undefined, to];
-  const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
-  const response = await fetch(`http://${holder.address}/v1/session-codes`, {
-    method: 'POST', headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' }, body: '{}',
-  });
-  if (!response.ok) throw new Error(`session code: ${response.status} ${await response.text()}`);
-  const code = await response.json();
-  const link = to ? `${to.replace(/#.*$/, '')}#code=${encodeURIComponent(code.code)}`
-    : process.env.PAGE_ORIGIN ? code.url.replace(/^http:\/\/[^/]+/, process.env.PAGE_ORIGIN) : code.url;
-  const redeemed = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/session', { timeout: STEP_MS });
-  const went = await page.goto(link, options);
-  const answer = await redeemed;
-  if (!answer.ok()) throw new Error(`sign in: POST /v1/session ${answer.status()}`);
-  return went;
+  return page.goto(to ? to.replace(/#.*$/, '') : `${calcifer()}/`, options);
 }
+
+/** The bearer in Calcifer's lock record: what this computer's cozy, and a cell's own calls from outside the page, send. */
+const holderToken = () => JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token;
 
 /** Chrome with its scrollbars shown, as on a person's screen, not hidden as headless has them. */
 const BARS = { ignoreDefaultArgs: ['--hide-scrollbars'] };
@@ -346,4 +337,62 @@ async function projectAction(folder, action, ...args) {
 /** A new project's folder by its name, in this person's home folder: what the page's New takes, as `cozy new` does (cl-980). */
 const projectFolder = (name) => join(homedir(), name);
 
-module.exports = { projectFolder, projectUrl, projectFromPage, projectAction, BARS, DARK_OPEN, MP4, STEP_MS, boxOf, calcifer, closeBox, openBox, openCanvas, fitCanvas, lastLook, launch, lookAt, noStall, png, projectHeld, renderOf, settled, signIn, until, upload };
+/** A separate process lets synchronous fixture readers talk to the real Calcifer. */
+const HTTP_READ = `
+const fs = require('node:fs');
+const http = require('node:http');
+const holder = JSON.parse(fs.readFileSync(process.env.HOLDER, 'utf8'));
+const body = fs.readFileSync(0);
+const url = new URL(process.argv[2], 'http://' + holder.address);
+const request = http.request(url, { method: process.argv[1], headers: {
+  Authorization: 'Bearer ' + holder.token,
+  'cozy-project-storage': '3',
+  'Content-Type': process.argv[3],
+  'Content-Length': body.length,
+}}, (response) => {
+  const chunks = [];
+  response.on('data', (chunk) => chunks.push(chunk));
+  response.on('end', () => {
+    const text = Buffer.concat(chunks);
+    if (response.statusCode >= 400) { process.stderr.write(text); process.exitCode = 1; }
+    else process.stdout.write(text);
+  });
+});
+request.on('error', (error) => { console.error(error.message); process.exitCode = 1; });
+request.end(body);
+`;
+
+function apiText(method, path, body = '', type = 'application/json') {
+  return execFileSync(process.execPath, ['-e', HTTP_READ, method, path, type], {
+    input: body, encoding: 'utf8', maxBuffer: 1 << 28, timeout: STEP_MS,
+  });
+}
+
+function projectJson(folder, method = 'GET', suffix = '', body) {
+  const text = apiText(method, projectPath(folder, suffix), body === undefined ? '' : JSON.stringify(body));
+  return text ? JSON.parse(text) : null;
+}
+
+/** Import a real file by the same content endpoint the browser uses. */
+function importFile(folder, file, name) {
+  const bytes = readFileSync(file);
+  const sha256 = `sha256:${require('crypto').createHash('sha256').update(bytes).digest('hex')}`;
+  apiText('PUT', `/v1/project-files/${sha256}?project=${encodeURIComponent(folder)}`, bytes, 'application/octet-stream');
+  const stem = require('path').parse(file).name;
+  return projectJson(folder, 'POST', '/imports', { source: sha256, name: name ?? stem, exact: name !== undefined });
+}
+
+/** Create starter-film fixtures through the project API. */
+async function newProject(folder) {
+  const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
+  const answer = await fetch(`http://${holder.address}/v1/projects`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: folder, starter: true, unencrypted: true }),
+  });
+  const opened = await answer.json();
+  if (!answer.ok) throw new Error(`create starter project ${folder}: ${answer.status} ${JSON.stringify(opened)}`);
+  return opened;
+}
+
+module.exports = { holderToken, projectFolder, projectUrl, projectFromPage, projectAction, projectJson, importFile, newProject, BARS, DARK_OPEN, MP4, STEP_MS, boxOf, calcifer, closeBox, openBox, openCanvas, fitCanvas, lastLook, launch, lookAt, noStall, png, projectHeld, renderOf, settled, signIn, until, upload };

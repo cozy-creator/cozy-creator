@@ -1,12 +1,11 @@
 //! Calcifer's loopback API (`docs/CALCIFER-API.md`): HTTP/1.1, JSON and SSE for the CLI and a
-//! browser. Every request passes the guard chain in order: a loopback peer, a loopback `Host`, an
-//! `Origin`, if any, that matches it, then (on the routes Calcifer serves) the bearer or a browser
-//! session (`sessions.rs`), and the admission gate a stopping Calcifer closes. Refusals are
-//! `api::error::Envelope`s. No CORS header is ever sent.
+//! browser. Every request passes the guard chain in order: a loopback peer, this listener's own `Host`
+//! and an `Origin`, if any, that matches it; then, on `/v1`, Calcifer's own OS account and its own page
+//! or the lock record's bearer (`loopback.rs`, no sessions); then the admission gate a stopping Calcifer
+//! closes. Refusals are `api::error::Envelope`s. No CORS header is ever sent.
 use std::{
     collections::{HashMap, VecDeque},
     convert::Infallible,
-    net::SocketAddr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU32, Ordering},
@@ -26,7 +25,7 @@ use axum::{
         IntoResponse, Response,
         sse::{self, KeepAlive, KeepAliveStream, Sse},
     },
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
 };
 use api::{
     calcifer::{CalciferActivity, CalciferStatus, Down, Event, PROCESS_HEADER, Run, RunList, Status},
@@ -40,6 +39,7 @@ use tokio::sync::{RwLock, broadcast, watch};
 use tracing::{info, warn};
 
 use crate::{
+    loopback::Peer,
     Calcifer,
     machines::{self, Machines},
     store::{RunFilter, RunRow, State as RunState, StoreError},
@@ -79,7 +79,6 @@ pub(crate) struct Api {
     pub(crate) listing: crate::toolbox::Listing,
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
-    pub(crate) sessions: crate::sessions::Sessions,
     pub(crate) browser: crate::browser::OwnedBrowser,
     pub(crate) browser_address: std::sync::OnceLock<std::net::SocketAddr>,
     pub(crate) development_web: std::sync::OnceLock<std::net::SocketAddr>,
@@ -110,7 +109,6 @@ impl Api {
         token: &str,
     ) -> Arc<Self> {
         let api = Arc::new(Self {
-            sessions: crate::sessions::Sessions::open(calcifer.maintenance_store()),
             browser: crate::browser::OwnedBrowser::new(),
             browser_address: std::sync::OnceLock::new(),
             development_web: std::sync::OnceLock::new(),
@@ -289,13 +287,10 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
                 .head(crate::runs::files::head)
                 .layer(DefaultBodyLimit::disable()),
         )
-        .route("/v1/session-codes", post(crate::sessions::code))
-        .route("/v1/session", delete(crate::sessions::end))
         .merge(crate::project::routes(&api))
         .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
-        .route("/v1/session", post(crate::sessions::start))
         .merge(crate::page::routes())
         .fallback(crate::page::fallback)
         .method_not_allowed_fallback(unknown_route)
@@ -344,7 +339,7 @@ pub(crate) fn project_storage_protocol_required() -> Refusal {
 }
 
 impl Refusal {
-    fn remedy(self, remedy: &str) -> Self {
+    pub(crate) fn remedy(self, remedy: &str) -> Self {
         Refusal(self.0.remedy(remedy))
     }
 }
@@ -394,14 +389,21 @@ impl From<BytesRejection> for Refusal {
     }
 }
 
-/// Loopback peer, `Host`, then `Origin`, on every request. A rebinding page is turned away before
-/// anything asks whether it holds a credential.
+/// Loopback peer, `Host`, then `Origin`, on every request (`loopback::refusal`).
 async fn guard(
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
     request: Request,
     next: Next,
 ) -> Response {
-    let refused = refusal(&peer, &request);
+    let began = std::time::Instant::now();
+    let refused = crate::loopback::refusal(&peer, request.headers());
+    let checked = began.elapsed();
+    let timing = crate::loopback::TIMING.load(std::sync::atomic::Ordering::Relaxed).then(crate::loopback::Timing::default);
+    let mut request = request;
+    if let Some(timing) = &timing {
+        request.extensions_mut().insert(timing.clone());
+    }
+    let api_route = request.uri().path().starts_with("/v1/");
     let mut response = match refused {
         Some(refusal) => {
             warn!(
@@ -423,57 +425,29 @@ async fn guard(
         }
     };
     let headers = response.headers_mut();
+    // Nothing under /v1 is a page: whatever it holds (a package's preview, a run's output, a file of a project) runs in no origin of
+    // Calcifer's, even opened as a URL; an SVG, which can carry script, runs none at all.
+    if api_route {
+        let svg = headers.get(header::CONTENT_TYPE).and_then(|kind| kind.to_str().ok()).is_some_and(|kind| kind.starts_with("image/svg"));
+        let mut policy = headers.get(header::CONTENT_SECURITY_POLICY).and_then(|policy| policy.to_str().ok()).unwrap_or_default().to_owned();
+        for directive in ["sandbox"].into_iter().chain(svg.then_some("script-src 'none'")) {
+            if !policy.split(';').any(|held| held.trim() == directive) {
+                policy = if policy.is_empty() { directive.to_owned() } else { format!("{policy}; {directive}") };
+            }
+        }
+        if let Ok(policy) = HeaderValue::from_str(&policy) {
+            headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+        }
+    }
     headers.entry(header::CACHE_CONTROL).or_insert(HeaderValue::from_static("no-store"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    response
-}
-
-/// A loopback name on any port: an SSH `-L` chooses its own. A rebinding page's `Host` is its own name.
-fn on_loopback(host: &str) -> bool {
-    ["127.0.0.1", "localhost", "[::1]"].iter().any(|name| {
-        host.strip_prefix(name).is_some_and(|rest| {
-            rest.is_empty() || rest.strip_prefix(':').is_some_and(|port| port.parse::<u16>().is_ok())
-        })
-    })
-}
-
-fn refusal(peer: &SocketAddr, request: &Request) -> Option<Refusal> {
-    let header = |name| {
-        request
-            .headers()
-            .get(name)
-            .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
-    };
-    if !peer.ip().is_loopback() {
-        Some(refuse(
-            Kind::Forbidden,
-            "not_loopback",
-            "Calcifer serves the loopback interface only",
-        ))
-    } else if !header(header::HOST).is_some_and(|host| on_loopback(&host)) {
-        Some(
-            refuse(
-                Kind::Forbidden,
-                "host_not_allowed",
-                format!("Host {:?} is not this Calcifer", header(header::HOST)),
-            )
-            .remedy("reach it as 127.0.0.1, localhost or [::1]"),
-        )
-    // Checked on every request, mutations and stream opens included; an absent Origin passes.
-    } else if let Some(origin) = header(header::ORIGIN)
-        && origin.strip_prefix("http://") != header(header::HOST).as_deref()
-    {
-        Some(refuse(
-            Kind::Forbidden,
-            "origin_not_allowed",
-            format!("Origin {origin:?} may not reach Calcifer"),
-        ))
-    } else {
-        None
+    if let Some(said) = timing.and_then(|timing| timing.header(checked, &peer)) {
+        headers.insert(header::HeaderName::from_static("server-timing"), said);
     }
+    response
 }
 
 /// The secret of `Authorization: Bearer`.
@@ -481,46 +455,45 @@ pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
 }
 
-/// The `?media=` secret of a read of a file: what `<img>` and `<video>` can't put in a header, so it
-/// opens nothing else.
-fn media_secret(request: &Request) -> Option<&str> {
+/// A read of a file, as `<img>` and `<video>` make one: no header of the page's own, the project storage's among them.
+fn file_read(request: &Request) -> bool {
     let reads = matches!(*request.method(), Method::GET | Method::HEAD);
     let path: Vec<&str> = request.uri().path().split('/').collect();
-    let file = matches!(
+    reads && matches!(
         path[..],
         ["", "v1", "runs", _, "outputs", _] | ["", "v1", "projects", _, "runs", _, "outputs", _] | ["", "v1", "projects", _, "files" | "cuts" | "thumbs", _]
-    );
-    if !reads || !file {
-        return None;
-    }
-    request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix("media="))
+    )
 }
 
-/// The bearer or a session, then the admission gate for every mutation but `down`, held while it runs.
-/// Detached request work retains this existing admission lease until its mutation is finished.
+/// Calcifer's own page or this computer's cozy, as its own account; then the admission gate for every mutation but `down`, held
+/// while it runs. Detached request work retains this existing admission lease until its mutation is finished.
 pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
 
-async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
-    // Any browser's session: Cozy's owned one (memory-only) or one a sign-in link started (state.db).
-    let store = api.calcifer.store();
-    let session_media = media_secret(&request).is_some_and(|media| api.sessions.admits_media(store, media));
-    let (admitted, page) = match bearer(request.headers()) {
-        Some(token) if api.admits(token) => (true, false),
-        Some(token) => (api.sessions.admits_token(store, token), true),
-        None => (session_media, true),
-    };
-    if !admitted {
-        let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
-        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a page opens from the link `cozy open` gives").next("cozy open");
-        return Refusal(error).into_response();
+async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>, mut request: Request, next: Next) -> Response {
+    // Calcifer's own account, then its own page or this computer's cozy (`loopback::admitted`).
+    let began = std::time::Instant::now();
+    let (method, path, headers) = (request.method(), request.uri().path(), request.headers());
+    let admitted = crate::loopback::admitted(&api, &peer, method, path, headers).await;
+    if let Some(timing) = request.extensions().get::<crate::loopback::Timing>() {
+        timing.admitted(began.elapsed());
     }
+    let (principal, client) = match admitted {
+        Ok(admitted) => admitted,
+        Err(refusal) => {
+            warn!(code = refusal.0.code, "refused {} {}", request.method(), request.uri().path());
+            return refusal.into_response();
+        }
+    };
+    let page = client == crate::loopback::Client::Page;
+    request.extensions_mut().insert(principal);
+    request.extensions_mut().insert(client);
     let path=request.uri().path();
     // The capability probe is how a client learns protocol 3 before opting in; it is no project request.
     let project_protocol=path != "/v1/project-storage" && (path.starts_with("/v1/projects") || path.starts_with("/v1/project-")
         || path.starts_with("/v1/run-") || matches!(path,"/v1/events"|"/v1/targets"|"/v1/plans"));
     // Native clients must opt into this storage contract before any project
-    // lookup/import/resume. Media elements use their session's media secret.
-    if project_protocol && !session_media && !speaks_project_storage(request.headers()) {
+    // lookup/import/resume. A page's media elements send no header of its own.
+    if project_protocol && !(page && file_read(&request)) && !speaks_project_storage(request.headers()) {
         return project_storage_protocol_required().into_response();
     }
     let process = request.headers().get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
@@ -638,7 +611,7 @@ pub(crate) async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRo
 
 /// The project that has or had `key` here. A project's keys are registered as it opens: one not opened since it was unlocked (or
 /// since this cozy) opens first. A locked project's are in no index, only in its project.db (Paul 11-15): its key is unknown here.
-async fn keyed_project(api: &Arc<Api>, key: &str) -> Result<Option<String>, Refusal> {
+pub(crate) async fn keyed_project(api: &Arc<Api>, key: &str) -> Result<Option<String>, Refusal> {
     let store = api.calcifer.store();
     if let Some(id) = store.key_owner(key).map_err(store_refusal)? { return Ok(Some(id)); }
     let known = store.known_projects().map_err(store_refusal)?;

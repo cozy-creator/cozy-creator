@@ -309,7 +309,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     seen.stored = { ...stored, ms: Date.now() - storing };
   });
 
-  /** A browser of its own, its cache cold, and its first tab signed in. */
+  /** A browser of its own, its cache cold, and its first tab open. */
   const fresh = async (theme = 'paper') => {
     const context = await newContext({ viewport: VIEWPORT });
     await context.addInitScript(SAMPLER);
@@ -317,7 +317,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       try { localStorage.setItem('cozy.theme', theme); } catch {}
     }, theme);
     const wire = new Wire(api.origin);
-    // Each tab signs in: a session is the tab's.
+    // Each tab opens the page itself.
     const tab = async (label) => {
       const page = await context.newPage();
       await wire.watch(page, label);
@@ -354,7 +354,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
         on_screen_frames: shown.map(([, row]) => row.frame).filter((at) => at !== null).sort((a, b) => a - b),
         on_screen_previews: shown.map(([, row]) => row.preview).filter((at) => at !== null).sort((a, b) => a - b),
         trace: {
-          reads: api.map((entry) => [`${path(entry).replace(/project-[0-9a-f]+/, 'P')}${new URL(entry.name).search.replace(/media=[^&]+&?/, '')}`, Math.round(entry.startTime), Math.round(entry.responseEnd)]).sort((a, b) => a[2] - b[2]).slice(0, 24),
+          reads: api.map((entry) => [`${path(entry).replace(/project-[0-9a-f]+/, 'P')}${new URL(entry.name).search}`, Math.round(entry.startTime), Math.round(entry.responseEnd)]).sort((a, b) => a[2] - b[2]).slice(0, 24),
           long: (opens?.long ?? []).filter(({ at }) => at < 3000),
         },
         waiting: rows.filter(([, row]) => row.waiting > 0).length,

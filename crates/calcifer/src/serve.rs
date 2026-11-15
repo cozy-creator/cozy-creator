@@ -6,7 +6,7 @@
 //! step is logged with its time, so a slow start names itself.
 use std::{
     io::ErrorKind,
-    net::{Ipv4Addr, SocketAddr},
+    net::Ipv4Addr,
     process::ExitCode,
     sync::Arc,
     time::{Duration, Instant},
@@ -257,6 +257,9 @@ mod port_tests {
 
 /// Serves `loaded.home` on `127.0.0.1`, at [`listen`]'s port, until `POST /v1/down`.
 pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
+    // What Calcifer makes is its account's alone: a project's database and files, and what its children write (calcifer-access.md).
+    #[cfg(unix)]
+    let _ = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
     let (home, port) = (&loaded.home, loaded.config.calcifer.port);
     crate::project::purge::set_window(loaded.config.calcifer.undo_seconds);
     let (began, mut steps) = (Instant::now(), Steps(Instant::now()));
@@ -311,10 +314,16 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let address = listener
         .local_addr()
         .map_err(|e| failed(Error::new(Kind::Internal, "calcifer_port", e.to_string())))?;
-    if loaded.config.calcifer.development_web.is_some_and(|development| development.port() == address.port()) {
+    // Dev mode: the page's code from this local Vite, served as Calcifer's own (page/development.rs).
+    let development_web = loaded.config.calcifer.development_web.filter(|_| loaded.config.dev);
+    if development_web.is_some_and(|development| development.port() == address.port()) {
         calcifer.close();
         return Err(failed(Error::new(Kind::Usage, "calcifer_development_web", "Vite and Calcifer must use different ports")));
     }
+    // ::1 on the same port too, so no other account can take it and answer `localhost` there (loopback::LOCALHOST).
+    let listener6 = TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, address.port())).await.ok();
+    crate::loopback::LOCALHOST.store(listener6.is_some(), std::sync::atomic::Ordering::Relaxed);
+    crate::loopback::TIMING.store(loaded.config.calcifer.diagnostics, std::sync::atomic::Ordering::Relaxed);
     steps.done("listen");
     let mut token = [0; 32];
     getrandom::fill(&mut token).expect("the OS provides randomness");
@@ -325,7 +334,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     tokio::spawn(drop_old_measurements(calcifer.clone()));
     let api = Api::new(calcifer.clone(), machines.clone(), &token);
     api.browser_address.set(address).expect("listener address set once");
-    if let Some(development) = loaded.config.calcifer.development_web {
+    if let Some(development) = development_web {
         api.development_web.set(development).expect("development web address set once");
     }
     // A service manager's stop (SIGTERM) is `down`, as graceful: the machine runs on.
@@ -361,12 +370,21 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     let _ = std::fs::remove_file(home.calcifer().join(REFUSED));
     steps.done("record");
-    let app = api::router(api.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    let app = api::router(api.clone()).into_make_service_with_connect_info::<crate::loopback::Peer>();
     let server = tokio::spawn(
-        axum::serve(listener, app)
+        axum::serve(listener, app.clone())
             .with_graceful_shutdown(api.stopped())
             .into_future(),
     );
+    // `localhost` stops being Calcifer's the moment ::1's server ends.
+    let server6 = listener6.map(|listener| {
+        let serving = axum::serve(listener, app).with_graceful_shutdown(api.stopped()).into_future();
+        tokio::spawn(async move {
+            let ended = serving.await;
+            crate::loopback::LOCALHOST.store(false, std::sync::atomic::Ordering::Relaxed);
+            ended
+        })
+    });
     crate::browser::hosted_proof(api.clone());
     crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");
@@ -385,6 +403,11 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     tokio::task::block_in_place(|| crate::project::vault::close_all(&api)).map_err(failed)?;
     if let Ok(Err(e)) = server.await {
         warn!("the API server ended: {e}");
+    }
+    if let Some(server6) = server6
+        && let Ok(Err(e)) = server6.await
+    {
+        warn!("the API server on ::1 ended: {e}");
     }
     machines.close();
     calcifer.close();

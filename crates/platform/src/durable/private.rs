@@ -157,3 +157,133 @@ fn create(path: &Path) -> io::Result<File> {
     }
     Ok(file)
 }
+
+/// Makes `dir` this account's alone: mode 0700 on Unix; on Windows a protected DACL whose one entry gives this account everything,
+/// inherited by all that's made in it.
+pub fn make_private_dir(dir: &Path) -> crate::Result<()> {
+    private_dir(dir).map_err(crate::Error::io("make a folder private", dir))
+}
+
+/// Whether another account on this computer may open `dir`: group or other bits on Unix; on Windows, an entry allowing anyone but
+/// this account, SYSTEM, Administrators or the owner.
+pub fn others_may_open(dir: &Path) -> crate::Result<bool> {
+    opened_by_others(dir).map_err(crate::Error::io("read a folder's access", dir))
+}
+
+#[cfg(unix)]
+fn private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(unix)]
+fn opened_by_others(dir: &Path) -> io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt as _;
+    Ok(std::fs::metadata(dir)?.permissions().mode() & 0o077 != 0)
+}
+
+#[cfg(windows)]
+fn wide(path: &Path) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt as _;
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    if name[..name.len() - 1].contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"));
+    }
+    Ok(name)
+}
+
+#[cfg(windows)]
+fn private_dir(dir: &Path) -> io::Result<()> {
+    use std::ptr;
+    use windows_sys::Win32::{
+        Foundation::{HLOCAL, LocalFree},
+        Security::{
+            Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW},
+            DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+        },
+    };
+    let name = wide(dir)?;
+    let sid = crate::ipc::this_user()?;
+    // Protected: nothing inherited from above. Object and container inherit: what's made inside is as private.
+    let sddl: Vec<u16> = format!("D:P(A;OICI;FA;;;{sid})").encode_utf16().chain([0]).collect();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: a terminated UTF-16 descriptor and an owned writable output pointer.
+    if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut descriptor, ptr::null_mut()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (mut present, mut dacl, mut defaulted) = (0, ptr::null_mut(), 0);
+    // SAFETY: the live descriptor just made and writable outputs; the DACL points into it.
+    let read = unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) };
+    let result = if read == 0 || present == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        let information = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+        // SAFETY: a terminated path and the descriptor's DACL, alive through the call; no owner, group or SACL changes.
+        match unsafe { SetNamedSecurityInfoW(name.as_ptr(), SE_FILE_OBJECT, information, ptr::null_mut(), ptr::null_mut(), dacl, ptr::null()) } {
+            0 => Ok(()),
+            code => Err(io::Error::from_raw_os_error(code as i32)),
+        }
+    };
+    // SAFETY: the descriptor the conversion allocated, freed once, after its DACL's last use.
+    unsafe { LocalFree(descriptor as HLOCAL) };
+    result
+}
+
+#[cfg(windows)]
+fn opened_by_others(dir: &Path) -> io::Result<bool> {
+    use std::ptr;
+    use windows_sys::Win32::{
+        Foundation::{HLOCAL, LocalFree},
+        Security::{
+            ACCESS_ALLOWED_ACE, ACL, Authorization::{ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT},
+            DACL_SECURITY_INFORMATION, GetAce, INHERIT_ONLY_ACE,
+        },
+        System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_ALLOWED_CALLBACK_ACE_TYPE},
+    };
+    let name = wide(dir)?;
+    let (mut dacl, mut descriptor): (*mut ACL, _) = (ptr::null_mut(), ptr::null_mut());
+    // SAFETY: a terminated path and writable outputs; the descriptor is freed below.
+    let code = unsafe {
+        GetNamedSecurityInfoW(name.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, ptr::null_mut(), ptr::null_mut(), &mut dacl, ptr::null_mut(), &mut descriptor)
+    };
+    if code != 0 {
+        return Err(io::Error::from_raw_os_error(code as i32));
+    }
+    // This account, SYSTEM, Administrators, OWNER RIGHTS and CREATOR OWNER: no other account. Compared in full `S-1-…` form, as SDDL
+    // would shorten some to aliases (the built-in Administrator's to `LA`).
+    let own = crate::ipc::this_user()?;
+    let mine = |sid: &str| [own.as_str(), "S-1-5-18", "S-1-5-32-544", "S-1-3-4", "S-1-3-0"].contains(&sid);
+    // No DACL at all lets everyone in.
+    let mut others = dacl.is_null();
+    // SAFETY: a live DACL inside the descriptor, read for its count.
+    let count = if dacl.is_null() { 0 } else { unsafe { (*dacl).AceCount } };
+    for at in 0..u32::from(count) {
+        let mut ace = ptr::null_mut();
+        // SAFETY: the live DACL, an index under its count and a writable pointer into it.
+        if unsafe { GetAce(dacl, at, &mut ace) } == 0 {
+            continue;
+        }
+        // SAFETY: every ACE starts with its header.
+        let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let kind = u32::from(allowed.Header.AceType);
+        if !matches!(kind, ACCESS_ALLOWED_ACE_TYPE | ACCESS_ALLOWED_CALLBACK_ACE_TYPE) || u32::from(allowed.Header.AceFlags) & INHERIT_ONLY_ACE != 0 {
+            continue;
+        }
+        let mut text: *mut u16 = ptr::null_mut();
+        // SAFETY: an allowed ACE's SID starts at its SidStart; a writable string pointer.
+        if unsafe { ConvertSidToStringSidW(ptr::addr_of!(allowed.SidStart).cast_mut().cast(), &mut text) } == 0 {
+            continue;
+        }
+        // SAFETY: a NUL-terminated string the conversion allocated.
+        let sid = unsafe {
+            let len = (0..).take_while(|&i| *text.add(i) != 0).count();
+            String::from_utf16_lossy(std::slice::from_raw_parts(text, len))
+        };
+        // SAFETY: the string the conversion allocated, freed once.
+        unsafe { LocalFree(text as HLOCAL) };
+        others |= !mine(&sid);
+    }
+    // SAFETY: the descriptor GetNamedSecurityInfoW allocated, freed once; `dacl` pointed into it and isn't read again.
+    unsafe { LocalFree(descriptor as HLOCAL) };
+    Ok(others)
+}
