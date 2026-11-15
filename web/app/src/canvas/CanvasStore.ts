@@ -1,4 +1,4 @@
-import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
+import type { CanvasController, CanvasNode, Viewport } from "./viewport"
 import { flushSync } from "react-dom"
 import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, lost, type OutboxPort } from "../api/outbox"
@@ -46,7 +46,7 @@ import { mergeValue, same, spliceOf, wordsChanged } from "./words"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
 export type ElementData = { name: string; width: number }
-export type ElementNode = Node<ElementData, "element" | "entity">
+export type ElementNode = CanvasNode
 
 /** A box that takes elements dragged onto it, at a point: a text at its caret, a slot. A tool can register one of its own. */
 export interface DropTarget {
@@ -213,7 +213,6 @@ function nextVersion(asset: Asset, file: Pick<MainFile, "sha256" | "field"> & Pa
 
 export const CARD_WIDTH = 240
 
-type Flow = ReactFlowInstance<ElementNode, Edge>
 const NOT_THERE = Symbol("the box went before its turn came")
 const NOT_YET = Number.POSITIVE_INFINITY
 
@@ -260,18 +259,20 @@ const WORST = ["making", "failed", "out_of_date", "missing", "current"] as const
 const worst = (standings: (Standing | "failed" | undefined)[]) => WORST.find((standing) => standings.includes(standing)) ?? "current"
 
 /**
- * What the canvas knows beyond React Flow's positions, viewport and selection: a plain store with per-name subscribers. `node.data` is
- * `{name, width}` carries only its identity and published body geometry. Other view state never touches React Flow, and an import or a rename stays the same node.
+ * The project's card state, independent of viewport geometry and rendering: a plain store with per-name subscribers. `node.data` is
+ * `{name, width}` carries only its identity and published body geometry. Other view state never lives in the renderer, and an import or a rename stays the same node.
  */
 export class CanvasStore {
   private retired = false
   projectId: string | null
   private client: Client
-  private flow: Flow | null = null
+  private viewport: CanvasController | null = null
   private views = new Map<string, ElementView>()
   private playbacks = new Map<string, VideoPlayback>()
   private aliases = new Map<string, string>()
   private subscribers = new Map<string, Set<() => void>>()
+  readonly sceneRevision = signal(0)
+  canvasAt: (x: number, y: number) => string | null = () => null
   private shapes = new Map<string, string>()
   /** Each view's stack, by the view: a change is a new view. */
   private pauses = new Map<string, ReturnType<typeof setTimeout>>()
@@ -455,20 +456,21 @@ export class CanvasStore {
   }
 
   /** A canvas drawn for it, the first or again: back on a project, its boxes are as it left them, whatever's still on its way to Calcifer. */
-  attach(flow: Flow) {
+  attach(viewport: CanvasController) {
     if (this.retired) return
-    this.flow = flow
+    this.viewport = viewport
     if (this.state && this.rows) this.reconcile()
-    // React Flow forgets what it's told as it mounts, which a project read already has in time for: what's held is told again once it's up.
+    // Restore any cards that arrived while this viewport was attaching.
     setTimeout(() => {
-      if (this.flow !== flow) return
-      flow.setNodes((nodes) => {
+      if (this.viewport !== viewport) return
+      viewport.replaceNodes((() => {
+        const nodes = viewport.getNodes()
         const there = new Set(nodes.map((node) => node.id))
         return [
           ...nodes,
           ...[...this.ids].filter(([, id]) => !there.has(id)).flatMap(([name, id]) => (this.rows?.has(name) ? [this.node(name, this.rows.get(name)!, this.selected.has(name), id)] : [])),
         ]
-      })
+      })())
     })
   }
 
@@ -477,7 +479,7 @@ export class CanvasStore {
     cancelAnimationFrame(this.surfaceFrame)
     this.surfaceFrame = 0
     this.surface = null
-    this.flow = null
+    this.viewport = null
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
     this.inPlace = null
     this.focusEntering.set(false)
@@ -516,7 +518,7 @@ export class CanvasStore {
     }
     for (const timer of this.gliding.values()) clearTimeout(timer)
     this.gliding.clear()
-    this.flow?.setNodes([])
+    this.viewport?.replaceNodes([])
     this.detach()
     this.projectId = null
     this.state = null; this.rows = null; this.cardsRead = undefined
@@ -561,6 +563,7 @@ export class CanvasStore {
   }
 
   private notify(name: string) {
+    this.sceneRevision.set(this.sceneRevision.get() + 1)
     this.subscribers.get(name)?.forEach((listener) => listener())
     for (const [alias, target] of this.aliases) {
       if (target === name) this.subscribers.get(alias)?.forEach((listener) => listener())
@@ -737,12 +740,11 @@ export class CanvasStore {
     if (!row || !view) return null
     const w = row.w ?? widthFor(view)
     const id = this.ids.get(key)
-    const at = this.dragging.has(key) && id ? this.flow?.getNode(id)?.position : undefined
+    const at = this.dragging.has(key) && id ? this.viewport?.getNode(id)?.position : undefined
     return { x: at?.x ?? row.x, y: at?.y ?? row.y, w, h: heightFor(view, w) }
   }
 
-  /** Node.position is the canonical anchor: its origin already accounts for the
-   * displayed body's offset. A drag never writes the selected version's width. */
+  /** Position is the canonical anchor; bounds hold the displayed body's offset. */
   private draggedRow(node: ElementNode): Card {
     const row = this.position(node.data.name)
     return { x: Math.round(node.position.x), y: Math.round(node.position.y), w: row?.w ?? this.poseOf(node.data.name)?.w ?? CARD_WIDTH }
@@ -764,8 +766,8 @@ export class CanvasStore {
       this.surfaceFrame = 0
       // An on-screen card binds before this frame. Only a culled one needs mounting.
       if (this.inPlace !== owner || this.surface?.id !== id || this.surface.update) return
-      const flow = this.flow
-      flushSync(() => flow?.updateNode(id, { height: 0, measured: { width: flow.getNode(id)?.width, height: 0 } }))
+      const name = this.namesById.get(id)
+      if (name) this.notify(name)
     })
   }
 
@@ -797,16 +799,14 @@ export class CanvasStore {
     if (this.surface?.id !== id) return
     const name = this.namesById.get(id)
     const pose = name && this.poseOf(name)
-    const node = this.flow?.getNode(id)
+    const node = this.viewport?.getNode(id)
     if (!pose || !node) return
     this.surface.current = current
     this.surface.pose = pose
     const { x, y, w: canonicalWidth } = pose
     const { x: left, y: top, w: width, h: height } = current.bounds
-    const origin: [number, number] = [(x - left) / width, (y - top) / height]
-    if (node.data.width === canonicalWidth && node.width === width && node.height === height && node.position.x === x && node.position.y === y && node.origin?.[0] === origin[0] && node.origin?.[1] === origin[1]) return
-    // The card's frame and its React Flow envelope are one layout change, before size observers run.
-    flushSync(() => this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: canonicalWidth }, position: { x, y }, width, height, origin, measured: { width, height } })))
+    if (node.data.width === canonicalWidth && node.bounds.w === width && node.bounds.h === height && node.position.x === x && node.position.y === y && node.bounds.x === left && node.bounds.y === top) return
+    flushSync(() => this.viewport?.updateNode(id, (queued) => ({ data: { ...queued.data, width: canonicalWidth }, position: { x, y }, bounds: current.bounds })))
   }
 
   closeSurface() {
@@ -835,12 +835,11 @@ export class CanvasStore {
       }
       const before = this.surface.pose
       if (before?.w !== pose.w || before.h !== pose.h) return this.measureSurface()
-      this.flow?.updateNode(id, { position: { x: pose.x, y: pose.y } })
+      this.viewport?.updateNode(id, { position: { x: pose.x, y: pose.y } })
       return
     }
     const drawn = bodyBox(view, pose)
-    const origin: [number, number] = [(pose.x - drawn.x) / drawn.w, (pose.y - drawn.y) / drawn.h]
-    this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: pose.w }, position: { x: pose.x, y: pose.y }, width: drawn.w, height: undefined, origin, measured: { width: drawn.w, height: drawn.h } }))
+    this.viewport?.updateNode(id, (queued) => ({ data: { ...queued.data, width: pose.w }, position: { x: pose.x, y: pose.y }, bounds: drawn }))
   }
 
   // From Calcifer
@@ -851,7 +850,7 @@ export class CanvasStore {
     this.began = state.began ?? 0
     const ahead = state.board?.ahead ?? []
     if (ahead.length || this.ahead.get().size) this.ahead.set(new Map(ahead.map((row) => [row.run, row])))
-    if (this.rows && this.flow) this.reconcile()
+    if (this.rows && this.viewport) this.reconcile()
   }
 
   /** `GET canvas`: every row, but what this page moved since that read began: it can't know. */
@@ -876,7 +875,7 @@ export class CanvasStore {
     }
     this.rows = rows
     if (first) {
-      if (this.state && this.flow) this.reconcile()
+      if (this.state && this.viewport) this.reconcile()
       return
     }
     for (const [name, row] of this.rows) this.applyRow(name, row)
@@ -1146,8 +1145,8 @@ export class CanvasStore {
   private homes(left: Placed[]): Map<string, Card> {
     const boxes = new Map<string, Box>()
     for (const [name, id] of this.ids) {
-      // A node just added isn't in the flow until it next draws; its row is.
-      const node = this.flow?.getNode(id)
+      // A node just added isn't in the viewport until it next draws; its row is.
+      const node = this.viewport?.getNode(id)
       const row = this.rows?.get(name)
       const view = this.views.get(name)
       if ((!node && !row) || !view) continue
@@ -1171,7 +1170,7 @@ export class CanvasStore {
 
   /** The canvas as far as it shows, clear of the top bar and the tools. */
   private onScreen(): Box | undefined {
-    const seen = this.flow?.getViewport()
+    const seen = this.viewport?.getViewport()
     if (!seen) return undefined
     const left = (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + CLEAR_OF_FRAME
     const top = (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + CLEAR_OF_FRAME
@@ -1189,7 +1188,7 @@ export class CanvasStore {
       for (const number of making) this.owners.set(number, element.name)
       return this.node(element.name, row, this.selected.has(element.name))
     })
-    this.flow?.addNodes(nodes)
+    this.viewport?.upsertNodes(nodes)
     this.followAll()
     // What watches a name hears it's here: one placed after its read (no row yet, `findHomes`) came after `names` last moved.
     for (const { element } of items) this.notify(element.name)
@@ -1212,10 +1211,7 @@ export class CanvasStore {
       type: view.entity ? "entity" : "element",
       position: { x: row.x, y: row.y },
       data: { name, width },
-      width: drawn.w,
-      origin: [(row.x - drawn.x) / drawn.w, (row.y - drawn.y) / drawn.h],
-      // Its size from the row and the lock: a culled node never gets measured, and React Flow's fit leaves out what isn't.
-      measured: { width: drawn.w, height: drawn.h },
+      bounds: drawn,
       selected,
     }
   }
@@ -1236,7 +1232,7 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const id = this.ids.get(key)
     const view = this.views.get(key)
-    const node = id ? this.flow?.getNode(id) : undefined
+    const node = id ? this.viewport?.getNode(id) : undefined
     if (!id || !view || !node) return
     const width = this.poseOf(key)?.w ?? widthFor(view)
     const height = heightFor(view, width)
@@ -1282,7 +1278,7 @@ export class CanvasStore {
   boxOf(name: string, bare = false): Box | null {
     const id = this.ids.get(name)
     const view = this.views.get(name)
-    const node = id ? this.flow?.getNode(id) : undefined
+    const node = id ? this.viewport?.getNode(id) : undefined
     const row = this.rows?.get(name)
     if ((!node && !row) || !view) return null
     // A row is what the page last said of it, and a node may not have heard yet.
@@ -1325,9 +1321,9 @@ export class CanvasStore {
     const was = this.position(name)
     this.rememberPose(name, { ...was, x: at.x, y: at.y, ...(at.w == null ? {} : { w: at.w }) })
     clearTimeout(this.gliding.get(id))
-    this.flow?.updateNode(id, { className: "glide" })
+    this.viewport?.updateNode(id, { gliding: true })
     this.paintPose(name)
-    this.gliding.set(id, setTimeout(() => this.flow?.updateNode(id, { className: undefined }), GLIDE_MS))
+    this.gliding.set(id, setTimeout(() => this.viewport?.updateNode(id, { gliding: false }), GLIDE_MS))
   }
 
   /** Slides to `to`, at its width, and that's its row: a shrink sticks as a pulled corner does. */
@@ -2214,7 +2210,7 @@ export class CanvasStore {
     this.shapes.delete(name)
     if (this.moreOpen.delete(name)) this.onMore?.([...this.moreOpen])
     this.notify(name)
-    if (id) this.flow?.setNodes((nodes) => nodes.filter((node) => node.id !== id))
+    if (id) this.viewport?.removeNodes([id])
   }
 
   /** The same node and view under a new name. `ours`: Calcifer doesn't know yet. */
@@ -2255,7 +2251,7 @@ export class CanvasStore {
     }
     if (this.focusedName.get() === from) this.focusedName.set(to)
     this.notify(to)
-    this.flow?.updateNodeData(id, { name: to })
+    this.viewport?.updateNode(id, (node) => ({ data: { ...node.data, name: to } }))
   }
 
   // A node's inputs
@@ -2592,18 +2588,23 @@ export class CanvasStore {
         this.overPart = at
         return part
       }
-      // What its tool can't use is taken all the same, and struck through where it's written (cl-944).
-      if (view?.asset?.kind === "image" && view.asset.tool) {
-        this.setHot(name)
-        return { over: () => {}, drop: (names) => this.takeInto(name, names) }
-      }
-      // A box of pictures takes a box of the same kind: it merges in.
-      if (view?.asset && holdsPictures(view.asset) && !view.asset.timeline && !madeHere(view.asset.tool)) {
-        this.setHot(name)
-        return { over: () => {}, drop: (names) => this.mergeBoxes(name, names) }
-      }
-      // Only a box being made takes anything: what's made, approved or only words is just in the way.
-      if (!view || !makes(view) || faceOf(view) !== "edit") break
+      return this.targetFor(name)
+    }
+    const name = this.canvasAt(x, y)
+    return name ? this.targetFor(name) : (this.setHot(null), null)
+  }
+
+  private targetFor(name: string): DropTarget | null {
+    const view = this.views.get(name)
+    if (view?.asset?.kind === "image" && view.asset.tool) {
+      this.setHot(name)
+      return { over: () => {}, drop: (names) => this.takeInto(name, names) }
+    }
+    if (view?.asset && holdsPictures(view.asset) && !view.asset.timeline && !madeHere(view.asset.tool)) {
+      this.setHot(name)
+      return { over: () => {}, drop: (names) => this.mergeBoxes(name, names) }
+    }
+    if (view && makes(view) && faceOf(view) === "edit") {
       this.setHot(name)
       return { over: () => {}, drop: (names) => this.takeInto(name, names) }
     }
@@ -2737,7 +2738,7 @@ export class CanvasStore {
     this.deleting.delete(name)
     this.rows?.set(name, row)
     this.views.set(name, { ...view, pending })
-    this.flow?.addNodes(this.node(name, row))
+    this.viewport?.upsertNodes(this.node(name, row))
   }
 
   /** What reads these and has nothing of its own held: it can't run again without them. */
@@ -2952,7 +2953,7 @@ export class CanvasStore {
           const now = this.namesById.get(id)
           if (now && now !== from) this.moveName(now, from, true)
         }
-        if (renamed.length && this.state && this.rows && this.flow) this.reconcile()
+        if (renamed.length && this.state && this.rows && this.viewport) this.reconcile()
         this.readAgain(names)
         if (this.projectId) void this.client.canvas(this.projectId).then(({ cards, seq }) => this.applyCanvas(cards, 0, seq), () => {})
       },
@@ -2974,7 +2975,7 @@ export class CanvasStore {
     this.views.set(key, { name, placing, draft: opts.naming ? name : undefined, preview: opts.preview ? { url: opts.preview } : undefined, aspect: opts.aspect })
     const row = this.clearOf(key, at, edit)
     this.rows?.set(key, row)
-    this.flow?.addNodes(this.node(key, row))
+    this.viewport?.upsertNodes(this.node(key, row))
     this.joinStep(edit, [key])
   }
 
@@ -3044,7 +3045,7 @@ export class CanvasStore {
 
   endAdding() {
     this.adding -= 1
-    if (this.adding === 0 && this.state && this.rows && this.flow) this.reconcile()
+    if (this.adding === 0 && this.state && this.rows && this.viewport) this.reconcile()
   }
 
   /** The project holds it now. If it moved while being asked, its row moves too. */
@@ -3142,7 +3143,7 @@ export class CanvasStore {
   setWidth(name: string, width: number, keep = true, edit?: string) {
     const key = this.resolveName(name)
     const id = this.ids.get(key)
-    const node = id ? this.flow?.getNode(id) : undefined
+    const node = id ? this.viewport?.getNode(id) : undefined
     if (!id || !node) return
     if (this.pulling?.name !== key) this.pulling = { name: key, was: this.boxOf(key) ?? undefined, shown: new Set() }
     const pulling = this.pulling
@@ -3256,7 +3257,7 @@ export class CanvasStore {
         if (signal.aborted) return end(() => failed(signal.reason))
         const read = this.began > after ? this.state?.assets.find((asset) => asset.name === served) : undefined
         if (!this.namesById.has(id) || this.served.get(id) !== served || (read && read !== was)) return end(done)
-        if (this.retired || !this.flow) end(() => failed(refusal))
+        if (this.retired || !this.viewport) end(() => failed(refusal))
       }
       const end = (then: () => void) => {
         this.hearing.delete(look)
@@ -3319,13 +3320,13 @@ export class CanvasStore {
       const at = this.clearOf(name, dropped, by)
       this.rows?.set(name, at)
       const node = this.node(name, at)
-      this.flow?.addNodes(node)
+      this.viewport?.upsertNodes(node)
       this.history.stepOf({ edit: by })?.before.push({ name, node: node.id })
       return { name, at, node }
     })
     const left = () => {
       this.adding -= boxes.length
-      if (this.adding === 0 && this.state && this.rows && this.flow) this.reconcile()
+      if (this.adding === 0 && this.state && this.rows && this.viewport) this.reconcile()
     }
     // What their drop pushed aside goes with them, the same on every try: one request, one transaction, one entry.
     let pushes: Pushes | undefined
@@ -3589,7 +3590,7 @@ export class CanvasStore {
         const now = this.namesById.get(id)
         if (now) this.moveName(now, from, true)
         // What took the name meanwhile, another writer's, shows now as Calcifer has it.
-        if (this.state && this.rows && this.flow) this.reconcile()
+        if (this.state && this.rows && this.viewport) this.reconcile()
       },
     })
   }

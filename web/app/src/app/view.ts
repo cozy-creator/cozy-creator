@@ -1,4 +1,4 @@
-import type { Viewport } from "@xyflow/react"
+import type { Viewport } from "../canvas/viewport"
 import type { Client } from "../api/client"
 import type { ProjectView, ProjectViewPatch } from "../api/calcifer"
 

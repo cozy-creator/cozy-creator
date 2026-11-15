@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
-import type { NodeProps, Viewport } from "@xyflow/react"
-import { useReactFlow } from "@xyflow/react"
+import type { Viewport } from "./viewport"
+import { useCanvasViewport } from "./viewportContext"
 import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { runQuery } from "../api/queries"
@@ -107,7 +107,7 @@ function TakeName({ view }: { view: ElementView }) {
     <div className="take-name">
       <button
         type="button"
-        className="chip nodrag"
+        className="chip canvas-control"
         title={`Copy <${name}>`}
         onPointerDown={(event) => carryOnMove(event.nativeEvent, { name }, event.currentTarget)}
         onClick={() => void navigator.clipboard?.writeText(`<${name}>`).then(() => say(`Copied <${name}>`), () => say(`<${name}>`))}
@@ -172,7 +172,7 @@ function FocusActions({ view, name }: { view: ElementView; name: string }) {
   if (!view.asset?.tool) return null
   const next = nextTake(store, view, name, tools)
   return (
-    <div className="focus-actions nodrag nopan">
+    <div className="focus-actions canvas-control">
       {next.adds && (
         <button type="button" className={`tb take add focus-new ${next.on && !watched(view) ? "on" : ""}`} aria-label={next.label} title={next.title} onClick={next.write}>
           <Icon name="plus" />
@@ -219,7 +219,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
   const row = (
     <div
       ref={side ? undefined : list}
-      className="takes nodrag nopan nowheel"
+      className="takes canvas-control"
       onWheel={(event) => {
         if (!side) event.currentTarget.scrollLeft += event.deltaX || event.deltaY
       }}
@@ -306,7 +306,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
     </div>
   )
   return side ? (
-    <div ref={list} className={`here-side ${asset.kind === "image" ? "image-history" : ""} nodrag nopan nowheel`}>
+    <div ref={list} className={`here-side ${asset.kind === "image" ? "image-history" : ""} canvas-control`}>
       {row}
     </div>
   ) : (
@@ -323,7 +323,7 @@ function OrbitToggle({ view, name }: { view: ElementView; name: string }) {
   if (beingMade(view) && !view.hereWords) {
     return (
       <label className="row orbit-toggle">
-        <input className="nodrag" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={false} disabled />
+        <input className="canvas-control" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={false} disabled />
         <span>Orbit</span>
         <span className="muted">Plays</span>
       </label>
@@ -339,7 +339,7 @@ function OrbitToggle({ view, name }: { view: ElementView; name: string }) {
   }
   return (
     <label className="row orbit-toggle">
-      <input className="nodrag" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={on} onChange={(event) => flip(event.target.checked)} />
+      <input className="canvas-control" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={on} onChange={(event) => flip(event.target.checked)} />
       <span>Orbit</span>
       <span className="muted">{on ? "Drag to turn" : "Plays"}</span>
     </label>
@@ -358,7 +358,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
     return (
       <div className="beats">
         {rows.map((row, i) => (
-          <button key={i} type="button" className="nodrag" style={{ flexGrow: lasts(row) }} onClick={() => store.patch(name, { hereWords: true })}>
+          <button key={i} type="button" className="canvas-control" style={{ flexGrow: lasts(row) }} onClick={() => store.patch(name, { hereWords: true })}>
             {lasts(row)}
             {total.unit ?? ""}
           </button>
@@ -378,7 +378,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
         <button
           key={i}
           type="button"
-          className="nodrag"
+          className="canvas-control"
           style={{ flexGrow: lasts[i] || 1 }}
           title={piece}
           onClick={() => store.seek(name, lasts.slice(0, i).reduce((sum, ms) => sum + ms, 0) / 1000)}
@@ -392,7 +392,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
 
 function Act({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <button type="button" className="act nodrag" onClick={onClick}>
+    <button type="button" className="act canvas-control" onClick={onClick}>
       {label}
     </button>
   )
@@ -438,7 +438,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
 function Corner({ name, view, width, focused = false }: { name: string; view: ElementView; width: number; focused?: boolean }) {
   const store = useCanvasStore()
   const focusResize = useFocusResize()
-  const flow = useReactFlow()
+  const flow = useCanvasViewport()
   const tools = useSignal(store.tools)
   const control = view.asset && reshapes(view) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
   const validRatio = (ratio: unknown): ratio is string => typeof ratio === "string" && ratio.split(":").length === 2 && ratio.split(":").map(Number).every((value) => value > 0 && Number.isFinite(value))
@@ -513,7 +513,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
     <>
       {badge && <span className="ratio-rest" data-output-aspect={label} title="Output aspect ratio">
         {label}
-        {hasOverride && <button type="button" className="ratio-clear nodrag nopan" aria-label={dynamic ? "Auto aspect ratio" : `Reset aspect ratio to ${defaultShape}`} title={dynamic ? "Back to Auto" : `Reset to ${defaultShape}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); resetShape() }}><Icon name="close" /></button>}
+        {hasOverride && <button type="button" className="ratio-clear canvas-control" aria-label={dynamic ? "Auto aspect ratio" : `Reset aspect ratio to ${defaultShape}`} title={dynamic ? "Back to Auto" : `Reset to ${defaultShape}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); resetShape() }}><Icon name="close" /></button>}
       </span>}
       {nearest && !badge && (
         <div className="ratio-live">
@@ -521,7 +521,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
         </div>
       )}
       <div
-        className="corner nodrag nopan"
+        className="corner canvas-control"
         role="slider"
         aria-label="Its size"
         aria-valuenow={Math.round(width)}
@@ -535,7 +535,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
           event.currentTarget.setPointerCapture(event.pointerId)
           // Canvas pixels per screen pixel: the zoom's, or focused, the frame's against its box.
           const frame = event.currentTarget.closest(".media")?.getBoundingClientRect()
-          const inverse = focused && frame?.width ? pose.w / frame.width : 1 / flow.getZoom()
+          const inverse = focused && frame?.width ? pose.w / frame.width : 1 / flow.getViewport().zoom
           from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), inverse, pixels: focused && frame ? { w: frame.width, h: frame.height } : undefined, owner: store.inPlace }
           if (focused && control) focusResize?.start()
           if (store.inPlace) store.inPlace.pulled = true
@@ -571,7 +571,7 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
     <span className="ratio-rest">
       {ratioWords(held)}
       {view.here && (
-        <button type="button" className="ratio-clear nodrag" aria-label={field.auto ? "Auto shape" : `Reset aspect ratio to ${fallback}`} title={field.auto ? "Use automatic aspect ratio" : `Reset to ${fallback}`} onClick={() => field.auto ? store.unshape(name, field.field) : void store.setField(name, field.field, fallback)}>
+        <button type="button" className="ratio-clear canvas-control" aria-label={field.auto ? "Auto shape" : `Reset aspect ratio to ${fallback}`} title={field.auto ? "Use automatic aspect ratio" : `Reset to ${fallback}`} onClick={() => field.auto ? store.unshape(name, field.field) : void store.setField(name, field.field, fallback)}>
           <Icon name="close" />
         </button>
       )}
@@ -647,7 +647,7 @@ function TileMeter({ view }: { view: ElementView }) {
 
 const CardBody = memo(function CardBody({ name, width, focused = false, snapshot }: { name: string; width: number; focused?: boolean; snapshot?: ElementView }) {
   const store = useCanvasStore()
-  const flow = useReactFlow<ElementNode>()
+  const flow = useCanvasViewport()
   const live = useElement(name)
   const view = snapshot ?? live
   const here = Boolean(view?.here)
@@ -856,7 +856,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           </span>
         )}
         {view.draft === undefined && here && warned ? (
-          <button type="button" className="iconb warned nodrag" aria-label="Warnings" title={noHash(view.warnings!.join("\n"))} onClick={() => store.patch(name, { warned: !view.warned })}>
+          <button type="button" className="iconb warned canvas-control" aria-label="Warnings" title={noHash(view.warnings!.join("\n"))} onClick={() => store.patch(name, { warned: !view.warned })}>
             !
           </button>
         ) : null}
@@ -864,7 +864,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           // Open or not, its trash can deletes it, with Undo (cl-939): Esc or a click off it leaves.
           <button
             type="button"
-            className="iconb nodrag"
+            className="iconb canvas-control"
             aria-label="Delete"
             title="Delete this box"
             onClick={() => {
@@ -876,14 +876,14 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           </button>
         ) : view.placing ? (
           // Its × stays as it was dropped: past the point of no return, the moment Calcifer is being asked, it does nothing.
-          <button type="button" className="iconb nodrag" aria-label="Cancel" onClick={() => view.placing?.stage !== "adding" && cancel()}>
+          <button type="button" className="iconb canvas-control" aria-label="Cancel" onClick={() => view.placing?.stage !== "adding" && cancel()}>
             <Icon name="close" />
           </button>
         ) : (
           view.draft === undefined &&
           (asset || view.landed) &&
           !lite && (
-            <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete this box" onClick={() => store.remove([name])}>
+            <button type="button" className="iconb canvas-control" aria-label="Delete" title="Delete this box" onClick={() => store.remove([name])}>
               <Icon name="trash" />
             </button>
           )
@@ -897,7 +897,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           {here && editing && view.continuing && <LeadIn name={name} view={view} />}
           {here && !focused && !view.hereWords && asset && shownVersion?.main && (
             <div
-              className="take-out nodrag nopan"
+              className="take-out canvas-control"
               onPointerDown={(event) => {
                 const tile = self.current?.querySelector<HTMLElement>(`.take[data-take="${shownVersion.number}"]`)
                 carryOnMove(event.nativeEvent, asset.kind === "image" ? { name } : { take: taken(store, name, asset, { ...shownVersion, main: shownVersion.main! }) }, tile ?? event.currentTarget)
@@ -917,13 +917,13 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {drawn && !here && !focused && <TileMeter view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
-        <div className="rest-asking nodrag nopan nowheel">
+        <div className="rest-asking canvas-control">
           <Asking name={name} fit={view.asking.fit} />
         </div>
       )}
       {here && asset && asset.kind !== "text" && (!asset.timeline || cut) && <Takes view={view} name={name} width={width} side focused={focused} />}
       {here && asset && !cut && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
-        <div className="here-under nodrag nopan nowheel">
+        <div className="here-under canvas-control">
           <div className="here-all">
             {(asset.kind !== "text" || asset.tool) && <>
               {editing && asset.kind === "video" && !asset.timeline && <ContinueFrom name={name} view={view} />}
@@ -949,8 +949,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   )
 })
 
-/** Thin, as React Flow renders it: identity and body width come from one geometry publication. */
-export function Card({ data }: NodeProps<ElementNode>) {
+/** Native interaction overlay: identity and body width come from one geometry publication. */
+export function Card({ data }: Pick<ElementNode, "data">) {
   const store = useCanvasStore()
   const focused = useSignal(store.focusedName)
   const entering = useSignal(store.focusEntering)

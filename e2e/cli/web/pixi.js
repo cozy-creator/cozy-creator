@@ -163,6 +163,7 @@ async function candidate(context, origin, directory) {
   page.setDefaultTimeout(STEP);
   page.setDefaultNavigationTimeout(STEP);
   const errors = [], violations = [], apiOrigins = new Set();
+  seen.pageErrors = errors; seen.cspViolations = violations;
   page.on('pageerror', error => errors.push(clean(error.message)));
   page.on('console', message => { if (message.type() === 'error') errors.push(clean(message.text())); });
   page.on('request', request => { const url = new URL(request.url()); if (url.pathname.startsWith('/v1')) apiOrigins.add(url.origin); });
@@ -278,6 +279,7 @@ async function candidate(context, origin, directory) {
   sameService();
 })().catch(async error => {
   failures.push(`${during}: ${clean(error.stack ?? error)}`);
+  if (page) seen.failedResources = await page.locator('.canvas-root').evaluate(el => el.canvasInspection?.resources()).catch(() => null);
   if (page && out) await page.screenshot({ path: join(out, 'failure.png'), timeout: 5000 }).catch(() => {});
 }).finally(async () => {
   if (browser) await browser.close().catch(() => {});

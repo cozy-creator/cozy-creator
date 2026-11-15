@@ -136,27 +136,38 @@ export class MediaCache {
     let blobBytes = 0
     let raw: ImageBitmap | undefined
     let bitmap: ImageBitmap | undefined
+    let image: HTMLImageElement | undefined
     let stage: FailureStage = "fetch"
     let httpStatus: number | undefined
     const live = () => !this.stopped && this.visible && !controller.signal.aborted && this.entries.get(entry.key) === entry && entry.pins > 0
     try {
       const { request } = entry
-      const response = request.local
-        ? await fetch(request.path, { signal: controller.signal })
-        : await this.client.transport.fetch(request.path, { signal: controller.signal })
-      httpStatus = response.status
-      if (!response.ok || response.status === 202) {
-        stage = "http"
-        void response.body?.cancel()
-        throw new Error("Thumbnail is not available")
+      if (request.local) {
+        // Import previews are image resources; connect-src deliberately excludes blob URLs.
+        image = new Image()
+        const released = () => image?.removeAttribute("src")
+        controller.signal.addEventListener("abort", released, { once: true })
+        image.src = request.path
+        stage = "decode"
+        await image.decode()
+        if (!live()) return
+        raw = await createImageBitmap(image)
+      } else {
+        const response = await this.client.transport.fetch(request.path, { signal: controller.signal })
+        httpStatus = response.status
+        if (!response.ok || response.status === 202) {
+          stage = "http"
+          void response.body?.cancel()
+          throw new Error("Thumbnail is not available")
+        }
+        const blob = await response.blob()
+        if (!live()) return
+        blobBytes = blob.size
+        this.sourceBytes += blobBytes
+        this.fetchedBytes += blobBytes
+        stage = "decode"
+        raw = await createImageBitmap(blob)
       }
-      const blob = await response.blob()
-      if (!live()) return
-      blobBytes = blob.size
-      this.sourceBytes += blobBytes
-      this.fetchedBytes += blobBytes
-      stage = "decode"
-      raw = await createImageBitmap(blob)
       if (!live()) return
       entry.aspect = raw.width / raw.height
       this.decodedTotal += raw.width * raw.height * 4
@@ -194,6 +205,7 @@ export class MediaCache {
         this.invalidate()
       }
     } finally {
+      image?.removeAttribute("src")
       raw?.close()
       bitmap?.close()
       this.sourceBytes -= blobBytes

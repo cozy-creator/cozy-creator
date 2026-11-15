@@ -495,7 +495,7 @@ export function MentionText({
     <>
       <div
         ref={box}
-        className="mention-text nodrag nopan nowheel"
+        className="mention-text canvas-control"
         role="textbox"
         aria-multiline="true"
         aria-label={label}

@@ -209,7 +209,7 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
         {cancel && (
           <button
             type="button"
-            className="face-cancel nodrag"
+            className="face-cancel canvas-control"
             aria-label={`Cancel ${name}'s render`}
             onClick={(event) => {
               // Its box isn't opened by it. The take looked at, by its id, when one is: its others go on (cl-945).

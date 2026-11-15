@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react"
-import type { Viewport } from "@xyflow/react"
+import type { Viewport } from "./viewport"
 import { CARD_WIDTH, type ElementView } from "./CanvasStore"
 import type { Box } from "./graph"
 import { aspectOf, bodyBox, HEAD, shownOf } from "./shown"

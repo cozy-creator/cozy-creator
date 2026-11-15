@@ -98,7 +98,7 @@ export function Transport({ playback, frames, fps }: { playback: Playback; frame
   const playing = useSignal(playback.playing)
   const last = Math.max(0, frames - 1)
   return (
-    <div className="tl-transport nodrag nopan">
+    <div className="tl-transport canvas-control">
       <button type="button" className="tb tl-go" aria-label={playing ? "Pause" : "Play"} title={playing ? "Pause (Space)" : "Play (Space)"} disabled={!frames} onClick={() => playback.toggle()}>
         <Icon name={playing ? "pause" : "play"} />
       </button>

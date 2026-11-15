@@ -413,7 +413,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
     // Its transport has the Play.
     if (controller) return null
     return (
-      <button type="button" className="play nodrag" aria-label="Play" onClick={() => setState("waiting")}>
+      <button type="button" className="play canvas-control" aria-label="Play" onClick={() => setState("waiting")}>
         <Icon name="play" />
       </button>
     )
@@ -423,7 +423,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
     <>
       <Tag
         ref={element}
-        className={`live nodrag nopan nowheel ${field}`}
+        className={`live canvas-control ${field}`}
         controls={!controller}
         preload="none"
         onTimeUpdate={(event) => onTime?.(event.currentTarget.currentTime)}
@@ -436,7 +436,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
         }}
       />
       {/* A stop, not ✕: in a corner ✕ reads as close or delete (Paul, 11-12). */}
-      <button type="button" className="stop nodrag" aria-label="Stop" title="Stop" onClick={() => stopRef.current()}>
+      <button type="button" className="stop canvas-control" aria-label="Stop" title="Stop" onClick={() => stopRef.current()}>
         <Icon name="stop" />
       </button>
     </>
@@ -862,7 +862,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
       {failedTake ? <FailedHere whole message={failedTake.message.replace(`${name}: `, "")} copy={bodyText(failedTake, watch?.run, undefined)} /> : failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}
-      {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
+      {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action canvas-control" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit: open it and drag to turn">
@@ -891,7 +891,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 function FailedHere({ message, copy, whole = false }: { message: string; copy: string; whole?: boolean }) {
   return (
     <div className={`run-face lines failed ${whole ? "whole" : ""}`} data-phase="failed">
-      <p className="face-state error-text nodrag nopan">
+      <p className="face-state error-text canvas-control">
         <b title={message}><span className="face-words">Didn't render: {message}</span></b>
         <CopyError text={copy} />
       </p>
@@ -971,7 +971,7 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
           <video
             ref={element}
             src={src}
-            className={open ? "nodrag nopan nowheel" : undefined}
+            className={open ? "canvas-control" : undefined}
             muted={!open}
             loop={!open}
             autoPlay={!open}
