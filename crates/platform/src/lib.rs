@@ -29,7 +29,7 @@ pub mod heap;
 pub mod ipc;
 #[cfg(feature = "seams")]
 pub mod lock;
-#[cfg(all(unix, feature = "seams"))]
+#[cfg(feature = "seams")]
 pub mod net;
 #[cfg(feature = "seams")]
 pub mod mounts;

@@ -2288,45 +2288,10 @@ pub struct CalciferActivity {
     pub now_ms: i64,
 }
 
-/// `POST /v1/session-codes`: a code a browser trades once for a session.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionCode {
-    pub code: String,
-    /// Calcifer's page, the code in its fragment.
-    pub url: String,
-    pub expires_ms: i64,
-}
-
-/// `POST /v1/session`'s body.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RedeemCode {
-    pub code: String,
-}
-
-/// `POST /v1/session`: `token` for `Authorization`, `media` for the `?media=` of a file's URL.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct BrowserSession {
-    pub token: String,
-    pub media: String,
-}
-
 // Credentials are never printed.
 impl fmt::Debug for Play {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Play").field("address", &self.address).field("expires_s", &self.expires_s).finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for RedeemCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RedeemCode").finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for BrowserSession {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BrowserSession").finish_non_exhaustive()
     }
 }
 

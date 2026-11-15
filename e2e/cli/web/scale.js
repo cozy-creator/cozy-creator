@@ -15,7 +15,7 @@ const { createHash } = require('crypto');
 const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { projectUrl, projectAction, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld, canvasBox, canvasNames, canvasView, fitCanvas, screenshotPixels } = require('./page');
+const { holderToken, projectUrl, projectAction, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld, canvasBox, canvasNames, canvasView, fitCanvas, screenshotPixels } = require('./page');
 const { readFootprint, closedProjectMemory } = require('./native-memory');
 const { runnerSpeed } = require('./speed');
 const { prepareCurrentSeed, seedCurrentProject } = require('./current-seed');
@@ -399,7 +399,7 @@ async function nativeMemory(base, folder) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const token = holderToken();
   const resources = () => page.evaluate(() => window.canvasInfo()?.resources() ?? null);
   // Geometry locates a probe; only independently decoded screenshots establish that the image was actually presented.
   const picture = async (name, expected = (x, y) => [90, x * 255, y * 255], ms = 120_000) => {

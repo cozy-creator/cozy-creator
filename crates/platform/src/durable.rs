@@ -15,7 +15,7 @@ use std::{
 mod disk;
 mod private;
 mod soon;
-pub use private::create_private_new;
+pub use private::{create_private_new, make_private_dir, others_may_open};
 pub use disk::{DiskClass, Filesystem, cached, cached_pages, cached_runs, filesystem, open_direct, page_size, renames_after_data, will_need};
 pub use soon::soon;
 

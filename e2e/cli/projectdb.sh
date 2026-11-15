@@ -48,11 +48,19 @@ chrome=$(web_chrome)
 [ -n "$chrome" ] && [ -x "$chrome" ] || { check "web: no Google Chrome (${chrome:-none})"; return; }
 npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "web: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
 restart=$(web_restart "$lock")
+# A busy computer's sockets, held while the cells run (web/busy.js).
+local busy=
+if [ -n "${BUSY_SOCKETS:-}" ]; then
+  ulimit -n 16384 2> /dev/null || true
+  node "$(web_path "$here/web/busy.js")" "$BUSY_SOCKETS" > "$OUT/web-busy.out" 2>&1 & busy=$!
+  until grep -q '^ready' "$OUT/web-busy.out" 2> /dev/null; do kill -0 "$busy" 2> /dev/null || { check "web: busy.js ended: $(tail -c 300 "$OUT/web-busy.out")"; return; }; sleep 0.2; done
+fi
 for name in ${DB_WEB:-place nodes versions tools live layout undo offline held}; do
   step "web-$name"
   case $name in
     instant) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     stays) web_proof "$name" "$chrome" "$pw" "$restart" ;;
+    access) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     palette) CATALOG=1 NO_HUB=$(web_restart "$lock" http://127.0.0.1:9) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     undo | offline) STOP=$(web_halt "$lock") START=$(web_start) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     # As web-core runs them (web.sh): see also on a Hub nothing answers, localfit on the GPU-selling stand-in.
@@ -64,6 +72,7 @@ for name in ${DB_WEB:-place nodes versions tools live layout undo offline held};
   esac
   [ "$name" != scale ] || web_scale_said
 done
+[ -z "$busy" ] || { kill "$busy" 2> /dev/null; wait "$busy" 2> /dev/null || true; }
 }
 
 # A new take never changes what's approved (cl-908): the page's double tap, its Render, a mention's real run (web/approvals.js).

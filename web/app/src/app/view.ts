@@ -1,6 +1,7 @@
 import type { Viewport } from "../canvas/viewport"
 import type { Client } from "../api/client"
 import type { ProjectView, ProjectViewPatch } from "../api/calcifer"
+import { forgetLastWords } from "../api/outbox"
 
 // Project preferences are durable only in project.db. These maps are this tab's live view.
 const privateProjects = new Set<string>()
@@ -15,7 +16,7 @@ export function forgetProjectView(id: string) {
   views.delete(id)
 }
 export function protectProjectView(id: string, encrypted: boolean) {
-  if (encrypted) { privateProjects.add(id); plainProjects.delete(id) }
+  if (encrypted) { privateProjects.add(id); plainProjects.delete(id); forgetLastWords(id) }
   else { privateProjects.delete(id); plainProjects.add(id) }
 }
 

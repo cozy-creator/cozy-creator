@@ -1,12 +1,12 @@
 // One stream across tabs, and across a restart of Calcifer (web-ui.md §3): tabs share one `GET /v1/events`, closing the tab that holds
-// it hands it on, and `kill -9` on Calcifer says it's offline and recovers with no reload, the session intact. A reload after the
+// it hands it on, and `kill -9` on Calcifer says it's offline and recovers with no reload. A reload after the
 // restart must not hang, which it did in the shelved build.
-//   node reconnect.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
+//   node reconnect.js: opened by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $RESTART: a shell command that kills this Calcifer with -9 and
 // brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
-const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, drop, png, noStall, until } = require('./page');
+const { holderToken, projectFolder, projectFromPage, calcifer, signIn, STEP_MS, drop, png, noStall, until } = require('./page');
 
 const { canvasBox, canvasView, hoverBox } = require('./page');
 
@@ -61,17 +61,16 @@ async function drag(page, name, dx, dy) {
   const url = first.url();
   const id = (await projectFromPage(first)).id;
   const folder = (await first.evaluate(async (id) => {
-    const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
-    return (await fetch(`/v1/projects/${id}`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
+    return (await fetch(`/v1/projects/${id}`, { headers: { 'cozy-project-storage': '3' } })).json();
   }, id)).path;
   await drop(first, [{ name: 'Here.png', type: 'image/png', bytes: png(90) }], 600, 300);
   await first.waitForSelector('.nm-field');
   await first.keyboard.press('Enter');
   seen.project = { id, folder };
-  // Its row as Calcifer answers it (cl-803: the canvas is project.db's), asked from here.
-  const { token } = JSON.parse(await first.evaluate(() => sessionStorage.getItem('cozy.session')));
+  // Its row as Calcifer answers it (cl-803: the canvas is project.db's), asked from here, with the lock record's bearer, read again after the
+  // restart: the new Calcifer's.
   const row = async (name) => {
-    const card = (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).cards?.[name];
+    const card = (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${holderToken()}`, 'cozy-project-storage': '3' } })).json()).cards?.[name];
     return card ? `${card.x},${card.y}` : null;
   };
   await until('the element landed', async () => Boolean(await canvasBox(first, 'here')) && Boolean(await row('here')), Boolean);
@@ -98,14 +97,14 @@ async function drag(page, name, dx, dy) {
   check('handover', true);
 
   if (process.env.RESTART) {
-    // kill -9: offline, in the top bar; then back with no reload and the session intact.
-    const held = await third.evaluate(() => sessionStorage.getItem('cozy.session'));
+    // kill -9: offline, in the top bar; then back with no reload.
     const restarted = new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
     const said = await until('it said offline', () => third.locator('.pill.warn').allTextContents(), (lines) => lines.some((line) => line.startsWith('Calcifer offline')));
     await restarted;
     await until('back', () => third.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('offline')));
     seen.said_during_restart = said;
-    check('no_sign_in_needed', (await third.locator('.gate').count()) === 0 && (await third.evaluate(() => sessionStorage.getItem('cozy.session'))) === held);
+    // The page holds no credential or session to reopen after Calcifer returns (cl-985).
+    check('nothing_to_open_again', (await third.locator('.gate').count()) === 0);
     check('still_on_canvas', Boolean(await canvasBox(third, 'here')));
     const wasRow = await row('here');
     const otherWas = await place(second, 'here');

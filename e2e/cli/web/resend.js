@@ -7,7 +7,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
+const { holderToken, projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -26,7 +26,7 @@ async function loseAnswers(page, method, path, times) {
     keys.push(lost.request().headers()['idempotency-key'] ?? null);
     if (left <= 0) return lost.fallback();
     left -= 1;
-    await lost.fetch();
+    await lost.fetch({ headers: { ...lost.request().headers(), authorization: `Bearer ${holderToken()}` } });
     await lost.abort('connectionreset');
   };
   await page.route(path, route);
@@ -49,11 +49,11 @@ async function loseAnswers(page, method, path, times) {
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
-  const token = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token);
-  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...init.headers } });
+  const token = holderToken();
+  const api = (path, init = {}) => page.evaluate(async ({ path, init }) => {
+    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, init, token });
+  }, { path, init });
   const at = `/v1/projects/${id}`;
   seen.project = { id, folder: (await api(at)).body.path };
   const asset = async (name) => (await api(at)).body.assets.find((row) => row.name === name);

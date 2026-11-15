@@ -12,7 +12,7 @@ const { execSync, execFileSync } = require('child_process');
 const { existsSync, mkdtempSync, readdirSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, drop, launch, lastLook, lookAt, noStall, openBox, png, pointAt, renderOf, until, rowsOf, upload } = require('./page');
+const { holderToken, projectFolder, projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, drop, launch, lastLook, lookAt, noStall, openBox, png, pointAt, renderOf, until, rowsOf, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -41,7 +41,7 @@ const drawer = join(__dirname, '..', 'project', 'draw.py');
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
-  const token = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token);
+  const token = holderToken();
   const api = async (path, init = {}) => {
     const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
