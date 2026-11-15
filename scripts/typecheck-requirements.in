@@ -4,7 +4,7 @@
 mypy
 cryptography
 h2
-cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/releases/download/xs-198-runtime-0.48.0.dev0-116ac53c/cozy_runtime-0.48.0.dev0%2Bdev.g116ac53c-py3-none-any.whl#sha256=2866142a536a39ca669667e33a2015e7c6366f4a954d3c69d8b71cd68ef8501c
+cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/releases/download/xs-198-runtime-0.48.0.dev0-aec95482/cozy_runtime-0.48.0.dev0%2Bdev.gaec95482-py3-none-any.whl#sha256=84e9156307fedf65fb4695626e5b155b9f1d197e08836310a920f71ad03f864b
 tensorfs @ https://github.com/cozy-creator/cozy-creator/releases/download/xs-198-tensorfs-0.27.0-95d567d3/tensorfs-0.27.0%2Bdev.g95d567d3-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=650a72ddda60622966c0053129f61dd0270fe5df2c3cba21e1aa9887e6e56a2a
 msgspec
 numpy
