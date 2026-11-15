@@ -225,6 +225,22 @@ PY_BACKING_SCAN
   printf '{"ordinary":true,"mounted_media":true,"lock":true,"recovery":true,"recovery_output_backing_refused":true,"recovery_output_view_refused":true,"rekey":true,"expiry":true,"decrypt":true,"reencrypt":true,"synthetic_only":true}\n' > "$work/receipt.json"
 )
 
+# cl-1002: `cozy open` in a locked encrypted project, on a real terminal (e2e/cli/open_unlock.py): it asks for the passphrase (a
+# wrong one again) or the recovery secret, unlocks and prints the page's URL; with --json, or from a pipe, it refuses, naming
+# `cozy vault unlock`. Linux: a pty and the runner's vault driver.
+open_unlocks() (
+  step "cozy open unlocks a locked project at a terminal (cl-1002)"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "open unlocks: Linux runners only"; exit 0; }
+  local work secrets
+  work=$(mktemp -d "$OUT/open-unlocks.XXXXXX") secrets=$(mktemp -d "$OUT/open-unlocks-credentials.XXXXXX")
+  trap 'in_project "$work/p" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic open passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  cozy --json new "$work/p" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" 2> "$work/new.err" \
+    || fail "open unlocks: cozy new --passphrase-file: $(tail -c 300 "$work/new.err")"
+  ARGV_LOG="$OUT/argv.log" python3 "$E2E/cli/open_unlock.py" --cozy "$COZY" --project "$work/p" --passphrase "$secrets/passphrase" \
+    --recovery "$secrets/recovery" --out "$work/proof" 2> "$work/proof.err" || { cat "$work/proof.err"; check "$(tail -n 1 "$work/proof.err" | cut -c1-400)"; }
+)
+
 # cl-886: encryption leaves nothing outside its vault. A conversion killed midway is recovered by the next start; Calcifer
 # never opens its own `.cozy-*` folders as projects; and no file outside the vault holds the project's plaintext.
 # Encrypted create and unlock times through the CLI (cl-995): a create (its two key slots, its filesystem and first database),

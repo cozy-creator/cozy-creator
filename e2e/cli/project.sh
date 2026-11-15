@@ -162,21 +162,27 @@ busy_skew() {
 }
 
 # cl-962: the installed cozy that finds a Calcifer of another version (an install swapped under it; here its lock's record says
-# 0.0.0-skew) keeps it running while a page's stream is open, and says so. A real skew is busy_skew's; this one runs wherever the
-# installed cozy is the candidate (isolated CI).
+# 0.0.0-skew) keeps it running while a page's stream is open, and (cl-1002) uses it without a word: no command says which
+# versions meet. A real skew is busy_skew's; this one runs wherever the installed cozy is the candidate (isolated CI).
 kept_calcifer() {
-  step "the installed cozy keeps a Calcifer of another version that a page uses"
-  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pid code=0
+  step "the installed cozy keeps a Calcifer of another version that a page uses, and says nothing of it"
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pid code words
   pid=$(calcifer_record pid)
   open_page || return
   cp "$holder" "$OUT/holder.saved"
   jq -c '.version = "0.0.0-skew"' "$OUT/holder.saved" > "$holder.skew" && mv -f "$holder.skew" "$holder"
-  cozy machine ls > "$OUT/kept.txt" 2>&1 || code=$?
+  : > "$OUT/kept.txt"
+  for words in "machine ls" "--json machine ls" "status" "--json status" "run ls --all"; do
+    code=0
+    # shellcheck disable=SC2086 # each a command's words
+    (cd "$OUT/project" && cozy $words) > "$OUT/kept-out.txt" 2> "$OUT/kept-err.txt" || code=$?
+    { echo "\$ cozy $words (exit $code)"; cat "$OUT/kept-out.txt" "$OUT/kept-err.txt"; } >> "$OUT/kept.txt"
+    [ "$code" = 0 ] || check "kept: cozy $words failed against a Calcifer of another version (exit $code): $(tail -c 300 "$OUT/kept-err.txt")"
+    ! grep -qiE 'Calcifer here is|this cozy is|keeps running|cozy restart' "$OUT/kept-out.txt" "$OUT/kept-err.txt" \
+      || check "kept: cozy $words spoke of the Calcifer it keeps: $(grep -hiE 'Calcifer here is|this cozy is|keeps running|cozy restart' "$OUT/kept-out.txt" "$OUT/kept-err.txt" | head -2)"
+  done
   cp "$OUT/holder.saved" "$holder"
   cat "$OUT/kept.txt"
-  [ "$code" = 0 ] || check "kept: cozy machine ls failed against a Calcifer of another version (exit $code)"
-  grep -q 'Calcifer here is 0.0.0-skew, this cozy is .*: it keeps running (a page is open' "$OUT/kept.txt" \
-    || check "kept: the installed cozy did not say it keeps a Calcifer a page uses"
   ! grep -q 'restarting it' "$OUT/kept.txt" || check "kept: the installed cozy said it restarts Calcifer"
   [ "$(calcifer_record pid)" = "$pid" ] || check "kept: Calcifer was restarted under an open page (pid $pid is now $(calcifer_record pid))"
   kill -0 "$PAGE_PID" 2> /dev/null || check "kept: the page's events stream was cut"

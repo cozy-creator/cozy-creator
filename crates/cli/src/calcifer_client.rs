@@ -828,18 +828,8 @@ impl Client {
         }
         let holder = match self.live().await {
             // It restarts on this binary: runs on machines go on, and it resumes what it owed. One someone uses keeps
-            // running (cl-962): this cozy asks it as it is, and only what it lacks is refused.
-            Some(holder) if self.replaced(&holder) => match self.kept(&holder).await {
-                Some(why) => {
-                    self.say(&format!(
-                        "Calcifer here is {}, this cozy is {}: it keeps running ({why}); `cozy restart` switches it",
-                        holder.version,
-                        ::api::VERSION
-                    ));
-                    holder
-                }
-                None => self.replace(holder).await?,
-            },
+            // running (cl-962), asked as it is without a word (cl-1002): only what it lacks is refused.
+            Some(holder) if self.replaced(&holder) && self.kept(&holder).await.is_none() => self.replace(holder).await?,
             Some(holder) => holder,
             None => self.start().await?,
         };
@@ -1470,11 +1460,6 @@ pub(crate) fn path(segments: &[&str]) -> String {
     url.path().to_owned()
 }
 
-/// The home's installed `cozy`, the only one Calcifer and the machine run: the path the home
-/// records. With none recorded, or a recorded file gone (a package manager moved it), it is the
-/// installer's `<home>/bin/cozy` when that is there, else this cozy (Homebrew's stable path, winget,
-/// a distro package), and that is recorded. One rule for every installer; another cozy never
-/// replaces a recorded one that is there.
 /// A Calcifer of another version that is kept running (cl-962): what this cozy asked for that it lacks, and why it keeps running.
 fn other_version(holder: &Holder, lacks: &str, why: &str) -> Error {
     Error::new(
@@ -1490,6 +1475,11 @@ fn other_version(holder: &Holder, lacks: &str, why: &str) -> Error {
     .next("cozy restart")
 }
 
+/// The home's installed `cozy`, the only one Calcifer and the machine run: the path the home
+/// records. With none recorded, or a recorded file gone (a package manager moved it), it is the
+/// installer's `<home>/bin/cozy` when that is there, else this cozy (Homebrew's stable path, winget,
+/// a distro package), and that is recorded. One rule for every installer; another cozy never
+/// replaces a recorded one that is there.
 pub(crate) fn installed(home: &Home) -> Result<PathBuf, Error> {
     let record = home.installed();
     let recorded = std::fs::read_to_string(&record).ok().map(|text| PathBuf::from(text.trim_end()));
