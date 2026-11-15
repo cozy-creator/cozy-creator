@@ -1332,9 +1332,13 @@ export class CanvasStore {
     }
   }
 
-  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. */
-  private giveWay(name: string, field: Field, box: Box, give: Give): Box {
-    const { pushed, ...fitted } = fit(box, field, give)
+  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. With `bare`, the boxes
+   *  themselves without the room each keeps: where nowhere near has its room but the box itself lies on none of them, it stays, closer than
+   *  its room, not sent beside everything, off past a crowd's edge. */
+  private giveWay(name: string, field: Field, box: Box, give: Give, bare?: Field): Box {
+    const { pushed, beside, ...fitted } = fit(box, field, give)
+    const itself = beside && bare ? this.boxOf(name, true) : null
+    if (itself && !bare!.under(itself).size) return box
     this.push(field, pushed)
     if (fitted.x === box.x && fitted.y === box.y && fitted.w === box.w) return box
     this.slide(name, fitted)
@@ -1348,24 +1352,26 @@ export class CanvasStore {
   }
 
   /**
-   * What arrived lying on something, put there by another writer or grown there, keeps where it was put (Paul, 11-06: "the placement
-   * position of the new object should be primary, and then other objects should move around it"; cl-800: a placement never overwrites an
-   * `at`), and what it lies on is pushed aside, by name order, so every tab does the same. What arrived with it is never pushed by it, and
-   * where what it lies on can't be pushed (held in a drag, open, still being made), it stays all the same. What's held in a drag, or by its
-   * corner, waits to be let go.
+   * What arrived lying on something, put there by another writer or grown there, keeps where it was put and pushes aside what it lies on
+   * (Paul, 11-06: "the placement position of the new object should be primary, and then other objects should move around it"; cl-800),
+   * what arrived or grew with it too, one by one in name order, so every tab does the same. Where what it lies on can't be pushed (held in a
+   * drag, open, still being made), it gives way itself: no box ever lies on another. What's held in a drag, or by its corner, waits to be
+   * let go.
    */
   private settle() {
     const batch = [...this.unsettled].filter((name) => this.ids.has(name) && !this.dragging.has(name) && name !== this.pulling?.name).sort()
     this.unsettled.clear()
     if (!batch.length) return
-    const names = new Set(batch)
-    const field = this.field(names)
-    const may = this.pushable(names)
+    const [field, bare] = [this.field(), this.field(undefined, true)]
     for (const name of batch) {
       const box = this.boxOf(name)
       if (!box) continue
-      if (field.under(box).size) this.push(field, pushAside(box, field, may))
-      field.add(name, box)
+      field.remove(name)
+      bare.remove(name)
+      const placed = this.giveWay(name, field, box, { pushes: this.pushable(new Set([name])) }, bare)
+      field.add(name, placed)
+      const itself = this.boxOf(name, true)
+      if (itself) bare.add(name, itself)
     }
   }
 
