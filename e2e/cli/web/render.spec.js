@@ -1,5 +1,5 @@
 // render (cl-973 core cell 11), on local: "A still" from the palette, typed in and rendered by Render, lists its take the frame after the
-// press and keeps that one id until it lands in place, unreloaded; another box rendered by Ctrl+Enter says Queued, then Rendering, with a
+// press and keeps that one id until it lands in place, unreloaded, its pending tile and its Cancel naming its run KEY-N; another box rendered by Ctrl+Enter says Queued, then Rendering, with a
 // faded preview of its latents until its take replaces it, and its finish note's View opens it. Render all: a box waiting on another says
 // so and shows none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
 // rendering, and their takes go.
@@ -164,13 +164,16 @@ const recordBox = (page, name) => page.evaluate((name) => {
 }, name);
 const said = (page, name) => page.evaluate((name) => window.__said[name], name);
 
-/** Focus's takes column for `name` on every change, by take id; and, heard before the page's own handler, the column as Render was pressed
- *  and in the next frame. */
+/** Focus's takes column for `name` on every change, by take id, with what each pending tile of a run and its Cancel say; and, heard before
+ *  the page's own handler, the column as Render was pressed and in the next frame. */
 const recordTakes = (page, name) => page.evaluate((name) => {
   const look = () => {
     const side = document.querySelector(`[data-focused-asset="${CSS.escape(name)}"] .here-side`);
     const ids = (selector) => [...(side?.querySelectorAll(selector) ?? [])].map((tile) => tile.getAttribute('data-take-id')).filter(Boolean);
-    return { open: Boolean(side), making: ids('.take.making[data-take-id]'), landed: ids('.take[data-take][data-take-id]') };
+    const runs = [...(side?.querySelectorAll('.take.making[data-run]') ?? [])].map((tile) => ({
+      run: tile.getAttribute('data-run'), tile: tile.getAttribute('title'), cancel: tile.closest('.take-at')?.querySelector('.take-off')?.getAttribute('aria-label') ?? null,
+    }));
+    return { open: Boolean(side), making: ids('.take.making[data-take-id]'), landed: ids('.take[data-take][data-take-id]'), runs };
   };
   const takes = (window.__takes = { log: [look()], pressed: null });
   new MutationObserver(() => {
@@ -255,6 +258,11 @@ test('render', async ({ page, project, api, cli }) => {
     const log = await page.evaluate(() => window.__takes.log);
     const listed = log.findIndex((look) => look.making.includes(take) || look.landed.includes(take));
     expect.soft(log.slice(listed).filter((look) => look.open && !look.making.includes(take) && !look.landed.includes(take)), 'never off the column until it lands').toEqual([]);
+    // Its pending tile and its Cancel name its run KEY-N, as the run drawer does, in every look (cl-987, #3341).
+    const { key } = await api.get(project.at('/key'));
+    const named = log.flatMap((look) => look.runs);
+    expect.soft(Boolean(key) && named.length > 0 && named.every(({ run, tile, cancel }) => tile === `Run ${key}-${run}` && cancel === `Cancel run ${key}-${run}`),
+      `its pending tile and its Cancel say Run ${key}-N: ${JSON.stringify(named.slice(0, 4))}`).toBe(true);
     await softly.poll(() => drawn(region.locator('.focus-viewer')), { message: 'its take drawn where it was made' }).toBe(shaOf(made, 1));
     expect.soft(await page.evaluate(() => window.__unreloaded), 'with no reload').toBe(true);
     await back(page);
