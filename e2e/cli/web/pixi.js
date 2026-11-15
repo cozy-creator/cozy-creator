@@ -140,6 +140,17 @@ async function candidate(context, origin, directory) {
   });
   await page.exposeFunction('recordCspViolation', value => violations.push(value));
   await page.addInitScript(() => { document.addEventListener('securitypolicyviolation', event => window.recordCspViolation({ directive: event.violatedDirective, disposition: event.disposition })); });
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input.url ?? String(input), location.href);
+      if (url.pathname !== '/v1/events') return original(input, init);
+      const abort = new AbortController(), prior = init.signal ?? (input instanceof Request ? input.signal : null);
+      window.reconnectPixiStream = () => abort.abort();
+      // Disconnect the real reader; the app must reconnect to Calcifer without a synthetic event or response.
+      return original(input, { ...init, signal: prior ? AbortSignal.any([prior, abort.signal]) : abort.signal });
+    };
+  });
   await candidate(context, origin, process.env.CANDIDATE_DIST);
   // Observe the page's own transport proof. No header, credential, or synthetic response is injected into its API requests.
   const proving = page.waitForResponse(response => { const url = new URL(response.url()); return url.origin === origin && url.pathname === '/v1/project-storage' && response.request().method() === 'GET'; });
@@ -207,6 +218,13 @@ async function candidate(context, origin, directory) {
     check(label, sample.matches, sample);
   };
   await picture('pixi_source', 'passive_real_pixels');
+  const priorCanvas = await page.locator('canvas.canvas-pixels').elementHandle();
+  const newInterest = page.waitForResponse(response => response.request().method() === 'PUT' && /^\/v1\/events\/[^/]+$/.test(new URL(response.url()).pathname) && response.ok());
+  await page.evaluate(() => window.reconnectPixiStream());
+  await newInterest; await settled();
+  check('plain_reconnect_retains_renderer', await priorCanvas.evaluate(element => element.isConnected && element === document.querySelector('canvas.canvas-pixels')));
+  await priorCanvas.dispose();
+  await picture('pixi_source', 'reconnected_real_pixels');
   let p = await point('pixi_source');
   await page.mouse.click(p.x, p.y);
   await until('single click selected', () => inspect('selectedNames'), names => names.join() === 'pixi_source');

@@ -46,9 +46,10 @@ export function CanvasSurface(props: Props) {
   const { store, active, disabled } = props
   const controller = useCanvasViewport()
   const projectId = store.projectId
-  const { client, privateViewEpoch, signedOut } = useConnection()
+  const { client, bridge, privateViewEpoch, signedOut } = useConnection()
   const queries = useQueryClient()
-  const privateEpoch = useSignal(privateViewEpoch)
+  useSignal(privateViewEpoch)
+  const projectEpoch = projectId ? bridge.projectEpoch(projectId) : 0
   const loggedOut = useSignal(signedOut)
   const helpId = useId()
   const root = useRef<HTMLDivElement>(null)
@@ -511,7 +512,7 @@ export function CanvasSurface(props: Props) {
       delete (element as HTMLDivElement & { canvasInspection?: unknown }).canvasInspection
       update.current = () => {}; enabled.current = () => {}
     }
-  }, [controller, store, projectId, client, queries, privateEpoch, loggedOut])
+  }, [controller, store, projectId, client, queries, projectEpoch, loggedOut])
 
   const node = hovered ? controller.getNodes().find(n => n.data.name === store.resolveName(hovered)) : undefined
   const native = active && node && focused !== node.data.name ? node : null
