@@ -6,7 +6,15 @@ use tracing_subscriber::{Layer as _, layer::SubscriberExt as _, util::Subscriber
 
 pub(crate) enum HealthEvent { Started, Stopping, Stopped, StartRefused, Panicked }
 
+static DIAGNOSTICS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a test's config keeps diagnostics (`calcifer.diagnostics`): a project's go in its own log (`private_io::diagnose`).
+pub(crate) fn diagnostics() -> bool {
+    DIAGNOSTICS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn install(home: &Home, diagnostics: bool) -> Result<(), ::api::error::Error> {
+    DIAGNOSTICS.store(diagnostics, std::sync::atomic::Ordering::Relaxed);
     let failed = || ::api::error::Error::new(::api::error::Kind::Internal, "calcifer_health", "Calcifer cannot open its service health record");
     home.open().and_then(|()| durable::private_dir(&home.calcifer())).map_err(|_| failed())?;
     let open = |path: std::path::PathBuf| -> Result<std::fs::File, ::api::error::Error> {
