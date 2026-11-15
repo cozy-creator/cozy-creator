@@ -1,9 +1,10 @@
 # egress: a pod fetches nothing at the metadata address (xs-196 D). One CPU rental, no GPU work:
 #   1. the pod's TensorD becomes the session's cozy (`cozy machine update --tensord`);
 #   2. a model source at https://169.254.169.254 is refused as link-local, on the pod.
+# About 10 min, so a $0.20 cap covers the cpu SKU (0.83 USD/h on 11-15).
 # No params.
 . "$(dirname "$0")/lib.sh"
-quote 900
+quote 600
 rent
 
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"
