@@ -329,6 +329,8 @@ export class CanvasStore {
   readAgain: (names: string[]) => void = () => {}
   /** These boxes are off this page: no read asks for them. */
   forget: (names: string[]) => void = () => {}
+  /** Calcifer answered taking these off: what the stream says of them after is another writer's, and read. */
+  forgotten: (names: string[]) => void = () => {}
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
   /** Opens Rent, with a GPU that holds it chosen when one is known. */
@@ -2737,6 +2739,7 @@ export class CanvasStore {
         send: (once, action) => this.client.deleteAsset(this.projectId!, this.served.get(id) ?? name, { once, edit, action }),
         done: () => {
           if (this.deleting.has(name)) this.deleting.set(name, nextProjectOrder())
+          this.forgotten([name])
         },
         // Its answer was lost: its first try did it.
         landed: (error) => (error.status === 404 ? { name } : undefined),
@@ -2954,6 +2957,7 @@ export class CanvasStore {
         const at = nextProjectOrder()
         for (const { ask } of overlays) ask.until = at
         for (const name of hidden) if (this.deleting.has(name)) this.deleting.set(name, at)
+        this.forgotten(hidden)
         for (const name of back) {
           const id = this.ids.get(name)
           if (id) this.served.set(id, name)
