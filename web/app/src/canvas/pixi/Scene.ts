@@ -74,6 +74,7 @@ interface Drawn {
   context: unknown
   fontEpoch: number
   latent?: Latent
+  wave?: { graphics: Graphics; began: number; alpha: number; spread: number }
   meter?: { run: number; fraction: number; since: number }
   alive: boolean
 }
@@ -95,12 +96,16 @@ export class PixiScene {
   private palette?: { theme: SceneUpdate["theme"]; colors: Palette; glow: number; alpha: number }
   private measure = document.createElement("canvas").getContext("2d")!
   private segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+  private reducedMotion = matchMedia("(prefers-reduced-motion: reduce)")
 
   constructor(private options: Options) {
     options.world.addChild(this.layer)
     this.cache = new MediaCache(options.client, options.store.projectId ?? "", options.invalidate)
     document.fonts.addEventListener("loadingdone", this.fontsChanged)
+    this.reducedMotion.addEventListener("change", this.motionChanged)
   }
+
+  private motionChanged = () => { this.advance(performance.now()); this.options.invalidate() }
 
   private fontsChanged = () => {
     if (this.stopped) return
@@ -155,6 +160,7 @@ export class PixiScene {
         this.draw(drawn)
       }
       this.latentFor(drawn)
+      this.waveFor(drawn)
     }
     for (const [id, drawn] of this.records) if (!live.has(id)) { this.remove(drawn); this.records.delete(id) }
     this.scheduleClock()
@@ -545,6 +551,7 @@ export class PixiScene {
       this.dropLatent(drawn)
       const sprite = new Sprite({ texture: Texture.EMPTY, eventMode: "none" })
       sprite.visible = false
+      sprite.alpha = 0.6
       drawn.pixels.addChild(sprite)
       drawn.latent = { run: run.number, revision: run.progress?.preview ?? 0, sprite }
       this.askLatent(drawn)
@@ -553,6 +560,62 @@ export class PixiScene {
       this.askLatent(drawn)
     }
     this.fitLatent(drawn)
+  }
+
+  private waveFor(drawn: Drawn) {
+    const view = drawn.node.view
+    const running = !view.here && Boolean(view.asset?.standing === "making" || view.queued || view.asked !== undefined)
+    if (!this.visible || !this.onScreen(drawn) || !running) {
+      drawn.wave?.graphics.destroy()
+      drawn.wave = undefined
+      return
+    }
+    if (!drawn.wave) {
+      const graphics = new Graphics()
+      drawn.container.addChildAt(graphics, 0)
+      drawn.wave = { graphics, began: performance.now(), alpha: 0, spread: 0 }
+    }
+  }
+
+  /** Host-owned demand scheduling: a visible render breathes; idle, hidden and reduced-motion scenes request no animation frames. */
+  advance(now: number): boolean {
+    if (!this.visible || this.stopped || !this.input) return false
+    let animated = false
+    const zoom = Math.max(0.0001, this.input.camera.zoom)
+    // CSS render-wave's cubic-bezier(0.25, 0.6, 0.3, 1), solved only for the few cards actually rendering.
+    const ease = (x: number) => {
+      let lo = 0, hi = 1
+      const curve = (t: number, a: number, b: number) => 3 * (1 - t) ** 2 * t * a + 3 * (1 - t) * t * t * b + t ** 3
+      for (let n = 0; n < 12; n++) { const t = (lo + hi) / 2; if (curve(t, 0.25, 0.3) < x) lo = t; else hi = t }
+      return curve((lo + hi) / 2, 0.6, 1)
+    }
+    for (const drawn of this.records.values()) {
+      const wave = drawn.wave
+      if (!wave) continue
+      const body = pictureBox(drawn.node), graphics = wave.graphics
+      const color = drawn.presentation.state === "queued" ? this.palette!.colors.queued : this.palette!.colors.running
+      graphics.clear()
+      const pulse = (spread: number, alpha: number) => {
+        if (spread <= 0 || alpha <= 0) return
+        const out = spread / zoom
+        graphics.roundRect(body.x - drawn.node.box.x - out / 2, body.y - drawn.node.box.y - out / 2, body.w + out, body.h + out, 2 + out / 2).stroke({ width: out, color, alpha, alignment: 0.5 })
+      }
+      if (this.reducedMotion.matches) {
+        wave.alpha = 0.6; wave.spread = 4
+        pulse(4, 0.6)
+      } else {
+        animated = true
+        const elapsed = Math.max(0, now - wave.began)
+        for (const delay of [0, 1200]) {
+          if (elapsed < delay) continue
+          const phase = ease(((elapsed - delay) % 2400) / 2400)
+          const spread = 24 * phase, alpha = 0.75 * (1 - phase)
+          if (!delay) { wave.alpha = alpha; wave.spread = spread }
+          pulse(spread, alpha)
+        }
+      }
+    }
+    return animated
   }
 
   private askLatent(drawn: Drawn) {
@@ -687,6 +750,8 @@ export class PixiScene {
         ...(key === "title" ? { title: drawn.presentation.title } : {}),
       }])),
       state: drawn.presentation.state, unseen: drawn.presentation.unseen, progress: drawn.presentation.progress ?? null,
+      controls: drawn.hits.filter(hit => hit.part === "delete" || hit.part === "cancel").map(hit => ({ part: hit.part, x: drawn.node.box.x + hit.box.x, y: drawn.node.box.y + hit.box.y, width: hit.box.w, height: hit.box.h })),
+      wave: drawn.wave ? { active: true, x: body.x, y: body.y, width: body.w, height: body.h, animation: this.reducedMotion.matches ? "none" : "render-wave", alpha: drawn.wave.alpha, spread: drawn.wave.spread, cycleMs: 2400, reducedMotion: this.reducedMotion.matches } : null,
       media: {
         ready: Boolean(texture), failed: Boolean(main?.failed), local, width: texture?.width ?? 0, height: texture?.height ?? 0,
         requestedWidth: this.resolution(body.w), resolution: local ? "local" : path.includes("/thumbs/") ? String(width) : "original",
@@ -709,6 +774,7 @@ export class PixiScene {
     this.stopped = true
     clearTimeout(this.clock)
     document.fonts.removeEventListener("loadingdone", this.fontsChanged)
+    this.reducedMotion.removeEventListener("change", this.motionChanged)
     for (const drawn of this.records.values()) this.remove(drawn)
     this.records.clear()
     this.cache.destroy()
