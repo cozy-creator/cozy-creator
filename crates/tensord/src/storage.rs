@@ -27,16 +27,38 @@ pub(crate) fn open(root: &Path) -> io::Result<Arc<Store>> {
     Ok(Arc::new(store))
 }
 
+/// Locks a TensorD that can't exit (cl-977) may still hold, which this one would otherwise wait on for good: the store's GC fence
+/// and each environment install's turn. A held one is replaced by a fresh file, as though that TensorD had crashed mid-way, which
+/// what those locks guard already survives.
+pub(crate) fn take_over_locks(store: &Path, generations: &Path) {
+    let installs = std::fs::read_dir(generations.join(".locks")).into_iter().flatten().flatten().map(|entry| entry.path());
+    for path in std::iter::once(store.join("holds").join("gc.lock")).chain(installs) {
+        let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).open(&path) else { continue };
+        if !matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)) {
+            continue;
+        }
+        let fresh = path.with_extension("fresh");
+        match std::fs::File::create(&fresh).and_then(|_| std::fs::rename(&fresh, &path)) {
+            Ok(()) => tracing::warn!("{} was held by the TensorD before this one: taken over", path.display()),
+            Err(error) => tracing::warn!("{} is held by the TensorD before this one, and isn't taken over: {error}", path.display()),
+        }
+    }
+}
+
 /// The machine's claim on its store: `owner.lock` at the store's real path, held exclusively
 /// (without waiting) for as long as the returned file lives; the OS releases it when the machine
 /// exits. A second machine on the same store, by any path, is refused. Readers (`tfs`, the
-/// library) never take it.
-pub(crate) fn claim(root: &Path) -> io::Result<std::fs::File> {
+/// library) never take it. Held by `over`, an earlier machine that can't exit (cl-977), it is taken over unclaimed.
+pub(crate) fn claim(root: &Path, over: Option<&str>) -> io::Result<std::fs::File> {
     let real = std::fs::canonicalize(root)?;
     let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(real.join(OWNER_LOCK))?;
-    match platform::lock::try_claim(&file)? {
-        true => Ok(file),
-        false => Err(io::Error::new(
+    match (platform::lock::try_claim(&file)?, over) {
+        (true, _) => Ok(file),
+        (false, Some(holder)) => {
+            tracing::warn!("the store {} is held by {holder}; this machine takes it over", real.display());
+            Ok(file)
+        }
+        (false, None) => Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("STORE_BUSY: this TensorFS store already has an owner ({})", real.display()),
         )),

@@ -160,7 +160,7 @@ impl Project {
         let Some(StreamEvent::Hello { stream, .. }) = watch.change().await else {
             return Err(Error::new(Kind::Unavailable, "events_unanswered", "Calcifer's event stream ended before it began").next("cozy doctor"));
         };
-        let shown: ProjectShowReply = self.calcifer.put(&path(&["v1", "events", &stream]), &Shown { projects: vec![self.id.clone()] }).await?;
+        let shown: ProjectShowReply = self.calcifer.put(&path(&["v1", "events", &stream]), &Shown { projects: vec![self.id.clone()], machines: false }).await?;
         match shown.refused.into_values().next() {
             Some(refused) => Err(refused.error),
             None => Ok(watch),

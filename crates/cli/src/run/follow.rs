@@ -163,6 +163,29 @@ pub(crate) async fn follow_until(
     }
 }
 
+/// [`follow`] for a command a run carries out (`machine update`, `package install`, `model install`, `model upload`, `model
+/// quantize`): a run that failed or was canceled is the command's refusal, said once as a typed error with its reason's code and
+/// remedy (`--json`: the envelope after the run's events, cl-998).
+pub(crate) async fn carry_out(ctx: &Context, run: Run) -> Result<Run, Error> {
+    let (run, interrupted) = watch(ctx, run, ctx.json, interrupt()).await?;
+    if matches!(run.status, Status::Failed | Status::Canceled) {
+        let reason = run.reason.clone().unwrap_or_default();
+        let code = if reason.code.is_empty() { "run_failed" } else { reason.code.as_str() };
+        let mut said = format!("run {} {}", handle(&run), status_word(run.status));
+        if !reason.message.is_empty() {
+            let _ = write!(said, ": {}", reason.message);
+        }
+        return Err(failure_next(&run).into_iter().fold(Error::new(Kind::Unavailable, code, said), Error::next));
+    }
+    if !ctx.json {
+        record(ctx, &run);
+    }
+    match interrupted {
+        true => Ok(run),
+        false => saved(run),
+    }
+}
+
 /// Ctrl-C in a shell.
 async fn interrupt() {
     let _ = tokio::signal::ctrl_c().await;

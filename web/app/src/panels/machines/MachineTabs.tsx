@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { machinesQuery, maintenanceRunsQuery, projectQuery, runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
-import type { Machine } from "../../api/calcifer"
+import type { Machine, Operation } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
 import { Bar } from "../common"
 import { runName as runLabel, workWords } from "../runs/words"
@@ -16,7 +16,7 @@ type Mark = "broken" | "slow" | "up" | "download" | "install" | "work" | "idle"
 /** Red blinks broken and yellow coming up. Up, each thing it does: an arrow glowing while weights arrive, a package while one installs, green
  *  blinking while it runs inference; steady grey with nothing to do. Steady red first while something makes its runs slow (cl-913). */
 function marksOf(machine: Machine, doing: Doing[]): Mark[] {
-  if (machine.offline || machine.end_failed || machine.unreachable_since_ms || machine.rental?.unreachable_since_ms) return ["broken"]
+  if (machine.offline || machine.broken || machine.end_failed || machine.unreachable_since_ms || machine.rental?.unreachable_since_ms) return ["broken"]
   if (machine.state === "booting" || machine.state === "ending") return ["up"]
   if (machine.state !== "ready" && machine.state !== "stopped") return ["broken"]
   const kinds = new Set(doing.map((one) => (one.kind === "run" ? (working(one.run, one.on) ? "work" : "waits") : one.kind)))
@@ -36,7 +36,11 @@ function MarkOf({ mark }: { mark: Mark }) {
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
-const numbers = (runs: number[]) => (runs.length === 1 ? `run ${runs[0]}` : `runs ${runs.join(", ")}`)
+// The runs waiting on it by name, `KEY-N` (cl-987).
+const numbers = (operation: Operation) => {
+  const runs = operation.names?.length ? operation.names : operation.runs.map(String)
+  return runs.length === 1 ? `run ${runs[0]}` : `runs ${runs.join(", ")}`
+}
 
 function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; to: (rest?: string) => string }) {
   if (doing.kind === "boot")
@@ -57,7 +61,7 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
         <span className="kind">{doing.kind === "download" ? "Download" : "Install"}</span>
         {doing.kind === "download" && fraction !== undefined && <Bar fraction={fraction} />}
         <span className="said">
-          {doing.kind === "download" ? fetchedWords(operation) : sentence(operation.stage || "installing")} · for {numbers(operation.runs)}
+          {doing.kind === "download" ? fetchedWords(operation) : sentence(operation.stage || "installing")} · for {numbers(operation)}
         </span>
       </li>
     )

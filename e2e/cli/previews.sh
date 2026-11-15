@@ -1,6 +1,6 @@
 # e2e/cli/previews.sh: the `previews` part (cr-282): a denoise loop on the CPU (project/latents.py) shows its latents to a
 # client watching its run. `cozy run --previews` and `cozy run watch --previews` save each new one as it runs; a run no
-# one asks about makes none. The box's side is web/previews.js (web.sh).
+# one asks about makes none. The box's side is the web suite's render cell.
 
 previews() {
 [ -n "$LOCAL" ] || { echo "previews: this computer runs no models itself"; return 0; }

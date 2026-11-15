@@ -1035,10 +1035,13 @@ pub struct RunList {
 }
 
 /// `PUT /v1/events/{stream}`: the projects a page on that stream shows, which Calcifer holds open
-/// while it lasts or until it shows others.
+/// while it lasts or until it shows others, and whether it shows a machine's view: its runs that
+/// are no project's (installs, updates). A page stream hears a run only of what it shows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Shown {
     pub projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub machines: bool,
 }
 
 /// The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
@@ -1202,6 +1205,11 @@ pub struct Machine {
     /// which is what a reader that predates this field shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offline: Option<String>,
+    /// Why nothing can run on it (cl-977): its own word (`stuck_in_driver`: the TensorD before its own can't exit, and its GPUs
+    /// can't be opened), or this computer's (`silent_after_update`: a rental that hasn't answered since an update restarted it).
+    /// It takes no work; a rental is released, by itself or by the computer that ordered it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broken: Option<crate::machine::Broken>,
     /// The Hub's word, for a rental.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rental: Option<Rental>,
@@ -1511,6 +1519,9 @@ pub struct Operation {
     /// The runs waiting on it, by number: this computer's own runs, or those of `project`.
     #[serde(default)]
     pub runs: Vec<u64>,
+    /// The same runs by name, `KEY-N` (cl-987).
+    #[serde(default)]
+    pub names: Vec<String>,
     /// The project whose runs wait on it, shown to its own views only; none for this computer's own work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -2243,6 +2254,30 @@ pub struct Down {
     pub stopping: bool,
     /// What Calcifer still owes, which the next Calcifer resumes.
     pub owed: Vec<String>,
+}
+
+/// `GET /v1/projects/{id}/legacy`: the project's history from before projects kept their own (cl-984): runs imported into
+/// its journal, and runs Calcifer's store still holds for it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyHistory {
+    pub imported: u64,
+    pub pending: u64,
+}
+
+/// `GET /v1/legacy`: the old project runs Calcifer's store still holds (cl-984), by the project folder each names: those whose
+/// folder is here (each imported as its project opens), those whose folder is gone, and those whose record can't be read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyRows {
+    pub existing: Vec<LegacyFolder>,
+    pub gone: Vec<LegacyFolder>,
+    pub unreadable: u64,
+}
+
+/// A project folder's old runs still in Calcifer's store.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyFolder {
+    pub path: std::path::PathBuf,
+    pub runs: u64,
 }
 
 /// `GET /v1/status`: this Calcifer at a glance. It never waits on a Hub.

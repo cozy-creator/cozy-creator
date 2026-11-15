@@ -16,6 +16,12 @@ if starter_project "$P" > "$OUT/released-new.json" 2>&1; then
   project_api "$P" /rename -X POST -H 'Content-Type: application/json' -d '{"from": "coast", "to": "shore"}' > /dev/null || check "released project: rename"
   project_api "$P" /assets/erupt -X DELETE > /dev/null || check "released project: delete"
   released_state "$P" > "$OUT/released-before.json" || check "released project: $released can't read it"
+  # An encrypted one too (cl-995): its keybag (format 2: both slots Argon2id, one lane) and its filesystem's own
+  # parameters are the release's; the candidate opens it by passphrase and by recovery secret (`released_vault`).
+  printf '%s\n' 'synthetic released vault passphrase' > "$OUT/released-vault.pass" && chmod 600 "$OUT/released-vault.pass"
+  cozy --json new "$OUT/encrypted-by-release" --passphrase-file "$OUT/released-vault.pass" --recovery-out "$OUT/released-vault.recovery" \
+    > "$OUT/released-vault-new.json" 2>&1 && (cd "$OUT/encrypted-by-release" && cozy --json vault lock) > "$OUT/released-vault-lock.json" 2>&1 \
+    || check "released project: $released made no encrypted project: $(tail -c 300 "$OUT/released-vault-new.json") $(tail -c 200 "$OUT/released-vault-lock.json")"
 else
   check "released project: $released made none: $(tail -c 300 "$OUT/released-new.json")"
 fi
@@ -36,6 +42,23 @@ before=$(cat "$OUT/released-before.json" 2> /dev/null) && [ -n "$before" ] || { 
 after=$(released_state "$P") || { check "released project: the candidate can't read it: $(tail -c 300 "$OUT/status.err")"; return; }
 [ "$after" = "$before" ] || check "released project: the candidate reads the release's project otherwise: $(diff <(jq . <<< "$before") <(jq . <<< "$after") | head -30)"
 echo "released project: the release's $(jq '.assets | length' <<< "$before") boxes, $(jq '[.assets[].versions] | add' <<< "$before") versions, $(jq '.history | length' <<< "$before") history entries and $(jq '.canvas | length' <<< "$before") rows read the same on $(cozy --version)"
+released_vault
+}
+
+# The release's encrypted project (`released_made`) opens on the candidate by passphrase and by recovery secret (cl-995).
+released_vault() {
+local V=$OUT/encrypted-by-release how
+[ -f "$V/project.vault.keys.json" ] || { check "released vault: the release made no encrypted project"; return; }
+echo "released vault: keybag format $(jq .format_version "$V/project.vault.keys.json")"
+for how in passphrase recovery; do
+  case $how in passphrase) set -- --passphrase-file "$OUT/released-vault.pass" ;; recovery) set -- --recovery-file "$OUT/released-vault.recovery" ;; esac
+  (cd "$V" && cozy --json vault unlock "$@" --idle 0) > "$OUT/released-vault-$how.json" 2> "$OUT/released-vault-$how.err" \
+    && J '.vault.state == "unlocked"' "$OUT/released-vault-$how.json" \
+    && (cd "$V" && cozy --json --full status) > "$OUT/released-vault-$how-status.json" 2>&1 \
+    || check "released vault: the candidate does not open the release's encrypted project by $how: $(tail -c 300 "$OUT/released-vault-$how.json") $(tail -c 200 "$OUT/released-vault-$how.err") $(tail -c 200 "$OUT/released-vault-$how-status.json" 2> /dev/null)"
+  (cd "$V" && cozy --json vault lock) > /dev/null 2>&1 || true
+  for _ in $(seq 60); do [ "$( (cd "$V" && cozy --json vault status) | jq -r .state)" = locked ] && break; sleep 0.5; done
+done
 }
 
 # What a person sees of a project: each box (its tool, fields, kind, versions, approval and standing), its history and its canvas rows. An
