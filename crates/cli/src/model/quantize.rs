@@ -12,7 +12,7 @@ use api::calcifer::hub::{ModelQuantize, job};
 use super::Quantize;
 use crate::Context;
 use crate::output::{self, Record};
-use crate::run::{exit_code, follow, settled};
+use crate::run::{carry_out, exit_code, settled};
 
 pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, Error> {
     let on = args.placement.on()?;
@@ -29,7 +29,7 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
     let ask = ModelQuantize { model: args.model, lane: args.lane.clone(), package };
     let run = crate::run::job(ctx, job::MODEL_QUANTIZE, &ask, on, code, project).await?;
     // Its install, no longer followed: nothing was called.
-    let run = if settled(&run) { run } else { follow(ctx, run).await? };
+    let run = if settled(&run) { run } else { carry_out(ctx, run).await? };
     if !ctx.json && run.status == Status::Completed
         && let Some(written) = written(&run, &args.lane)
     {

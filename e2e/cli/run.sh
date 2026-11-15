@@ -521,6 +521,7 @@ case $SHARD in
     broken_answers
     run_filters
     project_keys
+    run_failures
     run_playback
     hub_away
     lock_refresh
@@ -603,6 +604,7 @@ case $SHARD in
     yaml_requests
     run_filters
     project_keys
+    run_failures
     bound_runs
     own_references
     lane_fit

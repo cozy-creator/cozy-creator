@@ -74,7 +74,7 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
 pub(super) async fn download_to(ctx: &Context, mut ask: ModelDownload, on: Option<api::calcifer::On>) -> Result<ExitCode, Error> {
     crate::send::held(ctx, &mut ask.model, &mut ask.name, false).await?;
     let run = crate::run::job(ctx, job::MODEL_DOWNLOAD, &ask, on, None, None).await?;
-    let run = crate::run::follow(ctx, run).await?;
+    let run = crate::run::carry_out(ctx, run).await?;
     made(ctx, &run);
     Ok(crate::run::exit_code(&run))
 }
@@ -158,7 +158,7 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
         recorded(ctx, &crate::run::done(ctx, run).await?);
         return Ok(ExitCode::SUCCESS);
     }
-    let run = crate::run::follow(ctx, run).await?;
+    let run = crate::run::carry_out(ctx, run).await?;
     if !from_run {
         made(ctx, &run);
     }
