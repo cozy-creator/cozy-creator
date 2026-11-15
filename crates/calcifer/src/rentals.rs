@@ -1408,21 +1408,26 @@ impl Machines {
         let mut again = END_AGAIN_FIRST;
         let mut ask = ask;
         while !self.end_once(&ask).await {
-            let Some(name) = ask.machine.clone().filter(|_| !ask.hub.is_empty()) else { return };
+            if ask.hub.is_empty() {
+                return;
+            }
             tokio::time::sleep(again).await;
             again = (again * 2).min(END_AGAIN_MOST);
-            let standing = self.row(&name).is_ok_and(|row| row.state != MachineState::Ended);
-            match self.store().ask(&ask.key) {
-                Ok(Some(now)) if standing && now.state == AskState::Failed => {
-                    if let Err(e) = self.store().reopen_ask(&now.key) {
-                        return warn!(ask = now.key, "asking its end again: {e}");
-                    }
-                    warn!(machine = name, "asking its Hub again to end it: it may still bill");
-                    self.calcifer.machine_changed();
-                    ask = now;
-                }
+            // Read again: its machine may have been renamed meanwhile (its Hub named its host), and another end may have taken over.
+            let now = match self.store().ask(&ask.key) {
+                Ok(Some(now)) if now.state == AskState::Failed => now,
                 _ => return,
+            };
+            let Some(name) = now.machine.clone() else { return };
+            if !self.row(&name).is_ok_and(|row| row.state != MachineState::Ended) {
+                return;
             }
+            if let Err(e) = self.store().reopen_ask(&now.key) {
+                return warn!(ask = now.key, "asking its end again: {e}");
+            }
+            warn!(machine = name, "asking its Hub again to end it: it may still bill");
+            self.calcifer.machine_changed();
+            ask = now;
         }
     }
 
