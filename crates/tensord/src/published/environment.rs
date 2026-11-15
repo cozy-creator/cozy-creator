@@ -127,6 +127,9 @@ impl Publisher {
             next("fetching its files");
             fetch()?;
         }
+        // uv's downloads come from their own index, outside the downloader, and its many requests starve them (run
+        // 43316018343: 1080 s at 100-450 KiB/s): what comes after this install waits until it is built (cl-966).
+        let _aside = self.machine.give_way(job.order);
         let carried = carried(project.wheels).map_err(io_failure)?;
         if env.exists() {
             fs::remove_dir_all(env).map_err(io_failure)?;
@@ -251,8 +254,11 @@ impl Publisher {
                             let why = format!("its requirements refuse this machine's ({})", ranges.join("; "));
                             return Err(self.unspoken(env, project, &theirs, &why, true));
                         }
-                        fallback.push(format!("its lock's {} can't speak this machine's executor protocol: it runs on this machine's {}; {}",
-                            shown(&theirs), shown(&self.machine_pair()), relock(project, false)));
+                        // The open RC's Runtime runs released packages as a matter of course (cl-952): nothing to say.
+                        if !self.machine_pair().get("cozy-runtime").is_some_and(|runtime| rc_build(runtime)) {
+                            fallback.push(format!("its lock's {} can't speak this machine's executor protocol: it runs on this machine's {}; {}",
+                                shown(&theirs), shown(&self.machine_pair()), relock(project, false)));
+                        }
                         fallback.extend(checked(&found));
                     }
                     Ok(found) => fallback.extend(checked(&found)),
@@ -313,11 +319,13 @@ impl Publisher {
     /// it the lock's or a later patch of it (before 1.0 a minor may change what a package calls, a
     /// patch doesn't), so a release runs what its lock resolved, with a Runtime's fixes; or a pair
     /// that can't speak this machine's executor protocol (`speaks`), which only this machine's can.
-    /// A member the lock doesn't name is this machine's.
+    /// A member the lock doesn't name is this machine's. An RC build stands in for any RC build of its
+    /// series a lock took (xs-194): an RC package runs on its machine's Runtime, never the wheel its lock
+    /// named, which the next Runtime merge replaces.
     pub(crate) fn stands_in(&self, locked: &Locked) -> bool {
         let ours = self.machine_pair();
         !ours.is_empty() && (!self.speaks(&locked.packages) || SDK.iter().all(|name| match (ours.get(*name), locked.packages.get(*name)) {
-            (Some(ours), Some(locked)) => patch_of(ours, locked),
+            (Some(ours), Some(locked)) => patch_of(ours, locked) || (rc_build(ours) && rc_build(locked) && same_series(ours, locked)),
             (ours, _) => ours.is_some(),
         }))
     }
@@ -327,7 +335,7 @@ impl Publisher {
     /// built with (a Runtime of another series requires another TensorFS).
     fn protocol(&self) -> BTreeMap<String, String> {
         match self.machine_pair() {
-            ours if ours.is_empty() => BTreeMap::from([("tensorfs".to_string(), env!("CARGO_PKG_VERSION").to_string())]),
+            ours if ours.is_empty() => BTreeMap::from([("tensorfs".to_string(), tensorfs::VERSION.to_string())]),
             ours => ours,
         }
     }
@@ -388,12 +396,13 @@ impl Publisher {
             Err(("package_installation_uv_failed", detail)) => return Ok(Err(crate::triage::ends(&detail, 1000))),
             done => done?,
         }
-        Ok(Ok(self.check(py, job)?.difference(&before).cloned().collect()))
+        Ok(Ok(self.check(py, job)?.difference(&before).filter(|line| !rc_admitted(line)).cloned().collect()))
     }
 
     /// Finds a published version for each of `floors` and for what a prerelease's wheel requires of
-    /// the pair beyond what `env` holds: uv's index, else a GitHub prerelease, landed in `env`'s
-    /// `PAIR_WHEELS` for uv to find. Each as uv installs it.
+    /// the pair beyond what `env` holds: uv's index, else, only on a computer whose config says `dev = true`
+    /// (xs-196), a signed GitHub prerelease, landed in `env`'s `PAIR_WHEELS` for uv to find. Each as uv
+    /// installs it.
     fn published_pair(&self, env: &Path, floors: &[String], label: &str, job: &Job) -> Result<Vec<String>, Failure> {
         let stop = job.stop.clone().unwrap_or_default();
         let wheels = env.join(PAIR_WHEELS);
@@ -415,10 +424,17 @@ impl Publisher {
             let on_index = resolved.ok().and_then(|plan| plan.lines().find_map(|line| line.trim().strip_prefix(&prefix).map(str::to_owned)));
             let version = match on_index {
                 Some(version) => version,
+                // A prerelease no user machine takes by itself (xs-196): only a dev computer's, which opted in.
+                None if !api::config::load().is_ok_and(|loaded| loaded.config.dev) => {
+                    return Err(match &unread {
+                        Some(said) => (super::UNREACHABLE, format!("{label} needs {requirement}, and uv's index can't be read now ({said})")),
+                        None => ("runtime_floor_unmet", format!("{label} needs {requirement}, which isn't on PyPI: {}", floor_remedy(label))),
+                    });
+                }
                 None => {
                     let meets = |version: &str| floor.meets(version);
                     let index = if unread.is_some() { "uv's index can't be read now" } else { "uv's index doesn't have it" };
-                    let found = pypi::prerelease(&floor.name, &meets, &wheels, &self.machine, &stop).map_err(|why| {
+                    let found = pypi::prerelease(&floor.name, &meets, &wheels, &self.machine, job.order, &stop).map_err(|why| {
                         let said = format!("{label} needs {requirement}: {index}, and a GitHub prerelease couldn't be fetched ({why})");
                         (if why.kind() == io::ErrorKind::NotConnected { super::UNREACHABLE } else { "runtime_floor_unread" }, said)
                     })?;
@@ -455,7 +471,8 @@ impl Publisher {
     pub(crate) fn uv(&self, args: &[&str], env: &[(&str, &std::ffi::OsStr)], job: &Job) -> Result<(), Failure> {
         let mut command = self.sdk.uv.command().map_err(|e| ("uv_unavailable", e.to_string()))?;
         command.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
-        crate::private_io::protect_command(&mut command).map_err(io_failure)?;
+        // A package's environment is the machine's, whichever project's run builds it (cl-984): its uv runs on the
+        // machine's cache and Pythons, never a project's.
         let (ended, stderr) = run_builder(&mut command, &self.scope_namespace, job.stop.as_ref(), &|read| job.bytes(read, 0))?;
         let step = args[..2.min(args.len())].join(" ");
         match ended {
@@ -840,6 +857,19 @@ fn same_series(a: &str, b: &str) -> bool {
 /// Whether release `a` is of a later series than `b`.
 fn later_series(a: &str, b: &str) -> bool {
     matches!((Version::from_str(a), Version::from_str(b)), (Ok(a), Ok(b)) if series(&a) > series(&b))
+}
+
+/// Whether uv's finding `line` (`The package `sdxl` requires `cozy-runtime<0.46,>=0.45.0`, but `0.47.0.dev2260+g…` is
+/// installed`) is a cap the open RC's Runtime goes over (`api::release::runs`, cl-952): the RC runs released packages to try them.
+fn rc_admitted(line: &str) -> bool {
+    let mut parts = line.split('`');
+    let (Some(required), Some(installed)) = (parts.nth(3), parts.nth(1)) else { return false };
+    SDK.iter().any(|name| api::release::required([required], name).is_some_and(|versions| api::release::runs(&versions, installed)))
+}
+
+/// Whether a Runtime is the open RC's build: a dev release of the minor it makes (`0.47.0.dev2260+g1a2b3c4d`, cl-952).
+fn rc_build(runtime: &str) -> bool {
+    Version::from_str(runtime).is_ok_and(|version| version.is_dev() && !version.is_pre() && !version.is_post())
 }
 
 /// What uv's check found that the pair added, as the run's warning.

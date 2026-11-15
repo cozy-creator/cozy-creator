@@ -1,0 +1,1 @@
+Runs are named `KEY-N` (cl-987): each project has a key, proposed from its name (`SE`), kept in its project.db, so `cozy run watch SE-5` finds its run from any folder; `cozy key NEW` changes it, and the key it had still names its runs. Calcifer's own runs are `COZY-N`.

@@ -12,7 +12,7 @@ use super::{auth::VerifiedActor, v1, MachineIdentity};
 use crate::runs::{actor_id, Runs};
 use crate::machine::update::{Choice, Request, Status as Update, Updates, BINARY};
 use api::error::Error;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc};
 use futures_util::Stream;
 
 /// Whether run `id` is an update this machine holds or reserved.
@@ -119,6 +119,7 @@ pub(super) async fn submit(
     let updates = identity.updates.clone();
     let id = request.id.clone();
     // SQLite serializes this ID's ownership with ordinary acceptance and cancellation.
+    let owns = identity.authority.keys.owns(&actor.public_key);
     let owner = actor_id(actor);
     let stopped = |_| Error::internal("machine_operation_stopped", "machine operation stopped");
     let (reserving, reserved) = (runs.clone(), id.clone());
@@ -140,7 +141,7 @@ pub(super) async fn submit(
             return Ok((false, state(&id, &update)));
         }
         // A machine still starting queues it, as an update in progress does: never refused.
-        stage(&updates, &runs, actor, &id, request.spec, &identity.gpus, identity.readiness.proved())?;
+        stage(&updates, &runs, actor, owns, &id, request.spec, &identity.gpus, identity.readiness.proved())?;
         let update = updates.update(&id).ok_or_else(|| Error::internal("update_unrecorded", "the update was not recorded"))?;
         Ok((true, state(&id, &update)))
     })
@@ -159,6 +160,7 @@ pub(super) async fn events(
     let first = updates.update(&id).ok_or_else(absent)?;
     let (sender, receiver) = tokio::sync::mpsc::channel(16);
     let _ = sender.try_send(Ok(event(0, 0, v1::Event::State(state(&id, &first)))));
+    let mut written = updates.written();
     tokio::spawn(async move {
         let mut sent = after;
         loop {
@@ -181,17 +183,19 @@ pub(super) async fn events(
             }
             tokio::select! {
                 _ = sender.closed() => return,
-                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                changed = written.changed() => if changed.is_err() { return },
             }
         }
     });
     Ok(super::http::received(receiver))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage(
     updates: &Arc<Updates>,
     runs: &Runs,
     actor: VerifiedActor,
+    owns: bool,
     id: &str,
     spec: v1::RunSpec,
     gpus: &[crate::machine::receipt::Gpu],
@@ -203,10 +207,19 @@ fn stage(
     })?;
     // An instruction this machine cannot carry out fails; ignored, it would succeed unapplied.
     if let Some(name) = cohort.unknown.keys().next() {
-        let version = env!("CARGO_PKG_VERSION");
+        let version = ::api::VERSION;
         return Err(Error::validation("update_field_unknown", format!(
             "cozy {version} cannot carry out an update's {name:?}: move this machine's cozy first (`cozy machine update <machine>`), then ask again"
         )));
+    }
+    // A build no release vouches for, a staged file or a wheel by URL, only the machine's owner installs (xs-196): its own
+    // Calcifer or a rental owner's devices, never a controller `cozy machine authorize` let in.
+    let by_url = |member: &Option<Member>| matches!(member, Some(Member::Fetched { .. }));
+    if !owns && (!spec.inputs.is_empty() || by_url(&cohort.runtime) || by_url(&cohort.tensorfs)) {
+        return Err(Error::forbidden(
+            "update_owner_only",
+            "only the machine owner's keys install a build no release vouches for (a staged file or a wheel by URL): name released versions",
+        ));
     }
     // The file an input binds to `member`, staged as `file` and held to its digest.
     let held = |member: &str, file: &str| -> Result<Option<Choice>, Error> {
@@ -270,7 +283,7 @@ fn stage(
         notes,
     };
     updates
-        .request(request, ready, |code| std::process::exit(code))
+        .request(request, ready, |code| crate::machine::supervise::leave(code))
         .map(|_| ())
         .map_err(|(code, message)| refusal(code, message))
 }

@@ -1,0 +1,75 @@
+{
+ "note": "Krea 2 fine-tunes as Civitai publishes them, in the reference checkpoint's names (krea2-headers/krea2_raw_bf16): AiMeASOP's RedCraft 3.0 (Krea 2 Turbo) bf16 bare, and fp8, int8_convrot and nvfp4 under model.diffusion_model.; magic_studio's Real Dream V3 in fp8 (per-tensor weight_scale, _quantization_metadata), int8_convrot and nvfp4 (comfy_quant markers), bare",
+ "members": [
+  {
+   "source": "civitai://3139241/3259640",
+   "page": "https://civitai.com/models/958009?modelVersionId=3139241",
+   "member": "Krea2RedMix3.0-ComfyUI-bf16.safetensors",
+   "header_file": "Krea2RedMix3.0-ComfyUI-bf16.safetensors.header",
+   "header_sha256": "b7337e8e3c863b74db483bda399af4c0a41e0af57fb3b2c797fe06926620de61",
+   "header_bytes": 43728,
+   "full_length": 26283332608,
+   "declared_source_sha256": "50d3388e677c248955c0d4d967998a5bf02fc9310ff0bf3b11c028cd321c8331"
+  },
+  {
+   "source": "civitai://3139241/3019490",
+   "page": "https://civitai.com/models/958009?modelVersionId=3139241",
+   "member": "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
+   "header_file": "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors.header",
+   "header_sha256": "61970cf1f7fc5897d2bbaca3fd6780c98c6a543d6bea2a6371d1c7d1447981f7",
+   "header_bytes": 170536,
+   "full_length": 13141826368,
+   "declared_source_sha256": "f6088960c0febd27cbd372fc758bb07d012f2d8ae3cd10c45c903d48b94409ea"
+  },
+  {
+   "source": "civitai://3139241/3019607",
+   "page": "https://civitai.com/models/958009?modelVersionId=3139241",
+   "member": "Krea2RedMix3.0-ComfyUI-int8_convrot.safetensors",
+   "header_file": "Krea2RedMix3.0-ComfyUI-int8_convrot.safetensors.header",
+   "header_sha256": "67f5460b37a50af3e4c7e8f928bf26b5e2ed7b6fae2525978eb16276f5ca1dcb",
+   "header_bytes": 118792,
+   "full_length": 12829558176,
+   "declared_source_sha256": "a5dd85f90f873f80e2b07cb8d06fd6011755fcfb22434dfbb04155345eaa44b9"
+  },
+  {
+   "source": "civitai://3139241/3064389",
+   "page": "https://civitai.com/models/958009?modelVersionId=3139241",
+   "member": "Krea2RedMix3.0-ComfyUI-nvfp4.safetensors",
+   "header_file": "Krea2RedMix3.0-ComfyUI-nvfp4.safetensors.header",
+   "header_sha256": "5af3a1ff0b18f873398ac10bac7b7bfd8ea7e979dcd6c23511bb89ea00d67460",
+   "header_bytes": 133984,
+   "full_length": 7673684984,
+   "declared_source_sha256": "06c093878f823f88a8963aad32e66444cdf012302769e0c5b9c6f763b1dc8bf5"
+  },
+  {
+   "source": "civitai://3396368/3286566",
+   "page": "https://civitai.com/models/153568?modelVersionId=3396368",
+   "member": "krea2-v3-real-dream-fp8.safetensors",
+   "header_file": "krea2-v3-real-dream-fp8.safetensors.header",
+   "header_sha256": "20ee31eddf9ce68c9b7f984a0ebe444056050a36821543ce8c0a2dce20989674",
+   "header_bytes": 134872,
+   "full_length": 13782853128,
+   "declared_source_sha256": "bfbb1b61e396821f53db6cc33139504770e9dd01ccd8d74bc0b0d3a96e2127d8"
+  },
+  {
+   "source": "civitai://3396368/3289346",
+   "page": "https://civitai.com/models/153568?modelVersionId=3396368",
+   "member": "krea2-v3-real-dream-nvfp4.safetensors",
+   "header_file": "krea2-v3-real-dream-nvfp4.safetensors.header",
+   "header_sha256": "28bc82b282b66254273c2aa2cd248f31eaaf7f5fca9ee0398a487b31a2982678",
+   "header_bytes": 194736,
+   "full_length": 8314823648,
+   "declared_source_sha256": "12f55ccba4ba000d0805b44fe58e88ad6bcaff2cfbe054d2a2c9f5eaad900c47"
+  },
+  {
+   "source": "civitai://3396368/3304483",
+   "page": "https://civitai.com/models/153568?modelVersionId=3396368",
+   "member": "krea2-v3-real-dream-int8_convrot.safetensors",
+   "header_file": "krea2-v3-real-dream-int8_convrot.safetensors.header",
+   "header_sha256": "049f7d38f17a4d354ee08ffd20b594a697182d3b9feeebe68571bf56beebebe3",
+   "header_bytes": 89928,
+   "full_length": 13492688608,
+   "declared_source_sha256": "62ac9732f119020b46403e0282ecfe5a23fce6295d69c3d79ca4ce46957c33d2"
+  }
+ ]
+}

@@ -13,7 +13,6 @@ function said(by?: By): string {
   if (!by) return "this tab"
   if (by.via === "page") return by.client === TAB ? "this tab" : "another tab"
   if (by.via === "cli") return "the CLI"
-  if (by.via === "file") return "project.yaml"
   return by.client ?? "the API"
 }
 

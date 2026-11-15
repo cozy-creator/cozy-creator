@@ -63,9 +63,11 @@ pub struct CodeRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Code {
-    pub id: String,
+    /// None when asked too soon with no code out: nothing was sent, and `retry_after_s` says when the Hub will.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub email: String,
-    /// Asked again too soon: `id` is the code already out, and the Hub sends another after this.
+    /// Asked again too soon: the Hub sends another after this; a client counts it down rather than ask into a refusal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_s: Option<u64>,
 }
@@ -98,13 +100,20 @@ pub enum Proven {
 }
 
 /// A key for another computer: its file, which the client writes owner-only.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ExportedKey {
     pub email: String,
     pub device_key: String,
     /// The key file's text (`cozy login --key` installs it).
     pub key: String,
+}
+
+/// The key file is never printed.
+impl std::fmt::Debug for ExportedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExportedKey").field("email", &self.email).field("device_key", &self.device_key).finish_non_exhaustive()
+    }
 }
 
 /// `PUT /v1/account/name`: names a new account. The Hub's `account.name_unavailable` and
@@ -117,12 +126,19 @@ pub struct Naming {
 }
 
 /// `PUT /v1/account/key`: makes a key `Export` made this computer's key at its Hub.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyInstall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
     /// The key file's text.
     pub key: String,
+}
+
+/// The key file is never printed.
+impl std::fmt::Debug for KeyInstall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyInstall").field("hub", &self.hub).finish_non_exhaustive()
+    }
 }
 
 /// `DELETE /v1/account`, or a finished `SignOutEverywhere`: this computer's key is erased,
@@ -227,7 +243,7 @@ pub struct FoundModel {
     pub private: bool,
     /// Who made it: the org it credits, or the parked org it mirrors into.
     pub author: Option<ModelAuthor>,
-    /// Its owner's recommended LoRA strength, when provided; not applied by a render automatically.
+    /// Its owner's recommended LoRA strength, when provided: what it runs at when given without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f64>,
     /// What its header says it is. None: it couldn't be read.
@@ -305,8 +321,10 @@ pub struct ModelDetail {
     /// The pinned upstream source.
     pub source: Option<String>,
     pub author: Option<ModelAuthor>,
-    /// Words a LoRA's prompt uses, and its recommended strength (a run's default stays 1.0).
-    pub trigger: Option<String>,
+    /// What a LoRA's prompt uses, each entry one trigger kept whole, and its recommended strength: what it runs at
+    /// when given without one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<String>,
     pub strength: Option<f64>,
     /// Its labels, sorted: filled once from its source, then its owner's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -375,8 +393,79 @@ pub struct ModelCheckpoint {
     pub created_at: String,
 }
 
+/// `GET /v1/models/{org}/{name}/headers?release=|checkpoint=&lane=&full=` (`cozy model show`): what each lane of a release, or
+/// one checkpoint, holds, read from its header alone, never a weight.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelHeaders {
+    pub model: String,
+    /// Its owner's label, else what its header verifies as.
+    pub family: Option<String>,
+    /// The release shown; none for a checkpoint in no release.
+    pub release: Option<String>,
+    pub visibility: Option<crate::model_ref::ReleaseVisibility>,
+    /// The newer release a run naming this one takes: the newest of its series (xs-183).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolves_to: Option<String>,
+    pub lanes: Vec<LaneHeader>,
+}
+
+/// One lane's checkpoint as its header says.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LaneHeader {
+    pub lane: String,
+    /// `sha256:<hex>` of its tree.
+    pub checkpoint: String,
+    /// `sha256:<hex>` of its header, and the header's bytes.
+    pub header: String,
+    pub header_bytes: u64,
+    /// What its header verifies as; none: no family's model.
+    pub family: Option<String>,
+    pub kind: Option<ModelContentKind>,
+    /// `model_index.json`'s class, `[library, version, name]`.
+    pub pipeline: Option<[String; 3]>,
+    pub components: Vec<ComponentHeader>,
+    /// What it records of where it came from, as written: `inherited`, `composed`, `added`, `provenance`, `family`, `adapter`.
+    pub records: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// One component of a checkpoint: its class, config, run data and tensors.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ComponentHeader {
+    pub name: String,
+    /// `[library, version, name]`; empty: unknown.
+    pub class: [String; 3],
+    /// Its config's file, when it is not `config.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_file: Option<String>,
+    /// Its config's keys, sorted; none: it has no config.
+    pub config_keys: Vec<String>,
+    /// The config itself, when asked for (`full`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Its run data (`tokenizer.json`, `processor/vocab.json`), by path under its folder, and each one's bytes.
+    pub assets: std::collections::BTreeMap<String, u64>,
+    pub tensors: usize,
+    /// Its tensors' stored bytes: what installing it fetches of it.
+    #[serde(default)]
+    pub bytes: u64,
+    /// A LoRA's modules and their α, when it holds factors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lora: Option<LoraModules>,
+}
+
+/// A LoRA component's modules, and which state their α.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoraModules {
+    /// Modules with an A and a B factor.
+    pub modules: usize,
+    /// Of them, those with an `.alpha` of their own.
+    pub alphas: usize,
+    /// Its config's `lora_alpha`: the α of every module without its own.
+    pub lora_alpha: Option<f64>,
+}
+
 /// `PATCH /v1/models/{org}/{name}`: the fields its owner sets, each absent one kept. An empty or `none` family
-/// clears the label (its weights' family shows then), an empty trigger clears it, a null strength clears it. `add_tags`
+/// clears the label (its weights' family shows then), no triggers clears them, a null strength clears it. `add_tags`
 /// are added and `remove_tags` removed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -386,7 +475,7 @@ pub struct ModelEdit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<String>,
+    pub triggers: Option<Vec<String>>,
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     pub strength: Option<Option<f64>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -551,13 +640,14 @@ pub struct AfterRun {
     pub retired: Vec<Retired>,
 }
 
-/// A model's display metadata as set at the Hub: shown in the model browser, never applied (a
-/// run's LoRA strength stays 1.0).
+/// A model's display metadata as set at the Hub: shown in the model browser; a LoRA given without a
+/// strength runs at its recommended one.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Displayed {
     pub model: String,
-    pub trigger: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<String>,
     pub strength: Option<f64>,
     /// Why the Hub did not take them; the upload stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -598,8 +688,29 @@ pub mod job {
     /// `input`: [`super::PackagePublish`], of the request's `code`. Calcifer's run; its result is a [`super::Published`].
     pub const PACKAGE_PUBLISH: &str = "cozy/package_publish";
 
-    /// Every job, by its target.
+    /// `input`: [`super::CozyUpdate`]. Calcifer's run, which no client asks: this computer's cozy updated to a newer release for a
+    /// package release that needs one (cl-978); its result is a [`super::CozyUpdated`]. Calcifer restarts on it once nothing else runs.
+    pub const COZY_UPDATE: &str = "cozy/update";
+
+    /// Every job a client asks, by its target.
     pub const ALL: [&str; 7] = [MODEL_DOWNLOAD, MODEL_UPLOAD, MODEL_QUANTIZE, PACKAGE_INSTALL, PACKAGE_REMOVE, PACKAGE_LOCK, PACKAGE_PUBLISH];
+}
+
+/// `cozy/update`'s input: the release it updates to, and for what (`qwen-image-2 0.12.0`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CozyUpdate {
+    pub to: String,
+    #[serde(rename = "for")]
+    pub needed_by: String,
+}
+
+/// `cozy/update`'s result.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CozyUpdated {
+    pub from: String,
+    pub to: String,
 }
 
 /// `cozy/model_download`'s input.
@@ -629,11 +740,16 @@ pub struct ModelDownload {
 pub struct ModelUpload {
     /// A provider source, `local/<alias>`, a Hub model, a held file's `sha256:<hex>` (`PUT /v1/files`): a `.safetensors` file, or a
     /// CozyTensors folder's tree document, its files held too, or `run:N[#output]`: a run's weights output, uploaded from the
-    /// machine that holds it. A Hub checkpoint uploads only on a `base`; else it is recorded, and no machine runs.
+    /// machine that holds it. A Hub checkpoint uploads only on a `base` or cut to `components`; else it is recorded, and no
+    /// machine runs.
     pub source: String,
     /// A held source's name where its client has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// `SOURCE:COMPONENT,…`: the checkpoint holds only these of the source's components, a source of one taking the one name
+    /// (a VAE file is `vae`). None: all of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
     /// `org/name`.
     pub destination: String,
     pub lane: String,
@@ -647,7 +763,7 @@ pub struct ModelUpload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trained_on: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<String>,
+    pub triggers: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f64>,
     /// `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
@@ -756,9 +872,6 @@ pub struct PackageLock {
 pub struct PackagePublish {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub root: bool,
-    /// Published yanked: a gated candidate, never the package's newest release.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub yanked: bool,
 }
 
 /// `cozy/package_lock`'s result: the new `uv.lock` and whether it changed.
@@ -776,7 +889,7 @@ pub struct Locked {
 pub struct Published {
     pub package: String,
     pub release: String,
-    /// `published`, `published yanked`, or `already published`.
+    /// `published` or `already published`.
     pub status: String,
     pub changed: bool,
     pub uploaded_bytes: u64,

@@ -46,11 +46,20 @@ impl Signal {
 /// Blocks until any of `items` is readable, hung up or failed, then answers every one that is, in
 /// order, so none starves behind a lower one. No timeout.
 pub fn wait_any(items: &[Waitable<'_>]) -> Result<Vec<super::Ready>> {
+    wait_any_for(items, None)
+}
+
+/// [`wait_any`], or none ready once `timeout` passed.
+pub fn wait_any_for(items: &[Waitable<'_>], timeout: Option<std::time::Duration>) -> Result<Vec<super::Ready>> {
+    let deadline = timeout.map(|timeout| std::time::Instant::now() + timeout);
     let mut fds: Vec<PollFd<'_>> = items.iter().map(|fd| PollFd::new(fd, PollFlags::IN)).collect();
     loop {
-        match rustix::event::poll(&mut fds, None) {
+        let left = deadline.map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+        let left = left.map(rustix::event::Timespec::try_from).transpose().map_err(|_| Error::os("wait")(Errno::INVAL.into()))?;
+        match rustix::event::poll(&mut fds, left.as_ref()) {
             Err(Errno::INTR) => continue,
             Err(error) => return Err(Error::os("wait")(error.into())),
+            Ok(0) if left.is_some() => return Ok(vec![]),
             Ok(_) => {}
         }
         let broken = PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL;

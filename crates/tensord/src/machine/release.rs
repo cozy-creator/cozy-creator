@@ -20,7 +20,7 @@ pub(crate) fn cozy(version: &str, dir: &Path, machine: &Machine, stop: &Stop) ->
     let url = release.url();
     let bundles = format!("{url}.sigstore.jsonl");
     let signer = release.signer(&bundles, &text(machine, stop, bundles.clone())?).map_err(refused)?;
-    let archive = super::pypi::object_at(machine, &url, &release.sha256, None, None, stop).map_err(|e| io::Error::other(format!("{url}: {e}")))?;
+    let archive = super::pypi::object_at(machine, &url, &release.sha256, None, None, crate::origin::priority::NOW, stop).map_err(|e| io::Error::other(format!("{url}: {e}")))?;
     fs::create_dir_all(dir)?;
     let binary = dir.join(format!("cozy-{version}"));
     release.unpack(fs::File::open(archive)?, &mut fs::File::create(&binary)?)?;

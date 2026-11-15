@@ -22,7 +22,7 @@ use api::{
     code::{self as shared, LocalCode},
     config::Origin,
     error::{Error, Kind},
-    ids::Digest,
+    ids::{Digest, RunId},
     machine as v1,
 };
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,11 @@ use serde_json::Value;
 pub(crate) use api::code::source_files;
 
 use crate::{api::Api, rentals::Hubs};
+mod private_process;
+pub(crate) use private_process::active as private_process_active;
+pub(crate) use private_process::cancel as cancel_private_processes;
+pub(crate) use private_process::retire as retire_private_processes;
+pub(crate) fn project_tool_output(command:&mut Command)->std::io::Result<std::process::Output> {private_process::output(command)}
 
 /// The uv index name a project's sources use for cozy packages on the Hub: its account's own, else the root's (`bindings`).
 pub(crate) const INDEX: &str = "tensorhub";
@@ -95,12 +100,15 @@ fn keep_manifest(home: &Home, digest: &Digest, document: &[u8]) -> Result<PathBu
 
 pub(crate) use api::target::local;
 
-/// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path): a folder of
-/// Calcifer's own computer, as the project is, and the function it names. None: `text` is not written as a path (a published
-/// name). A client's own code comes by content instead (`copied`).
+/// Local code a project's text names (`./dir[/fn]`, `./script.py[/fn]` from its folder, `~/…`, an absolute path), or a
+/// first-party package a dev home's checkout holds (`qwen-image-2/generate`, `checkout::named`): a folder of Calcifer's own
+/// computer, as the project is, and the function it names. None: a published name. A client's own code comes by content instead
+/// (`copied`).
 pub(crate) fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Result<(PathBuf, Option<String>), Error>> {
     let raw = text.trim();
-    let path = local(raw, cwd.unwrap_or(Path::new("")), home)?;
+    let Some(path) = local(raw, cwd.unwrap_or(Path::new("")), home) else {
+        return crate::checkout::named(raw).map(Ok);
+    };
     if !path.is_absolute() {
         let said = format!("{raw} is relative, and names no folder of the project's");
         return Some(Err(Error::new(Kind::Usage, "target_relative", said).remedy("name local code by its path from the project's folder")));
@@ -127,6 +135,7 @@ const UNUSED: Duration = Duration::from_secs(24 * 60 * 60);
 /// The package `code` names, in Calcifer's copy of its tree: made once from the files it holds (`PUT /v1/files`), and only read
 /// after. A script's copy holds the package it is beside its tree. Its project's folder.
 pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
+    if crate::private_io::current().is_none() { crate::maintenance_source::require_home(home,code)?; }
     let dir = copies(home)?.join(hex(&code.tree));
     if !dir.join("tree").is_dir() {
         let scope = crate::private_io::current();
@@ -152,9 +161,24 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
 }
 
 /// A folder of Calcifer's own (a project's `with: ./dir`) as local code: read as a client reads its own, and copied as a
-/// client's is, so the one path from here on is the copy's.
-pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
-    let staged = shared::stage(path, Some(&crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?))?;
+/// client's is, so the one path from here on is the copy's. Where no project is, only a package of the dev home's packages
+/// checkout, admitted as independent source (xs-195).
+pub(crate) fn own(api: &Api, path: &Path) -> Result<LocalCode, Error> {
+    let home = api.machines.hubs.home();
+    if crate::private_io::current().is_none() {
+        if crate::checkout::package_at(path).is_some() {
+            return crate::maintenance_source::admit_checkout(api, path);
+        }
+        return Err(refuse("source_scope_required","use native independent source capture before staging project-independent code"));
+    }
+    let memo = crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?;
+    let staged = match crate::checkout::package_at(path) {
+        Some(_) => {
+            let patched = crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("patched"), "patched")?;
+            crate::checkout::stage(path, Some(&memo), &patched)?
+        }
+        None => shared::stage(path, Some(&memo))?,
+    };
     if !staged.left.is_empty() && crate::private_io::current().is_none() {
         tracing::info!("left out of {}: {}", path.display(), staged.left.join(", "));
     }
@@ -169,7 +193,7 @@ pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
 
 /// The tree's files, each from `from`, copied under `code/<digest>/tree`, made whole and then named; and a copy unused for a day
 /// past the newest `COPIES` goes.
-fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, api::tree::Member>, from: impl Fn(&Digest) -> Option<PathBuf>) -> Result<(), Error> {
+pub(crate) fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, api::tree::Member>, from: impl Fn(&Digest) -> Option<PathBuf>) -> Result<(), Error> {
     let root = copies(home)?;
     let dir = root.join(hex(tree));
     let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", root.display()));
@@ -466,7 +490,8 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         files,
         project: relative(&project_dir),
         locals: locals.iter().map(|l| relative(l)).collect(),
-        callees: callees(&project_dir)?,
+        // The checkout's packages it calls are its path dependencies here, named as the packages they are (xs-195).
+        callees: callees(&project_dir)?.into_iter().chain(crate::checkout::of(code).into_iter().flat_map(|from| from.callees)).collect(),
         wheels,
     };
     let own = match manifest.project.is_empty() {
@@ -540,9 +565,20 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     let done = lock_dir(home, code, hub)?;
     let turn = LOCKING.lock().expect("locking lock").entry(done.clone()).or_default().clone();
     let _turn = turn.lock().await;
+    // A lock that took the open RC's build by URL (its floor no release meets, xs-194) names a wheel the next Runtime merge
+    // removes: one that isn't the RC's newest is made again.
+    if let Some(rc) = crate::floor::rc_runtime(&sent).await? {
+        let made = fs::read_to_string(done.join("lock")).ok().filter(|made| !made.is_empty());
+        let held = made.or_else(|| fs::read_to_string(sent.join("uv.lock")).ok());
+        if done.is_dir() && !held.is_some_and(|lock| lock.contains(&rc.url)) {
+            let _ = fs::remove_dir_all(&done);
+        }
+    }
     if !done.is_dir() {
         let project = Project::read(sent.clone())?;
-        let say = |line: &str| tracing::info!("{}: {line}", project.name);
+        // A project's own code is the project's: nothing of it in Calcifer's log (cl-984).
+        let private = crate::private_io::current().is_some();
+        let say = |line: &str| if !private { tracing::info!("{}: {line}", project.name) };
         let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let part = done.with_extension(format!("part-{}-{nanos}", std::process::id()));
@@ -800,6 +836,7 @@ pub(crate) fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> Su
         ..Default::default()
     };
     SubmitRun {
+        project: crate::private_io::current().map(|scope|scope.storage.project_id),
         agreed: None,
         stays: vec![],
         on,
@@ -809,9 +846,20 @@ pub(crate) fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> Su
         spec,
         inputs: source.inputs.clone(),
         held: vec![],
-        out: crate::private_io::current().map(|scope| crate::project::landing(&scope.storage.view_root)),
+        out: crate::private_io::current().map(|scope| crate::project::landing(&crate::project::vault::logical(&scope.storage.view_root))),
         warnings: vec![],
     }
+}
+
+/// The package a run of local code installs or calls, by its target: `install local/x`, `sync local/x (source changed)`, `local/x/fn`.
+pub(crate) fn package_of(target: &str) -> &str {
+    if let Some(package) = target.strip_prefix("install ") {
+        return package;
+    }
+    if let Some(package) = target.strip_prefix("sync ").and_then(|rest| rest.strip_suffix(" (source changed)")) {
+        return package;
+    }
+    target.rsplit_once('/').map_or(target, |(package, _)| package)
 }
 
 /// What a settled install answered, or why it installed nothing.
@@ -821,7 +869,13 @@ pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
             || ("local_install_unfinished".to_owned(), format!("its install is {:?}", run.status).to_lowercase(), vec![]),
             |r| (r.code, r.message, r.next),
         );
-        let failed = Error::new(Kind::Unavailable, "local_install_failed", format!("the machine did not install this code: {message}")).cause(code);
+        // Its machine ended before it accepted the install: a machine gone, which a render places again (`project::GONE`).
+        let lost = code == "machine_lost" && run.accepted_at_ms.is_none();
+        let failed = match lost {
+            true => Error::new(Kind::Unavailable, "machine_ended", format!("the machine ended before it installed this code: {message}")),
+            false => Error::new(Kind::Unavailable, "local_install_failed", format!("the machine did not install this code: {message}")),
+        }
+        .cause(code);
         return Err(next.into_iter().chain([format!("cozy run watch {}", run.number)]).fold(failed, Error::next));
     }
     let mut result = run.result.unwrap_or_default();
@@ -843,7 +897,10 @@ pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
 /// interface (kept for this source and Runtime, or what its install answered). While an install
 /// it asked for is going, `install` is that run and `interface` is None: follow it, then ask again.
 pub(crate) struct Prepared {
+    /// `local/<name>`, or the first-party name of a package from the dev home's checkout (`_/qwen-image-2`).
     pub package: String,
+    /// The checkout and commit it came from, when it did (xs-195).
+    pub from: Option<crate::checkout::From>,
     pub source: v1::LocalSource,
     pub files: Vec<StagedInput>,
     pub interface: Option<Value>,
@@ -857,7 +914,9 @@ pub(crate) struct Prepared {
 /// `code` made callable `on` a machine, never waiting for an install: the install it
 /// needs is sent under `{key}/install` and returned, and once it has settled the same `key` finds
 /// its answer. `warm` installs again whatever is kept: a warm set names the machine's
-/// installation, which only an install answers.
+/// installation, which only an install answers. `again`: an install canceled for want of waiters
+/// (`project::host::Installs`), which an ask now sends anew.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare(
     api: &Arc<Api>,
     local: &LocalCode,
@@ -866,14 +925,18 @@ pub(crate) async fn prepare(
     warm: bool,
     key: &str,
     agreed: Option<api::calcifer::Agreed>,
+    again: &(dyn Fn(&RunId) -> bool + Sync),
 ) -> Result<Prepared, Error> {
     let hubs = &api.machines.hubs;
     let home = hubs.home().clone();
     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
     let code = source(&home, local, hubs, &origin).await?;
+    crate::maintenance_source::keep_derived(api,local,&code)?;
     let runtime = runtime(api, on).await;
+    let from = crate::checkout::of(local);
     let prepared = |interface, installation, machine, install| Prepared {
-        package: code.package.clone(),
+        package: from.as_ref().map_or_else(|| code.package.clone(), |from| from.package.clone()),
+        from: from.clone(),
         source: code.source.clone(),
         files: code.inputs.clone(),
         interface,
@@ -890,7 +953,7 @@ pub(crate) async fn prepare(
     }
     let submit = || SubmitRun { agreed: agreed.clone(), ..install_run(&home, origin.as_str(), on.clone(), &code) };
     let after = crate::private_io::current().is_none().then(|| crate::hub::after::After::Keep(code.filed()));
-    match install_through(api, &key, after.as_ref(), submit).await? {
+    match install_through(api, &key, after.as_ref(), again, submit).await? {
         Install::Going(run) => Ok(prepared(None, None, None, Some(run))),
         Install::Ended(run) => {
             let installed = installed(run)?;
@@ -909,34 +972,33 @@ pub(crate) enum Install {
     Ended(Run),
 }
 
-/// The install `submit` makes, under `key`, as far as it has got, with `after` its step once its machine completes it.
-pub(crate) async fn install_through(api: &Arc<Api>, key: &str, after: Option<&crate::hub::after::After>, submit: impl FnOnce() -> SubmitRun) -> Result<Install, Error> {
-    let Some(run) = sent(api, key)? else {
-        if let Some(after) = after {
-            api.calcifer.plan(key, after)?;
-        }
-        let run = api.calcifer.submit(key, submit()).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
-        return Ok(Install::Going(run));
-    };
-    match run.status {
-        Status::Completed | Status::Failed | Status::Canceled => Ok(Install::Ended(run)),
-        _ => Ok(Install::Going(run)),
-    }
-}
-
-/// `prepare`, waiting out the install it needs: what Calcifer's own callers (a project's render blocks) use.
-pub(crate) async fn ready(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, key: &str) -> Result<Prepared, Error> {
+/// The install `submit` makes, under `key`, as far as it has got, with `after` its step once its machine completes it. One `again`
+/// names (canceled for want of waiters) is followed by a new one, under a key of its own.
+pub(crate) async fn install_through(api: &Arc<Api>, key: &str, after: Option<&crate::hub::after::After>, again: &(dyn Fn(&RunId) -> bool + Sync), submit: impl FnOnce() -> SubmitRun) -> Result<Install, Error> {
+    let mut key = key.to_owned();
     loop {
-        let prepared = prepare(api, code, on, hub, false, key, None).await?;
-        let Some(run) = &prepared.install else { return Ok(prepared) };
-        crate::project::host::Host::new(api).wait(&run.id).await?;
+        let Some(run) = sent(api, &key)? else {
+            if let Some(after) = after {
+                api.calcifer.plan(crate::private_io::current().as_ref().map(|scope|scope.storage.project_id.as_str()), &key, after)?;
+            }
+            let run = api.calcifer.submit(&key, submit()).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
+            return Ok(Install::Going(run));
+        };
+        match run.status {
+            Status::Canceled if again(&run.id) => key = format!("{key}/after/{}", run.id),
+            Status::Completed | Status::Failed | Status::Canceled => return Ok(Install::Ended(run)),
+            _ => return Ok(Install::Going(run)),
+        }
     }
 }
 
 /// The run sent under `key`, if one was.
 fn sent(api: &Api, key: &str) -> Result<Option<Run>, Error> {
     let calcifer = &api.calcifer;
-    let row = calcifer.store().keyed(key).map_err(|e| crate::api::Refusal::from(crate::Error::from(e)).0)?;
+    let row = match crate::private_io::current() {
+        Some(scope)=>calcifer.project_store(&scope.storage.project_id).and_then(|store|store.keyed(key)),
+        None=>calcifer.maintenance_store().keyed(key),
+    }.map_err(|e| crate::api::Refusal::from(crate::Error::from(e)).0)?;
     row.map(|row| calcifer.record(&row).map_err(|e| crate::api::Refusal::from(e).0)).transpose()
 }
 
@@ -981,7 +1043,7 @@ pub(crate) fn run(command: &mut Command, code: &str, what: &str) -> Result<Strin
 
 /// `run`, a failure with the tool's whole stderr beside its refusal (what `uv_listed` reads).
 pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<String, (Error, String)> {
-    let out = command.output().map_err(|e| {
+    let out = private_process::output(command).map_err(|e| {
         let error = match e.kind() {
             std::io::ErrorKind::NotFound => Error::new(
                 Kind::Unavailable,
@@ -999,7 +1061,6 @@ pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<
     }
     let said = String::from_utf8_lossy(&out.stderr).into_owned();
     let (ended, killed) = platform::process::ended(&out.status);
-    tracing::warn!(code, "{what} {ended}; its stderr ends:\n{}", platform::process::tail(&said, 40));
     let refusal = runtime_refusal(&said);
     let words = refusal.as_ref().map(|refusal| refusal.error.message.clone())
         .or_else(|| platform::process::last_line(&said));
@@ -1117,7 +1178,7 @@ pub(crate) struct Python {
     pub full: String,
 }
 
-/// The cozy-runtime release `root`'s uv.lock holds, if it holds one.
+/// The cozy-runtime `root`'s uv.lock holds, as uv asks for it (`cozy-runtime==0.45.1`), if it holds one.
 pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
     #[derive(Deserialize)]
     struct Lock {
@@ -1129,20 +1190,27 @@ pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
         name: String,
         #[serde(default)]
         version: String,
+        #[serde(default)]
+        source: std::collections::BTreeMap<String, toml::Value>,
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
-    lock.package.into_iter().find(|p| p.name == "cozy-runtime").map(|p| p.version)
+    let locked = lock.package.into_iter().find(|p| p.name == "cozy-runtime")?;
+    // The open RC's Runtime is no index's: a lock takes its newest pure wheel by URL (`floor::rc_runtime`).
+    Some(match locked.source.get("url").and_then(toml::Value::as_str) {
+        Some(url) => format!("cozy-runtime @ {url}"),
+        None => format!("cozy-runtime=={}", locked.version),
+    })
 }
 
 /// The SDK is always cozy-runtime: the one named (a version, or an RC build's wheel URL), an authoritative lock, else
 /// plain unconditional version bounds. URLs, markers and unspecified versions retain the newest-SDK fallback; extras
 /// belong to the package, not its static reader. Never forward a project's source as the SDK.
 fn describer_requirement(dir: &Path, runtime: Option<&str>) -> Result<String, Error> {
-    if let Some(wheel) = runtime.filter(|runtime| runtime.starts_with("https://")) {
-        return Ok(format!("cozy-runtime @ {wheel}"));
-    }
-    if let Some(version) = runtime {
-        return Ok(format!("cozy-runtime=={version}"));
+    match runtime {
+        Some(wheel) if wheel.starts_with("https://") => return Ok(format!("cozy-runtime @ {wheel}")),
+        Some(locked) if locked.starts_with("cozy-runtime") => return Ok(locked.to_owned()),
+        Some(version) => return Ok(format!("cozy-runtime=={version}")),
+        None => {}
     }
     let text = fs::read_to_string(dir.join("pyproject.toml"))
         .map_err(|e| refuse("project_file_missing", format!("pyproject.toml: {e}")))?;
@@ -1209,31 +1277,40 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     Ok((said.trim_end().to_owned(), document))
 }
 
-/// What each copy of local code last read as, by the Runtime that read it, and whether it's its machine's own reading. One read
-/// at a time of each: any other waits and takes it. A copy never changes, so its reading stands for as long as Calcifer runs, but
-/// a static describer's only until the machine's own is kept.
+/// What each copy of local code last read as, in its project (None: the machine's), by the Runtime that read it, and whether it's
+/// its machine's own reading. One read at a time of each: any other waits and takes it. A copy never changes, so its reading stands
+/// for as long as Calcifer runs or its project stays open, but a static describer's only until the machine's own is kept.
 type Described = Arc<tokio::sync::Mutex<Option<((String, Value), bool)>>>;
-static DESCRIBED: LazyLock<Mutex<HashMap<(LocalCode, Option<String>), Described>>> = LazyLock::new(Mutex::default);
+static DESCRIBED: LazyLock<Mutex<HashMap<(Option<String>, LocalCode, Option<String>), Described>>> = LazyLock::new(Mutex::default);
+
+/// A project's readings leave memory when it locks or closes.
+pub(crate) fn forget_readings(project: &str) {
+    DESCRIBED.lock().expect("described lock").retain(|(owner, _, _), _| owner.as_deref() != Some(project));
+}
 
 /// The Runtime the machine `on` last said it runs, asking it nothing: no machine starts for a read.
 fn last_runtime(api: &Api, on: &On) -> Option<String> {
     let On::Machine(name) = on else { return None };
     let row = api.machines.named(name).ok()??;
-    let status = api.machines.picture(&row).ok()?.status?;
-    Some(status.runtime).filter(|runtime| !runtime.is_empty())
+    Some(api.machines.frame(&row.name)?.runtime).filter(|runtime| !runtime.is_empty())
 }
 
-/// `code` as a run `on` its machine reads it: `local/<name>` and its interface. What that machine's Runtime said installing this
+/// `code` as a run `on` its machine reads it: `local/<name>` (a checkout's first-party name, xs-195) and its interface. What that machine's Runtime said installing this
 /// very source, else Runtime's static describer, using its lock, plain version bounds or PyPI's newest. That can
 /// be older than the machine's, and refuse what the machine runs. No package code runs and no machine is asked.
 pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
+    if crate::private_io::current().is_none() { crate::maintenance_source::require_home(api.machines.hubs.home(),code)?; }
+    let (package, document) = described(api, code, on, hub).await?;
+    Ok((crate::checkout::of(code).map_or(package, |from| from.package), document))
+}
+
+async fn described(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
     let runtime = last_runtime(api, on);
-    let held = if crate::private_io::current().is_some() {
+    let project = crate::private_io::current().map(|scope| scope.storage.project_id);
+    if project.is_some() {
         copied(api.machines.hubs.home(), code)?;
-        Described::default()
-    } else {
-        DESCRIBED.lock().expect("described lock").entry((code.clone(), runtime.clone())).or_default().clone()
-    };
+    }
+    let held = DESCRIBED.lock().expect("described lock").entry((project, code.clone(), runtime.clone())).or_default().clone();
     let mut held = held.lock().await;
     if let Some((known, own)) = held.as_ref() {
         if *own {
@@ -1251,9 +1328,56 @@ pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &st
         *held = Some((found.clone(), true));
         return Ok(found);
     }
-    let known = read_interface(api, code, on, hub, runtime).await?;
+    let home = api.machines.hubs.home();
+    if let Some(known) = static_kept(home, code, hub, runtime.as_deref()) {
+        *held = Some((known.clone(), false));
+        return Ok(known);
+    }
+    let known = read_interface(api, code, on, hub, runtime.clone()).await?;
+    keep_static(home, code, hub, runtime.as_deref(), &known);
     *held = Some((known.clone(), false));
     Ok(known)
+}
+
+/// Where the static describer's reading of a tree is kept across Calcifer's restarts (xs-195): by the tree's content, its package's
+/// place in it, the Hub its lock is for and the Runtime that read it, in its project's own storage (else the machine's). A restart
+/// reads again only what changed.
+fn static_file(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> Option<PathBuf> {
+    let key = Digest::of(format!("{}\n{}\n{hub}\n{}", code.tree, code.at, runtime.unwrap_or_default()).as_bytes());
+    let dir = crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("described"), "described").ok()?;
+    Some(dir.join(format!("{}.json", &hex(&key)[..32])))
+}
+
+/// The static reading kept for this tree, said used now.
+fn static_kept(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
+    let path = static_file(home, code, hub, runtime)?;
+    let mut kept: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+    let package = kept["package"].as_str()?.to_owned();
+    let document = kept["interface"].take();
+    let _ = fs::File::options().append(true).open(&path).and_then(|file| file.set_modified(SystemTime::now()));
+    interface(&document).then_some((package, document))
+}
+
+/// Keeps a static reading, and only the newest 512.
+fn keep_static(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>, (package, document): &(String, Value)) {
+    const KEPT: usize = 512;
+    if !interface(document) {
+        return;
+    }
+    let Some(path) = static_file(home, code, hub, runtime) else { return };
+    let Some(dir) = path.parent() else { return };
+    let kept = serde_json::json!({ "package": package, "interface": document });
+    // A reading that can't be kept is read again after the next restart.
+    let _ = durable::private_dir(dir).and_then(|()| durable::replace(&path, kept.to_string().as_bytes(), 0o600));
+    let mut files: Vec<(SystemTime, PathBuf)> = (fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    if files.len() > KEPT {
+        files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+        for (_, old) in files.into_iter().skip(KEPT) {
+            let _ = fs::remove_file(old);
+        }
+    }
 }
 
 /// What the machine's Runtime said installing this very source, if it's kept here.
@@ -1262,6 +1386,7 @@ async fn own_reading(api: &Arc<Api>, local: &LocalCode, hub: &str, runtime: Opti
     let home = hubs.home();
     let origin = Origin::parse(hub).ok()?;
     let code = source(home, local, hubs, &origin).await.ok()?;
+    crate::maintenance_source::keep_derived(api,local,&code).ok()?;
     Some((code.package.clone(), kept(home, &code.filed(), runtime?)?))
 }
 

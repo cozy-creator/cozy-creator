@@ -5,17 +5,16 @@
 """A stand-in game for the vram-yield session: raw driver allocations from a process that is not cozy's, the way a
 game takes the GPU (sessions/vram-yield.sh). One op per run (`op=<name> cfg=<json>`):
   mode    machine.mode in TensorD's config.toml (`shared`: a desktop's default), read at its next start
-  start   a detached game: `gb` GiB in 256 MiB blocks, now, once the GPU is busy (`trigger: util`) or once a new
-          executor opens its CUDA context (`trigger: executor`), each refused block asked again every 50 ms up to
-          `give_up_s`, held `hold_s` (`shrink_to_gb` after `shrink_after_s`: it settles smaller and stays); waits
-          `wait_s` for its allocation to end
+  write   the game and its launcher, for a root shell to start over `cozy machine ssh`: `gb` GiB in 256 MiB blocks,
+          now, once the GPU is busy (`trigger: util`) or once a new executor opens its CUDA context (`trigger:
+          executor`), each refused block asked again every 50 ms up to `give_up_s`, held `hold_s` (`shrink_to_gb`
+          after `shrink_after_s`: it settles smaller and stays)
   status  its record: `alloc_s` (trigger to all of it), `reached`, `fails`, NVML at trigger and at done
   stop    ends it
-The game has a scrubbed environment (no executor scope token, so no executor end reaps it), a stop file and a hard
-lifetime. Nothing here talks to the network."""
+This package starts no process (the package contract refuses one that does): a root shell starts the game, so it is a
+program that is not cozy's, as a game is. It has a stop file and a hard lifetime. Nothing here talks to the network."""
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -25,7 +24,6 @@ import msgspec
 from cozy_runtime.author import App
 
 D = Path("/var/tmp/game")
-KEEP = ("PATH", "HOME", "LANG", "LD_LIBRARY_PATH", "NVIDIA_DRIVER_CAPABILITIES", "NVIDIA_VISIBLE_DEVICES")
 
 COMMON = r'''
 import ctypes, glob, json, os, sys, time
@@ -278,22 +276,6 @@ class Launch(TypedDict):
     state: str
 
 
-def env(gpu: bool) -> dict[str, str]:
-    e = {k: v for k, v in os.environ.items() if k in KEEP}
-    if gpu:
-        e["CUDA_VISIBLE_DEVICES"] = "0"
-    return e
-
-
-def daemon(code: str, cfg: Cfg, gpu: bool, log: str) -> int:
-    path = D / f"{log}.py"
-    path.write_text(code)
-    with open(D / f"{log}.log", "ab") as f:
-        p = subprocess.Popen([sys.executable, "-I", str(path), json.dumps(cfg | {"dir": str(D)})], env=env(gpu), stdout=f,
-                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
-    return p.pid
-
-
 def alive(pid: int) -> bool:
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
@@ -357,23 +339,6 @@ def run(cfg: Cfg) -> State | ModeSet | Launch:
     st, stop = D / f"game-{name}.json", D / f"game-{name}.stop"
     if op == "mode":
         return mode(cfg)
-    if op == "start":
-        if load(st).get("pid") and alive(load(st)["pid"]):
-            stop_and_wait(st, stop)
-        stop.unlink(missing_ok=True)
-        st.unlink(missing_ok=True)
-        pid = daemon(HOLDER, cfg, True, f"holder-{name}")
-        s: State
-        t, s = time.time(), {}
-        while time.time() - t < cfg.get("wait_s", 0):
-            s = load(st)
-            if s.get("t_done") or not alive(pid):
-                break
-            time.sleep(0.2)
-        s = load(st) or {"pid": pid}
-        if not alive(pid) and "t_done" not in s and not str(s.get("phase", "")).startswith("trigger"):
-            s["log"] = (D / f"holder-{name}.log").read_text()[-1500:]
-        return s
     if op == "write":  # the holder and its launcher, for a root shell to start (`cozy machine ssh`)
         if load(st).get("pid") and alive(load(st)["pid"]):
             stop_and_wait(st, stop)

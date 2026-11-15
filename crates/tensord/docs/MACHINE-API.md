@@ -15,7 +15,8 @@ onto them is `~/cozy_v2/tracker/design/machine-http-api.md` §2. In short:
   `POST /v1/runs` (a machine update only: the one request a controller of another release sends),
   `GET /v1/runs/{id}/events` (SSE after
   `Last-Event-ID`; closing it never cancels), `POST /v1/runs/{id}/cancel`;
-- `POST /v1/estimate`: when each job would run if all were sent now, a quote;
+- `PUT /v1/upcoming` and `PUT /v1/prepare` (cl-967): the jobs a caller expects to send, nearest first, and what to have ready with
+  no job; each item a function's warm run of the machine's own, behind every run, never listed;
 - `GET /v1/runs/{id}/outputs/{output}` (ranged, `ETag` = revision, readable while it grows),
   `GET /v1/logs/{name}`;
 - `PUT /v1/objects/sha256:<hex>`: content-addressed parts in any order, side by side, resumable
@@ -29,16 +30,18 @@ Refusals are `{"error":{kind, code, message}}`; a run's outcome carries the same
 Unknown fields are ignored.
 
 **The machine owns GPU width** (cl-816). A root sent with no count takes, as it starts, its width in
-the packing of the whole queue (`pack.rs`) that `POST /v1/estimate` quotes from: a lone job runs wide,
+the packing of the whole queue (`api::estimate`) that Calcifer quotes from (cl-967): a lone job runs wide,
 several queued jobs one GPU each. Each completed root keeps its compute
 (its time running less its waits for a GPU lane, for its calls' weights to download and their executors
 to start, and building weights onto GPUs, while no call computed) and its load (executor starts and
-builds); a quote is compute, plus, while its weights aren't here, their download at the measured link
-and that load. A job that builds a model on a GPU (`gpu`) can't run on a machine with
-none: its quote has `fits: false`, `no_gpu`, and no times, as does one whose weights the disk can't hold.
-Jobs a caller places together it sends together, as one batch: every new run of a batch is journaled in
-one transaction before any prepares, so the scheduler packs them as the quote did. A quote reserves
-nothing; separate callers are settled by the queue.
+builds). Status pushes what a quote needs: the queue with each root's function, size, widths and bytes
+still to come, each function's newest 40 runs, idle executors' loaded models, the measured link
+(`queue` and `times` only when they changed). A quote is compute, plus its download after those ahead of
+it at that link, its install after those ahead of it, and its load unless an idle executor holds it; a
+machine with no GPU is quoted for a GPU function, which it runs on its CPU. One whose weights the disk
+can't hold has `fits: false`. Jobs a caller places together it sends together, as one batch: every new
+run of a batch is journaled in one transaction before any prepares, so the scheduler packs them as the
+quote did. A quote reserves nothing; separate callers are settled by the queue.
 
 `RunSpec.gpus` is optional (`run-gpus/1`). Zero lets the machine choose among the GPU groups supported by
 all package-code model slots on the machine. A positive value requests exactly that many

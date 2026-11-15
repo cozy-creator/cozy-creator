@@ -28,13 +28,13 @@ export async function hashFile(file: File, signal: AbortSignal, onDone: (done: n
   return `sha256:${digest.digest("hex")}`
 }
 
-/** What `held` lacks of `size` bytes, as half-open ranges. */
+/** What `held` (half-open ranges) lacks of `size` bytes, as half-open ranges. */
 function gaps(held: [number, number][], size: number): [number, number][] {
   const missing: [number, number][] = []
   let at = 0
-  for (const [first, last] of [...held].sort((a, b) => a[0] - b[0])) {
-    if (first > at) missing.push([at, first])
-    at = Math.max(at, last + 1)
+  for (const [start, end] of [...held].sort((a, b) => a[0] - b[0])) {
+    if (start > at) missing.push([at, start])
+    at = Math.max(at, end)
   }
   if (at < size) missing.push([at, size])
   return missing
@@ -58,9 +58,9 @@ export async function sendFile(client: Client, file: File, digest: string, signa
   }
   // Sent whole and still not whole means what it held expired under it, so ask again; a third time isn't chance.
   for (let pass = 0; pass < 3; pass++) {
-    const held = await client.held(digest, signal, onAttempt, projectId)
-    if (held === true) return
-    const missing = gaps(held, file.size)
+    const missing = gaps(await client.held(digest, signal, onAttempt, projectId), file.size)
+    // Held whole: nothing to send.
+    if (!missing.length) return
     let sent = file.size - missing.reduce((sum, [from, to]) => sum + to - from, 0)
     onDone(sent / file.size)
     for (const [from, to] of missing) {

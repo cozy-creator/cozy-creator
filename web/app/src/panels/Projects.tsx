@@ -65,9 +65,9 @@ export function Projects() {
       <ul className="list">
         {listed.map((project, at) => (
           <li key={project.id} className={at > 0 && first.has(listed[at - 1].id) && !first.has(project.id) ? "tabbed" : undefined}>
+            {/* Its name; its folder on hover (cl-958: no paths on screen until asked). */}
             <Link to={projectPath(project)} title={project.path}>
               <b>{project.name}</b>
-              <small className="project-path">{project.path}</small>
             </Link>
           </li>
         ))}

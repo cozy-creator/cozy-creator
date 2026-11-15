@@ -77,12 +77,19 @@ pub(crate) struct AuthResult {
     pub device_key: Option<SignedDeviceKey>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct TokenSet {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: i64,
+}
+
+/// The token is never printed.
+impl std::fmt::Debug for TokenSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenSet").field("token_type", &self.token_type).field("expires_in", &self.expires_in).finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -92,12 +99,19 @@ pub(crate) struct SignedDeviceKey {
 }
 
 /// A machine's DPoP-bound token for its capability (AuthKit's jwt-bearer grant).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default)]
 pub struct WorkloadToken {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: i64,
+}
+
+/// The token is never printed.
+impl std::fmt::Debug for WorkloadToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkloadToken").field("token_type", &self.token_type).field("expires_in", &self.expires_in).finish_non_exhaustive()
+    }
 }
 
 /// Where a machine reaches this Hub (`GET /v1/execution-environment`).
@@ -209,8 +223,10 @@ pub struct ModelSummary {
     pub source: Option<String>,
     /// The org it credits (a root model) or is in (a mirror).
     pub author: Option<ModelAuthor>,
-    /// Words a LoRA's prompt uses, and its recommended strength (on a card); never applied.
-    pub trigger: Option<String>,
+    /// What a LoRA's prompt uses, each entry one trigger kept whole (cl-971), and its recommended
+    /// strength (on a card): what Calcifer runs a LoRA given without a strength at.
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub triggers: Vec<String>,
     pub strength: Option<f64>,
     /// Its labels, sorted: filled once from its source, then its owner's. `nsfw` marks one that makes sexual or nude images.
     #[serde(deserialize_with = "null_is_empty")]
@@ -472,6 +488,32 @@ pub struct PackageInstallPlan {
     pub package_interface: ExactDocument,
     pub pyproject: ExactDocument,
     pub uv_lock: ExactDocument,
+    /// Every file of the release, sorted by path: what `release_digest` is of (xs-196). Empty from a Hub before it.
+    #[serde(default, deserialize_with = "null_is_empty")]
+    pub release_files: Vec<PackageReleaseFile>,
+}
+
+/// One file a committed package release holds: its release path, digest and length.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PackageReleaseFile {
+    pub path: String,
+    pub digest: String,
+    pub length: i64,
+}
+
+/// A package release's digest, as its Hub serves it on the release's card (xs-196): `sha256:` and the hex SHA-256 of one line
+/// per file, in byte order of path, `<digest> <length> <bytes in path> <path>\n`. A published release never changes, so
+/// neither does this.
+pub fn release_digest(files: &[PackageReleaseFile]) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut sorted: Vec<&PackageReleaseFile> = files.iter().collect();
+    sorted.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
+    let mut hash = Sha256::new();
+    for file in sorted {
+        hash.update(format!("{} {} {} {}\n", file.digest, file.length, file.path.len(), file.path).as_bytes());
+    }
+    format!("sha256:{}", hex::encode(hash.finalize()))
 }
 
 /// One download of an install plan: its presigned URL, digest, release path and length.
@@ -510,6 +552,9 @@ pub struct PackageRelease {
 #[serde(default)]
 pub struct PackageReleaseSummary {
     pub release: String,
+    /// Its files' digest (`release_digest`); empty from a Hub before xs-196.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub digest: String,
 }
 
 /// One file a release declares before upload: its digest, length and release path.
@@ -561,8 +606,6 @@ pub struct PackageFinalization {
     pub error: Option<Value>,
     #[serde(deserialize_with = "null_is_empty")]
     pub warnings: Vec<String>,
-    /// The committed release is yanked. A Hub from before finalize took `yanked` never says so.
-    pub yanked: bool,
 }
 
 /// A yank or un-yank: `changed` false when the release already was.

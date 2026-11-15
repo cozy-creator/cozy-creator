@@ -4,7 +4,7 @@ import { signal } from "../ui/signal"
 import { isNsfw } from "../ui/Tags"
 import type { CanvasStore, ElementView } from "./CanvasStore"
 import { madeHere } from "./shown"
-import { loraNote } from "./loraNotes"
+import { chooseModel, fitsSlot, slotsOf as pickerSlots, withTriggers } from "./ModelPicker"
 
 /** What a box can be given by a drag: whether this one takes it, and what taking it does. A checkpoint is one; anything else goes by this same path. */
 export interface Carried {
@@ -95,10 +95,10 @@ export function whyNot(found: FoundModel, name: string, view: ElementView | unde
 /** The box under a point, its add-ons being part of it. */
 export function boxAt(store: CanvasStore, x: number, y: number): string | null {
   for (const element of document.elementsFromPoint(x, y)) {
-    const card = element.closest<HTMLElement>(".card[data-asset]") ?? element.closest(".react-flow__node")?.querySelector<HTMLElement>(".card[data-asset]")
+    const card = element.closest<HTMLElement>(".card[data-asset]") ?? element.closest(".canvas-node")?.querySelector<HTMLElement>(".card[data-asset]")
     if (card) return store.resolveName(card.dataset.asset ?? "")
   }
-  return null
+  return store.canvasAt(x, y)
 }
 
 /** Carried over a point: what would take it says so. */
@@ -153,11 +153,15 @@ export const carrying = (found: FoundModel, tools: Map<string, Tool>): Carried =
     const lora = store.valueOf(name, "lora")
     const models = store.valueOf(name, "models")
     if (addOnsOf(lora, models).some((addOn) => addOn.ref === found.model)) return void say(`${wordOf(found.model)} is already on ${name}`)
-    const slot = modelsOf(store.tools.get().get(store.get(name)?.asset?.tool ?? "")).find((model) => model.family === found.family)?.slot
+    // The slot the picker offers it in, as the picker writes it (H3's segments' base_model as one), its one model replaced.
+    const slot = pickerSlots(store.tools.get().get(store.get(name)?.asset?.tool ?? "")).find((model) => model.kind !== "lora" && fitsSlot(found, found.model, model, "weights", false))
     if (found.kind === "lora") {
-      const strength = found.strength ?? loraNote(found.model)?.strength
-      store.putOn(name, { lora: [...(Array.isArray(lora) ? lora : []), { ref: found.model, ...(typeof strength === "number" && Number.isFinite(strength) ? { strength } : {}) }] })
+      // Its triggers go after the box's prompt, in the same step (cl-968).
+      void store.modelDetail(found.model).then((detail) => detail.triggers ?? [], () => []).then((triggers) => {
+        const now = store.valueOf(name, "lora")
+        store.putOn(name, { lora: [...(Array.isArray(now) ? now : []), { ref: found.model }], ...withTriggers(store, name, triggers) })
+      })
     }
-    else if (slot) store.putOn(name, { models: { ...slotsOf(models), [slot]: { ...slotsOf(models)[slot], ref: found.model } } })
+    else if (slot) chooseModel(store, name, slot, found.model)
   },
 })

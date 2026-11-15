@@ -1,7 +1,19 @@
-import { useStoreApi } from "@xyflow/react"
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useSignal } from "../ui/signal"
 import { landscape, theme } from "../ui/theme"
+import { useCanvasStore } from "./context"
+import { useCanvasViewport } from "./viewportContext"
+// The landscape's pictures, as paper.css has them (its package exports only that, so by path): decoded here before they're put on.
+import hills from "../../node_modules/@cozy-creator/paper/landscape-hills.webp"
+import hillsFill from "../../node_modules/@cozy-creator/paper/landscape-hills-fill.webp"
+import meadow from "../../node_modules/@cozy-creator/paper/landscape-meadow.webp"
+import meadowFill from "../../node_modules/@cozy-creator/paper/landscape-meadow-fill.webp"
+import mountains from "../../node_modules/@cozy-creator/paper/landscape-mountains.webp"
+import mountainsFill from "../../node_modules/@cozy-creator/paper/landscape-mountains-fill.webp"
+import sky from "../../node_modules/@cozy-creator/paper/landscape-sky.webp"
+import clouds from "../../node_modules/@cozy-creator/paper/sky-clouds.webp"
+
+const ART = [clouds, sky, mountains, mountainsFill, hills, hillsFill, meadow, meadowFill]
 
 /** What the paper's tiles all repeat on, so wrapping by it can't be seen. */
 const PERIOD = 2048
@@ -34,12 +46,12 @@ const UNWASHED = 0.3
  * layer of its own, so it repaints nothing. On paper, a plain sheet is under it, the same paper without its sky: a zoom out fades the sky away by its layer's opacity.
  */
 function World({ washed }: { washed: boolean }) {
-  const flow = useStoreApi()
+  const viewport = useCanvasViewport()
   const plain = useRef<HTMLDivElement>(null)
   const sheet = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    let [last, held, washing] = [flow.getState().transform, NaN, -1]
-    const place = ([x, y, zoom]: typeof last) => {
+    let [last, held, washing] = [viewport.getViewport(), NaN, -1]
+    const place = ({ x, y, zoom }: typeof last) => {
       const step = stepOf(zoom)
       const period = PERIOD * zoom
       const wrap = (value: number) => (((value % period) + period) % period) - period
@@ -58,12 +70,12 @@ function World({ washed }: { washed: boolean }) {
       }
     }
     place(last)
-    return flow.subscribe(({ transform }) => {
-      if (transform === last) return
-      last = transform
-      place(transform)
+    return viewport.subscribeCamera((view) => {
+      if (view === last) return
+      last = view
+      place(view)
     })
-  }, [flow])
+  }, [viewport])
   return (
     <>
       {washed && <div ref={plain} className="paper-world paper-world-plain" aria-hidden="true" />}
@@ -80,8 +92,10 @@ function World({ washed }: { washed: boolean }) {
  * leaves a gap. With reduced motion they hold still. A pan sets four transforms and draws nothing.
  */
 function Landscape() {
-  const flow = useStoreApi()
+  const viewport = useCanvasViewport()
+  const store = useCanvasStore()
   const land = useRef<HTMLDivElement>(null)
+  const art = useArtAfterBoxes(viewport, store)
   useEffect(() => {
     const whole = land.current
     if (!whole) return
@@ -94,7 +108,7 @@ function Landscape() {
     const still = matchMedia("(prefers-reduced-motion: reduce)")
     const at = layers.map(() => 0)
     const steps = layers.map(() => NaN)
-    let [x, y, zoom] = flow.getState().transform
+    let { x, y, zoom } = viewport.getViewport()
     let [size, reach, vertical] = [1, 1, 0]
     // A taller window draws it larger (paper.css), and lets it go further up and down.
     const measure = () => {
@@ -121,8 +135,7 @@ function Landscape() {
       place()
     })
     resized.observe(whole)
-    const stop = flow.subscribe(({ transform }) => {
-      const [nx, ny, nz] = transform
+    const stop = viewport.subscribeCamera(({ x: nx, y: ny, zoom: nz }) => {
       if (nx === x && ny === y && nz === zoom) return
       if (!still.matches) {
         // A pan and a zoom are one move of the canvas: by k about the point it leaves where it was. Each layer moves by k to its rate
@@ -134,22 +147,61 @@ function Landscape() {
         })
         if (nz === zoom) vertical = Math.max(-reach, Math.min(reach, vertical + ny - y))
       }
-      ;[x, y, zoom] = transform
+      ;[x, y, zoom] = [nx, ny, nz]
       place()
     })
     return () => {
       stop()
       resized.disconnect()
     }
-  }, [flow])
+  }, [viewport])
   return (
-    <div ref={land} className="paper-landscape" aria-hidden="true">
+    <div ref={land} className="paper-landscape" data-art={art || undefined} aria-hidden="true">
       <div className="paper-landscape-sky" />
       <div className="paper-landscape-mountains" />
       <div className="paper-landscape-hills" />
       <div className="paper-landscape-meadow" />
     </div>
   )
+}
+
+/**
+ * The boxes come first: the landscape's pictures are decoded once the boxes' first frame is drawn (or the project's first read found none), off
+ * that frame's way, and only then put on, fading in over the cream (paper.css). Decoded and rastered with the boxes, they held the boxes' first
+ * frame back some 90 ms (e2e 43691308549: ~150 ms of decoding and ~150 ms of raster on the raster threads).
+ */
+function useArtAfterBoxes(viewport: ReturnType<typeof useCanvasViewport>, store: ReturnType<typeof useCanvasStore>): boolean {
+  const [shown, setShown] = useState(false)
+  useEffect(() => {
+    let [over, frame, waiting] = [false, 0, true]
+    // No project, nothing to wait for; else its first read is in and the renderer has presented its boxes, or the project has none.
+    const boxesDrawn = () => !store.projectId || (store.hasRead && (store.empty || viewport.hasDrawn))
+    const begin = () => {
+      if (!waiting || !boxesDrawn()) return
+      waiting = false
+      stop()
+      // The frame they're in is drawn by the second frame from here.
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          const decoded = ART.map((src) => {
+            const image = new Image()
+            image.src = src
+            return image.decode().catch(() => {})
+          })
+          void Promise.all(decoded).then(() => over || setShown(true))
+        })
+      })
+    }
+    const stops = [store.names.subscribe(begin), viewport.subscribeDrawn(begin)]
+    const stop = () => stops.forEach((one) => one())
+    begin()
+    return () => {
+      over = true
+      stop()
+      cancelAnimationFrame(frame)
+    }
+  }, [viewport, store])
+  return shown
 }
 
 /**
@@ -164,13 +216,12 @@ const ROW = 3
 
 /**
  * The dots, over what the canvas is drawn on and under every box, the same size at every zoom. They're on a layer of their own that a pan
- * moves by less than a step, so a pan draws none of them: React Flow's own background draws them all again each frame, which in WebKit is
- * most of a pan's frame far out. A zoom draws them again. Scaled, the layer would be filtered each frame of a pan, and kept on a layer through a zoom it's
- * drawn slower (e2e 43144421327). The pattern fills only a band along each row of dots, so a zoom draws at most half of the layer, not all of it
+ * moves by less than a step, so a pan draws none of them. A zoom draws them again. Scaled, the layer would be filtered each frame of a pan,
+ * and kept on a layer through a zoom it's drawn slower (e2e 43144421327). The pattern fills only a band along each row of dots, so a zoom draws at most half of the layer, not all of it
  * (e2e 43177889306: 370 → 210 ms of raster a second). The layer is a step at the most zoom (4) wider and taller than the window: `.canvas-dots`.
  */
 export function Dots() {
-  const flow = useStoreApi()
+  const viewport = useCanvasViewport()
   const layer = useRef<SVGSVGElement>(null)
   const cell = useRef<SVGPatternElement>(null)
   const dot = useRef<SVGCircleElement>(null)
@@ -178,8 +229,8 @@ export function Dots() {
   useEffect(() => {
     const svg = layer.current
     if (!svg) return
-    let [last, step, wide, tall] = [flow.getState().transform, 0, 0, 0]
-    const place = ([x, y, zoom]: typeof last) => {
+    let [last, step, wide, tall] = [viewport.getViewport(), 0, 0, 0]
+    const place = ({ x, y, zoom }: typeof last) => {
       if (!cell.current || !dot.current || !rows.current) return
       let gap = GAP * zoom
       while (gap < LEAST) gap *= 2
@@ -201,16 +252,16 @@ export function Dots() {
       place(last)
     })
     measured.observe(svg)
-    const stop = flow.subscribe(({ transform }) => {
-      if (transform === last) return
-      last = transform
-      place(transform)
+    const stop = viewport.subscribeCamera((view) => {
+      if (view === last) return
+      last = view
+      place(view)
     })
     return () => {
       stop()
       measured.disconnect()
     }
-  }, [flow])
+  }, [viewport])
   return (
     <svg ref={layer} className="canvas-dots" aria-hidden="true">
       <pattern ref={cell} id="canvas-dots" patternUnits="userSpaceOnUse">

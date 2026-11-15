@@ -58,14 +58,17 @@ pub(crate) struct Service {
 }
 
 const SWEEP_EVERY: std::time::Duration = crate::reclaim::IDLE;
-/// The disk's free bytes moved this far: what fills it is read again.
-const USAGE_MOVED: u64 = 64 << 20;
 
 /// Whether an executor this machine run does not supervise still fences GPU dispatch: it, or a
 /// member of its group born before `before`, is alive and not stuck in the kernel after its kill.
 /// One stuck (D state) is shown in the machine's status and fences nothing: what it holds stays
 /// held, its GPU memory included, as NVML reads it.
 fn holds_gpus(birth: &Birth, before: u64) -> bool {
+    let left = left(birth, before);
+    !left.is_empty() && !platform::contain::all_stuck(&left)
+}
+/// `birth`'s group from before `before`, as far as it has not exited.
+fn left(birth: &Birth, before: u64) -> Vec<Birth> {
     let mut left: Vec<Birth> = platform::process::group_members(birth)
         .into_iter()
         .filter(|m| m.start_ticks < before && m.state().is_ok_and(|s| s != platform::process::State::Gone))
@@ -73,7 +76,7 @@ fn holds_gpus(birth: &Birth, before: u64) -> bool {
     if !birth.ended().unwrap_or(false) {
         left.push(birth.clone());
     }
-    !left.is_empty() && !platform::contain::all_stuck(&left)
+    left
 }
 impl Service {
     pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>) -> io::Result<Arc<Self>> {
@@ -181,6 +184,8 @@ impl Service {
     }
     pub(crate) fn configure_publisher(&self, publisher: Arc<crate::published::Publisher>) {
         *self.publisher.lock().unwrap() = Some(publisher);
+        // The first sweep, now its packages are configured, so the disk is measured early.
+        crate::reclaim::ask();
     }
     pub(crate) fn configure_calls(&self, calls: Arc<crate::calls::Calls>) {
         *self.calls.lock().unwrap() = Some(calls);
@@ -222,9 +227,16 @@ impl Service {
         let (fence, started) = (self.startup_gpu_births.lock().unwrap().clone(), self.started_ticks);
         let (gpu, engine) = (gpu.clone(), self.engine.clone());
         std::thread::Builder::new().name("warm-set-restore".into()).spawn(move || {
-            let mut seen = engine.activity_epoch();
-            while fence.iter().any(|birth| holds_gpus(birth, started)) {
-                seen = engine.wait_activity(seen, Some(std::time::Duration::from_millis(100)));
+            // An exit wakes it; each second it looks whether those left are stuck in the kernel, which `holds_gpus` gives up.
+            while let Some(birth) = fence.iter().find(|birth| holds_gpus(birth, started)) {
+                let exiting = left(birth, started).iter().find_map(|member| platform::process::Exact::open(member).ok().flatten());
+                match exiting {
+                    Some(exact) => drop(exact.wait_for(std::time::Duration::from_secs(1))),
+                    None => std::thread::sleep(std::time::Duration::from_secs(1)),
+                }
+            }
+            if !fence.is_empty() {
+                gpu.ledgers_exited();
             }
             gpu.keep_all(&engine);
         })?;
@@ -326,6 +338,7 @@ impl Service {
             pool.stop()?;
         }
         self.engine.notify_activity();
+        crate::reclaim::ask();
         Ok(true)
     }
     fn dispatch_loop(self: Arc<Self>) {
@@ -350,26 +363,22 @@ impl Service {
             self.engine.wait_activity(epoch, None);
         }
     }
-    /// Sweep disk caches on their cadence. Native Varena owns GPU pressure service.
+    /// Sweep disk caches each `SWEEP_EVERY` (what each keeps goes once unused that long), the first once its packages are
+    /// configured; and measure what fills the disk after a sweep or when a reader saw it move (`reclaim::seen_free`).
+    /// Native Varena owns GPU pressure service.
     fn reclaim_loop(weak: std::sync::Weak<Self>) {
         platform::process::background_thread(); // nice 19, idle I/O: a big cleanup never crowds out work
         let mut swept: Option<std::time::Instant> = None;
-        let mut measured = 0;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            let asked = crate::reclaim::wait_asked(swept.map(|at| SWEEP_EVERY.saturating_sub(at.elapsed())));
             match weak.upgrade() {
                 Some(service) if !*service.stopped.lock().unwrap() => {
-                    // The first once its packages are configured, so the disk is measured early.
                     let due = swept.map_or_else(|| service.publisher.lock().unwrap().is_some(), |at| at.elapsed() >= SWEEP_EVERY);
                     if due {
                         service.reclaim();
                         swept = Some(std::time::Instant::now());
                     }
-                    // What fills the disk follows the disk between sweeps: `machine show` on a machine
-                    // whose models landed since the last sweep said what it held before them.
-                    let free = crate::reclaim::measure(&service.engine.root).map_or(measured, |disk| disk.available);
-                    if due || free.abs_diff(measured) >= USAGE_MOVED {
-                        measured = free;
+                    if due || asked {
                         service.measure_usage();
                     }
                 }
@@ -427,15 +436,17 @@ impl Service {
     /// The machine's garbage for a store admit of `incoming` bytes that finds the disk short,
     /// before the store evicts a model (`Store::on_short`): never kernels, memoized stages or
     /// run objects. Then the idle executors whose open models alone keep the room it needs end
-    /// (`end_idle_for_disk`), so the store's eviction can take those models.
-    pub(crate) fn reclaim_for(&self, incoming: u64) {
+    /// (`end_idle_for_disk`), so the store's eviction can take those models. True when any ended.
+    pub(crate) fn reclaim_for(&self, incoming: u64) -> bool {
         self.sweep(incoming, false);
-        if let Some(store) = self.store() {
-            let ended = self.end_idle_for_disk(&store, incoming);
-            if !ended.is_empty() {
-                tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(incoming), ended.join(", "));
-            }
+        let Some(store) = self.store() else {
+            return false;
+        };
+        let ended = self.end_idle_for_disk(&store, incoming);
+        if !ended.is_empty() {
+            tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(incoming), ended.join(", "));
         }
+        !ended.is_empty()
     }
 
     /// Room on the disk for the `missing` bytes of run `run`'s weights, before any is wanted: the

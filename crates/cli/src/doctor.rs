@@ -2,8 +2,8 @@
 //! lock record, whether it answers, whether it runs the installed cozy, and its service. A Calcifer
 //! that does not start, answers nothing while its process makes no progress, or runs another cozy
 //! than the installed one is restarted, which never stops work (machines run what they accepted).
-//! Then this computer's tools, and a machine's driver, GPUs, toolchain and kernels as its Status
-//! reports them. Exit 1 while a problem remains.
+//! Then project folders other accounts may open, this computer's tools, and a machine's driver, GPUs,
+//! toolchain and kernels as its Status reports them. Exit 1 while a problem remains.
 use std::{
     path::Path,
     process::{Command, ExitCode, Stdio},
@@ -67,6 +67,11 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let mut checks = calcifer(ctx).await;
     let up = checks.iter().all(|c| c.ok);
     checks.push(service(ctx));
+    let mut legacy = None;
+    if up {
+        checks.extend(folders(ctx).await);
+        legacy = legacy_rows(ctx, &mut checks).await;
+    }
     let tools = crate::tools::rows(ctx, Side::Computer);
     // Without --on, this computer's machine, where this OS runs models itself.
     let on = match args.on {
@@ -111,7 +116,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let code = if healthy { ExitCode::SUCCESS } else { ExitCode::FAILURE };
     if ctx.json {
         output::json(&serde_json::json!({
-            "healthy": healthy, "checks": checks, "tools": tools, "machine": machine,
+            "healthy": healthy, "checks": checks, "tools": tools, "machine": machine, "legacy": legacy,
         }));
         return Ok(code);
     }
@@ -146,6 +151,31 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         output::next(ctx, &logs[..if crate::machine::local_note().is_none() { 2 } else { 1 }]);
     }
     Ok(code)
+}
+
+/// Each project folder other accounts on this computer may open, a line each: Calcifer makes them its account's alone.
+async fn folders(ctx: &Context) -> Vec<Check> {
+    let Ok(client) = ctx.calcifer().await else { return vec![] };
+    let Ok(listed) = client.get::<api::calcifer::project::Projects>("/v1/projects?limit=1000").await else { return vec![] };
+    let loosened = listed.projects.into_iter().filter(|project| platform::durable::others_may_open(&project.path).unwrap_or(false));
+    loosened.map(|project| {
+        let path = project.path.display();
+        let fix = if cfg!(windows) { "give only your account access to it".to_owned() } else { format!("chmod 700 {path}") };
+        // A warning: the project still opens, as it did.
+        Check::ok("project folder", format!("warning: other accounts on this computer can open {path}: {fix}"))
+    }).collect()
+}
+
+/// The old project runs Calcifer's store still holds (cl-984), as one line: those whose project folder is here, those whose
+/// folder is gone, and unreadable ones. Nothing held, no line.
+async fn legacy_rows(ctx: &Context, checks: &mut Vec<Check>) -> Option<api::calcifer::LegacyRows> {
+    let rows: api::calcifer::LegacyRows = ctx.calcifer().await.ok()?.get("/v1/legacy").await.ok()?;
+    let runs = |folders: &[api::calcifer::LegacyFolder]| folders.iter().map(|folder| folder.runs).sum::<u64>();
+    if rows.existing.is_empty() && rows.gone.is_empty() && rows.unreadable == 0 { return Some(rows); }
+    checks.push(Check::ok("legacy history", format!(
+        "Calcifer's store holds {} old runs of {} project folders here (each imports as it opens), {} of {} folders gone, {} unreadable",
+        runs(&rows.existing), rows.existing.len(), runs(&rows.gone), rows.gone.len(), rows.unreadable)));
+    Some(rows)
 }
 
 /// Calcifer's lock record and whether it answers, running the installed cozy: each problem found,

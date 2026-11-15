@@ -35,7 +35,7 @@ function seedCurrentProject(folder, seed) {
       cwd: root, env: { ...process.env, COZY_WEB_SEED: input }, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 4 << 20,
     });
     const result = JSON.parse(readFileSync(receipt, 'utf8'));
-    if (result.schema !== 2 || result.crdt_format !== 1 || result.assets !== seed.expected_assets || result.versions !== seed.expected_versions || result.canvas !== seed.expected_assets || result.measured !== Object.keys(seed.measured).length || result.local_file_rows !== 0) throw new Error('current native fixture population differs from its requested workload');
+    if (result.schema !== result.current_schema || result.crdt_format !== result.current_crdt_format || result.assets !== seed.expected_assets || result.versions !== seed.expected_versions || result.canvas !== seed.expected_assets || result.measured !== Object.keys(seed.measured).length || result.local_file_rows !== 0) throw new Error('current native fixture population differs from its requested workload');
     return { ...result, producer_source: source };
   } finally {
     rmSync(input, { force: true });

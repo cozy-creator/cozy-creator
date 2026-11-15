@@ -1,6 +1,6 @@
 """stall.py MODE [CONT_S]: what a group follower suffers on its next formation, as a GPU fault would do it.
   kill  SIGKILL the follower as soon as it exists, before it joins
-  stop  SIGSTOP it the moment it joins rank 0's store (its TCP connection to a port rank 0 listens on)
+  stop  SIGSTOP it the moment it joins rank 0's store (it opens GPU 0's store file)
   stop  with CONT_S: and SIGCONT it CONT_S s later
 The follower is the executor whose parent and grandparent are executors (zygote -> GPU 0 -> follower).
 Prints what it did with timestamps; every executor's state and the GPUs follow at the end."""
@@ -42,42 +42,16 @@ def follower(seen: set[int]) -> tuple[int, int] | None:
     return None
 
 
-def sockets(pid: int) -> set[str]:
-    inodes = set()
+def joined(parent: int) -> bool:
+    """A follower opened GPU 0's newest store file (`<its --root>/group-*/<formation>`, the
+    Runtime's `group.rendezvous`): each rank's open adds a `refcount/` entry, GPU 0's first."""
     try:
-        for fd in os.listdir(f"/proc/{pid}/fd"):
-            try:
-                link = os.readlink(f"/proc/{pid}/fd/{fd}")
-            except OSError:
-                continue
-            if link.startswith("socket:["):
-                inodes.add(link[8:-1])
-    except OSError:
-        pass
-    return inodes
-
-
-def tcp() -> list[tuple[str, str, str, str]]:
-    rows = []
-    for name in ("/proc/net/tcp", "/proc/net/tcp6"):
-        try:
-            for line in Path(name).read_text().splitlines()[1:]:
-                f = line.split()
-                rows.append(
-                    (f[1].rsplit(":", 1)[1], f[2].rsplit(":", 1)[1], f[3], f[9])
-                )  # local port, remote port, state, inode
-        except OSError:
-            pass
-    return rows
-
-
-def joined(pid: int, parent: int) -> bool:
-    mine, theirs = sockets(pid), sockets(parent)
-    rows = tcp()
-    listening = {lp for lp, _, st, ino in rows if st == "0A" and ino in theirs}
-    return any(
-        st == "01" and ino in mine and rp in listening for _, rp, st, ino in rows
-    )
+        argv = Path(f"/proc/{parent}/cmdline").read_bytes().split(b"\0")
+        root = Path(argv[argv.index(b"--root") + 1].decode())
+        stores = [(path.stat().st_mtime_ns, path) for path in root.glob("group-*/*")]
+        return bool(stores) and max(stores)[1].read_bytes().count(b"refcount/") >= 2
+    except (OSError, ValueError, IndexError):
+        return False
 
 
 def main() -> None:
@@ -104,7 +78,7 @@ def main() -> None:
         os.kill(pid, signal.SIGKILL)
         say(f"SIGKILL {pid} before it joined")
     else:
-        while not joined(pid, parent):
+        while not joined(parent):
             if not os.path.exists(f"/proc/{pid}"):
                 say("follower gone before joining")
                 return

@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query"
-import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type CSSProperties, type PointerEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
 import { runFullQuery, runQuery } from "../api/queries"
 import { holdMedia, playingHere } from "../api/events"
+import { THUMB_TRIES, thumbPending, thumbWait, whenThumb } from "../api/thumbs"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
 import type { MainFile } from "../api/calcifer"
@@ -11,12 +12,14 @@ import { useCanvasStore } from "./context"
 import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
-import { useSignal } from "../ui/signal"
-import { aspectOf, faceOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
+import { tabShown, useSignal } from "../ui/signal"
+import { aspectOf, faceOf, failureOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
 import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
 import { BufferedImage } from "./BufferedImage"
+import type { VideoPlayback } from "./timeline/Player"
+import { FPS } from "./ranges"
 import { useArriving } from "./RunFace"
 import { bodyText, CopyError } from "../ui/CopyError"
 
@@ -24,169 +27,141 @@ const STRIP_FRAMES = 8
 /** How long the pointer rests on a video before its preview plays: one passing over on its way somewhere starts nothing. */
 const PREVIEW_AFTER_MS = 250
 
-/**
- * At most two different thumbnails asked at once. Calcifer makes few at a time, and `<img>`s waiting on it would fill the browser's six
- * connections to it, stalling every other call. Boxes drawing the same request share its place in line. An element scrolled away gives up
- * its own place. What a person is looking at right now, `now`, goes at once, past the line.
- */
-function line(limit: number) {
-  type Start = (complete: () => void) => void
-  type Load = { path: string; subscribers: Set<() => void>; running: boolean }
-  const loads = new Map<string, Load>()
-  const waiting = new Set<Load>()
-  let running = 0
-
-  const complete = (load: Load) => {
-    if (loads.get(load.path) !== load) return
-    loads.delete(load.path)
-    load.subscribers.clear()
-    if (load.running) running -= 1
-    else waiting.delete(load)
-    next()
-  }
-  const begin = (load: Load) => {
-    waiting.delete(load)
-    load.running = true
-    running += 1
-    for (const start of load.subscribers) start()
-  }
-  const next = () => {
-    for (const load of waiting) {
-      if (running >= limit) break
-      begin(load)
-    }
-  }
-
-  return (path: string, start: Start, now = false): (() => void) => {
-    let load = loads.get(path)
-    if (!load) {
-      load = { path, subscribers: new Set(), running: false }
-      loads.set(path, load)
-      waiting.add(load)
-    }
-    const joined = load
-    const ready = () => start(() => {
-      if (joined.subscribers.has(ready)) complete(joined)
-    })
-    joined.subscribers.add(ready)
-    if (joined.running) ready()
-    else if (now) begin(joined)
-    next()
-
-    return () => {
-      joined.subscribers.delete(ready)
-      if (!joined.subscribers.size) complete(joined)
-    }
-  }
-}
-
-const thumbLine = line(2)
 /** What's been up: coming back on screen is no arrival, and fades nothing. */
 const arrived = new Set<string>()
 
-/** What an open box draws: Calcifer's widest, never wider than the file, so a picture at its own resolution. */
+/** What an open box draws of a sound: as wide as Calcifer draws one. */
 const FULL = 2048
+/** A video's frames each, wherever a strip is drawn at rest: a box's hover, a clip. */
+const STRIP_WIDTH = 256
 
-/** A just-landed take's picture, at the size an open box draws it, asked once and decoded ahead, so a click on it shows it at once. */
-const preloaded = new Set<string>()
-export function preload(client: Client, projectId: string | null, sha256: string) {
-  const key = `${sha256}:${FULL}`
-  if (!projectId || preloaded.has(key)) return
-  preloaded.add(key)
-  void client.transport.src(client.thumb(projectId, sha256, FULL)).then((url) => {
-    const img = new Image()
-    img.src = url
-    img.decode().then(() => arrived.add(key), () => preloaded.delete(key))
-  })
+const mediaEpoch = new Map<string, number>()
+const mediaKey = (project: string | null, key: string) => `${project ?? ""}\0${key}`
+/** A project's view closed (its vault locked): what this page drew of it is forgotten, and what it's still asking for is let go. */
+export function revokeProjectMedia(project: string) {
+  mediaEpoch.set(project, (mediaEpoch.get(project) ?? 0) + 1)
+  const prefix = `${project}\0`
+  for (const key of arrived) if (key.startsWith(prefix)) arrived.delete(key)
 }
 
-/** Thumbnails come in these widths, so a file has few sizes in Calcifer's cache: as wide as it's drawn on screen, the canvas's zoom and the
- *  screen's density in, up to Calcifer's widest, which is never wider than the file. */
-function thumbWidth(cardWidth: number, zoom = 1): number {
-  const wanted = cardWidth * zoom * Math.min(2, window.devicePixelRatio || 1)
-  return wanted <= 256 ? 256 : wanted <= 512 ? 512 : wanted <= 1024 ? 1024 : FULL
-}
-/** The widest of each file drawn yet: zooming out keeps it rather than asking a smaller one. */
-const widest = new Map<string, number>()
-
+/**
+ * A thumbnail Calcifer keeps in the project, made as its file landed (cl-982): with no width, what the canvas and every list draw of a
+ * picture or a video. Each is asked for at once, as reading it is all Calcifer does. One not made yet (202 thumb_pending) is asked again
+ * when Calcifer says it's there, and one whose file is still on its way here, later each time, before it says there's none.
+ */
 export function Thumb({
   sha256,
   cardWidth,
   strip,
+  wave,
   exact,
   className,
   frame,
-  now,
+  pulse,
   onSize,
   onShown,
 }: {
   sha256: string
   cardWidth: number
   strip?: number
+  /** A video's sound as a waveform, rather than its picture. */
+  wave?: boolean
   /** `cardWidth` is the size wanted, not a card's: a small strip stays small. */
   exact?: boolean
   className?: string
   frame?: number
-  /** What a person is looking at: past the line. */
-  now?: boolean
+  /** Its frame pulses, faintly, until it's drawn, as a picture's does (cl-982). */
+  pulse?: boolean
   onSize?: (aspect: number) => void
   onShown?: () => void
 }) {
-  const { client } = useConnection()
+  const { client, bridge, privateViewEpoch, signedOut } = useConnection()
   const store = useCanvasStore()
-  const [image, setImage] = useState<{ path: string; src: string; request: number; complete: () => void; live: () => boolean }>()
+  const [image, setImage] = useState<{ path: string; src: string; request: number; live: () => boolean; failed: () => void }>()
+  const [loaded, setLoaded] = useState<string>()
   const nextRequest = useRef(0)
   const [failedPath, setFailedPath] = useState<string>()
   const projectId = store.projectId
-  const zoom = useSignal(store.sharpness)
-  const width = exact ? cardWidth : Math.max(thumbWidth(cardWidth, zoom), strip ? 0 : (widest.get(sha256) ?? 0))
-  const path = projectId ? client.thumb(projectId, sha256, width, strip) : undefined
+  const width = exact ? cardWidth : strip ? STRIP_WIDTH : undefined
+  const drawn = mediaKey(projectId, `${sha256}:${width ?? "picture"}`)
+  const base = projectId ? client.thumb(projectId, sha256, width, strip, wave) : undefined
+  const [tries, setTries] = useState<{ base?: string; n: number }>({ n: 0 })
+  const attempt = tries.base === base ? tries.n : 0
+  const path = base && attempt ? `${base}&try=${attempt}` : base
+  const latestPath = useRef(path)
+  latestPath.current = path
+  const retries = useRef<{ base?: string; errors: number; pending: number }>({ errors: 0, pending: 0 })
   useEffect(() => {
-    if (!path) return
-    let live = true
+    if (!path || !projectId) return
+    let live = true, checking = false
+    let wait: (() => void) | undefined
+    let probe: AbortController | undefined
+    const epoch = mediaEpoch.get(projectId) ?? 0
+    const projectEpoch = bridge.projectEpoch(projectId)
     const request = ++nextRequest.current
-    const leave = thumbLine(path, (complete) => {
-      void client.transport.src(path).then((src) => {
-        if (!live) return
-        setFailedPath(undefined)
-        setImage({ path, src, request, complete, live: () => live })
-      }, () => {
-        if (!live) return
-        leave()
-        setFailedPath(path)
+    const current = () => live && !probe?.signal.aborted && nextRequest.current === request && latestPath.current === path
+      && store.active && store.projectId === projectId && !signedOut.get() && (mediaEpoch.get(projectId) ?? 0) === epoch && bridge.projectEpoch(projectId) === projectEpoch
+    if (retries.current.base !== base) retries.current = { base, errors: 0, pending: 0 }
+    const retry = retries.current
+    const failed = async (checkPending: boolean) => {
+      if (!current() || checking) return
+      checking = true
+      let pending = false
+      if (checkPending) {
+        probe = new AbortController()
+        try { pending = await thumbPending(client.transport, path, probe.signal) } catch { /* An unknown failure still uses the bounded error budget. */ }
+      }
+      if (!current()) return
+      if (pending) { retry.errors = 0; retry.pending = Math.min(5, retry.pending + 1) }
+      else if (++retry.errors >= THUMB_TRIES) { setFailedPath(path); return }
+      setImage(undefined)
+      wait = whenThumb(projectId, sha256, thumbWait(pending ? retry.pending : retry.errors), () => {
+        wait = undefined
+        if (current()) setTries({ base, n: attempt + 1 })
       })
-    }, now)
-    return () => {
-      live = false
-      leave()
     }
-  }, [client, path])
+    const stop = () => { live = false; probe?.abort(); wait?.() }
+    const unwatch = privateViewEpoch.subscribe(() => { if (bridge.projectEpoch(projectId) !== projectEpoch) stop() })
+    const unsign = signedOut.subscribe(() => { if (signedOut.get()) stop() })
+    void client.transport.src(path).then((src) => {
+      if (!current()) { if (src.startsWith("blob:")) URL.revokeObjectURL(src); return }
+      setFailedPath(undefined)
+      setImage({ path, src, request, live: current, failed: () => { void failed(true) } })
+    }, () => { void failed(false) })
+    return () => {
+      unwatch(); unsign(); stop()
+    }
+  }, [client, bridge, privateViewEpoch, signedOut, store, projectId, path])
   // A strip that can't be made leaves the poster under it as it was.
-  if (path && failedPath === path) return strip ? null : <span className="media-note">No preview</span>
-  if (!image || failedPath === image.path) return null
+  if (path && failedPath === path) return strip || wave ? null : <span className="media-note">No preview</span>
+  const waiting = pulse && loaded !== path ? <span className="thumb-wait" /> : null
+  if (!image || failedPath === image.path) return waiting
   return (
+    <>
+    {waiting}
     <img
       key={image.request}
       src={image.src}
       alt=""
-      className={`${className ?? ""} ${arrived.has(`${sha256}:${width}`) ? "" : "arrives"}`}
+      className={`${className ?? ""} ${arrived.has(drawn) ? "" : "arrives"}`}
       draggable={false}
       style={frame === undefined ? undefined : { transform: `translateX(${(-frame * 100) / (strip ?? 1)}%)` }}
       onError={() => {
         if (image.path !== path || !image.live()) return
-        image.complete()
-        setFailedPath(image.path)
+        image.failed()
       }}
       onLoad={(event) => {
         if (image.path !== path || !image.live()) return
-        image.complete()
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
-        arrived.add(`${sha256}:${width}`)
-        if (!strip) widest.set(sha256, Math.max(width, widest.get(sha256) ?? 0))
+        retries.current.errors = 0
+        retries.current.pending = 0
+        arrived.add(drawn)
+        setLoaded(image.path)
         onShown?.()
       }}
     />
+    </>
   )
 }
 
@@ -194,24 +169,59 @@ export function Thumb({
  * Whether a video's preview plays: once the pointer has rested on it a moment. Only a pointer that moves counts, as a pan slides tiles under
  * one that doesn't; a finger has nothing to rest, and a held button is a drag. A wheel ends it, and so does a press, until the pointer leaves.
  */
-export function usePreview(video: boolean) {
+/** A real unpressed mouse move onto a passive video, carried across its native overlay's mount. */
+export interface PreviewHover {
+  x: number
+  y: number
+  at: number
+  signal: AbortSignal
+}
+
+export function usePreview(video: boolean, initialHover?: PreviewHover) {
   const [on, setOn] = useState(false)
   const resting = useRef<number | undefined>(undefined)
   const pressed = useRef(false)
-  useEffect(() => () => clearTimeout(resting.current), [])
-  const end = () => {
-    if (resting.current === undefined) return
+  const target = useRef<HTMLElement | null>(null)
+  const consumed = useRef<PreviewHover | undefined>(undefined)
+  const visible = useSignal(tabShown)
+  const hold = useCallback((element: HTMLElement | null) => { target.current = element }, [])
+  const end = useCallback(() => {
     clearTimeout(resting.current)
     resting.current = undefined
     setOn(false)
-  }
+  }, [])
+  useEffect(() => () => clearTimeout(resting.current), [])
+  useEffect(() => { if (!video || !visible) end() }, [video, visible, end])
+  useEffect(() => {
+    if (!initialHover) {
+      if (consumed.current) { consumed.current = undefined; end() }
+      return
+    }
+    if (consumed.current === initialHover) return
+    consumed.current = initialHover
+    if (!video || !visible || initialHover.signal.aborted) return
+    const underPointer = () => {
+      const element = target.current
+      const hit = document.elementFromPoint(initialHover.x, initialHover.y)
+      return Boolean(element && hit && element.contains(hit) && !hit.closest("button,input,select,textarea,[contenteditable],.nm"))
+    }
+    initialHover.signal.addEventListener("abort", end, { once: true })
+    if (resting.current === undefined && underPointer()) {
+      resting.current = window.setTimeout(() => {
+        if (!initialHover.signal.aborted && !pressed.current && underPointer()) setOn(true)
+        else resting.current = undefined
+      }, Math.max(0, PREVIEW_AFTER_MS - (performance.now() - initialHover.at)))
+    }
+    return () => { initialHover.signal.removeEventListener("abort", end); end() }
+  }, [initialHover, video, visible, end])
   const leave = {
+    ref: hold,
     onPointerLeave() {
       pressed.current = false
       end()
     },
   }
-  if (!video) return { on: false, hover: leave }
+  if (!video || !visible) return { on: false, hover: leave }
   return {
     on,
     hover: {
@@ -230,8 +240,10 @@ export function usePreview(video: boolean) {
   }
 }
 
-/** Previews that can't play, by hash: a hover doesn't ask again. */
-const unpreviewable = new Set<string>()
+/** Previews that couldn't play, by hash, and until when a hover doesn't ask again: a file still arriving has one soon. */
+const unpreviewable = new Map<string, number>()
+const PREVIEW_TRIES = 4
+const PREVIEW_AGAIN_MS = 30_000
 
 /**
  * A video's preview over its poster: a few seconds from the poster's frame on, silent and looping, which Calcifer made once as the file
@@ -242,18 +254,22 @@ export function Preview({ sha256 }: { sha256: string }) {
   const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
   const [playing, setPlaying] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const element = useRef<HTMLVideoElement>(null)
+  const retry = useRef<number | undefined>(undefined)
+  useEffect(() => () => clearTimeout(retry.current), [])
   const projectId = store.projectId
   useEffect(() => {
-    if (!projectId || unpreviewable.has(sha256)) return
+    if (!projectId || (unpreviewable.get(sha256) ?? 0) > Date.now()) return
     let live = true
-    void client.transport.src(client.preview(projectId, sha256)).then((url) => {
+    const path = client.preview(projectId, sha256)
+    void client.transport.src(attempt ? `${path}&try=${attempt}` : path).then((url) => {
       if (live) setSrc(url)
     })
     return () => {
       live = false
     }
-  }, [client, projectId, sha256])
+  }, [client, projectId, sha256, attempt])
   // Its bytes and decoder go with it, not when it's collected.
   useEffect(() => {
     const el = element.current
@@ -278,8 +294,10 @@ export function Preview({ sha256 }: { sha256: string }) {
       onPlaying={() => setPlaying(true)}
       onError={(event) => {
         if (event.currentTarget.error?.code === MediaError.MEDIA_ERR_NETWORK) return
-        unpreviewable.add(sha256)
         setSrc(undefined)
+        // Made on its first ask, or its file still arriving: asked again while the pointer rests, then not for a while.
+        if (attempt + 1 < PREVIEW_TRIES) retry.current = window.setTimeout(() => setAttempt(attempt + 1), 1000 * 2 ** attempt)
+        else unpreviewable.set(sha256, Date.now() + PREVIEW_AGAIN_MS)
       }}
     />
   )
@@ -296,7 +314,7 @@ function Poster({ shown, cardWidth, name, scrubbed, previewing }: { shown: Shown
   const at = scrubbed !== undefined && shown.duration_ms ? (scrubbed * 1000) / shown.duration_ms : null
   return (
     <div className="scrub">
-      <Thumb sha256={shown.sha256} cardWidth={cardWidth} onSize={(aspect) => store.setAspect(name, aspect)} onShown={() => store.showThumb(name)} />
+      <Thumb sha256={shown.sha256} cardWidth={cardWidth} pulse onSize={(aspect) => store.setAspect(name, aspect)} onShown={() => store.showThumb(name)} />
       {at !== null ? <WalkedFrames sha256={shown.sha256} cardWidth={cardWidth} at={at} /> : previewing && <Preview sha256={shown.sha256} />}
       {at !== null && shown.duration_ms ? <span className="tc">{clock(at * shown.duration_ms)}</span> : null}
     </div>
@@ -326,9 +344,10 @@ export function sourceOf(view: ElementView, shown: Shown | null): Source | null 
 }
 
 /** Straight from the machine: `play` says where and signs a cap for this output alone, and the shared browser player follows it. */
-async function fromMachine(client: Client, source: { run: number; output: string }, el: HTMLMediaElement, failed: (why: string) => void): Promise<Playback> {
+async function fromMachine(client: Client, source: { project: string; run: number; output: string }, el: HTMLMediaElement, signal: AbortSignal, failed: (why: string) => void): Promise<Playback> {
   const [name, index] = source.output.split("/")
-  const answer = await client.play(String(source.run), name, Number(index ?? 0))
+  const answer = await client.play({ project: source.project, run: source.run }, name, Number(index ?? 0))
+  signal.throwIfAborted()
   const player = new MachinePlayer(el, parseLink(new URL(answer.url).hash))
   let stopping = false
   player.addEventListener("status", (event) => {
@@ -354,7 +373,8 @@ export function viewable(view: ElementView | undefined): boolean {
 }
 
 /** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
-export function Player({ field, path, machine, seek, auto, from, onTime }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void }) {
+/** `controller`: in Focus, the one transport and track drive it (cl-965), so it has no controls of its own. */
+export function Player({ field, path, machine, seek, auto, from, onTime, controller }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void; controller?: VideoPlayback }) {
   const { client, stream } = useConnection()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const [why, setWhy] = useState("This browser can't play it")
@@ -364,6 +384,19 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
   const asked = useRef(seek?.ask ?? 0)
 
   useEffect(() => () => stopRef.current(), [])
+  // Closed, it drives nothing.
+  useEffect(() => {
+    if (state === "idle" || state === "unplayable") controller?.attach(null)
+  }, [state, controller])
+  // Its transport opens it: to play, or to show the frame a scrub asked for.
+  useEffect(() => {
+    if (!controller) return
+    controller.start = () => setState((now) => (now === "idle" ? "waiting" : now))
+    return () => {
+      controller.start = () => {}
+      controller.attach(null)
+    }
+  }, [controller])
   // Asked to play at once: once it's there, so React's second mount in development doesn't stop it.
   useEffect(() => {
     if (auto) setState("waiting")
@@ -417,22 +450,26 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
         release = held
         const el = element.current
         if (!el) return stop()
-        playback = path !== undefined ? client.transport.play(path, el) : await fromMachine(client, machine!, el, failed)
+        playback = path !== undefined ? client.transport.play(path, el) : await fromMachine(client, machine!, el, waiting.signal, failed)
         if (waiting.signal.aborted) return playback.stop()
         setState("playing")
         if (wanted.current !== null) el.currentTime = wanted.current
         wanted.current = null
+        // Opened by a scrub, it shows that frame and waits.
+        if (controller?.attach(el)) return
         el.play().catch(() => {})
       })
       .catch((error: unknown) => {
         if (!waiting.signal.aborted) failed(error instanceof Error ? error.message : String(error))
       })
-  }, [state, client, path, machine?.run, machine?.output])
+  }, [state, client, path, machine?.project, machine?.run, machine?.output])
 
   if (state === "unplayable") return <span className="media-note over">{why}</span>
   if (state === "idle") {
+    // Its transport has the Play.
+    if (controller) return null
     return (
-      <button type="button" className="play nodrag" aria-label="Play" onClick={() => setState("waiting")}>
+      <button type="button" className="play canvas-control" aria-label="Play" onClick={() => setState("waiting")}>
         <Icon name="play" />
       </button>
     )
@@ -442,8 +479,8 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
     <>
       <Tag
         ref={element}
-        className={`live nodrag nopan nowheel ${field}`}
-        controls
+        className={`live canvas-control ${field}`}
+        controls={!controller}
         preload="none"
         onTimeUpdate={(event) => onTime?.(event.currentTarget.currentTime)}
         onSeeked={(event) => onTime?.(event.currentTarget.currentTime)}
@@ -455,7 +492,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
         }}
       />
       {/* A stop, not ✕: in a corner ✕ reads as close or delete (Paul, 11-12). */}
-      <button type="button" className="stop nodrag" aria-label="Stop" title="Stop" onClick={() => stopRef.current()}>
+      <button type="button" className="stop canvas-control" aria-label="Stop" title="Stop" onClick={() => stopRef.current()}>
         <Icon name="stop" />
       </button>
     </>
@@ -486,7 +523,8 @@ interface Way {
   rendering?: boolean
 }
 
-/** How often a rendering box asks its run's machine for a preview while none comes: the machine makes them only while asked. */
+/** How often a rendering box asks its run's machine for a preview while none comes: the machine makes them only while asked, and this tab
+ *  asks only while it's in view. */
 const PREVIEW_ASK_MS = 8000
 
 /** What its run is making, faded under how far it's got (cr-282): the newest picture its machine made of the latents. Asked for as
@@ -494,44 +532,52 @@ const PREVIEW_ASK_MS = 8000
  *  one leaves the last in place. The take replaces it. */
 function LatentPreview({ view, number }: { view: ElementView; number: number }) {
   const { client } = useConnection()
+  const store = useCanvasStore()
+  const project = store.projectId
   const later = number !== view.run?.number
-  const { data } = useQuery({ ...runQuery(client, number), enabled: later })
+  const { data } = useQuery({ ...runQuery(client, project ?? "", number), enabled: Boolean(project && later) })
   const run = later ? data : view.run
   const running = run?.status === "in_progress" && run.machine_state !== "queued"
+  const inView = useSignal(tabShown)
+  const asking = running && inView
   const newest = run?.progress?.preview ?? 0
   const [ask, setAsk] = useState(0)
   const [shown, setShown] = useState<{ url: string; tag: string }>()
   const held = useRef<{ url: string; tag: string }>(undefined)
   useEffect(() => {
-    if (running) setAsk((n) => n + 1)
-  }, [running, newest])
+    if (asking) setAsk((n) => n + 1)
+  }, [asking, newest])
   useEffect(() => {
-    if (!running) return
+    if (!asking) return
     const timer = setInterval(() => setAsk((n) => n + 1), PREVIEW_ASK_MS)
     return () => clearInterval(timer)
-  }, [running])
+  }, [asking])
   useEffect(() => {
-    if (!running || !ask) return
+    if (!project || !asking || !ask) return
+    const epoch = mediaEpoch.get(project) ?? 0
     const asked = new AbortController()
     const tag = held.current?.tag
     void (async () => {
-      const response = await client.transport.fetch(client.runPreview(number), { signal: asked.signal, headers: tag ? { "If-None-Match": tag } : {} })
+      const response = await client.transport.fetch(client.runPreview({ project, run: number }), { signal: asked.signal, headers: tag ? { "If-None-Match": tag } : {} })
       const now = response.headers.get("etag")
       if (response.status !== 200 || !now || now === tag) return
-      const picture = { url: URL.createObjectURL(await response.blob()), tag: now }
+      const blob = await response.blob()
+      if (asked.signal.aborted || !store.active || store.projectId !== project || (mediaEpoch.get(project) ?? 0) !== epoch) return
+      const picture = { url: URL.createObjectURL(blob), tag: now }
       if (held.current) URL.revokeObjectURL(held.current.url)
       held.current = picture
       setShown(picture)
     })().catch(() => {})
     return () => asked.abort()
-  }, [client, number, running, ask])
-  useEffect(
-    () => () => {
+  }, [client, store, project, number, asking, ask])
+  useEffect(() => {
+    setShown(undefined)
+    return () => {
       if (held.current) URL.revokeObjectURL(held.current.url)
-    },
-    [],
-  )
-  if (!shown) return null
+      held.current = undefined
+    }
+  }, [project, number])
+  if (!shown || !project || !store.active) return null
   return (
     <div className="latent-preview" data-preview={shown.tag}>
       <img src={shown.url} alt="" draggable={false} />
@@ -547,12 +593,11 @@ function FramePicture({ sha256, open, restWidth, onSize, onShown }: { sha256: st
   if (full && !open) setFull(false)
   return (
     <>
-      {open && !full && <Thumb sha256={sha256} cardWidth={restWidth} now />}
+      {open && !full && <Thumb sha256={sha256} cardWidth={restWidth} />}
       <Thumb
         sha256={sha256}
         cardWidth={open ? FULL : restWidth}
         exact={open}
-        now={open}
         onSize={onSize}
         onShown={() => {
           if (open) setFull(true)
@@ -563,14 +608,19 @@ function FramePicture({ sha256, open, restWidth, onSize, onShown }: { sha256: st
   )
 }
 
-/** Words as a frame draws them, read only: each mention a chip, struck through when it names nothing. */
+/** Words as a frame draws them, read only: each mention a chip, struck through when it names nothing or its tool can't use it, saying why. */
 function Said({ words, view, name }: { words: string; view: ElementView; name: string }) {
   const store = useCanvasStore()
+  const chipOf = (mention: string) => {
+    const gone = view.asset?.missing?.includes(mention) || (store.mentionOf(mention, name)?.gone ?? isSelf(mention))
+    const unused = gone ? undefined : view.asset?.unused?.find((one) => one.mention === mention)?.why
+    return { className: `chip ${gone ? "missing" : unused ? "unused" : ""}`, title: unused }
+  }
   return (
     <p className="words">
       {withMentions(words).map((part, i) =>
         part.mention ? (
-          <span key={i} className={`chip ${view.asset?.missing?.includes(part.text.slice(1, -1)) || (store.mentionOf(part.text.slice(1, -1), name)?.gone ?? isSelf(part.text.slice(1, -1))) ? "missing" : ""}`}>
+          <span key={i} {...chipOf(part.text.slice(1, -1))}>
             {chipWords(part.text.slice(1, -1))}
           </span>
         ) : (
@@ -630,7 +680,7 @@ function MadeFrom({ view, name, run, cardWidth }: { view: ElementView; name: str
   const { client } = useConnection()
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const { data, isError } = useQuery({ ...runFullQuery(client, run ?? 0, 0), enabled: run !== undefined })
+  const { data, isError } = useQuery({ ...runFullQuery(client, store.projectId ?? "", run ?? 0, 0), enabled: Boolean(store.projectId && run !== undefined) })
   const control = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "prompt")
   if (!control) return null
   const own = valueIn(view, control.field)
@@ -693,7 +743,7 @@ export function Spread({ pictures, cardWidth, className }: { pictures: SpreadPic
           {line.map((picture) => (
             <span key={picture.key} className="spread-picture" data-picture={picture.key}>
               {picture.sha256 ? (
-                <Thumb sha256={picture.sha256} cardWidth={cardWidth / per} now onSize={(aspect) => setRead((was) => (was[picture.key] === aspect ? was : { ...was, [picture.key]: aspect }))} />
+                <Thumb sha256={picture.sha256} cardWidth={cardWidth / per} onSize={(aspect) => setRead((was) => (was[picture.key] === aspect ? was : { ...was, [picture.key]: aspect }))} />
               ) : (
                 <svg className={`ghost-blank ${picture.making ? "making" : ""}`} viewBox={`0 0 ${100 * (picture.shape ?? 1)} 100`} preserveAspectRatio="xMidYMid meet">
                   <rect x="2" y="2" width={100 * (picture.shape ?? 1) - 4} height="96" rx="3" />
@@ -738,7 +788,7 @@ function Making({ view, name, run, cardWidth }: { view: ElementView; name: strin
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   useSignal(store.names)
-  const { data, isError } = useQuery({ ...runFullQuery(client, run ?? 0, 0), enabled: run !== undefined })
+  const { data, isError } = useQuery({ ...runFullQuery(client, store.projectId ?? "", run ?? 0, 0), enabled: Boolean(store.projectId && run !== undefined) })
   const control = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "prompt")
   if (!control) return null
   const own = valueIn(view, control.field)
@@ -763,18 +813,21 @@ function Making({ view, name, run, cardWidth }: { view: ElementView; name: strin
   )
 }
 
-export function Media({ view, name, cardWidth, restWidth = cardWidth, children }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode }) {
+export function Media({ view, name, cardWidth, restWidth = cardWidth, children, previewHover }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode; previewHover?: PreviewHover }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const { asset, placing, preview } = view
+  const focused = useSignal(store.focusedName) === name
   // Being worked on, a take can be played and scrubbed, unless its words are over it.
   const open = Boolean(view.here && !view.hereWords)
   const shown = shownOf(view)
   const watch = watched(view)
-  const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined)
+  // The take looked at failed: its error in its frame, nothing of it on its way (cl-954).
+  const failedTake = failureOf(view)
+  const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined) && !failedTake
   // Drawn: only the take shown, as its takes and label say, once its file is here; never another in its place (cl-942). Its neighbours,
   // or those of what showed before a take was asked for, stay decoded.
-  const nearImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watchRun: undefined, watchFrom: undefined }) : null
+  const nearImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watch: undefined }) : null
   const drawnImage = asset?.kind === "image" && shown && !shown.absent ? shown : null
   // A dropped picture shows its own bytes for as long as it shows that file: no copy of it is asked for, so nothing takes its place.
   const own = Boolean(preview && (!preview.sha256 || !nearImage || hexOf(nearImage.sha256) === preview.sha256))
@@ -782,16 +835,18 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
   const onItsWay = making || Boolean(view.queued) || view.asked !== undefined
-  const busy = onItsWay && (Boolean(watch && watch.number === undefined) || !shown)
+  const busy = onItsWay && (Boolean(watch && watch.number === undefined) || !shown) && !failedTake
   // Made, with its file still on its way here: it says so, as a render on its way does.
   const arriving = useArriving(view)
   const run = onItsWay ? makingRun(view) : arriving
+  // What a render showed so far: only the run its frame is on's, never another take's (cl-945).
+  const glimpse = view.glimpse && (run === undefined || view.glimpse.number === run) ? view.glimpse : undefined
   const here = shown && !shown.absent ? shown : null
   // A video whose file says `orbit` turns, not plays: open, a drag turns it from the file here.
   const orbit = field === "video" ? orbitOf(shown) : null
   const turning = open && orbit && here && source && "path" in source && store.projectId ? { path: client.file(store.projectId, source.path), orbit } : null
   // On the canvas: an opened box plays the file itself.
-  const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here)
+  const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here, previewHover)
   const tools = useSignal(store.tools)
   const words = lineOf(valuesOf(view), asset ? fieldsOf(asset, tools) : [])
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
@@ -808,7 +863,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
-  const glimpsed = Boolean(view.glimpse && !shown && view.viewed === undefined && (making || asset?.failure))
+  const glimpsed = Boolean(glimpse && !shown && view.viewed === undefined && (making || asset?.failure))
   // The take its glimpse was playing as, opened, landing: its player plays on from there.
   const playhead = useRef<Playhead | null>(null)
   const playsOn = open && !glimpsed && source && "path" in source && here?.run !== undefined && playhead.current?.run === here.run ? playhead.current.at : undefined
@@ -816,13 +871,14 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
     if (playsOn !== undefined) playhead.current = null
   }, [playsOn])
   // Its take being made, with nothing of it yet: what its words mention is behind its face.
-  // An image or video being made at rest says what it's made from, in its frame (cl-940, cl-947), over what it shows.
-  const makingMedia = !view.here && (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline && onItsWay && asset.rendering == null && makes(view)
-  const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !view.glimpse && !makingMedia
+  // An image or video being made at rest says what it's made from, in its frame (cl-940, cl-947), over what it shows; an image too, open on
+  // a take of it being made (cl-945).
+  const makingMedia = !failedTake && (!view.here || (asset?.kind === "image" && Boolean(watch && watch.number === undefined) && !view.hereWords)) && (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline && onItsWay && asset.rendering == null && makes(view)
+  const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !glimpse && !makingMedia
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   // On its way, its face says so whole, unless a take is looked at, a glimpse of what it's making shows or its words are being written:
   // then along its bottom.
-  const full = (busy || arriving !== undefined) && view.viewed === undefined && !view.glimpse && !(view.here && view.hereWords)
+  const full = (busy || arriving !== undefined) && view.viewed === undefined && !glimpse && !(view.here && view.hereWords)
   // What stopped its last try, in place: an approved box looked at shows nothing wrong (Card's dot).
   const failed = !busy && !placing && Boolean(asset?.failure) && view.viewed === undefined && !(asset?.pinned && faceOf(view) === "media")
   return (
@@ -839,7 +895,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
             }}
           />
         )}
-        {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
+        {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.here ? view.scrub : undefined} previewing={previewing} />}
         {nearImage && field === "image" && !own && <BufferedImage sha256={drawnImage?.sha256 ?? null} originalPath={drawnImage?.path} neighborPaths={neighborPaths} neighbors={nearImage.absent || nearImage === drawnImage ? neighbors : [nearImage.sha256, ...neighbors]} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"}</span>}
@@ -853,16 +909,16 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           <Icon name={glyph} />
         </span>
       )}
-      {glimpsed && view.glimpse && <Glimpse glimpse={view.glimpse} failed={!making} open={Boolean(view.here)} playhead={playhead} />}
+      {glimpsed && glimpse && <Glimpse glimpse={glimpse} failed={!making} open={Boolean(view.here)} playhead={playhead} controller={focused && glimpse.media === "video" ? store.playbackOf(name, FPS) : undefined} />}
       {full && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {makingMedia && <Making view={view} name={name} run={run} cardWidth={cardWidth} />}
       {/* At rest it keeps its size (cl-936): what's being made fades in over it, unless what it shows is approved; an image's covers its references (cl-940). */}
-      {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
+      {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !glimpse && <LatentPreview view={view} number={run} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
-      {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
+      {failedTake ? <FailedHere whole message={failedTake.message.replace(`${name}: `, "")} copy={bodyText(failedTake, watch?.run, undefined)} /> : failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}
-      {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
+      {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action canvas-control" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit: open it and drag to turn">
@@ -874,11 +930,12 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           key={JSON.stringify(source)}
           field={field}
           path={"path" in source ? client.file(store.projectId, source.path) : undefined}
-          machine={"run" in source ? source : undefined}
+          machine={"run" in source ? { ...source, project: store.projectId } : undefined}
           seek={view.seek}
           onTime={field === "video" ? (seconds) => store.patch(name, { scrub: seconds }) : undefined}
           auto={playsOn !== undefined}
           from={playsOn}
+          controller={focused && field === "video" ? store.playbackOf(name, shown?.fps ?? 24) : undefined}
         />
       )}
       {children}
@@ -887,10 +944,10 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 }
 
 /** Why its last render failed, along its bottom, until it's tried again. */
-function FailedHere({ message, copy }: { message: string; copy: string }) {
+function FailedHere({ message, copy, whole = false }: { message: string; copy: string; whole?: boolean }) {
   return (
-    <div className="run-face lines failed" data-phase="failed">
-      <p className="face-state error-text nodrag nopan">
+    <div className={`run-face lines failed ${whole ? "whole" : ""}`} data-phase="failed">
+      <p className="face-state error-text canvas-control">
         <b title={message}><span className="face-words">Didn't render: {message}</span></b>
         <CopyError text={copy} />
       </p>
@@ -909,23 +966,40 @@ interface Playhead {
  * shot's segments 1..k, joined) plays silent and looping at rest; opened, beside its beats or not, it waits with its controls, to play with
  * its sound and seek. A newer revision (1..k+1) loads where it was, playing on if it was.
  */
-function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean; open: boolean; playhead: { current: Playhead | null } }) {
+/** Where each run's glimpse last was, by its run and the revision it played: a newer revision of it starts there, however its box redrew. */
+const glimpsedAt = new Map<string, { rev: number; at: number; playing: boolean }>()
+
+function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean; open: boolean; playhead: { current: Playhead | null }; controller?: VideoPlayback }) {
   const { client } = useConnection()
+  const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
   const element = useRef<HTMLVideoElement>(null)
   const resume = useRef<{ at: number; playing: boolean } | null>(null)
+  // The revision its element plays: the newest may still be on its way.
+  const playing = useRef(0)
+  const key = `${store.projectId ?? ""}\0${glimpse.run}`
   useEffect(() => {
+    if (!store.projectId) { setSrc(undefined); return }
     let live = true
-    void client.transport.src(client.output(glimpse.run, glimpse.output, glimpse.index, glimpse.rev)).then((url) => {
+    void client.transport.src(client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)).then((url) => {
       if (!live) return
+      // Where it is now, else where it last was: its element redrawn, or a revision before still on its way.
       const el = element.current
-      if (el?.currentSrc) resume.current = { at: el.currentTime, playing: !el.paused }
+      const was = glimpsedAt.get(key)
+      resume.current = el?.currentSrc && !resume.current ? { at: el.currentTime, playing: !el.paused }
+        : was && was.rev < glimpse.rev ? { at: was.at, playing: was.playing } : resume.current
+      playing.current = glimpse.rev
       setSrc(url)
     })
     return () => {
       live = false
     }
-  }, [client, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
+  }, [client, store.projectId, key, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
+  // Its new revision starts where the last one was: set before its metadata, it is never read at 0 s in between.
+  useLayoutEffect(() => {
+    const el = element.current
+    if (el && src && resume.current) el.currentTime = resume.current.at
+  }, [src])
   useEffect(() => {
     const el = element.current
     if (!el) return
@@ -933,8 +1007,18 @@ function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<Ele
     if (open) el.pause()
     else void el.play().catch(() => {})
   }, [open])
+  // In Focus it plays on the one transport and track a finished take has (cl-965; Paul, 11-12), not the browser's controls.
+  const drawn = Boolean(src)
+  useEffect(() => {
+    if (!controller || !drawn) return
+    controller.attach(element.current)
+    return () => {
+      controller.attach(null)
+    }
+  }, [controller, drawn])
   const heard = (el: HTMLVideoElement) => {
     playhead.current = open && !el.paused ? { run: glimpse.number, at: el.currentTime } : null
+    if (el.readyState >= 1 && !resume.current) glimpsedAt.set(key, { rev: playing.current, at: el.currentTime, playing: !el.paused })
   }
   return (
     <div className={`glimpse ${failed ? "failed" : ""}`} data-label={glimpse.label ?? ""} data-rev={glimpse.rev}>
@@ -943,11 +1027,11 @@ function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<Ele
           <video
             ref={element}
             src={src}
-            className={open ? "nodrag nopan nowheel" : undefined}
+            className={open ? "canvas-control" : undefined}
             muted={!open}
             loop={!open}
             autoPlay={!open}
-            controls={open}
+            controls={open && !controller}
             playsInline
             preload="auto"
             onLoadedMetadata={(event) => {
@@ -960,6 +1044,7 @@ function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<Ele
             }}
             onTimeUpdate={(event) => heard(event.currentTarget)}
             onPause={(event) => heard(event.currentTarget)}
+            onSeeked={(event) => heard(event.currentTarget)}
           />
         ) : (
           <img src={src} alt="" draggable={false} />

@@ -12,3 +12,5 @@ h3_group h3-u2-warm 100 prompt="<$NAME> $SCENE" seed:=$((R + 355)) duration_s:=5
 # A model the caller chose, fetched from the Hub during the call: its run carries a capability, so GPU 0's invoke holds a
 # token, and the group's `run` hands it to GPU 1 (cl-935: runs 47352, 47366 and 47432 failed group_broken, credential_at_seam).
 h3_group h3-u2-finetune 100 prompt="<$NAME> $MOTION" seed:=$((R + 354)) duration_s:=5 model.base_model=sexgod1979/pinkcherry
+# A 26 s shot in two segments, the second carrying the first's frames: its steps track the rows each attends (cr-288).
+source "$HERE/suites/execution/multi-gpu/h3-carried.sh"

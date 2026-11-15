@@ -69,9 +69,10 @@ pub(crate) struct Config {
     pub gpu_samples: Option<PathBuf>,
 }
 
-/// The one load.
+/// The one load, which declares the origins this machine fetches at a local address.
 pub(crate) fn load(lifetime: Lifetime) -> io::Result<Config> {
     let loaded = shared::load().map_err(|e| invalid(&named(&e.message)))?;
+    loaded.config.declare_local().map_err(|e| invalid(&e.message))?;
     from_loaded(lifetime, loaded, shared::environment())
 }
 

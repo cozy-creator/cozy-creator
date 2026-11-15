@@ -24,7 +24,7 @@ async fn public_code_fixture() {
     let dir = root.join("current");
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join(db::DB);
-    db::create(&path, &db::Stored { written: written::Written::blank().into(), ..Default::default() }, &[], &[]).unwrap();
+    db::create(&path, &db::Stored { written: written::Written::default().into(), ..Default::default() }, &[], &[]).unwrap();
     let mut conn = db::open(&path).unwrap();
     let id = "project-native-kept-id".to_owned();
     db::set_identity(&mut conn, &path, &id, "Current", None).unwrap();
@@ -52,10 +52,11 @@ async fn public_code_fixture() {
     assert_eq!(refusal.0.code, "project_db_version");
     assert_eq!(db::identity(&conn), Some((id.clone(), "Current".into())));
     assert_eq!(db::meta(&conn, "code"), Some(code.clone()));
-    assert_eq!(identify(&api, &dir).unwrap(), (id.clone(), "Current".into(), code.clone()));
-    assert_eq!(identify(&api, &dir).unwrap().2, code);
+    let identified = identify(&api, &dir).unwrap();
+    assert_eq!((identified.id, identified.name, identified.code), (id.clone(), "Current".into(), code.clone()));
+    assert_eq!(identify(&api, &dir).unwrap().code, code);
     db::set_meta(&conn, &path, "code", None).unwrap();
-    assert_eq!(identify(&api, &dir).unwrap().2, code);
+    assert_eq!(identify(&api, &dir).unwrap().code, code);
     assert_eq!(db::meta(&conn, "code"), Some(code.clone()));
     assert_eq!(known(&api, &code.to_ascii_lowercase()).unwrap().id, id);
     assert_eq!(known(&api, "current").unwrap().id, id);
@@ -65,13 +66,13 @@ async fn public_code_fixture() {
     let other = root.join("other");
     std::fs::create_dir(&other).unwrap();
     made_new(&api, &other, &code, false).unwrap();
-    let (other_id, _, other_code) = identify(&api, &other).unwrap();
+    let Identified { id: other_id, code: other_code, .. } = identify(&api, &other).unwrap();
     assert_ne!(other_code, code);
     assert_eq!(known(&api, &code).unwrap().id, id);
     assert_eq!(known(&api, &other_id).unwrap().id, other_id);
 
     // All API records carry the public code while their id stays canonical.
-    assert_eq!(opened(id.clone(), code.clone(), &dir).code, code);
+    assert_eq!(opened(id.clone(), code.clone(), String::new(), &dir).code, code);
     let project = api.projects.get(&api, &code).unwrap();
     let state = model::of(&api, &project).await.unwrap().state(&project, true);
     assert_eq!(state.id, id);
@@ -84,9 +85,9 @@ async fn public_code_fixture() {
     let copy = root.join("copy");
     std::fs::create_dir(&copy).unwrap();
     let copy_path = copy.join(db::DB);
-    db::create(&copy_path, &db::Stored { written: written::Written::blank().into(), ..Default::default() }, &[], &[]).unwrap();
+    db::create(&copy_path, &db::Stored { written: written::Written::default().into(), ..Default::default() }, &[], &[]).unwrap();
     db::set_identity(&mut db::open(&copy_path).unwrap(), &copy_path, &id, "Current", Some(&code)).unwrap();
-    let (copy_id, _, copy_code) = identify(&api, &copy).unwrap();
+    let Identified { id: copy_id, code: copy_code, .. } = identify(&api, &copy).unwrap();
     assert_ne!(copy_id, id);
     assert_ne!(copy_code, code);
     assert_eq!(db::meta(&conn, "code"), Some(code));

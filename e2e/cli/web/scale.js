@@ -1,6 +1,8 @@
 // Thousands of assets (Paul expects them): a generated 5,000-asset project, a real Calcifer, a real Chrome. How long a project API read takes, opening it in the page, one edit to show, what's read for it, a box let go on the crowd by hand, a render landing, panning, memory.
 // CI seeds the current native Automerge/SQLite baseline before timed reads: 4,000 shots with two versions each and 1,000 pictures, using the
 // same synthetic media and layout. From its first open onward, only the page and Calcifer's current HTTP API change that project state.
+// This fixture reuses TWO tiny synthetic sources. It exercises backend/storage/coalescing and the historic bars below; it is NOT proof
+// of 5,000 unique images' GPU capacity or production throughput. pixi-scale.js owns that photographic, unique-source qualification.
 // The bars are what a person would feel, in BARS, on the fast hosted runners: each time bar is held times this runner's
 // measured speed against those (speed.js), and seen.bars has what each was held to. What each took is seen.scale.
 //   node scale.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
@@ -13,7 +15,7 @@ const { createHash } = require('crypto');
 const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { projectUrl, projectAction, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld } = require('./page');
+const { holderToken, projectUrl, projectAction, calcifer, signIn, STEP_MS, lastLook, lookAt, png, noStall, closeBox, openBox, renderOf, until, projectHeld, canvasBox, canvasNames, canvasView, fitCanvas, screenshotPixels } = require('./page');
 const { readFootprint, closedProjectMemory } = require('./native-memory');
 const { runnerSpeed } = require('./speed');
 const { prepareCurrentSeed, seedCurrentProject } = require('./current-seed');
@@ -21,7 +23,7 @@ const { prepareCurrentSeed, seedCurrentProject } = require('./current-seed');
 prepareCurrentSeed();
 
 const failures = [];
-const seen = {};
+const seen = { fixture_scope: { assets: 5000, unique_source_images: 2, source_sizes: [[16, 16], [32, 18]], qualifies_unique_image_gpu_capacity: false, production_scale_protocol: 'pixi-scale.js' } };
 noStall(seen, died);
 let during = 'the start';
 function check(name, ok, detail) {
@@ -229,7 +231,7 @@ async function nativeMemory(base, folder) {
     catch (error) { sample.physical_error = error.message; }
   }
   try {
-    const reply = await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}` } });
+    const reply = await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3' } });
     const status = await reply.json();
     if (!reply.ok || !Number.isFinite(status.heap_bytes)) throw new Error(`status ${reply.status} carries no native heap counter`);
     sample.heap_bytes = status.heap_bytes;
@@ -291,7 +293,7 @@ async function nativeMemory(base, folder) {
   // computer runs models its tool is read by this machine's Runtime, from a run of it there, as tools.js primes its fixture.
   let keyed = await status(keying);
   numbers.status_first_s = seconds(keyed.ms);
-  const local = (await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}` } })).json()).local_usable;
+  const local = (await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}`, 'cozy-project-storage': '3' } })).json()).local_usable;
   if (local) {
     await cozyAt(keying, '--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local');
     keyed = await status(keying);
@@ -303,7 +305,7 @@ async function nativeMemory(base, folder) {
   const first = await status();
   numbers.status_import_s = seconds(first.ms);
   check('all_are_there', first.state.assets.length === ASSETS, first.state.assets.length);
-  check('its_storage_is_current_native', seen.native_seed.main.schema === 2 && seen.native_seed.main.assets === ASSETS && seen.native_seed.main.versions === (ASSETS - PICTURES) * 2);
+  check('its_storage_is_current_native', seen.native_seed.main.schema === seen.native_seed.main.current_schema && seen.native_seed.main.crdt_format === seen.native_seed.main.current_crdt_format && seen.native_seed.main.assets === ASSETS && seen.native_seed.main.versions === (ASSETS - PICTURES) * 2);
   seen.project = { id: first.state.id, folder };
   const id = first.state.id;
   const read = await status();
@@ -332,22 +334,29 @@ async function nativeMemory(base, folder) {
   await page.addInitScript(() => {
     window.violations = [];
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
-    window.boxOf = (name) => document.querySelector(`.card[data-asset="${CSS.escape(name)}"]`)?.closest('.react-flow__node');
+    window.canvasInfo = () => document.querySelector('.canvas-root')?.canvasInspection;
+    window.worldAt = (name) => {
+      const root = document.querySelector('.canvas-root'), info = root?.canvasInspection, box = info?.card(name)?.bounds, camera = info?.camera(), rect = root?.getBoundingClientRect();
+      return box && camera ? { x: (box.x - rect.left - camera.x) / camera.zoom, y: (box.y - rect.top - camera.y) / camera.zoom } : null;
+    };
+    window.shownCards = () => {
+      const info = window.canvasInfo();
+      return (info?.names() ?? []).flatMap(name => {
+        const card = info.card(name), box = card?.bounds;
+        if (!box) return [];
+        return [{ name, body: card.body, rect: { left: box.x, top: box.y, right: box.x + box.width, bottom: box.y + box.height, width: box.width, height: box.height } }];
+      }).filter(({ rect }) => rect.left > 240 && rect.top > 72 && rect.right < innerWidth && rect.bottom < innerHeight);
+    };
     window.placedAt = (name, x, y) => new Promise((done) => {
       const look = () => {
-        const node = window.boxOf(name);
-        const m = node && new DOMMatrix(getComputedStyle(node).transform);
-        return m && Math.abs(m.e - x) < 0.5 && Math.abs(m.f - y) < 0.5 ? done(Date.now()) : requestAnimationFrame(look);
+        const point = window.worldAt(name);
+        return point && Math.abs(point.x - x) < 0.5 && Math.abs(point.y - y) < 0.5 ? done(Date.now()) : requestAnimationFrame(look);
       };
       look();
     });
     window.wordsAre = (name, words) => new Promise((done) => {
       const held = () => [...document.querySelectorAll(`.card.here[data-asset="${name}"] .mention-text[data-field=instructions], .card.here[data-asset="${name}"] .held-line`)];
       const look = () => (held().some((line) => line.textContent.includes(words)) ? done(Date.now()) : requestAnimationFrame(look));
-      look();
-    });
-    window.pictureOf = (name) => new Promise((done) => {
-      const look = () => (window.boxOf(name)?.querySelector('.media img') ? done(Date.now()) : requestAnimationFrame(look));
       look();
     });
     window.takeFrames = (ms) => new Promise((done) => {
@@ -386,12 +395,37 @@ async function nativeMemory(base, folder) {
       else readGone.add(decodeURIComponent(pathname.split('/').at(-1)));
     }, () => {});
   });
-  const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png`, timeout: 60_000 }).catch(() => {}) : Promise.resolve());
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const token = holderToken();
+  const resources = () => page.evaluate(() => window.canvasInfo()?.resources() ?? null);
+  // Geometry locates a probe; only independently decoded screenshots establish that the image was actually presented.
+  const picture = async (name, expected = (x, y) => [90, x * 255, y * 255], ms = 120_000) => {
+    await page.mouse.move(15, 15);
+    await page.locator('.canvas-node').waitFor({ state: 'detached' });
+    const sampled = await until(`${name}'s actual displayed pixels`, async () => {
+      const box = (await canvasBox(page, name))?.body, size = page.viewportSize();
+      if (!box || box.x < 0 || box.y < 0 || box.x + box.width > size.width || box.y + box.height > size.height) return null;
+      const pixels = screenshotPixels(await page.screenshot()), dpr = pixels.width / size.width;
+      const probes = [[.25, .25], [.75, .25], [.25, .75], [.75, .75]].map(([x, y]) => ({ expected: expected(x, y), actual: pixels((box.x + box.width * x) * dpr, (box.y + box.height * y) * dpr) }));
+      return { at: Date.now(), probes, matches: probes.every(({ actual, expected }) => actual.every((channel, i) => Math.abs(channel - expected[i]) <= 24)) };
+    }, value => value?.matches, ms);
+    (seen.displayed_pixels ??= []).push({ name, probes: sampled.probes });
+    return sampled.at;
+  };
+  const landedPicture = async name => {
+    const main = await until(`${name}'s actual image file`, async () => {
+      const response = await fetch(`${base}/v1/projects/${id}/assets/${encodeURIComponent(name)}`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } });
+      if (!response.ok) throw new Error(`landed asset read: ${response.status}`);
+      return (await response.json()).asset?.prefixes?.at(-1)?.main;
+    }, main => main?.field === 'image' && main.path?.startsWith('files/') && !main.absent, 300_000);
+    const response = await fetch(`${base}/v1/projects/${id}/${main.path.split('/').map(encodeURIComponent).join('/')}`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } });
+    if (!response.ok) throw new Error(`landed PNG read: ${response.status}`);
+    const source = screenshotPixels(Buffer.from(await response.arrayBuffer()));
+    return picture(name, (x, y) => source(x * (source.width - 1), y * (source.height - 1)), 300_000);
+  };
 
   // The 95th percentile of half a second's frames. None in that half second is one longer than all of it: not short yet (macOS, 42022159182).
   const shortFrames = async () => {
@@ -399,25 +433,28 @@ async function nativeMemory(base, folder) {
     return frames.length ? summary(frames).p95_ms : Infinity;
   };
   /** Frames while the viewport goes 480 px left and back, every box on screen drawn first, and with no pan, each as a person's wheel does it. */
-  const panning = (ms) => page.evaluate((length) => new Promise((done) => {
-    const pane = document.querySelector('.react-flow__pane');
-    const frames = [];
-    let [last, sign, count] = [performance.now(), 1, 0];
-    const end = last + length;
-    const step = (now) => {
-      frames.push(now - last);
-      last = now;
+  const panning = async (ms) => {
+    await page.mouse.move(900, 600);
+    const frames = page.evaluate(length => window.takeFrames(length), ms), before = await canvasView(page);
+    const end = performance.now() + ms; let sign = 1, count = 0, moved = false;
+    while (performance.now() < end) {
+      await page.mouse.wheel(sign * 12, 0);
       if (++count % 40 === 0) sign = -sign;
-      pane.dispatchEvent(new WheelEvent('wheel', { deltaX: sign * 12, deltaY: 0, bubbles: true, cancelable: true }));
-      if (now < end) requestAnimationFrame(step);
-      else done(frames.slice(1));
-    };
-    requestAnimationFrame(step);
-  }), ms);
-  const drawn = () => until('every box on screen drawn', () => page.evaluate(() => {
-    const images = [...document.querySelectorAll('.react-flow__node .media img')];
-    return images.length > 0 && images.every((image) => image.complete);
-  }), Boolean, 120_000);
+      if (count === 1) { const after = await canvasView(page); moved = after && Math.abs(after.x - before.x) > .5; }
+      await page.waitForTimeout(16);
+    }
+    if (!moved) throw new Error('native wheel did not move the actual canvas camera');
+    const samples = await frames;
+    samples.wheel_events = count;
+    return samples;
+  };
+  const drawn = async () => {
+    await page.mouse.move(15, 15);
+    await until('every visible card texture loaded', resources, value => value?.visibleCards > 0 && value.loadedCards === value.visibleCards && !value.loading && !value.failed, 120_000);
+    const names = await page.evaluate(() => window.shownCards().map(card => card.name));
+    if (!names.length) throw new Error('no on-screen cards to verify');
+    for (const name of names.slice(0, 3)) await picture(name);
+  };
   const cdp = await context.newCDPSession(page);
   await cdp.send('Performance.enable');
   /** The page's own thread, in ms: its time on a core, and by the clock in all and at each kind of work. What the compositor and a software rasterizer take isn't in this. */
@@ -450,7 +487,7 @@ async function nativeMemory(base, folder) {
     const perSecond = (name) => +(((after[name] - before[name]) / REST_MS) * 1000).toFixed(1);
     const rest_ms_per_s = perSecond('TaskDuration');
     const from = await worked();
-    const moving = summary(await panning(PAN_MS));
+    const pan = await panning(PAN_MS), moving = summary(pan);
     const to = await worked();
     const perFrame = (name) => +((to[name] - from[name]) / moving.frames).toFixed(2);
     // Time on a core, which a busy runner can't stretch: by the clock macOS read 6 to 14 ms a frame four times, a minute after 1, where Linux and Windows
@@ -459,12 +496,14 @@ async function nativeMemory(base, folder) {
     return {
       still,
       moving,
+      wheel_events: pan.wheel_events,
       rest_ms_per_s,
       rest_kinds: { script: perSecond('ScriptDuration'), layout: perSecond('LayoutDuration'), style: perSecond('RecalcStyleDuration') },
       work_ms_per_frame: perFrame('ThreadTime'),
       clock_ms_per_frame: { task: perFrame('TaskDuration'), script: perFrame('ScriptDuration'), layout: perFrame('LayoutDuration'), style: perFrame('RecalcStyleDuration') },
       added_ms_per_frame: +(added / moving.frames).toFixed(2),
-      mounted: await page.locator('.react-flow__node').count(),
+      scene_cards: (await resources()).visibleCards,
+      native_overlays: await page.locator('.canvas-node').count(),
     };
   };
 
@@ -474,7 +513,8 @@ async function nativeMemory(base, folder) {
   generated(smallFolder, null, 36, 8);
   const small = (await projectAction(smallFolder, 'status')).value;
   await page.goto(await projectUrl(small.id));
-  await page.waitForSelector('.react-flow__node .nm');
+  await until('small canvas geometry', () => canvasBox(page, 'shot_0'), Boolean);
+  await picture('shot_0');
   await page.evaluate(() => { window.notReloaded = true; });
   numbers.pan_small = await measuredPan();
   check('small_pan_keeps_document', await page.evaluate(() => window.notReloaded === true));
@@ -482,7 +522,8 @@ async function nativeMemory(base, folder) {
   // Opening it: boxes on screen, then the page settled, its frames short.
   const opening = Date.now();
   await page.goto(await projectUrl(id));
-  await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
+  await until('large canvas geometry', () => canvasBox(page, 'shot_0'), Boolean, 120_000);
+  await picture('shot_0');
   numbers.open_boxes_s = seconds(Date.now() - opening);
   check('it_opens_quickly', numbers.open_boxes_s <= BAR.open_boxes_s, { s: numbers.open_boxes_s, bar: BAR.open_boxes_s });
   // The deliberate project navigation created this document. Watch its interactions from here.
@@ -492,7 +533,8 @@ async function nativeMemory(base, folder) {
   check('it_settles_quickly', numbers.open_settled_s <= BAR.open_settled_s, { s: numbers.open_settled_s, bar: BAR.open_settled_s });
   memory.open = calciferMb();
   numbers.calcifer_native.open = await nativeMemory(base, folder);
-  numbers.mounted_boxes = await page.locator('.react-flow__node').count();
+  numbers.scene_cards_open = (await resources()).visibleCards;
+  numbers.native_overlays_open = await page.locator('.canvas-node').count();
   numbers.pan_big = await measuredPan();
   const allowed = numbers.pan_small.added_ms_per_frame * BARS.pan_work_times_small + BAR.pan_work_slack_ms;
   check('size_adds_nothing_to_a_pan', numbers.pan_big.added_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
@@ -505,12 +547,9 @@ async function nativeMemory(base, folder) {
   await shot('open');
 
   // One edit, of a box on screen. It shows within a second or so, by a read of it alone, and the command itself is quick.
-  const onScreen = await page.evaluate(() => [...document.querySelectorAll('.react-flow__node')]
-    .map((node) => ({ name: node.querySelector('.nm')?.textContent, rect: node.getBoundingClientRect() }))
-    .filter(({ name, rect }) => name?.startsWith('shot_') && rect.left > 240 && rect.top > 72 && rect.right < innerWidth && rect.bottom < innerHeight)
-    .map(({ name }) => name));
+  const onScreen = await page.evaluate(() => window.shownCards().filter(card => card.name.startsWith('shot_')).map(card => card.name));
   numbers.shots_on_screen = onScreen.length;
-  check('a_shot_on_screen', onScreen.length > 0, await page.locator('.nm').allTextContents());
+  check('a_shot_on_screen', onScreen.length > 0, (await canvasNames(page))?.slice(0, 8));
   const edited = onScreen[0];
   // A box of a picture says nothing at rest of its words, nor that they've changed (Paul, 11-05): open, its instructions are what the file says,
   // its tool's own field, or under More what it holds that its tool doesn't read.
@@ -521,8 +560,8 @@ async function nativeMemory(base, folder) {
     await here.waitFor();
     // On a take an image tool made, its words are its next take's, behind its +.
     await (await renderOf(page, name)).waitFor();
-    await here.locator('.more-toggle').waitFor();
-    if (!(await here.locator('.edit-more').count())) await here.locator('.more-toggle').click();
+    // In Focus every field shows, nothing under More (cl-934); a box worked on elsewhere keeps what it holds under More.
+    if ((await here.locator('.more-toggle').count()) && !(await here.locator('.edit-more').count())) await here.locator('.more-toggle').click();
     await here.locator('.mention-text[data-field=instructions], .held-line:has-text("Instructions")').first().waitFor();
   };
   const says = (name, words) => within(`${name} says ${words}`, page.evaluate(([asked, said]) => window.wordsAre(asked, said), [name, words]));
@@ -550,10 +589,7 @@ async function nativeMemory(base, folder) {
 
   // Moved by a command, as a drag is: a row, and no read of the project.
   const moving = { ...reads };
-  const { x: fromX, y: fromY } = await page.evaluate((name) => {
-    const m = new DOMMatrix(getComputedStyle(window.boxOf(name)).transform);
-    return { x: m.e, y: m.f };
-  }, edited);
+  const { x: fromX, y: fromY } = await page.evaluate((name) => window.worldAt(name), edited);
   const [movedX, movedY] = [fromX + 30, fromY + 30];
   const shownMove = within('moved', page.evaluate(([name, x, y]) => window.placedAt(name, x, y), [edited, movedX, movedY]));
   const move = await project('set', edited, `at=${movedX},${movedY}`);
@@ -565,8 +601,7 @@ async function nativeMemory(base, folder) {
   // A box let go by hand on the crowd, its middle in the gutter between two and on both (Paul, 11-06): nothing near has room, even shrunk,
   // so it gives way by a move, at once, and lies on nothing.
   const crowd = await page.evaluate(() => {
-    const shown = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.card')?.dataset.asset, rect: node.querySelector('.card').getBoundingClientRect() }))
-      .filter(({ name, rect }) => name?.startsWith('shot_') && rect.left > 240 && rect.top > 72 && rect.right < innerWidth && rect.bottom < innerHeight);
+    const shown = window.shownCards().filter(card => card.name.startsWith('shot_'));
     for (const a of shown) {
       const b = shown.find((other) => other.rect.left > a.rect.right && other.rect.left - a.rect.right < a.rect.width / 2 && Math.abs(other.rect.top - a.rect.top) < 2);
       const carried = b && shown.find((other) => other !== a && other !== b && other.rect.top > a.rect.bottom);
@@ -576,24 +611,20 @@ async function nativeMemory(base, folder) {
   });
   check('a_crowd_on_screen', Boolean(crowd), crowd);
   if (crowd) {
-    const media = await box(crowd.carried).locator('.media').first().boundingBox();
+    const media = (await canvasBox(page, crowd.carried)).body;
     const [fromX, fromY] = [media.x + media.width / 2, media.y + media.height / 2];
     await page.mouse.move(fromX, fromY);
     await page.mouse.down();
     await page.mouse.move(fromX, fromY - 3);
     await page.mouse.move(crowd.x, crowd.y, { steps: 10 });
     await page.evaluate((name) => {
-      const node = window.boxOf(name);
-      const held = node.style.transform;
+      const held = window.worldAt(name);
       window.gaveWay = new Promise((done) => {
-        let up = 0;
-        document.addEventListener('pointerup', () => { up = performance.now(); }, { capture: true, once: true });
-        new MutationObserver((_, watching) => {
-          if (up && node.style.transform !== held) {
-            watching.disconnect();
-            done(performance.now() - up);
-          }
-        }).observe(node, { attributes: true, attributeFilter: ['style'] });
+        document.addEventListener('pointerup', () => {
+          const up = performance.now();
+          const look = () => { const at = window.worldAt(name); if (at && (Math.abs(at.x - held.x) > .5 || Math.abs(at.y - held.y) > .5)) done(performance.now() - up); else requestAnimationFrame(look); };
+          look();
+        }, { capture: true, once: true });
       });
     }, crowd.carried);
     await page.mouse.up();
@@ -601,11 +632,11 @@ async function nativeMemory(base, folder) {
     check('a_drop_on_a_crowd_gives_way_at_once', numbers.drop_ms <= BAR.drop_ms, { ms: numbers.drop_ms, bar: BAR.drop_ms });
     await page.waitForTimeout(400);
     const lying = await page.evaluate((name) => {
-      const mine = window.boxOf(name).querySelector('.card').getBoundingClientRect();
-      return [...document.querySelectorAll('.react-flow__node .card')].filter((card) => card.dataset.asset !== name).map((card) => ({ name: card.dataset.asset, rect: card.getBoundingClientRect() }))
-        .filter(({ rect }) => rect.left < mine.right - 0.5 && mine.left < rect.right - 0.5 && rect.top < mine.bottom - 0.5 && mine.top < rect.bottom - 0.5).map(({ name: other }) => other);
+      const info = window.canvasInfo(), mine = info.card(name).bounds;
+      return info.names().filter(other => other !== name).filter(other => { const box = info.card(other).bounds; return box.x < mine.x + mine.width - .5 && mine.x < box.x + box.width - .5 && box.y < mine.y + mine.height - .5 && mine.y < box.y + box.height - .5; });
     }, crowd.carried);
     check('a_drop_on_a_crowd_lies_on_nothing', lying.length === 0, lying);
+    await picture(crowd.carried);
   }
 
   // Forty more, as fast as they go: few reads, and right at the end.
@@ -630,7 +661,7 @@ async function nativeMemory(base, folder) {
   const writes = { post: [], patch: [], move: [], delete: [] };
   const write = async (held, path, method, body, headers = {}) => {
     const from = performance.now();
-    const answer = await fetch(`${base}/v1/projects/${id}${path}`, { method, body: JSON.stringify(body), headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...headers } });
+    const answer = await fetch(`${base}/v1/projects/${id}${path}`, { method, body: JSON.stringify(body), headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...headers } });
     if (!answer.ok) throw new Error(`${method} ${path}: ${answer.status} ${await answer.text()}`);
     held.push(performance.now() - from);
     return answer.json();
@@ -648,11 +679,11 @@ async function nativeMemory(base, folder) {
   check('writes_leave_the_project_whole', (await status()).state.assets.length === ASSETS, 'assets count changed');
 
   // A render from the API, on the fixture tool, landing on the open canvas.
-  if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).local_usable && !process.env.ALONE) {
+  if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).local_usable && !process.env.ALONE) {
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     await project('add', `${TOOL}/still`, 'scale_shot', `at=${HOLE.col * 300},${HOLE.row * 320},200`, 'instructions=A landing at scale');
-    await box('scale_shot').waitFor();
-    const landing = within('its picture', page.evaluate((name) => window.pictureOf(name), 'scale_shot'), 300_000);
+    await until('landing card geometry', () => canvasBox(page, 'scale_shot'), Boolean);
+    const landing = within('its actual picture pixels', landedPicture('scale_shot'), 300_000);
     const render = await project('render', 'scale_shot', '--on', 'local');
     numbers.render_command_s = seconds(render.ms);
     numbers.landing_shows_ms = (await landing) - render.at;
@@ -673,13 +704,14 @@ async function nativeMemory(base, folder) {
   // The whole of it fitted, and panned. What the page's own thread did in it says whether a slow fit is the page's work or drawing it.
   const fitting = Date.now();
   const unfitted = await worked();
-  await page.keyboard.press('f');
+  await fitCanvas(page);
   await until('fitted, its frames short', shortFrames, (p95) => p95 < 200, 180_000);
   numbers.fit_all_s = seconds(Date.now() - fitting);
   const fitted = await worked();
   numbers.fit_work_ms = Object.fromEntries(['TaskDuration', 'ScriptDuration', 'LayoutDuration', 'RecalcStyleDuration'].map((kind) => [kind.replace('Duration', '').toLowerCase(), Math.round(fitted[kind] - unfitted[kind])]));
   check('the_whole_of_it_fits', numbers.fit_all_s <= BAR.fit_all_s, { s: numbers.fit_all_s, bar: BAR.fit_all_s, page_thread_ms: numbers.fit_work_ms });
-  numbers.mounted_fitted = await page.locator('.react-flow__node').count();
+  numbers.scene_cards_fitted = (await resources()).visibleCards;
+  numbers.native_overlays_fitted = await page.locator('.canvas-node').count();
   numbers.pan_fitted = summary(await panning(3000));
   if (numbers.fit_all_s > BAR.fit_all_s) numbers.fitted_profile = await profiled(2000);
   await shot('fitted');

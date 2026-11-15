@@ -6,7 +6,7 @@
 //! step is logged with its time, so a slow start names itself.
 use std::{
     io::ErrorKind,
-    net::{Ipv4Addr, SocketAddr},
+    net::Ipv4Addr,
     process::ExitCode,
     sync::Arc,
     time::{Duration, Instant},
@@ -90,12 +90,21 @@ pub(crate) enum Stopped {
     AnotherHolds,
     /// `POST /v1/down`.
     Down,
+    /// cozy updated itself (cl-978): the installed binary starts in its place.
+    Updated,
 }
 
 /// `cozy calcifer`: exits 0 unless Calcifer could not start, which `refused.json` then says.
-/// Its log is its stdout (the service's `calcifer.log`).
+/// Its persistent diagnostics are the closed events in `health.log`.
 pub fn main() -> ExitCode {
-    tracing_subscriber::fmt().init();
+    // Inherited native proof IPC stays available here, never in browser/worker/helper children.
+    #[cfg(unix)]
+    platform::process::cloexec_from(3);
+    // The controller holds keybags and project data: it writes no core, but stays dumpable (cl-984).
+    #[cfg(unix)]
+    let _ = platform::private_exec::limit_own_cores();
+    // The panic payload and location never enter stderr or the health sink.
+    std::panic::set_hook(Box::new(|_| crate::health::service_health(crate::health::HealthEvent::Panicked)));
     // Before the runtime's workers start: Linux names the calling thread.
     if let Err(e) = process::set_name("calcifer")
         && !e.is_unsupported()
@@ -103,7 +112,10 @@ pub fn main() -> ExitCode {
         warn!("{e}");
     }
     let served = match configuration() {
-        Ok(loaded) => match runtime(&loaded) {
+        Ok(loaded) => match (loaded.config.declare_local())
+            .and_then(|()| crate::health::install(&loaded.home, loaded.config.calcifer.diagnostics))
+            .and_then(|()| runtime(&loaded))
+        {
             // Stopped, Calcifer exits now: nothing left on the runtime holds the process (or its
             // service) past `down`.
             Ok(runtime) => {
@@ -119,8 +131,37 @@ pub fn main() -> ExitCode {
         },
     };
     match served {
+        Ok(Stopped::Updated) => successor(),
         Ok(_) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// The installed cozy's Calcifer in this one's place, once it let go of the home (cl-978): on Unix this process becomes it, so its
+/// service manager (or none) holds the same process; on Windows it starts detached, as the CLI starts one, and this one exits.
+fn successor() -> ExitCode {
+    let binary = match configuration().map(|loaded| crate::cozy::installed(&loaded.home)) {
+        Ok(Ok(binary)) => binary,
+        Ok(Err(e)) | Err(e) => {
+            error!("the updated cozy: {e}; the next cozy command starts it");
+            return ExitCode::SUCCESS;
+        }
+    };
+    info!(binary = %binary.display(), "Calcifer starts on the updated cozy");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let e = std::process::Command::new(&binary).arg("calcifer").exec();
+        error!("starting {}: {e}; the next cozy command starts it", binary.display());
+        ExitCode::SUCCESS
+    }
+    #[cfg(not(unix))]
+    {
+        let log = configuration().ok().map(|loaded| loaded.home.calcifer_log());
+        if let Err(e) = process::detach(&binary, &["calcifer".into()], log.as_deref()) {
+            error!("starting {}: {e}; the next cozy command starts it", binary.display());
+        }
+        ExitCode::SUCCESS
     }
 }
 
@@ -142,20 +183,21 @@ fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
         .map_err(|e| Error::new(Kind::Internal, "calcifer_runtime", e.to_string()))
 }
 
-/// Logs why Calcifer cannot start and leaves it in `<home>/calcifer/refused.json` for the CLI.
+/// Logs why Calcifer cannot start and leaves it in `<home>/calcifer/refused.json` for the CLI: the
+/// failed step's code as its cause, never its message.
 fn refuse(home: &Home, error: Error) -> Error {
-    error!("Calcifer cannot start: {error}");
+    crate::health::service_health(crate::health::HealthEvent::StartRefused);
     let envelope = serde_json::to_vec(&Envelope {
-        error: error.clone(),
+        error: Error::new(Kind::Unavailable, "calcifer_start_failed", "Calcifer could not start")
+            .cause(error.code.clone())
+            .next("cozy doctor"),
     })
     .expect("serializes");
     let written = home
         .open()
         .and_then(|()| durable::private_dir(&home.calcifer()))
         .and_then(|()| durable::replace(&home.calcifer().join(REFUSED), &envelope, 0o600));
-    if let Err(e) = written {
-        error!("{e}");
-    }
+    let _ = written;
     error
 }
 
@@ -215,6 +257,9 @@ mod port_tests {
 
 /// Serves `loaded.home` on `127.0.0.1`, at [`listen`]'s port, until `POST /v1/down`.
 pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
+    // What Calcifer makes is its account's alone: a project's database and files, and what its children write (calcifer-access.md).
+    #[cfg(unix)]
+    let _ = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o077));
     let (home, port) = (&loaded.home, loaded.config.calcifer.port);
     crate::project::purge::set_window(loaded.config.calcifer.undo_seconds);
     let (began, mut steps) = (Instant::now(), Steps(Instant::now()));
@@ -229,6 +274,10 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         info!("another Calcifer holds this home");
         return Ok(Stopped::AnotherHolds);
     };
+    crate::browser::recover_profiles(&home.calcifer()).map_err(|error| failed(error.0))?;
+    // Old raw captures are disposable, unlike the authoritative run journal. A
+    // retained/unknown artifact remains visible through migration_required.
+    let _ = crate::legacy_cleanup::retire(&home.calcifer());
     crate::project::bind_calcifer(&home.calcifer()).map_err(failed)?;
     // Only the holder announces: its birth is what `Services::stop` must end.
     Services::new(home, &loaded.user_home)
@@ -265,14 +314,29 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let address = listener
         .local_addr()
         .map_err(|e| failed(Error::new(Kind::Internal, "calcifer_port", e.to_string())))?;
+    // Dev mode: the page's code from this local Vite, served as Calcifer's own (page/development.rs).
+    let development_web = loaded.config.calcifer.development_web.filter(|_| loaded.config.dev);
+    if development_web.is_some_and(|development| development.port() == address.port()) {
+        calcifer.close();
+        return Err(failed(Error::new(Kind::Usage, "calcifer_development_web", "Vite and Calcifer must use different ports")));
+    }
+    // ::1 on the same port too, so no other account can take it and answer `localhost` there (loopback::LOCALHOST).
+    let listener6 = TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, address.port())).await.ok();
+    crate::loopback::LOCALHOST.store(listener6.is_some(), std::sync::atomic::Ordering::Relaxed);
+    crate::loopback::TIMING.store(loaded.config.calcifer.diagnostics, std::sync::atomic::Ordering::Relaxed);
     steps.done("listen");
     let mut token = [0; 32];
     getrandom::fill(&mut token).expect("the OS provides randomness");
     let token = hex::encode(token);
+    crate::checkout::start(&loaded.config);
     let machines = Machines::start(calcifer.clone(), home.clone(), &loaded.user_home, &loaded.config);
     steps.done("machines");
     tokio::spawn(drop_old_measurements(calcifer.clone()));
     let api = Api::new(calcifer.clone(), machines.clone(), &token);
+    api.browser_address.set(address).expect("listener address set once");
+    if let Some(development) = development_web {
+        api.development_web.set(development).expect("development web address set once");
+    }
     // A service manager's stop (SIGTERM) is `down`, as graceful: the machine runs on.
     #[cfg(unix)]
     if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
@@ -283,25 +347,19 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
             shutdown_after_signal(stopping).await;
         });
     }
-    let app = api::router(api.clone()).into_make_service_with_connect_info::<SocketAddr>();
-    let server = tokio::spawn(
-        axum::serve(listener, app)
-            .with_graceful_shutdown(api.stopped())
-            .into_future(),
-    );
-
+    // The record before the first answer (cl-885): a client that reconnects across a restart with the last Calcifer's bearer is
+    // refused, and finds this one's record, never none. Served first, a record that was slow to land (a busy disk) ended a watch.
     let holder = Holder {
         address,
         token,
         pid: std::process::id(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         started_at_ms: crate::store::now_ms(),
     };
     let mut record = serde_json::to_vec(&holder).expect("serializes");
     record.push(b'\n');
     if let Err(e) = held.publish(&record) {
         api.stop();
-        let _ = server.await;
         machines.close();
         calcifer.close();
         return Err(failed(Error::new(
@@ -312,9 +370,26 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     let _ = std::fs::remove_file(home.calcifer().join(REFUSED));
     steps.done("record");
+    let app = api::router(api.clone()).into_make_service_with_connect_info::<crate::loopback::Peer>();
+    let server = tokio::spawn(
+        axum::serve(listener, app.clone())
+            .with_graceful_shutdown(api.stopped())
+            .into_future(),
+    );
+    // `localhost` stops being Calcifer's the moment ::1's server ends.
+    let server6 = listener6.map(|listener| {
+        let serving = axum::serve(listener, app).with_graceful_shutdown(api.stopped()).into_future();
+        tokio::spawn(async move {
+            let ended = serving.await;
+            crate::loopback::LOCALHOST.store(false, std::sync::atomic::Ordering::Relaxed);
+            ended
+        })
+    });
+    crate::browser::hosted_proof(api.clone());
+    crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");
     match calcifer.resume() {
-        Ok(runs) => steps.done(&format!("resume ({runs} runs)")),
+        Ok(_) => steps.done("resume"),
         Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
     }
     tokio::spawn(crate::hub::jobs::resume(api.clone()));
@@ -324,23 +399,30 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     crate::project::purge::start(api.clone());
 
     api.stopped().await;
+    crate::health::service_health(crate::health::HealthEvent::Stopping);
     tokio::task::block_in_place(|| crate::project::vault::close_all(&api)).map_err(failed)?;
     if let Ok(Err(e)) = server.await {
         warn!("the API server ended: {e}");
     }
+    if let Some(server6) = server6
+        && let Ok(Err(e)) = server6.await
+    {
+        warn!("the API server on ::1 ended: {e}");
+    }
     machines.close();
     calcifer.close();
     drop(held);
-    info!("Calcifer stopped");
-    Ok(Stopped::Down)
+    crate::health::service_health(crate::health::HealthEvent::Stopped);
+    Ok(if api.updated() { Stopped::Updated } else { Stopped::Down })
 }
 
 /// Logs each startup step with the time it took.
 struct Steps(Instant);
 
 impl Steps {
-    fn done(&mut self, step: &str) {
-        info!(step, ms = self.0.elapsed().as_millis() as u64, "started");
+    /// A start's step and how long it took, in the closed health log: a slow start names its slow step.
+    fn done(&mut self, step: &'static str) {
+        info!(target: "cozy.service_health", step, ms = self.0.elapsed().as_millis() as u64, "started");
         self.0 = Instant::now();
     }
 }
@@ -356,6 +438,9 @@ async fn shutdown_after_signal(api: Arc<Api>) {
     let began = Instant::now();
     let mut reported: Option<(String, Instant)> = None;
     loop {
+        // Listening before it asks: a view that closes meanwhile isn't missed. The vault clock tries each close again.
+        let mut closed = std::pin::pin!(crate::project::vault::CLOSED.notified());
+        closed.as_mut().enable();
         let error = match api.shutdown().await {
             Ok(_) => return,
             Err(error) => error,
@@ -371,7 +456,7 @@ async fn shutdown_after_signal(api: Arc<Api>) {
         }
         tokio::select! {
             () = api.stopped() => return,
-            () = tokio::time::sleep(Duration::from_millis(250)) => {},
+            () = closed => {},
         }
     }
 }
@@ -383,7 +468,11 @@ async fn drop_old_measurements(calcifer: Arc<Calcifer>) {
     loop {
         let began = Instant::now();
         let before_ms = crate::store::now_ms() - MEASURED_FOR.as_millis() as i64;
-        match calcifer.store().drop_measurements(after, before_ms) {
+        let dropped = {
+            let _took = crate::took::Took::new("drop_measurements");
+            calcifer.store().drop_measurements(after, before_ms)
+        };
+        match dropped {
             Ok(Some(next)) => {
                 after = next;
                 tokio::time::sleep(began.elapsed()).await;

@@ -10,6 +10,8 @@ static ALLOCATOR: platform::heap::Counted<mimalloc::MiMalloc> = platform::heap::
 
 fn main() -> std::process::ExitCode {
     if let Some(code) = project_mount::run_supervisor() { std::process::exit(code); }
+    // Where this cozy started from, before an update can rename another build over it (cl-981); `machine serve` says a failure.
+    let _ = platform::exe::record(api::VERSION);
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let words: Vec<&std::ffi::OsString> = args.iter().filter(|arg| *arg != "--json").collect();
     match words.as_slice() {
@@ -25,6 +27,8 @@ fn main() -> std::process::ExitCode {
         [noun, role, rest @ ..] if *noun == "machine" && *role == "serve" => {
             machine(std::iter::once(*role).chain(rest.iter().copied()).cloned())
         }
+        // The machine's own process opening its GPUs (cl-977); not for people.
+        [noun, role, rest @ ..] if *noun == "machine" && *role == "probe-gpus" => tensord::serve::probe_gpus(rest.iter().copied().cloned()),
         _ => cli::main(),
     }
 }

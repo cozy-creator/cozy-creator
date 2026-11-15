@@ -43,7 +43,7 @@ const COPIES: &[&str] = &[
 ];
 const COPY_DIRS: &[&str] = &["etc/profile.d"];
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ProviderSelf {
     RunPod {
         pod: String,
@@ -55,6 +55,16 @@ pub(crate) enum ProviderSelf {
         key: String,
         origin: String,
     },
+}
+
+/// The provider key is never printed.
+impl std::fmt::Debug for ProviderSelf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RunPod { pod, origin, .. } => f.debug_struct("RunPod").field("pod", pod).field("origin", origin).finish_non_exhaustive(),
+            Self::Vast { instance, origin, .. } => f.debug_struct("Vast").field("instance", instance).field("origin", origin).finish_non_exhaustive(),
+        }
+    }
 }
 
 impl ProviderSelf {
@@ -115,6 +125,32 @@ impl ProviderSelf {
             });
         }
         None
+    }
+
+    /// Ends this pod at its provider and asks again until the provider has taken it: this process ends with the pod, so it never
+    /// returns (cl-977: one refused or lost call left a released pod billing). A refused or unanswered end is asked again 2 s later,
+    /// doubling to a minute; an accepted one that hasn't taken the pod yet, a minute later, doubling to ten.
+    pub(crate) async fn end_until_gone(&self) -> ! {
+        const MOST_REFUSED: Duration = Duration::from_secs(60);
+        const MOST_ACCEPTED: Duration = Duration::from_secs(600);
+        let (mut refused, mut accepted) = (Duration::from_secs(2), Duration::from_secs(60));
+        let mut asks = 0u32;
+        loop {
+            asks += 1;
+            let wait = match self.end().await {
+                Ok(()) => {
+                    tracing::info!("the provider accepted this pod's end (ask {asks}); asked again in {} s if the pod is still here", accepted.as_secs());
+                    let next = (accepted * 2).min(MOST_ACCEPTED);
+                    std::mem::replace(&mut accepted, next)
+                }
+                Err(error) => {
+                    tracing::error!("the provider did not end this pod (ask {asks}: {error}); asking again in {} s", refused.as_secs());
+                    let next = (refused * 2).min(MOST_REFUSED);
+                    std::mem::replace(&mut refused, next)
+                }
+            };
+            tokio::time::sleep(wait).await;
+        }
     }
 
     /// Ends this pod at its provider, so billing stops.

@@ -11,15 +11,15 @@ use serde::Serialize;
 use super::{follow, live};
 use crate::{Context, output, tui};
 
-pub(crate) const HEADERS: [&str; 7] = ["#", "TARGET", "PROJECT", "MACHINE", "STATUS", "PROGRESS", "TIME"];
+pub(crate) const HEADERS: [&str; 7] = ["RUN", "TARGET", "PROJECT", "MACHINE", "STATUS", "PROGRESS", "TIME"];
 /// The newest runs a list shows unless `--limit` says otherwise.
 const SHOWN: u64 = 20;
 /// What `--json` keeps of a run in a list (`--full`: all of it): the table's facts, by the record's names.
 pub(crate) const FIELDS: &[&str] = &[
-    "older", "machine", "unreadable", "runs.id", "runs.number", "runs.kind", "runs.target", "runs.project", "runs.project_id", "runs.machine",
+    "older", "machine", "unreadable", "runs.id", "runs.number", "runs.name", "runs.kind", "runs.target", "runs.project", "runs.project_id", "runs.machine",
     "runs.status", "runs.queue_position", "runs.waiting", "runs.progress", "runs.stalled", "runs.reason.code",
     "runs.reason.message", "runs.created_at_ms", "runs.accepted_at_ms", "runs.started_at_ms", "runs.settled_at_ms",
-    "runs.execution_ms", "others.id", "others.machine_number", "others.target", "others.machine", "others.status",
+    "runs.execution_ms", "others.id", "others.name", "others.machine_number", "others.target", "others.machine", "others.status",
     "others.machine_state", "others.waiting", "others.reason.code", "others.reason.message", "others.accepted_at_ms",
     "others.started_at_ms", "others.settled_at_ms",
 ];
@@ -60,7 +60,7 @@ pub(crate) async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Er
     for run in &list.unreadable {
         println!("left out {run}");
     }
-    let listed: Vec<&Run> = list.runs.iter().chain(&list.others).filter(|run| shown(run)).collect();
+    let listed: Vec<&Run> = list.runs.iter().chain(&list.others).collect();
     if listed.is_empty() {
         let only = query.status.is_some() || query.package.is_some() || query.machine.is_some();
         match (only, &query.project) {
@@ -100,6 +100,10 @@ pub(crate) fn table(ctx: &Context, runs: &[&Run], projects: bool) -> output::Tab
 /// The runs `query` asks for, page by page.
 pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error> {
     let calcifer = ctx.calcifer().await?;
+    let projects = match &query.project {
+        Some(project) => vec![Some(project.clone())],
+        None => std::iter::once(None).chain(known_projects(&calcifer).await?.into_iter().map(Some)).collect(),
+    };
     let mut out = RunList {
         runs: vec![],
         older: 0,
@@ -111,30 +115,64 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
         limit: Some(query.limit.unwrap_or(500).min(500)),
         ..query.clone()
     };
-    loop {
-        let list = calcifer.runs(&page).await?;
+    for project in projects {
+      page.before = query.before;
+      let began = out.runs.len();
+      loop {
+        let list = match &project {
+            Some(project) => calcifer.runs(project, &page).await,
+            None => calcifer.get_query("/v1/runs", &page).await,
+        };
+        let list = match list {
+            Err(error) if query.project.is_none() && matches!(error.code.as_str(), "project_locked" | "project_busy" | "project_unknown") => continue_list(&mut out, error),
+            other => other?,
+        };
         let last = list.runs.last().map(|r| r.number);
         let more = list.older > 0;
-        out.older = list.older;
         out.machine = list.machine;
         out.unreadable.extend(list.unreadable);
         out.runs.extend(list.runs);
         out.others.extend(list.others);
         let wanted = query
             .limit
-            .is_none_or(|limit| (out.runs.len() as u64) < limit);
+            .is_none_or(|limit| ((out.runs.len() - began) as u64) < limit);
         match last {
             Some(number) if more && wanted => page.before = Some(number),
-            _ => return Ok(out),
+            _ => { out.older += list.older; break; },
+        }
+      }
+    }
+    out.runs.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms).then_with(|| a.project_id.cmp(&b.project_id)).then_with(|| b.number.cmp(&a.number)));
+    if let Some(limit) = query.limit {
+        out.older += out.runs.len().saturating_sub(limit as usize) as u64;
+        out.runs.truncate(limit as usize);
+    }
+    Ok(out)
+}
+
+/// Every project Calcifer knows, page by page: its index answers at most 1000 at once.
+async fn known_projects(calcifer: &crate::calcifer_client::Client) -> Result<Vec<String>, Error> {
+    let mut ids: Vec<String> = vec![];
+    loop {
+        let mut page = vec![("limit", "1000".to_owned())];
+        page.extend(ids.last().map(|last| ("before", last.clone())));
+        let known: api::calcifer::project::Projects = calcifer.get_query("/v1/projects", &page).await?;
+        let more = known.older > 0 && !known.projects.is_empty();
+        ids.extend(known.projects.into_iter().map(|project| project.id));
+        if !more {
+            return Ok(ids);
         }
     }
 }
 
+/// A locked scope is reported transiently, without rebuilding an outside run mapping.
+fn continue_list(out: &mut RunList, error: Error) -> RunList {
+    out.unreadable.push(error.message);
+    RunList { runs: vec![], older: 0, machine: None, unreadable: vec![], others: vec![] }
+}
+
 /// Whether `run` is one `query` lists: its state, package and machine.
 pub(crate) fn matches(query: &Query, run: &Run) -> bool {
-    if !shown(run) {
-        return false;
-    }
     let status = serde_json::to_value(run.status).ok();
     let state = query
         .status
@@ -179,14 +217,9 @@ pub(crate) fn rows(runs: &[Run]) -> Vec<Vec<String>> {
     runs.iter().map(row).collect()
 }
 
-/// Whether the list people read shows it: what a walk sends ahead of itself is `cozy project`'s own (`run watch` and `--json` have it).
-pub(crate) fn shown(run: &Run) -> bool {
-    !run.target.starts_with(api::calcifer::project::AHEAD)
-}
-
 fn row(run: &Run) -> Vec<String> {
     vec![
-        run.name(),
+        super::handle(run),
         target(run),
         run.project.clone().unwrap_or_else(|| "—".into()),
         run.machine.clone().unwrap_or_else(|| "—".into()),

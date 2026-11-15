@@ -18,11 +18,13 @@ mod dev;
 mod doctor;
 mod machine;
 mod model;
+mod node;
 mod open;
 mod output;
 mod package;
 mod progress;
 mod project;
+mod render;
 mod run;
 mod send;
 mod tools;
@@ -38,7 +40,7 @@ next: cozy run --help";
 #[derive(Parser, Debug)]
 #[command(
     name = "cozy",
-    version,
+    version = ::api::VERSION,
     disable_help_subcommand = true,
     about = "Run models on your machines and rented GPUs",
     after_help = NEXT
@@ -66,8 +68,22 @@ enum Command {
     Open(open::Args),
     /// Run a function in the current project.
     Run(run::Args),
+    /// List the current project's nodes, or print named ones whole as a file.
+    Get(node::Get),
+    /// Merge a file of nodes into the current project.
+    Apply(node::Apply),
+    /// What `cozy apply -f` would change, written nowhere.
+    Diff(node::Diff),
+    /// Remove nodes; the page's Undo brings them back.
+    Delete(node::Delete),
+    /// What a file of nodes can hold: kinds, tools and their fields.
+    Explain(node::Explain),
+    /// Render nodes of the current project and what they read, as the page's Render does.
+    Render(render::Args),
     /// Show the current project's health and warnings.
     Status(daemon::Status),
+    /// Show or change the current project's key: its runs are KEY-N.
+    Key(project::KeyArgs),
     /// Encrypt, lock or recover the current project.
     Vault(project::vault::Args),
     /// Local, rented and added machines.
@@ -82,6 +98,8 @@ enum Command {
     Update(update::Args),
     /// Diagnose this computer's Cozy installation and machines.
     Doctor(doctor::Args),
+    /// Restart Calcifer on the installed cozy.
+    Restart(daemon::Restart),
     /// Sign in to your TensorHub account.
     Login(account::Login),
     /// Sign out of your TensorHub account.
@@ -114,7 +132,7 @@ pub fn main() -> ExitCode {
         Ok(loaded) => loaded,
         Err(error) => return output::refuse(cli.json, &error),
     };
-    if let Err(error) = dev::admit(&matches, loaded.config.dev) {
+    if let Err(error) = dev::admit(&matches, loaded.config.dev).and_then(|()| loaded.config.declare_local()) {
         return output::refuse(cli.json, &error);
     }
     let warnings = loaded.warnings.clone();
@@ -170,12 +188,19 @@ fn usage_error(error: &clap::Error, arguments: &[std::ffi::OsString]) -> Error {
 async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
     match command {
         Command::Run(args) => run::exec(ctx, args).await,
+        Command::Get(args) => node::get(ctx, args).await,
+        Command::Explain(args) => node::explain(ctx, args).await,
+        Command::Render(args) => render::exec(ctx, args).await,
+        Command::Apply(args) => node::apply(ctx, args).await,
+        Command::Diff(args) => node::diff(ctx, args).await,
+        Command::Delete(args) => node::delete(ctx, args).await,
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,
         Command::Lora(args) => model::lora_exec(ctx, args).await,
         Command::New(args) => project::create(ctx, args).await,
         Command::Status(args) => daemon::status(ctx, args).await,
+        Command::Key(args) => project::key(ctx, args).await,
         Command::Vault(args) => project::vault::exec(ctx, args).await,
         Command::Open(args) => open::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,
@@ -184,6 +209,7 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Update(args) => update::exec(ctx, args).await,
         Command::Completion(args) => completion::exec(ctx, args).await,
         Command::Doctor(args) => doctor::exec(ctx, args).await,
+        Command::Restart(args) => daemon::restart_calcifer(ctx, args).await,
     }
 }
 

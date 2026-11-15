@@ -59,7 +59,9 @@ export function signInClient(client: Client) {
       if (path === "/passwordless/start") {
         stepping = undefined
         const out = await client.sendCode("sign_in", ask.identifier)
-        sent.set(ask.identifier, out.id)
+        if (out.id == null) sent.delete(ask.identifier)
+        else sent.set(ask.identifier, out.id)
+        // Too soon is an answer here, never a 429 on the wire: auth-ui counts the wait down on Resend.
         if (out.retry_after_s == null) return reply(204)
         const metadata = { retry_after_seconds: out.retry_after_s }
         return reply(429, { error: { type: "", code: "rate_limited", message: "Too soon.", metadata } }, out.retry_after_s)

@@ -76,7 +76,13 @@ impl Stage {
     /// to the machine (`TORCH_LAYER`): its lock holds no Torch, and an author's cap or exact pin on
     /// Torch is said once.
     fn new(project: &Project, within: &Path, uv: PathBuf, say: Say<'_>) -> Result<Self, Error> {
-        let dir = tempfile::tempdir().map_err(|e| refuse("stage_unavailable", e))?;
+        let dir = match crate::private_io::current() {
+            Some(scope)=>{
+                let root=crate::private_io::cache(Some(&scope),PathBuf::new(),"author")?;
+                tempfile::tempdir_in(root)
+            },
+            None=>tempfile::tempdir(),
+        }.map_err(|e| refuse("stage_unavailable", e))?;
         let root = dir.path().to_path_buf();
         let at = project.root.strip_prefix(within).map_err(|_| {
             refuse("stage_unavailable", format!("{} is outside its copy {}", project.root.display(), within.display()))
@@ -118,6 +124,28 @@ impl Stage {
         }
         fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
         Ok(Self { _dir: dir, root, src, uv })
+    }
+
+    /// A floor only the open RC meets (`cozy-runtime>=0.47.0.dev0`) takes the RC's newest build, its wheel by URL in this copy
+    /// alone (`floor::rc_runtime`, xs-194): the build every machine of the RC runs, never a wheel the package names, which each
+    /// Runtime merge replaces.
+    async fn rc_runtime(&self, say: Say<'_>) -> Result<(), Error> {
+        let Some(rc) = crate::floor::rc_runtime(&self.src).await? else { return Ok(()) };
+        let path = self.src.join("pyproject.toml");
+        let authored = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
+        let mut doc: toml_edit::DocumentMut = authored.parse().map_err(|e| refuse("project_invalid", e))?;
+        let sources = (doc["tool"]["uv"]["sources"].or_insert(toml_edit::table()))
+            .as_table_like_mut()
+            .ok_or_else(|| refuse("project_invalid", "tool.uv.sources is not a table"))?;
+        if sources.contains_key("cozy-runtime") {
+            return Ok(());
+        }
+        let mut source = toml_edit::InlineTable::new();
+        source.insert("url", rc.url.as_str().into());
+        sources.insert("cozy-runtime", toml_edit::value(source));
+        fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
+        say(&format!("cozy-runtime {}: the open RC's newest build, which its machines run (no release meets its floor)", api::prerelease::shown(&rc.version)));
+        Ok(())
     }
 
     /// Points each of the copy's `tensorhub` sources at the index `bound` names for its distribution: one uv index per
@@ -335,6 +363,7 @@ pub(crate) async fn locked(hubs: &Hubs, hub: &Origin, project: &Project, within:
     -> Result<Locked, Error> {
     let uv_path = tools(hubs.home(), project, say).await?;
     let stage = blocking(|| Stage::new(project, within, uv_path, say))?;
+    stage.rc_runtime(say).await?;
     let own = blocking(|| fs::read_to_string(project.root.join("uv.lock")).ok());
     let bound = match project.hub_sources.is_empty() {
         true => Bound::new(),
@@ -410,6 +439,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     }
     let uv_path = tools(api.machines.hubs.home(), &project, say).await?;
     let stage = blocking(|| Stage::new(&project, &within, uv_path, say))?;
+    stage.rc_runtime(say).await?;
     fs::write(stage.src.join("uv.lock"), &committed).map_err(|e| refuse("stage_unavailable", e))?;
     // Locking the copy is a no-op for a lock made for this Hub. For another, it moves each Hub
     // package to this Hub's index for its namespace, pinned to the versions the lock holds: a pin
@@ -424,10 +454,10 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
         }
     }
     let reader = rc_reader(api, &project.version).await?;
-    let (files, unshipped) = blocking(|| built(&stage, &python.request, &committed, &result.package, hub, reader.as_deref()))?;
-    for ui in unshipped {
-        say(&format!("the wheel doesn't hold {ui}, so that function draws its declared box: keep it beside the module that names it, and have your build include it"));
-    }
+    let files = blocking(|| built(&stage, &python.request, &committed, &result.package, hub, reader.as_deref()))?;
+    // What it imports from the Runtime, its floor has (cl-952).
+    let wheel = single(&stage.root.join("dist"), ".whl")?;
+    crate::floor::check(api, &stage.uv, &python.request, &stage.src, &wheel, &result.package).await?;
     let declared: Vec<PackageDeclaredFile> = (files.iter())
         .map(|f| PackageDeclaredFile { digest: f.digest.clone(), length: f.length, path: f.path.clone() })
         .collect();
@@ -435,7 +465,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     let grants = client.begin_package_release(org, name, release, &declared).await.map_err(hub_error)?;
     let declaration = Declaration { hub, client: &client, org, name, release, files: &declared };
     result.uploaded_bytes = upload(&files, &grants.files, &declaration, say).await?;
-    let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full, ask.yanked).await)
+    let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full).await)
         .map_err(hub_error)?;
     // Finalization re-hashes every file on the Hub; its state ends the wait.
     while state.state != "committed" && state.state != "failed" {
@@ -454,14 +484,7 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
         }
         return Err(error);
     }
-    // A Hub from before finalize took `yanked` ignores it, and the release is its newest until this.
-    if ask.yanked && !state.yanked {
-        client.yank_package_release(org, name, release).await.map_err(|e| {
-            refuse("package_not_yanked", format!("{org}/{name}@{release} is published but not yanked: {}", hub_error(e)))
-                .remedy(format!("cozy package yank {org}/{name}@{release}"))
-        })?;
-    }
-    result.status = if ask.yanked { "published yanked" } else { "published" }.into();
+    result.status = "published".into();
     result.changed = true;
     result.warnings = state.warnings;
     api.releases.forget(hub, &result.package);
@@ -475,8 +498,11 @@ async fn rc_reader(api: &Api, version: &str) -> Result<Option<String>, Error> {
     if !(api.machines.dev || crate::update::dev_build()) || !prerelease {
         return Ok(None);
     }
+    // Its pure wheel, which any platform reads; the RC's prerelease keeps a wheel an hour after the push that replaced it, so a
+    // SHA256SUMS read a moment before the RC moved still names one that's there (e2e 43206615800 read a 404).
+    let sums = api.machines.rc.now().await?;
     let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
-    Ok(api.machines.rc.now().await?.build("runtime", &platform).map(|(_, url)| url))
+    Ok(sums.pure_runtime().or_else(|| sums.build("runtime", &platform)).map(|(_, url)| url))
 }
 
 /// The staged project locked for this Hub, held to the committed lock, built, its git
@@ -488,7 +514,7 @@ fn built(
     package: &str,
     hub: &Origin,
     reader: Option<&str>,
-) -> Result<(Vec<File>, Vec<String>), Error> {
+) -> Result<Vec<File>, Error> {
     run(uv(&stage.uv, &stage.src).args(["lock", "--no-progress", "--python", python]), "lock_failed", "uv lock")?;
     let bound = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
     let (before, after) = (versions(committed)?, versions(&bound)?);
@@ -514,8 +540,8 @@ fn built(
         "uv build",
     )?;
     let git_wheels = git_wheels(stage, python)?;
-    let runtime = reader.or(after.get("cozy-runtime").map(String::as_str));
-    let (said, document) = describe_with(&stage.uv, &stage.src, python, runtime)?;
+    let runtime = reader.map(str::to_owned).or_else(|| crate::local_code::locked_runtime(&stage.src));
+    let (said, document) = describe_with(&stage.uv, &stage.src, python, runtime.as_deref())?;
     // A model default with no org stays as written: it names a first-party model (a machine reads
     // `sdxl@1.0.0` as `_/sdxl@1.0.0`), and the Runtime's interface parser refuses an org of `_`.
     let interface = Interface::parse(&document)
@@ -526,7 +552,6 @@ fn built(
     let interface_path = stage.root.join("package-interface.json");
     fs::write(&interface_path, said.trim_end()).map_err(|e| refuse("stage_unavailable", e))?;
     let wheel = single(&dist, ".whl")?;
-    let unshipped = crate::tool_ui::not_in_wheel(&wheel, &interface);
     let sdist = single(&dist, ".tar.gz")?;
     // Where each file is declared: the Hub's PackageReleasePath.
     let named = |dir: &str, local: &Path| format!("{dir}{}", local.file_name().unwrap_or_default().to_string_lossy());
@@ -541,7 +566,7 @@ fn built(
     for local in git_wheels {
         files.push(File::new(named("artifacts/dependencies/", &local), local)?);
     }
-    Ok((files, unshipped))
+    Ok(files)
 }
 
 /// A relock that could not keep the lock's account-index pins on `hub`: the pin uv names, by
@@ -739,7 +764,9 @@ fn git_wheel(stage: &Stage, python: &str, name: &str, vcs: &Vcs) -> Result<PathB
     let checkout = stage.root.join("git").join(name);
     fs::create_dir_all(&checkout).map_err(|e| refuse("git_dependency_checkout", e))?;
     let git = |args: &[&str]| -> Result<String, Error> {
-        let out = std::process::Command::new("git").arg("-C").arg(&checkout).args(args).output().map_err(|e| match e.kind() {
+        let mut command=std::process::Command::new("git");
+        command.current_dir(&checkout).arg("-C").arg(&checkout).args(args);
+        let out = crate::local_code::project_tool_output(&mut command).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => git_missing(),
             _ => refuse("git_dependency_checkout", e),
         })?;

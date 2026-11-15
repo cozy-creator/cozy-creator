@@ -137,14 +137,14 @@ pub fn room(device: i32) -> Result<Room> {
     let _context = owner.driver().enter()?;
     let polled = owner.poll(&mut state);
     polled.map_err(|error| owner.fail(&mut state, error))?;
-    owner.sample()?;
-    let (free, total) = owner.driver().memory_info()?;
+    let free = owner.sample()?;
+    let total = owner.total.load(Ordering::Acquire);
     Ok(Room {
         capacity: total.min(owner.capacity()),
         working_live: live_working(&state),
         pinned: owner.held.load(Ordering::Acquire),
         weights_resident: owner.pages.load(Ordering::Acquire),
-        free: headroom(owner, free, 0),
+        free: headroom(owner, owner.spare(free), 0),
     })
 }
 
@@ -461,8 +461,8 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     let _context = owner.driver().enter()?;
     let polled = owner.poll(&mut state);
     polled.map_err(|error| owner.fail(&mut state, error))?;
-    owner.sample()?;
-    let (free, total) = owner.driver().memory_info()?;
+    let free = owner.spare(owner.sample()?);
+    let total = owner.total.load(Ordering::Acquire);
     let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
     // The most any op has held this request, since this op's own weights may not be held yet; but
     // an op holds only its phase's weights, so an earlier phase's high-water isn't this one's: SDXL's
@@ -758,8 +758,7 @@ fn split_begin_inner(
         let _context = owner.driver().enter()?;
         let result = (|| -> Result<u64> {
             owner.poll(&mut state)?;
-            owner.sample()?;
-            let (free, _) = owner.driver().memory_info()?;
+            let free = owner.spare(owner.sample()?);
             let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
             let plan = plans.iter().find(|plan| plan.id == choice_id)
                 .ok_or(Error::Invalid("split choice is not declared"))?;
@@ -767,7 +766,7 @@ fn split_begin_inner(
                 // Matched compatible slots stay mapped, and so does a loop's; only other completed backing goes.
                 let preserve = plan.preserve.union(&state.kept()).copied().collect();
                 owner.trim_ready(&mut state, plan.missing - plan.now, None, &preserve, usize::MAX)?;
-                let (free, _) = owner.driver().memory_info()?;
+                let free = owner.spare(owner.driver().memory_info()?.0);
                 let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
                 let plan = plans.iter().find(|plan| plan.id == choice_id).expect("copied choice");
                 if plan.missing > plan.now {

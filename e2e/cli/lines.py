@@ -127,10 +127,20 @@ def installs() -> dict[str, Turn]:
     return found
 
 
+def resolved() -> set[str]:
+    """The headers and trees resolutions pulled (the store's transport log, `pull … header=sha256:… tree=sha256:…`): a job's
+    order since #3115, but its weights' index, never its download."""
+    path = out / "lines.tensorfs.log"
+    text_ = path.read_text(errors="replace") if path.exists() else ""
+    return set(re.findall(r"(?:header|tree)=sha256:([0-9a-f]{64})", text_))
+
+
 def downloads() -> dict[int, dict[str, list[Seen]]]:
     """Each run's objects from TensorD's log since `began`, by its job (its acceptance, from the order): when each started
-    and landed, with its bytes. Only runs' own orders (`priority::next`), not a reader's or a call's."""
+    and landed, with its bytes. Only runs' own orders (`priority::next`), not a reader's or a call's, and its weights, not
+    the headers and trees its resolution pulled."""
     jobs: dict[int, dict[str, list[Seen]]] = {}
+    index = resolved()
     for line in log_lines():
         found = LOGGED.match(line)
         if not found:
@@ -138,7 +148,7 @@ def downloads() -> dict[int, dict[str, list[Seen]]]:
         at = ms(found[1])
         fields = dict(re.findall(r"(\w+)=(\S+)", found[3]))
         order = int(fields.get("priority", "0"))
-        if at < began or order == 0 or order >= 1 << 62:
+        if at < began or order == 0 or order >= 1 << 62 or fields.get("object") in index:
             continue
         job = ((order - 1) >> 32) & ((1 << 30) - 1)
         if job:

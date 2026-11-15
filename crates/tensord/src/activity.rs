@@ -8,6 +8,18 @@ use std::{
 
 use api::machine as v1;
 
+/// What Status shows may have changed: something began (engine activity, an operation, an update). A Status stream with
+/// nothing going waits on this (`api::machine_status`).
+static STATUS: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::Sender::new(0));
+
+pub(crate) fn status_changed() {
+    STATUS.send_modify(|n| *n = n.wrapping_add(1));
+}
+
+pub(crate) fn status_changes() -> tokio::sync::watch::Receiver<u64> {
+    STATUS.subscribe()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Download,
@@ -78,6 +90,8 @@ pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
         operation.runs.clear();
     }
     *operation.runs.entry(run.to_owned()).or_default() += 1;
+    drop(listed);
+    status_changed();
     Waiting { id, run: run.to_owned() }
 }
 
@@ -163,6 +177,17 @@ impl Import {
 }
 
 /// What the runs `mine` admits wait on, each with only those runs. One that ended unlisted is listed this once.
+/// The repositories each run (by its caller's id) waits to download now.
+pub(crate) fn downloading() -> std::collections::HashMap<String, Vec<String>> {
+    let mut waits: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for operation in operations().values().filter(|operation| operation.kind == Kind::Download && operation.ended.is_none()) {
+        for run in operation.runs.keys() {
+            waits.entry(run.clone()).or_default().push(operation.subject.clone());
+        }
+    }
+    waits
+}
+
 pub(crate) fn listed(mine: impl Fn(&str) -> bool) -> Vec<v1::Operation> {
     let mut operations = operations();
     let listed = operations

@@ -7,7 +7,7 @@ use platform::durable::FileAt as _;
 use api::{config::Origin, error::{Error, Kind}};
 use tensorfs::{
     err::{Code, Refusal as Failed},
-    fetch::{self, is_loopback_origin, Endpoint, Request, SourcePolicy, TokenProvider},
+    fetch::{self, Endpoint, Request, SourcePolicy, TokenProvider},
     format::ObjectRef,
 };
 
@@ -31,7 +31,7 @@ impl TokenProvider for Signed {
 /// `hub` as this computer's signed-in user, and its objects.
 fn signed(api: &Api, hub: &Origin) -> Result<Endpoint, Error> {
     let client = api.machines.hubs.client(hub)?;
-    let policy = SourcePolicy { any_host: true, allow_local: is_loopback_origin(hub), max_redirects: 5, ..Default::default() };
+    let policy = SourcePolicy { any_host: true, max_redirects: 5, ..Default::default() };
     let provider: Arc<dyn TokenProvider> = Arc::new(Signed(client));
     let endpoint = Endpoint::new(&fetch::Client::new(policy), hub, Some(provider)).map_err(failed)?;
     Ok(endpoint)
@@ -100,7 +100,7 @@ async fn fetch(project: &Project, endpoint: &Endpoint, wanted: folder::File) -> 
         let _ = std::fs::remove_file(&part);
         return Err(Failed { code: Code::OBJECT_ID_MISMATCH, detail: format!("{path}: what landed is not its sha256; retry fetching it") });
     }
-    // Project.lock holds no name for it: its bytes say what it is.
+    // The lock holds no name for it: its bytes say what it is.
     let mut head = vec![];
     File::open(&part).and_then(|file| std::io::Read::read_to_end(&mut std::io::Read::take(file, 8192), &mut head)).map_err(named)?;
     let at = infer::get(&head).map_or_else(|| at.clone(), |kind| at.with_extension(kind.extension()));

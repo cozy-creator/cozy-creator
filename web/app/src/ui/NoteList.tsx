@@ -6,7 +6,7 @@ import { Icon } from "./Icon"
 import { dismiss, held, notes } from "./notes"
 import { useSignal } from "./signal"
 
-/** A note's picture: a take's thumbnail, fetched as the page fetches any (signed in). */
+/** A note's picture: a take's thumbnail, fetched as the page fetches any (with its session). */
 function NotePicture({ path }: { path: string }) {
   const { client } = useConnection()
   const [src, setSrc] = useState<string>()

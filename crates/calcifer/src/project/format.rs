@@ -1,8 +1,7 @@
-//! project.yaml, format 4 (design/tools.md): each box a name, the tool that makes it, its fields, the file you approved, and words for
-//! whatever mentions it. The platform reads `tool`, `approved`, `description`, `models`, `lora` and `<name>` in any text, and knows no
-//! field's meaning, but for the reserved package `cozy`, which it runs itself. Every other key is a field: the binder gives it to the tool by
-//! its type, and it counts in the key. Nothing refuses a project but a file of no format or another: what one line gets wrong is said, and
-//! that line does the best it can. `assetfile` writes the file.
+//! The project's boxes as Calcifer reads them (design/tools.md): each box a name, the tool that makes it, its fields, the file you approved,
+//! and words for whatever mentions it. The platform reads `tool`, `approved`, `description`, `models`, `lora` and `<name>` in any text, and
+//! knows no field's meaning, but for the reserved package `cozy`, which it runs itself. Every other key is a field: the binder gives it to
+//! the tool by its type, and it counts in the key. What one box gets wrong is said, and that box does the best it can.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
@@ -22,13 +21,11 @@ use super::{
 
 /// The name used to render every asset.
 pub(crate) const ALL: &str = "all";
-pub(super) const FORMAT: u64 = 4;
 /// What the platform reads of an asset. Any other key is an input.
 const PLATFORM: [&str; 8] = ["tool", "approved", "description", "models", "lora", NODE_KIND, SELECTED_VERSION, STARRED];
 /// What goes on a function's first call, beside its input.
 const MADE: [&str; 2] = ["models", "lora"];
 pub(super) const KINDS: [&str; 3] = ["image", "video", "audio"];
-const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
 /// What a text asset holds, and what it is.
 pub(super) const TEXT: &str = "text";
 /// Persistent container identity; this is project metadata, never a tool input.
@@ -84,88 +81,39 @@ pub(super) fn kind_made_here(plain: &str) -> Option<&'static str> {
     }
 }
 
-/// A new project's project.yaml: a short film that renders as it stands.
-pub(crate) fn starter() -> String {
-    r#"# A short film, ready to render in the browser opened by cozy open
-# Change anything. Each box says what makes it; `<name>` in any text reads that box.
-version: 4
-
-assets:
-  style:
-    text: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
-
-  kyogre:
-    tool: qwen-image-2/image
-    aspect_ratio: "16:9"
-    instructions: |
-      <style> Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
-    description: Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines.
-
-  groudon:
-    tool: qwen-image-2/image
-    aspect_ratio: "16:9"
-    instructions: |
-      <style> Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
-    description: Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws.
-
-  coast:
-    tool: qwen-image-2/image
-    aspect_ratio: "16:9"
-    instructions: <style> A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
-    description: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
-
-  edit:
-    tool: cozy/edit
-    fps: 24
-    tracks:
-      - clips:
-          - <awaken>
-          - <erupt>
-          - <clash>
-
-  awaken:
-    tool: minimax-h3/generate
-    aspect_ratio: "16:9"
-    summary: |
-      <style>
-      <kyogre> bursts out of the stormy sea of <coast>.
-    soundscape: Howling wind, crashing waves, and rolling thunder.
-    beats:
-      - duration: 6
-        description: |
-          A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins. The camera tilts up at slow speed as heavy rain starts to fall.
-
-  erupt:
-    tool: minimax-h3/generate
-    aspect_ratio: "16:9"
-    summary: |
-      <style>
-      <groudon> claws its way out of the lava cliffs of <coast> and roars.
-    soundscape: Cracking rock, hissing lava, heavy footfalls, and a deep roar.
-    beats:
-      - duration: 6
-        description: |
-          A wide shot from the rocks looks up at the lava cliffs of <coast>. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
-
-  clash:
-    tool: minimax-h3/generate
-    aspect_ratio: "16:9"
-    summary: |
-      <style>
-      <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
-    soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
-    beats:
-      - duration: 14
-        description: |
-          A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left. <kyogre> surges forward and fires a thick column of water across the frame. It bursts into white steam against the stone plates of <groudon>.
-      - duration: 10
-        description: |
-          <groudon> breathes a wide torrent of orange fire across the surf, and <kyogre> erupts from the water at the shoreline. The two crash together chest to chest, and a wall of water and steam rushes toward the camera.
-"#
-    .into()
+/// A new project's boxes: a short film that renders as it stands.
+pub(crate) fn starter() -> Written {
+    const SHEET: &str = "The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.";
+    let boxed = |name: &str, fields: Vec<(&str, Value)>| super::written::Boxed { name: name.to_owned(), fields: fields.into_iter().map(|(field, value)| (field.to_owned(), value)).collect(), ..Default::default() };
+    let still = |name: &str, description: &str, instructions: String| boxed(name, vec![
+        ("tool", json!("qwen-image-2/image")), ("aspect_ratio", json!("16:9")), ("instructions", json!(instructions)), ("description", json!(description)),
+    ]);
+    let character = |name: &str, description: &str| still(name, description, format!("<style> {description} {SHEET}"));
+    let shot = |name: &str, summary: &str, soundscape: &str, beats: Value| boxed(name, vec![
+        ("tool", json!("minimax-h3/generate")), ("aspect_ratio", json!("16:9")), ("summary", json!(format!("<style>\n{summary}"))), ("soundscape", json!(soundscape)), ("beats", beats),
+    ]);
+    let coast = "A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.";
+    let boxes = vec![
+        boxed("style", vec![("text", json!("High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style."))]),
+        character("kyogre", "Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines."),
+        character("groudon", "Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws."),
+        still("coast", coast, format!("<style> {coast}")),
+        boxed("edit", vec![("tool", json!("cozy/edit")), ("fps", json!(24)), ("tracks", json!([{"clips": ["<awaken>", "<erupt>", "<clash>"]}]))]),
+        shot("awaken", "<kyogre> bursts out of the stormy sea of <coast>.", "Howling wind, crashing waves, and rolling thunder.", json!([
+            {"duration": 6, "description": "A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins. The camera tilts up at slow speed as heavy rain starts to fall."},
+        ])),
+        shot("erupt", "<groudon> claws its way out of the lava cliffs of <coast> and roars.", "Cracking rock, hissing lava, heavy footfalls, and a deep roar.", json!([
+            {"duration": 6, "description": "A wide shot from the rocks looks up at the lava cliffs of <coast>. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step."},
+        ])),
+        shot("clash", "<kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.", "Crashing surf, roaring fire, bursts of steam, and deep impacts.", json!([
+            {"duration": 14, "description": "A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left. <kyogre> surges forward and fires a thick column of water across the frame. It bursts into white steam against the stone plates of <groudon>."},
+            {"duration": 10, "description": "<groudon> breathes a wide torrent of orange fire across the surf, and <kyogre> erupts from the water at the shoreline. The two crash together chest to chest, and a wall of water and steam rushes toward the camera."},
+        ])),
+    ];
+    Written { head: vec![], boxes }
 }
 
-/// One asset as the file says it, after defaults.
+/// One asset as its box says it, after defaults.
 pub(crate) struct Asset {
     pub name: String,
     /// What its file is: what it holds or last made, else what its tool's interface last said, else a picture. No more than what to call it.
@@ -178,13 +126,13 @@ pub(crate) struct Asset {
     pub tool_makes: bool,
     /// What makes it, as the memo holds it: no release, no root namespace, and local code by its directory's name.
     pub tool: Option<String>,
-    /// What makes it, as the file writes it.
+    /// What makes it, as its box says it.
     pub target: String,
     /// Its `models` and `lora`, after defaults.
     pub made: Map<String, Value>,
     /// Its inputs, after defaults, each mention of a text asset replaced by its words: what its function is given.
     pub inputs: Map<String, Value>,
-    /// Its inputs as the file says them, when that isn't `inputs`: what the page shows, and what its key holds.
+    /// Its inputs as its box says them, when that isn't `inputs`: what the page shows, and what its key holds.
     pub written: Option<Map<String, Value>>,
     /// The text assets `inputs` took in, those they mention too: each is a part of its key, as a read is.
     pub inlined: Vec<usize>,
@@ -194,11 +142,11 @@ pub(crate) struct Asset {
     pub own: BTreeSet<String>,
     /// The words for whatever mentions it.
     pub description: String,
-    /// `approved`: the sha256 it holds. Its tool and inputs stay in the file, and can show it out of date.
+    /// `approved`: the sha256 it holds. Its tool and inputs stay in its box, and can show it out of date.
     pub pin: Option<String>,
     /// `starred: true`.
     pub starred: bool,
-    /// It has no operation: no `tool` that can make it, or the file says nothing of it.
+    /// It has no operation: no `tool` that can make it, or its box says nothing.
     pub hollow: bool,
     /// What it reads, in the order its text mentions them.
     pub reads: Vec<Reading>,
@@ -214,18 +162,6 @@ pub(crate) struct Reading {
     pub said: String,
 }
 
-/// A project.yaml read as one mapping, and its boxes' names in order. What doesn't read is refused with its line.
-fn parsed(text: &str) -> Result<(Value, Vec<String>), Error> {
-    api::yaml::to_json_and_keys(text, &["assets"], names_a_file).map_err(|why| {
-        let (line, written) = at_line(text, &why);
-        let refused = invalid("project_yaml", format!("{}: {why}{line}", folder::PROJECT));
-        match written.trim_start().split_once(':').is_some_and(|(_, value)| value.trim_start().starts_with('[')) {
-            true => refused.remedy("text that starts with `[` goes on the lines under `summary: |` or `description: |`"),
-            false => refused,
-        }
-    })
-}
-
 /// A function Calcifer runs itself, free, with no machine.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Tool {
@@ -233,7 +169,7 @@ pub(crate) enum Tool {
     Frame,
 }
 
-/// project.yaml as Calcifer reads it.
+/// The project as Calcifer reads it: its boxes, what each reads, and in what order they can be made.
 pub(crate) struct Doc {
     pub assets: Vec<Asset>,
     /// What each reads.
@@ -242,9 +178,9 @@ pub(crate) struct Doc {
     pub order: Vec<usize>,
     pub warnings: Vec<Warning>,
     index: HashMap<String, usize>,
-    /// Each package's own tags, as project.lock last read them. A package not here hasn't been read yet.
+    /// Each package's own tags, as the lock last read them. A package not here hasn't been read yet.
     reserved: BTreeMap<String, Vec<String>>,
-    /// What each tool makes, as project.lock last read it.
+    /// What each tool makes, as the lock last read it.
     makes: BTreeMap<String, String>,
     /// Mentions naming nothing and no tag its package is known to have. Until a package is read its tags may be among them, so
     /// nothing is made of these before then.
@@ -258,7 +194,7 @@ pub(crate) struct Doc {
 /// Why an asset has the state it has, or none.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) enum State {
-    /// A hash in the file: the version it is, if one, with its whole file set, and what changed since it was made.
+    /// A hash its box approves: the version it is, if one, with its whole file set, and what changed since it was made.
     Pinned { version: Option<u32>, changed: Vec<String> },
     /// This version has these inputs.
     Current(u32),
@@ -313,50 +249,26 @@ impl Doc {
         folder.reading_boxes(|written| Self::of(folder, written, &lock))?
     }
 
-    /// The project `text` says, a YAML export: what a render was asked with. Only a file of no format, or another, is refused.
-    pub(crate) fn read(folder: &Folder, text: &str) -> Result<Self, Error> {
-        Self::of_text(folder, text, &folder.lock()?)
+    /// The project a render was asked with: its snapshot, of the files and tags the project holds now.
+    pub(crate) fn asked(folder: &Folder, written: &Written) -> Result<Self, Error> {
+        Self::of(folder, written, &folder.lock()?)
     }
 
     /// The project `written` says, of the files and tags `lock` holds.
     pub(super) fn of(folder: &Folder, written: &Written, lock: &Lock) -> Result<Self, Error> {
-        let (value, listed) = written.reading();
-        Self::of_format(folder, value, listed, "", lock)
-    }
-
-    /// The project `text` says, as YAML, of the files and tags `lock` holds.
-    pub(super) fn of_text(folder: &Folder, text: &str, lock: &Lock) -> Result<Self, Error> {
-        let (value, listed) = parsed(text)?;
-        Self::of_format(folder, value, listed, text, lock)
-    }
-
-    fn of_format(folder: &Folder, value: Value, listed: Vec<String>, text: &str, lock: &Lock) -> Result<Self, Error> {
-        let top = match value {
-            Value::Object(top) => top,
-            Value::Null => Map::new(),
-            _ => return Err(invalid("project_yaml", format!("{} is no mapping of sections", folder::PROJECT))),
-        };
-        let version = top.get("version").and_then(Value::as_u64);
-        if version.is_some_and(|version| version != FORMAT) || (version.is_none() && top.contains_key("entities")) {
-            let said = format!("{} is format {}, and cozy reads format {FORMAT}: it is left as it is", folder::PROJECT, version.unwrap_or(2));
-            return Err(invalid("project_format", said).remedy(format!("Explicit authoring import reads format {FORMAT}; older project formats are not converted")));
-        }
+        let (top, listed) = written.reading();
         let mut warnings = vec![];
-        if version.is_none() {
-            warnings.push(Warning::of_file(format!("{} has no `version: {FORMAT}`, so it reads as version {FORMAT}: add it", folder::PROJECT)));
-        }
-        warnings.extend(top.keys().filter(|key| !SECTIONS.contains(&key.as_str())).map(|key| Warning::of_file(format!("{}: cozy reads no section {key}; it is ignored", folder::PROJECT))));
         let empty = Map::new();
         let mut defaults = Map::new();
         for (section, value) in top.get("defaults").and_then(Value::as_object).unwrap_or(&empty) {
             if !KINDS.contains(&section.as_str()) {
-                warnings.push(Warning::of_file(format!("defaults.{section}: the only keys are image, video and audio; it is ignored")));
+                warnings.push(Warning::of_project(format!("defaults.{section}: the only keys are image, video and audio; it is ignored")));
                 continue;
             }
             let mut filled = value.as_object().cloned().unwrap_or_default();
             for word in PLATFORM.iter().filter(|word| !MADE.contains(word)) {
                 if filled.remove(*word).is_some() {
-                    warnings.push(Warning::of_file(format!("defaults.{section}.{word}: defaults fill a node's inputs: it is ignored")));
+                    warnings.push(Warning::of_project(format!("defaults.{section}.{word}: defaults fill a node's inputs: it is ignored")));
                 }
             }
             defaults.insert(section.clone(), Value::Object(filled));
@@ -373,7 +285,7 @@ impl Doc {
         let mut seen: HashMap<String, String> = HashMap::new();
         for name in &listed {
             if let Some(first) = seen.insert(name_key(&read_as(name)), name.clone()) {
-                return Err(one_name_twice(text, &first, name));
+                return Err(one_name_twice(&first, name));
             }
         }
         let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), makes: lock.makes.clone(), unread: vec![], dir: folder.dir.clone(), dotted: HashMap::new() };
@@ -382,7 +294,7 @@ impl Doc {
             let shown = read_as(name);
             if shown != *name {
                 doc.dotted.insert(name_key(name), doc.assets.len());
-                doc.warn(&shown, format!("{name}: a name holds no `.`, so it reads as {shown}: rename it {shown} in {}", folder::PROJECT));
+                doc.warn(&shown, format!("{name}: a name holds no `.`, so it reads as {shown}: rename it {shown}"));
             }
             doc.declare(&shown, written, &defaults, folder, lock);
         }
@@ -397,7 +309,7 @@ impl Doc {
         Ok(doc)
     }
 
-    /// An asset of the file, after defaults, what it approved read. A name taken: the first stands.
+    /// An asset of the project, after defaults, what it approved read. A name taken: the first stands.
     fn declare(&mut self, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) {
         let key = name_key(name);
         if key == ALL {
@@ -496,7 +408,7 @@ impl Doc {
         self.warnings.extend(said);
     }
 
-    /// `fields` with each text box they mention put in as its words, as a box's are: `cozy run`'s, written outside the file.
+    /// `fields` with each text box they mention put in as its words, as a box's are: `cozy run`'s, written outside the project.
     pub(super) fn worded(&self, fields: &mut Map<String, Value>, tags: &[String]) {
         let texts: HashMap<String, usize> = self.assets.iter().enumerate().filter(|(_, asset)| asset.text.is_some()).map(|(i, asset)| (name_key(&asset.name), i)).collect();
         let (mut took, mut said) = (vec![], vec![]);
@@ -621,7 +533,7 @@ impl Doc {
         self.warnings.push(Warning::of(name, message));
     }
 
-    /// Asset `i`'s inputs as its function is given them: a `|` text's last newline is the file's, not anyone's words.
+    /// Asset `i`'s inputs as its function is given them: a text's last newline is no one's words.
     pub(crate) fn inputs_of(&self, i: usize) -> Map<String, Value> {
         let mut inputs = self.assets[i].inputs.clone();
         inputs.values_mut().for_each(end_trimmed);
@@ -781,7 +693,7 @@ impl Doc {
         Some(Warning::of(&self.assets[i].name, said))
     }
 
-    /// `said_once_read` of each asset whose package project.lock knows.
+    /// `said_once_read` of each asset whose package the lock knows.
     pub(crate) fn said_of_known(&self, lock: &Lock) -> Vec<Warning> {
         (0..self.assets.len()).filter(|&i| self.makes(i) && self.tool(i).is_none()).filter_map(|i| self.said_once_read(i, self.tags(i)?, lock)).collect()
     }
@@ -795,7 +707,7 @@ impl Doc {
         close.filter(|(apart, _)| *apart <= 2).min_by_key(|(apart, _)| *apart).map(|(_, name)| name)
     }
 
-    /// The function that makes asset `i`, as the file writes it.
+    /// The function that makes asset `i`, as its box says it.
     pub(crate) fn target(&self, i: usize) -> String {
         self.assets[i].target.clone()
     }
@@ -824,7 +736,7 @@ impl Doc {
         !self.assets[i].hollow
     }
 
-    /// Every asset's state, in the file's terms.
+    /// Every asset's state, in the project's terms.
     /// Whether this was read with the package tags `lock` knows now.
     pub(crate) fn knows_tags_of(&self, lock: &Lock) -> bool {
         self.reserved == lock.reserved && self.makes == lock.makes
@@ -838,7 +750,7 @@ impl Doc {
         done
     }
 
-    /// The hash in the file, else its newest version for these inputs, else none. A hash that is a version's main file brings
+    /// The hash its box approves, else its newest version for these inputs, else none. A hash that is a version's main file brings
     /// the version's whole file set; one that is none's is just that file.
     pub(crate) fn standing(&self, i: usize, lock: &Lock, done: &[Standing]) -> Standing {
         let asset = &self.assets[i];
@@ -1116,7 +1028,7 @@ fn text_of(value: Option<&Value>) -> String {
     }
 }
 
-/// `name`, refused unless it can be a name: the file is wrong, and nothing is rendered from it.
+/// `name`, refused unless it can be a name: the project is wrong, and nothing is rendered from it.
 pub(crate) fn named(name: &str) -> Result<(), Error> {
     if is_name(name) {
         return Ok(());
@@ -1164,7 +1076,7 @@ fn file_named(written: &str, lock: &Lock) -> Result<String, String> {
     match lock.matching(&written.to_ascii_lowercase()).as_slice() {
         [file] => Ok(file.sha256.clone()),
         [] => Err(format!(": no file's hash starts with {written}: import a file in the browser opened by `cozy open`")),
-        several => Err(format!(": {written} fits {} files: write more of its hash", several.len())),
+        several => Err(format!(": {written} fits {} files: approve the version you mean again", several.len())),
     }
 }
 
@@ -1176,19 +1088,13 @@ fn quoted(text: &str) -> String {
     }
 }
 
-/// Whether a scalar at this path names a file, so that a number's shape is a hash's prefix by its text: an asset's `approved`, and a file
-/// input it writes. `12345678e012` isn't 1.2345678e19, and `012345678901` isn't 12345678901, which is another file's prefix.
-pub(super) fn names_a_file(path: &[&str]) -> bool {
-    matches!(path, ["assets", .., "approved" | "image" | "video" | "audio"])
-}
-
 /// `text` as it calls something new, if it can: through `as_name`, so a `.` is `_`.
 pub(crate) fn plain_name(text: &str) -> Option<String> {
     let name = as_name(text);
     (!name_key(&name).is_empty()).then_some(name)
 }
 
-/// `wanted`, or counting up if something in the project goes by it, or versions wait in project.lock for it: `hero_2`, and `shot_1` is `shot_2`.
+/// `wanted`, or counting up if something in the project goes by it, or versions wait in the lock for it: `hero_2`, and `shot_1` is `shot_2`.
 pub(crate) fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
     free_of(|name| doc.find(name).is_some(), lock, wanted)
 }
@@ -1215,14 +1121,6 @@ pub(crate) fn refuse_tag(lock: &Lock, name: &str) -> Result<(), Error> {
     match lock.reserved.iter().find(|(_, tags)| is_tag(tags, name)) {
         Some((tool, _)) => Err(Error::new(Kind::Validation, "asset_name_reserved", format!("{name} is a tag of {tool}: <{name}> in a prompt means that")).remedy("call it something else")),
         None => Ok(()),
-    }
-}
-
-/// `name` as a key of a mapping: quoted where YAML in general would read it as something other than this text.
-pub(crate) fn yaml_key(name: &str) -> String {
-    match api::yaml::to_json(name) {
-        Ok(Value::String(read)) if read == name && name.parse::<f64>().is_err() => name.to_owned(),
-        _ => format!("\"{name}\""),
     }
 }
 
@@ -1260,20 +1158,10 @@ fn each_text(value: &mut Value, with: &mut dyn FnMut(&mut String)) {
     }
 }
 
-/// `first` and `second` as the file spells them: one name, as names match by `name_key`, with where each is written.
-fn one_name_twice(text: &str, first: &str, second: &str) -> Error {
-    let lines = |name: &str| -> Vec<usize> {
-        let quoted = format!("\"{name}\"");
-        let writes = |line: &str| [name, quoted.as_str()].iter().any(|key| line.trim_start().strip_prefix(*key).is_some_and(|rest| rest.trim_start().starts_with(':')));
-        let at = |line: &str| line.len() - line.trim_start().len();
-        let under = text.lines().skip_while(|line| !line.starts_with("assets:")).skip(1).find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#')).map_or(2, at);
-        text.lines().enumerate().filter(|(_, line)| at(line) == under && writes(line)).map(|(n, _)| n + 1).collect()
-    };
-    let (at, then) = (lines(first), lines(second));
-    let one = at.first().copied().unwrap_or(0);
-    let other = then.iter().copied().find(|line| *line != one).unwrap_or(one);
-    let said = format!("{first}, on line {one}, and {second}, on line {other}, are one name: a name matches in any case, with `_` and `-` alike");
-    invalid("project_name_twice", said).remedy(format!("rename one of them in {}", folder::PROJECT))
+/// `first` and `second` as the project spells them: one name, as names match by `name_key`.
+fn one_name_twice(first: &str, second: &str) -> Error {
+    let said = format!("{first} and {second} are one name: a name matches in any case, with `_` and `-` alike");
+    invalid("project_name_twice", said).remedy(format!("rename {second}"))
 }
 
 fn own_part(key: &str) -> &str {
@@ -1287,11 +1175,4 @@ pub(super) fn invalid(code: &str, message: String) -> Error {
 /// Whether `name` is one of a package's `tags`, in any case.
 fn is_tag(tags: &[String], name: &str) -> bool {
     tags.iter().any(|tag| name_key(tag) == name_key(name))
-}
-
-/// The line a YAML error names (`… line 4 column 4 …`) as it is written: said after the error, and alone.
-fn at_line<'a>(text: &'a str, why: &str) -> (String, &'a str) {
-    let number = why.split("line ").nth(1).and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse::<usize>().ok());
-    let Some(written) = number.and_then(|number| text.lines().nth(number.saturating_sub(1))) else { return (String::new(), "") };
-    (format!(": `{}`", written.trim()), written)
 }

@@ -123,6 +123,10 @@ pub(crate) struct GpuConfig {
     /// Tests only: recorded GPU readings every call reads in place of its GPUs' own (`machine.gpu_samples`, cl-913).
     #[serde(default)]
     pub gpu_samples: Option<PathBuf>,
+    /// Why no GPU here can be used (cl-977: the TensorD before this one can't exit, and a fresh process can't open them): each
+    /// is out of service from the start, and runs waiting on one fail for their clients to place them again.
+    #[serde(default)]
+    pub broken: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ImageKernels {
@@ -222,6 +226,10 @@ pub(crate) struct Plan {
     pub slots: Vec<PlanSlot>,
     #[serde(default)]
     pub sources: Vec<PlanSource>,
+    /// The on-demand slots it binds no checkpoint, by parameter, each with what a call reading
+    /// one fails with: a code, and one line naming the slot, its model and why (xs-186).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unbound: BTreeMap<String, (String, String)>,
     /// GPUs it runs on (a group's are the first `degree` envelope devices); 0: deviceless.
     pub degree: u32,
 }
@@ -240,6 +248,7 @@ impl Plan {
             entrypoint: entrypoint.into(),
             slots: vec![],
             sources: vec![],
+            unbound: BTreeMap::new(),
             degree,
         }
     }
@@ -310,6 +319,10 @@ impl Plan {
     /// one's.
     pub(crate) fn upfront(&self) -> Vec<(String, Vec<String>)> {
         merged(self.slots.iter().filter(|slot| !slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
+    }
+    /// What its on-demand slots read once a stage asks: guessed ahead, never waited on (Paul, 11-12).
+    pub(crate) fn possible(&self) -> Vec<(String, Vec<String>)> {
+        merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
     /// asked for by name (`cozy machine warm`), so its first call waits on no download (cl-790).
@@ -854,8 +867,8 @@ pub(crate) struct Pool {
     host: Option<Arc<memory::Host>>,
     /// Held while the pool lives: the thread blocked on measurement events ends with it.
     _events: Option<memory::Reacting>,
-    /// Idle executors watched for their exit (none where it cannot watch).
-    exits: Option<Exits>,
+    /// Idle executors watched for their exit, once the pool is built (none where it cannot watch).
+    exits: std::sync::OnceLock<Exits>,
     /// Memoized Model methods' results, shared by every run on this machine.
     memo: Arc<crate::memo::Memo>,
     private_memos: Mutex<BTreeMap<(String, u64), Arc<crate::memo::Memo>>>,
@@ -869,6 +882,9 @@ pub(crate) struct Pool {
     lost: Mutex<BTreeMap<u32, Lost>>,
     /// GPUs out of service, by envelope index: in use at this run's start by processes it doesn't own (cl-935).
     foreign: Mutex<BTreeMap<usize, Foreign>>,
+    /// The host's ledger, supervised: an executor's exit is told to it, as to each GPU's.
+    #[cfg(target_os = "linux")]
+    host_ledger: std::sync::OnceLock<Arc<varena_ledger::Table>>,
     // Drop session/resource custody before ending the actual spawning thread.
     launcher: crate::child_launcher::ChildLauncher,
 }
@@ -954,6 +970,14 @@ fn waitable(file: &std::fs::File) -> platform::signal::Waitable<'_> {
 #[cfg(windows)]
 fn waitable(file: &std::fs::File) -> platform::signal::Waitable<'_> {
     std::os::windows::io::AsHandle::as_handle(file)
+}
+#[cfg(unix)]
+fn exit_waitable(exact: &Exact) -> platform::signal::Waitable<'_> {
+    std::os::fd::AsFd::as_fd(exact)
+}
+#[cfg(windows)]
+fn exit_waitable(exact: &Exact) -> platform::signal::Waitable<'_> {
+    std::os::windows::io::AsHandle::as_handle(exact)
 }
 
 struct Device {
@@ -1061,10 +1085,9 @@ impl Pool {
         let host = memory::Host::watch(config.host.mode, gpus, running.clone(), &notes);
         let launcher = crate::child_launcher::ChildLauncher::new()?;
         let memo = Arc::new(crate::memo::Memo::open(root.join("stage-memo"))?);
-        Ok(Arc::new_cyclic(|pool: &Weak<Self>| {
+        let pool = Arc::new_cyclic(|pool: &Weak<Self>| {
             let gpus = devices.iter().filter_map(|d| d.memory.clone()).map(memory::Source::Gpu);
             let sources: Vec<memory::Source> = gpus.chain(host.clone().map(memory::Source::Host)).collect();
-            let pool = pool.clone();
             let observations = pool.clone();
             let woke = move |woke| match (observations.upgrade(), woke) {
                 (Some(pool), memory::Woke::Gpu) => pool.memory_changed(),
@@ -1077,32 +1100,8 @@ impl Pool {
                     .map_err(|error| tracing::warn!("memory: no memory observation events: {error}"))
                     .ok(),
             };
-            #[cfg(target_os = "linux")]
-            for (index, table) in devices.iter().enumerate().filter_map(|(index, d)| Some((index, d.ledger.clone()?))) {
-                let pool = pool.clone();
-                let watching = std::thread::Builder::new().name(format!("gpu-ledger-{index}"))
-                    .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_on(index, askers))));
-                if let Err(error) = watching {
-                    tracing::warn!("GPU {index}'s idle executors end only with the machine: {error}");
-                }
-            }
-            #[cfg(target_os = "linux")]
-            match varena_ledger::Table::open_host() {
-                Ok(table) => {
-                    let pool = pool.clone();
-                    let watching = std::thread::Builder::new().name("host-ledger".into())
-                        .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_for_host(askers))));
-                    if let Err(error) = watching {
-                        tracing::warn!("idle executors end for host memory only by the host rule: {error}");
-                    }
-                }
-                Err(error) => tracing::warn!("no host ledger: idle executors end for host memory only by the host rule: {error}"),
-            }
-            let exits = Exits::watch(pool.clone())
-                .map_err(|error| tracing::warn!("executor exits are not watched: {error}"))
-                .ok();
             Self {
-                exits,
+                exits: std::sync::OnceLock::new(),
                 launcher,
                 root: root.to_path_buf(),
                 serving: Arc::default(),
@@ -1134,8 +1133,47 @@ impl Pool {
                 unreported: Mutex::default(),
                 lost: Mutex::default(),
                 foreign: Mutex::default(),
+                #[cfg(target_os = "linux")]
+                host_ledger: Default::default(),
             }
-        }))
+        });
+        // Started once the pool is built: inside `new_cyclic` its first upgrade found no pool and it
+        // ended, so an idle executor that exited stayed a zombie until the next call (cl-885).
+        match Exits::watch(Arc::downgrade(&pool)) {
+            Ok(exits) => drop(pool.exits.set(exits)),
+            Err(error) => tracing::warn!("executor exits are not watched: {error}"),
+        }
+        #[cfg(target_os = "linux")]
+        pool.supervise_ledgers();
+        if pool.config.broken.is_some() {
+            pool.refresh_out();
+        }
+        Ok(pool)
+    }
+    /// Each GPU's ledger and the host's supervised: an asker no peer could help gets an idle executor ended. Started once the
+    /// pool is built, as `Exits` is: a supervisor whose first upgrade finds no pool takes it for the pool's end and stops.
+    #[cfg(target_os = "linux")]
+    fn supervise_ledgers(self: &Arc<Self>) {
+        for (index, table) in self.devices.iter().enumerate().filter_map(|(index, d)| Some((index, d.ledger.clone()?))) {
+            let pool = Arc::downgrade(self);
+            let watching = std::thread::Builder::new().name(format!("gpu-ledger-{index}"))
+                .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_on(index, askers))));
+            if let Err(error) = watching {
+                tracing::warn!("GPU {index}'s idle executors end only with the machine: {error}");
+            }
+        }
+        match varena_ledger::Table::open_host() {
+            Ok(table) => {
+                let table = self.host_ledger.get_or_init(|| Arc::new(table)).clone();
+                let pool = Arc::downgrade(self);
+                let watching = std::thread::Builder::new().name("host-ledger".into())
+                    .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_for_host(askers))));
+                if let Err(error) = watching {
+                    tracing::warn!("idle executors end for host memory only by the host rule: {error}");
+                }
+            }
+            Err(error) => tracing::warn!("no host ledger: idle executors end for host memory only by the host rule: {error}"),
+        }
     }
     /// Current driver-attributed process usage. TensorD owns no GPU allocations.
     pub(crate) fn memory(&self) -> BTreeMap<String, api::machine::GpuMemory> {
@@ -1333,7 +1371,7 @@ impl Pool {
         let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
         let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
         let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min();
-        tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
+        tensorfs::fetch::Hardware { gpus, free_vram, ..Default::default() }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
         self.config.inventory.iter().find(|g| g.device_index.to_string() == entry || g.device_uuid == entry)
@@ -1397,8 +1435,12 @@ impl Pool {
         self.tenants.lock().unwrap().retain(|_, t|
             !(t.plan == env && t.start == start && gone.contains(t.exact.birth())));
         // Only now is what it held free: an asker waits on this, not on its lock dropping.
+        self.ledgers_exited();
+    }
+    /// Processes with rows in the ledgers exited: each ledger reaps their rows, and what they held is the driver's again.
+    pub(crate) fn ledgers_exited(&self) {
         #[cfg(target_os = "linux")]
-        for ledger in self.devices.iter().filter_map(|device| device.ledger.as_ref()) {
+        for ledger in self.devices.iter().filter_map(|device| device.ledger.as_ref()).chain(self.host_ledger.get()) {
             ledger.exited();
         }
     }
@@ -1412,7 +1454,7 @@ impl Pool {
     /// A stalled disk is named on the log of every run in progress (`disk`).
     pub(crate) fn watch_disks(self: &Arc<Self>) {
         let pool = Arc::downgrade(self);
-        let watching = crate::disk::watch(move |stalls| {
+        let watching = crate::disk::watch(self.running.clone(), move |stalls| {
             let Some(pool) = pool.upgrade() else { return false };
             stalls.iter().for_each(|stall| pool.disk_stalled(stall));
             true
@@ -1529,6 +1571,9 @@ impl Pool {
     fn out_of_service(&self) -> BTreeMap<usize, (String, bool)> {
         let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
         let mut out = BTreeMap::new();
+        if let Some(why) = &self.config.broken {
+            out.extend((0..self.devices.len()).map(|d| (d, (why.clone(), true))));
+        }
         for lost in self.lost.lock().unwrap().values() {
             for (gpu, bytes) in &lost.gpus {
                 if let Some(d) = (0..self.devices.len()).find(|d| self.index(*d) == *gpu) {
@@ -1577,6 +1622,8 @@ impl Pool {
     pub(crate) fn foreign_at_start(self: &Arc<Self>) {
         let dedicated = matches!(self.config.host.mode, HostMode::Dedicated);
         let mut found = BTreeMap::new();
+        // The executors it ended, by GPU: their exits are what it waits for.
+        let mut holders: Vec<(usize, Exact)> = vec![];
         for (d, device) in self.devices.iter().enumerate() {
             let Ok(reading) = platform::gpu::Device::open(&device.entry).and_then(|gpu| gpu.read()) else { continue };
             let used = reading.total.saturating_sub(reading.free);
@@ -1584,9 +1631,14 @@ impl Pool {
                 continue;
             }
             let pids: Vec<u32> = reading.processes.as_ref().map(|p| p.keys().copied().collect()).unwrap_or_default();
-            let ended: Vec<u32> = pids.iter().copied().filter(|pid| earlier_executor(*pid)).filter(|pid| {
-                Birth::of(*pid).ok().and_then(|birth| Exact::open(&birth).ok().flatten()).is_some_and(|exact| exact.kill().is_ok())
-            }).collect();
+            let mut ended = vec![];
+            for pid in pids.iter().copied().filter(|pid| earlier_executor(*pid)) {
+                let exact = Birth::of(pid).ok().and_then(|birth| Exact::open(&birth).ok().flatten());
+                if let Some(exact) = exact.filter(|exact| exact.kill().is_ok()) {
+                    ended.push(pid);
+                    holders.push((d, exact));
+                }
+            }
             if ended.is_empty() && !dedicated {
                 continue;
             }
@@ -1604,7 +1656,22 @@ impl Pool {
         let pool = Arc::downgrade(self);
         let mut told = std::collections::BTreeSet::new();
         let watching = std::thread::Builder::new().name("gpu-foreign".into()).spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            // Its ended executors' exits wake it, and a hold's stall once. It samples each 2 s only
+            // a GPU it holds none of: memory others hold (a container's pids aren't its own) or not back yet.
+            holders.retain(|(_, exact)| !exact.ended());
+            let (sample, stall) = {
+                let Some(pool) = pool.upgrade() else { return };
+                let foreign = pool.foreign.lock().unwrap();
+                let sample = foreign.iter().any(|(d, f)| f.pids.len() > f.ended.len() || !holders.iter().any(|(held, _)| held == d));
+                let stall = foreign.iter().filter(|(d, _)| !told.contains(*d))
+                    .map(|(_, f)| (f.at + platform::contain::STALL).saturating_duration_since(std::time::Instant::now())).min();
+                (sample, stall)
+            };
+            let timeout = [sample.then_some(std::time::Duration::from_secs(2)), stall].into_iter().flatten().min();
+            let exits: Vec<_> = holders.iter().map(|(_, exact)| exit_waitable(exact)).collect();
+            if let Err(error) = platform::signal::wait_any_for(&exits, timeout) {
+                return tracing::warn!("GPUs held at start: {error}");
+            }
             let Some(pool) = pool.upgrade() else { return };
             let held: Vec<usize> = pool.foreign.lock().unwrap().keys().copied().collect();
             // Read off the lock: a wedged driver blocks a read.
@@ -2039,7 +2106,9 @@ impl Pool {
     }
     /// Keep an executor idle for its next call, noting what a loaded one holds for Status.
     /// Once the pool stopped, or a cancel killed it, it ends instead.
-    fn keep_idle(&self, engine: &Arc<Engine>, session: Session) -> io::Result<Disposition> {
+    fn keep_idle(&self, engine: &Arc<Engine>, mut session: Session) -> io::Result<Disposition> {
+        // Idle, a shared executor holds no project's memo (cl-984).
+        session.executor.keep_memo(self.memo.clone());
         let key = session_key(&session.env, session.start);
         let killed = !session.executor.idle() || session.executor.abandoned_lookahead();
         if session.degree == 0 {
@@ -2047,7 +2116,7 @@ impl Pool {
             if !killed && !self.stopped.load(Ordering::Acquire) {
                 idle.push(session);
                 drop(idle);
-                self.exits.iter().for_each(Exits::changed);
+                self.exits.get().into_iter().for_each(Exits::changed);
                 return Ok(Disposition::Cached);
             }
             drop(idle);
@@ -2088,7 +2157,7 @@ impl Pool {
             drop(levels);
             sessions.insert(key, session);
             drop(sessions);
-            self.exits.iter().for_each(Exits::changed);
+            self.exits.get().into_iter().for_each(Exits::changed);
             return Ok(Disposition::Cached);
         }
     }
@@ -2172,16 +2241,21 @@ impl Pool {
     /// parent's first import, waited for. Its refusal's code and line; None where nothing imports
     /// ahead for it (no fork, it binds no model, the host has no room): its first call says then.
     pub(crate) fn import_verdict(self: &Arc<Self>, held: &HeldGeneration, stop: &crate::stop::Stop) -> Option<(&'static str, String)> {
-        if crate::private_io::current().is_some() || crate::private_io::is_private_path(&held.record.python) { return None; }
+        if crate::private_io::is_private_path(&held.record.python) { return None; }
         self.prespawn(held.clone());
         let parent = self.zygotes.lock().unwrap().get(&parent_app(held))?.clone();
-        // Package code runs here, and may not end: the install's cancel still does.
+        // Package code runs here, and may not end: the install's cancel still does, and wakes the wait.
+        let woken = parent.clone();
+        let _woken = stop.on_cancel(move || {
+            drop(woken.state.lock());
+            woken.changed.notify_all();
+        });
         let mut state = parent.state.lock().unwrap();
         while matches!(*state, ZygoteState::Starting) {
             if stop.is_cancelled() {
                 return None;
             }
-            state = parent.changed.wait_timeout(state, std::time::Duration::from_millis(250)).unwrap().0;
+            state = parent.changed.wait(state).unwrap();
         }
         let ZygoteState::Failed(reason) = &*state else { return None };
         let reason = reason.clone();
@@ -2278,14 +2352,16 @@ impl Pool {
     /// Derive each model slot's binding from the installed SDK's real static interface and
     /// the model the run's preparation resolved for it (`grants`, one per slot, `published`):
     /// a constructed slot becomes the plan's construction, a `Weights[M]` one its source.
-    /// `degree` 0 takes the widest group every constructed slot declares on this machine. No
-    /// model code executes during description/preparation.
+    /// `unbound` are the on-demand slots that did not bind, by parameter; one whose model it
+    /// can't load joins them (xs-186). `degree` 0 takes the widest group every constructed slot
+    /// declares on this machine. No model code executes during description/preparation.
     pub(crate) fn prepare_root(
         &self,
         installed: &crate::journal::Installation,
         entrypoint: &str,
         choices: &[crate::stored::ModelChoice],
         grants: &[ModelGrant],
+        mut unbound: BTreeMap<String, (String, String)>,
         degree: u32,
     ) -> io::Result<Plan> {
         let invalid = |detail: &str| io::Error::new(io::ErrorKind::InvalidData, detail.to_string());
@@ -2322,6 +2398,9 @@ impl Pool {
         let degree = self.degree(entry, degree);
         let (mut planned, mut sources) = (vec![], vec![]);
         for (model, (path, parameter)) in models.iter().zip(&slots) {
+            if unbound.contains_key(parameter) {
+                continue;
+            }
             let class = model
                 .get("class")
                 .and_then(serde_json::Value::as_str)
@@ -2351,26 +2430,12 @@ impl Pool {
                 });
                 continue;
             }
-            let mut wanted = std::collections::BTreeSet::new();
-            // The components this callable declares it uses, else every one its methods use.
-            if let Some(declared) = model.get("components").and_then(serde_json::Value::as_array) {
-                for component in declared {
-                    wanted.insert(
-                        component
-                            .as_str()
-                            .ok_or_else(|| invalid("declared component is not a name"))?
-                            .to_string(),
-                    );
-                }
-            } else if let Some(use_map) = model
-                .get("component_use")
-                .and_then(serde_json::Value::as_object)
-            {
-                for components in use_map.values() {
-                    for component in components
-                        .as_array()
-                        .ok_or_else(|| invalid("declared component use is not an array"))?
-                    {
+            let on_demand = model.get("on_demand").and_then(serde_json::Value::as_bool) == Some(true);
+            let bind = || -> io::Result<PlanSlot> {
+                let mut wanted = std::collections::BTreeSet::new();
+                // The components this callable declares it uses, else every one its methods use.
+                if let Some(declared) = model.get("components").and_then(serde_json::Value::as_array) {
+                    for component in declared {
                         wanted.insert(
                             component
                                 .as_str()
@@ -2378,68 +2443,97 @@ impl Pool {
                                 .to_string(),
                         );
                     }
+                } else if let Some(use_map) = model
+                    .get("component_use")
+                    .and_then(serde_json::Value::as_object)
+                {
+                    for components in use_map.values() {
+                        for component in components
+                            .as_array()
+                            .ok_or_else(|| invalid("declared component use is not an array"))?
+                        {
+                            wanted.insert(
+                                component
+                                    .as_str()
+                                    .ok_or_else(|| invalid("declared component is not a name"))?
+                                    .to_string(),
+                            );
+                        }
+                    }
                 }
-            }
-            let components: Vec<_> = grant
-                .components
-                .iter()
-                .filter(|c| wanted.is_empty() || wanted.contains(*c))
-                .cloned()
-                .collect();
-            let missing: Vec<&str> = wanted.iter().filter(|c| !components.contains(c)).map(String::as_str).collect();
-            if components.is_empty() || !missing.is_empty() {
-                let model = if grant.model.is_empty() { grant.manifest.clone() } else { grant.model.clone() };
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!(
-                        "{path} uses {} that its model {model} does not hold (it holds {})",
-                        if missing.is_empty() { "components".to_string() } else { missing.join(", ") },
-                        if grant.components.is_empty() { "none".to_string() } else { grant.components.join(", ") }
-                    ),
-                ));
-            }
-            let (selected_encoded_bytes, length) = selected_bytes(&self.store, &grant.manifest, &components)?;
-            if chosen
-                .and_then(|c| c.manifest.as_ref())
-                .is_some_and(|r| r.length != 0 && r.length != length)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "selected manifest length differs from cached bytes",
-                ));
-            }
-            let binding = Binding {
-                application: application.into(),
-                model_class: class.into(),
-                model_binding_path: path.clone(),
-                model_parameter_name: parameter.clone(),
-                components,
-                snapshot: grant.manifest.clone(),
-                release: format!("{}@{}", installed.package, installed.release),
-                package: installed.package.clone(),
-                model: format!("{}@{}", grant.model, grant.release),
-                ..Default::default()
+                let components: Vec<_> = grant
+                    .components
+                    .iter()
+                    .filter(|c| wanted.is_empty() || wanted.contains(*c))
+                    .cloned()
+                    .collect();
+                let missing: Vec<&str> = wanted.iter().filter(|c| !components.contains(c)).map(String::as_str).collect();
+                if components.is_empty() || !missing.is_empty() {
+                    let model = if grant.model.is_empty() { grant.manifest.clone() } else { grant.model.clone() };
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "{path} uses {} that its model {model} does not hold (it holds {})",
+                            if missing.is_empty() { "components".to_string() } else { missing.join(", ") },
+                            if grant.components.is_empty() { "none".to_string() } else { grant.components.join(", ") }
+                        ),
+                    ));
+                }
+                let (selected_encoded_bytes, length) = selected_bytes(&self.store, &grant.manifest, &components)?;
+                if chosen
+                    .and_then(|c| c.manifest.as_ref())
+                    .is_some_and(|r| r.length != 0 && r.length != length)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "selected manifest length differs from cached bytes",
+                    ));
+                }
+                let binding = Binding {
+                    application: application.into(),
+                    model_class: class.into(),
+                    model_binding_path: path.clone(),
+                    model_parameter_name: parameter.clone(),
+                    components,
+                    snapshot: grant.manifest.clone(),
+                    release: format!("{}@{}", installed.package, installed.release),
+                    package: installed.package.clone(),
+                    model: format!("{}@{}", grant.model, grant.release),
+                    ..Default::default()
+                };
+                let placeable = model.get("placeable").and_then(serde_json::Value::as_array).into_iter().flatten()
+                    .map(|c| c.as_str().map(str::to_owned).ok_or_else(|| invalid("declared placeable component is not a name")))
+                    .collect::<io::Result<Vec<_>>>()?;
+                if placeable.iter().any(|c| !binding.components.contains(c)) {
+                    return Err(invalid(&format!("a placeable component of {path} is not one it loads")));
+                }
+                Ok(PlanSlot {
+                    binding,
+                    lane: grant.lane.clone(),
+                    precision: precision(&self.store, &grant.manifest),
+                    selected_encoded_bytes,
+                    on_demand,
+                    placeable,
+                    adapted: grant.adapted.clone(),
+                    view: crate::storage::view(&grant.manifest).map(|view| view.recipe.clone()),
+                })
             };
-            let placeable = model.get("placeable").and_then(serde_json::Value::as_array).into_iter().flatten()
-                .map(|c| c.as_str().map(str::to_owned).ok_or_else(|| invalid("declared placeable component is not a name")))
-                .collect::<io::Result<Vec<_>>>()?;
-            if placeable.iter().any(|c| !binding.components.contains(c)) {
-                return Err(invalid(&format!("a placeable component of {path} is not one it loads")));
+            match bind() {
+                Ok(slot) => planned.push(slot),
+                // An on-demand slot its model can't fill fails a call only when its function reads it.
+                Err(e) if on_demand => {
+                    let named = if grant.model.is_empty() { grant.manifest.clone() } else { format!("{}@{}", grant.model, grant.release) };
+                    unbound.insert(parameter.clone(), ("model_preparation_failed".into(), format!("{parameter}: {named}: {e}")));
+                }
+                Err(e) => return Err(e),
             }
-            planned.push(PlanSlot {
-                binding,
-                lane: grant.lane.clone(),
-                precision: precision(&self.store, &grant.manifest),
-                selected_encoded_bytes,
-                on_demand: model.get("on_demand").and_then(serde_json::Value::as_bool) == Some(true),
-                placeable,
-                adapted: grant.adapted.clone(),
-                view: crate::storage::view(&grant.manifest).map(|view| view.recipe.clone()),
-            });
         }
         let construction = construction(&installed.generation, application, &planned, degree)?;
-        let id = format!("plan-{}", canonical_digest(serde_json::json!({"construction": construction,
-            "entrypoint": entrypoint, "slots": planned, "sources": sources}))?);
+        let mut identity = serde_json::json!({"construction": construction, "entrypoint": entrypoint, "slots": planned, "sources": sources});
+        if !unbound.is_empty() {
+            identity["unbound"] = serde_json::json!(unbound);
+        }
+        let id = format!("plan-{}", canonical_digest(identity)?);
         let executor = match planned.is_empty() {
             true => construction.clone(),
             false => environment(&installed.generation, application, degree)?,
@@ -2453,6 +2547,7 @@ impl Pool {
             entrypoint: entrypoint.into(),
             slots: planned,
             sources,
+            unbound,
             degree,
         })
     }
@@ -2559,6 +2654,19 @@ impl Pool {
     /// Whether an executor holds `plan`'s construction loaded: its call reads no weights.
     pub(crate) fn loaded(&self, plan: &Plan) -> bool {
         self.hosting(plan).iter().any(|(_, loaded)| *loaded)
+    }
+
+    /// Each idle executor's loaded models, its GPUs and the highest place it has them (`StatusFrame::resident`).
+    pub(crate) fn resident(&self) -> Vec<crate::api::v1::Resident> {
+        let held = self.serving.held.lock().unwrap().clone();
+        (self.sessions.lock().unwrap().values())
+            .filter_map(|session| {
+                let level = session.loaded.values().max()?;
+                let checkpoints = held.get(&session.serving).filter(|manifests| !manifests.is_empty())?.clone();
+                let gpus = session.lane().filter(|&device| device < self.devices.len()).map(|device| self.index(device)).collect();
+                Some(crate::api::v1::Resident { checkpoints, gpus, level: level.name().into() })
+            })
+            .collect()
     }
 
     fn hosting(&self, plan: &Plan) -> Vec<(usize, bool)> {
@@ -2849,7 +2957,7 @@ impl Pool {
             }
             None => {
                 let born = Mutex::new(vec![]);
-                let created = self.new_session(engine, held, &plan, start, None, |birth, cancel| {
+                let created = self.new_session(engine, held, &plan, start, |birth, cancel| {
                     born.lock().unwrap().push(birth.clone());
                     serve(cancel);
                     Ok(())
@@ -3071,7 +3179,7 @@ impl Pool {
     /// machine holds at most one parent imported ahead of its request. Past it, only its import
     /// pages are read ahead; its parent starts when its call does.
     pub(crate) fn prespawn(self: &Arc<Self>, held: HeldGeneration) {
-        if crate::private_io::current().is_some() || crate::private_io::is_private_path(&held.record.python) { return; }
+        if crate::private_io::is_private_path(&held.record.python) { return; }
         {
             let zygotes = self.zygotes.lock().unwrap();
             if zygotes.contains_key(&parent_app(&held)) {
@@ -3105,7 +3213,7 @@ impl Pool {
     /// that never served one (Paul, 10-29: a laptop must not hold half its RAM for packages it
     /// is not using). A parent a request used stays until the machine's idle exit.
     pub(crate) fn installed(self: &Arc<Self>, held: HeldGeneration) {
-        if crate::private_io::current().is_some() || crate::private_io::is_private_path(&held.record.python) { return; }
+        if crate::private_io::is_private_path(&held.record.python) { return; }
         self.kernel_boot(held.clone());
         if self.config.host.mode == HostMode::Shared {
             let key = parent_app(&held);
@@ -3216,7 +3324,7 @@ impl Pool {
     /// device (`Start.import_only`), to fork executors from.
     fn import_only(&self, held: &HeldGeneration) -> ZygoteState {
         let started = (|| {
-            let (root, socket, directory) = self.executor_endpoint()?;
+            let (root, socket, directory) = self.executor_endpoint(held)?;
             let spawned = Instant::now();
             let mut executor = DeviceExecutor::spawn_owned(
                 self.executor_config(held, root, socket, 0, self.devices.len().min(1) as u32)?,
@@ -3259,31 +3367,32 @@ impl Pool {
 
     /// A new executor root and its socket path. The socket is named through this process's
     /// descriptor of the root (Linux `sun_path` limit).
-    fn executor_endpoint(&self) -> io::Result<(PathBuf, PathBuf, File)> { self.executor_endpoint_in(None) }
-
-    fn executor_endpoint_in(&self, private: Option<&Path>) -> io::Result<(PathBuf, PathBuf, File)> {
-        let base = private.map(|path| path.join("executors")).unwrap_or_else(|| self.root.clone());
+    /// Its root is with its code (cl-984): the machine's for an installed package, its project's (`.vault-machine/executors`)
+    /// for a project's own code, whose interface, logs and caches are the project's.
+    fn executor_endpoint(&self, held: &HeldGeneration) -> io::Result<(PathBuf, PathBuf, File)> {
+        let area = crate::private_io::area_of(&held.record.python)?;
+        let base = area.as_ref().map_or_else(|| self.root.clone(), |area| area.join("executors"));
         fs::create_dir_all(&base)?;
         let root = base.join(crate::uuid::simple());
         fs::create_dir(&root)?;
         let directory = platform::durable::open_dir(&root)?;
         // Linux names it through this process's descriptor of the root; elsewhere it is the
-        // root's own, or a short private one when that is too long.
+        // root's own, or a short private one when that is too long. A project's may be on a filesystem that holds no
+        // socket inode (securefs): its socket is a short one outside, named by a digest.
         #[cfg(target_os = "linux")]
-        let socket = if private.is_some() {
-            // securefs holds regular data, but cannot create AF_UNIX socket inodes.
-            // IPC stays in the kernel; only its opaque owner-only endpoint is outside.
-            crate::device_executor::socket_path(&root, "executor")?
-        } else { PathBuf::from(format!(
-            "/proc/{}/fd/{}/executor",
-            std::process::id(),
-            std::os::fd::AsRawFd::as_raw_fd(&directory)
-        )) };
+        let socket = match area {
+            Some(_) => crate::device_executor::socket_path(&root, "executor")?,
+            None => PathBuf::from(format!("/proc/{}/fd/{}/executor", std::process::id(), std::os::fd::AsRawFd::as_raw_fd(&directory))),
+        };
         #[cfg(not(target_os = "linux"))]
         let socket = crate::device_executor::socket_path(&root, "executor")?;
         Ok((root, socket, directory))
     }
 
+    /// The machine's executor of `held` on the lane from `start`: every project's runs share it, each call in its own
+    /// scratch inside its project (cl-984). Its own files are with its code: a project's own code's executor keeps its JIT
+    /// scope (bytecode, compiler caches, temporary files), home and working directory in that project, as it does its root;
+    /// the kernel store is the machine's.
     fn executor_config(
         &self,
         held: &HeldGeneration,
@@ -3291,37 +3400,33 @@ impl Pool {
         socket: PathBuf,
         start: usize,
         degree: u32,
-    ) -> io::Result<ExecutorConfig> { self.executor_config_in(held, root, socket, start, degree, None) }
-
-    fn executor_config_in(&self, held: &HeldGeneration, root: PathBuf, socket: PathBuf, start: usize, degree: u32, private: Option<&api::machine::LocalPrivateStorage>) -> io::Result<ExecutorConfig> {
-        let private_root = private.map(crate::private_io::root).transpose()?;
-        let mut seal = Seal::prepare(
-            private_root.as_deref().unwrap_or(&self.root),
-            &self.incarnation,
-            &held.record.identity,
-            &self.lane_devices(start, degree)?,
-        )?;
+    ) -> io::Result<ExecutorConfig> {
+        let area = crate::private_io::area_of(&held.record.python)?;
+        let mut seal = Seal::prepare(&self.root, &self.incarnation, &held.record.identity, &self.lane_devices(start, degree)?)?;
+        if let Some(area) = &area {
+            seal.within(area, &self.incarnation)?;
+        }
         // A group's NCCL seal (NVLS off, peer memory only over NVLink).
         seal.group = degree > 1;
-        seal.tensorfs_home = Some(match private { Some(scope) => crate::private_io::store(scope)?.root().to_path_buf(), None => self.store.root().to_path_buf() });
+        seal.tensorfs_home = Some(self.store.root().to_path_buf());
         let mut environment = match &self.config.toolchain {
             Some(dir) => crate::machine::toolchain::environment(&self.config.environment, dir, ""),
             None => self.config.environment.clone(),
         };
-        if private.is_some() {
-            let tmp = seal.imposed().get("TMPDIR").cloned().ok_or_else(|| io::Error::other("private executor has no protected temporary directory"))?;
+        if let Some(area) = &area {
+            let tmp = seal.imposed().get("TMPDIR").cloned().ok_or_else(|| io::Error::other("an executor has no temporary directory"))?;
             fs::create_dir_all(&tmp)?;
             environment.insert("TEMP".into(), tmp.clone());
             environment.insert("TMP".into(), tmp);
-            let private_root = private_root.as_ref().expect("verified private root");
-            for (name, relative) in [("XDG_CACHE_HOME", "cache"), ("MPLCONFIGDIR", "matplotlib"), ("UV_CACHE_DIR", "uv-cache"), ("UV_TOOL_DIR", "uv-tools")] {
-                let path = private_root.join(relative);
+            for (name, relative) in [("HOME", "home"), ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"),
+                ("XDG_CACHE_HOME", "cache"), ("MPLCONFIGDIR", "matplotlib")] {
+                let path = area.join(relative);
                 fs::create_dir_all(&path)?;
                 environment.insert(name.into(), path.to_string_lossy().into_owned());
             }
         }
         Ok(ExecutorConfig {
-            private: private.is_some(),
+            within: area.is_some(),
             python: held.record.python.clone(),
             root,
             socket,
@@ -3353,7 +3458,6 @@ impl Pool {
         start: usize,
         calls: Option<&Arc<crate::calls::Calls>>,
     ) -> io::Result<Option<Postprocess>> {
-        let plan = self.private_plan(engine, id, plan)?;
         let key = plan.executor.clone();
         let mut disposition = Disposition::default();
         if plan.degree > 0 {
@@ -3365,16 +3469,8 @@ impl Pool {
             self.report_faults(lane, post);
         }
         self.finish_returned(engine, id, &key, start, &disposition)?;
+        engine.drop_scratch(id);
         result
-    }
-
-    fn private_plan(&self, engine: &Engine, id: &str, mut plan: Plan) -> io::Result<Plan> {
-        if let Some(scope) = engine.private_storage(id)? {
-            let identity = tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&serde_json::json!([scope.project_id, scope.generation])));
-            let prefix = format!("private-{identity}:");
-            if !plan.executor.starts_with(&prefix) { plan.executor = format!("{prefix}{}", plan.executor); }
-        }
-        Ok(plan)
     }
 
     pub(crate) fn memo_for_private(&self, scope: &api::machine::LocalPrivateStorage) -> io::Result<Arc<crate::memo::Memo>> {
@@ -3435,7 +3531,6 @@ impl Pool {
         disposition: &mut Disposition,
     ) -> io::Result<Option<Postprocess>> {
         let private = engine.private_storage(id)?;
-        let plan = self.private_plan(engine, id, plan)?;
         // Retain the exact cancellation object registered for this invocation. Removing its
         // map entry cannot revoke a Halt clone another thread already took.
         let cancellation = Mutex::new(None::<Cancellation>);
@@ -3495,7 +3590,7 @@ impl Pool {
                     born.lock().unwrap().extend(executor_births(birth, &[]));
                     engine.register_managed(id, birth.clone(), stops(cancel.clone()))
                 };
-                let created = self.new_session(engine, &held, &plan, start, private.as_ref(), on_birth);
+                let created = self.new_session(engine, &held, &plan, start, on_birth);
                 let births = born.into_inner().unwrap();
                 *disposition = Disposition::Unknown(births.clone());
                 match created {
@@ -3513,6 +3608,9 @@ impl Pool {
             }
         };
         *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
+        // A shared executor's memoized stages are this run's project's, or the machine's for a run of none (cl-984).
+        let mut session = session;
+        session.executor.keep_memo(match &private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
         // A development Runtime build is named by its build, not only its version.
         let hello = &session.executor.hello;
         let build = &held.record.runtime_build;
@@ -3583,20 +3681,18 @@ impl Pool {
         held: &HeldGeneration,
         plan: &Plan,
         start: usize,
-        private: Option<&api::machine::LocalPrivateStorage>,
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
         let launched = Instant::now();
-        let private_root = private.map(crate::private_io::root).transpose()?;
-        let (root, socket, directory) = self.executor_endpoint_in(private_root.as_deref())?;
-        let config = self.executor_config_in(held, root, socket, start, plan.degree, private)?;
+        let (root, socket, directory) = self.executor_endpoint(held)?;
+        let config = self.executor_config(held, root, socket, start, plan.degree)?;
         // A forked child takes its lane and seal with its environment, so a group forks from
         // the same import-only parent (sealed to the first GPU) as a single GPU does.
         let mut config = Some(config);
         let mut forked = None;
         // A parent found dead is replaced at once: importing a new one costs this executor
         // what a spawn would, and the next ones fork again.
-        for _ in 0..(if private.is_some() { 0 } else { 2 }) {
+        for _ in 0..2 {
             let Some((zygote, start)) = self.zygote(held) else {
                 break;
             };
@@ -3642,13 +3738,13 @@ impl Pool {
         };
         executor.retain_until_exit(directory);
         executor.retain_until_exit(WakeOnExit(Arc::downgrade(engine)));
-        executor.keep_memo(match private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
+        executor.keep_memo(self.memo.clone());
         if plan.degree > 0 {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
             let tenant = Tenant { plan: plan.executor.clone(), start, width: plan.degree as usize, exact };
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
-                private_project: private.map(|scope| scope.project_id.clone()),
+                private_project: crate::private_io::project_of(&held.record.python),
                 birth: executor.birth.clone(), env: plan.executor.clone(), constructions: Default::default(), start,
                 lookahead: (plan.degree == 1).then(|| executor.lookahead()),
             });
@@ -3667,7 +3763,9 @@ impl Pool {
         });
         let ledger = in_ledger(&executor.hello.tensorfs_version);
         Ok(Session {
-            private_project: private.map(|scope| scope.project_id.clone()),
+            // An executor of a project's own local code (its generation in the project) ends with the project's files
+            // (`close_private_namespace`).
+            private_project: crate::private_io::project_of(&held.record.python),
             ledger,
             env: plan.executor.clone(),
             start,
@@ -3932,10 +4030,14 @@ impl Pool {
         }).collect();
         let call = memory::Call { ranks, package: construction.clone(), shape: shape.clone() };
         let dispatched = Dispatched::new(gpus, id, &construction, &shape, self.running.clone());
-        self.running.lock().unwrap().insert(id.into(), call);
+        self.running.start(id.into(), call);
         let spool = engine.staging(id)?;
         let spool_owner = crate::execution::Spool(spool.clone());
         let input_store = engine.store_for(id)?;
+        // What the call writes by default stays in its project (cl-984): its folder there, and its project's store.
+        let scratch = engine.scratch(id)?;
+        session.executor.scratch_call(&scratch);
+        let store = engine.private_storage(id)?.map(|_| input_store.root().to_path_buf());
         let inputs = stage_inputs(
             &input_store,
             &spool,
@@ -3982,8 +4084,11 @@ impl Pool {
                 inputs: inputs.inputs,
                 trees: inputs.trees,
                 sources: plan.sources.iter().map(|s| (s.parameter.clone(), s.manifest.clone())).collect(),
+                unbound: plan.unbound.clone(),
                 weights,
                 display_limit: self.display_limit(&lane),
+                scratch: Some(scratch),
+                store,
             })),
             &mut callbacks,
         );

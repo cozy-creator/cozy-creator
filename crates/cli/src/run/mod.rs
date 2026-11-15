@@ -18,7 +18,7 @@ use crate::{
     Context, output,
     send::{Paths, Sender},
 };
-pub(crate) use follow::{done, exit_code, follow, follow_until, job, mint_key, settled};
+pub(crate) use follow::{carry_out, done, exit_code, follow, follow_until, handle, job, mint_key, settled};
 
 pub(crate) mod fetch;
 mod follow;
@@ -83,13 +83,13 @@ struct RunArgs {
     /// Override a model slot. Use --describe to list slots.
     #[arg(long = "model", value_name = "SLOT=REF", value_parser = model_override)]
     models: Vec<String>,
-    /// Apply a LoRA using `[SLOT=]REF[,STRENGTH]`. Default strength is 1.
+    /// Apply a LoRA using `[SLOT=]REF[,STRENGTH]`. Without a strength, its recommended one, else 1.
     #[arg(long = "lora", value_name = "[SLOT=]REF[,STRENGTH]")]
     loras: Vec<String>,
     /// Show the function's inputs and outputs.
     #[arg(long)]
     describe: bool,
-    /// Download outputs to this directory.
+    /// Export output copies to this directory. Project locks do not protect exported copies.
     #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
     output: Option<PathBuf>,
     /// Save previews of what it's making to this directory while it runs.
@@ -151,12 +151,12 @@ enum Verb {
     },
     /// Watch a run's progress, result, outputs and logs.
     Watch {
-        /// The run's number or id.
+        /// The run's name (`SE-5`, from any folder), its number in this project, or its id.
         run: String,
         /// Show the current state and exit.
         #[arg(long)]
         once: bool,
-        /// Download outputs to this directory.
+        /// Export output copies to this directory. Project locks do not protect exported copies.
         #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
         output: Option<PathBuf>,
         /// Save previews of what it's making to this directory while it runs.
@@ -165,7 +165,7 @@ enum Verb {
     },
     /// Cancel a queued or running run.
     Cancel {
-        /// The run's number or id.
+        /// The run's name (`SE-5`, from any folder), its number in this project, or its id.
         run: String,
     },
 }
@@ -200,9 +200,10 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Some(Verb::Watch { run, once, output, previews }) => watch::exec(ctx, &run, once, output.as_deref(), previews.as_deref()).await,
         Some(Verb::Cancel { run }) => {
             let calcifer = ctx.calcifer().await?;
-            let mut run = calcifer.run(&run).await?;
+            let address = crate::calcifer_client::RunAddress::current(ctx, &run).await?;
+            let mut run = calcifer.run(&address).await?;
             if !follow::settled(&run) {
-                run = calcifer.cancel(run.id.as_str()).await?;
+                run = calcifer.cancel(&crate::calcifer_client::RunAddress::of(&run)).await?;
             }
             follow::record(ctx, &run);
             Ok(ExitCode::SUCCESS)
@@ -221,16 +222,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
         return match local(ctx, &written, &cwd)? {
             None => describe(ctx, &written, None, args.on.as_deref(), None).await,
             Some((package, function)) => {
-                let project = match crate::project::identity(ctx).await {
-                    Ok(project) => Some(project.id),
-                    Err(error) if error.code == "not_in_a_project" => None,
-                    Err(error) => return Err(error),
-                };
-                let sender = match &project {
-                    Some(id) => Sender::for_project(ctx, id).await?,
-                    None => Sender::new(ctx).await?,
-                };
-                let code = sender.code(&package).await?;
+                let (code, project) = Sender::local_code(ctx, &package).await?;
                 describe(ctx, &function.unwrap_or_default(), Some(&code), args.on.as_deref(), project.as_deref()).await
             }
         };
@@ -415,6 +407,8 @@ async fn send(ctx: &Context, ask: RunRequest, package: Option<&Path>, previews: 
             // Following stopped: the install goes on, and nothing is called.
             return Ok(install);
         }
+        // cozy updated itself for it (cl-978): the run goes on as the new cozy.
+        crate::update::after_update(ctx, &install)?;
     }
 }
 
@@ -465,10 +459,15 @@ fn print_functions(ctx: &Context, target: &Target) {
     let (package, release) = (&target.package, &target.release);
     let from = (target.release_from != ReleaseFrom::Local).then(|| target.release_from.to_string());
     if ctx.json {
-        output::json(&serde_json::json!({
+        let mut document = serde_json::json!({
             "package": package, "release": release, "release_from": from, "summary": target.summary,
             "functions": target.functions,
-        }));
+        });
+        // With --full, its interface document: each function's model slots and the release each names by default.
+        if ctx.full {
+            document["interface"] = target.interface.clone();
+        }
+        output::json(&document);
         return;
     }
     let mut table = output::Table::new(ctx, ["FUNCTION", "DESCRIPTION"]);

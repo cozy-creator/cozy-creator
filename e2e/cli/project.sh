@@ -11,16 +11,50 @@ in_project() { local directory=$1; shift; (cd "$directory" && cozy "$@"); }
 project_api() {
   local directory=$1 suffix=$2; shift 2
   cozy --json machine ls > /dev/null || return
-  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded arg wrote=
   encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
-  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix" || return
+  for arg in "$@"; do case $arg in POST|PATCH|PUT|DELETE|-d|--data*) wrote=1 ;; esac; done
+  [ -z "$wrote" ] || project_integrity "$directory" "$suffix"
 }
-project_import() {
-  local directory=$1 file=$2 name=${3:-} source holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+# The rows a read takes against the document they were written with (cl-885): after any write, nowhere different. A Calcifer from
+# before the check (0.24.0's, in the cells that make a project with it) serves no such route, and is no Calcifer under test.
+project_integrity() {
+  local directory=$1 after=${2:-a write} holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded found code
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
+  found=$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$holder")/v1/projects/$encoded/integrity") \
+    || { check "rows_equal_document after $after in $directory: the integrity read failed: $found"; return 0; }
+  code=${found##*$'\n'} found=${found%$'\n'*}
+  if [ "$code" = 404 ] && [ "$(jq -r '.error.code? // empty' <<< "$found" 2> /dev/null)" = unknown_route ]; then
+    return 0
+  elif [ "$code" != 200 ]; then
+    check "rows_equal_document after $after in $directory: the integrity read answered $code: $found"
+  elif [ "$(jq '.differences | length' <<< "$found")" != 0 ]; then
+    check "rows_equal_document after $after in $directory: $(jq -c .differences <<< "$found")"
+  fi
+  return 0
+}
+# project_upload <folder> <file>: the file into that project's own content store, as the page sends it; its sha256:.
+project_upload() {
+  local directory=$1 file=$2 source holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded address token said code
   cozy --json machine ls > /dev/null || return
   source="sha256:$(sha "$file")"
-  curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $(jq -r .token "$holder")" \
-    --data-binary "@$file" "http://$(jq -r .address "$holder")/v1/files/$source" > /dev/null || return
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
+  address=$(jq -r .address "$holder") token=$(jq -r .token "$holder") said=$(mktemp)
+  code=$(curl -sS -o "$said" -w '%{http_code}' -X PUT -H "Authorization: Bearer $token" -H 'cozy-project-storage: 3' \
+    --data-binary "@$file" "http://$address/v1/project-files/$source?project=$encoded") || { rm -f "$said"; return 1; }
+  # A Calcifer from before project storage (0.24.0, in a migration cell's place) has no such route: it holds files for any project.
+  if [ "$code" = 404 ] && jq -e '.error.code == "unknown_route"' "$said" > /dev/null 2>&1; then
+    curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $token" --data-binary "@$file" "http://$address/v1/files/$source" > /dev/null || { rm -f "$said"; return 1; }
+  elif [ "${code:0:1}" != 2 ]; then
+    cat "$said" >&2; rm -f "$said"; return 1
+  fi
+  rm -f "$said"
+  echo "$source"
+}
+project_import() {
+  local directory=$1 file=$2 name=${3:-} source
+  source=$(project_upload "$directory" "$file") || return
   project_api "$directory" /imports -X POST -H 'Content-Type: application/json' \
     -d "$(jq -n --arg source "$source" --arg name "$name" '{source: $source} + (if $name == "" then {} else {name: $name, exact: true} end)')"
 }
@@ -38,7 +72,7 @@ fixture_calcifer() {
 fixture_projects() {
   cozy --json machine ls > /dev/null || return
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder
-  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/projects"
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$holder")/v1/projects"
 }
 # The starter film is fixture data, created through Calcifer's existing project API.
 starter_project() {
@@ -47,7 +81,7 @@ starter_project() {
   directory=$(cd "$directory" && pwd)
   [ "${RUNNER_OS:-}" != Windows ] || directory=$(cygpath -w "$directory")
   cozy --json machine ls > /dev/null || return
-  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'Content-Type: application/json' \
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' -H 'Content-Type: application/json' \
     -d "$(jq -n --arg path "$directory" '{path: $path, starter: true, unencrypted: true}')" "http://$(jq -r .address "$holder")/v1/projects"
 }
 
@@ -73,6 +107,140 @@ version_skew() {
   fi
 }
 
+# calcifer_record <field>: the running Calcifer's lock record's field, after a command made sure one runs (a candidate's update may
+# have just restarted it); empty when there is none. (`held` is a project asset's, below.)
+calcifer_record() {
+  cozy --json machine ls > /dev/null 2>&1 || true
+  jq -r ".$1 // empty" "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null || true
+}
+
+# open_page: a page as the browser makes one, against the running Calcifer: its events stream asked as the page's own fetch asks it
+# (cl-985: Calcifer's Host, `Sec-Fetch-Site: same-origin`, no Authorization, nothing signed in), answered, held open in the background
+# ($PAGE_PID, writing $OUT/page.sse) and counted among Calcifer's open pages. close_page ends it. A release from before cl-985
+# (busy_skew's) answers its page only by a session from a sign-in code, as that release's page signs in.
+open_page() {
+  local address code session token
+  address=$(calcifer_record address) token=$(calcifer_record token)
+  [ -n "$address" ] || { check "page: no Calcifer runs"; return 1; }
+  curl --fail-with-body -sSN -H "Host: $address" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' \
+    -H 'cozy-project-storage: 3' -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
+  sleep 2
+  if ! kill -0 "$PAGE_PID" 2> /dev/null && code=$(curl -fsS -X POST -H "Authorization: Bearer $token" -H 'cozy-project-storage: 3' "http://$address/v1/session-codes" 2> /dev/null | jq -er .code); then
+    session=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg c "$code" '{code: $c}')" "http://$address/v1/session" | jq -r .token) ||
+      { check "page: no browser session from the release's Calcifer at $address"; return 1; }
+    curl -sSN -H "Authorization: Bearer $session" -H 'cozy-project-storage: 3' -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
+    sleep 2
+    kill -0 "$PAGE_PID" 2> /dev/null || { check "page: its events stream did not stay open on the release's Calcifer: $(tail -c 300 "$OUT/page.sse")"; return 1; }
+    return 0
+  fi
+  kill -0 "$PAGE_PID" 2> /dev/null || { check "page: its events stream, asked as the page asks it, was refused or closed: $(tail -c 300 "$OUT/page.sse")"; return 1; }
+  # Calcifer takes it for its page, not for a program with the bearer: what keeps a cozy of another version from restarting it.
+  curl -fsS -H "Authorization: Bearer $token" "http://$address/v1/activity" | jq -e '.pages >= 1' > /dev/null \
+    || { check "page: Calcifer counts no open page while its stream is open"; close_page; return 1; }
+}
+close_page() { [ -z "${PAGE_PID:-}" ] || kill "$PAGE_PID" 2> /dev/null || true; PAGE_PID=''; }
+
+# cl-962: a cozy of another version never restarts a Calcifer someone uses. With a page's stream open, the candidate CLI asks the
+# release's Calcifer what it lacks (`machine use`, cl-873's route): it says "Calcifer here is <v>, this cozy is <w>" and exits, and
+# that Calcifer (its pid) and the page's stream go on. A release that serves the route answers it; Calcifer still keeps its pid.
+busy_skew() {
+  [ -f "$CAND_COZY" ] || return 0
+  step "version skew: the candidate CLI leaves a Calcifer with an open page running"
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pid code=0 release candidate
+  pid=$(calcifer_record pid) release=$(cozy --version) candidate=$("$CAND_COZY" --version)
+  open_page || return
+  (cd "$OUT/project" && "$CAND_COZY" machine use local) > "$OUT/skew-busy.txt" 2>&1 || code=$?
+  cat "$OUT/skew-busy.txt"
+  if [ "$code" != 0 ]; then
+    grep -qF "Calcifer here is ${release#cozy }, this cozy is ${candidate#cozy }" "$OUT/skew-busy.txt" && grep -q 'cozy restart' "$OUT/skew-busy.txt" \
+      || check "skew: the candidate CLI's refused ask did not say which versions meet and \`cozy restart\`"
+  fi
+  [ "$(jq -r .pid "$holder")" = "$pid" ] || check "skew: the candidate CLI restarted the release's Calcifer under an open page (pid $pid is now $(jq -r .pid "$holder"))"
+  kill -0 "$PAGE_PID" 2> /dev/null || check "skew: the page's events stream was cut"
+  ! grep -q 'restarting it' "$OUT/skew-busy.txt" || check "skew: the candidate CLI said it restarts Calcifer"
+  close_page
+}
+
+# cl-962: the installed cozy that finds a Calcifer of another version (an install swapped under it; here its lock's record says
+# 0.0.0-skew) keeps it running while a page's stream is open, and says so. A real skew is busy_skew's; this one runs wherever the
+# installed cozy is the candidate (isolated CI).
+kept_calcifer() {
+  step "the installed cozy keeps a Calcifer of another version that a page uses"
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pid code=0
+  pid=$(calcifer_record pid)
+  open_page || return
+  cp "$holder" "$OUT/holder.saved"
+  jq -c '.version = "0.0.0-skew"' "$OUT/holder.saved" > "$holder.skew" && mv -f "$holder.skew" "$holder"
+  cozy machine ls > "$OUT/kept.txt" 2>&1 || code=$?
+  cp "$OUT/holder.saved" "$holder"
+  cat "$OUT/kept.txt"
+  [ "$code" = 0 ] || check "kept: cozy machine ls failed against a Calcifer of another version (exit $code)"
+  grep -q 'Calcifer here is 0.0.0-skew, this cozy is .*: it keeps running (a page is open' "$OUT/kept.txt" \
+    || check "kept: the installed cozy did not say it keeps a Calcifer a page uses"
+  ! grep -q 'restarting it' "$OUT/kept.txt" || check "kept: the installed cozy said it restarts Calcifer"
+  [ "$(calcifer_record pid)" = "$pid" ] || check "kept: Calcifer was restarted under an open page (pid $pid is now $(calcifer_record pid))"
+  kill -0 "$PAGE_PID" 2> /dev/null || check "kept: the page's events stream was cut"
+  close_page
+}
+
+# cl-962: `cozy restart` is the one way to switch a Calcifer in use: with a page open, Calcifer comes back on the installed cozy
+# under a new pid, the page's stream ends (its page reconnects), and the next command is served.
+explicit_restart() {
+  step "cozy restart"
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pid
+  pid=$(calcifer_record pid)
+  open_page || return
+  cozy --json restart > "$OUT/restart.json" 2> "$OUT/restart.err" || { check "cozy restart failed: $(tail -c 300 "$OUT/restart.err")"; close_page; return; }
+  J --argjson old "$pid" '.restarted and .pid != $old' "$OUT/restart.json" || check "cozy restart: $(cat "$OUT/restart.json")"
+  [ "$(jq -r .pid "$holder")" = "$(jq -r .pid "$OUT/restart.json")" ] || check "cozy restart: the lock names pid $(jq -r .pid "$holder")"
+  sleep 2
+  ! kill -0 "$PAGE_PID" 2> /dev/null || check "cozy restart: the old Calcifer's page stream is still open"
+  close_page
+  cozy --json machine ls > /dev/null || check "cozy restart: the next command was not served"
+}
+
+# slow_upload <bytes>: a PUT /v1/files of that many random bytes at 200 KB/s to the running Calcifer, in the background ($UP),
+# its status in $OUT/slow.code.
+slow_upload() {
+  local digest address token
+  address=$(calcifer_record address) token=$(calcifer_record token)
+  head -c "$1" /dev/urandom > "$OUT/slow.bin"
+  digest=sha256:$(sha "$OUT/slow.bin")
+  curl -sS -o "$OUT/slow.json" -w '%{http_code}' --limit-rate 200k -T "$OUT/slow.bin" -H "Authorization: Bearer $token" \
+    "http://$address/v1/files/$digest" > "$OUT/slow.code" 2> "$OUT/slow.err" & UP=$!
+  sleep 2
+}
+
+# cl-962: the laptop's dev-local.sh restarts Calcifer through scripts/restart-calcifer-when-idle.py once it serves nothing: an
+# upload in flight holds the restart until it lands, and past its bound it restarts anyway and says so. Linux, where Calcifer is
+# the systemd user unit cozy-calcifer.
+idle_restart() {
+  [ "$RUNNER_OS" = Linux ] || return 0
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder restart=$E2E/../scripts/restart-calcifer-when-idle.py pid code t0
+  step "a Calcifer restart waits for an upload in flight"
+  pid=$(calcifer_record pid) t0=$SECONDS
+  slow_upload 3000000
+  python3 "$restart" --wait 120 --every 1 > "$OUT/idle-restart.txt" 2>&1 || check "idle restart failed: $(tail -c 300 "$OUT/idle-restart.txt")"
+  wait "$UP" || true
+  code=$(cat "$OUT/slow.code")
+  cat "$OUT/idle-restart.txt"
+  { grep -q 'restart waits: [0-9]* request' "$OUT/idle-restart.txt" && grep -q 'restarted idle' "$OUT/idle-restart.txt"; } \
+    || check "idle restart: it did not wait for the upload in flight"
+  [ "$code" = 201 ] || [ "$code" = 200 ] || check "idle restart: the upload in flight was cut ($code: $(tail -c 300 "$OUT/slow.err" "$OUT/slow.json"))"
+  [ $((SECONDS - t0)) -ge 10 ] || check "idle restart: Calcifer restarted after $((SECONDS - t0))s, before a 15 s upload landed"
+  cozy --json machine ls > /dev/null || check "idle restart: the next command was not served"
+  [ "$(calcifer_record pid)" != "$pid" ] || check "idle restart: Calcifer kept pid $pid"
+  step "past its bound a Calcifer restart goes ahead and says so"
+  pid=$(calcifer_record pid)
+  slow_upload 6000000
+  python3 "$restart" --wait 3 --every 1 > "$OUT/idle-bound.txt" 2>&1 || check "bounded restart failed: $(tail -c 300 "$OUT/idle-bound.txt")"
+  wait "$UP" || true
+  cat "$OUT/idle-bound.txt"
+  grep -q 'restarted while busy after [0-9]*s, the most it waits: [0-9]* request' "$OUT/idle-bound.txt" || check "bounded restart: it did not say it restarted busy"
+  cozy --json machine ls > /dev/null || check "bounded restart: the next command was not served"
+  [ "$(calcifer_record pid)" != "$pid" ] || check "bounded restart: Calcifer kept pid $pid"
+}
+
 sha() { { sha256sum "$1" 2> /dev/null || shasum -a 256 "$1"; } | cut -c1-64; }
 J() { jq -e "$@" > /dev/null; }
 # boxes_in <folder>: stdin's JSON array of boxes, each a `POST /v1/projects/{id}/assets` body ({name, tool, kind, fields, at}), made in
@@ -86,6 +254,9 @@ boxes_in() {
       || { check "box $(jq -r .name <<< "$box") in $1: $(tail -c 300 "$OUT/boxes-in.txt")"; return 1; }
   done <<< "$boxes"
 }
+# drop_folder <folder>: a cell's project gone. Its machine storage (`.vault-calcifer`, `.vault-machine`) may still be settling a run or
+# a look-ahead install: its leftovers never end the suite (run.sh is `set -e`).
+drop_folder() { rm -rf "$1" 2> /dev/null || { sleep 5; rm -rf "$1" 2> /dev/null; } || true; }
 # db_sql <project> <sql>: statements run on its project.db past Calcifer, as another program would.
 db_sql() {
   python3 - "$1/project.db" "$2" <<'PY'
@@ -96,8 +267,8 @@ PY
 }
 # owed <project>: how many runs its walk has pending.
 owed() { sql1 "$1" "SELECT count(*) FROM walk, json_each(walk.record, '\$.pending')"; }
-# api <curl args…>: Calcifer, with the bearer of its lock record.
-api() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
+# api <curl args…>: Calcifer, with the bearer of its lock record, on project storage protocol 3.
+api() { curl -sS -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "$@"; }
 # status <project>: what status says. Why it can't be read goes to the log, and an answer the CLI can't read is a failure of its own.
 status() { project_api "$1" '' 2> "$OUT/status.err"; }
 # row <project> <asset> <jq>: that of its row in status.
@@ -138,8 +309,8 @@ api -f -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: walking-
   -d '{"names":["all"],"on":["local"]}' "http://$ADDR/v1/projects/$id/runs" > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
 J '[.board.jobs[].asset] as $a | (["running_gone", "reads_gone", "slow", "beside", "one", "two", "last", "gone_soon"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
 J '.board.jobs[] | select(.asset == "last") | .needs | contains(["one", "two"])' <<< "$(status "$W")" || check "walking: last doesn't say what it waits for: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "last")')"
-for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run watch "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
-[ "$(cozy --json run watch "$run" --once | jq -r .status)" = in_progress ] || check "walking: running_gone isn't running: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "running_gone")')"
+for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(in_project "$W" --json run watch "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ "$(in_project "$W" --json run watch "$run" --once | jq -r .status)" = in_progress ] || check "walking: running_gone isn't running: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "running_gone")')"
 # On one machine they queue there: each went as soon as it could, not after the long job.
 for _ in $(seq 120); do J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" && break; sleep 0.25; done
 J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" || check "walking: what reads nothing waited for the long job: $(status "$W" | jq -c '[.board.jobs[] | {asset, run}]')"
@@ -148,8 +319,8 @@ project_api "$W" /assets/gone_soon -X DELETE > /dev/null || check "walking: dele
 for _ in $(seq 20); do J '.board.jobs[] | select(.asset == "gone_soon") | .state == "canceled"' <<< "$(status "$W")" && break; sleep 0.25; done
 api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$id/assets/running_gone"
 back=$(api "http://$ADDR/v1/projects/$id/history" | jq -r '[.entries[] | select(.undone == null and (.names | index("running_gone")))][0].id')
-for _ in $(seq 60); do [ "$(cozy --json run watch "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
-[ "$(cozy --json run watch "$run" --once | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(cozy --json run watch "$run" --once | jq -c '{status, progress}')"
+for _ in $(seq 60); do [ "$(in_project "$W" --json run watch "$run" --once | jq -r .status)" = canceled ] && break; sleep 0.5; done
+[ "$(in_project "$W" --json run watch "$run" --once | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(in_project "$W" --json run watch "$run" --once | jq -c '{status, progress}')"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$W")" && break; sleep 0.5; done
 soon told "$stream" ".type == \"board.updated\" and .project == \"$id\" and .board.ended != null" || check "walking: terminal board not delivered"
 kill "$tail" 2> /dev/null
@@ -190,7 +361,7 @@ show_events() {
 
 project_stream() {
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder ADDR TOKEN
-  ADDR=$(jq -er .address "$holder") && TOKEN=$(jq -er .token "$holder") || fail "project stream: missing Calcifer session"
+  ADDR=$(jq -er .address "$holder") && TOKEN=$(jq -er .token "$holder") || fail "project stream: no Calcifer lock record"
   walking
   event_stream
 }
@@ -203,10 +374,10 @@ local R=$OUT/stream log=$OUT/events.sse other=$OUT/events-unrelated.sse stream o
 starter_project "$R" > /dev/null || check "stream: project new"
 state=$(status "$R") || fail "stream: project state unavailable"
 id=$(jq -er .id <<< "$state") && code=$(jq -er .code <<< "$state") || fail "stream: project identity or link code unavailable"
-curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
+curl -sSN -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
 # Register with the public link code; deliveries still use the stable project ID.
 show_events "$log" "$code" || check "stream: project interest not held: $(head -c 300 "$log"; cat "$OUT/events.err")"
-curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$other" 2> "$OUT/events-unrelated.err" & other_stream=$!
+curl -sSN -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "http://$ADDR/v1/events" > "$other" 2> "$OUT/events-unrelated.err" & other_stream=$!
 soon told "$other" '.type == "hello"' || check "stream: no hello on unrelated connection"
 sse "$log" | sed -n 1p | J --arg v "$(fixture_calcifer | jq -r .calcifer.version)" '.type == "hello" and .version == $v' || check "stream: its first event: $(sse "$log" | sed -n 1p)"
 
@@ -224,6 +395,16 @@ soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told noth
 soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$id\"" \
   || check "stream: no run.updated says run $n completed in $id: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
 soon told "$other" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\"" || check "stream: a connection with no projects missed the global run"
+# Another program's change (xs-189: Calcifer watches the folder, it no longer looks): a file leaving files/, as a sync tool's would,
+# and coming back.
+local kept aside=$OUT/stream-aside
+kept=$(find "$R/files" -type f | head -1)
+seen=$(revs "$log" "$id" | wc -l)
+{ [ -n "$kept" ] && mv "$kept" "$aside"; } || check "stream: the landing left nothing in files/"
+soon told_more "$log" "$id" "$seen" || check "stream: a file leaving files/ told nothing"
+seen=$(revs "$log" "$id" | wc -l)
+[ -z "$kept" ] || mv "$aside" "$kept"
+soon told_more "$log" "$id" "$seen" || check "stream: a file back in files/ told nothing"
 [ -z "$(revs "$other" "$id")" ] || check "stream: project changes reached a connection with no interest"
 soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
 [ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"
@@ -251,14 +432,14 @@ python3 "$here/project/terminal.py" "$OUT/runs.screen" "$COZY" run ls --all > /d
 soon screen_says "$OUT/runs.screen" 'TARGET' || check "live: cozy run ls drew nothing"
 (cd "$R" && in_project "$R" run "$here/project/draw.py" instructions=live) > "$OUT/live-run.txt" 2>&1 || check "live: a run: $(tail -c 300 "$OUT/live-run.txt")"
 n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls in the project failed"
-soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: cozy run ls does not show run $n completed: $(head -5 "$OUT/runs.screen")"
+soon screen_says "$OUT/runs.screen" "^ *[A-Z][A-Z0-9]*-$n .* completed" || check "live: cozy run ls does not show run $n completed: $(head -5 "$OUT/runs.screen")"
 
 if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
   step "a project: a live view across a Calcifer restart, the branch resync takes"
   systemctl --user restart cozy-calcifer || check "live: systemctl --user restart cozy-calcifer failed"
   (cd "$R" && in_project "$R" run "$here/project/draw.py" instructions=restarted) > "$OUT/live-restarted.txt" 2>&1 || check "live: a run after the restart: $(tail -c 300 "$OUT/live-restarted.txt")"
   n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls after the restart failed"
-  soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: past a restart, cozy run ls does not show run $n: $(head -5 "$OUT/runs.screen")"
+  soon screen_says "$OUT/runs.screen" "^ *[A-Z][A-Z0-9]*-$n .* completed" || check "live: past a restart, cozy run ls does not show run $n: $(head -5 "$OUT/runs.screen")"
   ADDR=$(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder") TOKEN=$(jq -r .token "$HOME/.cozy/calcifer/calcifer.lock.holder")
 fi
 code=0; kill "$term" 2> /dev/null || true; wait "$term" || code=$?

@@ -36,12 +36,13 @@ fetch = ["seams", "dep:flate2", "dep:serde_json", "dep:sigstore-verify", "dep:ta
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true, optional = true }
 # use-libc-auxv: page size and clock ticks from getauxval, so they need no /proc.
-rustix = { workspace = true, features = ["event", "fs", "net", "param", "process", "thread", "use-libc-auxv"] }
+rustix = { workspace = true, features = ["event", "fs", "net", "param", "process", "thread", "time", "use-libc-auxv"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Wdk_System_SystemInformation",
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",

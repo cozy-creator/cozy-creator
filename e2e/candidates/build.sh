@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# e2e/candidates/build.sh <cozy|tensorfs|runtime> <src> <out>: one candidate for this runner's OS, into <out>; prints
-# its file. cozy (TensorD, the dev cozy <version>+dev.g<sha8>) and the TensorFS wheel come from the cozy-creator
+# e2e/candidates/build.sh <cozy|cozy-before|tensorfs|runtime> <src> <out>: one candidate for this runner's OS, into <out>; prints
+# its file. cozy-before (e2e/cli/selfupdate.sh, cl-978): the source built as a release of the line before the Latest, 0.24.99 with TensorFS
+# 0.24.99, which runs no Runtime from 0.46: the cozy that updates itself to the Latest for a package that needs it. cozy (TensorD, the dev cozy: the RC's <x.y.z>-dev+g<sha8>, a release's <version>+dev.g<sha8>) and the TensorFS wheel come from the cozy-creator
 # checkout <src>, the Runtime wheel (<version>+dev.g<sha8>) from the cozy-runtime checkout <src>.
 #   REUSE=1      cozy or tensorfs as a cozy-creator merge-group or dispatched e2e run uploaded it for the same build
 #                inputs: a PR's dispatch builds what its merge-queue entry reuses when the PR is up to date
@@ -29,7 +30,7 @@ reuse() {
 }
 
 case $what in
-  cozy | tensorfs) repo=cozy-creator ;;
+  cozy | cozy-before | tensorfs) repo=cozy-creator ;;
   runtime) repo=cozy-runtime ;;
   *) echo "build.sh: no candidate $what" >&2; exit 2 ;;
 esac
@@ -75,7 +76,8 @@ elif [ "$what" = cozy ]; then
       esac
     fi
     cargo fetch --locked
-    uv run -q --no-project python -c 'import re,sys; p="Cargo.toml"; s=open(p).read(); open(p,"w").write(re.sub(r"(?m)^version = \"([^\"]+)\"$", lambda m: f"version = \"{m[1]}+dev.g{sys.argv[1][:8]}\"", s, count=1))' "$sha"
+    # A release's version gets +dev.g<sha8>; the RC's dev version (0.26.0-dev) gets +g<sha8> from crates/api/build.rs (cl-976).
+    uv run -q --no-project python -c 'import re,sys; p="Cargo.toml"; s=open(p).read(); open(p,"w").write(re.sub(r"(?m)^version = \"([^\"]+)\"$", lambda m: m[0] if "-" in m[1] else f"version = \"{m[1]}+dev.g{sys.argv[1][:8]}\"", s, count=1))' "$sha"
     cargo update -w --offline
     COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy
     git checkout -- Cargo.toml Cargo.lock)
@@ -84,6 +86,14 @@ elif [ "$what" = cozy ]; then
   # cozy is one file (00e565d72): varena is the TensorFS wheel's.
   cp "$src/target/release/cozy$exe" "$out/cozy$exe"
   cp "$stage_src/target/release/examples/stage-code$exe" "$out/stage-code$exe"
+elif [ "$what" = cozy-before ]; then
+  # A release's version, no +dev: it updates itself. Its TensorFS crate is the line's, whose protocol is what it runs. No page.
+  (cd "$src"
+    sed -i '0,/^version = "[^"]*"$/s//version = "0.24.99"/' Cargo.toml crates/tensorfs/Cargo.toml
+    cargo update -w
+    COZY_COMMIT=$sha cargo build --release -p cozy --bin cozy
+    git checkout -- Cargo.toml Cargo.lock crates/tensorfs/Cargo.toml)
+  cp "$src/target/release/cozy$exe" "$out/cozy$exe"
 elif [ "$what" = tensorfs ]; then
   # Staged as the release wheel is (backend/stage_cli.py, as dev-build): `tfs` with the extension's features, so TensorFS
   # and every dependency compile once for both, and on Linux the Torch allocator shims, without which the candidate runs
@@ -102,7 +112,7 @@ else
     git checkout -- pyproject.toml)
 fi
 case $what in
-  cozy) file=$out/cozy$exe; chmod +x "$file"; version=$("$file" --version) ;;
+  cozy | cozy-before) file=$out/cozy$exe; chmod +x "$file"; version=$("$file" --version) ;;
   tensorfs) file=$(ls "$out"/tensorfs-*.whl) ;;
   runtime) file=$(ls "$out"/cozy_runtime-*.whl) ;;
 esac

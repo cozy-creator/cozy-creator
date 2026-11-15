@@ -12,6 +12,7 @@
   --frame-primary: url("./frames/frame-primary.svg");
 
   .ptabs,
+  .ptabs-add,
   .tools,
   .main-menu nav,
   .history-list,
@@ -39,8 +40,9 @@
   .tb.primary {
     border-image: var(--frame-primary) 12 fill / 12px / 4px stretch;
   }
+  /* border-image-source, not `border-image: none`: the build's minifier empties that shorthand, and the frame stayed on every row. */
   .main-menu nav .tb {
-    border-image: none;
+    border-image-source: none;
   }
   .ptab.on {
     background: none;
@@ -49,14 +51,14 @@
 }
 
 /* A box stands off the sheet, in either theme: an edge, and a shadow it sits on. One with nothing in it is a lighter sheet, not a hole. */
-.react-flow__node .media {
+.canvas-node .media {
   box-shadow: 0 0 0 1px var(--box-edge), 0 1px 2px var(--box-shade), 0 6px 14px var(--box-shade);
 }
-/* Far out a shadow can't be seen, and thousands of blurs are what drawing them costs. */
-.stage[data-lod="2"] .react-flow__node .media {
+/* Far out only the edge is distinct; the native active card matches its overview picture. */
+.stage[data-lod="2"] .canvas-node .media {
   box-shadow: 0 0 0 1px var(--box-edge);
 }
-.react-flow__node .media.blank {
+.canvas-node .media.blank {
   background-color: var(--box);
 }
 
@@ -118,24 +120,14 @@
 .paper-world.paper-world-plain {
   background-size: calc(1024px * var(--rung)), calc(2048px * var(--rung)), calc(512px * var(--rung));
 }
+/* The clouds stay still (Paul 11-15): their drift repainted the sky 12 times a second, most of an idle page's CPU. */
 .paper-world::after {
-  right: calc(-2048px * var(--rung));
   background-size: calc(2048px * var(--rung));
-  animation-name: paper-world-drift;
-}
-@keyframes paper-world-drift {
-  to {
-    transform: translate3d(calc(-2048px * var(--rung)), 0, 0);
-  }
+  animation: none;
 }
 :root[data-theme="dark"] .paper-world::after,
 .paper-world.paper-world-plain::after {
   content: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .paper-world::after {
-    animation: none;
-  }
 }
 
 /* A zoom scales the landscape (Sheet.tsx) about the bottom of the window, so the land stays on it. Each layer of land is laid out at its rung
@@ -152,6 +144,26 @@
 }
 .paper-landscape > * {
   --landscape-scale: calc(var(--landscape-size) * var(--rung));
+}
+/* The boxes come first (Sheet.tsx): until the landscape's pictures are decoded after the boxes' first frame, it's the cream they're on, and
+   then they fade in over it. */
+.paper-landscape {
+  background: var(--paper-cream);
+}
+.paper-landscape > * {
+  transition: opacity 400ms ease;
+}
+.paper-landscape:not([data-art]) > * {
+  opacity: 0;
+}
+.paper-landscape:not([data-art]) > *,
+.paper-landscape:not([data-art]) > *::after {
+  background-image: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .paper-landscape > * {
+    transition: none;
+  }
 }
 .paper-landscape-mountains,
 .paper-landscape-hills,

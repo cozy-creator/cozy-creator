@@ -108,6 +108,9 @@ pub(crate) struct Installation {
     /// The Hub origin a published release came from; empty for local code.
     #[serde(default)]
     pub hub: String,
+    /// Local code's manifest (`sha256:<hex>`) it was installed from; empty for a release.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub manifest: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,7 +195,7 @@ impl ExecutorFacts {
     pub(crate) fn observed(pid: u32, runtime_version: String, tensorfs_version: String) -> Self {
         Self {
             pid, runtime_version, tensorfs_version,
-            tensord_version: env!("CARGO_PKG_VERSION").into(),
+            tensord_version: ::api::VERSION.into(),
             tensord_commit: Some(api::COMMIT.to_owned()),
         }
     }
@@ -247,6 +250,8 @@ pub(crate) enum AdjustmentKind {
     Adjusted,
     Clamp,
     Warn,
+    /// An input the function has no use for, left out (cl-944).
+    Ignored,
 }
 
 impl AdjustmentKind {
@@ -255,6 +260,7 @@ impl AdjustmentKind {
             Self::Adjusted => "adjusted",
             Self::Clamp => "clamp",
             Self::Warn => "warn",
+            Self::Ignored => "ignored",
         }
     }
 }
@@ -381,12 +387,15 @@ impl Execution {
 
 /// What one completed root took: its width, its size as its input said, its compute, and what it
 /// spent putting weights on its GPUs (`Ran`).
-#[derive(Clone, Debug)]
-pub(crate) struct RunTime {
-    pub width: u32,
-    pub size: api::machine::JobSize,
-    pub ms: f64,
-    pub load_ms: f64,
+pub(crate) use api::machine::TimedRun as RunTime;
+
+/// What a function's run reads of one model (cl-967): its header, its repository, those components and their bytes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct FunctionRead {
+    pub checkpoint: String,
+    pub model: String,
+    pub components: Vec<String>,
+    pub bytes: u64,
 }
 
 /// What a completed root did with its time, by its own and its calls' records and measurements
@@ -587,6 +596,14 @@ fn db_error(error: impl std::fmt::Display) -> io::Error {
 fn encoded(value: &impl Serialize) -> io::Result<String> {
     serde_json::to_string(value).map_err(db_error)
 }
+/// A project run's caller id as the machine's columns keep it (cl-984): digested with its project, so the machine's journal
+/// never holds a project's run identities; an unscoped run's is its own.
+fn stored_id(scope: Option<&api::machine::LocalPrivateStorage>, id: &str) -> String {
+    match scope {
+        Some(scope) => format!("p:{}", tensorfs::sha256::hex_digest(format!("{}\0{id}", scope.project_id).as_bytes())),
+        None => id.to_owned(),
+    }
+}
 fn invocation_index(invocation: &Invocation) -> io::Result<String> {
     if invocation.local_private.is_none() { return encoded(invocation); }
     encoded(&serde_json::json!({
@@ -682,7 +699,7 @@ impl Journal {
         platform::durable::set_mode(&root.join(FILE), 0o600)?;
         connection
             .execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
+                "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;
             CREATE TABLE IF NOT EXISTS executions (
               id INTEGER PRIMARY KEY AUTOINCREMENT, idempotency_key TEXT NOT NULL UNIQUE,
               invocation TEXT NOT NULL, record TEXT NOT NULL, state TEXT NOT NULL,
@@ -716,13 +733,15 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS held_names(name TEXT PRIMARY KEY,named TEXT NOT NULL,read_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS objects(actor TEXT NOT NULL,sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(actor,sha256));
             CREATE TABLE IF NOT EXISTS object_uses(sha256 TEXT PRIMARY KEY,length INTEGER NOT NULL,used_ms INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS private_object_uses(project TEXT NOT NULL,sha256 TEXT NOT NULL,length INTEGER NOT NULL,used_ms INTEGER NOT NULL,PRIMARY KEY(project,sha256));
+            DROP TABLE IF EXISTS private_object_uses;
             CREATE TABLE IF NOT EXISTS run_objects(execution INTEGER NOT NULL REFERENCES executions(id),sha256 TEXT NOT NULL,length INTEGER NOT NULL,PRIMARY KEY(execution,sha256));
             CREATE INDEX IF NOT EXISTS run_objects_digest ON run_objects(sha256);
             CREATE TABLE IF NOT EXISTS run_specs(execution INTEGER PRIMARY KEY REFERENCES executions(id),spec BLOB NOT NULL);
             DROP TABLE IF EXISTS run_times;
             CREATE TABLE IF NOT EXISTS root_times(execution INTEGER PRIMARY KEY REFERENCES executions(id),function TEXT NOT NULL,width INTEGER NOT NULL,size TEXT NOT NULL,ms INTEGER NOT NULL,load_ms INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS root_times_function ON root_times(function,execution);
+            CREATE TABLE IF NOT EXISTS cold_times(execution INTEGER PRIMARY KEY REFERENCES executions(id));
+            CREATE TABLE IF NOT EXISTS function_reads(function TEXT NOT NULL,checkpoint TEXT NOT NULL,model TEXT NOT NULL,components TEXT NOT NULL,bytes INTEGER NOT NULL,PRIMARY KEY(function,checkpoint));
             CREATE TABLE IF NOT EXISTS held_memos(actor TEXT NOT NULL,computation TEXT NOT NULL,record BLOB NOT NULL,used_ms INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(actor,computation));
             CREATE TABLE IF NOT EXISTS held_memo_objects(actor TEXT NOT NULL,computation TEXT NOT NULL,sha256 TEXT NOT NULL,PRIMARY KEY(actor,computation,sha256));
             CREATE INDEX IF NOT EXISTS held_memo_objects_digest ON held_memo_objects(sha256);
@@ -744,6 +763,8 @@ impl Journal {
                     [crate::uuid::hyphenated()],
                 )
                 .map_err(db_error)?;
+            // Born with `secure_delete`: no older copy of any row is in its free space (`compact`).
+            connection.execute("INSERT OR IGNORE INTO machine_metadata(key,value) VALUES('secure_delete','1')", []).map_err(db_error)?;
         }
         connection
             .execute(
@@ -778,6 +799,169 @@ impl Journal {
             connection,
             workspace_id,
         })
+    }
+
+    /// The acceptance of each of `requests` that `actor` (or its scoped key in `scope`) sent here: what Calcifer's import of
+    /// a project's legacy history checks its records against (cl-984). A request tagged to another project is refused.
+    pub(crate) fn legacy_bindings(&self, actor: &str, scoped: &str, scope: &api::machine::LocalPrivateStorage, requests: &[String])
+        -> io::Result<api::machine::ProjectExecutionLegacyLookupAnswer> {
+        if requests.len() > 256 {
+            return Err(db_error("legacy binding lookup exceeds its protocol bound"));
+        }
+        let mut answer = api::machine::ProjectExecutionLegacyLookupAnswer::default();
+        for request in requests {
+            if request.is_empty() || request.len() > 256 || request.chars().any(char::is_control) {
+                return Err(db_error("invalid legacy request identity"));
+            }
+            let row: Option<(u64, String)> = self.connection.query_row(
+                "SELECT id,record FROM executions WHERE request_id=?2 AND (actor=?1 OR actor=?3) LIMIT 1",
+                params![actor, request, scoped], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(db_error)?;
+            let Some((source_number, record)) = row else {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "a legacy request has no acceptance at this worker"));
+            };
+            let record = decoded_execution(&record)?;
+            if record.invocation.local_private.as_ref().is_some_and(|tagged| tagged.project_id != scope.project_id) {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "a legacy request is tagged to another project"));
+            }
+            let accepted = record.submission.ok_or_else(|| db_error("a legacy request has no accepted binding"))?;
+            if accepted.request_id != *request || accepted.invocation_digest.is_empty() {
+                return Err(db_error("a legacy accepted binding is incomplete"));
+            }
+            answer.bindings.push(api::machine::ProjectExecutionLegacyBinding {
+                source_number,
+                binding: api::machine::ProjectExecutionMigrationBinding {
+                    request_id: request.clone(),
+                    source_workspace_id: self.workspace_id.clone(),
+                    invocation_spec_digest: accepted.invocation_digest,
+                },
+            });
+        }
+        Ok(answer)
+    }
+
+    /// Every unscoped run's retained output: (actor, owner, record).
+    pub(crate) fn machine_native_outputs(&self) -> io::Result<Vec<(String, String, Vec<u8>)>> {
+        let mut statement = self.connection.prepare("SELECT actor,owner,source FROM native_outputs").map_err(db_error)?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(db_error)?;
+        let rows: Vec<(String, String, Vec<u8>)> = rows.collect::<Result<_, _>>().map_err(db_error)?;
+        Ok(rows.into_iter().filter(|(_, _, source)| private_journal::scope(source).is_ok_and(|scope| scope.is_none())).collect())
+    }
+
+    /// Retired runs' retained outputs go, their pages overwritten.
+    pub(crate) fn retire_native_outputs(&mut self, outputs: &[(String, String)]) -> io::Result<()> {
+        if outputs.is_empty() {
+            return Ok(());
+        }
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        for (actor, owner) in outputs {
+            tx.execute("DELETE FROM native_outputs WHERE actor=?1 AND owner=?2", params![actor, owner]).map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)?;
+        self.truncate_wal();
+        Ok(())
+    }
+
+    /// A locking project leaves nothing here (cl-984): every row of its runs and every row its scope keyed goes, their
+    /// pages overwritten and the WAL emptied. Its history is its own (Calcifer's project journal); its runs are idle.
+    pub(crate) fn retire_project(&mut self, project_id: &str) -> io::Result<()> {
+        let prefix = format!("local-private:{}:{}:", project_id.len(), project_id);
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let ids: Vec<i64> = {
+            let mut statement = tx.prepare("SELECT id FROM executions WHERE json_extract(invocation,'$.local_private.project_id')=?1").map_err(db_error)?;
+            let rows = statement.query_map([project_id], |row| row.get(0)).map_err(db_error)?;
+            rows.collect::<Result<_, _>>().map_err(db_error)?
+        };
+        for id in ids {
+            delete_execution(&tx, id)?;
+        }
+        for (table, column) in [("installations", "actor"), ("preparations", "actor"), ("warm_sets", "actor"), ("resolutions", "actor"), ("native_outputs", "actor"),
+            ("held_names", "name"), ("objects", "actor"), ("held_memos", "actor"), ("held_memo_objects", "actor"), ("update_run_ids", "actor")] {
+            tx.execute(&format!("DELETE FROM {table} WHERE substr({column},1,length(?1))=?1"), [&prefix]).map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)?;
+        let secure: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM machine_metadata WHERE key='secure_delete')", [], |row| row.get(0)).map_err(db_error)?;
+        if secure { self.truncate_wal() } else { self.compact() }
+        Ok(())
+    }
+
+    /// Whether execution `id` is still journaled here.
+    pub(crate) fn holds_execution(&self, id: u64) -> io::Result<bool> {
+        self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE id=?1)", [id], |row| row.get(0)).map_err(db_error)
+    }
+
+    /// Deletes `ids`' executions and every row of theirs, their pages overwritten (cl-984): a project's legacy worker
+    /// history once Calcifer imported it into the project. Answers the objects only they named, and their triage subjects.
+    pub(crate) fn retire_executions(&mut self, ids: &[u64]) -> io::Result<(Vec<tensorfs::format::ObjectRef>, Vec<String>)> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let (mut objects, mut subjects) = (vec![], vec![]);
+        for id in ids {
+            {
+                let mut only = tx.prepare("SELECT sha256,length FROM run_objects WHERE execution=?1 AND sha256 NOT IN (SELECT sha256 FROM run_objects WHERE execution<>?1)").map_err(db_error)?;
+                let rows = only.query_map([id], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? })).map_err(db_error)?;
+                for row in rows { objects.push(row.map_err(db_error)?); }
+            }
+            // Every object its record names (inputs uploaded for it, outputs it made) that no other run holds.
+            let record: Option<String> = tx.query_row("SELECT record FROM executions WHERE id=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+            if let Some(execution) = record.and_then(|record| decoded_execution(&record).ok()) {
+                let mut named = std::collections::BTreeMap::new();
+                for input in &execution.invocation.inputs {
+                    named.insert(input.digest.strip_prefix("sha256:").unwrap_or(&input.digest).to_owned(), input.length);
+                }
+                fn digests(value: &Value, found: &mut std::collections::BTreeMap<String, u64>) {
+                    match value {
+                        Value::String(text) => {
+                            let hex = text.strip_prefix("sha256:").unwrap_or(text);
+                            if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) { found.entry(hex.to_ascii_lowercase()).or_insert(0); }
+                        }
+                        Value::Array(items) => items.iter().for_each(|item| digests(item, found)),
+                        Value::Object(fields) => fields.values().for_each(|item| digests(item, found)),
+                        _ => {}
+                    }
+                }
+                if let Ok(value) = serde_json::to_value(&execution) { digests(&value, &mut named); }
+                for (sha256, length) in named {
+                    let others: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM run_objects WHERE sha256=?1 AND execution<>?2)", params![sha256, id], |row| row.get(0)).map_err(db_error)?;
+                    if !others && sha256.len() == 64 && !objects.iter().any(|held| held.sha256 == sha256) {
+                        objects.push(tensorfs::format::ObjectRef { sha256, length });
+                    }
+                }
+            }
+            let triage: Option<String> = tx.query_row("SELECT record FROM triage WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+            subjects.extend(triage.and_then(|record| serde_json::from_str::<Value>(&record).ok()?.get("subject_id")?.as_str().map(String::from)));
+            delete_execution(&tx, *id as i64)?;
+        }
+        // Their objects' uses, uploads and held memos name them too.
+        for object in &objects {
+            crate::project_objects::drop_naming(&tx, &object.sha256)?;
+            for table in ["object_uses", "objects"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE sha256=?1"), [&object.sha256]).map_err(db_error)?;
+            }
+        }
+        tx.commit().map_err(db_error)?;
+        self.compact();
+        Ok((objects, subjects))
+    }
+
+    /// The journal rewritten whole, its WAL emptied before and after: `secure_delete` zeroes a deleted cell, but not the older
+    /// copies of its rows a build without it (0.24, 0.25) left in free space, which only a rewrite overwrites. Run after a
+    /// retirement, never at start; atomic (a crash leaves the journal as it was); its scratch copy stays in RAM. Once done,
+    /// the journal holds no such copy and a lock's retirement no longer rewrites it.
+    fn compact(&self) {
+        self.truncate_wal();
+        match self.connection.execute_batch("PRAGMA temp_store=MEMORY; VACUUM; INSERT OR REPLACE INTO machine_metadata(key,value) VALUES('secure_delete','1');") {
+            Ok(()) => {}
+            Err(error) => tracing::warn!("the machine journal could not be rewritten after a retirement: {error}"),
+        }
+        self.truncate_wal();
+    }
+
+    /// The WAL emptied into the journal, retried while a reader holds an older snapshot: no page image it held outlives this.
+    pub(crate) fn truncate_wal(&self) {
+        for _ in 0..40 {
+            let busy: i64 = self.connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0)).unwrap_or(1);
+            if busy == 0 { return; }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
     }
 
     pub(crate) fn workspace_id(&self) -> &str {
@@ -957,91 +1141,75 @@ impl Journal {
         Ok(())
     }
     pub(crate) fn held_memo(&self, actor: &str, computation: &str) -> io::Result<Option<Vec<u8>>> {
-        let record: Option<Vec<u8>> = self.connection
-            .query_row("SELECT record FROM held_memos WHERE actor=?1 AND computation=?2",
-                params![actor, computation], |r| r.get(0))
-            .optional()
-            .map_err(db_error)?;
-        if record.is_some() {
-            self.connection.execute("UPDATE held_memos SET used_ms=?3 WHERE actor=?1 AND computation=?2",
-                params![actor, computation, timestamp()]).map_err(db_error)?;
+        if let Some(scope) = crate::private_io::current() {
+            return crate::project_objects::held(&crate::project_objects::open(&scope)?, actor, computation);
         }
+        let record = crate::project_objects::held(&self.connection, actor, computation)?;
         record.map(|body| private_journal::read_scoped(&format!("memo:{actor}:{computation}"), &body)).transpose()
     }
     /// Every held memo naming `sha256` goes with it (its file is no longer this machine's).
     pub(crate) fn drop_held_memos(&mut self, sha256: &str) -> io::Result<usize> {
+        if let Some(scope) = crate::private_io::current() {
+            return crate::project_objects::drop_naming(&crate::project_objects::open(&scope)?, sha256);
+        }
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
-        let scope = crate::private_io::current();
-        let prefix = scope.as_ref().map(|scope| format!("local-private:{}:{}:", scope.project_id.len(), scope.project_id));
-        let dropped = tx.execute("DELETE FROM held_memos WHERE (actor,computation) IN
-            (SELECT actor,computation FROM held_memo_objects WHERE sha256=?1
-             AND ((?2 IS NULL AND substr(actor,1,14)!='local-private:') OR substr(actor,1,length(?2))=?2))", params![sha256, prefix]).map_err(db_error)?;
-        tx.execute("DELETE FROM held_memo_objects WHERE (actor,computation) NOT IN
-            (SELECT actor,computation FROM held_memos)", []).map_err(db_error)?;
+        let dropped = crate::project_objects::drop_naming(&tx, sha256)?;
         tx.commit().map_err(db_error)?;
         Ok(dropped)
     }
     pub(crate) fn object(&self, actor: &str, sha256: &str) -> io::Result<Option<u64>> {
-        self.connection
-            .query_row(
-                "SELECT length FROM objects WHERE actor=?1 AND sha256=?2",
-                params![actor, sha256],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(db_error)
+        match crate::private_io::current() {
+            Some(scope) => crate::project_objects::object(&crate::project_objects::open(&scope)?, actor, sha256),
+            None => crate::project_objects::object(&self.connection, actor, sha256),
+        }
     }
-    pub(crate) fn bind_object(
-        &mut self,
-        actor: &str,
-        object: &tensorfs::format::ObjectRef,
-    ) -> io::Result<()> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(db_error)?;
-        tx.execute(
-            "INSERT OR REPLACE INTO objects(actor,sha256,length) VALUES(?1,?2,?3)",
-            params![actor, object.sha256, object.length],
-        )
-        .map_err(db_error)?;
-        touch_object(&tx, object)?;
-        tx.commit().map_err(db_error)?;
-        Ok(())
+    pub(crate) fn bind_object(&mut self, actor: &str, object: &tensorfs::format::ObjectRef) -> io::Result<()> {
+        if let Some(scope) = crate::private_io::current() {
+            let project = crate::project_objects::open(&scope)?;
+            crate::project_objects::bind(&project, actor, object)?;
+            return crate::project_objects::touch(&project, object);
+        }
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        crate::project_objects::bind(&tx, actor, object)?;
+        crate::project_objects::touch(&tx, object)?;
+        tx.commit().map_err(db_error)
     }
 
     /// A child's result becomes its parent's dependency before the parent is handed it.
-    pub(crate) fn adopt_object(
-        &mut self,
-        actor: &str,
-        parent: &str,
-        object: &tensorfs::format::ObjectRef,
-    ) -> io::Result<()> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(db_error)?;
+    pub(crate) fn adopt_object(&mut self, actor: &str, parent: &str, object: &tensorfs::format::ObjectRef) -> io::Result<()> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
         let scope = private_scope(&tx, parent)?;
-        let actor = crate::private_io::within(scope, || metadata_actor(actor));
-        tx.execute(
-            "INSERT OR REPLACE INTO objects(actor,sha256,length) VALUES(?1,?2,?3)",
-            params![actor, object.sha256, object.length],
-        )
-        .map_err(db_error)?;
+        let actor = crate::private_io::within(scope.clone(), || metadata_actor(actor));
+        if let Some(scope) = scope {
+            let project = crate::project_objects::open(&scope)?;
+            crate::project_objects::bind(&project, &actor, object)?;
+            return crate::project_objects::reference(&project, parent, std::slice::from_ref(object));
+        }
+        crate::project_objects::bind(&tx, &actor, object)?;
         reference_objects(&tx, parent, std::slice::from_ref(object))?;
         tx.commit().map_err(db_error)
+    }
+
+    /// The machine journal ids of `project`'s runs unfinished or ended since `since_ms`.
+    fn live_runs(&self, project: &str, since_ms: i64) -> io::Result<std::collections::HashSet<i64>> {
+        let mut statement = self.connection.prepare("SELECT id FROM executions WHERE json_extract(invocation,'$.local_private.project_id')=?1
+            AND (updated_ms>=?2 OR state NOT IN ('completed','failed','canceled'))").map_err(db_error)?;
+        let rows = statement.query_map(params![project, since_ms], |row| row.get(0)).map_err(db_error)?;
+        rows.collect::<Result<_, _>>().map_err(db_error)
     }
 
     /// The objects something needs now: used (a Write, a new run) since `since_ms`, or named by
     /// a run that is unfinished or ended since.
     pub(crate) fn needed_objects(&self, since_ms: i64) -> io::Result<Vec<tensorfs::format::ObjectRef>> {
-        let scope = crate::private_io::current().map(|scope| scope.project_id);
-        let mut statement = self.connection.prepare("SELECT sha256,length FROM object_uses WHERE ?2 IS NULL AND used_ms>=?1
-            UNION SELECT sha256,length FROM private_object_uses WHERE project=?2 AND used_ms>=?1
+        if let Some(scope) = crate::private_io::current() {
+            let live = self.live_runs(&scope.project_id, since_ms)?;
+            return crate::project_objects::needed(&crate::project_objects::open(&scope)?, since_ms, &live);
+        }
+        let mut statement = self.connection.prepare("SELECT sha256,length FROM object_uses WHERE used_ms>=?1
             UNION SELECT r.sha256,r.length FROM run_objects r JOIN executions e ON e.id=r.execution
-              WHERE ((?2 IS NULL AND json_extract(e.invocation,'$.local_private.project_id') IS NULL) OR json_extract(e.invocation,'$.local_private.project_id')=?2)
+              WHERE json_extract(e.invocation,'$.local_private.project_id') IS NULL
                 AND (e.updated_ms>=?1 OR e.state NOT IN ('completed','failed','canceled'))").map_err(db_error)?;
-        let rows = statement.query_map(params![since_ms, scope], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? })).map_err(db_error)?;
+        let rows = statement.query_map(params![since_ms], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? })).map_err(db_error)?;
         rows.collect::<Result<_, _>>().map_err(db_error)
     }
 
@@ -1064,13 +1232,15 @@ impl Journal {
     /// `before_ms`, and no run naming it that is unfinished (any state but the three
     /// terminal ones) or ended since then.
     pub(crate) fn object_releasable(&self, sha256: &str, before_ms: i64) -> io::Result<bool> {
-        let scope = crate::private_io::current().map(|scope| scope.project_id);
+        if let Some(scope) = crate::private_io::current() {
+            let live = self.live_runs(&scope.project_id, before_ms)?;
+            return crate::project_objects::releasable(&crate::project_objects::open(&scope)?, sha256, before_ms, &live);
+        }
         self.connection.query_row("SELECT
-          NOT EXISTS(SELECT 1 FROM object_uses WHERE ?3 IS NULL AND sha256=?1 AND used_ms>=?2)
-          AND NOT EXISTS(SELECT 1 FROM private_object_uses WHERE project=?3 AND sha256=?1 AND used_ms>=?2)
+          NOT EXISTS(SELECT 1 FROM object_uses WHERE sha256=?1 AND used_ms>=?2)
           AND NOT EXISTS(SELECT 1 FROM run_objects r JOIN executions e ON e.id=r.execution WHERE r.sha256=?1
-            AND ((?3 IS NULL AND json_extract(e.invocation,'$.local_private.project_id') IS NULL) OR json_extract(e.invocation,'$.local_private.project_id')=?3)
-            AND (e.updated_ms>=?2 OR e.state NOT IN ('completed','failed','canceled')))", params![sha256, before_ms, scope], |row| row.get(0)).map_err(db_error)
+            AND json_extract(e.invocation,'$.local_private.project_id') IS NULL
+            AND (e.updated_ms>=?2 OR e.state NOT IN ('completed','failed','canceled')))", params![sha256, before_ms], |row| row.get(0)).map_err(db_error)
     }
 
     /// The failed attempt's triage bundle reference; written before the run settles.
@@ -1216,7 +1386,7 @@ impl Journal {
     /// An accepted run is returned for normal cancellation; its spec/outcome is never replaced.
     pub(crate) fn reserve_run_cancellation(&mut self, actor: &str, id: &str) -> io::Result<Execution> {
         validate_scope(actor, id, id)?;
-        let key = format!("run:{}", encoded(&(actor, id))?);
+        let key = format!("run:{}", encoded(&(actor, stored_id(crate::private_io::current().as_ref(), id)))?);
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
         if update_run_reserved(&tx, actor, id)? {
@@ -1425,50 +1595,31 @@ pub(crate) struct HeldMemo {
     pub record: Vec<u8>,
     pub objects: Vec<String>,
 }
-fn hold_memo(tx: &rusqlite::Transaction<'_>, held: &HeldMemo) -> io::Result<()> {
-    let HeldMemo { actor, computation, record, objects } = held;
-    tx.execute("INSERT OR REPLACE INTO held_memos(actor,computation,record,used_ms) VALUES(?1,?2,?3,?4)",
-        params![actor, computation, record, timestamp()]).map_err(db_error)?;
-    tx.execute("DELETE FROM held_memos WHERE actor=?1 AND computation NOT IN
-        (SELECT computation FROM held_memos WHERE actor=?1 ORDER BY used_ms DESC LIMIT ?2)",
-        params![actor, MAX_HELD_MEMOS]).map_err(db_error)?;
-    tx.execute("DELETE FROM held_memo_objects WHERE actor=?1 AND computation NOT IN
-        (SELECT computation FROM held_memos WHERE actor=?1)", params![actor]).map_err(db_error)?;
-    tx.execute("DELETE FROM held_memo_objects WHERE actor=?1 AND computation=?2", params![actor, computation])
-        .map_err(db_error)?;
-    for sha256 in objects {
-        tx.execute("INSERT OR IGNORE INTO held_memo_objects(actor,computation,sha256) VALUES(?1,?2,?3)",
-            params![actor, computation, sha256]).map_err(db_error)?;
+/// Execution `id` and every row keyed by it.
+fn delete_execution(tx: &rusqlite::Transaction<'_>, id: i64) -> io::Result<()> {
+    for table in ["public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied", "run_log_lengths",
+        "package_log_dropped", "run_calls", "triage", "run_objects", "run_specs", "root_times", "cold_times"] {
+        tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
     }
+    tx.execute("DELETE FROM executions WHERE id=?1", [id]).map_err(db_error)?;
     Ok(())
 }
 
-fn touch_object(tx: &rusqlite::Transaction<'_>, object: &tensorfs::format::ObjectRef) -> io::Result<()> {
-    touch_object_scoped(tx, object, crate::private_io::current().as_ref())
-}
-fn touch_object_scoped(tx: &rusqlite::Transaction<'_>, object: &tensorfs::format::ObjectRef, scope: Option<&api::machine::LocalPrivateStorage>) -> io::Result<()> {
-    crate::storage::check_digest("run object", &object.sha256, false)?;
-    match scope {
-        Some(scope) => tx.execute("INSERT INTO private_object_uses(project,sha256,length,used_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(project,sha256) DO UPDATE SET used_ms=excluded.used_ms", params![scope.project_id, object.sha256, object.length, timestamp()]),
-        None => tx.execute("INSERT INTO object_uses(sha256,length,used_ms) VALUES(?1,?2,?3) ON CONFLICT(sha256) DO UPDATE SET used_ms=excluded.used_ms", params![object.sha256, object.length, timestamp()]),
-    }.map(drop).map_err(db_error)
+/// A run's held memo, in its project's bookkeeping when it has one.
+fn hold_memo(tx: &rusqlite::Transaction<'_>, scope: Option<&api::machine::LocalPrivateStorage>, held: &HeldMemo) -> io::Result<()> {
+    let Some(scope) = scope else { return crate::project_objects::hold(tx, held, MAX_HELD_MEMOS) };
+    let project = crate::project_objects::open(scope)?;
+    let tx = project.unchecked_transaction().map_err(db_error)?;
+    crate::project_objects::hold(&tx, held, MAX_HELD_MEMOS)?;
+    tx.commit().map_err(db_error)
 }
 
-fn reference_objects(
-    tx: &rusqlite::Transaction<'_>,
-    execution: &str,
-    objects: &[tensorfs::format::ObjectRef],
-) -> io::Result<()> {
-    let scope = private_scope(tx, execution)?;
-    for object in objects {
-        touch_object_scoped(tx, object, scope.as_ref())?;
-        tx.execute(
-            "INSERT OR IGNORE INTO run_objects(execution,sha256,length) VALUES(?1,?2,?3)",
-            params![execution, object.sha256, object.length],
-        )
-        .map_err(db_error)?;
+/// `execution` names `objects`: in its project's bookkeeping when it has one.
+fn reference_objects(tx: &rusqlite::Transaction<'_>, execution: &str, objects: &[tensorfs::format::ObjectRef]) -> io::Result<()> {
+    match private_scope(tx, execution)? {
+        Some(scope) => crate::project_objects::reference(&crate::project_objects::open(&scope)?, execution, objects),
+        None => crate::project_objects::reference(tx, execution, objects),
     }
-    Ok(())
 }
 
 /// The waiting reason of a run accepted before its preparation completes.
@@ -1494,7 +1645,7 @@ pub(crate) struct Accepting<'a> {
 fn accepting(tx: &rusqlite::Transaction<'_>, actor: &str, run: Accepting<'_>) -> io::Result<(Execution, bool)> {
     let Accepting { id, digest, invocation, objects, spec } = run;
     validate_scope(actor, id, id)?;
-    let key = format!("run:{}", encoded(&(actor, id))?);
+    let key = format!("run:{}", encoded(&(actor, stored_id(invocation.local_private.as_ref(), id)))?);
     if update_run_reserved(tx, actor, id)? {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "this run id names a software update"));
     }
@@ -1561,7 +1712,7 @@ fn insert(
             })
         })
         .collect();
-    tx.execute("INSERT INTO executions(idempotency_key,invocation,record,state,updated_ms,actor,request_id,submission_id) VALUES(?1,?2,'{}','queued',?3,?4,?5,?6)", params![key, invocation_index(&invocation)?, timestamp(),context.as_ref().map(|context|context.actor.as_str()),context.as_ref().map(|context|context.request_id.as_str()),context.as_ref().map(|context|context.submission_id.as_str())]).map_err(db_error)?;
+    tx.execute("INSERT INTO executions(idempotency_key,invocation,record,state,updated_ms,actor,request_id,submission_id) VALUES(?1,?2,'{}','queued',?3,?4,?5,?6)", params![key, invocation_index(&invocation)?, timestamp(),context.as_ref().map(|context|context.actor.as_str()),context.as_ref().map(|context|stored_id(invocation.local_private.as_ref(), &context.request_id)),context.as_ref().map(|context|stored_id(invocation.local_private.as_ref(), &context.submission_id))]).map_err(db_error)?;
     let execution = Execution {
         id: tx.last_insert_rowid().to_string(),
         idempotency_key: key.into(),
@@ -1624,7 +1775,7 @@ impl Journal {
             .connection
             .query_row(
                 "SELECT record FROM executions WHERE (actor=?1 OR ?1 IS NULL AND actor IS NOT NULL) AND request_id=?2 LIMIT 1",
-                params![actor, request_id],
+                params![actor, stored_id(crate::private_io::current().as_ref(), request_id)],
                 |row| row.get(0),
             )
             .optional()
@@ -1750,9 +1901,19 @@ impl Journal {
         }
         let ran = Ran::of(tx, record)?;
         let size = encoded(&api::machine::JobSize::of(&invocation.input))?;
+        let function = function_key(&invocation.package, &invocation.entrypoint);
+        // Its first call here: its plan compiled as it ran, so its time is the cold one (cl-967).
+        let cold = tx
+            .query_row("SELECT 1 FROM root_times WHERE function=?1 AND execution<>?2 LIMIT 1", params![function, record.id], |_| Ok(()))
+            .optional()
+            .map_err(db_error)?
+            .is_none();
+        if cold {
+            tx.execute("INSERT OR REPLACE INTO cold_times(execution) VALUES(?1)", params![record.id]).map_err(db_error)?;
+        }
         tx.execute(
             "INSERT OR REPLACE INTO root_times(execution,function,width,size,ms,load_ms) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![record.id, function_key(&invocation.package, &invocation.entrypoint), record.width, size, ran.compute_ms as i64, ran.load_ms as i64],
+            params![record.id, function, record.width, size, ran.compute_ms as i64, ran.load_ms as i64],
         )
         .map_err(db_error)?;
         Ok(())
@@ -1761,18 +1922,72 @@ impl Journal {
     /// The newest `limit` times of `function` here (`function_key`), newest first.
     pub(crate) fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<RunTime>> {
         let mut statement = self.connection
-            .prepare("SELECT width,size,ms,load_ms FROM root_times WHERE function=?1 ORDER BY execution DESC LIMIT ?2")
+            .prepare("SELECT r.width,r.size,r.ms,r.load_ms,c.execution IS NOT NULL FROM root_times r LEFT JOIN cold_times c ON c.execution=r.execution WHERE r.function=?1 ORDER BY r.execution DESC LIMIT ?2")
             .map_err(db_error)?;
         let rows = statement
             .query_map(params![function, limit.min(i64::MAX as usize) as i64], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, bool>(4)?))
             })
             .map_err(db_error)?;
         rows.map(|row| {
-            let (width, size, ms, load_ms) = row.map_err(db_error)?;
-            Ok(RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64 })
+            let (width, size, ms, load_ms, cold) = row.map_err(db_error)?;
+            Ok(RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64, cold })
         })
         .collect()
+    }
+
+    /// What `function`'s newest run here reads, in place of what the one before read (cl-967).
+    pub(crate) fn record_reads(&mut self, function: &str, reads: &[FunctionRead]) -> io::Result<()> {
+        let tx = self.connection.transaction().map_err(db_error)?;
+        tx.execute("DELETE FROM function_reads WHERE function=?1", params![function]).map_err(db_error)?;
+        for read in reads {
+            tx.execute(
+                "INSERT OR REPLACE INTO function_reads(function,checkpoint,model,components,bytes) VALUES(?1,?2,?3,?4,?5)",
+                params![function, read.checkpoint, read.model, encoded(&read.components)?, read.bytes as i64],
+            )
+            .map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)
+    }
+
+    /// Each function's newest reads here (`record_reads`), by function.
+    pub(crate) fn function_reads(&self) -> io::Result<Vec<(String, FunctionRead)>> {
+        let mut statement = self.connection
+            .prepare("SELECT function,checkpoint,model,components,bytes FROM function_reads ORDER BY function,checkpoint")
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
+            })
+            .map_err(db_error)?;
+        rows.map(|row| {
+            let (function, checkpoint, model, components, bytes) = row.map_err(db_error)?;
+            let components = serde_json::from_str(&components).unwrap_or_default();
+            Ok((function, FunctionRead { checkpoint, model, components, bytes: bytes.max(0) as u64 }))
+        })
+        .collect()
+    }
+
+    /// Each timed function's newest `limit` times here, newest first (`StatusFrame::times`).
+    pub(crate) fn all_run_times(&self, limit: usize) -> io::Result<Vec<api::machine::Timed>> {
+        let mut statement = self.connection
+            .prepare("SELECT r.function,r.width,r.size,r.ms,r.load_ms,c.execution IS NOT NULL FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY function ORDER BY execution DESC) AS n FROM root_times) r LEFT JOIN cold_times c ON c.execution=r.execution WHERE r.n <= ?1 ORDER BY r.function, r.execution DESC")
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map(params![limit.min(i64::MAX as usize) as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, bool>(5)?))
+            })
+            .map_err(db_error)?;
+        let mut timed: Vec<api::machine::Timed> = vec![];
+        for row in rows {
+            let (function, width, size, ms, load_ms, cold) = row.map_err(db_error)?;
+            if timed.last().is_none_or(|last| last.function != function) {
+                timed.push(api::machine::Timed { function, runs: vec![], reads: vec![] });
+            }
+            let run = RunTime { width: width as u32, size: serde_json::from_str(&size).unwrap_or_default(), ms: ms as f64, load_ms: load_ms as f64, cold };
+            timed.last_mut().expect("pushed").runs.push(run);
+        }
+        Ok(timed)
     }
 
     fn selected(&self, query: &str, limit: usize) -> io::Result<Vec<Execution>> {
@@ -2357,9 +2572,8 @@ impl Journal {
     ) -> io::Result<Execution> {
         let output = std::cell::Cell::new(false);
         let hold = |tx: &rusqlite::Transaction<'_>, record: &Execution| {
-            if let Some(mut held) = held.filter(|_| record.state == State::Completed) {
-                held.record = private_journal::write(record.invocation.local_private.as_ref(), &format!("memo:{}:{}", held.actor, held.computation), &held.record)?;
-                hold_memo(tx, &held)?;
+            if let Some(held) = held.filter(|_| record.state == State::Completed) {
+                hold_memo(tx, record.invocation.local_private.as_ref(), &held)?;
             }
             if output.get() { Self::phase_log(tx, record, serde_json::json!({"phase": "output_finished"}))?; }
             Ok(())
@@ -2517,7 +2731,7 @@ fn public_prior(
     let request: Option<String> = tx
         .query_row(
             "SELECT record FROM executions WHERE actor=?1 AND request_id=?2",
-            params![actor, request_id],
+            params![actor, stored_id(crate::private_io::current().as_ref(), request_id)],
             |row| row.get(0),
         )
         .optional()
@@ -2527,7 +2741,7 @@ fn public_prior(
     }
     tx.query_row(
         "SELECT record FROM executions WHERE actor=?1 AND submission_id=?2",
-        params![actor, submission_id],
+        params![actor, stored_id(crate::private_io::current().as_ref(), submission_id)],
         |row| row.get(0),
     )
     .optional()

@@ -56,6 +56,10 @@ pub struct Part {
     pub data: BTreeSet<String>,
     #[serde(default)]
     pub config: bool,
+    /// What a LoRA keeps beside its factors (a step-distilled one's per-step tables and heads), by key with its numbered
+    /// segments as `N`: a slot whose default keeps them takes only a LoRA that keeps them too.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub kept: BTreeSet<String>,
 }
 
 /// How a slot reads a checkpoint, as its function declares it.
@@ -123,6 +127,7 @@ impl Part {
             modules: modules(&component.tensors),
             data,
             config: !component.config.is_empty(),
+            kept: kept(component),
         }
     }
 
@@ -131,12 +136,37 @@ impl Part {
     }
 }
 
+/// A LoRA component's tensors besides its factors, by key with numbered segments as `N`; none for a component of no LoRA.
+fn kept(component: &Component) -> BTreeSet<String> {
+    if !super::paired(component) {
+        return BTreeSet::new();
+    }
+    (component.tensors.iter())
+        .filter(|tensor| !super::factor(&tensor.key))
+        .map(|tensor| tensor.key.split('.').map(|segment| if segment.bytes().all(|b| b.is_ascii_digit()) { "N" } else { segment }).collect::<Vec<_>>().join("."))
+        .collect()
+}
+
 impl Parts {
     pub fn of(header: &Header) -> Parts {
         Parts {
             pipeline: header.pipeline().map(|pipeline| class(&pipeline.class)).filter(|class| !class.is_empty()),
             components: header.components().iter().map(|component| (component.name.clone(), Part::of(component))).collect(),
         }
+    }
+
+    /// What `other`, a LoRA, lacks of what this one keeps beside its factors in the components `reads` names, in words; none when
+    /// it keeps all of it. A LoRA slot whose default is step-distilled (H3 Turbo) takes no ordinary LoRA.
+    pub fn keeps_lacking(&self, other: &Parts, reads: Reads<'_>) -> Option<String> {
+        let read = |name: &str| reads.components.is_empty() || reads.components.iter().any(|held| held == name);
+        for (name, part) in self.components.iter().filter(|(name, part)| !part.kept.is_empty() && read(name)) {
+            let theirs = other.components.get(name).map(|theirs| &theirs.kept);
+            let missing: Vec<&str> = part.kept.iter().filter(|key| !theirs.is_some_and(|held| held.contains(*key))).map(String::as_str).collect();
+            if !missing.is_empty() {
+                return Some(format!("it keeps no {name} {}{}", missing[..missing.len().min(3)].join(", "), if missing.len() > 3 { ", …" } else { "" }));
+            }
+        }
+        None
     }
 
     /// What `other` lacks to load where this checkpoint loads, read as `reads` says, in words; none when it loads. A slot that

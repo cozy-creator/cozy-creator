@@ -5,38 +5,89 @@
 # BiRefNet removal on the CPU from a YAML request, run ls/show, a second executor (the machine restarted)
 # with an --file input, a stuck Calcifer that cozy doctor restarts, and removal as the README says. Where the OS
 # runs no models itself (macOS, Windows: lib.sh's LOCAL), what needs no machine, every local verb refused, and the
-# rest of that list but the machine. On every OS, the page Calcifer serves (web.sh).
+# rest of that list but the machine. On every OS, the page Calcifer serves (web_serves, and web.sh's suite in its own shards).
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-trash|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
+#   e2e/cli/run.sh --out DIR [--shard NAME]: NAME is a case below, or web-<cell> for web/<cell>.spec.js alone (else a web/<cell>.js
+#                  outside the suite, by hand)
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
 . "$(dirname "$0")/lines.sh"
+. "$(dirname "$0")/ondemand.sh"
+. "$(dirname "$0")/disk.sh"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
 . "$(dirname "$0")/projectdb.sh"
 . "$(dirname "$0")/statedb.sh"
 . "$(dirname "$0")/projectvault.sh"
+. "$(dirname "$0")/containmentscale.sh"
 . "$(dirname "$0")/machineset.sh"
 . "$(dirname "$0")/rental.sh"
 . "$(dirname "$0")/fallback.sh"
 . "$(dirname "$0")/previews.sh"
+. "$(dirname "$0")/released.sh"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
+. "$(dirname "$0")/oldtakes.sh"
+. "$(dirname "$0")/selfupdate.sh"
+. "$(dirname "$0")/idle.sh"
+. "$(dirname "$0")/plan.sh"
+. "$(dirname "$0")/render.sh"
+. "$(dirname "$0")/source.sh"
+. "$(dirname "$0")/envcost.sh"
+. "$(dirname "$0")/egress.sh"
+. "$(dirname "$0")/stuck.sh"
+. "$(dirname "$0")/rentalself.sh"
+
+# This proof owns its foreground Calcifer/private observation pipe. Keep it out
+# of the ordinary raw-log/body collectors and never emit its private CLI data.
+if [ "$SHARD" = containment ] || [ "$SHARD" = containment-web ]; then
+  user_services
+  step install; install_cozy
+  step candidates; candidates
+  systemctl --user stop cozy-calcifer.service
+  mkdir -p "$OUT/containment"
+  python3 - "$HOME/.cozy/bin/cozy" "$OUT/containment/ready.json" "$SHARD" "${CAND_RT:-}" "${CAND_TFS:-}" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+binary, ready = map(Path, sys.argv[1:3])
+ready.write_text(json.dumps({"ready": True, "native_execution": sys.argv[3] == "containment", "remote_cpu": sys.argv[3] == "containment-web", "runtime": sys.argv[4], "tensorfs": sys.argv[5], "development_web": True, "sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest()}))
+PY
+  exec xvfb-run -a uv run --no-project "$here/containment/run.py" \
+    --ready-file "$OUT/containment/ready.json" --out "$OUT/containment"
+fi
 
 start() {
-step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
+step install; install_cozy
+# The newest release makes its project before the candidate's first start: Calcifer's store is one way (released.sh).
+[[ $parts != *released_project* ]] || { user_services; released_made; }
+run_project "$OUT/project" || fail "project initialization failed"
 user_services
 step status; fixture_calcifer | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
-[ "$SHARD" != commands ] || version_skew
+[ "$SHARD" != commands ] || { version_skew; busy_skew; }
 step candidates; candidates
+[ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
+# web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
+# its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
+case $SHARD in projectvault | plan | stuck | coming) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+}
+
+# A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
+# calcifer.diagnostics (tests only), its warnings in calcifer/diagnostics.log, which the job collects with the other logs; each
+# project's walk keeps its decisions in its own storage (.vault-calcifer/diagnostics/walk.log).
+calcifer_diagnostics() {
+  local config=$HOME/.cozy/config.toml
+  awk '/^diagnostics *=/ { next } { print } /^\[calcifer\]/ { print "diagnostics = true"; put = 1 } END { if (!put) printf "\n[calcifer]\ndiagnostics = true\n" }' "$config" > "$config.next" && mv "$config.next" "$config"
+  # `cozy restart`, not a signal: Git Bash's kill reaches no Windows pid (cl-989).
+  cozy --json restart > "$OUT/diagnostics-restart.json" 2>&1 || fail "Calcifer did not start again with its diagnostics: $(tail -c 300 "$OUT/diagnostics-restart.json")"
+  [ -f "$HOME/.cozy/calcifer/diagnostics.log" ] || fail "Calcifer kept no diagnostics log"
 }
 
 # The candidate set end to end: a request through TensorD, the Runtime and TensorFS to the reply, no model.
@@ -99,7 +150,8 @@ for form in script folder; do
   fi
 done
 # accelerator=True is the default's GPU-when-there-is-one: an interface writes only `false`.
-kept=$(ls ~/.cozy/packages/local/words/*.json 2> /dev/null | head -1)
+# A project's runs keep their interfaces inside it (.vault-calcifer); a call outside any project keeps them in the home.
+kept=$(ls "$RUN_PROJECT"/.vault-calcifer/packages/local/words/*.json ~/.cozy/packages/local/words/*.json 2> /dev/null | head -1 || true)
 [ -n "$kept" ] && ! grep -q '"accelerator":false' "$kept" || check "the script's interface is not accelerator=True (${kept:-none kept})"
 }
 
@@ -125,6 +177,21 @@ if cell ratio-unknown "$ratio" "prompt=ratio $RANDOM" negative_prompt=blurry gui
       || check "ratio-unknown: $field, which it doesn't take, isn't said"
   done
 fi
+}
+
+# An on-demand model slot whose model the Hub doesn't have (xs-186): a request that never reads it completes, and one that
+# reads it is refused with one line naming the slot, the model and why.
+lazy_slots() {
+step "an on-demand slot whose model the Hub lacks"
+local lazy=$here/script/lazy.py said
+if cell lazy-unused "$lazy" use:=false; then
+  grep -q '"used": *false' "$OUT/lazy-unused.ndjson" || check "lazy-unused: the reply is not used=false"
+fi
+ALLOW='extra: e2e/absent@0.1.0: ' cell lazy-read "$lazy" use:=true || return 0
+said=$(run_get "$OUT" lazy-read '[.reason.code, .reason.message] | join(" ")')
+echo "lazy-read: $(run_get "$OUT" lazy-read .status): $said"
+[ -f "$OUT/lazy-read.refused" ] && [[ $said == *" extra: e2e/absent@0.1.0: "* ]] \
+  || check "lazy-read: reading the slot did not fail naming it, its model and why: ${said:-nothing}"
 }
 
 # Describe reads a checkout's editable install statically (direct_url.json and .pth paths, never their code).
@@ -189,24 +256,101 @@ step "Calcifer reaps the machine it started"; machine_reaped
 step "a restarted Calcifer adopts the machine"; calcifer_restart_adopts
 }
 
+# bounded_cell <seconds> <name> <target> <inputs...>: `cell`, in $here, still going after <seconds> is said (its events, its
+# record, its follower) and ended: a hang after a Calcifer restart fails the step, never the suite.
+bounded_cell() {
+  local limit=$1 name=$2 job pid n began=$SECONDS; shift 2
+  (cd "$here" && cell "$name" "$@") & job=$!
+  while kill -0 "$job" 2> /dev/null && [ $((SECONDS - began)) -lt "$limit" ]; do sleep 1; done
+  if kill -0 "$job" 2> /dev/null; then
+    pid=$(cat "$OUT/$name.pid" 2> /dev/null) n=$(cat "$OUT/$name.number" 2> /dev/null)
+    echo "$name: run ${n:-none}'s cell still going after $limit s; its follower ${pid:-?} $([ -n "$pid" ] && kill -0 "$pid" 2> /dev/null && echo runs || echo exited)"
+    echo "  events: $(grep '^{' "$OUT/$name.ndjson" 2> /dev/null | jq -r '.type' 2> /dev/null | uniq -c | tr -s ' \n' ' ')"
+    echo "  last: $(grep '^{' "$OUT/$name.ndjson" 2> /dev/null | tail -n 3 | jq -c '{type, status: .run.status, machine_state: .run.machine_state, reason}' 2> /dev/null | tr '\n' ' ')"
+    echo "  stderr: $(tail -n 3 "$OUT/$name.err" 2> /dev/null | cut -c1-300 | tr '\n' ' ')"
+    echo "  record: $(cozy --json run watch "${n:-0}" --once 2> /dev/null | jq -c '{status, machine_state, waiting, reason: .reason.code}' 2> /dev/null)"
+    [ -z "$pid" ] || echo "  process: $(grep -E '^(State|voluntary_ctxt|nonvoluntary_ctxt)' "/proc/$pid/status" 2> /dev/null | tr -s '\t\n' ' ') wchan $(cat "/proc/$pid/wchan" 2> /dev/null) cpu $(ps -o time= -p "$pid" 2> /dev/null)"
+    [ -z "$pid" ] || kill "$pid" 2> /dev/null || true
+    kill "$job" 2> /dev/null || true
+    wait "$job" 2> /dev/null || true
+    check "$name: run ${n:-none}'s cell did not end in $limit s"
+    return 1
+  fi
+  wait "$job"
+}
+
 # After the other parts, as these stop Calcifer, and not straight after calcifer_restart_adopts: systemd starts a
 # unit at most five times in 10 s (run 40132725041: doctor's restart was refused).
 calcifer_faults() {
 if [ -n "$LOCAL" ]; then
   step "Calcifer stopped under the machine it started"
   if calcifer_orphaned; then
-    (cd "$here" && cell after-orphan ./weightless/reverse "text=orphan$RANDOM") || check "no run went after cozy doctor recovered Calcifer"
+    bounded_cell 300 after-orphan ./weightless/reverse "text=orphan$RANDOM" || check "no run went after cozy doctor recovered Calcifer"
   fi
 fi
 
 step "a stuck Calcifer"
 if calcifer_stuck; then
   if [ -n "$LOCAL" ]; then
-    (cd "$here" && cell after-stuck ./weightless/reverse "text=after$RANDOM") || check "no run went after cozy doctor restarted Calcifer"
+    bounded_cell 300 after-stuck ./weightless/reverse "text=after$RANDOM" || check "no run went after cozy doctor restarted Calcifer"
   else
     fixture_calcifer | jq -e '.calcifer.running' > /dev/null || check "Calcifer does not answer after cozy doctor restarted it"
   fi
 fi
+}
+
+# cl-885: `cozy run watch` of a run going on outlives Calcifer restarts, the first by a Calcifer whose lock record lands 5 s late (a busy
+# disk, slow-record.c): it reconnects on the new record and reaches the run's end. A Calcifer that answered before its record landed refused
+# the watch's last bearer while there was no record to find, and the watch ended ("Calcifer's API needs the bearer from its lock record").
+# Each run record the watch was sent names the run's project as GET's does, and `cozy run ls`, open on a terminal through the restarts,
+# lists the run and opens it by its project's route (cl-885: the stream's records named none, so a read built from them asked /v1/runs).
+watch_restart() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a run watched across Calcifer restarts, one whose lock record lands 5 s late (cl-885)"
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder dropin=$HOME/.config/systemd/user/cozy-calcifer.service.d/cl885-slow-record.conf
+local n pid submitter watcher lister code=0 slowed once
+cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC -o "$OUT/slow-record.so" "$here/slow-record.c" -ldl || { check "watch restart: slow-record.c didn't build"; return; }
+(cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/wait" seconds:=45 --on local > "$OUT/watched-run.ndjson" 2> "$OUT/watched-run.err") & submitter=$!
+for _ in $(seq 240); do n=$(grep -m1 -oE '"number": *[0-9]+' "$OUT/watched-run.ndjson" | grep -oE '[0-9]+$') && break; sleep 0.5; done
+[ -n "$n" ] || { check "watch restart: the run never began: $(tail -c 300 "$OUT/watched-run.err")"; wait "$submitter" || true; return; }
+# Its number names a run of its project: watched from there.
+(cd "$RUN_PROJECT" && timeout 600 cozy --json run watch "$n") > "$OUT/watch.ndjson" 2> "$OUT/watch.err" & watcher=$!
+for _ in $(seq 60); do [ -s "$OUT/watch.ndjson" ] && break; sleep 0.5; done
+(cd "$RUN_PROJECT" && exec python3 "$here/project/terminal.py" "$OUT/watch-ls.screen" "$COZY" run ls) > /dev/null 2>&1 & lister=$!
+soon screen_says "$OUT/watch-ls.screen" 'TARGET' || check "watch restart: cozy run ls drew nothing"
+for slow in yes no; do
+  pid=$(jq -r .pid "$holder")
+  if [ "$slow" = yes ]; then
+    mkdir -p "${dropin%/*}" && printf '[Service]\nEnvironment=LD_PRELOAD=%s\n' "$OUT/slow-record.so" > "$dropin"
+  else
+    rm -f "$dropin"
+  fi
+  systemctl --user daemon-reload && systemctl --user restart cozy-calcifer || check "watch restart: systemctl --user restart cozy-calcifer failed"
+  for _ in $(seq 120); do [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] && [ -s "$holder" ] && break; sleep 0.5; done
+  [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] || check "watch restart: no new Calcifer's record 60 s after a restart"
+done
+# Calcifer's start steps are in its closed health log.
+slowed=$(grep -a 'started step="record"' "$HOME/.cozy/calcifer/health.log" 2> /dev/null | tail -2 | head -1 | grep -oE 'ms=[0-9]+' | cut -d= -f2) || slowed=
+[ "${slowed:-0}" -ge 4000 ] || check "watch restart: the first restart's record wasn't slowed (record step ${slowed:-?} ms): the cell proves nothing"
+wait "$watcher" || code=$?
+[ "$code" = 0 ] && J -s 'any(.[]; .type == "run.completed" and .run.status == "completed")' "$OUT/watch.ndjson" \
+  || check "watch restart: the watch of run $n didn't reach its end (exit $code): $(tail -c 300 "$OUT/watch.ndjson") $(tail -c 300 "$OUT/watch.err")"
+once=$(in_project "$RUN_PROJECT" --json run watch "$n" --once) && J '.status == "completed"' <<< "$once" || check "watch restart: run $n did not complete"
+jq -se --argjson got "${once:-null}" 'map(select(.run)) | length > 0 and all(.run.project_id == $got.project_id and .run.project == $got.project)' \
+  "$OUT/watch.ndjson" > /dev/null && J '.project_id' <<< "$once" \
+  || check "watch restart: the stream's run records don't name run $n's project as GET does ($(jq -c '{project_id, project}' <<< "${once:-null}")): $(jq -sc 'map(select(.run) | .run | {project_id, project}) | unique' "$OUT/watch.ndjson")"
+# Enter on the newest row, run $n, opens it as `cozy run watch` does; q goes back, and q again quits.
+soon screen_says "$OUT/watch-ls.screen" "^ *[A-Z][A-Z0-9]*-$n .* completed" || check "watch restart: cozy run ls past the restarts doesn't list run $n completed: $(head -5 "$OUT/watch-ls.screen")"
+kill -USR1 "$lister" 2> /dev/null || true
+soon screen_says "$OUT/watch-ls.screen" "cozy run watch [A-Z][A-Z0-9]*-$n " && soon screen_says "$OUT/watch-ls.screen" 'completed' \
+  && ! screen_says "$OUT/watch-ls.screen" 'no such run|run_not_found' \
+  || check "watch restart: cozy run ls didn't open run $n: $(head -8 "$OUT/watch-ls.screen")"
+kill "$lister" 2> /dev/null || true
+soon screen_says "$OUT/watch-ls.screen" 'TARGET' || true
+kill "$lister" 2> /dev/null || true
+code=0; wait "$lister" || code=$?
+[ "$code" = 0 ] || check "watch restart: cozy run ls exited $code on q"
+wait "$submitter" || true
 }
 
 # cl-716 B: a run followed while Calcifer restarts goes on being followed to its end; a burst of restarts past
@@ -217,7 +361,7 @@ step "a run followed across a Calcifer restart"
 local code n
 (cd "$here" && in_project "$RUN_PROJECT" run "$here/weightless/wait" seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
 local follower=$!
-for _ in $(seq 120); do n=$(grep -oE '^run [0-9]+ ' "$OUT/across.txt" | head -1 | grep -oE '[0-9]+') && break; sleep 0.5; done
+for _ in $(seq 120); do n=$(grep -oE '^run [A-Z][A-Z0-9]*-[0-9]+ ' "$OUT/across.txt" | head -1 | cut -d' ' -f2) && [ -n "$n" ] && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"
 systemctl --user restart cozy-calcifer || check "systemctl --user restart cozy-calcifer failed"
 wait "$follower" || true
@@ -232,7 +376,7 @@ systemctl --user show -p Result --value cozy-calcifer > "$OUT/burst-result.txt" 
 echo "after the burst: $(cat "$OUT/burst-result.txt")"
 cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && fixture_calcifer | J '.calcifer.running == true' \
   || check "after a burst of restarts ($(cat "$OUT/burst-result.txt")), the next command did not start Calcifer: $(tail -c 300 "$OUT/burst-machines.err")"
-(cd "$here" && cell after-burst ./weightless/reverse "text=burst$RANDOM") || check "no run went after the burst of restarts"
+bounded_cell 300 after-burst ./weightless/reverse "text=burst$RANDOM" || check "no run went after the burst of restarts"
 }
 
 update() { step update; update_to_newest; }
@@ -274,7 +418,8 @@ for at in 1 2 1; do
     grep -q "\"words\": *$at\b" "$OUT/folder-$turn.ndjson" || check "one package name at two paths: path $at ran another's code"
   fi
 done
-cozy --json package uninstall local/one-name --on local > /dev/null || check "package uninstall local/one-name failed"
+in_project "$RUN_PROJECT" --json package uninstall local/one-name --on local > "$OUT/uninstall-one-name.json" 2>&1 \
+  || check "package uninstall local/one-name failed: $(tail -c 300 "$OUT/uninstall-one-name.json")"
 for at in 1 2; do
   mkdir -p "$OUT/paths/$at/scripts"
   sed "s/words=len(payload.text.split())/words=$at/" "$words" > "$OUT/paths/$at/scripts/one_script.py"
@@ -285,121 +430,360 @@ for at in 1 2 1; do
     grep -q "\"words\": *$at\b" "$OUT/script-$turn.ndjson" || check "one script name at two paths: path $at ran another's code"
   fi
 done
-cozy --json package uninstall local/one_script --on local > /dev/null || check "package uninstall local/one_script failed"
+in_project "$RUN_PROJECT" --json package uninstall local/one_script --on local > "$OUT/uninstall-one-script.json" 2>&1 \
+  || check "package uninstall local/one_script failed: $(tail -c 300 "$OUT/uninstall-one-script.json")"
 }
+
+# The web suite's lanes (cl-973), each a job of its own with its own Calcifer: their cells at once (web.sh's web_suite), balanced by
+# measured time, longest first, one cell a line. A cell is web/<cell>.spec.js; its line is uncommented once it's written.
+WEB_1=(
+  video
+  render
+  upload
+  mention
+  box-actions
+  timeline
+  open
+  gone
+)
+WEB_2=(
+  fields
+  layout
+  type
+  live
+  delete-undo
+  canvas-nav
+)
+WEB_3=(
+  focus
+  create
+  takes
+  no-overlap
+  instant
+  select
+  move
+)
+# The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
+WEB_ENGINES=(
+  upload
+  type
+  create
+  move
+  open
+  vault
+)
+# What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
+WEB_SOLO=(
+  opens
+  open
+  account-rent
+  offline
+)
+# macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout, and what the old native cells durable, see and undo
+# checked (instant, canvas-nav, delete-undo).
+WEB_NATIVE=(
+  layout
+  # offline: its step 5 renders on local, which macOS and Windows don't run (lib.sh's LOCAL)
+  canvas-nav
+  instant
+  upload
+  type
+  create
+  delete-undo
+  move
+  open
+)
+web_cells=()
+web_lane() { web_suite "${SHARD#web-}" ${web_cells[@]+"${web_cells[@]}"}; }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="uv_at_once entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles slot_choices old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine slow_runs prepares completions calcifer_faults calcifer_restarts update remove" ;;
-  runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
-  executors) parts="second_executor lifetime kept_preparing update remove" ;;
+  '') parts="
+    uv_at_once
+    entrypoints
+    weightless
+    script_package
+    one_name_two_paths
+    image_ratio
+    lazy_slots
+    describe
+    first_run
+    previews
+    second_executor
+    lifetime
+    kept_preparing
+    catalog
+    basics
+    component_models
+    second_project
+    yaml_requests
+    run_flags
+    run_follow
+    time_left
+    broken_answers
+    run_filters
+    project_keys
+    run_failures
+    run_playback
+    hub_away
+    lock_refresh
+    bound_runs
+    own_references
+    lane_fit
+    no_descriptions
+    orbit_angles
+    old_runtime
+    hostile_media
+    egress
+    hostile_inputs
+    unseen
+    machine_checkout
+    local_edits
+    path_manifest
+    rental_end
+    machine_show_runs
+    writes_once
+    project_stream
+    agent_render
+    agent_api
+    ignored_inputs
+    orbit_metadata
+    web_serves
+    queued_download
+    machines
+    local_idle
+    machine_set
+    fall_back
+    coming_machine
+    slow_runs
+    completions
+    install_retries
+    calcifer_faults
+    calcifer_restarts
+    stuck_exit
+    update
+    remove
+  " ;;
+  runs) parts="
+    weightless
+    describe
+    first_run
+    previews
+    run_flags
+    run_playback
+    hub_away
+    lock_refresh
+    logs
+  " ;;
+  executors) parts="
+    second_executor
+    lifetime
+    kept_preparing
+    released_project
+    update
+    remove
+  " ;;
+  # A project the newest release made, read by the candidate (cl-930); then the release refuses the candidate's store.
+  released) parts="released_project update logs" ;;
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;
+  # An idle Calcifer and TensorD, CPU time and wakeups (xs-189): by dispatch, as it measures for minutes.
+  idle) parts="idle_cost logs" ;;
+  # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.
+  env-cost) parts="env_cost logs" ;;
+  # What a call may read on demand, on a cold machine (cl-966).
+  ondemand) parts="ondemand_ahead ondemand_need ondemand_install logs" ;;
+  # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
+  disk) parts="disk_full logs" ;;
+  # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
+  plan) parts="estimate_line plan_picks plan_published prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
-  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references no_descriptions orbit_angles slot_choices old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
-  # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
-  web) parts="tools_read web_serves page_resend logs" ;;
+  commands) parts="
+    entrypoints
+    catalog
+    basics
+    component_models
+    second_project
+    yaml_requests
+    run_filters
+    project_keys
+    run_failures
+    bound_runs
+    own_references
+    lane_fit
+    no_descriptions
+    orbit_angles
+    old_runtime
+    hostile_media
+    egress
+    hostile_inputs
+    machine_show_runs
+    writes_once
+    project_stream
+    agent_api
+    ignored_inputs
+    orbit_metadata
+    web_serves
+    install_retries
+    logs
+  " ;;
   project-stream) parts="project_stream logs" ;;
-  # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path, the page too.
+  # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path.
   slow) parts="slow_runs logs" ;;
-  project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
-  # A box from Render to its take, each phase of its face kept as a picture (cl-921).
-  web-activity) export DB_WEB=activity; parts="tools_read db_existing_web logs" ;;
-  web-core) parts="tools_read web_core page_resend logs" ;;
-  web-firefox) parts="tools_read web_firefox logs" ;;
-  # The palette against a Hub holding every first-party package (e2e/isolated.sh), and with none (cl-896).
-  web-palette) export DB_WEB=palette; parts="tools_read db_existing_web logs" ;;
-  # The canvas where it was after Focus (cl-931).
-  web-refocus) export DB_WEB=refocus; parts="tools_read db_existing_web logs" ;;
-  # A pulled shape snapping to a ratio its tool makes (cl-936).
-  web-aspect) export DB_WEB=aspect; parts="tools_read db_existing_web logs" ;;
-  # A video scrubbed in Focus (cl-933).
-  web-scrub) export DB_WEB=scrub; parts="tools_read db_existing_web logs" ;;
-  # One Models & LoRAs picker for every tool; H3's fields unfolded (cl-934). Its Hub holds an H3 LoRA (isolated.sh).
-  web-models) export DB_WEB=models; parts="tools_read db_existing_web logs" ;;
-  # One editing view for a picture and a video: the frame holds the prompt sections, Render and the fields under it (cl-938).
-  web-frame) export DB_WEB=frame; parts="tools_read db_existing_web logs" ;;
-  # Deleting by a trash can (cl-939).
-  web-trash) export DB_WEB=trash; parts="tools_read db_existing_web logs" ;;
-  # The tool beside a box's name (cl-927).
-  web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
-  # A box's models and LoRAs, open (web/addons.js; at rest it has no chips, cl-932).
-  web-addons) export DB_WEB=addons; parts="tools_read db_existing_web logs" ;;
-  # The right-side panel closed by a click off it (cl-929).
-  web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;
-  # No New on an empty box (cl-925).
-  web-empty) export DB_WEB=empty; parts="tools_read db_existing_web logs" ;;
-  # A press from inside never dismisses (cl-923).
-  web-dismiss) export DB_WEB=dismiss; parts="tools_read db_existing_web logs" ;;
-  # Typed words over a picture (cl-901).
-  web-legible) export DB_WEB=legible; parts="tools_read db_existing_web logs" ;;
-  # A Shot's beats laid out (cl-903).
-  web-beats) export DB_WEB=beats; parts="tools_read db_existing_web logs" ;;
-  # Pasted mentions (cl-902).
-  web-paste) export DB_WEB=paste; parts="tools_read db_existing_web logs" ;;
-  # A toast when a render finishes, with View (cl-937).
-  web-donetoast) export DB_WEB=donetoast; parts="tools_read db_existing_web logs" ;;
-  # A run says one thing at most: no note of a completed run's warnings, one note of a failure that stays (cl-921).
-  web-toasts) export DB_WEB=toasts; parts="tools_read db_existing_web logs" ;;
-  # A rendering box at rest, and new takes not looked at (cl-928).
-  web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
-  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it; an
-  # edit's backdrop with every picture it uses (cl-949).
-  web-tiles) export DB_WEB="tiles newtakes backdrop"; parts="tools_read db_existing_web logs" ;;
-  # The take looked at in Focus is the one drawn when it finishes (cl-942).
-  web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
-  web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
-  web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
-  # Files dropped: twenty pictures at once, each drawn once where and as it stays (cl-918), and Place's drop, chooser, rename and moves.
-  web-dropped) export DB_WEB="dropped place"; parts="tools_read db_existing_web logs" ;;
-  # A deleted box gone from the project, its files after the undo window (cl-919): its own runner, as it waits out the window twice.
-  web-deleted) export DB_WEB=deleted; parts="tools_read db_existing_web logs" ;;
-  web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
-  web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
-  web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
-  follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
+  web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
+  web-2) web_cells=(${WEB_2[@]+"${WEB_2[@]}"}); parts="web_lane logs" ;;
+  web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
+  web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
+  web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
+  web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
+  # cl-982's opens on a busy computer: 3,000 other loopback connections open (web/busy.js), as the gate's lookups meet them (cl-985).
+  web-opens-busy) export BUSY_SOCKETS=3000; web_cells=(opens); parts="web_lane logs" ;;
+  # The page as Calcifer's own and what the access rule refuses (cl-985), alone.
+  web-serves) parts="tools_read web_serves logs" ;;
+  # A project cozy 0.24.0 made keeps every take under this cozy, and a take asked by id lands as that version (cl-945).
+  old-takes) parts="old_takes logs" ;;
+  follow) parts="
+    script_package
+    one_name_two_paths
+    image_ratio
+    lazy_slots
+    run_follow
+    time_left
+    broken_answers
+    queued_download
+    machines
+    completions
+    calcifer_faults
+    watch_restart
+    calcifer_restarts
+    logs
+  " ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
-  # computer placed on (cl-894), a new take never changing what's approved (cl-908), one not looked at (cl-928), and the take looked at in
-  # Focus drawn when it finishes (cl-942).
-  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes focusfinish prepares logs" ;;
-  # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
-  projectdb-prepares) parts="prepares logs" ;;
-  projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
+  # computer placed on (cl-894), deleted boxes' files gone after the undo window and Undo after the purge (cl-919), a project closed once
+  # nothing reads it (cl-823), a 0.24.0 project's takes kept (cl-945), and a 0.24.0 project opened with nothing lost (cl-904).
+  projectdb) parts="
+    projectdb
+    statedb
+    local_idle
+    machine_set
+    fall_back
+    db_deleted_gc
+    db_purged
+    db_closes
+    old_takes
+    db_migrate
+    db_legacy
+    db_opens
+    db_migrate_large
+    db_waits
+    db_keyed
+    agent_render
+    logs
+  " ;;
+  # Deleted boxes' files after the undo window, Undo after the purge (cl-919), and a project closed once nothing reads it (cl-823).
+  projectdb-deleted) parts="db_deleted_gc logs" ;;
+  projectdb-purged) parts="db_purged logs" ;;
+  projectdb-closes) parts="db_closes logs" ;;
+  projectvault) parts="
+    vault_times
+    shared_scratch
+    projectvault
+    vault_leftovers
+    vault_swapped
+    logs
+  " ;;
   projectdb-latency) parts="db_latency logs" ;;
+  # Dispatch-only: a large 0.24 home's first start here, and 100 project reads after it (containmentscale.sh).
+  containment-scale) parts="containment_scale logs" ;;
+  # A keyed write cut off mid-request, sent again (cl-885).
+  projectdb-keyed) parts="db_keyed logs" ;;
+  # cozy render alone (cl-956), with the project part's fixtures.
+  projectdb-render) parts="agent_render logs" ;;
+  # A project 0.24.0 made, opened here (cl-904, schema 3).
+  projectdb-migrate) parts="db_migrate logs" ;;
+  # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984).
+  projectdb-legacy) parts="db_legacy logs" ;;
+  # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
+  projectdb-migrate-large) parts="db_migrate_large logs" ;;
+  # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).
+  projectdb-waits) parts="db_waits logs" ;;
+  # A project opened and read again, across Calcifer's restart, with nothing in it changed (cl-885).
+  projectdb-opens) parts="db_opens logs" ;;
+  # A run watched across Calcifer restarts, one whose lock record lands late (cl-885).
+  follow-watch) parts="watch_restart logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
-  projectdb-web) parts="tools_read db_existing_web logs" ;;
-  projectdb-palette) parts="tools_read db_existing_web logs"; DB_WEB="nodes tools" ;;
-  projectdb-focus) parts="tools_read db_existing_web logs"; DB_WEB=focused ;;
-  projectdb-select) parts="tools_read db_existing_web logs"; DB_WEB=select ;;
   projectdb-cancel) parts="db_cancel_undo logs" ;;
-  projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
-  projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
-  projectdb-versions) parts="tools_read db_existing_web logs"; DB_WEB=versions ;;
-  projectdb-menu) parts="tools_read db_existing_web logs"; DB_WEB=menu ;;
-  projectdb-selected) parts="tools_read db_existing_web logs"; DB_WEB=selected ;;
-  projectdb-copy) parts="tools_read db_existing_web logs"; DB_WEB=copy ;;
-  projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
-  projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
+  projectdb-cancelrace) parts="db_cancel_race logs" ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
   # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a child
-  # result's Latents in another package's caller (cr-276), a host path refused; then a docker rental's end, signed out,
-  # with a revoked key and signed in (cl-875).
-  local-code) parts="uv_at_once unseen local_edits hub_dependency hub_published child_latents path_manifest rental_end logs" ;;
+  # result's Latents in another package's caller (cr-276), a host path refused, a dev home's first-party packages from its
+  # packages checkout (xs-195); then a docker rental's end, signed out, with a revoked key and signed in (cl-875).
+  local-code) parts="
+    uv_at_once
+    unseen
+    machine_checkout
+    local_edits
+    hub_dependency
+    hub_published
+    rc_floor
+    held_prerelease
+    runtime_floor
+    child_latents
+    path_manifest
+    from_source
+    rental_end
+    rental_end_again
+    logs
+  " ;;
+  # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a
+  # stood-in Hub and provider (cl-977): about 12 min.
+  stuck) parts="
+    stuck_exit
+    rental_self
+    logs
+  " ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
+  # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating
+  # itself for a package that needs a newer cozy (cl-978).
+  selfupdate) parts="self_forward self_update logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
-  control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
+  control) parts="
+    machine_show_runs
+    writes_once
+    hub_away
+    broken_answers
+    logs
+  " ;;
+  # Any other web-<cell> runs web/<cell>.spec.js alone, so a new cell takes no line here, else a by-hand web/<cell>.js outside the suite
+  # (web.sh's web_alone: look, scale, pageidle). A list above is one cell a line: cells added by two changes never share a line.
+  web-*)
+    if [ -f "$(dirname "$0")/web/${SHARD#web-}.spec.js" ]; then
+      web_cells=("${SHARD#web-}"); parts="web_lane logs"
+    else
+      [ -f "$(dirname "$0")/web/${SHARD#web-}.js" ] || { echo "no cli shard $SHARD" >&2; exit 2; }
+      WEB_ALONE_CELL=${SHARD#web-}; parts="tools_read web_alone logs"
+    fi ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 # macOS and Windows run what's theirs: the CLI, Calcifer, paths, the service and the page, on a Hub with only packages
-# published (e2e/isolated.sh). The catalog's reads of published weights are the same on every OS: Linux's commands shard.
-if [ -z "$LOCAL" ]; then
+# published (e2e/isolated.sh). The catalog's reads of published weights are the same on every OS: Linux's commands shard. A web lane
+# is the same lane there.
+if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault) ;;
-    web-layout-* | web-scale | web-canvas) parts="db_existing_web logs" ;;
-    web-core) parts="entrypoints refusals web_native completions homebrew calcifer_faults update remove" ;;
-    *) parts="entrypoints refusals web_serves completions homebrew calcifer_faults update remove" ;;
+    entrypoints | projectvault | web-serves) ;;
+    web-*) parts="web_alone logs" ;;
+    *) parts="
+      entrypoints
+      refusals
+      web_serves
+      completions
+      homebrew
+      calcifer_faults
+      update
+      remove
+    " ;;
   esac
 fi
 

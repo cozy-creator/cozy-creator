@@ -1,7 +1,7 @@
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query"
 import { type FormEvent, useEffect, useRef, useState } from "react"
 import QRCode from "react-qr-code"
-import type { Client, VaultAsk, VaultProgress } from "../api/client"
+import { ApiError, type Client, type VaultAsk, type VaultProgress } from "../api/client"
 import { useConnection } from "../app/Connection"
 import { useProjectId } from "../app/Shell"
 import { useSignal } from "../ui/signal"
@@ -10,12 +10,16 @@ import { Failure, useAsk } from "./common"
 import { bytes } from "./format"
 
 export const vaultKey = (id: string) => ["project-vault", id] as const
+/** Kept by the stream: `project.vault` says each change, and `hello` has it read again. A read Calcifer couldn't answer is asked again, later
+ *  each time; a refusal isn't. */
 export const vaultQuery = (client: Client, id: string) => queryOptions({
   queryKey: vaultKey(id),
   queryFn: ({ signal }) => client.vault(id, signal),
   staleTime: 0,
-  refetchInterval: 1000,
-  refetchIntervalInBackground: true,
+  refetchInterval: ({ state }) => {
+    const lost = state.status === "error" && state.error instanceof ApiError && (state.error.status === 0 || state.error.status >= 500)
+    return lost ? Math.min(30_000, 1000 * 2 ** state.fetchFailureCount) : false
+  },
 })
 
 type Pending = { action: string; event: VaultProgress | null }
@@ -35,6 +39,7 @@ function pendingLine(pending: Pending | null): string {
     verifying: "Verifying project files", committing: "Saving project changes", opening: "Opening project",
     cleaning_up: "Finishing cleanup", waiting: "Waiting for project work to finish",
     protecting_history: "Encrypting project history", compacting_history: "Compacting local history",
+    updating_project_storage: "Updating project storage", finishing_storage_change: "Finishing the storage change",
   }
   const event = pending.event
   const counts = [
@@ -74,7 +79,7 @@ export function Recovery({ secret, onDone, disabled = false }: { secret: string;
   return (
     <section className="sect" aria-label="Save recovery secret">
       <h3>Save your recovery secret</h3>
-      <p>Keep it on your phone, in a password manager, or on paper away from this computer. TensorHub does not receive it.</p>
+      <p>Save this somewhere safe: it opens the project if the passphrase is lost, and it's shown only now. Keep it on your phone, in a password manager, or on paper away from this computer. TensorHub does not receive it.</p>
       <pre className="yaml" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{secret}</pre>
       <QRCode value={secret} size={180} title="Recovery secret for transfer to your own device" />
       <div className="row">
@@ -83,7 +88,7 @@ export function Recovery({ secret, onDone, disabled = false }: { secret: string;
         <button className="tb" type="button" onClick={print}>Print</button>
       </div>
       <label><input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} /> I saved this somewhere away from this computer</label>
-      <button className="tb primary" type="button" disabled={!saved || disabled} onClick={onDone}>Done</button>
+      <div className="row"><button className="tb primary" type="button" disabled={!saved || disabled} onClick={onDone}>Done</button></div>
     </section>
   )
 }
@@ -202,9 +207,10 @@ function VaultBody({ id }: { id: string }) {
   if (client.transport.channel) return <p>Open this project on its computer to manage local encryption.</p>
   if (!status) return <><p>Checking project protection…</p><Failure error={error} /><button className="tb" type="button" onClick={() => void refetch()}>Try again</button></>
   const unlocked = status.state === "unlocked"
+  const updating = status.state === "storage_update_required"
   return (
     <div className="stack" data-vault-state={status.state}>
-      <p>{!status.encrypted ? "Encryption is off. This project uses ordinary local storage." : unlocked ? "This project is unlocked." : status.state === "locking" ? "Locking: another application is still using a file. Close it and try again." : "This project is locked."}</p>
+      <p>{updating ? "Project storage still needs a verified update. Protection cannot be confirmed until it finishes." : !status.encrypted ? "Encryption is off. This project uses ordinary local storage." : unlocked ? "This project is unlocked." : status.state === "locking" ? "Locking: another application is still using a file. Close it and try again." : "This project is locked."}</p>
       <Failure error={ask.error} plain />
       {sourceRemoved && !error && status.encrypted && unlocked && <p>The unencrypted project was removed.</p>}
       {ended.length > 0 && <p className="muted">Locking ended the project's runs {ended.join(", ")}.</p>}
@@ -229,7 +235,7 @@ function VaultBody({ id }: { id: string }) {
             ? <label>Passphrase<input className="field" type="password" maxLength={4096} autoComplete="current-password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>
             : <label>Recovery secret<input className="field" type="password" maxLength={4096} autoComplete="off" spellCheck={false} value={recovery} onChange={(event) => setRecovery(event.target.value)} /></label>}
           {timeoutControls}
-          <button className="tb primary" type="submit" disabled={ask.busy || !(credential === "recovery" ? recovery : passphrase)}>Unlock project</button>
+          <button className="tb primary" type="submit" disabled={ask.busy || !(credential === "recovery" ? recovery : passphrase)}>{updating ? "Unlock and update storage" : "Unlock project"}</button>
         </form>
       ) : (
         <>

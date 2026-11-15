@@ -1,0 +1,1 @@
+The project canvas uses PixiJS WebGL and pixi-viewport for its overview, with native React controls for editing and playback. Offscreen cards release their rendering resources, and an idle canvas stops drawing.

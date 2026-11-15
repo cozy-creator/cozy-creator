@@ -1,5 +1,4 @@
-import type { ToolField, MainFile, Tool } from "../api/calcifer"
-import type { Media } from "../types"
+import type { ErrorBody, MainFile, Tool } from "../api/calcifer"
 import type { ElementView } from "./CanvasStore"
 import type { Box } from "./graph"
 
@@ -41,25 +40,47 @@ export const HEAD = 32
 
 /**
  * What hangs off a box at rest, its name over it and its tool, shape and render's lines under it (cl-932), is drawn at the canvas's scale
- * like the rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
+ * like the rest of it. A box keeps that room clear, once: its name never lies on the box above, nor what hangs under one on the box below,
+ * and boxes stacked are as close as boxes side by side, clear's gap apart (Paul, 11-12: "allow for tiles to get a little closer on the top
+ * and bottoms").
  */
-const HANG = 2
-// As app.css draws them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
+const HANG = 1
+// As app.css draws them: tokens.css's title and body steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
-const SMALL_LINE = 10.5 * 1.35 * 1.25
+const BODY_LINE = 12.5 * 1.35 * 1.25
 const CLOSE = 30
+/** A selected box's ring, outside its picture, that the line under it starts past. */
+const RING = 9
 /** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
 const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
-/** A render's two lines (RunFace, on lines of 1.35), with the gap over them. */
-const RUN = 2 * 10.5 * 1.35 * 1.35 + 4
+/** A render's two lines (RunFace) at the body step on lines of 1.35, the second as tall as its 28px Cancel, with the gaps over them. */
+const RUN = 12.5 * 1.35 * 1.35 + 28 + 6
 
 /** The room a box keeps clear under it (cl-932): its tool and shape, and if it renders, how its render goes, then the room the name of a box
- *  below it rises into. */
+ *  below it rises into. A file dropped keeps its line from its drop, as its picture's row (`isPicture`): what it keeps never grows as it
+ *  lands, so nothing it was laid out beside is pushed then. */
 export function underOf(view: ElementView): number {
-  const asset = view.asset
-  const line = asset && (asset.tool || asset.kind !== "text") ? SMALL_LINE + 2 : 0
+  const kind = view.asset?.kind ?? view.placing?.media ?? view.landed?.field
+  const line = view.asset?.tool || (kind && kind !== "text") ? RING + BODY_LINE + 2 : 0
   return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
+
+/** What a box placed or pushed is left of the rest (clear.ts). */
+export const GAP = 16
+
+/** How far out the canvas is, as `data-lod` draws it: 0 close, 1 far, 2 past 20%. */
+export const bandOf = (zoom: number): 0 | 1 | 2 => (zoom < 0.2 ? 2 : zoom < 0.45 ? 1 : 0)
+
+/**
+ * A box's name is one line in bold mono on a line of 1.25, its foot 12 over its picture (app.css). As the canvas zooms out it's held at the
+ * body size on screen (cl-958) only as far as it fits the room the layout keeps above every box, RISE and a gap, a foot's 12 clear of the
+ * box above (Paul, 11-13: "the text size should be limited"): 36.8px on the canvas, the body size down to 46%. Further out it shrinks with
+ * the canvas, and nothing moves: a zoom never makes room.
+ */
+const NAME_MOST = (RISE + GAP + (HEAD - 12) - 12) / 1.25
+/** How much larger than the canvas a box's name is drawn, at least (`--name-zoom`): the zoom's inverse in quarter steps, to NAME_MOST. */
+export const nameZoomOf = (zoom: number) => Math.min(2 ** Math.max(0, Math.ceil(-Math.log2(zoom || 1) * 4) / 4), NAME_MOST / (12.5 * 1.35))
+
 const ENTITY_DESC = 60
 const ENTITY_SLOTS = 72
 export const SUB_ROW = 136
@@ -79,7 +100,7 @@ export const faceOf = (view: ElementView): "edit" | "media" => view.asset?.kind 
 /** No box is narrower: its corner stops here, and nothing shrinks one past it. */
 export const NARROWEST = 160
 
-export const widthFor = (view: ElementView | undefined): number => (view?.asset?.timeline ? 720 : view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
+export const widthFor = (view: ElementView | undefined): number => (view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
 
 /** `16:9` as a number, if it's one. */
 export function ratioOf(value: unknown): number | undefined {
@@ -97,35 +118,43 @@ export function valueIn(view: ElementView | undefined, field: string): unknown {
   return view?.asset?.fields?.[field]
 }
 
-const ONE: Record<string, string> = { image: "a picture", video: "a video", audio: "a sound", text: "words" }
-const SEVERAL: Record<string, string> = { image: "pictures", video: "videos", audio: "sounds" }
-const MEDIA: Media[] = ["image", "video", "audio"]
-
-/** The kinds `tool`'s prompts send a mention as, each its `takes`, else any. None: it has no prompt. */
-function takenBy(tool: Tool | undefined): Media[] {
-  const prompts = (fields: ToolField[]): ToolField[] => fields.flatMap((field) => (field.type === "prompt" ? [field] : prompts(field.members ?? [])))
-  return [...new Set(prompts(tool?.fields ?? []).flatMap((field) => (field.takes as Media[] | null) ?? MEDIA))]
+/** The take its frame looks at while it's made, open, by its id (cl-945): its run once that has a number, and its number once it's landed.
+ *  At rest a box looks at what it showed, so a render never changes its size (cl-936): an approved one goes on showing what's approved,
+ *  and what's made lands beside it, unseen (cl-928); with none, the new take is its state once it lands. */
+export function watched(view: ElementView): { id: string; run?: number; number?: number } | undefined {
+  const id = view.watch
+  if (id === undefined || !view.here) return undefined
+  const version = view.asset?.prefixes?.find((held) => held.id === id)
+  const take = view.asset?.takes?.find((held) => held.id === id)
+  return { id, run: take?.run ?? version?.run ?? undefined, number: version?.number }
 }
 
-/** Why `tool`'s words can't send a mention of `view`: a box of a kind none of its prompts takes. A text box is words, and a tool with no prompt takes anything. */
-export function refusal(tool: Tool | undefined, view: ElementView | undefined): string | null {
-  const kind = view?.asset?.kind ?? view?.landed?.field
-  const takes = takenBy(tool)
-  if (!view || !kind || !takes.length || kind === "text" || takes.includes(kind as Media)) return null
-  return `${toolName(tool!)} takes ${takes.map((one) => SEVERAL[one]).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
+/** A take not landed, by its id: what Calcifer lists, then this page's own it doesn't list yet, from the click (cl-945). */
+export interface Taking {
+  id: string
+  run?: number
+  queued?: boolean
+  /** It failed, and why: listed until it's deleted (cl-954). */
+  failure?: ErrorBody
 }
 
-/** The take being made that it looks at, open: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made,
- *  and its number once it's landed. At rest a box looks at what it showed, so a render never changes its size (cl-936): an approved one
- *  goes on showing what's approved, and what's made lands beside it, unseen (cl-928); with none, the new take is its state once it lands. */
-export function watched(view: ElementView): { run?: number; number?: number } | undefined {
-  const { watchRun, watchFrom: from } = view
-  if (watchRun === undefined && from === undefined) return undefined
-  if (!view.here) return undefined
-  const versions = view.asset?.prefixes ?? []
-  const newer = (run?: number | null) => (run ?? 0) > (from ?? 0)
-  const run = watchRun ?? Math.max(0, ...(view.asset?.making ?? []).filter(newer), ...versions.filter((held) => newer(held.run)).map((held) => held.run ?? 0))
-  return { run: run || undefined, number: run ? versions.find((held) => held.run === run)?.number : undefined }
+/** Its takes not landed, in the order they were asked: a take is listed from the click to its version, and is never another's. */
+export function takingOf(view: ElementView): Taking[] {
+  const landed = new Set([...(view.asset?.prefixes ?? []).map((held) => held.id).filter(Boolean), ...(view.gone ?? [])])
+  const listed = (view.asset?.takes ?? []).filter((take) => !landed.has(take.id)).map((take) => ({ id: take.id, run: take.run ?? undefined, queued: take.queued, failure: take.failure ?? undefined }))
+  const known = new Set(listed.map((take) => take.id))
+  return [...listed, ...(view.taking ?? []).filter((take) => !known.has(take.id) && !landed.has(take.id)).map((take) => ({ id: take.id, queued: true }))]
+}
+
+/** Why the take its frame looks at failed, when it did (cl-954): what the frame shows in its place. */
+export function failureOf(view: ElementView): ErrorBody | undefined {
+  const watch = watched(view)
+  return watch ? takingOf(view).find((take) => take.id === watch.id)?.failure : undefined
+}
+
+/** A take's id, made where it's asked for, as Calcifer makes one: `project-` and 32 hex digits. */
+export function newTakeId(): string {
+  return `project-${Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")}`
 }
 
 /** The run making the take a box's frame is on while it's made: the one it looks at, else the first going. None: not sent yet. */
@@ -204,8 +233,6 @@ export function heightFor(view: ElementView, width: number): number {
     const subs = view.entity.subs ?? []
     return HEAD + ENTITY_DESC + (hasSlots(view.entity.links) ? ENTITY_SLOTS : 0) + subs.length * SUB_ROW
   }
-  // An Edit on its controls: a picture over a filmstrip.
-  if (view.asset?.timeline && faceOf(view) === "edit") return HEAD + 332
   return HEAD + Math.round(imageViewHeight(view, width) ?? width / aspectOf(view)) + (isPicture(view) ? 40 : 0)
 }
 

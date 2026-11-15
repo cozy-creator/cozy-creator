@@ -159,6 +159,18 @@ pub(crate) fn is_private_path(path: &std::path::Path) -> bool {
         .any(|scope| path.starts_with(&scope.descriptor.view_root))
 }
 
+/// The project whose view holds `path`: a project's own local-code generation, whose executors end when it closes.
+pub(crate) fn project_of(path: &std::path::Path) -> Option<String> {
+    VERIFIED.lock().unwrap().values().find(|scope| path.starts_with(&scope.descriptor.view_root)).map(|scope| scope.descriptor.project_id.clone())
+}
+
+/// The machine area (`.vault-machine`) of the project whose view holds `path`: where the executors of that project's own code
+/// keep their files (cl-984). None: the machine's code.
+pub(crate) fn area_of(path: &std::path::Path) -> io::Result<Option<PathBuf>> {
+    let scope = VERIFIED.lock().unwrap().values().find(|scope| path.starts_with(&scope.descriptor.view_root)).map(|scope| scope.descriptor.clone());
+    scope.as_ref().map(root).transpose()
+}
+
 pub(crate) fn root(descriptor: &LocalPrivateStorage) -> io::Result<PathBuf> {
     let root = resolve(descriptor)?.view_root.join(AREA);
     fs::create_dir_all(&root)?;
@@ -366,6 +378,13 @@ pub(crate) fn warning(engine: &crate::execution::Engine, run: &str, detail: impl
         tracing::warn!(run, "{detail}");
     } else {
         tracing::warn!(run, "execution warning; open the authorized run history for details");
+    }
+}
+
+/// What a run's work says, kept out of the global subscriber the same way.
+pub(crate) fn info(engine: &crate::execution::Engine, run: &str, detail: impl std::fmt::Display) {
+    if current().is_none() && matches!(engine.private_storage(run), Ok(None)) {
+        tracing::info!(run, "{detail}");
     }
 }
 

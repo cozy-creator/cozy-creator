@@ -1,12 +1,20 @@
 //! Calcifer's loopback API (`docs/CALCIFER-API.md`): HTTP/1.1, JSON and SSE for the CLI and a
-//! browser. Every request passes the guard chain in order: a loopback peer, a loopback `Host`, an
-//! `Origin`, if any, that matches it, then (on the routes Calcifer serves) the bearer or a browser
-//! session (`sessions.rs`), and the admission gate a stopping Calcifer closes. Refusals are
-//! `api::error::Envelope`s. No CORS header is ever sent.
-use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, sync::Arc};
+//! browser. Every request passes the guard chain in order: a loopback peer, this listener's own `Host`
+//! and an `Origin`, if any, that matches it; then, on `/v1`, Calcifer's own OS account and its own page
+//! or the lock record's bearer (`loopback.rs`, no sessions); then the admission gate a stopping Calcifer
+//! closes. Refusals are `api::error::Envelope`s. No CORS header is ever sent.
+use std::{
+    collections::{HashMap, VecDeque},
+    convert::Infallible,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{
         ConnectInfo, DefaultBodyLimit, FromRequestParts, Path, Query, Request, State,
         rejection::{BytesRejection, QueryRejection},
@@ -17,10 +25,10 @@ use axum::{
         IntoResponse, Response,
         sse::{self, KeepAlive, KeepAliveStream, Sse},
     },
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
 };
 use api::{
-    calcifer::{CalciferStatus, Down, Event, MachineKind, MachineState, Run, RunList, Status},
+    calcifer::{CalciferActivity, CalciferStatus, Down, Event, PROCESS_HEADER, Run, RunList, Status},
     error::{Envelope, Error, Kind, STOPPING},
     ids::RunId,
 };
@@ -31,6 +39,7 @@ use tokio::sync::{RwLock, broadcast, watch};
 use tracing::{info, warn};
 
 use crate::{
+    loopback::Peer,
     Calcifer,
     machines::{self, Machines},
     store::{RunFilter, RunRow, State as RunState, StoreError},
@@ -40,6 +49,17 @@ use crate::{
 // `Cozy-Ignored-Fields`: a client newer than Calcifer learns what it lacks.
 tokio::task_local! {
     static IGNORED: Arc<std::sync::Mutex<Vec<String>>>;
+}
+
+/// `work`, spawned by a request, hearing what it ignores as the request does (`Cozy-Ignored-Fields`).
+pub(crate) fn carry_ignored<F: std::future::Future>(work: F) -> impl std::future::Future<Output = F::Output> {
+    let held = IGNORED.try_with(Arc::clone).ok();
+    async move {
+        match held {
+            Some(held) => IGNORED.scope(held, work).await,
+            None => work.await,
+        }
+    }
 }
 
 /// The header a client reads to learn which of its request's fields this Calcifer did not read.
@@ -59,14 +79,27 @@ pub(crate) struct Api {
     pub(crate) listing: crate::toolbox::Listing,
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
-    pub(crate) sessions: crate::sessions::Sessions,
-    /// The components packages ship, as read for the page.
-    pub(crate) tool_uis: crate::tool_ui::Held,
+    pub(crate) browser: crate::browser::OwnedBrowser,
+    pub(crate) browser_address: std::sync::OnceLock<std::net::SocketAddr>,
+    pub(crate) development_web: std::sync::OnceLock<std::net::SocketAddr>,
+    /// Who uses this Calcifer (`GET /v1/activity`).
+    activity: Activity,
     bearer: [u8; 32],
     /// Shut once Calcifer is stopping: a mutation holds it open while it runs, so the exit can
     /// never land between a submission's check and its commit.
     stopping: Arc<RwLock<bool>>,
     stop: watch::Sender<bool>,
+    /// Set once cozy updated itself (cl-978): this Calcifer stops to start the installed binary in its place.
+    updated: std::sync::atomic::AtomicBool,
+    /// When this Calcifer started: its own updates are keyed by it.
+    pub(crate) started_ms: i64,
+}
+
+async fn no_store(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
 }
 
 impl Api {
@@ -76,18 +109,23 @@ impl Api {
         token: &str,
     ) -> Arc<Self> {
         let api = Arc::new(Self {
-            sessions: crate::sessions::Sessions::open(calcifer.store()),
+            browser: crate::browser::OwnedBrowser::new(),
+            browser_address: std::sync::OnceLock::new(),
+            development_web: std::sync::OnceLock::new(),
             calcifer,
             machines,
             projects: Default::default(),
             releases: Default::default(),
             listing: Default::default(),
             codes: Default::default(),
-            tool_uis: Default::default(),
+            activity: Activity::default(),
             bearer: Sha256::digest(token).into(),
             stopping: Arc::new(RwLock::new(false)),
             stop: watch::channel(false).0,
+            updated: std::sync::atomic::AtomicBool::new(false),
+            started_ms: crate::store::now_ms(),
         });
+        api.calcifer.serve_api(&api);
         crate::project::vault::start(&api);
         api
     }
@@ -105,10 +143,13 @@ impl Api {
     }
 
     async fn down_inner(self: &Arc<Self>, keep_admission_closed: bool) -> Result<Vec<String>, Error> {
+        // Draft flushes need ordinary mutation admission. Freeze and drain the exact
+        // owned session before taking the global writer that closes that admission.
+        let mut browser = Some(self.browser.prepare_close().await.map_err(|error| error.0)?);
         let mut stopping = self.stopping.write().await;
         let was_stopping = *stopping;
         *stopping = true;
-        if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all(self)) {
+        if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all_prepared(self, &mut browser)) {
             *stopping = was_stopping || keep_admission_closed;
             return Err(error);
         }
@@ -117,6 +158,49 @@ impl Api {
         info!(owed = owed.len(), "down: stopping");
         self.stop();
         Ok(owed)
+    }
+
+    /// What keeps this Calcifer from restarting now but `own`, its update's run (cl-978): runs going (its machines', its own),
+    /// and requests being served. None: it's idle; a page with a stream open reconnects.
+    pub(crate) fn busy_but(&self, own: &str) -> Result<Option<String>, Error> {
+        let internal = |e: StoreError| Error::internal("store_unreadable", e.to_string());
+        let runs: usize = self.calcifer.each_store(|store| store.unsettled().map(|ids| ids.len())).map_err(internal)?.into_iter().sum();
+        let here: usize = self.calcifer.each_store(|store| Ok(store.unsettled_here()?.into_iter().filter(|id| id.as_str() != own).count())).map_err(internal)?.into_iter().sum();
+        let requests = self.activity.requests.load(Ordering::Relaxed);
+        let mut busy = vec![];
+        match runs + here {
+            0 => {}
+            1 => busy.push("a run is going".to_owned()),
+            n => busy.push(format!("{n} runs are going")),
+        }
+        if requests > 0 {
+            busy.push(format!("{requests} request(s) in flight"));
+        }
+        Ok((!busy.is_empty()).then(|| busy.join(", ")))
+    }
+
+    /// Stops this Calcifer for the cozy it updated to, which starts in its place (`serve::main`): as `down` does, admission closed
+    /// once mutations in flight are done, again while an encrypted view is still closing.
+    pub(crate) async fn restart_updated(self: &Arc<Self>) {
+        self.updated.store(true, Ordering::Relaxed);
+        loop {
+            let mut closed = std::pin::pin!(crate::project::vault::CLOSED.notified());
+            closed.as_mut().enable();
+            match self.down().await {
+                Ok(_) => return,
+                Err(e) => warn!(code = %e.code, "restarting on the updated cozy: {}; again once a view closes", e.message),
+            }
+            tokio::select! {
+                () = self.stopped() => return,
+                () = closed => {}
+                () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+            }
+        }
+    }
+
+    /// Whether this Calcifer stopped for the cozy it updated to.
+    pub(crate) fn updated(&self) -> bool {
+        self.updated.load(Ordering::Relaxed)
     }
 
     /// Ends every stream and the server.
@@ -151,6 +235,9 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
     Router::new()
         .route("/v1/events", get(crate::events::stream))
         .route("/v1/events/{stream}", put(crate::events::show))
+        .route("/v1/project-storage", get(crate::browser::project_storage))
+        .route("/v1/browser/open", post(crate::browser::open))
+        .route("/v1/maintenance/source", post(crate::maintenance_source::capture))
         .route("/v1/runs", post(crate::runs::submit).get(list))
         .route("/v1/runs/{id}", get(show))
         .route("/v1/runs/{id}/cancel", post(cancel))
@@ -160,6 +247,8 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/play", get(crate::play::play))
         .route("/v1/down", post(down))
         .route("/v1/status", get(status))
+        .route("/v1/legacy", get(legacy))
+        .route("/v1/activity", get(activity))
         .route("/v1/machines", get(machines::list).post(machines::create))
         .route(
             "/v1/machines/{name}",
@@ -185,7 +274,8 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/tools", get(crate::toolbox::list))
         .route("/v1/tools/list", post(crate::toolbox::change))
         .route("/v1/tools/browse", get(crate::toolbox::browse))
-        .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
+        .route("/v1/project-files/held", post(crate::runs::files::project_held_files))
+        .route("/v1/files/held", post(crate::runs::files::held_files))
         .route(
             "/v1/project-files/{name}",
             axum::routing::put(crate::runs::files::project_put)
@@ -198,36 +288,37 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
                 .head(crate::runs::files::head)
                 .layer(DefaultBodyLimit::disable()),
         )
-        .route("/v1/session-codes", post(crate::sessions::code))
-        .route("/v1/session", delete(crate::sessions::end))
         .merge(crate::project::routes(&api))
         .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
-        .route("/v1/session", post(crate::sessions::start))
-        .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
         .merge(crate::page::routes())
-        .fallback(unknown_route)
+        .fallback(crate::page::fallback)
         .method_not_allowed_fallback(unknown_route)
         .layer(middleware::from_fn(guard))
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(middleware::from_fn(no_store))
+        .layer(middleware::from_fn(crate::took::request))
         .with_state(api)
 }
 
-/// A refusal, rendered as its envelope with the status its kind names.
+/// A refusal, rendered as its envelope with its status (a peer's 429 stays 429), and the wait it states as `Retry-After`.
 #[derive(Debug)]
 pub(crate) struct Refusal(pub Error);
 
 impl IntoResponse for Refusal {
     fn into_response(self) -> Response {
-        let status =
-            StatusCode::from_u16(self.0.kind.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
+        let status = StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
+        let wait = self.0.retry_after_s;
         let mut response = (status, Json(Envelope { error: self.0 })).into_response();
         if status == StatusCode::UNAUTHORIZED {
             response.headers_mut().insert(
                 header::WWW_AUTHENTICATE,
                 HeaderValue::from_static(r#"Bearer realm="cozy""#),
             );
+        }
+        if let Some(wait) = wait {
+            response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(wait));
         }
         response
     }
@@ -237,8 +328,19 @@ pub(crate) fn refuse(kind: Kind, code: &str, message: impl Into<String>) -> Refu
     Refusal(Error::new(kind, code, message))
 }
 
+/// Whether a native client speaks project storage protocol 3; one released before it does not.
+pub(crate) fn speaks_project_storage(headers: &axum::http::HeaderMap) -> bool {
+    headers.get(::api::calcifer::project::PROJECT_STORAGE_HEADER).and_then(|value| value.to_str().ok()) == Some(::api::calcifer::project::PROJECT_STORAGE_VERSION)
+}
+
+/// What a client released before project storage protocol 3 is told for any project request.
+pub(crate) fn project_storage_protocol_required() -> Refusal {
+    Refusal(Error::new(Kind::Usage, "project_storage_protocol_required", "update this client: project storage protocol 3 is required")
+        .remedy("run the installed cozy (~/.cozy/bin/cozy), or update this one").next("cozy update"))
+}
+
 impl Refusal {
-    fn remedy(self, remedy: &str) -> Self {
+    pub(crate) fn remedy(self, remedy: &str) -> Self {
         Refusal(self.0.remedy(remedy))
     }
 }
@@ -288,14 +390,21 @@ impl From<BytesRejection> for Refusal {
     }
 }
 
-/// Loopback peer, `Host`, then `Origin`, on every request. A rebinding page is turned away before
-/// anything asks whether it holds a credential.
+/// Loopback peer, `Host`, then `Origin`, on every request (`loopback::refusal`).
 async fn guard(
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
     request: Request,
     next: Next,
 ) -> Response {
-    let refused = refusal(&peer, &request);
+    let began = std::time::Instant::now();
+    let refused = crate::loopback::refusal(&peer, request.headers());
+    let checked = began.elapsed();
+    let timing = crate::loopback::TIMING.load(std::sync::atomic::Ordering::Relaxed).then(crate::loopback::Timing::default);
+    let mut request = request;
+    if let Some(timing) = &timing {
+        request.extensions_mut().insert(timing.clone());
+    }
+    let api_route = request.uri().path().starts_with("/v1/");
     let mut response = match refused {
         Some(refusal) => {
             warn!(
@@ -317,57 +426,29 @@ async fn guard(
         }
     };
     let headers = response.headers_mut();
+    // Nothing under /v1 is a page: whatever it holds (a package's preview, a run's output, a file of a project) runs in no origin of
+    // Calcifer's, even opened as a URL; an SVG, which can carry script, runs none at all.
+    if api_route {
+        let svg = headers.get(header::CONTENT_TYPE).and_then(|kind| kind.to_str().ok()).is_some_and(|kind| kind.starts_with("image/svg"));
+        let mut policy = headers.get(header::CONTENT_SECURITY_POLICY).and_then(|policy| policy.to_str().ok()).unwrap_or_default().to_owned();
+        for directive in ["sandbox"].into_iter().chain(svg.then_some("script-src 'none'")) {
+            if !policy.split(';').any(|held| held.trim() == directive) {
+                policy = if policy.is_empty() { directive.to_owned() } else { format!("{policy}; {directive}") };
+            }
+        }
+        if let Ok(policy) = HeaderValue::from_str(&policy) {
+            headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+        }
+    }
     headers.entry(header::CACHE_CONTROL).or_insert(HeaderValue::from_static("no-store"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    response
-}
-
-/// A loopback name on any port: an SSH `-L` chooses its own. A rebinding page's `Host` is its own name.
-fn on_loopback(host: &str) -> bool {
-    ["127.0.0.1", "localhost", "[::1]"].iter().any(|name| {
-        host.strip_prefix(name).is_some_and(|rest| {
-            rest.is_empty() || rest.strip_prefix(':').is_some_and(|port| port.parse::<u16>().is_ok())
-        })
-    })
-}
-
-fn refusal(peer: &SocketAddr, request: &Request) -> Option<Refusal> {
-    let header = |name| {
-        request
-            .headers()
-            .get(name)
-            .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
-    };
-    if !peer.ip().is_loopback() {
-        Some(refuse(
-            Kind::Forbidden,
-            "not_loopback",
-            "Calcifer serves the loopback interface only",
-        ))
-    } else if !header(header::HOST).is_some_and(|host| on_loopback(&host)) {
-        Some(
-            refuse(
-                Kind::Forbidden,
-                "host_not_allowed",
-                format!("Host {:?} is not this Calcifer", header(header::HOST)),
-            )
-            .remedy("reach it as 127.0.0.1, localhost or [::1]"),
-        )
-    // Checked on every request, mutations and stream opens included; an absent Origin passes.
-    } else if let Some(origin) = header(header::ORIGIN)
-        && origin.strip_prefix("http://") != header(header::HOST).as_deref()
-    {
-        Some(refuse(
-            Kind::Forbidden,
-            "origin_not_allowed",
-            format!("Origin {origin:?} may not reach Calcifer"),
-        ))
-    } else {
-        None
+    if let Some(said) = timing.and_then(|timing| timing.header(checked, &peer)) {
+        headers.insert(header::HeaderName::from_static("server-timing"), said);
     }
+    response
 }
 
 /// The secret of `Authorization: Bearer`.
@@ -375,38 +456,59 @@ pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
 }
 
-/// The `?media=` secret of a read of a file: what `<img>` and `<video>` can't put in a header, so it
-/// opens nothing else.
-fn media_secret(request: &Request) -> Option<&str> {
+/// A read of a file, as `<img>` and `<video>` make one: no header of the page's own, the project storage's among them.
+fn file_read(request: &Request) -> bool {
     let reads = matches!(*request.method(), Method::GET | Method::HEAD);
     let path: Vec<&str> = request.uri().path().split('/').collect();
-    let file = matches!(
+    reads && matches!(
         path[..],
-        ["", "v1", "runs", _, "outputs", _] | ["", "v1", "projects", _, "files" | "cuts" | "thumbs", _]
-    );
-    if !reads || !file {
-        return None;
-    }
-    request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix("media="))
+        ["", "v1", "runs", _, "outputs", _] | ["", "v1", "projects", _, "runs", _, "outputs", _] | ["", "v1", "projects", _, "files" | "cuts" | "thumbs", _]
+    )
 }
 
-/// The bearer or a session, then the admission gate for every mutation but `down`, held while it runs.
-/// Detached request work retains this existing admission lease until its mutation is finished.
+/// Calcifer's own page or this computer's cozy, as its own account; then the admission gate for every mutation but `down`, held
+/// while it runs. Detached request work retains this existing admission lease until its mutation is finished.
 pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
 
-async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
-    let admitted = match bearer(request.headers()) {
-        Some(token) => api.admits(token) || api.sessions.admits_token(api.calcifer.store(), token),
-        None => media_secret(&request).is_some_and(|media| api.sessions.admits_media(api.calcifer.store(), media)),
-    };
-    if !admitted {
-        let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
-        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
-        return Refusal(error).into_response();
+async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>, mut request: Request, next: Next) -> Response {
+    // Calcifer's own account, then its own page or this computer's cozy (`loopback::admitted`).
+    let began = std::time::Instant::now();
+    let (method, path, headers) = (request.method(), request.uri().path(), request.headers());
+    let admitted = crate::loopback::admitted(&api, &peer, method, path, headers).await;
+    if let Some(timing) = request.extensions().get::<crate::loopback::Timing>() {
+        timing.admitted(began.elapsed());
     }
+    let (principal, client) = match admitted {
+        Ok(admitted) => admitted,
+        Err(refusal) => {
+            warn!(code = refusal.0.code, "refused {} {}", request.method(), request.uri().path());
+            return refusal.into_response();
+        }
+    };
+    let page = client == crate::loopback::Client::Page;
+    request.extensions_mut().insert(principal);
+    request.extensions_mut().insert(client);
+    let path=request.uri().path();
+    // The capability probe is how a client learns protocol 3 before opting in; it is no project request.
+    let project_protocol=path != "/v1/project-storage" && (path.starts_with("/v1/projects") || path.starts_with("/v1/project-")
+        || path.starts_with("/v1/run-") || matches!(path,"/v1/events"|"/v1/targets"|"/v1/plans"));
+    // Native clients must opt into this storage contract before any project
+    // lookup/import/resume. A page's media elements send no header of its own.
+    if project_protocol && !(page && file_read(&request)) && !speaks_project_storage(request.headers()) {
+        return project_storage_protocol_required().into_response();
+    }
+    let process = request.headers().get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
+    api.activity.note(if page { "page" } else { process });
+    // Served until its answer is made (a stream's body is the open page's, not this); `/v1/activity` counts no one.
+    let _serving = (request.uri().path() != "/v1/activity").then(|| Counted::of(&api.activity.requests));
     // A read is answered while Calcifer stops: a HEAD's refusal would lose its body.
     if matches!(*request.method(), Method::GET | Method::HEAD) || request.uri().path() == "/v1/down" {
-        return next.run(request).await;
+        let response = next.run(request).await;
+        let stream = response.headers().get(header::CONTENT_TYPE).is_some_and(|kind| kind.as_bytes().starts_with(b"text/event-stream"));
+        return match page && stream {
+            true => api.activity.held_open(response),
+            false => response,
+        };
     }
     let stopping = api.stopping.clone().read_owned().await;
     if *stopping {
@@ -465,27 +567,85 @@ pub(crate) fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
 }
 
 /// A run by its id or its number.
-pub(crate) fn find(api: &Api, key: &str) -> Result<RunRow, Refusal> {
-    let store = api.calcifer.store();
-    let row = match store.run(key)? {
-        Some(row) => Some(row),
-        None => match key.parse() {
-            Ok(number) => store.run_by_number(number)?,
-            Err(_) => None,
+#[derive(Deserialize)]
+pub(crate) struct RunPath {
+    id: String,
+    #[serde(default)]
+    run: Option<String>,
+}
+impl RunPath {
+    pub(crate) fn project(&self) -> Option<&str> { self.run.as_ref().map(|_| self.id.as_str()) }
+    pub(crate) fn key(&self) -> &str { self.run.as_deref().unwrap_or(&self.id) }
+}
+
+pub(crate) fn find_maintenance(api: &Api, key: &str) -> Result<RunRow, Refusal> {
+    let store=api.calcifer.maintenance_store();
+    let row=store.run(key)?.or(match key.parse() { Ok(number)=>store.run_by_number(number)?,Err(_)=>None });
+    let row=row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","maintenance knows no such run"))?;
+    api.calcifer.remember_maintenance_run(row.id.as_str());
+    Ok(row)
+}
+
+pub(crate) fn find_current(api:&Api,key:&str)->Result<RunRow,Refusal> {
+    let Some(scope)=crate::private_io::current() else { return find_maintenance(api,key); };
+    let store=api.calcifer.project_store(&scope.storage.project_id)?;
+    let row=store.run(key)?.or(match key.parse() { Ok(number)=>store.run_by_number(number)?,Err(_)=>None });
+    row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","this project knows no such run"))
+}
+
+/// The run `KEY-N` names from any scope (cl-987): run N of the project that has or had the key, `COZY-N` Calcifer's own. None when
+/// `text` is no such name, or no project here has the key.
+pub(crate) async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRow>, Refusal> {
+    let Some((key, number)) = ::api::calcifer::project::run_name(text) else { return Ok(None) };
+    let journal = match key.as_str() {
+        ::api::calcifer::project::MACHINE_KEY => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
+        reserved if ::api::calcifer::project::RESERVED_KEYS.contains(&reserved) => return Ok(None),
+        _ => match keyed_project(api, &key).await? {
+            Some(id) => crate::store::RunStore::Project(api.projects.store(api, &id).await.map_err(Refusal)?),
+            None => return Ok(None),
         },
     };
-    let row = row.ok_or_else(|| {
-        Refusal(
-            Error::new(Kind::NotFound, "run_not_found", format!("no run {key}"))
-                .next("cozy run ls"),
-        )
+    let row = journal.run_by_number(number)?.ok_or_else(|| Refusal(Error::new(Kind::NotFound, "run_not_found", format!("there is no run {key}-{number}")).next("cozy run ls --all")))?;
+    if matches!(journal, crate::store::RunStore::Maintenance(_)) { api.calcifer.remember_maintenance_run(row.id.as_str()); }
+    Ok(Some(row))
+}
+
+/// The project that has or had `key` here. A project's keys are registered as it opens: one not opened since it was unlocked (or
+/// since this cozy) opens first. A locked project's are in no index, only in its project.db (Paul 11-15): its key is unknown here.
+pub(crate) async fn keyed_project(api: &Arc<Api>, key: &str) -> Result<Option<String>, Refusal> {
+    let store = api.calcifer.store();
+    if let Some(id) = store.key_owner(key).map_err(store_refusal)? { return Ok(Some(id)); }
+    let known = store.known_projects().map_err(store_refusal)?;
+    for entry in known.iter().filter(|entry| entry.key.is_empty() && !crate::project::vault::locked_now(&entry.path)) {
+        let _ = api.projects.store(api, &entry.id).await;
+    }
+    store.key_owner(key).map_err(store_refusal)
+}
+
+pub(crate) async fn find_scoped(api: &Arc<Api>, project: Option<&str>, key: &str) -> Result<RunRow, Refusal> {
+    if let Some(row) = named_run(api, key).await? { return Ok(row); }
+    let journal = match project {
+        Some(project) => crate::store::RunStore::Project(api.projects.store(api, project).await.map_err(Refusal)?),
+        None => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
+    };
+    let row = match journal.run(key)? {
+        Some(row) => Some(row),
+        None => match key.parse() { Ok(number) => journal.run_by_number(number)?, Err(_) => None },
+    };
+    // cozy's own update (cl-978) is no project's: a project's client that asked for it follows it from Calcifer's journal.
+    let row = match row {
+        None if project.is_some() => api.calcifer.maintenance_store().run(key)?.filter(|row| row.target == ::api::calcifer::hub::job::COZY_UPDATE),
+        row => row,
+    }.ok_or_else(|| match ::api::calcifer::project::run_name(key) {
+        Some((named, _)) => Refusal(Error::new(Kind::NotFound, "run_not_found", format!("no project on this computer has the key {named}")).next("cozy run ls --all")),
+        None => refuse(Kind::NotFound, "run_not_found", "this scope knows no such run"),
     })?;
-    crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
+    if project.is_none() || row.target == ::api::calcifer::hub::job::COZY_UPDATE { api.calcifer.remember_maintenance_run(row.id.as_str()); }
     Ok(row)
 }
 
 #[derive(Deserialize)]
-struct Listing {
+pub(crate) struct Listing {
     status: Option<Status>,
     /// A prefix of the runs' target (`org/pkg`).
     package: Option<String>,
@@ -498,12 +658,22 @@ struct Listing {
 }
 
 /// Runs newest first, and how many older ones match.
-async fn list(
-    State(api): State<Arc<Api>>,
-    query: Result<Query<Listing>, QueryRejection>,
-) -> Result<Json<RunList>, Refusal> {
+async fn list(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
     let Query(listing) = query?;
-    let store = api.calcifer.store();
+    if listing.project.is_some() && !speaks_project_storage(&headers) { return Err(project_storage_protocol_required()); }
+    if listing.project.is_some() { return Err(refuse(Kind::Usage, "project_context_required", "use the project run-history route")); }
+    list_scoped(&api, None, listing).await
+}
+
+pub(crate) async fn project_list(State(api): State<Arc<Api>>, Path(project): Path<String>, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
+    list_scoped(&api, Some(&project), query?.0).await
+}
+
+async fn list_scoped(api: &Arc<Api>, project: Option<&str>, listing: Listing) -> Result<Json<RunList>, Refusal> {
+    let journal = match project {
+        Some(project) => crate::store::RunStore::Project(api.projects.store(api, project).await.map_err(Refusal)?),
+        None => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
+    };
     let named = match &listing.machine {
         Some(text) => match api.machines.named(text).map_err(Refusal)? {
             Some(row) => Some(row),
@@ -514,87 +684,66 @@ async fn list(
         None => None,
     };
     let machine = (named.as_ref().map(|row| row.name.clone())).or_else(|| listing.machine.as_ref().map(|_| "local".to_owned()));
-    let (rows, older, mut unreadable) = store.runs(&RunFilter {
+    let (rows, older, mut unreadable) = journal.runs(&RunFilter {
         status: listing.status,
         target: listing.package.clone(),
         machine: machine.clone(),
-        out_dir: match listing.project.as_deref() {
-            Some(named) => Some(crate::project::landed_in(&crate::project::named(&api, named).map_err(Refusal)?)),
-            None => None,
-        },
+        out_dir: None,
         before: listing.before,
         limit: listing.limit.unwrap_or(50).clamp(1, 1000),
     })?;
     let mut runs = Vec::with_capacity(rows.len());
     for row in &rows {
-        if crate::project::vault::require_path(&row.out_dir).is_err() { continue; }
-        match api.calcifer.record(row) {
-            Ok(run) => runs.push(run),
-            Err(e) => unreadable.push(format!("run {}: {e}", row.number)),
-        }
+        if project.is_none() { api.calcifer.remember_maintenance_run(row.id.as_str()); }
+        match api.calcifer.record(row) { Ok(run) => runs.push(run), Err(_) => unreadable.push("run_unavailable".into()) }
     }
-    if let Some(first) = unreadable.first() {
-        warn!("{} runs left out of a list, the first {first}", unreadable.len());
-    }
-    // A rental's runs other clients of this account sent, on its first page.
-    let mut others = vec![];
-    if let Some(row) = named.filter(|row| row.kind == MachineKind::Rental && row.state == MachineState::Ready && listing.before.is_none()) {
-        match crate::others::listed(&api, &row).await {
-            Ok(listed) => others = listed,
-            Err(e) => unreadable.push(format!("{}'s runs other clients sent: {}", row.name, e.message)),
-        }
-        let package = listing.package.as_deref().unwrap_or_default();
-        others.retain(|run| listing.status.is_none_or(|status| run.status == status) && run.target.starts_with(package));
-    }
-    Ok(Json(RunList {
-        runs,
-        older,
-        machine,
-        unreadable,
-        others,
-    }))
+    Ok(Json(RunList { runs, older, machine, unreadable, others: vec![] }))
 }
 
 #[derive(Deserialize)]
-struct Detail {
+pub(crate) struct Detail {
     detail: Option<String>,
 }
 
 /// The run; `?detail=full` adds its measurements and settled calls.
-async fn show(
+pub(crate) async fn show(
     State(api): State<Arc<Api>>,
-    Path(key): Path<String>,
+    Path(path): Path<RunPath>,
+    headers: axum::http::HeaderMap,
     query: Result<Query<Detail>, QueryRejection>,
 ) -> Result<Json<Run>, Refusal> {
-    if let Some((machine, number)) = crate::others::named(&key) {
-        return Ok(Json(crate::others::show(&api, machine, number).await.map_err(Refusal)?));
-    }
-    let row = find(&api, &key)?;
+    let key = path.key();
+    let row = match find_scoped(&api, path.project(), key).await {
+        // An older client asks the global route for what is now a project's run.
+        Err(refusal) if path.project().is_none() && refusal.0.code == "run_not_found" && !speaks_project_storage(&headers) => {
+            return Err(project_storage_protocol_required());
+        }
+        found => found?,
+    };
     if query?.0.detail.as_deref() != Some("full") {
         return Ok(Json(api.calcifer.record(&row)?));
     }
-    let mut run = api.calcifer.store().detail(&row)?;
+    let mut run = api.calcifer.row_store(&row)?.detail(&row)?;
     let record = api.calcifer.record(&row)?;
     (run.waiting, run.progress, run.queue_position) = (record.waiting, record.progress, record.queue_position);
-    (run.project, run.project_id, run.stalled) = (record.project, record.project_id, record.stalled);
+    (run.name, run.project, run.project_id, run.stalled) = (record.name, record.project, record.project_id, record.stalled);
     run.request = crate::runs::asked(&row);
-    run.video_progress = crate::runs::video_progress::of(&run, &api.calcifer.store().events_after(row.id.as_str(), 0)?);
+    run.video_progress = crate::runs::video_progress::of(&run, &api.calcifer.row_store(&row)?.events_after(row.id.as_str(), 0)?);
     run.report = crate::runs::report::of(&run);
     Ok(Json(run))
 }
 
 /// 202 with the run asked to stop; 200 when it had already ended.
-async fn cancel(
+pub(crate) async fn cancel(
     State(api): State<Arc<Api>>,
-    Path(key): Path<String>,
+    Path(path): Path<RunPath>,
 ) -> Result<(StatusCode, Json<Run>), Refusal> {
-    if crate::others::named(&key).is_some() {
-        return Err(refuse(Kind::Conflict, "run_sent_elsewhere", format!("run {key} was sent by another client of this account: it is canceled from there")));
-    }
-    let row = find(&api, &key)?;
+    let key = path.key();
+    let row = find_scoped(&api, path.project(), key).await?;
     if row.state == RunState::Settled {
         return Ok((StatusCode::OK, Json(api.calcifer.record(&row)?)));
     }
+    if api.calcifer.row_owner(&row)?.as_ref().is_some_and(|owner|owner.project_id()!=row.owner) { return Err(refuse(Kind::Conflict,"copied_run_inert","copied execution history cannot cancel the original execution")); }
     let run = api.calcifer.cancel(&row.id)?;
     let run =
         run.ok_or_else(|| refuse(Kind::NotFound, "run_not_found", format!("no run {key}")))?;
@@ -611,19 +760,104 @@ async fn down(State(api): State<Arc<Api>>) -> Result<Json<Down>, Refusal> {
     }))
 }
 
+/// `GET /v1/legacy`: the old runs Calcifer's store still holds, by the folder each names (cl-984).
+async fn legacy(State(api): State<Arc<Api>>) -> Result<Json<::api::calcifer::LegacyRows>, Refusal> {
+    let rows = tokio::task::block_in_place(|| crate::legacy_status::store(api.calcifer.maintenance_store()))?;
+    Ok(Json(rows))
+}
+
 async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Refusal> {
     let hub = crate::hub::origin(&api, None)?;
     Ok(Json(CalciferStatus {
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         os: std::env::consts::OS.into(),
         local_usable: platform::Os::CURRENT.local_inference(),
         signed_in: hub.device_key(api.machines.hubs.home()).exists(),
         heap_bytes: platform::heap::held(),
         encrypted_project_creation: true,
+        home: api.machines.user_home.clone(),
     }))
 }
 
-async fn unknown_route(method: Method, uri: Uri) -> Refusal {
+/// Who uses this Calcifer now (cl-962): a `cozy` of another version restarts it only when no page, run or other client does.
+async fn activity(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap) -> Result<Json<CalciferActivity>, Refusal> {
+    // Calcifer's own runs and each open project's, from their journals.
+    let counts = api.calcifer.each_store(|store| Ok((store.unsettled()?.len(), store.unsettled_here()?.len()))).map_err(store_refusal)?;
+    let here: usize = counts.iter().map(|(_, here)| here).sum();
+    let runs = counts.iter().map(|(runs, _)| runs).sum::<usize>() + here;
+    let asker = headers.get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
+    Ok(Json(CalciferActivity {
+        version: ::api::VERSION.into(),
+        pages: api.activity.pages.load(Ordering::Relaxed),
+        runs: u32::try_from(runs).unwrap_or(u32::MAX),
+        here: u32::try_from(here).unwrap_or(u32::MAX),
+        requests: api.activity.requests.load(Ordering::Relaxed),
+        others_request_ms: api.activity.others(asker),
+        now_ms: crate::store::now_ms(),
+    }))
+}
+
+fn store_refusal(e: StoreError) -> Refusal {
+    refuse(Kind::Internal, "store_unreadable", e.to_string())
+}
+
+/// Each client's newest request, by the process it names (`PROCESS_HEADER`; a page is `page`, a client that names none ``), the
+/// requests being served, and the pages' open streams.
+#[derive(Default)]
+struct Activity {
+    pages: Arc<AtomicU32>,
+    requests: Arc<AtomicU32>,
+    seen: Mutex<HashMap<String, i64>>,
+}
+
+/// One of `Activity`'s counts, held while this lives.
+struct Counted(Arc<AtomicU32>);
+
+impl Counted {
+    fn of(count: &Arc<AtomicU32>) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        Self(count.clone())
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Activity {
+    /// Clients kept: the newest this many.
+    const KEPT: usize = 64;
+
+    fn note(&self, client: &str) {
+        let mut seen = self.seen.lock().expect("activity");
+        seen.insert(client.to_owned(), crate::store::now_ms());
+        if seen.len() > Self::KEPT
+            && let Some(oldest) = seen.iter().min_by_key(|(_, at)| **at).map(|(client, _)| client.clone())
+        {
+            seen.remove(&oldest);
+        }
+    }
+
+    fn others(&self, asker: &str) -> Option<i64> {
+        let seen = self.seen.lock().expect("activity");
+        seen.iter().filter(|(client, _)| asker.is_empty() || client.as_str() != asker).map(|(_, at)| *at).max()
+    }
+
+    /// `response`, a page's stream, counted among the open pages while its body lives.
+    fn held_open(&self, response: Response) -> Response {
+        let open = Counted::of(&self.pages);
+        let (parts, body) = response.into_parts();
+        let body = Body::from_stream(body.into_data_stream().map(move |chunk| {
+            let _open = &open;
+            chunk
+        }));
+        Response::from_parts(parts, body)
+    }
+}
+
+pub(crate) async fn unknown_route(method: Method, uri: Uri) -> Refusal {
     refuse(
         Kind::NotFound,
         "unknown_route",
@@ -632,7 +866,7 @@ async fn unknown_route(method: Method, uri: Uri) -> Refusal {
 }
 
 #[derive(Deserialize)]
-struct Resume {
+pub(crate) struct Resume {
     #[serde(default)]
     starting_after: u64,
 }
@@ -641,36 +875,38 @@ struct Resume {
 /// events, then the broadcast as it happens. The stream ends after the run's terminal event once
 /// each of its outputs has landed or carries an `export_error`; Calcifer stopping ends it without
 /// one (reconnect from the last `id:`, as `Last-Event-ID` or `?starting_after=`).
-async fn events(
+pub(crate) async fn events(
     State(api): State<Arc<Api>>,
-    Path(key): Path<String>,
+    Path(path): Path<RunPath>,
     headers: axum::http::HeaderMap,
     query: Result<Query<Resume>, QueryRejection>,
 ) -> Result<Sse<KeepAliveStream<BoxStream<'static, Result<sse::Event, Infallible>>>>, Refusal> {
     let Query(Resume { starting_after }) = query?;
     let last = headers.get("last-event-id").and_then(|v| v.to_str().ok()?.trim().parse::<u64>().ok());
     let starting_after = starting_after.max(last.unwrap_or(0));
-    if let Some((machine, number)) = crate::others::named(&key) {
-        let events = crate::others::events(&api, machine, number, starting_after).await.map_err(Refusal)?;
-        return Ok(Sse::new(events.take_until(api.stopped()).boxed()).keep_alive(KeepAlive::default()));
-    }
+    let key = path.key();
     // Subscribed first: whatever happens after the store is read is in the tail.
     let tail = api.calcifer.subscribe();
-    let row = find(&api, &key)?;
+    let row = find_scoped(&api, path.project(), key).await?;
     let mut pending = VecDeque::from(
-        api.calcifer
-            .store()
-            .events_after(row.id.as_str(), starting_after)?,
+        api.calcifer.row_store(&row)?.events_after(row.id.as_str(), starting_after)?,
     );
-    // What it replays of a run still going says its machine's GPU, as its live events do.
+    // Replayed events use the live GPU without giving inert legacy rows a live tail.
     for event in &mut pending {
         if let Event::Created { run, .. } | Event::Queued { run, .. } | Event::InProgress { run, .. } = event {
             api.calcifer.live_gpu(run);
         }
     }
-    pending.extend(api.calcifer.live(&row.id));
+    let owner = api.calcifer.row_owner(&row)?;
+    let named = crate::project_of(&row);
+    let inert = row.custody_pending || owner.as_ref().is_some_and(|owner| owner.project_id() != row.owner);
+    if !inert { pending.extend(api.calcifer.live(&row.id)); }
     let follow = Follow {
+        owner,
+        named,
+        inert,
         vault_token: crate::project::vault::readable_token(&row.out_dir),
+        _following: (row.state != RunState::Settled).then(|| crate::project::vault::following(&row.out_dir)).flatten(),
         id: row.id,
         pending,
         last: starting_after,
@@ -685,7 +921,13 @@ async fn events(
 
 /// One SSE subscriber's place in its run's stream.
 struct Follow {
+    owner:Option<crate::project::RunOwner>,
+    /// Its project's id and name, which each record it sends names as GET's does: the store's records name none.
+    named: Option<(String, String)>,
+    inert:bool,
     vault_token: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// A run still going, followed: its encrypted project stays unlocked meanwhile.
+    _following: Option<crate::project::vault::Following>,
     id: RunId,
     pending: VecDeque<Event>,
     /// The highest sequence number sent; a durable event at or below it is already known.
@@ -698,10 +940,16 @@ struct Follow {
 }
 
 impl Follow {
+    fn store(&self)->crate::store::Result<crate::store::RunStore<'_>> {match &self.owner {Some(owner)=>owner.store().map(crate::store::RunStore::Project),None=>Ok(crate::store::RunStore::Maintenance(self.calcifer.maintenance_store()))}}
     async fn next(mut self) -> Option<(Result<sse::Event, Infallible>, Self)> {
         loop {
             if self.vault_token.as_ref().is_some_and(|token| !token.load(std::sync::atomic::Ordering::Acquire)) { return None; }
-            if let Some(event) = self.pending.pop_front() {
+            if let Some(mut event) = self.pending.pop_front() {
+                if let (Some((id, name)), Event::Created { run, .. } | Event::Queued { run, .. } | Event::InProgress { run, .. }
+                    | Event::Completed { run, .. } | Event::Failed { run, .. } | Event::Canceled { run, .. }) = (&self.named, &mut event)
+                {
+                    (run.project_id, run.project) = (Some(id.clone()), Some(name.clone()));
+                }
                 self.ended |= event.is_terminal();
                 let mut sent = sse::Event::default();
                 if let Some(sequence) = event.sequence_number() {
@@ -714,8 +962,9 @@ impl Follow {
                 let data = serde_json::to_string(&event).expect("an event serializes");
                 return Some((Ok(sent.data(data)), self));
             }
+            if self.inert { return None; }
             // An ended run's stream waits only for its outputs to land (or a store it cannot read).
-            let owed = self.calcifer.store().outputs_to_export(self.id.as_str());
+            let owed = self.store().and_then(|store| store.outputs_to_export(self.id.as_str()));
             if self.ended && !owed.is_ok_and(|outputs| !outputs.is_empty()) {
                 return None;
             }
@@ -724,7 +973,8 @@ impl Follow {
                     Ok((id, event)) if id == self.id => self.pending.push_back(event),
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        match self.calcifer.store().events_after(self.id.as_str(), self.last) {
+                        let journal=match &self.owner {Some(owner)=>owner.store().map(crate::store::RunStore::Project),None=>Ok(crate::store::RunStore::Maintenance(self.calcifer.maintenance_store()))};
+                        match journal.and_then(|store| store.events_after(self.id.as_str(), self.last)) {
                             Ok(events) => self.pending.extend(events),
                             Err(e) => {
                                 warn!(run = %self.id, "the event stream cannot catch up: {e}");

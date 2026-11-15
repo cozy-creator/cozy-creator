@@ -7,10 +7,9 @@
 //! minute, each attempt said. A request or stream Calcifer leaves unanswered says so, naming its
 //! process and what it is doing.
 use std::{
-    fs::OpenOptions,
     io::{self, Write as _},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -22,13 +21,17 @@ use platform::{
     tools,
 };
 use api::{
-    calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, StreamEvent, project::{VaultAsk, VaultChanged, VaultEvent}},
+    calcifer::{
+        CalciferActivity, Down, Event, Holder, LogEvent, MachineList, PROCESS_HEADER, REFUSED, Run, RunList, StreamEvent,
+        project::{VaultAsk, VaultChanged, VaultEvent},
+    },
     error::{Envelope, Error, Kind, STOPPING},
     ids::Digest,
     machine::{HELD, LogLines, Ranges, parse_held},
 };
 use reqwest::{RequestBuilder, Response, StatusCode, header};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest as _, Sha256};
 use tensorfs::fetch::Backoff;
 
 /// `calcifer::api::IGNORED_FIELDS`: the request fields Calcifer did not read.
@@ -46,6 +49,8 @@ use crate::{Context, output};
 const SAMPLE: Duration = Duration::from_millis(50);
 /// How often a wait that goes on says so.
 const REPORT: Duration = Duration::from_secs(5);
+/// A request this recent by anyone else means someone uses Calcifer: a `cozy` of another version leaves it running (cl-962).
+const IN_USE: Duration = Duration::from_secs(600);
 /// Calcifer's streams carry a keepalive this often (axum's default): one silent for two is a Calcifer
 /// that does not answer.
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -84,6 +89,47 @@ pub(crate) enum VaultProgress<'a> {
     Notice { message: &'a str },
 }
 
+/// A run number is meaningful only inside the explicit project that owns it. `None` is
+/// independent maintenance, never a fallback after a project lookup failed. A run id is unique:
+/// inside a project, one the project doesn't know is Calcifer's own run (a download, an update).
+#[derive(Clone)]
+pub(crate) struct RunAddress { pub project: Option<String>, pub run: String }
+impl RunAddress {
+    pub(crate) fn of(run: &Run) -> Self {
+        match &run.project_id {
+            Some(project) => Self { project: Some(project.clone()), run: run.id.to_string() },
+            // A record a run's stream sent names no project: its `KEY-N` finds it from any scope (cl-987).
+            None if api::calcifer::project::run_name(&run.name).is_some() => Self { project: None, run: run.name.clone() },
+            None => Self { project: None, run: run.id.to_string() },
+        }
+    }
+    pub(crate) async fn current(ctx: &Context, run: &str) -> Result<Self, Error> {
+        // `KEY-N` names one run from any folder (cl-987): Calcifer finds its project.
+        if api::calcifer::project::run_name(run).is_some() {
+            return Ok(Self { project: None, run: run.trim().to_ascii_uppercase() });
+        }
+        let project = match crate::project::identity(ctx).await {
+            Ok(project) => Some(project.id),
+            Err(error) if error.code == "not_in_a_project" => None,
+            Err(error) => return Err(error),
+        };
+        let address = Self { project, run: run.into() };
+        if address.project.is_none() || !run.starts_with("run-") {
+            return Ok(address);
+        }
+        match ctx.calcifer().await?.run(&address).await {
+            Err(error) if error.code == "run_not_found" => Ok(Self { project: None, ..address }),
+            _ => Ok(address),
+        }
+    }
+    pub(crate) fn path(&self) -> String {
+        match &self.project {
+            Some(project) => path(&["v1", "projects", project, "runs", &self.run]),
+            None => path(&["v1", "runs", &self.run]),
+        }
+    }
+}
+
 struct Inner {
     http: reqwest::Client,
     home: Home,
@@ -110,8 +156,13 @@ impl Client {
     }
 
     fn new(ctx: &Context) -> Result<Self, Error> {
-        // Who a project's history says made an edit.
-        let said = header::HeaderMap::from_iter([(header::HeaderName::from_static("cozy-client"), header::HeaderValue::from_static("cli"))]);
+        // Who a project's history says made an edit, its project storage protocol, and which process asks (cl-962: Calcifer tells
+        // its requests from others').
+        let said = header::HeaderMap::from_iter([
+            (header::HeaderName::from_static("cozy-client"), header::HeaderValue::from_static("cli")),
+            (header::HeaderName::from_static(api::calcifer::project::PROJECT_STORAGE_HEADER), header::HeaderValue::from_static(api::calcifer::project::PROJECT_STORAGE_VERSION)),
+            (header::HeaderName::from_static(PROCESS_HEADER), header::HeaderValue::from(std::process::id())),
+        ]);
         let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone")
             .no_proxy()
             .default_headers(said)
@@ -208,7 +259,7 @@ impl Client {
     /// One vault operation ID for the command's lifetime. Reconnecting the same PUT attaches to
     /// that operation; the server acknowledges receipt immediately and records admission before
     /// changing storage, so an accepted operation is never run twice.
-    /// A controller without this route gets one legacy POST, whose uncertain result is not retried.
+    /// Protocol 3 is negotiated before each wire attempt; older vault routes are never used.
     pub(crate) async fn vault(
         &self,
         path: &str,
@@ -216,14 +267,12 @@ impl Client {
         mut progress: impl FnMut(VaultProgress<'_>),
     ) -> Result<VaultChanged, Error> {
         let body = json_body(request)?;
-        let operation = format!("{path}/operations/{}", write_key());
-        let attempts = AtomicUsize::new(0);
+        let operation = format!("{path}/operations/p3_{}", write_key());
         let mut reconnects = Backoff::transfer();
-        let (mut can_use_legacy, mut accepted) = (true, false);
+        let mut accepted = false;
         let mut last_progress = None;
         loop {
             let mut answer = self.send(Ask::Write, |c, base| {
-                attempts.fetch_add(1, Ordering::Relaxed);
                 json(c.put(format!("{base}{operation}")), &body).header(header::ACCEPT, "text/event-stream")
             }).await.map_err(vault_uncertain)?;
             if !answer.status().is_success() {
@@ -236,18 +285,8 @@ impl Client {
                     }
                 };
                 let error = vault_refusal(status, &bytes);
-                // A hidden transport retry may follow an admitted PUT whose headers were lost.
-                // Only the very first wire attempt can prove that an old route never accepted it.
-                if can_use_legacy && attempts.load(Ordering::Relaxed) == 1
-                    && status == StatusCode::NOT_FOUND && matches!(error.code.as_str(), "unknown_route" | UNTYPED)
-                {
-                    return self.legacy_vault(path, &body).await;
-                }
                 return Err(error);
             }
-            // Even without an Accepted event, a successful operation response may have admitted it.
-            // A later missing/expired operation must never turn into a new legacy mutation.
-            can_use_legacy = false;
             let content_type = answer.headers().get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok())
                 .and_then(|value| value.split(';').next()).map(str::trim).unwrap_or("");
             if content_type != "text/event-stream" {
@@ -302,16 +341,6 @@ impl Client {
         Ok(())
     }
 
-    async fn legacy_vault(&self, path: &str, body: &bytes::Bytes) -> Result<VaultChanged, Error> {
-        let answer = self.send(Ask::Unkeyed, |c, base| {
-            json(c.post(format!("{base}{path}")), body).header(header::ACCEPT, "application/json")
-        }).await.map_err(vault_uncertain)?;
-        let status = answer.status();
-        let body = answer.bytes().await.map_err(|_| vault_interrupted("the legacy response was interrupted"))?;
-        if !status.is_success() { return Err(vault_refusal(status, &body)); }
-        serde_json::from_slice(&body).map_err(|_| vault_interrupted("the legacy response could not be read"))
-    }
-
     /// A PUT: idempotent by its path, and under its call's key too.
     pub(crate) async fn put<B, T>(&self, path: &str, body: &B) -> Result<T, Error>
     where
@@ -325,6 +354,12 @@ impl Client {
     pub(crate) async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
         let key = write_key();
         self.exchange(Ask::Write, |c, base| c.delete(format!("{base}{path}")).header(KEY, &key)).await
+    }
+
+    /// A DELETE that is part of `edit`, as a project's history names it (`Cozy-Edit`): deletes sharing one are one entry, one Undo.
+    pub(crate) async fn delete_edit<T: DeserializeOwned>(&self, path: &str, edit: &str) -> Result<T, Error> {
+        let key = write_key();
+        self.exchange(Ask::Write, |c, base| c.delete(format!("{base}{path}")).header(KEY, &key).header("cozy-edit", edit)).await
     }
 
     pub(crate) async fn delete_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
@@ -357,8 +392,9 @@ impl Client {
             return Err(Error::new(Kind::Unavailable, "project_upload_unsupported", "Calcifer does not support protected project uploads; update it before sending private files"));
         }
         let ranges = || answer.headers().get(HELD).and_then(|v| v.to_str().ok()).and_then(parse_held).unwrap_or_default();
+        // 200: held whole; 404: none of it, or the ranges `Cozy-Held` says.
         match answer.status() {
-            status if status.is_success() => Ok(None),
+            StatusCode::OK => Ok(None),
             StatusCode::NOT_FOUND => Ok(Some(ranges())),
             _ => Err(envelope(answer).await),
         }
@@ -489,14 +525,14 @@ impl Client {
                         if let Some(fields) = ignored {
                             let lacks = format!("does not read {fields}");
                             self.say(&format!("{}; it carried out the ask without them", self.lacking(&lacks)));
-                            self.restart(&lacks).await?;
+                            self.restart_after(&lacks).await;
                         }
                         return Ok(value);
                     }
                     Err(e) if self.other_version() && write => {
                         let lacks = format!("answers without what this cozy reads ({e})");
                         self.say(&format!("{}; it carried out the ask, which isn't sent again", self.lacking(&lacks)));
-                        self.restart(&lacks).await?;
+                        self.restart_after(&lacks).await;
                         let said = format!("The operation completed, but its response could not be read: {e}");
                         return Err(Error::new(Kind::Internal, "answer_unreadable", said));
                     }
@@ -553,7 +589,7 @@ impl Client {
 
     /// Whether the Calcifer this talks to runs another cozy version than this one.
     fn other_version(&self) -> bool {
-        self.holder().is_some_and(|h| h.version != env!("CARGO_PKG_VERSION"))
+        self.holder().is_some_and(|h| h.version != ::api::VERSION)
     }
 
     /// "Calcifer runs cozy X, which <lacks>".
@@ -563,9 +599,14 @@ impl Client {
     }
 
     /// Restarts Calcifer on the installed cozy because it `lacks` something this cozy asks for;
-    /// false when the restart brought back the same version, which would lack it still.
+    /// false when the restart brought back the same version, which would lack it still. A Calcifer
+    /// that is kept (`kept`: someone uses it, or this is not the installed cozy) is left running, and
+    /// the ask refused (cl-962).
     async fn restart(&self, lacks: &str) -> Result<bool, Error> {
         let Some(holder) = self.holder() else { return Ok(false) };
+        if let Some(why) = self.kept(&holder).await {
+            return Err(other_version(&holder, lacks, &why));
+        }
         self.say(&format!("{}; restarting it on the installed cozy", self.lacking(lacks)));
         if let Err(e) = self.down(&holder).await {
             self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
@@ -575,30 +616,84 @@ impl Client {
         Ok(started.version != holder.version)
     }
 
+    /// After an ask Calcifer carried out: restarted for the next command, or said why it is kept.
+    async fn restart_after(&self, lacks: &str) {
+        if let Err(e) = self.restart(lacks).await {
+            self.say(&e.message);
+        }
+    }
+
+    /// Why the Calcifer `holder` names must keep running, which none of another version is restarted
+    /// past (cl-962): only the installed cozy's own path replaces it, and only while nobody uses it:
+    /// no page has a stream open, no run is unsettled, no request is being served, and nobody else asked anything for `IN_USE`.
+    /// One too old to say who uses it is kept.
+    async fn kept(&self, holder: &Holder) -> Option<String> {
+        if !self.is_installed() {
+            return Some("this cozy is not the installed one, which a restart would start".into());
+        }
+        let request = self.0.http.get(format!("http://{}/v1/activity", holder.address)).bearer_auth(&holder.token);
+        let answer = match tokio::time::timeout(REPORT, request.send()).await {
+            Ok(Ok(answer)) if answer.status().is_success() => answer,
+            Ok(Ok(_)) => return Some(format!("cozy {} can't say who uses it", holder.version)),
+            _ => return Some("it did not say who uses it".into()),
+        };
+        let Ok(activity) = answer.json::<CalciferActivity>().await else {
+            return Some(format!("cozy {} can't say who uses it", holder.version));
+        };
+        let recent = activity.others_request_ms.map(|at| Duration::from_millis(u64::try_from(activity.now_ms - at).unwrap_or(0)));
+        let mut uses = Vec::new();
+        match activity.pages {
+            0 => {}
+            1 => uses.push("a page is open".to_owned()),
+            n => uses.push(format!("{n} pages are open")),
+        }
+        match activity.runs {
+            0 => {}
+            1 => uses.push("a run is going".to_owned()),
+            n => uses.push(format!("{n} runs are going")),
+        }
+        match activity.requests {
+            0 => {}
+            1 => uses.push("it is serving a request".to_owned()),
+            n => uses.push(format!("it is serving {n} requests")),
+        }
+        if let Some(ago) = recent.filter(|ago| *ago < IN_USE) {
+            uses.push(format!("someone asked it something {}s ago", ago.as_secs()));
+        }
+        (!uses.is_empty()).then(|| uses.join(", "))
+    }
+
+    /// Whether this process is the installed cozy, which Calcifer is started from.
+    fn is_installed(&self) -> bool {
+        let me = std::env::current_exe().and_then(|exe| exe.canonicalize());
+        let installed = installed(&self.0.home).ok().and_then(|it| it.canonicalize().ok());
+        matches!((me, installed), (Ok(me), Some(it)) if me == it)
+    }
+
     /// Calcifer is older than this cozy and the installed cozy is too.
     fn outdated(&self, lacks: &str) -> Error {
         Error::new(
             Kind::Unavailable,
             "calcifer_outdated",
-            format!("{}; this is cozy {}", self.lacking(lacks), env!("CARGO_PKG_VERSION")),
+            format!("{}; this is cozy {}", self.lacking(lacks), ::api::VERSION),
         )
         .next("cozy update")
     }
 
     /// A run by its id or number.
-    pub(crate) async fn run(&self, id: &str) -> Result<Run, Error> {
-        self.get(&path(&["v1", "runs", id])).await
+    pub(crate) async fn run(&self, address: &RunAddress) -> Result<Run, Error> {
+        self.get(&address.path()).await
     }
 
     /// Runs, newest first; `query` is the route's filters.
-    pub(crate) async fn runs<Q: Serialize + ?Sized>(&self, query: &Q) -> Result<RunList, Error> {
-        self.get_query("/v1/runs", query).await
+    pub(crate) async fn runs<Q: Serialize + ?Sized>(&self, project: &str, query: &Q) -> Result<RunList, Error> {
+        self.get_query(&path(&["v1", "projects", project, "runs"]), query).await
     }
 
     /// A running run's newest preview when it isn't `held` (its `ETag`): its tag, its step and its
     /// picture (cr-282); none while there is no newer one. Asking keeps its machine making them.
-    pub(crate) async fn preview(&self, id: &str, held: &str) -> Result<Option<(String, String, bytes::Bytes)>, Error> {
-        let path = path(&["v1", "runs", id, "preview"]);
+    pub(crate) async fn preview(&self, run: &RunAddress, held: &str) -> Result<Option<(String, String, bytes::Bytes)>, Error> {
+        let path = format!("{}/preview", run.path());
         let answer = self
             .send(Ask::Read, |c, base| match held {
                 "" => c.get(format!("{base}{path}")),
@@ -615,8 +710,8 @@ impl Client {
     }
 
     /// Asks for a run's cancel; its machine's own outcome ends it.
-    pub(crate) async fn cancel(&self, id: &str) -> Result<Run, Error> {
-        let path = path(&["v1", "runs", id, "cancel"]);
+    pub(crate) async fn cancel(&self, address: &RunAddress) -> Result<Run, Error> {
+        let path = format!("{}/cancel", address.path());
         self.post(&path, &serde_json::json!({}), None).await
     }
 
@@ -640,10 +735,10 @@ impl Client {
     }
 
     /// A run's events after `starting_after`, to its terminal one.
-    pub(crate) fn events(&self, id: &str, starting_after: u64) -> Events {
+    pub(crate) fn events(&self, address: &RunAddress, starting_after: u64) -> Events {
         Events {
             client: self.clone(),
-            path: path(&["v1", "runs", id, "events"]),
+            path: format!("{}/events", address.path()),
             cursor: starting_after,
             stream: None,
             sse: Sse::default(),
@@ -659,10 +754,10 @@ impl Client {
 
     /// A run's events after `starting_after` past its terminal one, until Calcifer ends the
     /// stream: once each output's last revision landed or failed (or Calcifer stopped).
-    pub(crate) fn events_until_landed(&self, id: &str, starting_after: u64) -> Events {
+    pub(crate) fn events_until_landed(&self, address: &RunAddress, starting_after: u64) -> Events {
         Events {
             landing: true,
-            ..self.events(id, starting_after)
+            ..self.events(address, starting_after)
         }
     }
 
@@ -719,9 +814,7 @@ impl Client {
     /// Whether the Calcifer `holder` names runs another cozy than this one, which is the installed
     /// one: something replaced the binary under it (`cozy machine update` on a pod, an installer).
     fn replaced(&self, holder: &Holder) -> bool {
-        let me = std::env::current_exe().and_then(|exe| exe.canonicalize());
-        let installed = installed(&self.0.home).ok().and_then(|it| it.canonicalize().ok());
-        holder.version != env!("CARGO_PKG_VERSION") && matches!((me, installed), (Ok(me), Some(it)) if me == it)
+        holder.version != ::api::VERSION && self.is_installed()
     }
 
     /// Reaches Calcifer, starting it if none runs.
@@ -734,23 +827,33 @@ impl Client {
             return Ok(holder);
         }
         let holder = match self.live().await {
-            // It restarts on this binary: runs on machines go on, and it resumes what it owed.
-            Some(holder) if self.replaced(&holder) => {
-                self.say(&format!(
-                    "Calcifer runs cozy {}; restarting it on {}",
-                    holder.version,
-                    env!("CARGO_PKG_VERSION")
-                ));
-                if let Err(e) = self.down(&holder).await {
-                    self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
+            // It restarts on this binary: runs on machines go on, and it resumes what it owed. One someone uses keeps
+            // running (cl-962): this cozy asks it as it is, and only what it lacks is refused.
+            Some(holder) if self.replaced(&holder) => match self.kept(&holder).await {
+                Some(why) => {
+                    self.say(&format!(
+                        "Calcifer here is {}, this cozy is {}: it keeps running ({why}); `cozy restart` switches it",
+                        holder.version,
+                        ::api::VERSION
+                    ));
+                    holder
                 }
-                self.start().await?
-            }
+                None => self.replace(holder).await?,
+            },
             Some(holder) => holder,
             None => self.start().await?,
         };
         self.remember(Some(holder.clone()));
         Ok(holder)
+    }
+
+    /// Stops `holder`'s Calcifer and starts the installed cozy's in its place.
+    async fn replace(&self, holder: Holder) -> Result<Holder, Error> {
+        self.say(&format!("Calcifer runs cozy {}; restarting it on {}", holder.version, ::api::VERSION));
+        if let Err(e) = self.down(&holder).await {
+            self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
+        }
+        self.start().await
     }
 
     fn remember(&self, holder: Option<Holder>) {
@@ -805,7 +908,6 @@ impl Client {
             }));
         }
         let services = Services::new(home, &self.0.user_home);
-        let mut steps = Steps::new(home.calcifer_log());
         // Another cozy (a build, a copy) never writes the service: it starts it only as already
         // defined for the installed cozy, else runs the installed one detached.
         let exe = std::env::current_exe().and_then(|exe| exe.canonicalize());
@@ -823,23 +925,20 @@ impl Client {
             output::warn(&warning);
         }
         if managed && ours {
-            let wrote = services.ensure(&spec).map_err(failed)?;
-            steps.done(match wrote {
-                true => "wrote Calcifer's service and reloaded its manager",
-                false => "found Calcifer's service current",
-            });
+            services.ensure(&spec).map_err(failed)?;
         }
-        let (mut child, mut asked, mut cleared) = (None, false, false);
+        let (mut child, mut cleared) = (None, false);
         let began = Instant::now();
         let mut reported = began;
         loop {
             // Nobody holds the home: start one. Again too when the last start lost to a
             // Calcifer that was stopping, which held the lock until it went.
             if child.is_none() && self.lock_free() {
-                match managed {
+                child = match managed {
                     // The manager stops starting a service killed or failed too often lately
                     // (`Services::clear`): its refusal is cleared once a start, so a Calcifer that
-                    // keeps failing by itself is still said.
+                    // keeps failing by itself is still said. With no manager (Windows), the process
+                    // started is watched as a detached one is (cl-989).
                     true => services
                         .start(&spec)
                         .or_else(|refused| match std::mem::replace(&mut cleared, true) {
@@ -847,18 +946,14 @@ impl Client {
                             false => services.clear(&spec).and_then(|()| services.start(&spec)),
                         })
                         .map_err(failed)?,
-                    false => child = Some(spawn(&spec).map_err(failed)?),
-                }
-                if !std::mem::replace(&mut asked, true) {
-                    steps.done("started Calcifer");
-                }
+                    false => Some(spawn(&spec).map_err(failed)?),
+                };
             }
             tokio::time::sleep(SAMPLE).await;
             if let Some(error) = refusal(&refused) {
                 return Err(error);
             }
             if let Some(holder) = self.live().await {
-                steps.done("Calcifer answered");
                 return Ok(holder);
             }
             if let Some(tree) = child.as_mut()
@@ -893,7 +988,7 @@ impl Client {
             name: "calcifer".into(),
             program: installed,
             args: vec!["calcifer".into()],
-            log: Some(self.0.home.calcifer_log()),
+            log: None,
         }
     }
 
@@ -920,6 +1015,33 @@ impl Client {
             let holder = self.endpoint().await?;
             let base = format!("http://{}", holder.address);
             let request = build(&self.0.http, &base).bearer_auth(&holder.token);
+            let probe = request.try_clone().ok_or_else(|| Error::new(Kind::Internal, "request_unrepeatable", "The request cannot be inspected before transmission"))?
+                .build().map_err(unreachable)?;
+            if needs_project_storage(probe.url().path()) {
+                let birth = match self.project_storage(&holder).await {
+                    Ok(birth) => birth,
+                    Err(Probe::Unsupported) => return Err(storage_unsupported()),
+                    // Mid-restart (cl-716 B): asked again on the record it publishes, by the call's rule.
+                    Err(Probe::Restarting(why)) => {
+                        self.remember(None);
+                        let why = format!("{RESTARTING} ({why})");
+                        match backoff.again(&why, false, None) {
+                            Some((wait, said)) => {
+                                output::warn(&said);
+                                tokio::time::sleep(wait).await;
+                                continue;
+                            }
+                            None => return Err(Error::new(Kind::Unavailable, "calcifer_unreachable", backoff.spent(&why)).next("cozy doctor")),
+                        }
+                    }
+                };
+                // No old daemon can receive the project request after a restarted holder was probed. Never by
+                // taking the lock: a client whose home holds only a copy of the record would erase it.
+                if self.record().as_ref() != Some(&holder) || process::Birth::of(holder.pid).ok().as_ref() != Some(&birth) {
+                    self.remember(None);
+                    continue;
+                }
+            }
             let sent = self.heard(holder.pid, Instant::now(), REPORT, request.send()).await;
             let (error, stated, restarting) = match sent {
                 // A restart minted a new token: asked again once under the record it published. The same
@@ -968,6 +1090,33 @@ impl Client {
                 }
             }
         }
+    }
+
+    /// A header alone is insufficient: old controllers ignore unknown headers. This response is
+    /// bound to both this exact process birth and this OS account before any project bytes go.
+    /// A Calcifer that is stopping or starting is `Restarting`; only one that answers without the
+    /// protocol is `Unsupported`.
+    async fn project_storage(&self, holder: &Holder) -> Result<process::Birth, Probe> {
+        #[derive(Deserialize)]
+        struct Capability { version: u32, daemon_birth: String, principal: String }
+        let birth = process::Birth::of(holder.pid).map_err(|_| Probe::Restarting("its process ended".into()))?;
+        let expected_birth = hex::encode(Sha256::digest(serde_json::to_vec(&birth).map_err(|_| Probe::Unsupported)?));
+        let answer = self.0.http.get(format!("http://{}/v1/project-storage", holder.address)).bearer_auth(&holder.token)
+            .send().await.map_err(|error| Probe::Restarting(format!("no answer: {error}")))?;
+        let status = answer.status();
+        // A new token, or a Calcifer stopping or not yet serving.
+        if status == StatusCode::UNAUTHORIZED || weather(status) { return Err(Probe::Restarting(format!("it answered {status}"))); }
+        if !status.is_success() { return Err(Probe::Unsupported); }
+        let body = answer.bytes().await.map_err(|error| Probe::Restarting(format!("its answer broke: {error}")))?;
+        let capability: Capability = serde_json::from_slice(&body).map_err(|_| Probe::Unsupported)?;
+        // The account Calcifer verified for this connection: this process's own.
+        let own = platform::net::User::current().map(|user| format!("user:{user}"));
+        if capability.version != 3 || Some(capability.principal) != own {
+            return Err(Probe::Unsupported);
+        }
+        // Another process answers at the record's address: the record is being replaced.
+        if capability.daemon_birth != expected_birth { return Err(Probe::Restarting("another Calcifer answers".into())); }
+        Ok(birth)
     }
 
     /// Samples `done` until it holds, saying what it waits for every few seconds.
@@ -1326,6 +1475,21 @@ pub(crate) fn path(segments: &[&str]) -> String {
 /// installer's `<home>/bin/cozy` when that is there, else this cozy (Homebrew's stable path, winget,
 /// a distro package), and that is recorded. One rule for every installer; another cozy never
 /// replaces a recorded one that is there.
+/// A Calcifer of another version that is kept running (cl-962): what this cozy asked for that it lacks, and why it keeps running.
+fn other_version(holder: &Holder, lacks: &str, why: &str) -> Error {
+    Error::new(
+        Kind::Unavailable,
+        "calcifer_other_version",
+        format!(
+            "Calcifer here is {}, this cozy is {}; run the matching cozy, or `cozy restart` to switch",
+            holder.version,
+            ::api::VERSION
+        ),
+    )
+    .remedy(format!("It {lacks}; it keeps running: {why}"))
+    .next("cozy restart")
+}
+
 pub(crate) fn installed(home: &Home) -> Result<PathBuf, Error> {
     let record = home.installed();
     let recorded = std::fs::read_to_string(&record).ok().map(|text| PathBuf::from(text.trim_end()));
@@ -1346,15 +1510,9 @@ pub(crate) fn installed(home: &Home) -> Result<PathBuf, Error> {
     Ok(chosen)
 }
 
-/// Homebrew's `<prefix>/bin/cozy` for a cozy it installed at `<prefix>/Cellar/<formula>/<version>/bin/cozy`,
-/// a path every upgrade moves.
+/// Homebrew's `<prefix>/bin/cozy` for a cozy it installed (`api::update::homebrew`).
 pub(crate) fn homebrew(exe: &Path) -> Option<PathBuf> {
-    let bin = exe.parent()?;
-    let cellar = bin.parent()?.parent()?.parent()?;
-    if bin.file_name()? != "bin" || cellar.file_name()? != "Cellar" {
-        return None;
-    }
-    Some(cellar.parent()?.join("bin").join(exe.file_name()?))
+    api::update::homebrew(exe)
 }
 
 /// The refusal a Calcifer that could not start left.
@@ -1442,32 +1600,6 @@ async fn envelope(answer: Response) -> Error {
     }
 }
 
-/// The steps of a start, each with its time, appended to Calcifer's log (`cozy machine logs local calcifer`)
-/// beside Calcifer's own: a slow start names its slow step.
-struct Steps {
-    log: PathBuf,
-    since: Instant,
-}
-
-impl Steps {
-    fn new(log: PathBuf) -> Self {
-        Self {
-            log,
-            since: Instant::now(),
-        }
-    }
-
-    fn done(&mut self, step: &str) {
-        let ms = self.since.elapsed().as_millis();
-        let line = format!("{}  INFO cozy: {step} in {ms} ms\n", jiff::Timestamp::now());
-        let log = OpenOptions::new().create(true).append(true).open(&self.log);
-        if let Ok(mut log) = log {
-            let _ = log.write_all(line.as_bytes());
-        }
-        self.since = Instant::now();
-    }
-}
-
 /// A write's own `Idempotency-Key`, made once per call.
 fn write_key() -> String {
     let mut bytes = [0u8; 16];
@@ -1482,3 +1614,20 @@ mod tests;
 #[cfg(test)]
 #[path = "calcifer_restart_tests.rs"]
 mod restart_tests;
+
+/// Global service/account diagnostics remain available to diagnose an old controller.
+/// Why a project storage probe proved nothing.
+enum Probe {
+    /// Calcifer is stopping, starting or replaced: asked again.
+    Restarting(String),
+    /// It answers without protocol 3: a Calcifer released before it.
+    Unsupported,
+}
+
+fn storage_unsupported() -> Error {
+    Error::new(Kind::Unavailable, "project_storage_unsupported", "Calcifer cannot prove project storage protocol 3; no project request was sent").next("cozy update")
+}
+
+fn needs_project_storage(path: &str) -> bool {
+    ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/browser/", "/v1/maintenance/source", "/v1/events"].iter().any(|prefix| path.starts_with(prefix))
+}

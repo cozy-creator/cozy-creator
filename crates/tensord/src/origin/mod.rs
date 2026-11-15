@@ -28,20 +28,19 @@ use crate::stop::Stop;
 /// How long the datacenter volume keeps what nobody reads.
 const VOLUME_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// How often a blocked call looks at its stop.
-const TICK: Duration = Duration::from_millis(100);
-
 /// The machine's one download line, smaller first (cl-905): what a reader is blocked on, then each
 /// run's needs in job order (acceptance, as its GPU work queues), then what jobs waiting on another's
 /// output will read, then guesses, then warm sets. The downloader finishes one before the next.
 pub(crate) mod priority {
-    /// A reader is blocked on it.
-    pub(crate) const NOW: u64 = 0;
-    /// The order of what a started run fetches (its calls' weights): ahead of every queued root,
-    /// whose order is its acceptance, from 1.
+    /// What a started call's function reads now and isn't here yet (`ModelNeed`): before everything (cl-966).
+    pub(crate) const EMERGENCY: u64 = 0;
+    /// What the machine itself is blocked on (its update), no job's.
+    pub(crate) const NOW: u64 = 1;
+    /// The run a started run's fetches are ordered as (its calls' weights): ahead of every queued
+    /// root, whose order is its acceptance, from 1.
     pub(crate) const STARTED: u64 = 0;
     fn at(class: u64, run: u64, rank: u32) -> u64 {
-        1 + (class << 62 | run.min((1 << 30) - 1) << 32 | u64::from(rank))
+        2 + (class << 62 | run.min((1 << 30) - 1) << 32 | u64::from(rank))
     }
     /// Next for `run` (by acceptance), `rank` within it.
     pub(crate) fn next(run: u64, rank: u32) -> u64 {
@@ -56,20 +55,24 @@ pub(crate) mod priority {
     pub(crate) fn guess(run: u64, rank: u32) -> u64 {
         at(2, run, rank)
     }
+    /// What a caller expects demand for here with no job yet (`PUT /v1/prepare`, cl-967): after every guess.
+    pub(crate) fn prepare(run: u64, rank: u32) -> u64 {
+        at(3, run, rank)
+    }
     /// Kept for later (a warm set's `downloaded`).
     pub(crate) const BEHIND: u64 = u64::MAX;
 }
 
 /// A checkpoint's origin, with the CAs its hosts may present beyond the public roots (a PEM
-/// bundle) and whether its deployment declared itself local (loopback plaintext allowed).
+/// bundle).
 #[derive(Clone)]
 pub(crate) struct Remote {
     pub origin: Arc<dyn Origin>,
     pub trust: Option<Arc<Vec<u8>>>,
-    pub local: bool,
 }
 
-type Key = (Option<Arc<Vec<u8>>>, bool);
+/// A fetcher per trust: the roots beyond the public ones.
+type Key = Option<Arc<Vec<u8>>>;
 
 /// Task cancellation or panic must wake a queued owner too, rather than leaving it waiting
 /// forever for an ordinary result callback. This owns no work beyond the existing fetch.
@@ -91,6 +94,7 @@ pub(crate) struct Machine {
     runtime: Arc<tokio::runtime::Runtime>,
     volume: Option<VolumeOrigin>,
     fetchers: Mutex<Vec<(Key, Arc<Fetcher>)>>,
+    returned: Arc<tokio::sync::Notify>,
 }
 
 impl Machine {
@@ -98,7 +102,7 @@ impl Machine {
     pub(crate) fn new(store: Arc<Store>, volume: Option<&Path>) -> io::Result<Arc<Machine>> {
         let runtime = tensorfs::fetch::runtime().map_err(io::Error::other)?;
         let volume = volume.and_then(|path| VolumeOrigin::mounted(path, VOLUME_TTL));
-        Ok(Arc::new(Machine { store, runtime, volume, fetchers: Mutex::default() }))
+        Ok(Arc::new(Machine { store, runtime, volume, fetchers: Mutex::default(), returned: Arc::default() }))
     }
 
     pub(crate) fn store(&self) -> &Arc<Store> {
@@ -106,8 +110,8 @@ impl Machine {
     }
 
     /// The client objects of a remote with this trust are fetched over (for an `Endpoint`).
-    pub(crate) fn client(&self, trust: Option<&Arc<Vec<u8>>>, local: bool) -> Result<Client> {
-        Ok(self.fetcher(&(trust.cloned(), local))?.client().clone())
+    pub(crate) fn client(&self, trust: Option<&Arc<Vec<u8>>>) -> Result<Client> {
+        Ok(self.fetcher(&trust.cloned())?.client().clone())
     }
 
     fn fetcher(&self, key: &Key) -> Result<Arc<Fetcher>> {
@@ -116,9 +120,9 @@ impl Machine {
             return Ok(fetcher.clone());
         }
         // Every object is held to its digest: no host vouches for anything, addresses are
-        // still checked.
-        let policy = SourcePolicy { any_host: true, allow_local: key.1, max_redirects: 8, ..Default::default() };
-        let client = match &key.0 {
+        // still checked, at every hop (a local one only at an origin this computer declared).
+        let policy = SourcePolicy { any_host: true, max_redirects: 8, ..Default::default() };
+        let client = match key {
             Some(pem) => Client::with_roots(policy, pem)?,
             None => Client::new(policy),
         };
@@ -127,6 +131,17 @@ impl Machine {
         let fetcher = Arc::new(Fetcher::new(store, client, self.volume.clone(), Config::default()));
         fetchers.push((key.clone(), fetcher.clone()));
         Ok(fetcher)
+    }
+
+    /// Told as each fetch returns: what `received` says may have moved.
+    pub(crate) fn returned(&self) -> Arc<tokio::sync::Notify> {
+        self.returned.clone()
+    }
+
+    /// Until they drop, what comes after `order` waits in every fetcher (`Fetcher::give_way`): one
+    /// started meanwhile isn't held, and there is one, made by the first pull.
+    pub(crate) fn give_way(&self, order: u64) -> Vec<tensorfs::fetch::GiveWay> {
+        self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.give_way(order)).collect()
     }
 
     /// The bytes every fetcher received from its origin, and the time any of them was arriving.
@@ -138,7 +153,7 @@ impl Machine {
     }
 
     fn of(&self, remote: &Remote) -> Result<Arc<Fetcher>> {
-        self.fetcher(&(remote.trust.clone(), remote.local))
+        self.fetcher(&remote.trust)
     }
 
     /// Each of `objects`' download from `remote` as it stands (`Fetching`); None for one with no
@@ -150,18 +165,13 @@ impl Machine {
     /// Runs `work` on the fetch runtime and waits for it, or for `stop`.
     pub(crate) fn block<T: Send + 'static>(&self, stop: &Stop, work: impl Future<Output = Result<T>> + Send + 'static) -> Result<T> {
         let (sent, answer) = std::sync::mpsc::channel();
-        let stop = stop.clone();
+        let (stop, returned) = (stop.clone(), self.returned.clone());
         self.runtime.spawn(async move {
-            let stopped = async {
-                let mut tick = tokio::time::interval(TICK);
-                while !stop.is_cancelled() {
-                    tick.tick().await;
-                }
-            };
             let answered = tokio::select! {
                 answered = work => answered,
-                () = stopped => refuse(Code::TRANSFER_FAILED, "stopped"),
+                () = stop.cancelled() => refuse(Code::TRANSFER_FAILED, "stopped"),
             };
+            returned.notify_one();
             let _ = sent.send(answered);
         });
         answer.recv().unwrap_or_else(|_| refuse(Code::TRANSFER_FAILED, "the fetch runtime ended"))
@@ -230,11 +240,12 @@ impl Machine {
         &self, remote: &Remote, objects: Vec<ObjectRef>, priority: u64,
         settled: impl FnOnce(&Result<Landed>) + Send + 'static,
     ) -> Result<tokio::task::JoinHandle<Result<Landed>>> {
-        let (fetcher, origin) = (self.of(remote)?, remote.origin.clone());
+        let (fetcher, origin, returned) = (self.of(remote)?, remote.origin.clone(), self.returned.clone());
         let completion = FetchCompletion(Some(settled));
         Ok(self.runtime.spawn(async move {
             let mut completion = completion;
             let result = fetcher.objects(&origin, &objects, &Want { priority, ..Want::default() }).await;
+            returned.notify_one();
             if let Some(settled) = completion.0.take() { settled(&result); }
             result
         }))

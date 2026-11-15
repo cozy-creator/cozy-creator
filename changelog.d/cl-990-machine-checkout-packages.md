@@ -1,0 +1,1 @@
+Outside a project, `cozy package install <checkout>`, `package uninstall local/<name>` and `model quantize --package <checkout>` work again: the checkout is a machine-wide package, as a Hub package is. From a project, local code stays that project's. `cozy run <local package> --describe` works on macOS and Windows, in plaintext and encrypted projects.

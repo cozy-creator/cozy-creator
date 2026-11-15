@@ -13,7 +13,10 @@ With --link, every object byte goes through one link of that many bytes/s, as a 
 however slow each request gets (run 31103: 72 objects judged slow at 5 MB/s, then nothing for good).
 With --silent, the first ask of 256 KiB to 1 MiB gets its headers and half its body, then a socket held open and silent:
 a range too small to split, the last left, which only the no-bytes stall can end (run 32321 sat 16 min on its last two).
-    straggler.py <port> <upstream> <stragglers> <rate> <log> [<burst> [<min> [fast]]] [--link <bytes/s>] [--silent]"""
+With --drip, the first such ask gets half its body, then 16 KiB every 25 s, under the 30 s stall, until the client leaves:
+a tail no steal can split and no stall ends, which held run 47820 15 min (tfs-149); only a hedge on another connection ends
+it soon.
+    straggler.py <port> <upstream> <stragglers> <rate> <log> [<burst> [<min> [fast]]] [--link <bytes/s>] [--silent] [--drip]"""
 import argparse
 import http.client
 import json
@@ -35,6 +38,7 @@ class Args(argparse.Namespace):
     fast: str | None
     link: int
     silent: bool
+    drip: bool
 
 
 ap = argparse.ArgumentParser()
@@ -44,11 +48,12 @@ for name in ('burst', 'min', 'fast'):
     ap.add_argument(name, nargs='?')
 ap.add_argument('--link', type=int, default=0)
 ap.add_argument('--silent', action='store_true')
+ap.add_argument('--drip', action='store_true')
 a = ap.parse_args(namespace=Args())
 PORT, UPSTREAM, STRAGGLERS, RATE, LOG = int(a.port), a.upstream, int(a.stragglers), int(a.rate), a.log
 BURST = int(a.burst or 0)
 MIN = int(a.min) if a.min else 4 * BURST
-FAST, LINK, SILENT = bool(a.fast), a.link, a.silent
+FAST, LINK, SILENT, DRIP = bool(a.fast), a.link, a.silent, a.drip
 PART = 16 << 20
 up = urllib.parse.urlsplit(UPSTREAM)
 lock = threading.Lock()
@@ -143,6 +148,31 @@ class Handler(BaseHTTPRequestHandler):
                 break
         self.close_connection = True
         return len(half)
+
+    def drip(self, resp: http.client.HTTPResponse) -> int:
+        """Headers and half the body, then 16 KiB every 25 s, never 30 s silent, until done or the client leaves."""
+        self.send_response(resp.status)
+        for k, v in resp.getheaders():
+            if k.lower() not in HOP:
+                self.send_header(k, v)
+        self.end_headers()
+        length = resp.getheader('content-length')
+        assert length is not None
+        body = resp.read(int(length))
+        sent = len(body) // 2
+        try:
+            self.send(body[:sent])
+            self.wfile.flush()
+            while sent < len(body):
+                time.sleep(25)
+                piece = body[sent:sent + (16 << 10)]
+                self.send(piece)
+                self.wfile.flush()
+                sent += len(piece)
+        except OSError:  # the client gave up on it: what a hedge that landed first leads to
+            pass
+        self.close_connection = True
+        return sent
 
     def relay(self, resp: http.client.HTTPResponse, slow: bool = False) -> int:
         self.send_response(resp.status)
@@ -243,10 +273,10 @@ class Handler(BaseHTTPRequestHandler):
             if FAST and slow and got.status in (200, 206) and length <= PART:
                 slow = False
             with lock:
-                silent = SILENT and not silenced and got.status in (200, 206) and 256 << 10 <= length <= 1 << 20
+                silent = (SILENT or DRIP) and not silenced and got.status in (200, 206) and 256 << 10 <= length <= 1 << 20
                 if silent:
                     silenced.add(self.path)
-            sent = self.hold(got) if silent else self.relay(got, slow=slow)
+            sent = (self.drip(got) if DRIP else self.hold(got)) if silent else self.relay(got, slow=slow)
             if not got.isclosed():  # the client left mid-body: that connection's answer is unread
                 forget(loc)
             # `slow`: the object is a straggler (cold); `dripped`: this ask was sent slowly.

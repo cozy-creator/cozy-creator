@@ -98,11 +98,11 @@ pub struct Tool {
     /// The package a machine installs, where `package` is local code's path: its own name (`local/<name>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installs: Option<String>,
+    /// From a dev home's packages checkout (xs-195): its branch and commit, `rc/0.26.0 @ 1a2b3c4d`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// What its box asks for, in its struct's order.
     pub fields: Vec<ToolField>,
-    /// The path in its package of a component that draws its box, where it ships one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ui: Option<String>,
     /// It takes a pickup, which Pick up from here fills: the frames one may land on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickup: Option<Snap>,
@@ -135,14 +135,6 @@ pub struct ToolModel {
     /// This slot reads raw weights rather than constructing a model.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub weights: bool,
-}
-
-/// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct ToolUi {
-    /// Its entry module on this computer's Calcifer, named by its hash.
-    pub module: String,
 }
 
 /// The control a box draws for a field.
@@ -260,7 +252,7 @@ pub fn edit() -> Tool {
         description: "Put videos and stills together into one video, free, with no machine".to_owned(),
         local: false,
         installs: None,
-        ui: None,
+        source: None,
         pickup: None,
         model: None,
         models: vec![],
@@ -329,8 +321,8 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
         description: callable.description.clone(),
         local: false,
         installs: None,
+        source: None,
         fields: drawn.filter_map(|field| field_of(field, default(field))).collect(),
-        ui: declared.ui.clone(),
         pickup: pickup(&callable.request),
         model: choices::main_model(&callable.models, &called).map(|slot| model_slot(&slot.param, slot)),
         models,
@@ -372,7 +364,7 @@ pub fn first_of(word: &str) -> String {
 }
 
 /// A package in words, its last part's: `qwen-image-2` is `Qwen Image 2`, and a word with no vowel is upper case, `sdxl` SDXL and `h3` H3.
-pub(crate) fn title(package: &str) -> String {
+pub fn title(package: &str) -> String {
     let words = package_word(package).split(['-', '_']).filter(|word| !word.is_empty());
     let word = |word: &str| match word.chars().any(|c| "aeiouAEIOU".contains(c)) {
         true => capitalized(word),

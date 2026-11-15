@@ -3,6 +3,7 @@
 # sdxl and birefnet (packages repo) are local stubs under typings/.
 mypy
 cryptography
+h2
 cozy-runtime==0.45.0
 msgspec
 numpy

@@ -1,8 +1,8 @@
-//! Calcifer's own state beside its runs, as tables of `state.db` (cl-818): the project folders it opened, browser sessions, your tool
-//! list, Render here, what each model header said, an ask's step after its run, and the takes you haven't looked at. Each change is one
+//! Calcifer's own state beside its runs, as tables of `state.db` (cl-818): the project folders it opened, your tool
+//! list, Render here, model header caches and independent asks. Project activity belongs to project.db. Each change is one
 //! transaction; nothing is rewritten whole. The JSON files an earlier Calcifer kept these in are imported once, at open, and deleted ([`import`]).
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     io::ErrorKind,
     path::{Path, PathBuf},
 };
@@ -21,21 +21,21 @@ pub(crate) const TABLES: &str = "
     CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
         path TEXT NOT NULL,
-        used_at_ms INTEGER NOT NULL,
-        walking INTEGER NOT NULL DEFAULT 0,
-        name TEXT NOT NULL DEFAULT '',
-        code TEXT NOT NULL DEFAULT '',
-        purge_ms INTEGER NOT NULL DEFAULT 0
+        code TEXT NOT NULL DEFAULT ''
     ) STRICT;
-    CREATE TABLE IF NOT EXISTS sessions (
-        token_sha256 TEXT PRIMARY KEY,
-        media_sha256 TEXT NOT NULL UNIQUE,
-        used_at_ms INTEGER NOT NULL
+    CREATE TABLE IF NOT EXISTS project_keys (
+        key TEXT PRIMARY KEY,
+        id TEXT NOT NULL,
+        current INTEGER NOT NULL DEFAULT 0
     ) STRICT;
-    CREATE TABLE IF NOT EXISTS session_codes (
-        code_sha256 TEXT PRIMARY KEY,
-        expires_ms INTEGER NOT NULL
+    CREATE UNIQUE INDEX IF NOT EXISTS project_keys_current ON project_keys (id) WHERE current = 1;
+    CREATE TABLE IF NOT EXISTS projects_gone (
+        id TEXT PRIMARY KEY,
+        code TEXT NOT NULL,
+        path TEXT NOT NULL
     ) STRICT;
+    DROP TABLE IF EXISTS sessions;
+    DROP TABLE IF EXISTS session_codes;
     CREATE TABLE IF NOT EXISTS tool_list (
         ord INTEGER PRIMARY KEY,
         package TEXT NOT NULL UNIQUE
@@ -56,73 +56,67 @@ pub(crate) const TABLES: &str = "
         families TEXT NOT NULL,
         lora INTEGER NOT NULL,
         family TEXT,
-        parts TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (hub, sha256)
     ) STRICT, WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS after_steps (
         key_sha256 TEXT PRIMARY KEY,
         step TEXT NOT NULL
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS unseen (
-        project TEXT NOT NULL,
-        box TEXT NOT NULL,
-        number INTEGER NOT NULL,
-        PRIMARY KEY (project, box, number)
-    ) STRICT, WITHOUT ROWID;";
+    ) STRICT;";
 
 /// A project Calcifer opened, by its id: its name, and where it last was.
 #[derive(Clone, Debug)]
 pub(crate) struct KnownProject {
     pub id: String,
     pub code: String,
+    /// What its runs are named by here (cl-987); empty until it opens.
+    pub key: String,
     pub name: String,
     pub path: PathBuf,
     pub used_at_ms: i64,
     /// Its walk was going: the next start walks it again.
     pub walking: bool,
-    /// When a deleted box's undo window next ends in it, in ms (cl-919): its files go then, or as the next start catches up. 0: none.
-    pub purge_ms: i64,
 }
 
-/// A browser session, by its secrets' digests.
+/// A project whose folder went (cl-980): what it was known by, and where.
 #[derive(Clone, Debug)]
-pub(crate) struct SessionRow {
-    pub token: String,
-    pub media: String,
-    pub used_at_ms: i64,
+pub(crate) struct GoneProject {
+    pub id: String,
+    pub code: String,
+    pub path: PathBuf,
 }
 
 fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
     let path = PathBuf::from(row.get::<_, String>(1)?);
     let name = Some(row.get::<_, String>(4)?).filter(|name| !name.is_empty());
     let name = name.unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
-    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)?, purge_ms: row.get(6)? })
+    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, key: row.get::<_, Option<String>>(6)?.unwrap_or_default(), name, path, used_at_ms: row.get(2)?, walking: row.get(3)? })
 }
 
-/// An index from before cl-919 knows of no deleted boxes' files to purge: its column, added, none due.
-pub(crate) fn project_purges(conn: &Connection) -> rusqlite::Result<()> {
-    match conn.prepare("SELECT purge_ms FROM projects LIMIT 0").is_ok() {
-        true => Ok(()),
-        false => conn.execute_batch("ALTER TABLE projects ADD COLUMN purge_ms INTEGER NOT NULL DEFAULT 0"),
+/// `known`'s columns, from `projects`.
+const KNOWN: &str = "SELECT id, path, 0, 0, '', code, (SELECT key FROM project_keys WHERE project_keys.id = projects.id AND current = 1) FROM projects";
+
+/// Whether project `id` may take `key` here: no reserved key, and none another project this index knows has, now or before (cl-987).
+/// A key of a project the index let go of is free.
+fn key_free(conn: &Connection, id: &str, key: &str) -> rusqlite::Result<bool> {
+    if api::calcifer::project::RESERVED_KEYS.contains(&key) { return Ok(false); }
+    let taken: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM project_keys JOIN projects ON projects.id = project_keys.id
+        WHERE key = ?1 AND project_keys.id <> ?2)", [key, id], |row| row.get(0))?;
+    Ok(!taken)
+}
+
+/// `key` project `id`'s here: its key now when `current`.
+fn key_kept(conn: &Connection, id: &str, key: &str, current: bool) -> rusqlite::Result<()> {
+    if current {
+        conn.execute("UPDATE project_keys SET current = 0 WHERE id = ?1 AND key <> ?2", [id, key])?;
     }
+    conn.execute("INSERT INTO project_keys (key, id, current) VALUES (?1, ?2, ?3)
+        ON CONFLICT (key) DO UPDATE SET id = excluded.id, current = MAX(excluded.current, CASE WHEN project_keys.id = excluded.id THEN project_keys.current ELSE 0 END)",
+        params![key, id, current])?;
+    Ok(())
 }
 
 /// A store from before cl-819 names no project: its column, added.
-pub(crate) fn project_names(conn: &Connection) -> rusqlite::Result<()> {
-    let named = conn.prepare("SELECT name FROM projects LIMIT 0").is_ok();
-    match named {
-        true => Ok(()),
-        false => conn.execute_batch("ALTER TABLE projects ADD COLUMN name TEXT NOT NULL DEFAULT ''"),
-    }
-}
-
-/// A store from before cl-943 keeps no header's parts: its column, added. Its rows were read under other facts, and go.
-pub(crate) fn header_parts(conn: &Connection) -> rusqlite::Result<()> {
-    match conn.prepare("SELECT parts FROM headers LIMIT 0").is_ok() {
-        true => Ok(()),
-        false => conn.execute_batch("ALTER TABLE headers ADD COLUMN parts TEXT NOT NULL DEFAULT ''"),
-    }
-}
+pub(crate) fn project_names(_conn: &Connection) -> rusqlite::Result<()> { Ok(()) }
 
 /// Older indexes gain public codes without replacing their project identities or rows.
 pub(crate) fn project_codes(conn: &Connection) -> rusqlite::Result<()> {
@@ -216,121 +210,129 @@ fn digest(key: &str) -> String {
 
 impl Store {
     pub(crate) fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
-        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name, code, purge_ms FROM projects WHERE id = ?1", [id], known).optional()?))
+        self.read(|conn| Ok(conn.query_row(&format!("{KNOWN} WHERE id = ?1"), [id], known).optional()?))
     }
 
     /// Every project opened here, last used first.
     pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name, code, purge_ms FROM projects ORDER BY used_at_ms DESC, id")?;
+            let mut statement = conn.prepare(&format!("{KNOWN} ORDER BY id"))?;
             Ok(statement.query_map([], known)?.collect::<rusqlite::Result<_>>()?)
         })
     }
 
-    /// These left the index: their folders are gone.
+    /// These left the index: their folders are gone. Where each was is kept, so asking for one says so (cl-980).
     pub(crate) fn projects_gone(&self, ids: &[String]) -> Result<()> {
         self.write(|tx| {
+            let mut kept = tx.prepare("INSERT OR REPLACE INTO projects_gone (id, code, path) SELECT id, code, path FROM projects WHERE id = ?1")?;
             let mut statement = tx.prepare("DELETE FROM projects WHERE id = ?1")?;
             for id in ids {
+                kept.execute([id])?;
                 statement.execute([id])?;
             }
             Ok(())
         })
     }
 
+    /// The project `id` or `code` whose folder went, if it did: its id, its code, and where it was.
+    pub(crate) fn project_gone(&self, id: &str, code: &str) -> Result<Option<GoneProject>> {
+        self.read(|conn| {
+            Ok(conn.query_row("SELECT id, code, path FROM projects_gone WHERE id = ?1 OR (code <> '' AND code = ?2)", [id, code], |row| {
+                Ok(GoneProject { id: row.get(0)?, code: row.get(1)?, path: PathBuf::from(row.get::<_, String>(2)?) })
+            }).optional()?)
+        })
+    }
+
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
-    pub(crate) fn project_opened(&self, id: &str, name: &str, path: &Path, used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
+    pub(crate) fn project_opened(&self, id: &str, _name: &str, path: &Path, _used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
         self.write(|tx| {
-            // A folder holds one project: another the index had there is gone.
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
+            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
             let code = project_code(tx, id, preferred, crate::project::code::generate)?;
-            tx.execute(
-                "INSERT INTO projects (id, path, used_at_ms, name, code) VALUES (?1, ?2, COALESCE(?4, CAST(strftime('%s', 'now') AS INTEGER) * 1000), ?3, ?5)
-                 ON CONFLICT (id) DO UPDATE SET path = excluded.path, name = excluded.name, code = excluded.code, used_at_ms = COALESCE(?4, projects.used_at_ms)",
-                params![id, path.to_string_lossy(), name, used_at_ms, code],
-            )?;
+            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code", params![id, path.to_string_lossy(), code])?;
             Ok(code)
         })
     }
 
-    /// `id`'s deleted boxes' files are due to go at `at_ms`, if that's sooner than what was due.
-    pub(crate) fn purge_due(&self, id: &str, at_ms: i64) -> Result<()> {
+    /// The key project `id` goes by here (cl-987), given `held`, the keys its project.db keeps, its key now last: that one when no other
+    /// project here has it, else the one this index gave it, else the first free of `proposed`. Each other held key free here names it
+    /// too.
+    pub(crate) fn project_keyed(&self, id: &str, held: &[String], mut proposed: impl Iterator<Item = String>) -> Result<String> {
         self.write(|tx| {
-            tx.execute("UPDATE projects SET purge_ms = ?2 WHERE id = ?1 AND (purge_ms = 0 OR purge_ms > ?2)", params![id, at_ms])?;
-            Ok(())
+            for key in held.iter().filter(|key| api::calcifer::project::key(key).as_ref() == Some(*key)) {
+                if key_free(tx, id, key)? { key_kept(tx, id, key, false)?; }
+            }
+            let mine = |key: &String| tx.query_row("SELECT EXISTS (SELECT 1 FROM project_keys WHERE key = ?1 AND id = ?2)", [key, id], |row| row.get::<_, bool>(0));
+            let wanted = match held.last() {
+                Some(key) if mine(key)? => Some(key.clone()),
+                _ => tx.query_row("SELECT key FROM project_keys WHERE id = ?1 AND current = 1", [id], |row| row.get(0)).optional()?
+                    .filter(|key: &String| key_free(tx, id, key).unwrap_or(false)),
+            };
+            let key = match wanted {
+                Some(key) => key,
+                None => loop {
+                    let key = proposed.next().ok_or_else(|| StoreError::ProjectKey("no free project key".into()))?;
+                    if key_free(tx, id, &key)? { break key; }
+                },
+            };
+            key_kept(tx, id, &key, true)?;
+            Ok(key)
         })
     }
 
-    /// `id` purged, its next due at `next_ms` (0: none), as read when it was due at `was_ms`: a delete since, due later, stands too.
-    pub(crate) fn purged(&self, id: &str, was_ms: i64, next_ms: i64) -> Result<()> {
+    /// Project `id`'s key is `key` now (cl-987); the one it had names it still. Refused when another project here has or had it.
+    pub(crate) fn project_key_changed(&self, id: &str, key: &str) -> Result<()> {
         self.write(|tx| {
-            tx.execute(
-                "UPDATE projects SET purge_ms = CASE WHEN purge_ms = ?2 THEN ?3 WHEN ?3 = 0 THEN purge_ms ELSE MIN(purge_ms, ?3) END WHERE id = ?1",
-                params![id, was_ms, next_ms],
-            )?;
-            Ok(())
+            if api::calcifer::project::RESERVED_KEYS.contains(&key) {
+                return Err(StoreError::ProjectKey(format!("{key} is Calcifer's own: its runs are {key}-N")));
+            }
+            if !key_free(tx, id, key)? {
+                return Err(StoreError::ProjectKey(format!("another project on this computer has the key {key}")));
+            }
+            Ok(key_kept(tx, id, key, true)?)
         })
+    }
+
+    /// The project `key` names here, now or before (cl-987).
+    pub(crate) fn key_owner(&self, key: &str) -> Result<Option<String>> {
+        self.read(|conn| Ok(conn.query_row("SELECT project_keys.id FROM project_keys JOIN projects ON projects.id = project_keys.id WHERE key = ?1",
+            [key], |row| row.get(0)).optional()?))
+    }
+
+    /// The keys project `id` had here, which name it still: oldest first.
+    pub(crate) fn former_keys(&self, id: &str) -> Result<Vec<String>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT key FROM project_keys WHERE id = ?1 AND current = 0 ORDER BY rowid")?;
+            Ok(statement.query_map([id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// A locked encrypted project keeps only where it is here (cl-984): an opaque handle and its folder, so a list offers Unlock.
+    /// Its id, code and anything else go, their pages overwritten and the WAL emptied; unlocking opens it, which registers it again
+    /// from its own project.db.
+    pub(crate) fn project_locked(&self, id: &str, path: &Path) -> Result<()> {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).expect("the OS gives random bytes");
+        let handle = format!("locked-{}", hex::encode(bytes));
+        self.write(|tx| {
+            tx.pragma_update(None, "secure_delete", "ON")?;
+            tx.execute("DELETE FROM projects WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
+            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
+            // Its keys too (cl-987): its project.db keeps them, its next open registers them again, and its KEY-N is unknown here meanwhile.
+            tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
+            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, '')", params![handle, path.to_string_lossy()])?;
+            Ok(())
+        })?;
+        for _ in 0..40 {
+            let busy: i64 = self.read(|conn| Ok(conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?))?;
+            if busy == 0 { return Ok(()); }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        Err(StoreError::Protected("a reader holds the index's older pages of a locked project".into()))
     }
 
     /// Whether each project is being walked, which the next start walks again.
-    pub(crate) fn projects_walking(&self, walking: &[(String, bool)]) -> Result<()> {
-        self.write(|tx| {
-            let mut statement = tx.prepare("UPDATE projects SET walking = ?2 WHERE id = ?1 AND walking <> ?2")?;
-            for (id, walking) in walking {
-                statement.execute(params![id, walking])?;
-            }
-            Ok(())
-        })
-    }
-
-    /// The sessions used after `since_ms`; the rest have ended, and go.
-    pub(crate) fn sessions(&self, since_ms: i64) -> Result<Vec<SessionRow>> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM sessions WHERE used_at_ms <= ?1", [since_ms])?;
-            let mut statement = tx.prepare("SELECT token_sha256, media_sha256, used_at_ms FROM sessions")?;
-            let rows = statement.query_map([], |r| Ok(SessionRow { token: r.get(0)?, media: r.get(1)?, used_at_ms: r.get(2)? }))?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
-    /// Keep only the digest of an unredeemed browser sign-in code.
-    pub(crate) fn session_code(&self, code: &str, now: i64, expires_ms: i64) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM session_codes WHERE expires_ms <= ?1", [now])?;
-            tx.execute("INSERT INTO session_codes (code_sha256, expires_ms) VALUES (?1, ?2)", params![code, expires_ms])?;
-            Ok(())
-        })
-    }
-
-    /// Redeem a valid code and save its session in the same transaction.
-    pub(crate) fn session_started(&self, code: &str, session: &SessionRow, now: i64, since_ms: i64) -> Result<bool> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM session_codes WHERE expires_ms <= ?1", [now])?;
-            if tx.execute("DELETE FROM session_codes WHERE code_sha256 = ?1", [code])? == 0 {
-                return Ok(false);
-            }
-            tx.execute("DELETE FROM sessions WHERE used_at_ms <= ?1", [since_ms])?;
-            tx.execute(
-                "INSERT INTO sessions (token_sha256, media_sha256, used_at_ms) VALUES (?1, ?2, ?3)",
-                params![session.token, session.media, session.used_at_ms],
-            )?;
-            Ok(true)
-        })
-    }
-
-    pub(crate) fn session_used(&self, token: &str, at_ms: i64) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("UPDATE sessions SET used_at_ms = ?2 WHERE token_sha256 = ?1", params![token, at_ms])?;
-            Ok(())
-        })
-    }
-
-    pub(crate) fn session_ended(&self, token: &str) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM sessions WHERE token_sha256 = ?1", [token])?;
-            Ok(())
-        })
-    }
+    pub(crate) fn projects_walking(&self, _walking: &[(String, bool)]) -> Result<()> { Ok(()) }
 
     /// Your tool list.
     pub(crate) fn tool_list(&self) -> Result<ToolList> {
@@ -372,72 +374,10 @@ impl Store {
     }
 
     /// What each header read here said, by Hub and sha256, while TensorFS's families are `families`: what others said goes.
-    pub(crate) fn header_facts(&self, families: &str) -> Result<HashMap<(String, String), Facts>> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM headers WHERE families <> ?1", [families])?;
-            let mut statement = tx.prepare("SELECT hub, sha256, lora, family, parts FROM headers")?;
-            let rows = statement.query_map([], |r| {
-                let parts: String = r.get(4)?;
-                Ok(((r.get(0)?, r.get(1)?), Facts { lora: r.get(2)?, family: r.get(3)?, parts: serde_json::from_str(&parts).unwrap_or_default() }))
-            })?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
+    pub(crate) fn header_facts(&self, _families: &str) -> Result<HashMap<(String,String),Facts>> { Ok(HashMap::new()) }
+    pub(crate) fn keep_header_facts(&self, _families: &str, _read: &[((String,String),Facts)]) -> Result<()> { Ok(()) }
 
-    /// What headers said, by Hub and sha256, read under `families`.
-    pub(crate) fn keep_header_facts(&self, families: &str, read: &[((String, String), Facts)]) -> Result<()> {
-        self.write(|tx| {
-            let mut statement = tx.prepare("INSERT OR REPLACE INTO headers (hub, sha256, families, lora, family, parts) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
-            for ((hub, sha256), facts) in read {
-                let parts = serde_json::to_string(&facts.parts).unwrap_or_default();
-                statement.execute(params![hub, sha256, families, facts.lora, facts.family, parts])?;
-            }
-            Ok(())
-        })
-    }
 
-    /// Keeps `step` (JSON) for the ask under `key`, before its run is submitted.
-    pub(crate) fn plan_after(&self, key: &str, step: &str) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("INSERT OR REPLACE INTO after_steps (key_sha256, step) VALUES (?1, ?2)", params![digest(key), step])?;
-            Ok(())
-        })
-    }
-
-    pub(crate) fn after_step(&self, key: &str) -> Result<Option<String>> {
-        self.read(|conn| Ok(conn.query_row("SELECT step FROM after_steps WHERE key_sha256 = ?1", [digest(key)], |r| r.get(0)).optional()?))
-    }
-
-    pub(crate) fn forget_after(&self, key: &str) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM after_steps WHERE key_sha256 = ?1", [digest(key)])?;
-            Ok(())
-        })
-    }
-
-    /// The versions of `project`'s boxes this person hasn't looked at (cl-928), by box id.
-    pub(crate) fn unseen(&self, project: &str) -> Result<BTreeMap<String, BTreeSet<u32>>> {
-        self.read(|conn| {
-            let mut statement = conn.prepare("SELECT box, number FROM unseen WHERE project = ?1")?;
-            let mut unseen: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
-            for row in statement.query_map([project], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))? {
-                let (held, number) = row?;
-                unseen.entry(held).or_default().insert(number);
-            }
-            Ok(unseen)
-        })
-    }
-
-    /// Version `number` of box `held` landed unseen, or with `seen`, was looked at.
-    pub(crate) fn keep_unseen(&self, project: &str, held: &str, number: u32, seen: bool) -> Result<()> {
-        self.write(|tx| {
-            match seen {
-                true => tx.execute("DELETE FROM unseen WHERE project = ?1 AND box = ?2 AND number = ?3", params![project, held, number])?,
-                false => tx.execute("INSERT OR IGNORE INTO unseen (project, box, number) VALUES (?1, ?2, ?3)", params![project, held, number])?,
-            };
-            Ok(())
-        })
-    }
 }
 
 #[derive(Deserialize)]
@@ -455,19 +395,14 @@ struct OldProject {
 }
 
 #[derive(Deserialize)]
-struct OldSession {
-    token: String,
-    media: String,
-    used_at_ms: i64,
-}
-
-#[derive(Deserialize)]
-struct OldHere {
+#[serde(deny_unknown_fields)]
+pub(super) struct OldHere {
     #[serde(default)]
     here: Vec<OldRenderedHere>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OldRenderedHere {
     tool: String,
     machine: String,
@@ -476,7 +411,8 @@ struct OldRenderedHere {
 }
 
 #[derive(Deserialize)]
-struct OldHeaders {
+#[serde(deny_unknown_fields)]
+pub(super) struct OldHeaders {
     families: String,
     facts: HashMap<String, Facts>,
 }
@@ -506,7 +442,8 @@ fn old<T: DeserializeOwned>(path: &Path) -> Option<Option<T>> {
 pub(crate) fn import(store: &Store, dir: &Path) {
     let file = |name: &str| dir.join(name);
     let index = old::<OldIndex>(&file("projects.json"));
-    let sessions = old::<Vec<OldSession>>(&file("sessions.json"));
+    // An earlier Calcifer's browser sessions: there are none now (cl-980), so the file only goes.
+    let sessions = old::<serde_json::Value>(&file("sessions.json"));
     let tools = old::<ToolList>(&file("tools.json"));
     let here = old::<OldHere>(&file("here.json"));
     let headers = old::<OldHeaders>(&file("checkpoints.json"));
@@ -520,7 +457,6 @@ pub(crate) fn import(store: &Store, dir: &Path) {
             steps.push((key.to_string_lossy().into_owned(), step.map(|step| step.to_string()), path));
         }
     }
-    let families = tensorfs::family::facts_digest();
     let none = index.is_none() && sessions.is_none() && tools.is_none() && here.is_none() && headers.is_none() && steps.is_empty();
     if none {
         let _ = std::fs::remove_dir(&after_dir);
@@ -529,12 +465,8 @@ pub(crate) fn import(store: &Store, dir: &Path) {
     let mut counts = BTreeMap::new();
     let imported = store.write(|tx| {
         for (id, project) in index.iter().flatten().flat_map(|index| &index.projects) {
-            let sql = "INSERT OR IGNORE INTO projects (id, path, used_at_ms, walking) VALUES (?1, ?2, ?3, ?4)";
-            *counts.entry("projects").or_insert(0) += tx.execute(sql, params![id, project.path.to_string_lossy(), project.used_at_ms, project.walking])?;
-        }
-        for session in sessions.iter().flatten().flatten() {
-            let sql = "INSERT OR IGNORE INTO sessions (token_sha256, media_sha256, used_at_ms) VALUES (?1, ?2, ?3)";
-            *counts.entry("sessions").or_insert(0) += tx.execute(sql, params![session.token, session.media, session.used_at_ms])?;
+            let sql = "INSERT OR IGNORE INTO projects (id, path, code) VALUES (?1, ?2, '')";
+            *counts.entry("projects").or_insert(0) += tx.execute(sql, params![id, project.path.to_string_lossy()])?;
         }
         if let Some(Some(list)) = &tools
             && tool_list_in(tx)? == ToolList::default()
@@ -546,21 +478,6 @@ pub(crate) fn import(store: &Store, dir: &Path) {
                 *counts.entry("tools_off").or_insert(0) += tx.execute("INSERT OR IGNORE INTO tools_off (tool) VALUES (?1)", [tool])?;
             }
         }
-        for held in here.iter().flatten().flat_map(|here| &here.here) {
-            let sql = "INSERT OR IGNORE INTO rendered_here (tool, machine, bytes) VALUES (?1, ?2, ?3)";
-            *counts.entry("rendered_here").or_insert(0) += tx.execute(sql, params![held.tool, held.machine, held.bytes as i64])?;
-        }
-        // What other families said is read again.
-        for (key, facts) in headers.iter().flatten().filter(|held| held.families == families).flat_map(|held| &held.facts) {
-            let Some((hub, sha256)) = key.rsplit_once(' ') else { continue };
-            let sql = "INSERT OR IGNORE INTO headers (hub, sha256, families, lora, family) VALUES (?1, ?2, ?3, ?4, ?5)";
-            *counts.entry("headers").or_insert(0) += tx.execute(sql, params![hub, sha256, families, facts.lora, facts.family])?;
-        }
-        for (key, step, _) in &steps {
-            let Some(step) = step else { continue };
-            let sql = "INSERT OR IGNORE INTO after_steps (key_sha256, step) VALUES (?1, ?2)";
-            *counts.entry("after_steps").or_insert(0) += tx.execute(sql, params![key, step])?;
-        }
         Ok(())
     });
     if let Err(e) = imported {
@@ -568,8 +485,8 @@ pub(crate) fn import(store: &Store, dir: &Path) {
         return;
     }
     info!("imported into state.db: {counts:?}");
-    let read = [("projects.json", index.is_some()), ("sessions.json", sessions.is_some()), ("tools.json", tools.is_some()), ("here.json", here.is_some()), ("checkpoints.json", headers.is_some())];
-    let gone = read.into_iter().filter(|(_, read)| *read).map(|(name, _)| file(name)).chain(steps.into_iter().map(|(_, _, path)| path));
+    let read = [("projects.json", false), ("sessions.json", sessions.is_some()), ("tools.json", tools.is_some()), ("here.json", false), ("checkpoints.json", false)];
+    let gone = read.into_iter().filter(|(_, read)| *read).map(|(name, _)| file(name));
     for path in gone {
         if let Err(e) = std::fs::remove_file(&path) {
             warn!("{}: {e}", path.display());

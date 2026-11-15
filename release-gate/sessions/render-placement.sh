@@ -56,7 +56,7 @@ local_stopped() {
 placed_among() {
   local among; among=$(run_page board | jq -c '.on // []'); say "$1: Calcifer placed it among $among"
   # What Calcifer said as it placed it (a machine that didn't quote says why), for a step that fails.
-  tail -n 4000 "$HOME/.cozy/calcifer/calcifer.log" > "$OUT/calcifer-$1.log" 2> /dev/null || true
+  cozy machine logs local calcifer --lines 4000 > "$OUT/calcifer-$1.log" 2>&1 || true
   J --arg m "$NAME" '. == [$m, "local"]' <<< "$among" || fail "$1: with no machine chosen, Calcifer placed it among $among, not the rental, then this computer"
 }
 
@@ -92,7 +92,7 @@ if ! timeout 420 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on local warm > "$O
   (cd "$RUN_PROJECT" && cozy --json run ls --limit 5) > "$OUT/warm-runs.json" 2>&1 || true
   cozy --json machine show local > "$OUT/warm-local.json" 2>&1 || true
   cozy machine logs local --lines 400 > "$OUT/warm-tensord.log" 2>&1 || true
-  tail -n 4000 "$HOME/.cozy/calcifer/calcifer.log" > "$OUT/calcifer-warm.log" 2> /dev/null || true
+  cozy machine logs local calcifer --lines 4000 > "$OUT/calcifer-warm.log" 2>&1 || true
   fail "warm, here: not made in 7 min: $(jq -c '[.runs[]? | {number, target, machine, status, waiting, reason: .reason.message}]' "$OUT/warm-runs.json" 2> /dev/null | head -c 600)"
 fi
 run_page render --on "$NAME" long > "$OUT/long-timed.txt" 2>&1 || fail "long, timed on $NAME: $(tail -3 "$OUT/long-timed.txt")"

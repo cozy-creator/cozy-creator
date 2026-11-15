@@ -1,52 +1,38 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import {
-  type Edge,
-  type OnSelectionChangeParams,
-  ReactFlow,
-  ReactFlowProvider,
-  SelectionMode,
-  useReactFlow,
-  useStore,
-  useStoreApi,
-  type Viewport,
-} from "@xyflow/react"
+import { CanvasController, type Viewport } from "./viewport"
+import { CanvasViewportProvider, useCanvasViewport, useCanvasViewportValue, useCanvasNodesValue } from "./viewportContext"
+import { CanvasSurface } from "./CanvasSurface"
 import { type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
 import { lost } from "../api/outbox"
-import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
-import { useTo } from "../app/project"
+import { canvasQuery, machinesQuery, projectQuery, projectViewQuery, toolsQuery } from "../api/queries"
+import { Unopened, useGone, useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
-import type { Opened } from "../api/calcifer"
-import { ProjectCreate } from "../panels/ProjectCreate"
-import { Copyable } from "../ui/Copyable"
-import { dismiss, say } from "../ui/notes"
+import type { Opened, ProjectViewPatch } from "../api/calcifer"
+import { type Ask, asked, giveUp } from "../app/making"
+import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetMenu } from "./AssetMenu"
 import { Asking } from "./Asking"
 import { CARD_WIDTH, CanvasStore, type ElementNode } from "./CanvasStore"
-import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore, useElement } from "./context"
 import { carriedAt, LET_GO, type Load, type LetGo } from "./carry"
 import { boxAt, carriedOver, letGo } from "./checkpoints"
 import { copyBoxes, copyOf, middleOf, ownCopy } from "./copy"
-import { EntityCard } from "./EntityCard"
 import { FocusedViewport } from "./FocusedViewport"
 import { HistoryControls } from "./HistoryControls"
 import type { Box } from "./graph"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
-import { aspectOf, bodyBox, HEAD, madeHere, shownOf } from "./shown"
-import { noHash } from "./text"
+import { aspectOf, bandOf, bodyBox, HEAD, madeHere, shownOf } from "./shown"
 import { pressBeganOutside } from "../ui/press"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
 import { keys, stepZoom, ZOOMS, ZoomControl, type ZoomItem } from "./ZoomControl"
-import { MOST_HERE } from "./readableSurface"
 
-const nodeTypes = { element: Card, entity: EntityCard }
 /** The room left on the canvas by what floats over it: the tools at the left, the top bar, and the zoom control in the bottom corner. */
 const clearOf = () => ({
   left: (document.querySelector(".tools")?.getBoundingClientRect().right ?? 0) + 24,
@@ -57,19 +43,36 @@ const clearOf = () => ({
 /** A fit, clear of what floats over the canvas. */
 const fitOver = () => {
   const { left, top, right, bottom } = clearOf()
-  return { maxZoom: 1, padding: { top: `${top}px`, right: `${right}px`, bottom: `${bottom}px`, left: `${left}px` } as const }
+  return { maxZoom: 1, padding: { top, right, bottom, left } }
 }
 
 const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
 /** How long a canvas camera action, including entering or leaving Focus, takes. */
 const HERE_MS = 260
+/** How long the wheel stays still before the canvas takes it again after Focus: a trackpad's glide goes on after the hand has left. */
+const WHEEL_QUIET_MS = 200
+
+/** The same view, to a pixel. */
+const sameView = (a: Viewport, b: Viewport) => Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.zoom - b.zoom) < 0.0005
+
+/** `then` once a camera move has ended: when it lands, or by when it should have, as a move stopped on the way never says it ended. */
+function landing(move: Promise<boolean>, then: () => void) {
+  let done = false
+  const land = () => {
+    if (done) return
+    done = true
+    clearTimeout(late)
+    then()
+  }
+  const late = setTimeout(land, HERE_MS + 120)
+  void move.then(land, land)
+}
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
 const pointOf = (event: Pointing) => ("clientX" in event ? event : event.changedTouches[0])
 const altHeld = (event: Pointing) => event.altKey
 
 const ACCEPT = "image/*,video/*,audio/*"
-const MULTI = ["Shift", "Meta", "Control"]
 const hasFiles = (event: DragEvent) => event.dataTransfer.types.includes("Files")
 const typing = (target: EventTarget | null) =>
   target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
@@ -81,9 +84,10 @@ const words = (target: EventTarget | null) =>
 function ProjectSync({ id }: { id: string }) {
   const { client, stream, bridge } = useConnection()
   const store = useCanvasStore()
-  const navigate = useNavigate()
-  const { data: state, error: stateError } = useQuery(projectQuery(client, stream, id))
-  const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, stream, id))
+  // Its folder gone, nothing of it is read again (cl-980).
+  const gone = useGone(id)
+  const { data: state, error: stateError } = useQuery({ ...projectQuery(client, stream, id), enabled: !gone })
+  const { data: canvas, error: canvasError } = useQuery({ ...canvasQuery(client, stream, id), enabled: !gone })
   const asked = useRef(new Set<string>())
   const queries = useQueryClient()
 
@@ -108,13 +112,11 @@ function ProjectSync({ id }: { id: string }) {
   useEffect(() => {
     if (canvas) store.applyCanvas(canvas.cards, canvas.began, canvas.seq)
   }, [store, canvas])
-  // Gone: there's nothing to show. Anything else that stops it being read is said on the canvas (`Unread`), for as long as it holds.
+  // Gone (its folder deleted, say): said on the canvas (`Unread`) as anything else that stops it being read is, and the page stays where it is
+  // (cl-980: sent to `/`, the tabs sent it back, forever). Its tab goes from the list.
   useEffect(() => {
-    if (!(stateError instanceof ApiError && stateError.status === 404)) return
-    const note = say("Couldn't read this project", stateError)
-    navigate("/", { replace: true })
-    return () => dismiss(note)
-  }, [stateError, navigate])
+    if (stateError instanceof ApiError && stateError.status === 404) void queries.invalidateQueries({ queryKey: ["projects"] })
+  }, [stateError, queries])
   useEffect(() => {
     if (canvasError && !lost(canvasError)) say("Couldn't read where things sit", canvasError)
   }, [canvasError])
@@ -135,7 +137,10 @@ function ProjectSync({ id }: { id: string }) {
   }, [stream, store, id])
   useEffect(() => bridge.onRun((run) => store.applyRun(run)), [bridge, store])
   useEffect(() => {
-    store.readAgain = (names) => bridge.changed(id, { assets: names, head: true })
+    store.readAgain = (names) => bridge.readAgain(id, names)
+    store.forget = (names) => bridge.forget(id, names)
+    store.forgotten = (names) => bridge.forgotten(id, names)
+    store.readWhole = () => bridge.changed(id, {})
   }, [bridge, store, id])
   return null
 }
@@ -187,18 +192,10 @@ function RenderAll({ id }: { id: string }) {
 }
 
 /** A project this Calcifer can't read: why, and what to do, where its boxes would be. */
-function Unread({ error }: { error: unknown }) {
-  const body = error instanceof ApiError ? error.body : undefined
+function Unread({ error, gone }: { error?: unknown; gone?: string }) {
   return (
     <div className="unread" role="alert">
-      <div>
-        <h2>This project can't be opened yet</h2>
-        <p>{error instanceof Error ? noHash(error.message) : String(error)}</p>
-        {body?.remedy && <p>{noHash(body.remedy)}</p>}
-        {body?.next?.map((line) => (
-          <Copyable key={line} text={line} />
-        ))}
-      </div>
+      <Unopened error={error} gone={gone} />
     </div>
   )
 }
@@ -218,16 +215,19 @@ function Addressed({ name, enter, leave }: { name: string; enter: (name: string)
 
 /** The zoom control, drawn again only as the zoom changes: a pan changes nothing here. */
 function Zoom({ zoomBy, items }: { zoomBy: (by: 1 | -1) => void; items: () => ZoomItem[] }) {
-  const zoom = useStore((state) => state.transform[2])
+  const zoom = useCanvasViewportValue((view) => view.zoom)
   return <ZoomControl zoom={zoom} zoomIn={() => zoomBy(1)} zoomOut={() => zoomBy(-1)} items={items} />
 }
 
-/** One line, and it does what it says when clicked too. */
+/** One line, and it does what it says when clicked too. At `/`, with no project open, what to do instead (cl-980). */
 function Empty({ choose }: { choose: () => void }) {
   const store = useCanvasStore()
   useSignal(store.names)
-  const empty = useStore((state) => state.nodes.length === 0)
+  const empty = useCanvasNodesValue((nodes) => nodes.length === 0)
+  const home = useMatch({ path: "/", end: true })
+  const making = useSignal(asked)
   if (!empty || (store.projectId && !store.hasRead) || !store.empty) return null
+  if (home && !store.projectId) return making ? null : <div className="empty-canvas"><p className="home-line">No project open. Pick one above, or press +.</p></div>
   return (
     <div className="empty-canvas">
       <button type="button" onClick={choose}>
@@ -251,19 +251,35 @@ function Canvas({
   onAdopt: (id: string, code: string) => void
 }) {
   const connection = useConnection()
-  const flow = useReactFlow<ElementNode, Edge>()
+  const flow = useCanvasViewport()
   const navigate = useNavigate()
   const to = useTo()
-  const { client, stream, bridge, outbox, canvases } = connection
+  const { client, stream, bridge, outbox, canvases, closeBlockers } = connection
   const [saved] = useState(() => loadViewport(projectId))
   // One per project for as long as the tab is open: a tab gone to and back finds what it showed, and what's still waiting for Calcifer shows as done.
   // One a code reload left is another class's, and is made again.
   const [store] = useState(() => {
     const kept = projectId ? canvases.get(projectId) : undefined
     if (kept instanceof CanvasStore) return kept
-    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId), projectId, loadSelection(projectId), loadMore(projectId))
+    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId, projectId), projectId, loadSelection(projectId), loadMore(projectId))
     return made
   })
+  const keepView = useCallback((patch: ProjectViewPatch) => {
+    const id = store.projectId
+    if (!id) return
+    outbox.add({
+      project: id,
+      // Each field of it replaces what's saved: only the latest of a field goes.
+      view: `${id} ${Object.keys(patch).sort().join(",")}`,
+      send: (once, action) => client.patchProjectView(id, patch, { once, action }),
+      refused: (error) => {
+        if (!(error instanceof ApiError && error.body.code === "project_locked")) say("Couldn't save the canvas view", error)
+      },
+    })
+  }, [client, outbox, store])
+  const keepViewport = useCallback((id: string, viewport: Viewport) => {
+    if (saveViewport(id, viewport)) keepView({ viewport })
+  }, [keepView])
   const focusedName = useSignal(store.focusedName)
   // A canvas's first box makes its project: kept from then on.
   useEffect(() => {
@@ -271,17 +287,23 @@ function Canvas({
   })
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
-  const [creation, setCreation] = useState<{ resolve(project: Opened): void; reject(why: Error): void } | null>(null)
-  const creating = useRef<typeof creation>(null)
+  // A first drop asks for its project in place, as the strip's + does (`making`), and waits for it; nothing closes this canvas meanwhile.
+  const creating = useRef<Ask | null>(null)
+  useEffect(() => {
+    const blocked = () => creating.current !== null && asked.get() === creating.current
+    closeBlockers.add(blocked)
+    return () => { closeBlockers.delete(blocked) }
+  }, [closeBlockers])
   const [placer] = useState(() => new Placer(store, client, {
     adopt: (id, code) => adopt.current(id, code),
     create: () => new Promise<Opened>((resolve, reject) => {
-      const pending = { resolve, reject }
-      creating.current = pending
-      setCreation(pending)
+      giveUp()
+      const ask: Ask = { by: "drop", resolve, reject }
+      creating.current = ask
+      asked.set(ask)
     }),
   }))
-  useEffect(() => () => { creating.current?.reject(new Error("Project creation was canceled")); creating.current = null }, [])
+  useEffect(() => () => { if (creating.current && asked.get() === creating.current) giveUp() }, [])
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
@@ -292,10 +314,7 @@ function Canvas({
   openedNow.current = opened
   const stage = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
-    if (active) {
-      store.refreshSurface()
-      return
-    }
+    if (active) return
     // Keep draft/import owners alive under the cover, while closing any mention
     // popup portaled outside its hidden DOM subtree. Shell pauses covered media.
     if (document.activeElement instanceof HTMLElement && stage.current?.contains(document.activeElement)) document.activeElement.blur()
@@ -305,14 +324,47 @@ function Canvas({
   shutNow.current = shut
   const focusTravel = useRef<{ owner: NonNullable<CanvasStore["inPlace"]>; body: Box; started?: boolean } | null>(null)
   const transition = useRef(0)
-  const returning = useRef<Viewport | null>(null)
+  /** The canvas as it was before this visit to Focus: kept from its first box through every other opened from it, until the canvas is back there (cl-955). */
+  const visit = useRef<Viewport | null>(null)
+  /** On its way back from Focus: the canvas takes no hand until it's there, so a wheel still gliding can't stop it at the box's zoom. */
+  const [homing, setHomingState] = useState(false)
+  /** The stage says `data-moving` while its camera moves: a glide asked for, a hand's pan or zoom, the way back from Focus. On the element, not in
+   *  state, so a pan renders nothing. What a test waits out. */
+  const motion = useRef({ glides: 0, hand: false, homing: false })
+  const showMotion = useCallback(() => {
+    const { glides, hand, homing } = motion.current
+    stage.current?.toggleAttribute("data-moving", glides > 0 || hand || homing)
+  }, [])
+  const setHoming = useCallback((on: boolean) => {
+    motion.current.homing = on
+    showMotion()
+    setHomingState(on)
+  }, [showMotion])
+  /** A camera move asked for: moving from now, until it lands or should have. */
+  const glide = useCallback((move: Promise<boolean>, then?: () => void) => {
+    motion.current.glides += 1
+    showMotion()
+    landing(move, () => {
+      motion.current.glides -= 1
+      showMotion()
+      then?.()
+    })
+  }, [showMotion])
+  const wheeled = useRef(0)
+  useEffect(() => {
+    const wheel = () => {
+      wheeled.current = performance.now()
+    }
+    window.addEventListener("wheel", wheel, { capture: true, passive: true })
+    return () => window.removeEventListener("wheel", wheel, { capture: true })
+  }, [])
   const closingAddress = useRef<string | null>(null)
   // Once arrived, Focus fits and moves its own image camera.
   store.fitHere = () => {}
   store.enterFocus = (room) => {
     const travel = focusTravel.current
     if (!travel || travel.started || store.inPlace !== travel.owner || !store.focusEntering.get()) return
-    const pane = stage.current?.querySelector(".react-flow")?.getBoundingClientRect()
+    const pane = stage.current?.querySelector(".canvas-root")?.getBoundingClientRect()
     // No room to draw in on: Focus shows where it is, never held hidden.
     if (!room || room.width <= 0 || room.height <= 0 || !pane) {
       store.focusEntering.set(false)
@@ -328,11 +380,12 @@ function Canvas({
       zoom,
     }
     const arrived = () => {
-      if (transition.current === token && focusTravel.current === travel && store.inPlace === travel.owner) store.focusEntering.set(false)
+      if (transition.current !== token || focusTravel.current !== travel || store.inPlace !== travel.owner) return
+      if (!sameView(flow.getViewport(), viewport)) void flow.setViewport(viewport)
+      store.focusEntering.set(false)
     }
-    void flow.setViewport(viewport, { duration: HERE_MS }).then(arrived, arrived)
     // A move cut short (a wheel, a key, another move) never ends: Focus shows once its time is up all the same.
-    window.setTimeout(arrived, HERE_MS)
+    glide(flow.setViewport(viewport, { duration: HERE_MS }), arrived)
   }
   /** Focus one asset while preserving Wander's camera and palette state. */
   const writeHere = useCallback(
@@ -344,15 +397,15 @@ function Canvas({
       if (!view) return
       const pose = store.poseOf(name)
       const frame = pose && bodyBox(view, pose)
-      const back = store.inPlace?.back ?? returning.current ?? flow.getViewport()
+      // Once a visit, at its first box: one opened from another, or again on the way back, keeps it.
+      visit.current ??= flow.getViewport()
       transition.current += 1
-      returning.current = null
+      setHoming(false)
       if (store.inPlace) {
         void store.save(store.inPlace.name)
-        store.closeSurface()
         store.patch(store.inPlace.name, { here: undefined, hereWords: undefined })
       }
-      const owner = { name, back }
+      const owner = { name }
       store.inPlace = owner
       focusTravel.current = frame ? { owner, body: { x: frame.x, y: frame.y + HEAD, w: frame.w, h: frame.w / aspectOf(view) } } : null
       store.view(name)
@@ -366,7 +419,7 @@ function Canvas({
       store.focusEntering.set(Boolean(focusTravel.current))
       store.focusedName.set(name)
     },
-    [store, flow],
+    [store, flow, setHoming],
   )
   store.openHere = (name: string) => {
     writeHere(name)
@@ -374,37 +427,43 @@ function Canvas({
   }
   const stopWriting = useCallback(() => {
     const held = store.inPlace
-    const back = held?.back ?? focusTravel.current?.owner.back
     const palette = toolsBeforeFocus.current
-    if (!held && !back && palette === null) return
+    // Nothing open: a return already on its way goes on as it was.
+    if (!held && !store.focusedName.get() && palette === null) return
+    const back = visit.current
     const token = ++transition.current
-    // Store the return anchor before any subscribed state can render the old route.
-    if (back) returning.current = back
     toolsBeforeFocus.current = null
     focusTravel.current = null
     store.inPlace = null
-    store.closeSurface()
     if (held) {
       void store.save(held.name)
-      store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
+      store.patch(held.name, { here: undefined, hereWords: undefined })
       store.view(held.name)
     }
     store.focusEntering.set(false)
     store.focusedName.set(null)
     if (palette !== null) setShut(palette)
-    if (back) {
-      if (store.projectId) saveViewport(store.projectId, back)
-      const returned = () => {
-        if (transition.current !== token || store.inPlace) return
-        returning.current = null
-        if (store.projectId) saveViewport(store.projectId, flow.getViewport())
+    if (!back) return
+    setHoming(true)
+    if (store.projectId) saveViewport(store.projectId, back)
+    // Exactly where it was, however the way back went: stopped by a key's zoom, or the canvas a moment late.
+    const home = () => {
+      if (transition.current !== token) return
+      if (!sameView(flow.getViewport(), back)) void flow.setViewport(back)
+      const still = performance.now() - wheeled.current
+      if (still < WHEEL_QUIET_MS) {
+        setTimeout(home, WHEEL_QUIET_MS - still)
+        return
       }
-      void flow.setViewport(back, { duration: HERE_MS }).then(returned, returned)
+      visit.current = null
+      setHoming(false)
     }
-  }, [store, flow])
+    glide(flow.setViewport(back, { duration: HERE_MS }), home)
+  }, [store, flow, setHoming, glide])
   const leaveHere = useCallback(() => {
-    if (!store.inPlace) return
-    closingAddress.current = store.inPlace.name
+    const name = store.inPlace?.name ?? store.focusedName.get()
+    if (!name) return
+    closingAddress.current = name
     stopWriting()
     navigate(to())
   }, [store, navigate, stopWriting, to])
@@ -429,11 +488,12 @@ function Canvas({
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
   const pointer = useRef<{ x: number; y: number } | null>(null)
   // What can't be read says so on the canvas, and everything around it still works. One already read stays while Calcifer's away.
-  const { data: read, error } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
+  const gone = useGone(projectId)
+  const { data: read, error } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) && !gone })
   // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
   const machines = useMachines(store, read?.machines ?? [])
   const machine = machines?.at(-1) ?? null
-  const unread = error && !(read && lost(error)) ? error : null
+  const unread = gone ? { gone } : error && !(read && lost(error)) ? { error } : null
   const readable = unread ? null : projectId
   const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
 
@@ -443,25 +503,26 @@ function Canvas({
     let fitted = Boolean(saved)
     const fitOnce = async () => {
       if (fitted || !store.projectId || store.focusedName.get() || openedNow.current) return
+      if (openedOn && !await flow.fitView(fitOver())) return
       fitted = true
-      if (openedOn) await flow.fitView(fitOver())
-      saveViewport(store.projectId, flow.getViewport())
+      keepViewport(store.projectId, flow.getViewport())
     }
     store.onFirstRead = async () => {
       if (flow.getNodes().length || !store.projectId) return fitOnce()
     }
     store.onPlaced = fitOnce
     store.onMore = (names) => {
-      if (store.projectId) saveMore(store.projectId, names)
+      if (store.projectId && saveMore(store.projectId, names)) keepView({ more: names })
     }
     store.askMachine = () => navigate(to("machines"))
     store.rent = (pick) => {
       const chosen = pick ? `?${new URLSearchParams({ rent: pick.sku, gpus: String(pick.gpus) })}` : ""
       navigate(`${to("machines")}${chosen}`)
     }
+    const stopDrawn = flow.subscribeDrawn(() => { if (flow.hasDrawn) void fitOnce() })
     store.attach(flow)
-    return () => store.detach()
-  }, [store, flow, saved, openedOn, bridge, navigate, to])
+    return () => { stopDrawn(); store.detach() }
+  }, [store, flow, saved, openedOn, bridge, navigate, to, keepView, keepViewport])
 
   /** Where the last zoom of the buttons or keys is going, so a second press steps on from there, not from part of the way. */
   const aim = useRef<{ view: Viewport; until: number } | null>(null)
@@ -473,7 +534,7 @@ function Canvas({
         store.focusZoomTo?.(zoom)
         return
       }
-      const pane = stage.current?.querySelector(".react-flow")?.getBoundingClientRect()
+      const pane = stage.current?.querySelector(".canvas-root")?.getBoundingClientRect()
       if (!pane) return
       const from = aimed()
       const to = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom))
@@ -483,9 +544,9 @@ function Canvas({
       const view = { x: x - ((x - from.x) * to) / from.zoom, y: y - ((y - from.y) * to) / from.zoom, zoom: to }
       aim.current = { view, until: performance.now() + HERE_MS }
       if (store.inPlace) store.inPlace.moved = true
-      void flow.setViewport(view, { duration: HERE_MS })
+      glide(flow.setViewport(view, { duration: HERE_MS }))
     },
-    [flow, store, aimed],
+    [flow, store, aimed, glide],
   )
   const zoomBy = useCallback((by: 1 | -1) => {
     if (store.focusedName.get()) {
@@ -501,8 +562,8 @@ function Canvas({
       return
     }
     aim.current = null
-    void flow.fitView({ ...fitOver(), duration: HERE_MS })
-  }, [flow, store])
+    glide(flow.fitView({ ...fitOver(), duration: HERE_MS }))
+  }, [flow, store, glide])
   /** What's selected, else the box worked on. */
   const fitSelected = useCallback(() => {
     if (store.focusedName.get()) {
@@ -512,8 +573,8 @@ function Canvas({
     const nodes = flow.getNodes().filter((node) => node.selected)
     if (!nodes.length) return fit()
     aim.current = null
-    void flow.fitView({ ...fitOver(), maxZoom: MOST_HERE, nodes, duration: HERE_MS })
-  }, [flow, store, fit])
+    glide(flow.fitView({ ...fitOver(), maxZoom: 2.5, bounds: nodes.map((node) => node.bounds), duration: HERE_MS }))
+  }, [flow, store, fit, glide])
   const zoomItems = useCallback(
     (): ZoomItem[] => [
       { label: "Zoom in", keys: keys("Mod", "+"), run: () => zoomBy(1) },
@@ -534,7 +595,7 @@ function Canvas({
     const box = stage.current!.getBoundingClientRect()
     const left = document.querySelector(".tools")?.getBoundingClientRect().right ?? box.left
     const right = document.querySelector(".drawer")?.getBoundingClientRect().left ?? box.right
-    return flow.screenToFlowPosition({ x: (left + right) / 2, y: box.top + box.height / 2 })
+    return flow.screenToWorld({ x: (left + right) / 2, y: box.top + box.height / 2 })
   }, [flow])
 
   const picked = useCallback(
@@ -553,7 +614,7 @@ function Canvas({
   const land = useCallback(
     (load: Load, x: number, y: number) => {
       if (letGo(store, x, y)) return
-      const point = flow.screenToFlowPosition({ x, y })
+      const point = flow.screenToWorld({ x, y })
       const under = boxAt(store, x, y)
       if (load.name) {
         const target = store.dropTargetAt(x, y, [])
@@ -595,7 +656,7 @@ function Canvas({
       if (!hasFiles(event)) return
       event.preventDefault()
       setVeil(false)
-      const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+      const point = flow.screenToWorld({ x: event.clientX, y: event.clientY })
       const under = boxAt(store, event.clientX, event.clientY)
       const files = [...event.dataTransfer.files]
       if (!files.length) return
@@ -606,23 +667,31 @@ function Canvas({
     [placer, flow, store],
   )
 
+  const moving = useCallback(() => {
+    motion.current.hand = true
+    showMotion()
+  }, [showMotion])
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (store.focusedName.get() || returning.current) return
-      if (store.projectId) saveViewport(store.projectId, viewport)
+      // A programmed glide is counted separately from the hand's camera movement.
+      motion.current.hand = false
+      showMotion()
+      if (store.focusedName.get() || visit.current) return
+      if (store.projectId) keepViewport(store.projectId, viewport)
     },
-    [store],
+    [store, keepViewport, showMotion],
   )
 
   const selectionChanged = useCallback(
-    ({ nodes }: OnSelectionChangeParams<ElementNode, Edge>) => {
+    ({ nodes }: { nodes: readonly ElementNode[] }) => {
       store.select(nodes.map((node) => node.data.name))
       clearTimeout(settling.current)
       settling.current = setTimeout(() => {
-        if (store.projectId) saveSelection(store.projectId, nodes.map((node) => node.data.name))
+        const selection = nodes.map((node) => node.data.name)
+        if (store.projectId && saveSelection(store.projectId, selection)) keepView({ selection })
       }, 200)
     },
-    [store],
+    [store, keepView],
   )
 
   /** The boxes selected. */
@@ -632,13 +701,20 @@ function Canvas({
     (names: string[]) => {
       if (!names.length) return
       const wanted = new Set(names)
-      flow.setNodes((nodes) => nodes.map((node) => (Boolean(node.selected) === wanted.has(node.data.name) ? node : { ...node, selected: wanted.has(node.data.name) })))
+      flow.replaceNodes(flow.getNodes().map((node) => (Boolean(node.selected) === wanted.has(node.data.name) ? node : { ...node, selected: wanted.has(node.data.name) })))
     },
     [flow],
   )
   store.duplicate = (names) => selectOnly(placer.duplicate(names))
+  store.placeFiles = (files, then, near) => {
+    const by = near ? store.position(near) : null
+    placer.add(files, by ? { x: by.x + (by.w ?? CARD_WIDTH) + CARD_WIDTH, y: by.y } : visibleCentre(), then)
+  }
 
-  const draggedEls = (nodes: ElementNode[]) => nodes.flatMap((node) => document.querySelector(`.react-flow__node[data-id="${CSS.escape(node.id)}"]`) ?? [])
+  const draggedEls = (nodes: ElementNode[]) => {
+    const ids = new Set(nodes.map(node => node.id))
+    return [...document.querySelectorAll<HTMLElement>(".canvas-node[data-id]")].filter(element => ids.has(element.dataset.id!))
+  }
 
   // While something's carried, what could take it says so, with no render of anything it isn't.
   const carrying = (held: boolean) => stage.current?.toggleAttribute("data-carrying", held)
@@ -666,35 +742,39 @@ function Canvas({
     },
     [store],
   )
+  const clearDrag = useCallback(() => {
+    carrying(false)
+    stage.current?.removeAttribute("data-offering")
+    stage.current?.removeAttribute("data-copying")
+    store.refusing.set(null)
+    store.setHot(null)
+  }, [store])
+  const dragCancel = useCallback((nodes: ElementNode[]) => {
+    store.dragDropped(nodes)
+    clearDrag()
+  }, [store, clearDrag])
   const dragStop = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
-      // React Flow can deliver both node and selection stop for one group drag.
       if (!nodes.some((node) => store.isDragging(node.data.name))) return
-      carrying(false)
-      stage.current?.removeAttribute("data-offering")
-      stage.current?.removeAttribute("data-copying")
       // Let go with Alt or Option held, copies land there and what was carried goes back where it was, as in Figma.
       if (altHeld(event)) {
         const copies = nodes.flatMap((node) => (node.type === "element" ? (copyOf(store, node.data.name, true) ?? []) : []))
-        store.refusing.set(null)
-        store.setHot(null)
-        store.dragDropped(nodes)
+        dragCancel(nodes)
         if (copies.length) selectOnly(placer.paste(copies, middleOf(copies), "Copied"))
         return
       }
       const { clientX, clientY } = pointOf(event)
       const { target, why } = store.offered(clientX, clientY, nodes.map((node) => node.data.name), draggedEls(nodes))
-      store.refusing.set(null)
-      if (why) say(why)
-      if (!target || why) {
-        store.setHot(null)
+      clearDrag()
+      if (!target) {
         return store.dragStopped(nodes)
       }
+      // Let go on what takes boxes, what was carried goes back where it was: a drop is never a move, a refused one included.
       store.dragDropped(nodes)
-      target.drop(nodes.map((node) => node.data.name), clientX, clientY)
-      store.setHot(null)
+      if (why) say(why)
+      else target.drop(nodes.map((node) => node.data.name), clientX, clientY)
     },
-    [store, placer, selectOnly],
+    [store, placer, selectOnly, clearDrag, dragCancel],
   )
 
   /** On a box's picture, the arrows walk its row one take at a time, and Enter approves the one showing, or unapproves it. */
@@ -725,6 +805,7 @@ function Canvas({
   useEffect(() => {
     if (!active) return
     const key = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
       // Bubbling up to here: a name field or the names offered in a text has taken its own Esc, and a menu goes first.
       if (store.viewing.get()) return
       const here = store.inPlace?.name
@@ -746,7 +827,7 @@ function Canvas({
           const placing = store.get(node.data.name)?.placing
           if (node.selected && placing && placing.stage !== "adding") store.cancel(store.resolveName(node.data.name))
         }
-        flow.setNodes((nodes) => nodes.map((node) => (node.selected ? { ...node, selected: false } : node)))
+        flow.replaceNodes(flow.getNodes().map((node) => (node.selected ? { ...node, selected: false } : node)))
       } else if (event.key === "Delete" || (event.key === "Backspace" && !command)) {
         // What's selected goes, with Undo; open, the box itself. A take goes by its own ✕ or menu.
         const names = here ? [here] : flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
@@ -760,7 +841,7 @@ function Canvas({
         store.duplicate(here ? [here] : chosen())
       } else if (command && event.key.toLowerCase() === "a") {
         event.preventDefault()
-        flow.setNodes((nodes) => nodes.map((node) => ({ ...node, selected: true })))
+        flow.replaceNodes(flow.getNodes().map((node) => ({ ...node, selected: true })))
       } else if ((command && event.key === "0") || (!command && event.shiftKey && event.code === "Digit0")) {
         event.preventDefault()
         zoomTo(1)
@@ -799,7 +880,7 @@ function Canvas({
       // On a picture with no tool, a picture is its next version.
       const joins = here && store.joins(here) && !store.get(here)?.hereWords ? here : null
       // At the pointer when it's on the canvas, else beside what was copied, as in Figma.
-      const point = pointer.current ? flow.screenToFlowPosition(pointer.current) : null
+      const point = pointer.current ? flow.screenToWorld(pointer.current) : null
       const one = own?.length === 1 ? own[0] : null
       if (joins && one && "file" in one && one.file.from !== joins) store.takePicture(joins, one.file)
       else if (own) selectOnly(placer.paste(own, point))
@@ -817,9 +898,9 @@ function Canvas({
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
   // A click selects a box, and only it (Shift, Ctrl or Cmd add to what's selected); a double click or tap opens it (Paul, 11-12).
   const nodeClicked = useCallback(
-    (event: ReactMouseEvent, node: ElementNode) => {
+    (event: MouseEvent, node: ElementNode) => {
       if (event.shiftKey || event.metaKey || event.ctrlKey) return
-      flow.setNodes((nodes) => nodes.map((held) => (Boolean(held.selected) === (held.id === node.id) ? held : { ...held, selected: held.id === node.id })))
+      flow.replaceNodes(flow.getNodes().map((held) => (Boolean(held.selected) === (held.id === node.id) ? held : { ...held, selected: held.id === node.id })))
     },
     [flow],
   )
@@ -828,25 +909,23 @@ function Canvas({
       const view = store.get(name)
       if (!store.projectId || !view?.asset || view.placing || view.draft !== undefined) return
       if (store.focusedName.get() === name) return
-      flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
+      flow.replaceNodes(flow.getNodes().map((held) => (held.selected ? { ...held, selected: false } : held)))
       writeHere(name)
       navigate(to(`assets/${encodeURIComponent(name)}`))
     },
     [store, flow, writeHere, navigate, to],
   )
-  const nodeDoubleClicked = useCallback((event: ReactMouseEvent, node: ElementNode) => {
+  const nodeDoubleClicked = useCallback((event: MouseEvent, node: ElementNode) => {
     if (node.type !== "element" || event.shiftKey || event.metaKey || event.ctrlKey || (event.target as Element).closest("button, input, select, textarea, [contenteditable]")) return
     focusNode(node.data.name)
   }, [focusNode])
-  const touchPress = useRef<{ id: number; name: string; x: number; y: number } | null>(null)
-  const lastTap = useRef<{ name: string; at: number; x: number; y: number } | null>(null)
   // A click on open canvas leaves the box worked on, unless its press began on a box: a selection or a drag let go out here.
 
   const paneClicked = useCallback(() => {
-    if (!store.focusedName.get() && pressBeganOutside((element) => Boolean(element.closest(".react-flow__node, .react-flow__nodesselection")))) leaveHere()
+    if (!store.focusedName.get() && pressBeganOutside((element) => Boolean(element.closest(".canvas-node, .canvas-selection")))) leaveHere()
   }, [store, leaveHere])
   const nodeMenu = useCallback(
-    (event: ReactMouseEvent, node: ElementNode) => {
+    (event: MouseEvent, node: ElementNode) => {
       if (node.type !== "element") return
       event.preventDefault()
       store.menu.set({ name: node.data.name, x: event.clientX, y: event.clientY })
@@ -856,35 +935,18 @@ function Canvas({
   const nodeDragStart = useCallback((_: unknown, __: unknown, nodes: ElementNode[]) => dragStart(nodes), [dragStart])
   const nodeDrag = useCallback((event: Pointing, _: unknown, nodes: ElementNode[]) => dragging(event, nodes), [dragging])
   const nodeDragStop = useCallback((event: Pointing, _: unknown, nodes: ElementNode[]) => dragStop(event, nodes), [dragStop])
-  const selectionDragStart = useCallback((_: unknown, nodes: ElementNode[]) => dragStart(nodes), [dragStart])
-  const selectionDrag = useCallback((event: Pointing, nodes: ElementNode[]) => dragging(event, nodes), [dragging])
-  const selectionDragStop = useCallback((event: Pointing, nodes: ElementNode[]) => dragStop(event, nodes), [dragStop])
 
   // Far out, a card shows its picture, its name and little else.
-  const band = useStore((state) => (state.transform[2] < 0.2 ? 2 : state.transform[2] < 0.45 ? 1 : 0))
+  const band = useCanvasViewportValue((view) => bandOf(view.zoom))
   useLayoutEffect(() => store.far.set(band === 2), [store, band])
-  const sharpness = useStore((state) => 2 ** Math.max(-2, Math.ceil(Math.log2(state.transform[2] || 1))))
+  const sharpness = useCanvasViewportValue((view) => 2 ** Math.max(-2, Math.ceil(Math.log2(view.zoom || 1))))
   useLayoutEffect(() => store.sharpness.set(sharpness), [store, sharpness])
   // A selected box's ring keeps its width on screen: the zoom in steps of two, so a zoom sets it only as it crosses one.
-  const unzoom = useStore((state) => 2 ** -Math.ceil(Math.log2(state.transform[2] || 1)))
+  const unzoom = useCanvasViewportValue((view) => 2 ** -Math.ceil(Math.log2(view.zoom || 1)))
   useLayoutEffect(() => stage.current?.style.setProperty("--unzoom", String(unzoom)), [unzoom])
-  const flowStore = useStoreApi<ElementNode, Edge>()
-  // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
-  useLayoutEffect(() => {
-    let [held, settle] = [flowStore.getState().transform[2], 0]
-    const settled = () => stage.current?.toggleAttribute("data-zooming", false)
-    const stop = flowStore.subscribe(({ transform: [, , zoom] }) => {
-      if (zoom === held) return
-      held = zoom
-      stage.current?.toggleAttribute("data-zooming", true)
-      cancelAnimationFrame(settle)
-      settle = requestAnimationFrame(() => (settle = requestAnimationFrame(settled)))
-    })
-    return () => {
-      stop()
-      cancelAnimationFrame(settle)
-    }
-  }, [flowStore])
+  // A box's name keeps the body size on screen as the canvas zooms out (cl-958), as far as the room above a box allows (shown.ts nameZoomOf):
+  // the zoom's inverse in quarter steps, so it's set only as a zoom crosses one. On the boxes' layer, not the stage: a custom property changed
+  // over the sheet restyles it whole, and it's painted again (cl-895).
 
   // The list a box's controls come from, whatever the panel is searching.
   useEffect(() => {
@@ -893,7 +955,6 @@ function Canvas({
 
   return (
     <CanvasStoreProvider value={store}>
-      {creation && <ProjectCreate modal onCreated={(project) => { creating.current = null; setCreation(null); creation.resolve(project) }} onCancel={() => { creating.current = null; setCreation(null); creation.reject(new Error("Project creation was canceled")) }} />}
       <ToolPanel
         project={readable}
         machine={machine}
@@ -908,27 +969,8 @@ function Canvas({
       <div
         ref={stage}
         className="stage"
-        data-layered={LAYERED ? "" : undefined}
         data-tools={shut ? "shut" : "open"}
         data-lod={band}
-        onPointerDownCapture={(event) => {
-          if (event.pointerType === "mouse" || store.focusedName.get() || (event.target as Element).closest("button, input, select, textarea, [contenteditable]")) return
-          const name = (event.target as Element).closest<HTMLElement>(".card[data-asset]")?.dataset.asset
-          touchPress.current = name ? { id: event.pointerId, name, x: event.clientX, y: event.clientY } : null
-        }}
-        onPointerUpCapture={(event) => {
-          const press = touchPress.current
-          if (!press || press.id !== event.pointerId) return
-          touchPress.current = null
-          if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > 6) { lastTap.current = null; return }
-          const previous = lastTap.current
-          const at = performance.now()
-          if (previous?.name === press.name && at - previous.at <= 500 && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) < 24) {
-            lastTap.current = null
-            focusNode(press.name)
-          } else lastTap.current = { name: press.name, at, x: event.clientX, y: event.clientY }
-        }}
-        onPointerCancelCapture={() => { touchPress.current = null; lastTap.current = null }}
         onPointerMove={(event) => {
           pointer.current = { x: event.clientX, y: event.clientY }
         }}
@@ -949,49 +991,33 @@ function Canvas({
         onDrop={drop}
       >
         <Sheet />
-        <ReactFlow<ElementNode, Edge>
-          defaultNodes={[]}
-          nodeTypes={nodeTypes}
-          defaultViewport={saved ?? undefined}
-          panOnScroll={!focusedName}
-          panOnDrag={!focusedName}
-          zoomOnScroll={!focusedName}
-          zoomOnPinch={!focusedName}
-          panOnScrollSpeed={1}
-          selectionMode={SelectionMode.Partial}
-          selectNodesOnDrag={false}
-          zoomOnDoubleClick={false}
-          minZoom={MIN_ZOOM}
-          maxZoom={MAX_ZOOM}
-          multiSelectionKeyCode={MULTI}
-          deleteKeyCode={null}
-          disableKeyboardA11y
-          nodesConnectable={false}
-          onlyRenderVisibleElements
-          colorMode="dark"
-          attributionPosition="bottom-left"
-          onMoveEnd={moved}
+        <Dots />
+        <CanvasSurface
+          store={store}
+          onReady={() => store.onPlaced?.()}
+          active={active}
+          disabled={Boolean(focusedName) || homing}
+          locked={homing}
+          onMoveStart={moving}
           onSelectionChange={selectionChanged}
+          onMoveEnd={moved}
           onNodeClick={nodeClicked}
           onNodeDoubleClick={nodeDoubleClicked}
           onPaneClick={paneClicked}
           onNodeContextMenu={nodeMenu}
-          onNodeDragStart={nodeDragStart}
-          onNodeDrag={nodeDrag}
-          onNodeDragStop={nodeDragStop}
-          onSelectionDragStart={selectionDragStart}
-          onSelectionDrag={selectionDrag}
-          onSelectionDragStop={selectionDragStop}
+          onDragStart={nodeDragStart}
+          onDrag={nodeDrag}
+          onDragStop={nodeDragStop}
+          onDragCancel={dragCancel}
         >
-          <Dots />
-          {unread ? <Unread error={unread} /> : <Empty choose={choose} />}
-        </ReactFlow>
+          {unread ? <Unread {...unread} /> : active && <Empty choose={choose} />}
+        </CanvasSurface>
         <Zoom zoomBy={zoomBy} items={zoomItems} />
         {veil && <div className="dropveil" />}
       </div>
       {active && focusedName && <FocusedViewport name={focusedName} onClose={leaveHere} onCopyVersion={(file, x, y) => {
         leaveHere()
-        requestAnimationFrame(() => placer.addFile({ ...file, copy: true }, flow.screenToFlowPosition({ x, y })))
+        requestAnimationFrame(() => placer.addFile({ ...file, copy: true }, flow.screenToWorld({ x, y })))
       }} />}
       {opened && <Addressed name={opened} enter={enterAddressed} leave={leaveHere} />}
       {active && <AssetMenu />}
@@ -1004,18 +1030,20 @@ function Canvas({
   )
 }
 
-/**
- * WebKit draws again all that a transform moves, each frame it moves, so there the boxes are on a layer of their own: 300 of them panned at
- * 214–590 ms a frame on macOS, and 16 ms on one. Chrome and Firefox move them as drawn already, and Chrome rasters a layer at its whole size:
- * 5,000 fitted were many windows of it, and every frame took 1.5 s.
- */
-const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.test(navigator.userAgent)
-
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
 export function CanvasHost(props: { projectId: string | null; active: boolean; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {
-  return (
-    <ReactFlowProvider defaultNodes={[]}>
-      <Canvas {...props} />
-    </ReactFlowProvider>
-  )
+  const { client, stream } = useConnection()
+  // A first drop adopts a newly created project without unmounting its in-flight placer.
+  const [openedProject] = useState(props.projectId)
+  const view = useQuery({ ...projectViewQuery(client, stream, props.projectId ?? ""), enabled: Boolean(openedProject && props.projectId) })
+  // A project Calcifer refuses to read (a newer schema, say) still opens its canvas: it says why there, and the tools stay.
+  if (openedProject && !view.data && !(view.error instanceof ApiError)) {
+    return <div className="empty-canvas"><p>{view.error ? "Couldn't read this project's canvas view." : "Opening project…"}</p>{view.error && <button className="tb" onClick={() => void view.refetch()}>Retry</button>}</div>
+  }
+  return <ReadyCanvas {...props} />
+}
+
+function ReadyCanvas(props: Parameters<typeof Canvas>[0]) {
+  const [controller] = useState(() => new CanvasController(loadViewport(props.projectId) ?? undefined))
+  return <CanvasViewportProvider controller={controller}><Canvas {...props} /></CanvasViewportProvider>
 }

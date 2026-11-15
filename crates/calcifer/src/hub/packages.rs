@@ -212,6 +212,7 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
     let home = api.machines.hubs.home();
     if let Some(code) = &code {
         let source = crate::local_code::source(home, code, &api.machines.hubs, hub).await.map_err(Refusal)?;
+        crate::maintenance_source::keep_derived(api,code,&source).map_err(Refusal)?;
         let mut submit = crate::local_code::install_run(home, hub.as_str(), on, &source);
         submit.agreed = agreed;
         return Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Keep(source.filed())), notes: vec![], mirror: None });
@@ -225,10 +226,17 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
     }
     let reader = reader(api, hub)?;
     let root = home.root().to_owned();
-    let chosen = match ask.release {
-        Some(release) => release,
-        None => api.releases.now(api, hub, &package).await.and_then(|read| read.newest(&package)).map_err(Refusal)?,
-    };
+    // As a run's release: the one asked, else the newest its machine runs, its Runtime moved first (cl-952) or cozy updated first (cl-978).
+    let (chosen, moved, upgrade, cozy) = crate::runs::target::installed_release(api, hub.as_str(), &package, ask.release.as_deref(), &on).await.map_err(Refusal)?;
+    if let Some(wanted) = cozy {
+        return Ok(Planned::Cozy(Box::new(wanted)));
+    }
+    let mut notes: Vec<String> = moved.into_iter().map(|note| note.message).collect();
+    if let Some(upgrade) = &upgrade
+        && api.machines.upgrade(upgrade).await.map_err(Refusal)?.is_some()
+    {
+        notes.push(upgrade.note().message);
+    }
     // The release's card, kept while its machine installs: the first run after an install
     // binds against it with no Hub read on its path (an RTX 4090's cold SDXL run waited 0.55 s
     // on it). A failed read is the run's to repeat.
@@ -239,12 +247,12 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
         }
     });
     let submit = release_install(hub.as_str(), on, &package, &chosen, agreed);
-    Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Retire { package }), notes: vec![], mirror: None })
+    Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Retire { package }), notes, mirror: None })
 }
 
 /// The run that installs `release` of `package` on a machine: a warm one naming no function.
 fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<api::calcifer::Agreed>) -> SubmitRun {
-    SubmitRun {
+    SubmitRun { project: None,
         agreed,
         stays: vec![],
         on,
@@ -253,7 +261,7 @@ fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Opti
         target: format!("{package}@{release}"),
         spec: v1::RunSpec {
             kind: v1::RunKind::Warm,
-            source: Some(Source::Release(v1::Release { package: package.to_owned(), release: release.to_owned() })),
+            source: Some(Source::Release(v1::Release { package: package.to_owned(), release: release.to_owned(), ..Default::default() })),
             ..Default::default()
         },
         inputs: vec![],
@@ -275,6 +283,13 @@ pub(super) struct Removal {
 pub(super) async fn removal(api: &Arc<Api>, hub: &Origin, on: &On, ask: PackageRemove) -> Result<Planned, Refusal> {
     let machine = super::jobs::machine(on, "a removal")?;
     let held = crate::machines::fresh(&api.machines, &machine).await.map_err(Refusal)?;
+    // A project's packages live in its own environments, which the machine's status never lists:
+    // its remove runs answer for them, and a name none removed is refused after them.
+    if crate::private_io::current().is_some() {
+        let targets = ask.packages.iter().map(|name| (name.clone(), hub.to_string())).collect();
+        let target = format!("remove {}", ask.packages.join(", "));
+        return Ok(Planned::Here { target, work: Work::Remove(Removal { machine: held.name, targets }) });
+    }
     let envs: Vec<&Environment> = held.status.iter().flat_map(|s| &s.environments).collect();
     if let Some(name) = ask.packages.iter().find(|name| !envs.iter().any(|env| &&env.package == name)) {
         return Err(Refusal(
@@ -306,7 +321,7 @@ impl Removal {
             retained: Vec<String>,
         }
         let runs = self.targets.iter().enumerate().map(|(i, (package, from))| {
-            let submit = SubmitRun {
+            let submit = SubmitRun { project: crate::private_io::current().map(|scope|scope.storage.project_id),
                 agreed: None,
                 stays: vec![],
                 on: On::Machine(self.machine.clone()),
@@ -315,12 +330,12 @@ impl Removal {
                 target: package.clone(),
                 spec: v1::RunSpec {
                     kind: v1::RunKind::Remove,
-                    source: Some(Source::Release(v1::Release { package: package.clone(), release: String::new() })),
+                    source: Some(Source::Release(v1::Release { package: package.clone(), ..Default::default() })),
                     ..Default::default()
                 },
                 inputs: vec![],
                 held: vec![],
-                out: None,
+                out: crate::private_io::current().map(|scope|crate::project::landing(&crate::project::vault::logical(&scope.storage.view_root))),
                 warnings: vec![],
             };
             let key = format!("{key}-{i}");
@@ -338,6 +353,13 @@ impl Removal {
                 Ok(run) => done.failed.push(format!("{package}: {}", failure(&run))),
                 Err(e) => done.failed.push(format!("{package}: {e}")),
             }
+        }
+        if crate::private_io::current().is_some()
+            && let Some((name, _)) = self.targets.iter().find(|(name, _)| !done.removed.iter().any(|gone| &gone.package == name))
+            && done.failed.is_empty()
+        {
+            return Err(Error::not_found("package_not_installed", format!("{name} is not installed in this project on {}", done.machine))
+                .next(format!("cozy package ls --on {}", done.machine)));
         }
         if done.failed.is_empty() {
             return Ok(done);

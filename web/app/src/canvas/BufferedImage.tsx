@@ -1,36 +1,12 @@
 import { useLayoutEffect, useRef, useState } from "react"
+import { THUMB_TRIES, thumbPending, thumbWait, whenThumb } from "../api/thumbs"
 import { useConnection } from "../app/Connection"
 import { useCanvasStore } from "./context"
 
-const WIDTH = 2048
+/** What Calcifer keeps of every picture for the canvas, made as its file lands (cl-982): a box of 240 CSS px at 100% on a screen of
+ *  twice the density. Drawn wider, a picture is its own file. */
+const PICTURE = 512
 const HELD = 5
-const LOADING = 2
-
-// Share only in-flight work, not decoded pictures. Neighbors must not fill the browser's API connections.
-const requests: { urgent(): boolean; start(): void }[] = []
-let loading = 0
-function nextRequest() {
-  requests.sort((a, b) => Number(b.urgent()) - Number(a.urgent()))
-  while (loading < LOADING && requests.length) requests.shift()!.start()
-}
-function schedule(start: (done: () => void) => void, urgent: () => boolean): () => void {
-  let running = false
-  let released = false
-  const done = () => {
-    if (released) return
-    released = true
-    if (running) loading--
-    else {
-      const at = requests.indexOf(request)
-      if (at >= 0) requests.splice(at, 1)
-    }
-    nextRequest()
-  }
-  const request = { urgent, start() { running = true; loading++; start(done) } }
-  requests.push(request)
-  nextRequest()
-  return done
-}
 
 interface Source {
   key: string
@@ -44,7 +20,14 @@ interface Picture extends Source {
   ready: boolean
   dead: boolean
   running: boolean
-  cancel?: () => void
+  /** Request/cache-bust generation, including accepted pending checks. */
+  tries: number
+  /** Consecutive genuine failures; an accepted pending response does not spend this budget. */
+  errors: number
+  pendingChecks: number
+  probe?: AbortController
+  /** Stops waiting to ask again. */
+  wait?: () => void
 }
 
 interface Buffer {
@@ -63,7 +46,7 @@ export interface BufferedImageProps {
   /** Nearby versions, nearest first, kept decoded. The current image and at most four neighbors are held. */
   neighbors: string[]
   cardWidth: number
-  /** Original project-relative image path, used beyond the widest thumbnail. */
+  /** Original project-relative image path, used where a box is drawn wider than its thumbnail. */
   originalPath?: string
   neighborPaths?: Record<string, string>
   /** Optional actual on-screen width in CSS pixels; display density is applied here. */
@@ -82,11 +65,13 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
   const callbacks = useRef({ onSize, onShown })
   callbacks.current = { onSize, onShown }
   const [failed, setFailed] = useState(false)
+  // Its own picture drawn: until then its frame pulses, faintly (cl-982).
+  const [shown, setShown] = useState(false)
   // Unknown until it's measured, before it's first drawn: only the size it's drawn at is asked for, not a smaller one first.
   const [resolution, setResolution] = useState<number | null>(null)
   const sources = resolution === null ? [] : [...new Set([...(sha256 ? [sha256] : []), ...neighbors])].slice(0, HELD).map((sha): Source => {
     const path = sha === sha256 ? originalPath ?? neighborPaths?.[sha] : neighborPaths?.[sha]
-    const width = resolution === 0 && path ? 0 : resolution || WIDTH
+    const width = resolution === 0 && path ? 0 : PICTURE
     const original = width === 0 ? path : undefined
     return { key: JSON.stringify([sha, width, original]), sha, width, path: original }
   })
@@ -101,13 +86,14 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
     let frame = 0
     const measure = () => {
       frame = 0
-      const actual = element.getBoundingClientRect().width
-      // Wander's signal is the upper zoom bound of its current bucket, so later zooms within that bucket stay sharp.
-      const width = displayWidth ?? (focus ? actual || cardWidth : Math.max(actual, cardWidth * store.sharpness.get()))
+      // Wander's signal is the upper zoom bound of its current bucket, so later zooms within that bucket stay sharp: a box is
+      // never drawn wider than that, so only Focus, which sizes a picture itself, reads the page's layout (each read laid out
+      // the whole page again, a box at a time, as a project opened: cl-885).
+      const width = displayWidth ?? (focus ? element.getBoundingClientRect().width || cardWidth : cardWidth * store.sharpness.get())
       const density = (window.devicePixelRatio || 1) * (window.visualViewport?.scale ?? 1)
       const pixels = Math.ceil(Math.max(1, width) * density)
-      element.dataset.requestedWidth = String(pixels)
-      const next = pixels > WIDTH ? 0 : pixels > 1024 ? WIDTH : pixels > 512 ? 1024 : pixels > 256 ? 512 : 256
+      if (element.dataset.requestedWidth !== String(pixels)) element.dataset.requestedWidth = String(pixels)
+      const next = pixels > PICTURE ? 0 : PICTURE
       setResolution((was) => was === next ? was : next)
     }
     const scheduleMeasure = () => { if (!frame) frame = requestAnimationFrame(measure) }
@@ -119,7 +105,9 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
     const unwatch = store.sharpness.subscribe(scheduleMeasure)
     window.addEventListener("resize", scheduleMeasure)
     window.visualViewport?.addEventListener("resize", scheduleMeasure)
-    measure()
+    // Measured in the next frame with every other box's, never here: a layout read in each mount's effect, between other boxes'
+    // style writes, laid the page out again once a box.
+    scheduleMeasure()
     return () => {
       if (frame) cancelAnimationFrame(frame)
       resize.disconnect()
@@ -133,8 +121,9 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
   const discard = (buffer: Buffer, picture: Picture) => {
     picture.dead = true
     picture.running = false
+    picture.probe?.abort()
     picture.image.removeAttribute("src")
-    picture.cancel?.()
+    picture.wait?.()
     picture.image.remove()
     buffer.pictures.delete(picture.key)
   }
@@ -142,6 +131,7 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
   /** Nothing drawn: what it shows now can't be drawn, and no other picture is drawn in its place. */
   const hide = (buffer: Buffer) => {
     buffer.displayed = null
+    setShown(false)
     host.current?.replaceChildren()
     host.current?.removeAttribute("data-displayed-sha")
     host.current?.removeAttribute("data-displayed-resolution")
@@ -159,45 +149,87 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
     element.dataset.displayedWidth = String(picture.image.naturalWidth)
     buffer.displayed = picture
     setFailed(false)
+    setShown(true)
     const { naturalWidth: width, naturalHeight: height } = picture.image
     if (width && height) callbacks.current.onSize(width / height)
     callbacks.current.onShown()
   }
 
+  /** `picture` asked for, at once: each is served from its project's store. One not made yet is asked again when Calcifer says it's
+   *  there; one still on its way here, later each time. */
+  const load = (buffer: Buffer, picture: Picture) => {
+    const id = project
+    if (!id || buffer.stopped || picture.dead || picture.ready || picture.running || picture.errors >= THUMB_TRIES) return
+    picture.running = true
+    const attempt = picture.tries
+    const current = () => !buffer.stopped && !picture.dead && store.active && store.projectId === id
+      && buffer.pictures.get(picture.key) === picture && picture.tries === attempt
+    const base = picture.path ? client.file(id, picture.path) : client.thumb(id, picture.sha)
+    const path = attempt ? `${base}${base.includes("?") ? "&" : "?"}try=${attempt}` : base
+    let imageRequested = false
+    void (async () => {
+      // A box's first picture asked once the frame it's drawn in is up: fifty requests set up at once held a project's first frame
+      // ~100 ms (web-opens A/B 43395065723).
+      if (!buffer.displayed && !picture.tries) await new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0)))
+      if (!current()) return
+      const url = await client.transport.src(path)
+      if (!current()) return
+      picture.image.src = url
+      imageRequested = true
+      await picture.image.decode()
+      if (!current()) return
+      picture.running = false
+      picture.ready = true
+      picture.errors = 0
+      picture.pendingChecks = 0
+      reveal(buffer, picture)
+      refresh(buffer)
+    })().catch(async () => {
+      if (!current()) return
+      let pending = false
+      // Original files retain their existing load/retry path. Only a failed thumbnail needs readiness classification.
+      if (!picture.path && imageRequested) {
+        const probe = new AbortController()
+        picture.probe = probe
+        try { pending = await thumbPending(client.transport, path, probe.signal) } catch { /* Unknown failures remain bounded. */ }
+        finally { if (picture.probe === probe) picture.probe = undefined }
+        if (probe.signal.aborted || !current()) return
+      }
+      if (pending) { picture.errors = 0; picture.pendingChecks = Math.min(5, picture.pendingChecks + 1) }
+      else picture.errors++
+      if (picture.errors < THUMB_TRIES) {
+        picture.tries++
+        picture.wait = whenThumb(id, picture.sha, thumbWait(pending ? picture.pendingChecks : picture.errors), () => {
+          picture.wait = undefined
+          picture.running = false
+          if (!buffer.stopped && !picture.dead && store.active && store.projectId === id && buffer.pictures.get(picture.key) === picture && picture.tries === attempt + 1) refresh(buffer)
+        })
+        return
+      }
+      picture.running = false
+      if (buffer.selected !== picture.key) return
+      if (buffer.displayed?.sha !== picture.sha) hide(buffer)
+      setFailed(true)
+    })
+  }
+
+  /** The picture shown first, and its neighbours once it's drawn: a project opening asks for each box's own picture before any other's. */
   const pump = (buffer: Buffer) => {
     if (!project || buffer.stopped) return
-    while (buffer.queue.length) {
-      const picture = buffer.queue.shift()!
-      if (picture.dead || picture.ready || picture.running) continue
-      picture.running = true
-      picture.cancel = schedule((done) => {
-        void (async () => {
-          if (buffer.stopped || picture.dead) return
-          const path = picture.path ? client.file(project, picture.path) : client.thumb(project, picture.sha, picture.width)
-          const url = await client.transport.src(path)
-          if (buffer.stopped || picture.dead) return
-          picture.image.src = url
-          await picture.image.decode()
-          if (buffer.stopped || picture.dead) return
-          picture.ready = true
-          reveal(buffer, picture)
-          refresh(buffer)
-        })().catch(() => {
-          if (buffer.stopped || picture.dead || buffer.selected !== picture.key) return
-          if (buffer.displayed?.sha !== picture.sha) hide(buffer)
-          setFailed(true)
-        }).finally(() => {
-          picture.running = false
-          done()
-        })
-      }, () => picture.key === buffer.selected)
-    }
+    buffer.queue = buffer.queue.filter((picture) => !picture.dead && !picture.ready)
+    const selected = buffer.pictures.get(buffer.selected)
+    if (selected && !selected.ready) load(buffer, selected)
+    else for (const picture of buffer.queue) load(buffer, picture)
   }
 
   const refresh = (buffer: Buffer) => {
     if (buffer.stopped) return
     const selected = buffer.pictures.get(buffer.selected)
     if (selected?.ready) reveal(buffer, selected)
+    else if (selected && selected.errors >= THUMB_TRIES) {
+      if (buffer.displayed?.sha !== selected.sha) hide(buffer)
+      setFailed(true)
+    }
     const keep = new Set(buffer.wanted)
     // A far jump keeps the previous picture while loading without growing the decoded-image budget.
     if (buffer.displayed && !keep.has(buffer.displayed.key)) {
@@ -219,7 +251,7 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
       image.decoding = "async"
       const source = buffer.sources.get(key)
       if (!source) continue
-      const picture: Picture = { ...source, image, ready: false, dead: false, running: false }
+      const picture: Picture = { ...source, image, ready: false, dead: false, running: false, tries: 0, errors: 0, pendingChecks: 0 }
       buffer.pictures.set(key, picture)
       buffer.queue.push(picture)
     }
@@ -267,7 +299,7 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
   }, [client, store, project, selected, windowKey])
 
   return <>
-    <span ref={host} className="buffered-image" style={{ position: "absolute", inset: 0, display: "block", pointerEvents: "none" }} />
+    <span ref={host} className="buffered-image" data-loading={sha256 && !shown && !failed ? "" : undefined} style={{ position: "absolute", inset: 0, display: "block", pointerEvents: "none" }} />
     {failed && <span className="media-note">Selected image unavailable</span>}
   </>
 }

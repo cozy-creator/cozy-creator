@@ -23,7 +23,7 @@ use api::{
 
 use crate::{
     Context,
-    calcifer_client::Client,
+    calcifer_client::{Client, RunAddress},
     machine::{Following, Notices, route},
     output,
 };
@@ -43,7 +43,11 @@ pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -
             ask.agreed = Some(quoted.quote.agreed);
         }
     }
-    let submitted: Submitted = calcifer.post("/v1/runs", &ask, Some(key)).await?;
+    let route = match &ask.project {
+        Some(project) => crate::calcifer_client::path(&["v1", "projects", project, "runs", "submit"]),
+        None => "/v1/runs".into(),
+    };
+    let submitted: Submitted = calcifer.post(&route, &ask, Some(key)).await?;
     for note in &submitted.notes {
         match note.level {
             NoteLevel::Info => output::say(ctx, &note.message),
@@ -56,8 +60,8 @@ pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -
 
 /// Asks Calcifer's job `target` (`api::calcifer::hub::job`) with `input` as its fields, under a fresh key, quoted and agreed first
 /// when it rents: the run it became. Local code not yet ready on its machine is installed first, then asked again under that key.
-pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Serialize, on: Option<On>, code: Option<api::code::LocalCode>) -> Result<Run, Error> {
-    let ask = RunRequest::job(target, input, on, ctx.hub().to_string(), code);
+pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Serialize, on: Option<On>, code: Option<api::code::LocalCode>, project: Option<String>) -> Result<Run, Error> {
+    let ask = RunRequest { project, ..RunRequest::job(target, input, on, ctx.hub().to_string(), code) };
     let key = mint_key();
     loop {
         let submitted = submit_request(ctx, &ask, &key).await?;
@@ -69,21 +73,23 @@ pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Seriali
             // Following stopped: the install goes on, and nothing more is asked.
             return Ok(install);
         }
+        // cozy updated itself for it (cl-978): the job goes on as the new cozy.
+        crate::update::after_update(ctx, &install)?;
     }
 }
 
 /// One of Calcifer's own runs (`Kind::Here`), followed quietly to its end: its result, or the refusal it ended with, whole.
 pub(crate) async fn done<T: serde::de::DeserializeOwned>(ctx: &Context, run: Run) -> Result<T, Error> {
     let run = settle(ctx, run).await?;
-    let show = format!("cozy run watch {}", run.name());
+    let show = format!("cozy run watch {}", handle(&run));
     let result = run.result.clone().unwrap_or_default();
     match run.status {
-        Status::Completed => serde_json::from_value(result).map_err(|e| Error::new(Kind::Internal, "untyped_answer", format!("run {}'s result: {e}", run.name()))),
+        Status::Completed => serde_json::from_value(result).map_err(|e| Error::new(Kind::Internal, "untyped_answer", format!("run {}'s result: {e}", handle(&run)))),
         Status::Failed | Status::Canceled => Err(serde_json::from_value(result["error"].clone()).unwrap_or_else(|_| {
             let reason = run.reason.clone().unwrap_or_default();
             Error::new(Kind::Unavailable, "run_failed", format!("{}: {}", run.target, reason.message)).next(&show)
         })),
-        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("Stopped watching run {}; it is still running", run.name())).next(&show)),
+        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("Stopped watching run {}; it is still running", handle(&run))).next(&show)),
     }
 }
 
@@ -94,9 +100,17 @@ fn replayed(ctx: &Context, submitted: &Submitted) {
             ctx,
             &format!(
                 "this key names run {}, submitted before",
-                submitted.run.number
+                handle(&submitted.run)
             ),
         );
+    }
+}
+
+/// What names `run` to `cozy run watch` from any folder: `KEY-N` (cl-987), or its id for one another client sent.
+pub(crate) fn handle(run: &Run) -> String {
+    match run.name.is_empty() {
+        true => run.id.to_string(),
+        false => run.name.clone(),
     }
 }
 
@@ -113,7 +127,7 @@ pub(crate) fn exit_code(run: &Run) -> ExitCode {
     match run.status {
         Status::Failed | Status::Canceled => ExitCode::FAILURE,
         _ if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) => {
-            let n = run.name();
+            let n = handle(&run);
             output::warned(&format!("run {n}: {}. It keeps running: `cozy run watch {n}` follows it", stalled_words(stalled)));
             ExitCode::from(output::STALLED)
         }
@@ -149,9 +163,52 @@ pub(crate) async fn follow_until(
     }
 }
 
+/// [`follow`] for a command a run carries out (`machine update`, `package install`, `model install`, `model upload`, `model
+/// quantize`): a run that failed or was canceled is the command's refusal, said once as a typed error with its reason's code and
+/// remedy (`--json`: the envelope after the run's events, cl-998).
+pub(crate) async fn carry_out(ctx: &Context, run: Run) -> Result<Run, Error> {
+    let (run, interrupted) = watch(ctx, run, ctx.json, interrupt()).await?;
+    if matches!(run.status, Status::Failed | Status::Canceled) {
+        let reason = run.reason.clone().unwrap_or_default();
+        let code = if reason.code.is_empty() { "run_failed" } else { reason.code.as_str() };
+        let mut said = format!("run {} {}", handle(&run), status_word(run.status));
+        if !reason.message.is_empty() {
+            let _ = write!(said, ": {}", reason.message);
+        }
+        return Err(failure_next(&run).into_iter().fold(Error::new(Kind::Unavailable, code, said), Error::next));
+    }
+    if !ctx.json {
+        record(ctx, &run);
+    }
+    match interrupted {
+        true => Ok(run),
+        false => saved(run),
+    }
+}
+
 /// Ctrl-C in a shell.
 async fn interrupt() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+/// `run` as `event` moves it: its record anew, or one of its outputs. An event's record names no project, so the run keeps the
+/// one it was followed in, which every read after it names (cl-885: the last read after a restart asked the global route).
+fn absorb(run: &mut Run, event: &Event) {
+    match event {
+        Event::Created { run: now, .. } | Event::Queued { run: now, .. } | Event::InProgress { run: now, .. }
+        | Event::Completed { run: now, .. } | Event::Failed { run: now, .. } | Event::Canceled { run: now, .. } => {
+            *run = Run { project: now.project.clone().or(run.project.take()), project_id: now.project_id.clone().or(run.project_id.take()), ..now.clone() };
+        }
+        Event::OutputAdded { output_index, item, .. } | Event::OutputDone { output_index, item, .. } | Event::OutputLanded { output_index, item, .. } => {
+            let at = *output_index as usize;
+            if at < run.output.len() {
+                run.output[at] = item.clone();
+            } else if at == run.output.len() {
+                run.output.push(item.clone());
+            }
+        }
+        _ => {}
+    }
 }
 
 /// An output still owed to Calcifer.
@@ -173,13 +230,13 @@ fn saved(run: Run) -> Result<Run, Error> {
     if lost.is_empty() || !settled(&run) {
         return Ok(run);
     }
-    let show = format!("cozy run watch {}", run.name());
+    let show = format!("cozy run watch {}", handle(&run));
     Err(Error::new(
         Kind::Unavailable,
         "output_not_saved",
         format!(
             "Run {} {}. Outputs not saved: {}",
-            run.number,
+            handle(&run),
             status_word(run.status),
             lost.join(", ")
         ),
@@ -204,11 +261,13 @@ async fn watch(
     stop: impl Future<Output = ()>,
 ) -> Result<(Run, bool), Error> {
     let calcifer = ctx.calcifer().await?;
-    let mut events = calcifer.events_until_landed(run.id.as_str(), 0);
+    let address = RunAddress::of(&run);
+    let mut events = calcifer.events_until_landed(&address, 0);
     let mut view = View::new(ctx, &run);
     let mut interrupt = std::pin::pin!(stop);
-    let id = run.id.clone();
     let mut terminal = None;
+    // The run as its stream says it, so an end needs no read: a vault locks as its work ends.
+    let mut latest = run.clone();
     // The rental the run was placed on, followed until it is known whether its Hub placed it far
     // away: the Hub decides after it accepts the order.
     let mut placing: Option<Following> = None;
@@ -232,8 +291,8 @@ async fn watch(
                     },
                     _ = &mut interrupt => {
                         view.done();
-                        let run = calcifer.run(id.as_str()).await?;
-                        let n = run.name();
+                        let run = calcifer.run(&address).await?;
+                        let n = handle(&run);
                         output::say(ctx, &match settled(&run) {
                             true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run watch {n}` follows them"),
                             false => format!("stopped following: run {n} keeps running; `cozy run watch {n}` follows it again, `cozy run cancel {n}` cancels it"),
@@ -244,9 +303,15 @@ async fn watch(
                 }
             }
         };
+        if let Some(Ok(event)) = &event {
+            absorb(&mut latest, event);
+        }
         match event {
             None => {
-                let run = calcifer.run(id.as_str()).await?;
+                let run = match settled(&latest) && !owed(&latest) {
+                    true => latest.clone(),
+                    false => calcifer.run(&address).await?,
+                };
                 // Its Calcifer stopped with an output still owed: wait on the next one.
                 if settled(&run) && owed(&run) {
                     events.again();
@@ -268,7 +333,7 @@ async fn watch(
                     false => view.on(&event),
                 }
                 view.done();
-                return Ok((calcifer.run(id.as_str()).await?, true));
+                return Ok((calcifer.run(&address).await?, true));
             }
             Some(Ok(event)) if events.restarted() && !events_out => {
                 view.line(&format!("  Calcifer restarted; following run {} again", view.number));
@@ -342,7 +407,7 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
         return;
     }
     if matches!(run.status, Status::Failed | Status::Canceled) {
-        let mut line = format!("Run {} {}", run.name(), status_word(run.status));
+        let mut line = format!("Run {} {}", handle(&run), status_word(run.status));
         if let Some(reason) = &run.reason {
             if !reason.code.is_empty() {
                 let _ = write!(line, " [{}]", reason.code);
@@ -361,7 +426,7 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
 fn failure_next(run: &Run) -> Vec<String> {
     let mut next = Vec::new();
     for command in run.reason.iter().flat_map(|reason| &reason.next)
-        .cloned().chain([format!("cozy run watch {} --full", run.name())])
+        .cloned().chain([format!("cozy run watch {} --full", handle(&run))])
     {
         if !command.trim().is_empty() && !next.contains(&command) {
             next.push(command);
@@ -392,13 +457,32 @@ pub(super) fn keyed(basis: &str) -> &'static str {
     }
 }
 
+/// Where the plan sent it and what it quoted there: `enishi, to finish in 20 s (measured, warm; 9 s preparing, 0.3 GiB to fetch)`.
+fn placed_words(placed: &api::calcifer::Placed) -> String {
+    let basis = serde_json::to_value(placed.basis).ok().and_then(|basis| basis.as_str().map(str::to_owned)).unwrap_or_default();
+    let warm = if placed.warm { ", warm" } else { "" };
+    let fetch = match placed.fetch_bytes {
+        0 => String::new(),
+        bytes => format!(", {:.1} GiB to fetch", bytes as f64 / (1u64 << 30) as f64),
+    };
+    let preparing = match placed.prepare_ms / 1000 {
+        0 => String::new(),
+        s => format!("; {s} s preparing{fetch}"),
+    };
+    let finish = (placed.finish_at_ms - placed.quoted_at_ms).max(0) / 1000;
+    format!("{}, to finish in {finish} s ({basis}{warm}{preparing})", placed.machine)
+}
+
 /// The record's fields, for a person.
 pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     let mut record = output::Record::new()
-        .field("run", run.name())
+        .field("run", handle(&run))
         .field("target", &run.target)
         .field("status", status(run))
         .field("machine", run.machine.as_deref().unwrap_or("—"));
+    if let Some(placed) = &run.placed {
+        record = record.field("placed", placed_words(placed));
+    }
     if let Some(gpu) = &run.gpu {
         record = record.field("gpu", gpu);
     }
@@ -467,20 +551,24 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
         record = record.note(adjustment(row));
     }
     for warning in &run.warnings {
-        record = record.note(format!("warning: {}", warning.message));
+        // A mention its function can't use was left out: said once, nothing to act on.
+        let said = if warning.code == api::calcifer::MENTION_UNUSED { "note" } else { "warning" };
+        record = record.note(format!("{said}: {}", warning.message));
     }
     record
 }
 
 /// One adjustment as a line: `adjusted assets.2.asset: 21.4 -> 15 (video truncated to 15 s)
-/// [policy]`; a warning reads `warn field: reason [source]`.
+/// [policy]`; a warning reads `warn field: reason [source]`, and an input the function has no use for
+/// `ignored field: what (why) [source]`.
 fn adjustment(row: &Adjustment) -> String {
     let mut line = format!("{} {}:", row.kind, row.field);
-    if row.kind != "warn" {
+    if !matches!(row.kind.as_str(), "warn" | "ignored") {
         let _ = write!(line, " {} -> {}", row.requested, row.applied);
     }
     let _ = match (row.kind.as_str(), row.reason.as_str()) {
         (_, "") => Ok(()),
+        ("ignored", reason) => write!(line, " {} ({reason})", row.requested),
         ("warn", reason) => write!(line, " {reason}"),
         (_, reason) => write!(line, " ({reason})"),
     };
@@ -492,13 +580,13 @@ fn adjustment(row: &Adjustment) -> String {
 
 /// What to do next with `run`: follow it while it goes on, show it when it did not succeed.
 pub(super) fn next(ctx: &Context, run: &Run) {
-    let watch = format!("cozy run watch {}", run.name());
+    let watch = format!("cozy run watch {}", handle(&run));
     match run.status {
         Status::Completed => {}
         Status::Failed | Status::Canceled => output::next(ctx, &failure_next(run).iter().map(String::as_str).collect::<Vec<_>>()),
         _ if run.stalled.is_some() => {
             let logs = run.machine.as_ref().map(|machine| format!("cozy machine logs {machine} -n 40"));
-            output::next(ctx, &[&format!("cozy run cancel {}", run.name()), logs.as_deref().unwrap_or(&watch)]);
+            output::next(ctx, &[&format!("cozy run cancel {}", handle(&run)), logs.as_deref().unwrap_or(&watch)]);
         }
         _ => output::next(ctx, &[&watch]),
     }
@@ -521,7 +609,7 @@ pub(super) fn status(run: &Run) -> String {
     if run.cancel_requested && !settled(run) {
         status = "canceling".into();
     }
-    if !run.warnings.is_empty() {
+    if run.warnings.iter().any(|warning| warning.code != api::calcifer::MENTION_UNUSED) {
         status.push_str(" ⚠");
     }
     status
@@ -556,7 +644,7 @@ struct View {
     /// Off a terminal, what was last written: the status or stage, the tenth reached, and the
     /// minutes it had made no progress.
     shown: (String, i64, i64),
-    /// What names the run (`Run::name`).
+    /// What names the run (`handle`).
     number: String,
     machine: Option<String>,
     /// The run's own word for where it is (`queued`, the machine's state), and why it waits now
@@ -577,7 +665,7 @@ struct View {
 
 impl View {
     fn new(ctx: &Context, run: &Run) -> Self {
-        output::say(ctx, &format!("run {} · {}", run.name(), run.target));
+        output::say(ctx, &format!("run {} · {}", handle(&run), run.target));
         let bar = (!ctx.json && ctx.term.stderr).then(|| {
             let bar = crate::progress::Line::stderr(true, None, |s| {
                 format!("{} {} {} {}", s.spinner(), s.msg(), crate::progress::WIDE_BAR, s.elapsed())
@@ -589,7 +677,7 @@ impl View {
             term: ctx.term,
             bar,
             shown: (String::new(), -1, 0),
-            number: run.name(),
+            number: handle(&run),
             machine: None,
             state: String::new(),
             waiting: None,

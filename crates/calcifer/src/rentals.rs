@@ -392,6 +392,9 @@ impl Machines {
         shape: Shape,
         run: Option<RunId>,
     ) -> Result<(Ask, bool), Error> {
+        if run.as_ref().is_some_and(|id| matches!(self.calcifer.run_store(id.as_str()),Ok(crate::store::RunStore::Project(_)))) {
+            return Err(Error::new(Kind::Conflict,"project_remote_execution_unavailable","project work cannot create a global rental intent"));
+        }
         let origin = config::Origin::parse(hub)?;
         let mut intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
             "disk_gb": shape.disk_gb});
@@ -412,6 +415,9 @@ impl Machines {
                 ));
             }
             return Ok((asked, false));
+        }
+        if self.store().legacy_rental_pending().map_err(internal)? {
+            return Err(Error::new(Kind::Conflict,"legacy_rental_pending","an earlier rental order still needs ownership or history recovery; resolve it before creating another order"));
         }
         // A rent its Hub has not answered is this computer's one order for what it asks: asking
         // again, under any key, never buys a second pod.
@@ -552,7 +558,7 @@ impl Machines {
                         self.store()
                             .settle_ask(&ask.key, Err(STOPPED))
                             .map_err(internal)?;
-                        self.ask_end(&end_key(&id), &row.hub, &id, Some(row.name.clone()), false)?;
+                        self.ask_end(&end_key(&id), &row.hub, &id, Some(row.name.clone()), EndBody::default())?;
                         if let Some(run) = &ask.run {
                             let reason = Reason {
                                 code: "rental_refused".into(),
@@ -613,7 +619,7 @@ impl Machines {
                 Ok(listing) => {
                     for rental in listing.rentals.iter().filter(|rental| rental.name == name) {
                         warn!(ask = ask.key, rental = rental.rental_id, "the stopped order was placed: ending it");
-                        self.ask_end(&end_key(&rental.rental_id), &ask.hub, &rental.rental_id, None, false)?;
+                        self.ask_end(&end_key(&rental.rental_id), &ask.hub, &rental.rental_id, None, EndBody::default())?;
                     }
                     break;
                 }
@@ -996,6 +1002,23 @@ impl Machines {
                 }
             });
         }
+        // An end that failed before this Calcifer is asked again, paced, while its rental stands: it may still bill (cl-977).
+        for ask in self.store().failed_end_asks().unwrap_or_default() {
+            let standing = ask.machine.as_deref().and_then(|name| self.row(name).ok())
+                .is_some_and(|row| row.kind == MachineKind::Rental && row.state != MachineState::Ended);
+            if !standing {
+                continue;
+            }
+            let me = self.clone();
+            self.spawn(async move {
+                tokio::time::sleep(END_AGAIN_FIRST).await;
+                let failed = me.store().ask(&ask.key).ok().flatten().is_some_and(|now| now.state == AskState::Failed);
+                if failed && me.store().reopen_ask(&ask.key).is_ok() {
+                    me.calcifer.machine_changed();
+                    me.finish_end(ask).await;
+                }
+            });
+        }
     }
 
     /// Follows a booting rental at its Hub until it has an address (then its runs are sent) or
@@ -1257,7 +1280,8 @@ impl Machines {
             },
         };
         let wait = !force && !owed.is_empty();
-        self.ask_end(&key, &row.hub, row.rental_id.as_deref().unwrap_or_default(), Some(row.name.clone()), wait)?;
+        let body = EndBody { wait, ..Default::default() };
+        self.ask_end(&key, &row.hub, row.rental_id.as_deref().unwrap_or_default(), Some(row.name.clone()), body)?;
         Ok(Ended {
             machine: self.picture(&row)?,
             changed: true,
@@ -1282,7 +1306,7 @@ impl Machines {
         if self.pending_end(name)?.is_some() {
             return Ok(());
         }
-        self.ask_end(&end_key(id), &row.hub, id, Some(row.name.clone()), false)
+        self.ask_end(&end_key(id), &row.hub, id, Some(row.name.clone()), EndBody { by_pod: true, ..Default::default() })
     }
 
     /// Why the last end asked of a live rental failed: nothing was ended.
@@ -1294,7 +1318,7 @@ impl Machines {
         Ok(ask.filter(|ask| ask.state == AskState::Failed).map(|ask| ask.reason.unwrap_or_default()))
     }
 
-    /// Records the end under `key` (`wait`: once its runs' outputs land) and carries it out; one
+    /// Records the end under `key` (`end.wait`: once its runs' outputs land) and carries it out; one
     /// recorded already keeps its course, unless this one stops its wait.
     fn ask_end(
         self: &Arc<Self>,
@@ -1302,9 +1326,9 @@ impl Machines {
         hub: &str,
         id: &str,
         machine: Option<String>,
-        wait: bool,
+        end: EndBody,
     ) -> Result<(), Error> {
-        let body = serde_json::to_vec(&EndBody { wait }).expect("serializes");
+        let body = serde_json::to_vec(&end).expect("serializes");
         let ask = Ask {
             key: key.to_owned(),
             kind: AskKind::End,
@@ -1322,7 +1346,7 @@ impl Machines {
             self.store().reopen_ask(&ask.key).map_err(internal)?;
         }
         // Asked again: once more after it failed, or with its wait stopped.
-        if reopened || (!fresh && ask.state != AskState::Done && EndBody::of(&ask).wait && !wait) {
+        if reopened || (!fresh && ask.state != AskState::Done && EndBody::of(&ask).wait && !end.wait) {
             self.store().rewrite_ask(&ask.key, &body).map_err(internal)?;
             self.end_waits.notify_waiters();
         }
@@ -1379,6 +1403,38 @@ impl Machines {
         if let Some(name) = &ask.machine {
             self.outputs_landed(&ask.key, name).await;
         }
+        // A rental whose end failed may still bill: it is asked again, paced, for as long as it stands and nothing else asks
+        // (cl-977). An end asked again meanwhile (`machine end`) carries on in its place.
+        let mut again = END_AGAIN_FIRST;
+        let mut ask = ask;
+        while !self.end_once(&ask).await {
+            if ask.hub.is_empty() {
+                return;
+            }
+            tokio::time::sleep(again).await;
+            again = (again * 2).min(END_AGAIN_MOST);
+            // Read again: its machine may have been renamed meanwhile (its Hub named its host), and another end may have taken over.
+            let now = match self.store().ask(&ask.key) {
+                Ok(Some(now)) if now.state == AskState::Failed => now,
+                _ => return,
+            };
+            let Some(name) = now.machine.clone() else { return };
+            if !self.row(&name).is_ok_and(|row| row.state != MachineState::Ended) {
+                return;
+            }
+            if let Err(e) = self.store().reopen_ask(&now.key) {
+                return warn!(ask = now.key, "asking its end again: {e}");
+            }
+            warn!(machine = name, "asking its Hub again to end it: it may still bill");
+            self.calcifer.machine_changed();
+            ask = now;
+        }
+    }
+
+    /// One course of the end asked under `ask`: true once its Hub affirms the pod gone (or an added machine is removed), false once
+    /// it failed, settled as failed (`end_failed`). Its Hub silent past `END_UNCONFIRMED` after it took the release is noted on the
+    /// ask (`end_unconfirmed`), and asked on.
+    async fn end_once(self: &Arc<Self>, ask: &Ask) -> bool {
         let id = ask.digest.clone();
         let mut pause = Duration::ZERO;
         let settle = |outcome: Result<(), String>| {
@@ -1390,6 +1446,7 @@ impl Machines {
                 warn!(ask = ask.key, "{e}");
             }
             self.calcifer.machine_changed();
+            outcome.is_ok()
         };
         // An added machine is removed from this controller: no Hub is asked.
         if ask.hub.is_empty() {
@@ -1398,19 +1455,21 @@ impl Machines {
             }
             return settle(Ok(()));
         }
-        let mut released = false;
+        let (mut released, mut noted) = (None::<tokio::time::Instant>, false);
         loop {
             pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(30));
             let client = match self.hubs.client(&ask.hub) {
                 Ok(client) => client,
                 Err(e) => return settle(Err(said(&e))),
             };
-            if !released {
-                let release = client.release_rental(&id).await;
+            if released.is_none() {
+                // Read now: an end asked again may have been rewritten.
+                let by_pod = self.store().ask(&ask.key).ok().flatten().is_some_and(|now| EndBody::of(&now).by_pod);
+                let release = client.release_rental(&id, by_pod).await;
                 match release.map_err(|e| hub_refusal(&ask.hub, e)) {
                     // Released, or released already (a conflict): its end is read below.
-                    Ok(()) => released = true,
-                    Err(e) if e.kind == Kind::Conflict => released = true,
+                    Ok(()) => released = Some(tokio::time::Instant::now()),
+                    Err(e) if e.kind == Kind::Conflict => released = Some(tokio::time::Instant::now()),
                     Err(e) if e.kind == Kind::NotFound => {
                         return settle(Err(format!(
                             "release_unconfirmed: {} does not know rental {id}; nothing was ended",
@@ -1424,7 +1483,16 @@ impl Machines {
                     Err(e) => return settle(Err(said(&e))),
                 }
             }
-            if released {
+            if let Some(at) = released {
+                if !noted && at.elapsed() >= END_UNCONFIRMED {
+                    noted = true;
+                    let minutes = END_UNCONFIRMED.as_secs() / 60;
+                    let said = format!("its Hub took the release {minutes} min ago and has not said the pod is gone: it may still be billing; Calcifer keeps asking");
+                    match self.store().note_ask(&ask.key, &said) {
+                        Ok(()) => self.calcifer.machine_changed(),
+                        Err(e) => warn!(ask = ask.key, "{e}"),
+                    }
+                }
                 match client.get_rental(&id).await {
                     Ok(rental) => {
                         let gone_now = gone(&rental.state).then(|| cause(&rental));
@@ -1460,21 +1528,30 @@ impl Hubs {
     }
 }
 
+/// A failed end is asked again this long after, doubling to `END_AGAIN_MOST` (cl-977: a rental whose end failed may still bill).
+const END_AGAIN_FIRST: Duration = Duration::from_secs(60);
+const END_AGAIN_MOST: Duration = Duration::from_secs(30 * 60);
+/// How long a Hub may take, once it took a release, before the end shows `end_unconfirmed`: `cozy machine end`'s own wait.
+const END_UNCONFIRMED: Duration = Duration::from_secs(300);
+
 /// The key a rental's end is asked under: one end per rental, asked again under the same key.
 fn end_key(rental_id: &str) -> String {
     format!("end-{rental_id}")
 }
 
-/// An end ask as recorded: whether it waits for its machine's runs' outputs to land first. One
-/// recorded before ends waited (an empty body) does not.
-#[derive(serde::Serialize, serde::Deserialize)]
+/// An end ask as recorded: whether it waits for its machine's runs' outputs to land first, and
+/// whether it passes on the machine's own release (`by_pod`) rather than this computer's end. One
+/// recorded before ends waited (an empty body) does neither.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
 struct EndBody {
     wait: bool,
+    #[serde(default)]
+    by_pod: bool,
 }
 
 impl EndBody {
     fn of(ask: &Ask) -> Self {
-        serde_json::from_slice(&ask.body).unwrap_or(EndBody { wait: false })
+        serde_json::from_slice(&ask.body).unwrap_or_default()
     }
 }
 
@@ -1571,6 +1648,26 @@ struct RentBody {
     /// `cozy machine end` stopped it.
     #[serde(default)]
     stopped: bool,
+}
+
+/// Old run-less rows came only from independent machine rent/end operations.
+/// Reject unknown fields instead of reclassifying an opaque payload as maintenance.
+pub(crate) fn independent_legacy_ask(kind:&str,bytes:&[u8])->bool {
+    fn known(source:&serde_json::Value,shape:&serde_json::Value)->bool {
+        match (source,shape) {
+            (serde_json::Value::Object(source),serde_json::Value::Object(shape))=>source.iter().all(|(key,value)|shape.get(key).is_some_and(|shape|known(value,shape))),
+            (serde_json::Value::Array(source),serde_json::Value::Array(shape))=>source.len()==shape.len() && source.iter().zip(shape).all(|(value,shape)|known(value,shape)),
+            _=>source==shape || source.is_null(),
+        }
+    }
+    if kind=="end" && bytes.is_empty() {return true;}
+    let Ok(source)=serde_json::from_slice::<serde_json::Value>(bytes) else {return false;};
+    let shape=match kind {
+        "rent"=>serde_json::from_slice::<RentBody>(bytes).ok().and_then(|value|serde_json::to_value(value).ok()),
+        "end"=>serde_json::from_slice::<EndBody>(bytes).ok().and_then(|value|serde_json::to_value(value).ok()),
+        _=>None,
+    };
+    shape.is_some_and(|shape|known(&source,&shape))
 }
 
 /// How long an order stays open while its Hub doesn't answer. Past it nobody is waiting on the

@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
 # ///
-"""The tools cells' every-type fixture (web/tools.js, and the binder's weightless cell 1): weightless tools whose boxes hold every type the SDK
+"""The tools cells' every-type fixture (the web suite's fields cell, and the binder's weightless cell 1): weightless tools whose boxes hold every type the SDK
 has, groups two deep, so the page draws each and each reaches the function as typed. `shot` makes a video of its plate's bytes, or of the take it picks up from, shows each segment as it ends, and says in
 `given` what it got. `still` makes a picture of one random colour."""
 
@@ -89,6 +89,8 @@ class Take(msgspec.Struct):
     latents: Latents
     given: File
     warnings: list[str]
+    #: Where each segment after the first starts, on its grid (se-130).
+    seams: list[int] = []
 
 
 def _seen(value: object) -> object:
@@ -114,7 +116,8 @@ def shot(payload: Everything, out: Outputs) -> Take:
         time.sleep(1.5)
         out.publish("video", _copy(source, out), label=f"Segment {index + 1} of {payload.segments}")
     given = msgspec.json.encode(_seen(payload))
-    return Take(_copy(source, out), cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(given, media_type="application/json"), [])  # a saved file fills a Latents field: the Runtime checks its kind
+    seams = [5 * index + 2 for index in range(1, payload.segments)]
+    return Take(_copy(source, out), cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(given, media_type="application/json"), [], seams)  # a saved file fills a Latents field: the Runtime checks its kind
 
 
 def _copy(video: VideoFile, out: Outputs) -> VideoFile:

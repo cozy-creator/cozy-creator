@@ -15,11 +15,13 @@ axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
 platform = { workspace = true, features = ["fetch", "allocator"] }
-api = { workspace = true, features = ["hub"] }
+api = { workspace = true, features = ["hub", "update"] }
 ed25519-dalek = { workspace = true, features = ["pem", "pkcs8"] }
 futures-util = { workspace = true, features = ["alloc"] }
 getrandom.workspace = true
 hex.workspace = true
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util.workspace = true
 infer.workspace = true
 pep440_rs = { version = "0.7.3", default-features = false }
 reqwest.workspace = true
@@ -42,7 +44,9 @@ tracing-subscriber.workspace = true
 tensorfs = { workspace = true, features = ["net"] }
 toml.workspace = true
 toml_edit.workspace = true
-zip.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "process", "net"] }
 
 [lints]
 workspace = true

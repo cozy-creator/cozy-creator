@@ -9,7 +9,7 @@ import { size, stageParts } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
-import { shownOf } from "./shown"
+import { shownOf, watched } from "./shown"
 
 /**
  * A render on its way, as Paul wrote it (11-12), two plain lines and nothing else:
@@ -62,9 +62,10 @@ const reason = (run: Run, boxOf: (run: number) => string | undefined) =>
  *  it's here). None for a file a machine keeps. */
 export function useArriving(view: ElementView | undefined): number | undefined {
   const { client } = useConnection()
+  const store = useCanvasStore()
   const shown = view ? shownOf(view) : null
   const number = shown?.absent ? shown.run : undefined
-  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: number !== undefined })
+  const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && number !== undefined) })
   return data && data.status === "completed" && owed(data) !== undefined ? number : undefined
 }
 
@@ -134,14 +135,18 @@ export function faceOf(seen: Seen): Face {
   return face("work", run.machine_state === "preparing" ? "Preparing" : "Starting")
 }
 
-/** How far the whole job is, by line 1's numbers: what's passed of what it has taken and has left. None until there's an estimate; it
- *  never goes back while it's the same run. */
+/** How far the whole job is, by line 1's numbers: first what's passed of what it has taken and has left, then each moment moves it that
+ *  moment's share of the time left over what it has still to go. It never goes back while it's the same run, a longer estimate slows it,
+ *  and one that was too short never pins it near its end: it reaches the end as the estimate does. None until there's an estimate; no
+ *  time left while it still runs (it ran past what was expected) says nothing, and it holds. */
 function useWhole(run: Run | undefined, since: number | undefined, left: number | undefined): number | undefined {
-  const held = useRef<{ run: number; fraction: number } | null>(null)
+  const held = useRef<{ run: number; fraction: number; since: number } | null>(null)
   if (!run || since === undefined || left === undefined) return undefined
-  const fraction = Math.min(0.99, since / Math.max(1, since + left))
-  const was = held.current?.run === run.number ? held.current.fraction : 0
-  held.current = { run: run.number, fraction: Math.max(was, fraction) }
+  const was = held.current?.run === run.number ? held.current : null
+  if (!was && left <= 0) return undefined
+  const passed = was ? Math.max(0, since - was.since) : 0
+  const fraction = !was ? Math.max(0, since) / (Math.max(0, since) + left) : left > 0 ? was.fraction + ((1 - was.fraction) * passed) / (passed + left) : was.fraction
+  held.current = { run: run.number, fraction: Math.min(0.99, fraction), since }
   return held.current.fraction
 }
 
@@ -170,7 +175,7 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const asset = view.asset
   const making = asset?.standing === "making"
   const later = number !== undefined && number !== view.run?.number
-  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: later })
+  const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && later) })
   const run = later ? data : view.run
   const on = useWaitsOn(run)
   const { data: machines } = useQuery(machinesQuery(client))
@@ -179,17 +184,18 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const onItsWay = making || Boolean(view.queued) || view.asked !== undefined
   const waits = making || !onItsWay ? null : store.waitsFor(name)
   const installsOf = asset?.tool ? tools.get(asset.tool) : undefined
-  const installing = useInstalling(run || waits ? undefined : installsOf && (installsOf.installs ?? installsOf.package))
+  const installing = useInstalling(run || waits ? undefined : installsOf && (installsOf.installs ?? installsOf.package), store.projectId)
   useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
   useSignal(store.ahead)
-  const now = useNow(true)
+  // Its clock ticks only while it has a time to show.
+  const now = useNow(run !== undefined && leftOf(run) !== undefined)
   const face = faceOf({ view, run, machine, on, installing, waits: waits && !on ? waits : undefined, ahead: store.aheadOf(name), preparing: store.preparing(name), canceling: Boolean(view.canceling), boxOf: (n) => store.boxOfRun(n) })
   const since = run ? (now - run.created_at_ms) / 1000 : undefined
   const left = run ? leftOf(run) : undefined
   const time = since !== undefined && left != null ? ` - ${short(since)} / ${short(since + left)}` : ""
   const cancel = !["canceling", "failed", "result"].includes(face.phase)
   return (
-    <div className={`prog run-face ${above ? "above" : "lines"} ${face.phase}`} data-phase={face.phase}>
+    <div className={`prog run-face ${above ? "above" : "lines"} ${face.phase}`} role="status" aria-label={`${name}'s render`} data-phase={face.phase} data-run={number}>
       {/* Its words give way to a narrow box; its numbers never do (cl-953). */}
       <p className="face-machine">
         <span className="face-where">{face.machine}</span>
@@ -203,12 +209,14 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
         {cancel && (
           <button
             type="button"
-            className="face-cancel nodrag"
+            className="face-cancel canvas-control"
             aria-label={`Cancel ${name}'s render`}
             onClick={(event) => {
-              // Its box isn't opened by it.
+              // Its box isn't opened by it. The take looked at, by its id, when one is: its others go on (cl-945).
               event.stopPropagation()
-              store.cancelRender(name)
+              const take = watched(view)
+              if (take) store.cancelTake(name, { id: take.id, run: take.run })
+              else store.cancelRender(name)
             }}
           >
             Cancel
@@ -219,14 +227,39 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   )
 }
 
+/** In Focus, once its take has landed, its render's row stays and says so (Paul, 11-12): where it ran, then the take and how long the job
+ *  took. The same two lines in the same place, so nothing under them moves. */
+export function RunDone({ view, number }: { view: ElementView; number: number }) {
+  const { client } = useConnection()
+  const project = useCanvasStore().projectId
+  const later = number !== view.run?.number
+  const { data } = useQuery({ ...runQuery(client, project ?? "", number), enabled: Boolean(project && later) })
+  const run = later ? data : view.run
+  const made = view.asset?.prefixes?.find((version) => version.run === number)
+  const ms = run?.settled_at_ms ? run.settled_at_ms - run.created_at_ms : made?.execution_ms
+  return (
+    <div className="prog run-face above done" data-phase="done" data-run={number}>
+      <p className="face-machine">
+        <span className="face-where">{run?.machine ?? ""}</span>
+      </p>
+      <p className="face-state">
+        <b>
+          <span className="face-words">{made ? `${view.asset?.noun ?? "take"} ${made.number} done${ms ? ` in ${short(ms / 1000)}` : ""}` : ""}</span>
+        </b>
+      </p>
+    </div>
+  )
+}
+
 /** At rest, how far the whole job is, as a thin meter along the top of its box (cl-928; Paul, 11-12: at the top): line 1's numbers, drawn
  *  only once there's an estimate. Focus has the lines alone. */
 export function RunMeter({ view, number }: { view: ElementView; number?: number }) {
   const { client } = useConnection()
+  const store = useCanvasStore()
   const later = number !== undefined && number !== view.run?.number
-  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: later })
+  const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && later) })
   const run = later ? data : view.run
-  const now = useNow(true)
+  const now = useNow(run !== undefined && leftOf(run) !== undefined)
   const since = run ? (now - run.created_at_ms) / 1000 : undefined
   const whole = useWhole(run, since, run ? leftOf(run) : undefined)
   if (whole === undefined || view.canceling || run?.cancel_requested || run?.status === "failed") return null

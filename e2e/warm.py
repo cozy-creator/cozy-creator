@@ -10,6 +10,9 @@ import urllib.error
 import urllib.request
 import uuid
 
+# A warm names no project: its runs are Calcifer's own, read outside any project.
+OUTSIDE = Path.home()
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -31,15 +34,8 @@ def main() -> int:
     request: dict[str, object] = {"target": args.target, "warm": args.level, "on": [args.on], "terms": args.terms, "loras": args.lora}
     target = Path(args.target).expanduser()
     if args.target.startswith((".", "/", "~")) or target.exists() or target.parent.exists():
-        if args.stage_code is None:
-            parser.error("local warming needs --stage-code with the api stage-code example executable")
-        staged = json.loads(subprocess.check_output([str(args.stage_code), str(target)], text=True))
-        for left in staged["left"]:
-            print("left out of code: " + left, file=sys.stderr)
-        for file in staged["files"]:
-            upload(base, headers, file["digest"], Path(file["path"]).read_bytes())
-        upload(base, headers, staged["code"]["tree"], staged["document"].encode())
-        request.update(target=staged["target"], code=staged["code"])
+        code, function = local_code(base, headers, target, args.stage_code)
+        request.update(target=function, code=code)
     if args.lane:
         request["lane"] = args.lane
     if hub := os.environ.get("COZY_HUB_URL"):
@@ -67,9 +63,30 @@ def main() -> int:
         run = answer["run"]
         if not answer.get("preparing"):
             break
-        subprocess.run([args.cozy, "--json", "run", "watch", str(run["number"])], stdout=sys.stderr, check=True)
+        subprocess.run([args.cozy, "--json", "run", "watch", run["id"]], stdout=sys.stderr, check=True, cwd=OUTSIDE)
     print(json.dumps({"type": "run.accepted", "run": run}), flush=True)
-    return subprocess.call([args.cozy, "--json", "run", "watch", str(run["number"])])
+    return subprocess.call([args.cozy, "--json", "run", "watch", run["id"]], cwd=OUTSIDE)
+
+
+def local_code(base: str, headers: dict[str, str], target: Path, stage_code: Path | None) -> tuple[dict[str, object], str]:
+    """The code of a local package outside any project and the function it names, as the CLI sends it: captured by
+    Calcifer from its folder. A Calcifer before native capture takes it by content (the stage-code example)."""
+    package, function = (target, "") if target.is_dir() or target.suffix == ".py" else (target.parent, target.name)
+    call = urllib.request.Request(base + "/v1/maintenance/source", data=json.dumps({"path": str(package.resolve())}).encode(),
+        headers={**headers, "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(call) as response:
+            return json.load(response), function
+    except urllib.error.HTTPError as error:
+        if error.code not in (404, 405) or stage_code is None:
+            raise
+    staged = json.loads(subprocess.check_output([str(stage_code), str(target)], text=True))
+    for left in staged["left"]:
+        print("left out of code: " + left, file=sys.stderr)
+    for file in staged["files"]:
+        upload(base, headers, file["digest"], Path(file["path"]).read_bytes())
+    upload(base, headers, staged["code"]["tree"], staged["document"].encode())
+    return staged["code"], staged["target"]
 
 
 def upload(base: str, headers: dict[str, str], digest: str, data: bytes) -> None:

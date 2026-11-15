@@ -5,7 +5,7 @@
 """The tool cells' package: weightless tools as a canvas drops them. `still` makes a picture of one colour, `slow` too, saying how far
 it's got in steps, and `told` a picture from a prompt and its beats. `need` wants a video it may not get. `words` makes no media, so it's no
 tool, and `caption` answers what it's shown, as Calcifer's Caption asks a package's `caption`. `stepped` is no tool either: its stages and
-steps time a run as a model's do."""
+steps time a run as a model's do. `fetching` spends its first `download` seconds in the stage a machine's weight download is."""
 
 import os
 import time
@@ -68,6 +68,26 @@ def slow(ctx: Context, payload: SlowBox, out: Outputs, tel: Telemetry) -> Pictur
             time.sleep(payload.seconds / 10)
             ctx.progress(at, 10)
     return Picture(_picture(out), payload.instructions.text)
+
+
+class FetchingBox(msgspec.Struct, kw_only=True):
+    seconds: Annotated[float, Range(0, 600)] = 1.0
+    download: Annotated[float, Range(0, 600)] = 0.0
+
+
+@app.tool(label="A still that downloads first")
+def fetching(ctx: Context, payload: FetchingBox, out: Outputs, tel: Telemetry) -> Picture:
+    """A still whose run first spends `download` seconds as a machine downloading weights does, then `seconds` drawing."""
+    if payload.download:
+        with tel.stage("downloading its weights"):
+            for at in range(10):
+                ctx.progress(at, 10)
+                time.sleep(payload.download / 10)
+    with tel.stage("drawing"):
+        for at in range(10):
+            time.sleep(payload.seconds / 10)
+            ctx.progress(at, 10)
+    return Picture(_picture(out), "")
 
 
 class SteppedInput(msgspec.Struct, kw_only=True):

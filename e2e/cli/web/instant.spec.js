@@ -1,0 +1,340 @@
+// instant (cl-973 core cell 17), local-first (Paul, 11-05): a tool box is drawn in the frame it's dropped with its POST held, and what's
+// typed in it and its move show at once and land after it, in order; an answer lost after it landed is sent again under the same
+// Idempotency-Key and makes one asset and one history entry; a rename refused because another writer took the name meanwhile rolls back
+// with one line saying why; a delete with project.db held by another program shows, says in the top bar that it waits, and saves once
+// it's let go; and an Undo of a rename refused because another writer took the old name meanwhile leaves one box under each name.
+const { spawn } = require('child_process');
+const { join } = require('path');
+const { createInterface } = require('readline');
+const { test, expect, canvasIdle, focus, middle, zoomOf, canvasPoint, canvasText, selectedNames, hoverBox, screenshotPixels } = require('./fixtures');
+
+/** Polls whose miss leaves the cell going, as `expect.soft` does. */
+const softly = expect.configure({ soft: true });
+
+/** Each `method` call to `path` waits here, unsent, until `release`. */
+async function hold(page, method, path) {
+  const calls = [];
+  let open;
+  const held = new Promise((done) => (open = done));
+  const matches = (url) => url.pathname === path;
+  const handler = async (route) => {
+    if (route.request().method() !== method) return route.fallback();
+    calls.push(route.request());
+    await held;
+    await route.fallback();
+  };
+  await page.route(matches, handler);
+  return { calls, release: async () => { open(); await page.unroute(matches, handler); } };
+}
+
+/** The first `method` call to `path` goes to Calcifer and its answer is lost, as a dropped connection loses one after the write landed. Sent
+ *  from here, not the page, it carries `token`, the holder's bearer: Calcifer answers no other program (cl-985). */
+async function loseOne(page, method, path, token) {
+  const keys = [];
+  const matches = (url) => url.pathname === path;
+  const handler = async (route) => {
+    if (route.request().method() !== method) return route.fallback();
+    keys.push(route.request().headers()['idempotency-key'] ?? null);
+    if (keys.length > 1) return route.fallback();
+    await route.fetch({ headers: { ...route.request().headers(), authorization: `Bearer ${token}` } });
+    await route.abort('connectionreset');
+  };
+  await page.route(matches, handler);
+  return { keys, done: () => page.unroute(matches, handler) };
+}
+
+/** project.db's write lock, held by another program (an open `BEGIN IMMEDIATE`, as a SQLite browser holds one) until `release`. `boxes()`
+ *  reads the boxes it holds, in that same transaction: what Calcifer has written, past nothing it could be waiting on. */
+async function holdDatabase(file) {
+  const script = [
+    'import json, sqlite3, sys',
+    'c = sqlite3.connect(sys.argv[1], isolation_level=None)',
+    'c.execute("BEGIN IMMEDIATE")',
+    'print("acquired", flush=True)',
+    'while sys.stdin.readline():',
+    '    print(json.dumps([name for (name,) in c.execute("SELECT name FROM boxes ORDER BY ord")]), flush=True)',
+    'c.execute("ROLLBACK")',
+  ].join('\n');
+  const child = spawn(process.platform === 'win32' ? 'python' : 'python3', ['-c', script, file], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let said = '';
+  child.stderr.on('data', (bytes) => { said = (said + bytes).slice(-4000); });
+  const ended = new Promise((done) => child.once('close', (code) => done(code)));
+  const answers = [];
+  await new Promise((done, fail) => {
+    createInterface({ input: child.stdout }).on('line', (line) => { if (line === 'acquired') done(); else answers.shift()?.(JSON.parse(line)); });
+    ended.then((code) => fail(new Error(`the SQLite holder ended before it held the lock: exit ${code}: ${said}`)));
+    child.once('error', fail);
+  });
+  let released;
+  return {
+    boxes: () => new Promise((done) => {
+      answers.push(done);
+      child.stdin.write('boxes\n');
+    }),
+    release: () => {
+      released ??= (async () => {
+        child.stdin.end();
+        const code = await ended;
+        if (code !== 0) throw new Error(`the SQLite holder: exit ${code}: ${said}`);
+      })();
+      return released;
+    },
+  };
+}
+
+/** Carried as a hand carries one out of the palette: across it a little first, which tells a carry from a scroll, then let go at `to`. */
+async function carry(page, from, to) {
+  const { x, y } = await middle(from);
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 12, y, { steps: 3 });
+  await page.mouse.move(to.x, to.y, { steps: 8 });
+  await page.mouse.up();
+}
+
+/** A point on open canvas near the middle of what shows of it, `dx` from it: a box let go there lands in view. */
+const centre = (page, dx = 0) => page.evaluate((dx) => {
+  const left = document.querySelector('aside.tools')?.getBoundingClientRect().right ?? 0;
+  const [x, y] = [(left + innerWidth) / 2 + dx, innerHeight / 2];
+  for (let r = 0; r <= 600; r += 30) {
+    for (const [dx, dy] of [[0, 0], [-r, 0], [r, 0], [0, -r], [0, r], [-r, -r], [r, -r], [-r, r], [r, r]]) {
+      if (document.elementFromPoint(x + dx, y + dy)?.classList.contains('canvas-pane') && !document.querySelector('.canvas-root')?.canvasInspection?.hitTest({ x: x + dx, y: y + dy })) return { x: x + dx, y: y + dy };
+    }
+  }
+  throw new Error('no open canvas near the middle');
+}, dx);
+
+/** In the page: the boxes on the canvas as the next drop is let go, and in the frame after it. */
+const armDrop = (page) => page.evaluate(() => {
+  const names = () => {
+    const scene = document.querySelector('.canvas-root')?.canvasInspection;
+    const retained = scene?.names().filter(name => {
+      const shown = scene.card(name)?.rendered;
+      return shown && shown.transform.alpha > 0 && shown.labels.title;
+    }) ?? [];
+    const native = [...document.querySelectorAll('.canvas-node .card[data-asset]')].filter(card => card.checkVisibility()).map(card => card.dataset.asset);
+    return [...new Set([...retained, ...native])];
+  };
+  window.__instantNames = names;
+  const clock = (window.__dropped = {});
+  document.querySelector('.stage').addEventListener('letgo', () => { clock.before = names(); }, { capture: true, once: true });
+  // Schedule after the application's bubble handler schedules its demand frame, still observing the first frame after this drop.
+  window.addEventListener('letgo', () => { requestAnimationFrame(() => { clock.after = names(); }); }, { once: true });
+});
+
+const shownNames = (page) => page.evaluate(() => window.__instantNames());
+
+/** Independent screenshot evidence that the newly retained/native title actually paints, outside the first-frame sampler. */
+async function titlePixels(page, name) {
+  const rect = await page.evaluate(name => {
+    const native = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] .nm`);
+    const r = native?.getBoundingClientRect() ?? document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered?.labels.title;
+    return r && { x: r.x, y: r.y, width: r.width, height: r.height };
+  }, name);
+  expect(rect, `${name}'s presented title geometry`).toBeTruthy();
+  const pixels = screenshotPixels(await page.screenshot({ scale: 'css' })), colours = new Map();
+  for (let y = Math.ceil(Math.max(0, rect.y)); y < Math.min(pixels.height, rect.y + rect.height); y++) for (let x = Math.ceil(Math.max(0, rect.x)); x < Math.min(pixels.width, rect.x + rect.width); x++) {
+    const key = pixels(x, y).map(value => Math.round(value / 16)).join();
+    colours.set(key, (colours.get(key) ?? 0) + 1);
+  }
+  const counts = [...colours.values()].sort((a, b) => b - a);
+  expect.soft(counts.slice(1).reduce((sum, count) => sum + count, 0), `${name}'s title paints contrasting pixels`).toBeGreaterThan(6);
+}
+
+/** The box the armed drop made: drawn in the frame of its drop, one box. */
+async function dropped(page) {
+  await expect.poll(() => page.evaluate(() => Boolean(window.__dropped.after)), { message: 'the frame after the drop' }).toBe(true);
+  const { before, after } = await page.evaluate(() => window.__dropped);
+  expect.soft(after.filter((name) => !before.includes(name)), 'one box drawn in the frame of its drop').toHaveLength(1);
+  let made;
+  await expect.poll(async () => {
+    made = (await shownNames(page)).filter((name) => !before.includes(name));
+    return made.length;
+  }, { message: 'one box made by the drop' }).toBe(1);
+  await titlePixels(page, made[0]);
+  return made[0];
+}
+
+/** Its place on the canvas, as its node is drawn. */
+const placeOf = (page, name) => page.evaluate(name => {
+  const root = document.querySelector('.canvas-root'), scene = root.canvasInspection, card = scene.card(name);
+  if (!card) return null;
+  const camera = scene.camera(), pane = root.getBoundingClientRect();
+  const native = root.querySelector(`.canvas-node:has(.card[data-asset=${JSON.stringify(name)}])`);
+  const rect = native?.checkVisibility() ? native.getBoundingClientRect() : null;
+  const shown = card.rendered;
+  if (!rect && (!shown || shown.transform.alpha <= 0)) return null;
+  const x = rect ? (rect.x - pane.x - camera.x) / camera.zoom : shown.transform.x;
+  const y = rect ? (rect.y - pane.y - camera.y) / camera.zoom : shown.transform.y;
+  // The displayed bounds may be offset from the canonical anchor; observe the actual bounds and retain only that fixed offset.
+  return { x: x + card.position.x - (card.bounds.x - pane.x - camera.x) / camera.zoom, y: y + card.position.y - (card.bounds.y - pane.y - camera.y) / camera.zoom };
+}, name);
+
+test('instant', async ({ page, project, api, guards }) => {
+  const at = project.at();
+  // Caused here on purpose: the answer lost, the rename refused, and the saves refused while project.db is held.
+  guards.allow(
+    /^(?=.*ERR_CONNECTION_RESET)(?=.*\/v1\/projects\/[^/ ]+\/assets(?![/\w]))/,
+    /status of 409\b.*\/v1\/projects\/[^/ ]+\/rename\b/,
+    /status of 503\b.*\/v1\/projects\/[^/ ]+\//,
+  );
+  const writes = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() !== 'GET' && path.startsWith(at)) writes.push(`${request.method()} ${path.slice(at.length)}`);
+  });
+  const text = page.getByRole('complementary', { name: 'Tools' }).locator('li[data-node="text"]');
+  const lines = () => page.locator('.notes .note .line').allInnerTexts();
+  let first;
+  let second;
+
+  await test.step("a tool box dropped, typed in and moved while its POST is held: each shown at once, landing after it in order", async () => {
+    await expect(text).toBeVisible();
+    const posts = await hold(page, 'POST', project.at('/assets'));
+    await armDrop(page);
+    await carry(page, text, await centre(page));
+    first = await dropped(page);
+    await expect.poll(() => posts.calls.length, { message: 'its POST asked, and held' }).toBe(1);
+    expect.soft(await project.asset(first), 'nothing saved yet').toBeUndefined();
+
+    const region = await focus(page, first);
+    const words = region.getByRole('textbox', { name: 'Text', exact: true });
+    await words.click();
+    await page.keyboard.type('Typed while it was held');
+    await expect.soft(words, 'the words show as typed').toHaveText('Typed while it was held');
+    await region.getByRole('button', { name: 'Back to canvas' }).click();
+    await canvasIdle(page);
+
+    // Carried by its name, as a hand moves a box: a drag where it draws nothing (its name row past its name) pans the canvas (Paul, 11-06).
+    const zoom = await zoomOf(page);
+    const was = await placeOf(page, first);
+    const grip = await middle((await hoverBox(page, first)).locator('.nm'));
+    // Cross the click threshold; the canvas retains the original press as the drag anchor.
+    const began = { x: grip.x + 4, y: grip.y + 2 };
+    const to = { x: grip.x + 120, y: grip.y + 80 };
+    await page.mouse.move(grip.x, grip.y);
+    await page.mouse.down();
+    await page.mouse.move(began.x, began.y);
+    await page.mouse.move(to.x, to.y, { steps: 6 });
+    await page.mouse.up();
+    // On the canvas, not only on screen, where a pan would move it too.
+    await softly.poll(async () => {
+      const now = await placeOf(page, first);
+      return now ? Math.round(Math.max(Math.abs(now.x - was.x - (to.x - grip.x) / zoom), Math.abs(now.y - was.y - (to.y - grip.y) / zoom))) : Infinity;
+    }, { message: 'the move shows at once, on the canvas where it was let go: px off', timeout: 1000 }).toBeLessThanOrEqual(2);
+    const place = await placeOf(page, first);
+    expect.soft(posts.calls.length, 'still the one POST, held').toBe(1);
+    const going = writes.slice(writes.indexOf('POST /assets')).filter((write) => write === `PATCH /assets/${encodeURIComponent(first)}` || write === 'PATCH /canvas');
+    expect.soft(going, 'its words and its move wait behind its POST').toEqual([]);
+    expect.soft(await project.asset(first), 'still nothing saved').toBeUndefined();
+
+    await posts.release();
+    await softly.poll(async () => (await project.asset(first))?.fields?.text, { message: 'its words landed' }).toBe('Typed while it was held');
+    await softly.poll(async () => {
+      const card = (await api.get(project.at('/canvas'))).cards[first];
+      return card && [Math.round(card.x), Math.round(card.y)];
+    }, { message: 'its move landed' }).toEqual([Math.round(place.x), Math.round(place.y)]);
+    // Read once its move's write is seen here: Calcifer's answer to the read above can come before Playwright tells of the request.
+    await softly.poll(() => writes.slice(writes.indexOf('POST /assets')).includes('PATCH /canvas'), { message: "its move's write seen" }).toBe(true);
+    const after = writes.slice(writes.indexOf('POST /assets'));
+    const order = [after.indexOf('POST /assets'), after.indexOf(`PATCH /assets/${encodeURIComponent(first)}`), after.indexOf('PATCH /canvas')];
+    expect.soft(order.every((i) => i >= 0) && order[0] < order[1] && order[1] < order[2], `the drop, then its words, then its move: ${after.join(', ')}`).toBe(true);
+    await softly.poll(async () => (await shownNames(page)).filter(name => name === first).length).toBe(1);
+  });
+
+  await test.step("an answer lost after it lands, and a rename onto a name that's taken", async () => {
+    const assets = (await project.assets()).length;
+    const lost = await loseOne(page, 'POST', project.at('/assets'), api.token);
+    await armDrop(page);
+    // Left of the first, clear of it.
+    await carry(page, text, await centre(page, -320));
+    second = await dropped(page);
+    await expect.poll(() => lost.keys.length, { message: 'sent again' }).toBeGreaterThanOrEqual(2);
+    await lost.done();
+    await expect.poll(async () => Boolean(await project.asset(second)), { message: 'it landed' }).toBe(true);
+    expect.soft(lost.keys[0], 'an Idempotency-Key').toBeTruthy();
+    expect.soft(new Set(lost.keys).size, `every try under one key: ${lost.keys.join(', ')}`).toBe(1);
+    expect.soft((await project.assets()).length, 'one asset').toBe(assets + 1);
+    const added = (await api.get(project.at('/history?limit=50'))).entries.filter((entry) => entry.names?.includes(second) && entry.words.startsWith('Added'));
+    expect.soft(added.map((entry) => entry.words), 'one history entry adds it').toHaveLength(1);
+    await softly.poll(async () => (await shownNames(page)).filter(name => name === second).length).toBe(1);
+
+    // Another writer takes the name while this rename is on its way: it's refused, and the box is as it was.
+    const renames = await hold(page, 'POST', project.at('/rename'));
+    const name = await middle((await hoverBox(page, first)).locator('.nm'));
+    await page.mouse.click(name.x, name.y);
+    const field = page.getByRole('textbox', { name: 'Name', exact: true });
+    await field.fill('taken');
+    await field.press('Enter');
+    await softly.poll(async () => (await shownNames(page)).filter(name => name === 'taken').length, { message: 'the new name shows at once' }).toBe(1);
+    await softly.poll(async () => (await shownNames(page)).filter(name => name === first).length).toBe(0);
+    await expect.poll(() => renames.calls.length, { message: 'its rename asked, and held' }).toBe(1);
+    await titlePixels(page, 'taken');
+    await project.add({ name: 'taken', kind: 'text', fields: { text: "Another writer's" } });
+    const answered = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === project.at('/rename'));
+    await renames.release();
+    expect.soft((await answered).status(), 'the rename refused').toBe(409);
+    await softly.poll(() => canvasText(page, first), { message: 'rolled back to its name' }).toContain('Typed while it was held');
+    await softly.poll(() => canvasText(page, 'taken'), { message: "the other writer's box" }).toContain("Another writer's");
+    await softly.poll(async () => (await lines()).filter((line) => line.startsWith("Couldn't rename")), { message: 'one line says why' })
+      .toEqual([expect.stringMatching(new RegExp(`^Couldn't rename ${first}: .*taken.*already`))]);
+    expect.soft((await project.asset(first))?.fields?.text, 'its words where they were').toBe('Typed while it was held');
+    expect.soft((await project.asset('taken'))?.fields?.text).toBe("Another writer's");
+  });
+
+  await test.step('project.db held by another program: a delete shows, the top bar says it waits, and it saves once let go', async () => {
+    const held = await holdDatabase(join(project.path, 'project.db'));
+    try {
+      const { x, y } = await canvasPoint(page, second);
+      await page.mouse.click(x, y);
+      await expect.poll(() => selectedNames(page)).toContain(second);
+      await page.keyboard.press('Delete');
+      await softly.poll(async () => (await shownNames(page)).filter(name => name === second).length, { message: 'the delete shows at once' }).toBe(0);
+      const bar = page.locator('.pill.warn').filter({ hasText: 'project.db is open in another program' });
+      // Calcifer waits 10 s on another's write lock before it says so.
+      await expect.soft(bar, 'the top bar says what holds it').toHaveCount(1, { timeout: 60_000 });
+      await expect.soft(bar).toContainText(/\b[1-9]\d* changes? waiting\b/);
+      expect.soft(await held.boxes(), 'nothing written to project.db while it is held').toContain(second);
+    } finally {
+      await held.release();
+    }
+    await softly.poll(async () => Boolean(await project.asset(second)), { message: 'saved once let go', timeout: 60_000 }).toBe(false);
+    await expect.soft(page.locator('.pill.warn').filter({ hasText: 'project.db is open in another program' }), 'the top bar clears').toHaveCount(0, { timeout: 30_000 });
+    await softly.poll(async () => (await shownNames(page)).filter(name => name === second).length).toBe(0);
+    expect.soft((await project.assets()).map((asset) => asset.name).sort(), 'what else is there stays').toEqual([first, 'taken'].sort());
+    expect.soft((await lines()).filter((line) => /Couldn't delete/.test(line)), 'nothing refused').toEqual([]);
+  });
+
+  await test.step("a rename undone while another writer takes the name it puts back: refused, one box under each name", async () => {
+    // The page's rename lands; its Undo shows at once and is held while another writer takes the old name, so Calcifer refuses it (that 409
+    // is this cell's doing). The box goes back to the name Calcifer has for it, and the other writer's box shows under the name it took.
+    guards.allow(/status of 409\b.*\/v1\/projects\/[^/ ]+\/history\/undo\b/);
+    const name = await middle((await hoverBox(page, first)).locator('.nm'));
+    await page.mouse.click(name.x, name.y);
+    const field = page.getByRole('textbox', { name: 'Name', exact: true });
+    await field.fill('renamed');
+    await field.press('Enter');
+    await expect.poll(async () => (await project.assets()).map((asset) => asset.name).sort(), { message: 'the rename landed' }).toEqual(['renamed', 'taken']);
+    const undos = await hold(page, 'POST', project.at('/history/undo'));
+    const open = await centre(page, 320);
+    await page.mouse.click(open.x, open.y);
+    await page.keyboard.press('ControlOrMeta+z');
+    await softly.poll(async () => (await shownNames(page)).filter(name => name === first).length, { message: 'its Undo shows at once' }).toBe(1);
+    await softly.poll(async () => (await shownNames(page)).filter(name => name === 'renamed').length).toBe(0);
+    await expect.poll(() => undos.calls.length, { message: 'its Undo asked, and held' }).toBe(1);
+    await titlePixels(page, first);
+    await project.add({ name: first, kind: 'text', fields: { text: "Another writer's, again" } });
+    const answered = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === project.at('/history/undo'));
+    await undos.release();
+    expect.soft((await answered).status(), 'the Undo refused').toBe(409);
+    await softly.poll(() => canvasText(page, 'renamed'), { message: 'back under the name Calcifer has for it' }).toContain('Typed while it was held');
+    await softly.poll(() => canvasText(page, first), { message: "the other writer's box, under the name it took" }).toContain("Another writer's, again");
+    await softly.poll(async () => (await shownNames(page)).filter(name => name === 'renamed').length, { message: 'one box each' }).toBe(1);
+    await softly.poll(async () => (await shownNames(page)).filter(name => name === first).length).toBe(1);
+    const taken = first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await softly.poll(async () => (await lines()).filter((line) => line.startsWith("Couldn't undo")), { message: 'one line says why' })
+      .toEqual([expect.stringMatching(new RegExp(`^Couldn't undo .*\\b${taken} is taken\\b`))]);
+    expect.soft((await project.asset('renamed'))?.fields?.text, 'its words where they were').toBe('Typed while it was held');
+    expect.soft((await project.asset(first))?.fields?.text).toBe("Another writer's, again");
+  });
+});

@@ -1,10 +1,10 @@
 //! What can be dropped on a canvas: `GET /v1/tools`, every function that makes media of every package the Hub lists, of what a machine has
 //! installed and of what a search finds on the Hub, less the tools you took off; and what a tool makes, for a node of it.
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    sync::{Arc, LazyLock, Mutex},
+    time::{Duration, Instant, SystemTime},
 };
 
 use axum::{
@@ -13,7 +13,7 @@ use axum::{
     extract::{Query, State, rejection::{BytesRejection, QueryRejection}},
     response::Response,
 };
-use futures_util::{StreamExt as _, stream};
+use futures_util::{FutureExt as _, StreamExt as _, future::{BoxFuture, Shared}, stream};
 use ::api::hub::cards;
 use api::{
     calcifer::On,
@@ -23,6 +23,7 @@ use api::{
     interface::Interface,
     names::{ROOT, shown},
     calcifer::tool::{self, BrowsedPackage, Browsed, Tool, ToolList, ToolListChange, Tools},
+    release::{Moves, Takes},
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -30,7 +31,7 @@ use tensorfs::format::newest_by;
 
 use crate::{
     api::{Api, Refusal, parse},
-    local_code, private_io,
+    checkout, local_code, private_io,
     project::{self, vault},
     runs::{self, target},
 };
@@ -83,14 +84,22 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
         }
         None => vec![],
     };
-    let held = held(api, &hub, &on).await;
-    let (listed, mut note) = api.listing.tools(api, &hub).await;
+    // A dev home's checkout's first-party packages are their source's, not the Hub's (xs-195).
+    let (source, reading) = from_source(api, &hub, &on).await;
+    let held: Vec<Tool> = held(api, &hub, &on).await.into_iter().filter(|tool| !checkout::holds(&tool.package)).collect();
+    let (listed, note) = api.listing.tools(api, &hub).await;
+    let mut note = note.or(reading);
     let installed: BTreeSet<&str> = held.iter().map(|tool| tool.package.as_str()).collect();
-    // What can't run on the machines' Runtime isn't offered (run 46790: flux-3-klein@0.7.0, locked to Runtime 0.44).
-    let stack = stack(api, &hub, &on).await;
-    let runs = |offered: &&Offered| stack.as_ref().is_none_or(|stack| runs_on(&offered.pair, stack));
-    let listed: Vec<Tool> = (listed.iter()).filter(|offered| !installed.contains(offered.tool.package.as_str())).filter(runs).map(|offered| offered.tool.clone()).collect();
-    let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(local).chain(held).chain(listed).collect();
+    // What its machine can't run, on its Runtime or one a run of it moves to (cl-952), isn't offered (run 46790: flux-3-klein@0.7.0,
+    // locked to Runtime 0.44). A release that needs a newer Runtime is (cl-975: every 0.25 release, on a machine still on 0.45.0).
+    let runner = Runner::of(api, &on).await;
+    let runs = |offered: &&Offered| runner.as_ref().is_none_or(|runner| runner.takes(&offered.pair));
+    let listed: Vec<Tool> = (listed.iter())
+        .filter(|offered| !installed.contains(offered.tool.package.as_str()) && !checkout::holds(&offered.tool.package))
+        .filter(runs)
+        .map(|offered| offered.tool.clone())
+        .collect();
+    let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(local).chain(source).chain(held).chain(listed).collect();
     let (added, unread) = on_your_list(api, &hub, &mine, &tools).await;
     note = note.or(unread);
     tools.extend(added);
@@ -99,7 +108,7 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     if let Some(q) = q {
         let listed: BTreeSet<String> = tools.iter().map(|tool| tool.package.clone()).collect();
         match tokio::time::timeout(HUB_LATE, on_the_hub(api, &hub, q)).await {
-            Ok(Ok(found)) => tools.extend(found.into_iter().filter(|tool| !listed.contains(&tool.package))),
+            Ok(Ok(found)) => tools.extend(found.into_iter().filter(|tool| !listed.contains(&tool.package) && !checkout::holds(&tool.package))),
             Ok(Err(why)) => note = Some(format!("only what's installed: the Hub said {}", why.message)),
             Err(_) => note = Some(late()),
         }
@@ -201,13 +210,25 @@ async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, listed: &[Tool
 /// The tools of each local package `named`, by its path as it's written, and saying they're local: what a project's nodes name, and what's on
 /// your list. One that can't be read is left out, and a render says why.
 async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on: &On) -> Vec<Tool> {
-    let private = private_io::current().is_some();
+    let scope = private_io::current();
+    let private = scope.is_some();
+    // Each function is read at once, the static describer's reading kept in its project until the machine's own takes over, and a
+    // read goes on past a list that stops waiting for it (its caller gone, or late): the next list has it.
+    let reads: Vec<_> = named.into_iter().map(|(written, path)| {
+        let (api, hub, on, scope) = (api.clone(), hub.to_owned(), on.clone(), scope.clone());
+        tokio::spawn(private_io::context(scope.clone(), async move {
+            let _turn = LOCAL_READS.acquire().await;
+            let described = match staged(&api, scope.as_ref(), &path) {
+                Ok(code) => local_code::describe(&api, &code, &on, &hub).await,
+                Err(why) => Err(why),
+            };
+            (written, described)
+        }))
+    }).collect();
+    let late = tokio::time::Instant::now() + LOCAL_LATE;
     let mut tools = vec![];
-    for (written, path) in named {
-        let described = match local_code::own(api.machines.hubs.home(), &path) {
-            Ok(code) => local_code::describe(api, &code, on, hub).await,
-            Err(why) => Err(why),
-        };
+    for read in reads {
+        let Ok(Ok((written, described))) = tokio::time::timeout_at(late, read).await else { continue };
         let (package, document) = match described {
             Ok(described) => described,
             Err(why) => {
@@ -227,6 +248,102 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
     tools
 }
 
+/// `path`'s code copied into its project, which holds still meanwhile: a lock under way refuses the read, and one asked waits.
+fn staged(api: &Api, scope: Option<&private_io::Scope>, path: &Path) -> Result<api::code::LocalCode, Error> {
+    let _admitted = scope.map(|scope| vault::try_admit_root(&vault::logical(&scope.storage.view_root))).transpose()?;
+    local_code::own(api, path)
+}
+
+/// How long a list waits for the local functions its project's boxes name to be read: the page reads the list again once when a box
+/// names one, so it waits for the reading. One read later still is listed by a later list.
+const LOCAL_LATE: Duration = Duration::from_secs(60);
+/// How many of them are read at once.
+static LOCAL_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+/// How long a list waits for the checkout's packages to be read from source; one read later is listed by a later list.
+const SOURCE_LATE: Duration = Duration::from_secs(20);
+/// How long a list waits for a package's new reading when it has a good one to show meanwhile.
+const SOURCE_FRESH: Duration = Duration::from_secs(1);
+/// How many of them are read at once: each locks and describes its source with uv.
+static SOURCE_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+/// A checkout package's tools as a list asks for them: its name, the Hub and the machine.
+type SourceKey = (String, String, String);
+/// Each package's last good tools, shown while a new reading goes on (or failed), so a slow read never empties the list.
+static LAST_GOOD: LazyLock<Mutex<HashMap<SourceKey, Vec<Tool>>>> = LazyLock::new(Mutex::default);
+/// The one reading of each package going on: every list waits on it, none starts another.
+static READING: LazyLock<Mutex<HashMap<SourceKey, Shared<BoxFuture<'static, ()>>>>> = LazyLock::new(Mutex::default);
+
+/// The tools of each first-party package the dev home's checkout holds, read from its source as a run of it is (xs-195), each
+/// saying its branch and commit. Each package is read once at a time, behind every list that asks; a list shows each one's
+/// newest good tools: what its reading found within [`SOURCE_FRESH`] (or [`SOURCE_LATE`] for one never read), else its last
+/// good ones. One never read well yet is said in the note, and listed once read.
+async fn from_source(api: &Arc<Api>, hub: &str, on: &On) -> (Vec<Tool>, Option<String>) {
+    let packages = checkout::packages();
+    let key = |name: &str| (name.to_owned(), hub.to_owned(), on.to_string());
+    let known = {
+        let last = LAST_GOOD.lock().expect("last good lock");
+        packages.iter().all(|(name, _)| last.contains_key(&key(name)))
+    };
+    let deadline = tokio::time::Instant::now() + if known { SOURCE_FRESH } else { SOURCE_LATE };
+    let reads: Vec<_> = packages.iter().map(|(name, dir)| reading(api, hub, on, key(name), dir.clone())).collect();
+    for read in reads {
+        let _ = tokio::time::timeout_at(deadline, read).await;
+    }
+    let last = LAST_GOOD.lock().expect("last good lock");
+    let (mut tools, mut late) = (vec![], vec![]);
+    for (name, _) in &packages {
+        match last.get(&key(name)) {
+            Some(found) => tools.extend(found.iter().cloned()),
+            None => late.push(name.clone()),
+        }
+    }
+    let note = (!late.is_empty()).then(|| format!("still reading from source, listed once read: {}", late.join(", ")));
+    (tools, note)
+}
+
+/// The reading of `key`'s package at `dir` going on, else a new one: what it finds good becomes its last good tools.
+fn reading(api: &Arc<Api>, hub: &str, on: &On, key: SourceKey, dir: PathBuf) -> Shared<BoxFuture<'static, ()>> {
+    let mut reading = READING.lock().expect("reading lock");
+    if let Some(going) = reading.get(&key) {
+        return going.clone();
+    }
+    let (api, hub, on, held) = (api.clone(), hub.to_owned(), on.clone(), key.clone());
+    // It takes its place below before it can end: the lock is held until then.
+    let task = tokio::spawn(async move {
+        if let Some(found) = source_tools(&api, &hub, &on, &held.0, &dir).await {
+            LAST_GOOD.lock().expect("last good lock").insert(held.clone(), found);
+        }
+        READING.lock().expect("reading lock").remove(&held);
+    });
+    let going = async move {
+        let _ = task.await;
+    }
+    .boxed()
+    .shared();
+    reading.insert(key, going.clone());
+    going
+}
+
+/// `name`'s tools from its source at `dir` in the checkout; none when it can't be read.
+async fn source_tools(api: &Arc<Api>, hub: &str, on: &On, name: &str, dir: &Path) -> Option<Vec<Tool>> {
+    let _turn = SOURCE_READS.acquire().await;
+    let described = match local_code::own(api, dir) {
+        Ok(code) => local_code::describe(api, &code, on, hub).await.map(|described| (code, described)),
+        Err(why) => Err(why),
+    };
+    let (code, (package, document)) = match described {
+        Ok(described) => described,
+        Err(why) => {
+            tracing::warn!("{name} from source isn't listed: {}", why.message);
+            return None;
+        }
+    };
+    let interface = Interface::parse(&document).ok()?;
+    let said = checkout::of(&code).map(|from| from.said());
+    let release = said.clone().unwrap_or_else(|| "source".into());
+    Some(tool::tools_of(&package, &release, &interface).into_iter().map(|tool| Tool { source: said.clone(), ..tool }).collect())
+}
+
 /// Whether every word of `q` is in `tool`'s package's name or its label.
 fn says(tool: &Tool, q: &str) -> bool {
     let text = format!("{} {} {}", tool.package, tool.package_title, tool.label).to_lowercase();
@@ -244,7 +361,7 @@ pub(crate) fn canonical(hub: &str) -> String {
 }
 
 /// What `on` has installed from `hub`: each package and its newest release there, as a run there takes it: on the RC's
-/// Runtime a prerelease built for it before the last final (`target::newest_on`).
+/// Runtime a prerelease built for it before the last final, elsewhere finals only (`api::release::newest`, cl-952).
 async fn installed_releases(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(String, String)> {
     let Some((machine, environments)) = api.machines.holds(on, true).await else { return vec![] };
     let rc = api.machines.takes_rc(&machine, on);
@@ -253,7 +370,7 @@ async fn installed_releases(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(String, 
     packages.sort_unstable();
     packages.dedup();
     let releases = |package: &'_ str| -> Option<String> {
-        target::newest_on(rc, environments.iter().filter(|env| env.package == package && !env.release.is_empty()).map(|env| env.release.as_str())).map(str::to_owned)
+        api::release::newest(environments.iter().filter(|env| env.package == package && !env.release.is_empty()).map(|env| env.release.as_str()), rc).map(str::to_owned)
     };
     packages.into_iter().filter_map(|package| Some((package.to_owned(), releases(package)?))).collect()
 }
@@ -274,17 +391,32 @@ pub(crate) struct Listing(Mutex<HashMap<String, Listed>>);
 #[derive(Clone, Default)]
 struct Listed {
     tools: Arc<Vec<Offered>>,
-    read_at: Option<Instant>,
+    /// When the Hub answered it: a read here, or the one kept from before a restart (`cards::kept_listed`).
+    read_at: Option<SystemTime>,
     /// The last read that didn't answer: when, and why.
     failed: Option<(Instant, String)>,
 }
 
+impl Listed {
+    fn age(&self) -> Option<Duration> {
+        self.read_at.map(|at| at.elapsed().unwrap_or_default())
+    }
+}
+
 impl Listing {
     /// `hub`'s tools, and why they're old or none: its last read, else this one, which goes on past [`HUB_LATE`] for a later list.
+    /// Calcifer just started, its last read is the one it kept, so a restart never lists only what's installed (cl-975).
     async fn tools(&self, api: &Arc<Api>, hub: &str) -> (Arc<Vec<Offered>>, Option<String>) {
         let key = canonical(hub);
-        let kept = self.0.lock().expect("listing lock").get(&key).cloned().unwrap_or_default();
-        if kept.read_at.is_some_and(|at| at.elapsed() < LISTED_FOR) {
+        let read = self.0.lock().expect("listing lock").get(&key).cloned();
+        let kept = match read {
+            Some(read) => read,
+            None => {
+                let kept = kept_listing(api, hub);
+                self.0.lock().expect("listing lock").entry(key).or_insert(kept).clone()
+            }
+        };
+        if kept.age().is_some_and(|age| age < LISTED_FOR) {
             return (kept.tools, None);
         }
         let why = match &kept.failed {
@@ -308,8 +440,8 @@ impl Listing {
                 }
             }
         };
-        match kept.read_at {
-            Some(at) => (kept.tools, Some(format!("the Hub's tools as read {} s ago: {why}", at.elapsed().as_secs()))),
+        match kept.age() {
+            Some(age) => (kept.tools, Some(format!("the Hub's tools as read {} s ago: {why}", age.as_secs()))),
             None => (kept.tools, Some(format!("only what's installed: {why}"))),
         }
     }
@@ -318,7 +450,7 @@ impl Listing {
         let mut held = self.0.lock().expect("listing lock");
         let listed = held.entry(canonical(hub)).or_default();
         match read {
-            Ok(tools) => *listed = Listed { tools, read_at: Some(Instant::now()), failed: None },
+            Ok(tools) => *listed = Listed { tools, read_at: Some(SystemTime::now()), failed: None },
             Err(why) => listed.failed = Some((Instant::now(), why)),
         }
     }
@@ -338,19 +470,32 @@ async fn every_tool(api: &Arc<Api>, hub: &str) -> Result<Arc<Vec<Offered>>, Erro
     }
     let released: Vec<(String, String)> = wanted.into_iter().filter_map(|(package, release)| Some((package, release?))).collect();
     let root = api.machines.hubs.home().root();
-    let reads = released.into_iter().map(|(package, release)| async move {
+    let reads = released.clone().into_iter().map(|(package, release)| async move {
         match cards::card_requiring(|| api.machines.hubs.reader(hub), root, hub, &package, &release).await {
-            Ok(card) => {
-                let pair: Arc<[String]> = card.requirements().unwrap_or_default().into_iter().filter(|required| on_the_pair(required).is_some()).map(str::to_owned).collect();
-                tool::tools_of(&package, &card.release, &card.interface).into_iter().map(|tool| Offered { tool, pair: pair.clone() }).collect()
-            }
+            Ok(card) => offered(&package, &card),
             Err(why) => {
                 tracing::debug!("{package}@{release}: {}", why.message);
                 vec![]
             }
         }
     });
-    Ok(Arc::new(stream::iter(reads).buffered(READS).collect::<Vec<Vec<Offered>>>().await.into_iter().flatten().collect()))
+    let tools = Arc::new(stream::iter(reads).buffered(READS).collect::<Vec<Vec<Offered>>>().await.into_iter().flatten().collect());
+    cards::keep_listed(root, hub, &released);
+    Ok(tools)
+}
+
+/// The last whole read of `hub`'s list that this computer kept, by the cards it kept: none, and the list holds what's installed.
+fn kept_listing(api: &Api, hub: &str) -> Listed {
+    let root = api.machines.hubs.home().root();
+    let Some((at, listed)) = cards::kept_listed(root, hub) else { return Listed::default() };
+    let tools = (listed.iter()).filter_map(|(package, release)| Some(offered(package, &cards::kept(root, hub, package, release)?))).flatten().collect();
+    Listed { tools: Arc::new(tools), read_at: Some(at), failed: None }
+}
+
+/// `package`'s tools at `card`'s release, each with what the release requires of the Runtime pair.
+fn offered(package: &str, card: &cards::Card) -> Vec<Offered> {
+    let pair: Arc<[String]> = card.requirements().unwrap_or_default().into_iter().filter(|required| on_the_pair(required)).map(str::to_owned).collect();
+    tool::tools_of(package, &card.release, &card.interface).into_iter().map(|tool| Offered { tool, pair: pair.clone() }).collect()
 }
 
 /// A tool the Hub lists, and what its release requires of the Runtime pair.
@@ -364,53 +509,44 @@ struct Offered {
 /// The pair a machine runs packages on.
 const PAIR: [&str; 2] = ["cozy-runtime", "tensorfs"];
 
-/// The pair the tools at rest must run on: what `on` last said it runs, asking it nothing, else what the Hub has every machine run.
-/// None: neither is known, and nothing is held back.
-async fn stack(api: &Arc<Api>, hub: &str, on: &On) -> Option<BTreeMap<&'static str, String>> {
-    let said = match on {
-        On::Machine(name) => api.machines.named(name).ok().flatten().and_then(|row| api.machines.picture(&row).ok()?.status),
-        _ => None,
-    };
-    let (runtime, tensorfs) = match said.filter(|status| !status.runtime.is_empty()) {
-        Some(status) => (status.runtime, status.tensorfs),
-        None => {
-            let software = async { api.machines.hubs.anonymous(hub)?.get_software().await.map_err(cards::refusal) };
-            let software = tokio::time::timeout(HUB_LATE, software).await.ok()?.ok()?;
-            (software.runtime, software.tensorfs)
+/// The machine the tools at rest are offered for: the pair it runs packages on, and the Runtimes it moves to for a release that
+/// needs a newer one, as a run there moves it (`api::release::takes`, cl-952).
+struct Runner {
+    runtime: String,
+    tensorfs: String,
+    runtimes: Vec<String>,
+    moves: Moves,
+    newer: Option<api::release::Newer>,
+}
+
+impl Runner {
+    /// `on` as it last said what it runs, asking it nothing. None: it hasn't said since Calcifer started, or what it moves to isn't
+    /// read in [`HUB_LATE`], and nothing is held back, as a run on a machine that hasn't said holds nothing back.
+    async fn of(api: &Arc<Api>, on: &On) -> Option<Self> {
+        let On::Machine(name) = on else { return None };
+        let frame = api.machines.frame(name).filter(|frame| !frame.runtime.is_empty())?;
+        let (runtimes, moves, newer) = tokio::time::timeout(HUB_LATE, api.machines.runtimes(name, &frame, api.machines.takes_rc(name, on))).await.ok()?;
+        Some(Self { runtime: frame.runtime, tensorfs: frame.tensorfs, runtimes, moves, newer })
+    }
+
+    /// Whether a run here takes a release whose wheel requires `pair`, as a run decides (`api::release::takes`): its Runtime runs it
+    /// (an RC build of the next minor, one capped below it) with its TensorFS, or it moves up to a Runtime that does, which brings
+    /// its own TensorFS. A requirement that can't be read holds nothing back, as TensorD's own check decides.
+    fn takes(&self, pair: &[String]) -> bool {
+        let required = |member: &str| api::release::required(pair.iter().map(String::as_str), member);
+        let machine = api::release::Machine { runtime: &self.runtime, runtimes: &self.runtimes, moves: self.moves, newer: self.newer.as_ref() };
+        match required(PAIR[0]).map_or(Takes::Runs, |needs| api::release::takes(&needs, &machine)) {
+            Takes::Runs => required(PAIR[1]).is_none_or(|needs| self.tensorfs.is_empty() || api::release::runs(&needs, &self.tensorfs)),
+            // A run moves it, or updates cozy first (cl-978).
+            Takes::Moves(_) | Takes::Cozy { .. } => true,
+            Takes::Held(_) | Takes::Major(_) | Takes::No => false,
         }
-    };
-    Some(PAIR.into_iter().zip([runtime, tensorfs]).filter(|(_, version)| !version.is_empty()).collect())
+    }
 }
 
-/// Whether a release whose wheel requires `pair` runs on `stack`: each of its requirements admits that member's version, by its release
-/// numbers alone (a dev build of 0.45.0 is 0.45.0). One that can't be read holds nothing back, as TensorD's own check decides.
-fn runs_on(pair: &[String], stack: &BTreeMap<&str, String>) -> bool {
-    pair.iter().all(|required| {
-        let Some((member, versions)) = on_the_pair(required) else { return true };
-        let Some(version) = stack.get(member).and_then(|version| version.parse::<pep440_rs::Version>().ok()) else { return true };
-        versions.contains(&version.only_release())
-    })
-}
-
-/// A requirement on the pair outside any extra (`cozy-runtime[media]<0.46,>=0.45.0`): its member, and the versions it admits.
-fn on_the_pair(required: &str) -> Option<(&'static str, pep440_rs::VersionSpecifiers)> {
-    let (required, marker) = required.split_once(';').unwrap_or((required, ""));
-    if marker.contains("extra") {
-        return None;
-    }
-    let end = required.find(|c: char| " <>=!~[(".contains(c)).unwrap_or(required.len());
-    let name = required[..end].trim().to_lowercase().replace(['_', '.'], "-");
-    let member = PAIR.into_iter().find(|member| *member == name)?;
-    let rest = required[end..].trim_start();
-    let rest = match rest.strip_prefix('[') {
-        Some(extras) => &extras[extras.find(']')? + 1..],
-        None => rest,
-    };
-    let rest = rest.trim().trim_start_matches('(').trim_end_matches(')').trim();
-    if rest.is_empty() {
-        return None;
-    }
-    Some((member, rest.parse().ok()?))
+/// Whether a requirement (`cozy-runtime[media]<0.46,>=0.45.0`) is on a member of the pair, outside any extra.
+fn on_the_pair(required: &str) -> bool {
+    PAIR.iter().any(|member| api::release::required([required], member).is_some())
 }
 
 /// Each `(package, release)`'s tools, in the order asked.
@@ -431,14 +567,43 @@ async fn read_all(api: &Arc<Api>, hub: &str, wanted: Vec<(String, String)>) -> V
 
 /// What a box of `tool` asks for, read as `read` reads it. None: it can't be read.
 pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<Vec<tool::ToolField>> {
-    let hub = api.machines.hubs.default_origin();
-    let found = target::describe(api, &hub, tool, None, Some(dir), &runs::default_on(api)).await.ok()?;
-    let interface = Interface::parse(&found.interface).ok()?;
-    let function = found.function.as_deref().or(target::only_function(&interface))?.to_owned();
-    tool::tools_of(&found.package, "", &interface).into_iter().find(|held| held.function == function).map(|held| held.fields)
+    tool_of(api, tool, dir).await.ok().map(|held| held.fields)
 }
 
-/// A box's model choices, bound as a run binds them, refused where their slot can't load them (`checkpoints::check_choices`).
+/// `tool` as `GET /v1/tools` lists it, read as a run of it on this computer would be, from its package's declarations: nothing of it runs.
+pub(crate) async fn tool_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<Tool, Error> {
+    if api::calcifer::node::plain(tool.trim()).trim_start_matches("_/") == tool::EDIT {
+        return Ok(tool::edit());
+    }
+    let hub = api.machines.hubs.default_origin();
+    let found = match target::describe(api, &hub, tool, None, Some(dir), &runs::default_on(api)).await {
+        Ok(found) => found,
+        // This computer's machine can't run it (one held on an older Runtime): the Hub's card says what it asks for all the same.
+        // Not for a checkout's package, whose source is what runs.
+        Err(why) if checkout::named(tool).is_some() => return Err(why),
+        Err(why) => return listed_tool(api, &hub, tool).await.ok_or(why),
+    };
+    let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;
+    let Some(function) = found.function.as_deref().or(target::only_function(&interface)).map(str::to_owned) else {
+        let functions = interface.public().iter().map(|name| format!("{}/{name}", shown(&found.package))).collect::<Vec<_>>().join(", ");
+        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: a tool is one of its functions: {functions}")));
+    };
+    tool::tools_of(&found.package, &found.release, &interface).into_iter().find(|held| held.function == function)
+        .ok_or_else(|| Error::new(Kind::Usage, "tool_not_a_tool", format!("{tool} is no tool: its function declares no @app.tool, or makes no media")))
+}
+
+/// `tool` as `GET /v1/tools` lists it from the Hub: its package's newest release, by its card. None for local code, or what the Hub hasn't.
+async fn listed_tool(api: &Arc<Api>, hub: &str, tool: &str) -> Option<Tool> {
+    let id = shown(api::calcifer::node::plain(tool.trim()));
+    let (listed, _) = api.listing.tools(api, hub).await;
+    if let Some(offered) = listed.iter().find(|offered| offered.tool.id == id) {
+        return Some(offered.tool.clone());
+    }
+    let (package, _) = id.rsplit_once('/')?;
+    on_the_hub(api, hub, package).await.ok()?.into_iter().find(|found| found.id == id)
+}
+
+/// A box's model choices, bound as a run binds them, refused where their slot can't take them (`checkpoints::check_choices`).
 pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fields: &Map<String, Value>) -> Result<(), Error> {
     let hub = api.machines.hubs.default_origin();
     let Ok(found) = runs::target::describe(api, &hub, target, None, Some(dir), &runs::default_on(api)).await else { return Ok(()) };
@@ -451,27 +616,7 @@ pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fi
     choices.take(&mut document)?;
     let choices = choices.into_choices();
     choices::wire(&choices)?;
-    crate::hub::checkpoints::check_choices(api, &hub, target, &crate::hub::checkpoints::slots_of(&interface, callable), &choices).await
-}
-
-/// The slots `key` names in `tool`'s function, read as a run of it is (`checkpoints::slots_named`), each with the default a choice
-/// for it is judged by: what `cozy model ls --fits <tool>:<key>` and the page's Models & LoRAs offer for. `dir` finds local code.
-pub(crate) async fn slots_for(api: &Arc<Api>, hub: &str, tool: &str, key: &str, dir: Option<&Path>) -> Result<Vec<api::interface::Slot>, Error> {
-    let found = runs::target::describe(api, hub, tool, None, dir, &runs::default_on(api)).await?;
-    let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;
-    let function = found.function.as_deref().or(target::only_function(&interface));
-    let Some(callable) = function.and_then(|function| interface.callables.iter().find(|callable| callable.name == function)) else {
-        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: name one of its functions")).next(format!("cozy run {tool}")));
-    };
-    let slots: Vec<api::interface::Slot> = crate::hub::checkpoints::slots_named(&interface, callable, key).into_iter().cloned().collect();
-    if slots.is_empty() {
-        let keys: Vec<&str> = crate::hub::checkpoints::slots_of(&interface, callable).into_iter().map(|(key, _)| key).collect();
-        return Err(Error::new(Kind::Usage, "model_slot_unknown", format!("{tool} has no model slot {key:?}")).remedy(format!("its slots: {}", keys.join(", "))));
-    }
-    if slots.iter().any(|slot| slot.default.is_none()) {
-        return Err(Error::new(Kind::Usage, "model_slot_no_default", format!("{tool}'s {key} names no default model to judge a choice by")));
-    }
-    Ok(slots)
+    crate::hub::checkpoints::check_choices(api, &hub, &crate::hub::checkpoints::slots_of(&interface, callable), &choices).await
 }
 
 /// What `tool` makes, `image`, `video` or `audio`, as its function's output says, and what a new box of it is called, read as a run of it

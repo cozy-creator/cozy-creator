@@ -1,6 +1,6 @@
 import type { Asset, Tool } from "../api/calcifer"
 import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
-import { OWN, startingFields } from "./controls"
+import { mainText, OWN, startingFields } from "./controls"
 import { toolName } from "./shown"
 import { toolFitsNode } from "./palette"
 
@@ -85,7 +85,7 @@ export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, to
   const asks = new Set(tool.fields.map((field) => field.field))
   const { kept: addOns, lost } = addOnsOn(fields, from, tool)
   const words = wordsIn(fields)
-  const reads = tool.fields.find((field) => field.type === "prompt" || field.type === "words")?.field ?? "instructions"
+  const reads = mainText(tool.fields)?.field ?? "instructions"
   const send: Fields = { ...initial, node_kind: tool.makes }
   for (const field of Object.keys(fields)) if (!asks.has(field) && !OWN.includes(field) && field !== "instructions") send[field] = null
   if (words && words !== reads) {
