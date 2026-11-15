@@ -411,28 +411,35 @@ const test = base.extend({
 const box = (page, name) => page.locator(`.canvas-node .card[data-asset=${JSON.stringify(name)}], [data-focused-asset=${JSON.stringify(name)}] .card[data-asset=${JSON.stringify(name)}]`).first();
 
 /** Read-only product geometry and logical names. Neither is evidence that the GPU presented the expected pixels.
- *  A file still on its way to Calcifer is drawn under the name it was given while the scene keys it `placing:N` (place.ts): these helpers take
- *  and give the name a person sees. */
-const canvasCard = (page, name) => page.evaluate((name) => {
+ *  A file still on its way to Calcifer is drawn under the name it was given while the scene and its card key it `placing:N` (place.ts):
+ *  these helpers take and give the name a person sees, from its drawn title or its mounted card's. */
+const SHOWN = `(inspection, key) => {
+  if (!key.startsWith('placing:')) return key;
+  const title = inspection.card(key)?.rendered?.labels?.title?.title;
+  if (title) return title;
+  const nm = document.querySelector('.canvas-node .card[data-asset=' + JSON.stringify(key) + '] .head .nm');
+  return nm?.value || nm?.textContent?.trim() || key;
+}`;
+const KEY = `(inspection, name) => inspection.card(name) ? name : inspection.names().find((key) => key.startsWith('placing:') && (${SHOWN})(inspection, key) === name)`;
+const canvasCard = (page, name) => page.evaluate(`((name) => {
   const inspection = document.querySelector('.canvas-root')?.canvasInspection;
-  if (!inspection) return null;
-  const key = inspection.card(name) ? name : inspection.names().find((one) => one.startsWith('placing:') && inspection.card(one)?.rendered?.labels?.title?.title === name);
+  const key = inspection && (${KEY})(inspection, name);
   return key ? inspection.card(key) : null;
-}, name);
-const canvasNames = (page) => page.evaluate(() => {
+})(${JSON.stringify(name)})`);
+const canvasNames = (page) => page.evaluate(`(() => {
   const inspection = document.querySelector('.canvas-root')?.canvasInspection;
-  return inspection?.names().map((key) => (key.startsWith('placing:') ? inspection.card(key)?.rendered?.labels?.title?.title ?? key : key)) ?? [];
-});
+  return inspection?.names().map((key) => (${SHOWN})(inspection, key)) ?? [];
+})()`);
 const selectedNames = (page) => page.evaluate(() => [...(document.querySelector('.canvas-root')?.canvasInspection?.selectedNames() ?? [])].sort());
-const canvasVisible = (page, name) => page.evaluate((name) => {
+const canvasVisible = (page, name) => page.evaluate(`((name) => {
   const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
-  const key = inspection && (inspection.card(name) ? name : inspection.names().find((one) => one.startsWith('placing:') && inspection.card(one)?.rendered?.labels?.title?.title === name));
+  const key = inspection && (${KEY})(inspection, name);
   const card = key && inspection.card(key);
-  const native = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}]`);
+  const native = key && document.querySelector('.canvas-node .card[data-asset=' + JSON.stringify(key) + ']');
   if (!root || !card || (!card.rendered && !native?.checkVisibility())) return false;
   const r = native?.getBoundingClientRect() ?? card.bounds, view = root.getBoundingClientRect();
   return r.width > 0 && r.height > 0 && r.x + r.width > view.left && r.y + r.height > view.top && r.x < view.right && r.y < view.bottom;
-}, name);
+})(${JSON.stringify(name)})`);
 
 /** Text held by actual rendered labels/words, or the committed native card; never read from the document store. */
 const canvasText = (page, name) => page.evaluate((name) => {
