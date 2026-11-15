@@ -2,7 +2,7 @@
 
 import sys
 import msgspec
-from sympy import isprime
+from sympy import isprime  # type: ignore[import-untyped]  # SymPy ships no typing metadata.
 from xxhash import xxh64_hexdigest
 from cozy_runtime.author import App, InvalidRequest, call
 
