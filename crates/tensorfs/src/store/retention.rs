@@ -16,7 +16,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +28,8 @@ use crate::format::{Header, ObjectRef, Model};
 pub(crate) const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How often maintenance expires uses.
 const SWEEP: Duration = Duration::from_secs(10 * 60);
+/// The most `make_room` waits for the fence's readers, who hold it only between reading metadata and holding what it names.
+const ROOM_WAIT: Duration = Duration::from_secs(30);
 
 /// Digests kept while a process holds them: never unlocked by hand, so a forked child that
 /// inherited the descriptor keeps holding them until it exits or execs.
@@ -103,6 +105,33 @@ pub(crate) fn try_collect(store: &Store) -> Result<Option<Fence>> {
         Ok(()) => Ok(Some(Fence(file))),
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(e)) => Err(fail("lock", &store.root)(e)),
+    }
+}
+
+/// The fence for making room: its readers let go within moments, so it waits for them, up to `ROOM_WAIT`, and says how
+/// long it waited.
+fn room_fence(store: &Store) -> Result<Fence> {
+    let file = fence_file(store)?;
+    let (began, mut pause) = (Instant::now(), Duration::from_millis(1));
+    loop {
+        match file.try_lock() {
+            Ok(()) => {
+                if began.elapsed() >= Duration::from_millis(100) {
+                    tracing::info!("tensorfs: making room in {} waited {} ms for its readers", store.root.display(), began.elapsed().as_millis());
+                }
+                return Ok(Fence(file));
+            }
+            Err(TryLockError::WouldBlock) if began.elapsed() < ROOM_WAIT => {}
+            Err(TryLockError::WouldBlock) => {
+                return Err(fail("make room in", store.root())(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!("its readers held it for {} s; retry after current work finishes", ROOM_WAIT.as_secs()),
+                )))
+            }
+            Err(TryLockError::Error(error)) => return Err(fail("lock", store.root())(error)),
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(100));
     }
 }
 
@@ -322,8 +351,8 @@ impl Store {
         }
         let short = || shortfall(&self.root, incoming);
         let mut collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
-        // Refuse promptly while a read-only borrower protects this source store.
-        let _fence = exclusive(self)?;
+        // Waits out readers that are taking holds, so what they hold is judged, as long as `ROOM_WAIT`.
+        let _fence = room_fence(self)?;
         let mut all = Collected::default();
         if short()? > 0 {
             self.drop_partials()?;
