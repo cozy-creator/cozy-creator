@@ -31,7 +31,7 @@
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1)
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
 [[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
-VRAM=$(dirname "$0")/../suites/bench/vram.py
+VRAM=$(cd "$(dirname "$0")/../suites/bench" && pwd)/vram.py
 [ -z "$FREE_GIB" ] || [ -f "$VRAM" ] || fail "no suites/bench/vram.py"
 # ssh for the holder and for what holds the GPU when a cell fails (`gpu`)
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
