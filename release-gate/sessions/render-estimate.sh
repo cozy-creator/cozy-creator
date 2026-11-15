@@ -2,7 +2,7 @@
 # what the page shows beside Render against what the render takes, on one rented card this runner's Calcifer never ran H3 on.
 # The bench's H3 Turbo 15 s shot, a box of the project, whose machine is the pod alone (`cozy machine use`):
 #   - `fit` as the page asks it before any run: the pod, its card, our measurement of that card (`api::estimate::reference`);
-#   - rendered twice on the pod, the second warm, each run's own time from its record;
+#   - rendered twice on the pod, the second warm on another seed (the same request again makes nothing), each version's execution time;
 #   - `fit` again: now measured there.
 # Passes when the first estimate is within 35% of the warm run. One rental of $SKU. params:
 #   tool    the shot's tool (default minimax-h3/generate, the Hub's)
@@ -10,7 +10,6 @@
 TOOL=$(param tool minimax-h3/generate)
 J() { jq -e "$@" > /dev/null; }
 estimate() { run_page fit shot | jq -c '.estimates[0] // {}'; }
-newest_run() { run_page asset shot | jq -r '.versions[-1].runs[-1]'; }
 
 quote 3000
 rent
@@ -29,13 +28,13 @@ J --arg m "$NAME" '.machine == $m and .basis == "reference" and .run_ms > 0' <<<
 
 declare -A TOOK=()
 for n in 1 2; do
+  [ "$n" = 1 ] || run_page set shot --fields "{\"seed\": $((20261301 + n))}" > "$OUT/seed-$n.txt" 2>&1 || fail "seed $n: $(tail -c 300 "$OUT/seed-$n.txt")"
   say "render $n on $NAME"
   run_page render --on "$NAME" shot > "$OUT/render-$n.txt" 2>&1 || fail "render $n: $(tail -c 500 "$OUT/render-$n.txt")"
-  run=$(newest_run)
-  cozy run watch "$run" --once --json > "$OUT/run-$n.json" 2>&1
-  [ "$(jq -r .status "$OUT/run-$n.json")" = completed ] || fail "run $run: $(jq -r '.reason.message // .status' "$OUT/run-$n.json" | cut -c1-300)"
-  TOOK[$n]=$(jq '.execution_ms // 0' "$OUT/run-$n.json")
-  say "run $run ($n): execution $((TOOK[$n] / 1000)) s"
+  run_page asset shot > "$OUT/asset-$n.json" 2>&1
+  TOOK[$n]=$(jq '.versions[-1].execution_ms // 0' "$OUT/asset-$n.json")
+  [ "$(jq '.versions | length' "$OUT/asset-$n.json")" = "$n" ] && [ "${TOOK[$n]}" -gt 0 ] || fail "render $n made no timed version: $(tail -c 300 "$OUT/asset-$n.json")"
+  say "version $n: execution $((TOOK[$n] / 1000)) s"
 done
 
 after=$(estimate)
