@@ -132,13 +132,15 @@ impl Stage {
         let path = self.src.join("pyproject.toml");
         let authored = fs::read_to_string(&path).map_err(|e| refuse("stage_unavailable", e))?;
         let mut doc: toml_edit::DocumentMut = authored.parse().map_err(|e| refuse("project_invalid", e))?;
-        let sources = (doc["tool"]["uv"]["sources"].or_insert(toml_edit::table()))
-            .as_table_like_mut()
-            .ok_or_else(|| refuse("project_invalid", "tool.uv.sources is not a table"))?;
-        if sources.contains_key("cozy-runtime") {
+        let selected = doc.get("tool").and_then(|tool| tool.get("uv")).and_then(|uv| uv.get("sources"))
+            .and_then(toml_edit::Item::as_table_like).is_some_and(|sources| sources.contains_key("cozy-runtime"));
+        if selected {
             return Ok(());
         }
         let Some(rc) = crate::floor::rc_runtime(&self.src).await? else { return Ok(()) };
+        let sources = (doc["tool"]["uv"]["sources"].or_insert(toml_edit::table()))
+            .as_table_like_mut()
+            .ok_or_else(|| refuse("project_invalid", "tool.uv.sources is not a table"))?;
         let mut source = toml_edit::InlineTable::new();
         source.insert("url", rc.url.as_str().into());
         sources.insert("cozy-runtime", toml_edit::value(source));
