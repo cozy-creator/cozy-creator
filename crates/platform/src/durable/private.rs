@@ -235,12 +235,13 @@ fn opened_by_others(dir: &Path) -> io::Result<bool> {
     use windows_sys::Win32::{
         Foundation::{HLOCAL, LocalFree},
         Security::{
-            Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT},
-            DACL_SECURITY_INFORMATION,
+            ACCESS_ALLOWED_ACE, ACL, Authorization::{ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT},
+            DACL_SECURITY_INFORMATION, GetAce, INHERIT_ONLY_ACE,
         },
+        System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_ALLOWED_CALLBACK_ACE_TYPE},
     };
     let name = wide(dir)?;
-    let (mut dacl, mut descriptor) = (ptr::null_mut(), ptr::null_mut());
+    let (mut dacl, mut descriptor): (*mut ACL, _) = (ptr::null_mut(), ptr::null_mut());
     // SAFETY: a terminated path and writable outputs; the descriptor is freed below.
     let code = unsafe {
         GetNamedSecurityInfoW(name.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, ptr::null_mut(), ptr::null_mut(), &mut dacl, ptr::null_mut(), &mut descriptor)
@@ -248,39 +249,41 @@ fn opened_by_others(dir: &Path) -> io::Result<bool> {
     if code != 0 {
         return Err(io::Error::from_raw_os_error(code as i32));
     }
-    let mut text: *mut u16 = ptr::null_mut();
-    // SAFETY: the live descriptor and a writable string pointer; the length is not asked.
-    let converted = unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut text, ptr::null_mut()) };
-    let sddl = (converted != 0).then(|| {
+    // This account, SYSTEM, Administrators, OWNER RIGHTS and CREATOR OWNER: no other account. Compared in full `S-1-…` form, as SDDL
+    // would shorten some to aliases (the built-in Administrator's to `LA`).
+    let own = crate::ipc::this_user()?;
+    let mine = |sid: &str| [own.as_str(), "S-1-5-18", "S-1-5-32-544", "S-1-3-4", "S-1-3-0"].contains(&sid);
+    // No DACL at all lets everyone in.
+    let mut others = dacl.is_null();
+    // SAFETY: a live DACL inside the descriptor, read for its count.
+    let count = if dacl.is_null() { 0 } else { unsafe { (*dacl).AceCount } };
+    for at in 0..u32::from(count) {
+        let mut ace = ptr::null_mut();
+        // SAFETY: the live DACL, an index under its count and a writable pointer into it.
+        if unsafe { GetAce(dacl, at, &mut ace) } == 0 {
+            continue;
+        }
+        // SAFETY: every ACE starts with its header.
+        let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let kind = u32::from(allowed.Header.AceType);
+        if !matches!(kind, ACCESS_ALLOWED_ACE_TYPE | ACCESS_ALLOWED_CALLBACK_ACE_TYPE) || u32::from(allowed.Header.AceFlags) & INHERIT_ONLY_ACE != 0 {
+            continue;
+        }
+        let mut text: *mut u16 = ptr::null_mut();
+        // SAFETY: an allowed ACE's SID starts at its SidStart; a writable string pointer.
+        if unsafe { ConvertSidToStringSidW(ptr::addr_of!(allowed.SidStart).cast_mut().cast(), &mut text) } == 0 {
+            continue;
+        }
         // SAFETY: a NUL-terminated string the conversion allocated.
-        let sddl = unsafe {
+        let sid = unsafe {
             let len = (0..).take_while(|&i| *text.add(i) != 0).count();
             String::from_utf16_lossy(std::slice::from_raw_parts(text, len))
         };
         // SAFETY: the string the conversion allocated, freed once.
         unsafe { LocalFree(text as HLOCAL) };
-        sddl
-    });
-    let no_dacl = dacl.is_null();
+        others |= !mine(&sid);
+    }
     // SAFETY: the descriptor GetNamedSecurityInfoW allocated, freed once; `dacl` pointed into it and isn't read again.
     unsafe { LocalFree(descriptor as HLOCAL) };
-    let sddl = sddl.ok_or_else(io::Error::last_os_error)?;
-    let own = crate::ipc::this_user()?;
-    Ok(no_dacl || others_allowed(&sddl, &own))
-}
-
-/// Whether a DACL in SDDL (`D:PAI(A;OICI;FA;;;SY)(A;;FA;;;S-1-5-21-…)`) allows anyone but `own`, SYSTEM, Administrators or the
-/// owner. An inherit-only entry (`IO`) doesn't apply to the folder itself.
-#[cfg(windows)]
-fn others_allowed(sddl: &str, own: &str) -> bool {
-    let Some(dacl) = sddl.split_once("D:").map(|(_, dacl)| dacl) else { return true };
-    if dacl.starts_with("NO_ACCESS_CONTROL") {
-        return true;
-    }
-    dacl.split('(').skip(1).filter_map(|ace| ace.split(')').next()).any(|ace| {
-        let fields: Vec<&str> = ace.split(';').collect();
-        let (kind, flags, sid) = (fields.first().copied().unwrap_or(""), fields.get(1).copied().unwrap_or(""), fields.get(5).copied().unwrap_or(""));
-        let inherit_only = flags.as_bytes().chunks(2).any(|flag| flag == b"IO");
-        matches!(kind, "A" | "OA" | "XA" | "ZA") && !inherit_only && !["SY", "BA", "OW", "CO", own].contains(&sid)
-    })
+    Ok(others)
 }
