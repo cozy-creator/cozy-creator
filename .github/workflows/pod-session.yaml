@@ -187,7 +187,7 @@ jobs:
         run: |
           gpus=$(jq -r '.gpus // 1' <<<"$PARAMS" 2>/dev/null || echo 1)
           args=(); [ "$gpus" = 1 ] || args=(--gpus "$gpus")
-          price=$(cozy machine rent "$SKU" --disk-gb "$DISK" "${args[@]}" --json < /dev/null 2>/dev/null |
+          price=$(cozy machine rent "$SKU" --disk-gb "$DISK" "${args[@]}" --json < /dev/null 2>/dev/null | grep '^{' |
             jq -r 'select(.quote) | .quote.usd_micros_per_hour' 2>/dev/null | head -1) || true  # a quote refuses: no --yes
           minutes=$(awk -v c="$CAP" -v h="${price:-0}" 'BEGIN{print (h > 0) ? int(c * 1e6 / h * 60) + 15 : 120}')
           echo "minutes=$minutes" >> "$GITHUB_OUTPUT"

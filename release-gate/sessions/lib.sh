@@ -158,7 +158,8 @@ quote() {
       sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
     done
     grep -q quote_unagreed "$OUT/quote-$s.json" || fail "a quote without --yes did not refuse: $(tail -c 300 "$OUT/quote-$s.json")"
-    price=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote-$s.json" 2>/dev/null | head -1)
+    # Its JSON lines only: a warning line comes first when the SKU holds less disk than asked (vast, 43755131033).
+    price=$(grep '^{' "$OUT/quote-$s.json" | jq -r 'select(.quote) | .quote.usd_micros_per_hour' 2>/dev/null | head -1)
     [ -n "$price" ] || fail "no quote for $s: $(tail -c 300 "$OUT/quote-$s.json")"
     hourly=$((hourly + price)); said="$said $s $price"
   done
