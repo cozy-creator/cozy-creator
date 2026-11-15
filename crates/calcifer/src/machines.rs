@@ -103,12 +103,21 @@ pub(crate) struct Machines {
     pub(crate) arrivals: tokio::sync::watch::Sender<u64>,
 }
 
+/// How long a rental may say nothing after an update restarted it before this computer calls it broken (cl-977). Its own
+/// restart past a TensorD before it that can't exit takes about 6 minutes at most (`tensord::machine::stuck`: 10 s to exit, up
+/// to 5 × 60 s killed while it still moves, then 60 s for a fresh process to open the GPUs).
+const UPDATE_RETURN_MS: i64 = 10 * 60_000;
+
 /// What Calcifer last heard of a machine, never stored.
 #[derive(Default)]
 pub(crate) struct Seen {
     frame: Option<v1::StatusFrame>,
     /// Its Status stream is open: `frame` is what it is now, not what it was when the stream broke.
     streaming: bool,
+    /// When its last frame came, else (none came since this Calcifer started) its first failed attempt (unix ms).
+    heard: Option<i64>,
+    /// This computer's word that it is broken: silent since an update restarted it (cl-977). Cleared when it answers.
+    silent: Option<v1::Broken>,
     unreachable: Option<String>,
     /// Since when it has not answered (unix ms).
     since: Option<i64>,
@@ -520,7 +529,7 @@ impl Machines {
     /// follows it. Callers share one start.
     /// Whether this computer's machine runs and is followed: `local_up` returns at once.
     pub(crate) fn local_runs(&self) -> bool {
-        !lock(&self.seen).get("local").is_some_and(|seen| seen.stopped) && self.local.running()
+        !lock(&self.seen).get("local").is_some_and(|seen| seen.stopped) && self.local.running() && self.local.silent().is_none()
     }
 
     pub(crate) async fn local_up(self: &Arc<Self>) -> Result<(), Error> {
@@ -532,13 +541,43 @@ impl Machines {
         if self.local_runs() {
             return Ok(());
         }
+        // A start that isn't answering is refused at once until it serves or exits (cl-977).
+        if let Some(refusal) = self.local.silent() {
+            self.local_silent(&refusal);
+            return Err(refusal);
+        }
         // TensorD admits this controller's key from the home as it starts.
         self.owner_key()?;
-        let endpoint = match self.local.serving().await {
-            Some(endpoint) => endpoint,
-            None => self.local.start().await?,
+        let me = self.clone();
+        let answered = move |endpoint| match me.put_local(Some(endpoint), true) {
+            Ok(()) => me.calcifer.machine_changed(),
+            Err(e) => warn!("this computer's machine serves, late: {}", e.message),
         };
+        let started = match self.local.serving().await {
+            Ok(Some(endpoint)) => Ok(endpoint),
+            Ok(None) => self.local.start(answered).await,
+            Err(refusal) => Err(refusal),
+        };
+        let endpoint = started.inspect_err(|refusal| {
+            if refusal.code == "machine_not_answering" {
+                self.local_silent(refusal);
+            }
+        })?;
         self.put_local(Some(endpoint), true)
+    }
+
+    /// `local` isn't answering (cl-977): `machine ls`/`show` and the page say why, and placement takes it as unreachable until
+    /// it serves (its first frame clears it) or exits.
+    fn local_silent(&self, refusal: &Error) {
+        {
+            let mut seen = lock(&self.seen);
+            let seen = seen.entry("local".into()).or_default();
+            seen.stopped = false;
+            seen.since.get_or_insert(crate::store::now_ms());
+            seen.unreachable = Some(refusal.message.clone());
+        }
+        self.calcifer.touch("local");
+        self.calcifer.machine_changed();
     }
 
     /// What `text` names. A rental id names its machine whatever its state. A name or former
@@ -591,7 +630,12 @@ impl Machines {
     /// `local`'s TensorD exited: while another computer's controller is authorized to use it, it
     /// starts again at once (after `cozy update`, on the new binary).
     fn local_exited(self: &Arc<Self>) {
+        // Stopped broken (cl-977), it starts again at its next use, not at once: each start checks its GPUs again.
+        let broken = lock(&self.seen).get("local").and_then(|seen| seen.frame.as_ref()).is_some_and(|frame| frame.broken.is_some());
         self.local_stopped();
+        if broken {
+            return;
+        }
         // The old joined status/log task was just aborted. Machines owns the wake through readiness,
         // so canceling that watcher cannot drop its startup mutex while the detached child boots.
         let me = self.clone();
@@ -752,7 +796,7 @@ impl Machines {
         }
         let (mut held, mut activity) = (vec![], vec![]);
         // Copied under the lock and worked out after it: a picture never holds up what a machine's Status says.
-        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), unreachable: seen.unreachable.clone(), ..*seen });
+        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), unreachable: seen.unreachable.clone(), silent: seen.silent.clone(), ..*seen });
         if let Some(seen) = seen {
             if seen.stopped {
                 machine.state = MachineState::Stopped;
@@ -764,6 +808,7 @@ impl Machines {
                 let followed = lock(&self.project_activity);
                 activity.extend(projects.iter().filter_map(|project| followed.get(project)).flatten().cloned());
             }
+            machine.broken = broken_in(&row.name, &seen).filter(|_| row.state != MachineState::Ended);
             machine.unreachable = seen.unreachable;
             machine.unreachable_since_ms = seen.since;
             machine.boot = seen.boot;
@@ -804,7 +849,7 @@ impl Machines {
         }
         visible.warm = self.calcifer.maintenance_warm(name, std::mem::take(&mut visible.warm));
         visible.kernels.clear();
-        for process in &mut visible.stuck {
+        for process in visible.stuck.iter_mut().filter(|process| process.command != v1::STUCK_TENSORD) {
             process.command.clear();
         }
         visible.toolchain.detail.clear();
@@ -1000,6 +1045,7 @@ impl Machines {
                         hub_pause = Duration::ZERO;
                     }
                 }
+                self.silent_after_update(&name);
             }
             let ask = kind == MachineKind::Rental && (offline || unreachable);
             if ask && tokio::time::Instant::now() >= hub_at {
@@ -1071,7 +1117,9 @@ impl Machines {
             seen.stopped &= frame.phase == "releasing";
             seen.streaming = true;
             seen.frame = Some(frame);
+            seen.heard = Some(crate::store::now_ms());
             seen.since = None;
+            seen.silent = None;
             seen.unreachable.take().is_some()
         };
         // Its runs and exports that wait on it try again now.
@@ -1115,6 +1163,46 @@ impl Machines {
     pub(crate) fn offline(&self, name: &str) -> Option<String> {
         let row = self.store().machine(name).ok()??;
         self.offline_in(&row, &lock(&self.seen))
+    }
+
+    /// Why nothing can run on the machine (cl-977): its own word, else this computer's that it went silent after an update.
+    pub(crate) fn broken(&self, name: &str) -> Option<v1::Broken> {
+        broken_in(name, lock(&self.seen).get(name)?)
+    }
+
+    /// A rental silent since an update restarted it, past `UPDATE_RETURN_MS` (cl-977): broken by this computer's word, its runs
+    /// unsent here leave it, and one this computer ordered is ended, billing for nothing. Nothing there can be making progress:
+    /// it has said nothing since its update drained its runs. Asked at each failed attempt to reach it, never on a timer.
+    fn silent_after_update(self: &Arc<Self>, name: &str) {
+        let Ok(Some(row)) = self.store().machine(name) else { return };
+        if row.kind != MachineKind::Rental || row.state == MachineState::Ended {
+            return;
+        }
+        let updating = self.store().updating(name).unwrap_or_default();
+        let now = crate::store::now_ms();
+        let said = {
+            let mut seen = lock(&self.seen);
+            let seen = seen.entry(name.to_owned()).or_default();
+            let restarted = updating || seen.frame.as_ref().and_then(|f| f.update.as_ref()).is_some_and(|u| u.state == "running");
+            match *seen.heard.get_or_insert(now) {
+                heard if seen.silent.is_none() && restarted && now - heard >= UPDATE_RETURN_MS => {
+                    let said = format!("it hasn't answered since an update restarted it {} ago", wire::clock(now - heard));
+                    seen.silent = Some(v1::Broken { code: "silent_after_update".into(), message: said.clone() });
+                    said
+                }
+                _ => return,
+            }
+        };
+        warn!(machine = name, "broken: {said}");
+        self.calcifer.touch(name);
+        self.calcifer.machine_changed();
+        if !self.ordered(&row) || self.pending_end(name).ok().flatten().is_some() {
+            return;
+        }
+        match self.end_here(row, true) {
+            Ok(_) => warn!(machine = name, "ending it: broken, it bills for nothing"),
+            Err(e) => warn!(machine = name, "ending it: {}", e.message),
+        }
     }
 
     fn offline_in(&self, row: &MachineRow, seen: &HashMap<String, Seen>) -> Option<String> {
@@ -1171,6 +1259,9 @@ impl Machines {
         }
         if let Some(reason) = self.offline(&name) {
             return Err(offline_refusal(&name, &reason));
+        }
+        if let Some(broken) = self.broken(&name) {
+            return Err(broken_refusal(&name, &broken.message));
         }
         let failed = match lock(&self.seen).get(&name) {
             Some(seen) if seen.unreachable.is_some() => true,
@@ -1341,6 +1432,7 @@ impl Machines {
             .filter(|row| row.kind == MachineKind::Rental && row.state != MachineState::Ended && self.ordered(row))
             .filter(|row| !ending.contains(&row.name))
             .filter(|row| self.offline_in(row, &seen).is_none())
+            .filter(|row| seen.get(&row.name).and_then(|seen| broken_in(&row.name, seen)).is_none())
             .filter(|row| gpus == 0 || count(row).is_none_or(|n| n >= gpus))
             .min_by_key(|row| {
                 let (running, queued) = load.get(&row.name).copied().unwrap_or_default();
@@ -1364,6 +1456,9 @@ impl Machines {
         }
         if self.pending_end(name).ok().flatten().is_some() {
             return Some(format!("{name} is ending"));
+        }
+        if let Some(broken) = self.broken(name) {
+            return Some(format!("{name} is broken: {}", broken.message));
         }
         self.offline(name).map(|why| format!("{name} is offline: {why}"))
     }
@@ -2157,6 +2252,19 @@ fn ended_refusal(name: &str, reason: &str) -> Error {
     Error::new(Kind::Conflict, "machine_ended", format!("{name} has ended: {reason}"))
         .remedy("`--on new` rents a machine, or name another")
         .next("cozy machine ls")
+}
+
+/// Why machine `name` is broken (cl-977): its own Status's word, else this computer's.
+fn broken_in(name: &str, seen: &Seen) -> Option<v1::Broken> {
+    // Stopped, this computer's machine's last word is not what it is now: its next start checks again.
+    let said = seen.frame.as_ref().filter(|_| !(seen.stopped && name == "local")).and_then(|frame| frame.broken.clone());
+    said.or_else(|| seen.silent.clone())
+}
+
+pub(crate) fn broken_refusal(name: &str, reason: &str) -> Error {
+    Error::new(Kind::Unavailable, "machine_broken", format!("{name} is broken: {reason}"))
+        .remedy("it takes no work and a rental is released; `--on new` rents a machine, or name another")
+        .next(format!("cozy machine show {name}"))
 }
 
 fn offline_refusal(name: &str, reason: &str) -> Error {

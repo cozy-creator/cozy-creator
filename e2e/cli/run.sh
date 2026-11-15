@@ -40,6 +40,7 @@ parse "$@"
 . "$(dirname "$0")/source.sh"
 . "$(dirname "$0")/envcost.sh"
 . "$(dirname "$0")/egress.sh"
+. "$(dirname "$0")/stuck.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -72,7 +73,7 @@ step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985).
-case $SHARD in projectvault | plan) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | plan | stuck) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -554,6 +555,7 @@ case $SHARD in
     install_retries
     calcifer_faults
     calcifer_restarts
+    stuck_exit
     update
     remove
   " ;;
@@ -721,6 +723,8 @@ case $SHARD in
     rental_end
     logs
   " ;;
+  # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs (cl-977): about 10 min.
+  stuck) parts="stuck_exit logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating

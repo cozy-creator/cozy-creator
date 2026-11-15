@@ -26,11 +26,20 @@ stand_in() {
   reach=$(jq -r '.machine.reach // empty' "$OUT/$name-authorize.json")
   cozy --json machine add "$name" "$reach" --fingerprint "$fp" > "$OUT/$name-add.json" 2> "$OUT/$name-add.err" \
     || { check "$name: machine add $reach: $(head -c 300 "$OUT/$name-add.json") $(tail -c 300 "$OUT/$name-add.err")"; return 1; }
-  local args=()
-  [ -z "$CAND_TFS" ] || args+=(--tensorfs "$CAND_TFS")
-  [ -z "$CAND_RT" ] || args+=(--runtime "$CAND_RT")
-  [ ${#args[@]} -eq 0 ] || cozy --json machine update "$name" "${args[@]}" -y > "$OUT/$name-update.json" 2>&1 \
-    || { check "$name: the candidates: $(jq -r 'select(.type == "run.failed") | .run.reason.message' "$OUT/$name-update.json" 2> /dev/null | tail -c 400)"; return 1; }
+  # A build no release vouches for only its machine's owner installs, never a controller it authorized (xs-196
+  # `update_owner_only`): the stand-in's own cozy moves its machine to the candidates, a wheel from its own copy.
+  local args=() flag candidate
+  for flag in tensorfs runtime; do
+    candidate=$CAND_TFS; [ "$flag" = tensorfs ] || candidate=$CAND_RT
+    [ -n "$candidate" ] || continue
+    if [ -f "$candidate" ]; then
+      sudo install -m 644 "$candidate" "/opt/cozy-$name/" || { check "$name: its copy of $candidate"; return 1; }
+      candidate=/opt/cozy-$name/$(basename "$candidate")
+    fi
+    args+=(--"$flag" "$candidate")
+  done
+  [ ${#args[@]} -eq 0 ] || stand_as "$name" --json machine update local "${args[@]}" -y > "$OUT/$name-update.json" \
+    || { check "$name: the candidates: $(tail -c 400 "$OUT/$name-update.json") $(tail -c 300 "$OUT/$name.err")"; return 1; }
 }
 
 # set_runs <project> <file>: the project's runs of the echo, `number machine status` each.
