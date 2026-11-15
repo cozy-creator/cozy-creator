@@ -257,17 +257,20 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       };
       const shots = join(need('OUT'), 'web', 'render-time');
       mkdirSync(shots, { recursive: true });
-      /** The page at 1440×900 and 1920×1080, paper and dark, for a person to look at (look-at-your-own-ui). */
-      const look = async (what) => {
-        for (const [width, height] of [[1440, 900], [1920, 1080]]) {
-          await page.setViewportSize({ width, height });
-          for (const theme of ['paper', 'dark']) {
-            await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme === 'dark');
+      /** The page at 1440×900 and 1920×1080, on paper and dark (each a reload, as the page's own switch keeps it), for a person to look
+       *  at (look-at-your-own-ui); `again` puts back what's looked at after each reload. */
+      const look = async (what, again) => {
+        for (const theme of ['dark', 'paper']) {
+          await page.evaluate((chosen) => { localStorage.setItem('cozy.theme', chosen); }, theme);
+          await page.reload();
+          await again();
+          for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+            await page.setViewportSize({ width, height });
             await canvasIdle(page);
             await page.screenshot({ path: join(shots, `${what}-${width}x${height}-${theme}.png`) });
           }
         }
-        await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+        await page.setViewportSize({ width: 1600, height: 1000 });
       };
       await page.goto(project.url());
       await expect.poll(() => canvasVisible(page, 'slow')).toBe(true);
@@ -287,12 +290,16 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await region.getByRole('button', { name: 'Render', exact: true }).click();
       await expect.poll(async () => (await project.asset('slow')).versions ?? 0, { message: "slow's first take", timeout: 240_000 }).toBe(1);
       await expect.soft(time, 'beside Render once it ran, about how long').toHaveText(/^about (2\d|3\d) s$/, { timeout: 30_000 });
+      const timed = async () => {
+        await expect(await focus(page, 'slow')).toBeVisible();
+        await expect.soft(page.getByRole('region', { name: 'Focused asset' }).getByRole('note', { name: 'Render time' })).toBeVisible({ timeout: 30_000 });
+      };
       // This computer's runs are its project's own (xs-160), so its machine times none of them: the estimate stands on the
       // project's run here (`prior`).
       const ran = (await api.post(project.at('/fit'), { names: ['slow'] })).estimates?.[0];
       expect.soft(ran, "by this project's run here").toMatchObject({ machine: 'local', basis: 'prior' });
       expect.soft(ran?.run_ms, 'its run here, about its 24 s').toBeGreaterThanOrEqual(20_000);
-      await look('slow');
+      await look('slow', timed);
       await leave();
 
       // Fast: once rendered here, under 15 s, so nothing is said.
@@ -315,13 +322,24 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       const slowHere = region.getByRole('button', { name: 'Slow here', exact: true });
       await expect(slowHere, 'Slow here beside Render').toBeVisible();
       await expect.soft(region.getByRole('note', { name: 'Render time' }), 'no time on a CPU nothing measured').toHaveCount(0);
-      await look('shot');
-      await slowHere.click();
+      const shown = async () => {
+        await focus(page, 'shot');
+        await expect(slowHere).toBeVisible({ timeout: 30_000 });
+      };
+      await look('shot', shown);
       const notice = page.getByRole('group', { name: 'Slow here', exact: true });
+      const opened = async () => {
+        await shown();
+        if (!(await notice.count())) await slowHere.click();
+        await expect(notice).toBeVisible();
+        await notice.scrollIntoViewIfNeeded();
+      };
+      await slowHere.click();
       await expect(notice, 'it opens under the box').toBeVisible();
+      await expect.soft(notice, 'in view, next to Render').toBeInViewport();
       await expect.soft(notice.locator('p').first()).toHaveText('This computer has no GPU, so this would run on its CPU, slowly. On a rented RTX 4090, about 6 min.');
       await expect.soft(notice.locator('p').nth(1)).toHaveText('A rented RTX 4090 runs it for $0.69/h.');
-      await look('shot-notice');
+      await look('shot-notice', opened);
       // A press that begins inside and ends outside leaves it open; a click outside closes it; Slow here opens it again.
       const inside = await notice.locator('p').first().boundingBox();
       await page.mouse.move(inside.x + 4, inside.y + inside.height / 2);
@@ -337,7 +355,6 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await notice.getByRole('button', { name: 'Rent an RTX 4090', exact: true }).click();
       await expect(page, 'Machines, the card asked for').toHaveURL(`${project.url('machines')}?rent=${CARD.name}&gpus=1`);
       expect.soft(asked.filter((one) => one.names?.includes('shot')), 'Rent renders nothing').toEqual([]);
-      await page.setViewportSize({ width: 1600, height: 1000 });
     });
 
     await test.step('A heavy box asks first; Run here anyway renders here, then Cancel; Render again, and again after a reload', async () => {

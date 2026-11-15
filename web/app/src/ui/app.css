@@ -2173,21 +2173,45 @@ video.preview.on {
   height: 15px;
 }
 .status.slow-notice {
+  display: grid;
+  gap: 8px;
   max-width: 460px;
-  margin-top: 8px;
-  padding: 10px 12px;
+  margin: 8px 0;
+  padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--ood) 45%, transparent);
   border-radius: var(--round);
   background: var(--card);
+  color: var(--ink);
   font-size: var(--body);
+  line-height: 1.45;
+}
+.status.slow-notice p {
+  margin: 0;
 }
 .status.slow-notice p:first-child {
   color: var(--ood);
   font-weight: 600;
 }
+.status.slow-notice .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+.status.slow-notice .tb {
+  height: auto;
+  min-height: 34px;
+  padding: 0 14px;
+}
 .status.slow-notice .slow-close {
+  min-width: 34px;
   margin-left: auto;
-  padding: 0 8px;
+  padding: 0;
+  justify-content: center;
+}
+.status.slow-notice .slow-close .icon {
+  width: 16px;
+  height: 16px;
 }
 .run {
   display: inline-flex;
