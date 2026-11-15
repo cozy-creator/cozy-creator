@@ -352,8 +352,12 @@ async function died(error) {
     await focus.getByRole('button', { name: 'Render', exact: true }).click();
     const running = await until('the image render has a pending state tile', asset, (item) => item.versions === 10 && item.making?.length === 1, 300_000);
     const run = running.making[0];
-    const pending = history.locator(`.take.making[title="Run ${run}"]`);
+    const pending = history.locator(`.take.making[data-run="${run}"]`);
     await pending.scrollIntoViewIfNeeded();
+    // Its tile and its cancel name the run KEY-N, as the run drawer does (cl-987).
+    const key = (await api(`${at}/key`)).key;
+    const named = { tile: await pending.getAttribute('title'), cancel: await history.locator(`.take-at:has(.take.making[data-run="${run}"]) .take-off`).getAttribute('aria-label') };
+    check('pending_tile_names_its_run_key_n', named.tile === `Run ${key}-${run}` && named.cancel === `Cancel run ${key}-${run}`, { key, run, ...named });
     await pending.click();
     check('pending_tile_preview_does_not_approve_the_render', (await asset()).version === approvalBefore.version && (await asset()).approved === approvalBefore.approved);
     const edited = await until('editing an older state appends another alternative', asset, (item) => item.versions === 11 && !item.making?.length, 300_000);

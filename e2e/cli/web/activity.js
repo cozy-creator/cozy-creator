@@ -225,7 +225,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   check('face_result_download_says_its_bytes', result.every((face) => face.says === 'Saving' || /^Downloading result - \d.*B \/ \d/.test(face.says)), result);
   const gone = await until('its face gone with its take', () => page.locator('.card[data-asset="waits"] .run-face').count(), (n) => n === 0, 15_000).catch(() => 1);
   check('face_gone_with_its_take', gone === 0);
-  check('install_listed_with_its_waiter', said.rows.some((row) => /^install: activity_\d+ Install .* for run \d+$/.test(row)), said.rows);
+  check('install_listed_with_its_waiter', said.rows.some((row) => /^install: activity_\d+ Install .* for run [A-Z][A-Z0-9]*-\d+$/.test(row)), said.rows);
   check('a_run_waited_on_it', said.rows.some((row) => /^run: .*Waits on the install of activity_\d+$/.test(row)), said.rows);
   check('chip_marked_an_install', said.marks.includes('mark install'), said.marks);
   check('install_done_leaves_the_list', (await list.locator('[data-doing=install]').count()) === 0);
@@ -265,7 +265,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const row = await until('its bytes moving', () => fetching.first().innerText(), (text) => /[1-9][\d.]* [KMG]iB \/ /.test(text), 60_000);
   seen.download = row;
   check('download_counts_its_bytes', /iB \/ \d+ MiB/.test(row), row);
-  check('download_names_its_waiter', /for run \d+/.test(row), row);
+  check('download_names_its_waiter', /for run [A-Z][A-Z0-9]*-\d+/.test(row), row);
   check('download_named_as_people_say_it', row.startsWith(VAE_SAID), row);
   check('its_run_waits_on_the_download', (await list.locator('[data-doing=run]').filter({ hasText: `Waits on the download of ${VAE_SAID}` }).count()) === 1, await list.innerText());
   check('chip_marks_a_download', (await chip.locator('.mark.download').count()) === 1);
