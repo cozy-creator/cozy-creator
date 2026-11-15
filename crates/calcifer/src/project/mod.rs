@@ -3650,7 +3650,7 @@ impl Walk {
             // work, and the plan places it once it has.
             for unsent in self.unquoted() {
                 work.push(async move {
-                    let quoted = self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone()).await;
+                    let quoted = self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), true).await;
                     Done::Quoted { key: unsent.key, quoted }
                 }.boxed());
             }
@@ -3795,11 +3795,11 @@ impl Walk {
 
     /// What `wanted`'s machine has ready for job `key` (`PUT /v1/upcoming`): the function its text names, else the first of its package
     /// that makes this kind, with its model choices; and the function, as its row says it. None: its package makes nothing of the kind.
-    /// Local code is installed there first, as a call's is. A project's published code and its models are the machine's, as every
-    /// project's are (Paul, 11-13); an encrypted project's local code goes with the run that calls it.
+    /// Local code is staged there and its install sent, never waited for. A project's published code and its models are the machine's,
+    /// as every project's are (Paul, 11-13); an encrypted project's local code goes with the run that calls it.
     async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
         let Wanted { machine, hub, with, kind, made } = wanted;
-        let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), Some(key)).await?;
+        let package = self.host.foreseen(hub, with, &self.folder().dir, std::slice::from_ref(machine), Some(key)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
         let mut payload = Map::new();
         for field in ["models", "lora"] {
@@ -3819,7 +3819,8 @@ impl Walk {
                 if scope.as_ref().is_some_and(|scope| !scope.storage.ordinary) {
                     return Ok(None);
                 }
-                v1::Source::Local(crate::private_io::context(scope, self.host.ready(path, machine, hub, Some(key))).await?.source)
+                // Staged there without waiting: its install is the machine's preparation, shown on the job's row.
+                v1::Source::Local(crate::private_io::context(scope, self.host.staged(path, machine, hub)).await?.source)
             }
         };
         let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
@@ -3838,10 +3839,15 @@ impl Walk {
     }
 
     /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices; else why not. It waits for its package
-    /// to say what it calls (a local tool's code to be ready on a machine) and its models' cards what they weigh.
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>) -> Result<placement::Job, String> {
+    /// to say what it calls and its models' cards what they weigh; `waiting` (for another's output): its local tool read statically.
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, waiting: bool) -> Result<placement::Job, String> {
         let api = self.host.api();
-        let package = match self.host.package(hub, with, &self.folder().dir, &on, Some(key.as_str())).await {
+        // A waiting job's local tool is read statically: readying it on a machine would install it there first (`Host::foreseen`).
+        let package = match waiting {
+            true => self.host.foreseen(hub, with, &self.folder().dir, &on, Some(key.as_str())).await,
+            false => self.host.package(hub, with, &self.folder().dir, &on, Some(key.as_str())).await,
+        };
+        let package = match package {
             Err(e) => return Err(format!("{with}: {}", e.message)),
             Ok(package) => package,
         };
@@ -3883,7 +3889,7 @@ impl Walk {
         // What each ready job asks of a machine, read once, as its send would; a waiting one's comes in the walk's work (`unquoted`).
         let known: HashSet<String> = self.project.walker.lock().expect("walker lock").quotables.keys().cloned().collect();
         let read = unsent.iter().filter(|unsent| unsent.ready && !known.contains(&unsent.key)).map(|unsent| async move {
-            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone()).await)
+            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), false).await)
         });
         let mut unread: HashMap<String, String> = HashMap::new();
         let quotables = {

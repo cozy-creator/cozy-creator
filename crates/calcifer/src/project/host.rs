@@ -282,6 +282,29 @@ impl Host {
         self.published(hub, with, Some(&first)).await
     }
 
+    /// Local code `path` staged `on` a machine without waiting for its install (`local_code::prepare`): the source an upcoming item
+    /// names. The install it needs is sent and goes on there, the machine's preparation of the job.
+    pub(crate) async fn staged(&self, path: &Path, on: &On, hub: &str) -> Result<local_code::Prepared, Error> {
+        let scope = crate::private_io::current().or(crate::private_io::of_path(path)?);
+        crate::private_io::context(scope, async {
+            let code = local_code::own(&self.api, path)?;
+            local_code::prepare(&self.api, &code, on, hub, false, &self.key(path, on), None, &|run| self.installs.ended(run)).await
+        }).await
+    }
+
+    /// The package `with` names for a job that isn't sent yet: local code read by the static describer (`described`), never made
+    /// ready on a machine for it; a published one as `package` finds it.
+    pub(crate) async fn foreseen(&self, hub: &str, with: &str, folder: &Path, on: &[On], job: Option<&str>) -> Result<Package, Error> {
+        let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
+        match local_code::target(with, Some(folder), &home) {
+            Some(found) => {
+                let (path, _) = found?;
+                Ok(Package { local: Some(path), ..self.described(with, folder).await? })
+            }
+            None => self.package(hub, with, folder, on, job).await,
+        }
+    }
+
     /// Local code `with`, from `folder`, as described for a read that runs nothing: never made ready on a machine.
     pub(crate) async fn described(&self, with: &str, folder: &Path) -> Result<Package, Error> {
         let hub = self.api.machines.hubs.default_origin();
