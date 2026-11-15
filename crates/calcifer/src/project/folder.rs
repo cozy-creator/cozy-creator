@@ -133,6 +133,9 @@ pub(crate) struct File {
     pub frames: u64,
     #[serde(skip)]
     pub alpha: f64,
+    /// Only its size is known, read from its header as it came: the rest is measured once ffprobe gets to it.
+    #[serde(skip)]
+    pub shape_only: bool,
     /// A file too big for one object at the Hub: the objects it goes as, in order. Its first push lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<tensorfs::format::ObjectRef>,
@@ -165,19 +168,21 @@ pub(crate) struct Measured {
     alpha: f64,
     #[serde(default, skip_serializing_if = "is_zero")]
     duration_ms: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    shape_only: bool,
 }
 
 impl Measured {
     fn of(file: &File) -> Self {
-        Self { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms }
+        Self { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms, shape_only: file.shape_only }
     }
 }
 
 impl File {
     /// What `measured` says is measured of these bytes, on this row.
     fn measured_as(&mut self, measured: &File) {
-        (self.width, self.height, self.fps, self.frames, self.alpha, self.duration_ms) =
-            (measured.width, measured.height, measured.fps, measured.frames, measured.alpha, measured.duration_ms);
+        (self.width, self.height, self.fps, self.frames, self.alpha, self.duration_ms, self.shape_only) =
+            (measured.width, measured.height, measured.fps, measured.frames, measured.alpha, measured.duration_ms, measured.shape_only);
     }
 
     fn extension(&self) -> String {
@@ -216,7 +221,7 @@ impl File {
     pub(crate) fn unmeasured(&self) -> bool {
         match media_of(&self.extension()) {
             Some((_, "audio")) => self.duration_ms == 0,
-            Some(_) => self.width == 0,
+            Some(_) => self.width == 0 || self.shape_only,
             None => false,
         }
     }
@@ -2088,6 +2093,22 @@ impl Folder {
             }
         }
         self.record_measured(&measured)
+    }
+
+    /// The sizes `kept` read from their headers as they came, on their rows not measured yet: in the act that lists them, so the first read of
+    /// a picture has its shape and its box is drawn at it, not at a guess it grows from once ffprobe measures it.
+    pub(crate) fn keep_shapes<'a>(&self, kept: impl IntoIterator<Item = &'a Kept>) -> Result<(), Error> {
+        let shapes: BTreeMap<String, File> = self.reading_bare_lock(|lock| {
+            (kept.into_iter())
+                .filter(|kept| kept.file.shape_only && kept.file.width > 0)
+                .filter(|kept| lock.files.get(&kept.file.sha256).is_some_and(|row| row.width == 0))
+                .map(|kept| (kept.file.sha256.clone(), File { width: kept.file.width, height: kept.file.height, shape_only: true, ..Default::default() }))
+                .collect()
+        })?;
+        match shapes.is_empty() {
+            true => Ok(()),
+            false => self.record_measured(&shapes),
+        }
     }
 
     /// What's `measured` of these files by hash, in project.db and on their rows, in one write: what ffprobe says of their bytes, here or not.
