@@ -40,7 +40,7 @@ pub(crate) struct Boxed {
 }
 
 fn unknown(name: &str) -> Error {
-    Error::new(Kind::Usage, "project_edit", format!("the project has no box {name}")).next("cozy status")
+    Error::new(Kind::NotFound, "asset_unknown", format!("the project has no box {name}")).next("cozy status")
 }
 
 impl PartialEq for Boxed {
