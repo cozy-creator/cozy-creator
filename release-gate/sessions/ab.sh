@@ -26,7 +26,7 @@
 #              two failed cells stop the session
 #              "floor_mb_s", "floor_after_s" (optional: this cell's slow-host floor, lib.sh `step`; the session's by default);
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
-#   need_s     seconds the cap must buy (3600)
+#   need_s     seconds the cap must buy (3600), at most 19800: a hosted job ends at 6 h with nothing kept
 #   gpus       optional: the pod's GPU count (1); a cell's `--gpus=<n>` arg runs it on that many
 #   file       optional: a JSON file in this checkout (from its root) holding all of these, for a matrix past the
 #              dispatch input's 65,535 characters
@@ -93,7 +93,10 @@ done
 printf 'run 5 · sync local/x (source changed)\nrun 6 · local/x/f\nrun      6\n' > "$OUT/probe-cell.txt"
 current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$1.txt" 2>/dev/null; }
 [ "$(runno probe-cell)" = 6 ] && [ "$(current probe-cell)" = 6 ] || fail "parsers"
-quote "$(param need_s 3600)"
+NEED=$(param need_s 3600)
+# A hosted job ends at 6 h and keeps no log and no artifact then (43459786225): a session must end well inside it.
+[ "$NEED" -le 19800 ] || fail "need_s $NEED: past 5.5 h, a hosted job's 6 h end would lose every result; split the session"
+quote "$NEED"
 rent
 
 
