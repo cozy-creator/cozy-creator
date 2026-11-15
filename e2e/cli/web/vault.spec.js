@@ -169,7 +169,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
   await test.step('an encrypted project, made from the page', async () => {
     await page.getByRole('navigation', { name: 'Projects' }).getByRole('link', { name: project.name, exact: true }).click();
     const field = page.getByLabel("New project's folder");
-    await expect(field).toBeFocused();
+    await expect(page.getByLabel("New project's name")).toBeFocused();
     await expect.soft(page.getByLabel('Create without encryption'), 'encrypted unless asked').not.toBeChecked();
     const asked = async (folder) => {
       await field.fill(folder);

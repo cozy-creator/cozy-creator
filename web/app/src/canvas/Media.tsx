@@ -481,20 +481,22 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
         ref={element}
         className={`live canvas-control ${field}`}
         controls={!controller}
+        playsInline={field === "video"}
         preload="none"
         onTimeUpdate={(event) => onTime?.(event.currentTarget.currentTime)}
         onSeeked={(event) => onTime?.(event.currentTarget.currentTime)}
-        onEnded={() => stopRef.current()}
+        onClick={field === "video" && controller ? (event) => { event.stopPropagation(); controller.toggle() } : undefined}
+        // Pause/end keeps the decoded video frame. Closing Focus or losing its slot still releases the decoder.
+        onEnded={field === "video" ? undefined : () => stopRef.current()}
         onError={() => {
           const el = element.current
           // Bytes that didn't come are Calcifer's to fix by coming back. Bytes this browser can't decode, it can't.
           if (path !== undefined && el?.getAttribute("src") && el.error?.code !== MediaError.MEDIA_ERR_NETWORK && stream.health.get().state === "live") setState("unplayable")
         }}
       />
-      {/* A stop, not ✕: in a corner ✕ reads as close or delete (Paul, 11-12). */}
-      <button type="button" className="stop canvas-control" aria-label="Stop" title="Stop" onClick={() => stopRef.current()}>
+      {field === "audio" && <button type="button" className="stop canvas-control" aria-label="Stop" title="Stop" onClick={() => stopRef.current()}>
         <Icon name="stop" />
-      </button>
+      </button>}
     </>
   )
 }
@@ -1032,6 +1034,7 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
             loop={!open}
             autoPlay={!open}
             controls={open && !controller}
+            onClick={open && controller ? (event) => { event.stopPropagation(); controller.toggle() } : undefined}
             playsInline
             preload="auto"
             onLoadedMetadata={(event) => {
