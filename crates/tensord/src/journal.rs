@@ -596,6 +596,14 @@ fn db_error(error: impl std::fmt::Display) -> io::Error {
 fn encoded(value: &impl Serialize) -> io::Result<String> {
     serde_json::to_string(value).map_err(db_error)
 }
+/// A project run's caller id as the machine's columns keep it (cl-984): digested with its project, so the machine's journal
+/// never holds a project's run identities; an unscoped run's is its own.
+fn stored_id(scope: Option<&api::machine::LocalPrivateStorage>, id: &str) -> String {
+    match scope {
+        Some(scope) => format!("p:{}", tensorfs::sha256::hex_digest(format!("{}\0{id}", scope.project_id).as_bytes())),
+        None => id.to_owned(),
+    }
+}
 fn invocation_index(invocation: &Invocation) -> io::Result<String> {
     if invocation.local_private.is_none() { return encoded(invocation); }
     encoded(&serde_json::json!({
@@ -848,14 +856,29 @@ impl Journal {
                 let rows = only.query_map([id], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? })).map_err(db_error)?;
                 for row in rows { objects.push(row.map_err(db_error)?); }
             }
-            // Its inputs, uploaded for it: objects its record names that no other run holds.
+            // Every object its record names (inputs uploaded for it, outputs it made) that no other run holds.
             let record: Option<String> = tx.query_row("SELECT record FROM executions WHERE id=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
             if let Some(execution) = record.and_then(|record| decoded_execution(&record).ok()) {
+                let mut named = std::collections::BTreeMap::new();
                 for input in &execution.invocation.inputs {
-                    let sha256 = input.digest.strip_prefix("sha256:").unwrap_or(&input.digest).to_owned();
+                    named.insert(input.digest.strip_prefix("sha256:").unwrap_or(&input.digest).to_owned(), input.length);
+                }
+                fn digests(value: &Value, found: &mut std::collections::BTreeMap<String, u64>) {
+                    match value {
+                        Value::String(text) => {
+                            let hex = text.strip_prefix("sha256:").unwrap_or(text);
+                            if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) { found.entry(hex.to_ascii_lowercase()).or_insert(0); }
+                        }
+                        Value::Array(items) => items.iter().for_each(|item| digests(item, found)),
+                        Value::Object(fields) => fields.values().for_each(|item| digests(item, found)),
+                        _ => {}
+                    }
+                }
+                if let Ok(value) = serde_json::to_value(&execution) { digests(&value, &mut named); }
+                for (sha256, length) in named {
                     let others: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM run_objects WHERE sha256=?1 AND execution<>?2)", params![sha256, id], |row| row.get(0)).map_err(db_error)?;
                     if !others && sha256.len() == 64 && !objects.iter().any(|held| held.sha256 == sha256) {
-                        objects.push(tensorfs::format::ObjectRef { sha256, length: input.length });
+                        objects.push(tensorfs::format::ObjectRef { sha256, length });
                     }
                 }
             }
@@ -874,12 +897,17 @@ impl Journal {
         }
         tx.commit().map_err(db_error)?;
         // Their cells are zeroed (`secure_delete`); the WAL's older images of those pages go once no reader holds them.
+        self.truncate_wal();
+        Ok((objects, subjects))
+    }
+
+    /// The WAL emptied into the journal, retried while a reader holds an older snapshot: no page image it held outlives this.
+    pub(crate) fn truncate_wal(&self) {
         for _ in 0..40 {
             let busy: i64 = self.connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0)).unwrap_or(1);
-            if busy == 0 { break; }
+            if busy == 0 { return; }
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
-        Ok((objects, subjects))
     }
 
     pub(crate) fn workspace_id(&self) -> &str {
@@ -1318,7 +1346,7 @@ impl Journal {
     /// An accepted run is returned for normal cancellation; its spec/outcome is never replaced.
     pub(crate) fn reserve_run_cancellation(&mut self, actor: &str, id: &str) -> io::Result<Execution> {
         validate_scope(actor, id, id)?;
-        let key = format!("run:{}", encoded(&(actor, id))?);
+        let key = format!("run:{}", encoded(&(actor, stored_id(crate::private_io::current().as_ref(), id)))?);
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
         if update_run_reserved(&tx, actor, id)? {
@@ -1596,7 +1624,7 @@ pub(crate) struct Accepting<'a> {
 fn accepting(tx: &rusqlite::Transaction<'_>, actor: &str, run: Accepting<'_>) -> io::Result<(Execution, bool)> {
     let Accepting { id, digest, invocation, objects, spec } = run;
     validate_scope(actor, id, id)?;
-    let key = format!("run:{}", encoded(&(actor, id))?);
+    let key = format!("run:{}", encoded(&(actor, stored_id(invocation.local_private.as_ref(), id)))?);
     if update_run_reserved(tx, actor, id)? {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists, "this run id names a software update"));
     }
@@ -1663,7 +1691,7 @@ fn insert(
             })
         })
         .collect();
-    tx.execute("INSERT INTO executions(idempotency_key,invocation,record,state,updated_ms,actor,request_id,submission_id) VALUES(?1,?2,'{}','queued',?3,?4,?5,?6)", params![key, invocation_index(&invocation)?, timestamp(),context.as_ref().map(|context|context.actor.as_str()),context.as_ref().map(|context|context.request_id.as_str()),context.as_ref().map(|context|context.submission_id.as_str())]).map_err(db_error)?;
+    tx.execute("INSERT INTO executions(idempotency_key,invocation,record,state,updated_ms,actor,request_id,submission_id) VALUES(?1,?2,'{}','queued',?3,?4,?5,?6)", params![key, invocation_index(&invocation)?, timestamp(),context.as_ref().map(|context|context.actor.as_str()),context.as_ref().map(|context|stored_id(invocation.local_private.as_ref(), &context.request_id)),context.as_ref().map(|context|stored_id(invocation.local_private.as_ref(), &context.submission_id))]).map_err(db_error)?;
     let execution = Execution {
         id: tx.last_insert_rowid().to_string(),
         idempotency_key: key.into(),
@@ -1726,7 +1754,7 @@ impl Journal {
             .connection
             .query_row(
                 "SELECT record FROM executions WHERE (actor=?1 OR ?1 IS NULL AND actor IS NOT NULL) AND request_id=?2 LIMIT 1",
-                params![actor, request_id],
+                params![actor, stored_id(crate::private_io::current().as_ref(), request_id)],
                 |row| row.get(0),
             )
             .optional()
@@ -2683,7 +2711,7 @@ fn public_prior(
     let request: Option<String> = tx
         .query_row(
             "SELECT record FROM executions WHERE actor=?1 AND request_id=?2",
-            params![actor, request_id],
+            params![actor, stored_id(crate::private_io::current().as_ref(), request_id)],
             |row| row.get(0),
         )
         .optional()
@@ -2693,7 +2721,7 @@ fn public_prior(
     }
     tx.query_row(
         "SELECT record FROM executions WHERE actor=?1 AND submission_id=?2",
-        params![actor, submission_id],
+        params![actor, stored_id(crate::private_io::current().as_ref(), submission_id)],
         |row| row.get(0),
     )
     .optional()
