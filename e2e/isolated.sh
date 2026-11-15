@@ -198,6 +198,7 @@ case $suite:$shard in
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
   cli:ondemand) needs='packages birefnet downloads spare' ;;
+  cli:disk) needs='packages disk' ;;
   cli:env-cost) needs='packages birefnet' ;;
   cli:plan) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
@@ -348,7 +349,7 @@ if [ -n "$needs" ]; then
       held
       rc_floor ;;
   esac
-  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* ]]; then
+  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* || " $needs " == *" disk "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -364,6 +365,14 @@ if [ -n "$needs" ]; then
     random_weights "$seed/fontbox.safetensors" 115
     mirror "$seed/fontbox.safetensors" lilylilith/fontbox bf16 0.1.0 https://huggingface.co/lilylilith/fontbox --source-format as-is
     rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" disk "* ]]; then
+    # What disk_full (cli/disk.sh, tfs-150) cycles through a 2.5 GiB disk: six models of 384 MiB of random weights, none sharing a chunk.
+    for i in 1 2 3 4 5 6; do
+      random_weights "$seed/disk.safetensors" 384
+      mirror "$seed/disk.safetensors" "e2e/disk-$i" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+      rm -f "$seed/disk.safetensors"
+    done
   fi
   if [[ " $needs " == *" spare "* ]]; then
     random_weights "$seed/pagebox.safetensors" 900
