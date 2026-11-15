@@ -200,6 +200,17 @@ interface Snap {
 const ROWED = ["tool", "fields", "timeline", "pinned", "approved", "version", "versions", "prefixes", "sha256"] as const
 const rowOf = (asset: Asset): Partial<Asset> => Object.fromEntries(ROWED.map((field) => [field, asset[field]]))
 
+/** `asset` with `file` its next version: what its row says then, and the number it takes. None when it has that file already. */
+function nextVersion(asset: Asset, file: Pick<MainFile, "sha256" | "field"> & Partial<MainFile>): { row: Partial<Asset>; number: number } | null {
+  const had = asset.prefixes ?? []
+  if (asset.sha256 === file.sha256 || had.some((held) => held.main?.sha256 === file.sha256)) return null
+  const first: VersionPrefix[] = had.length || !asset.sha256 ? had : [{ number: 1, prefix: asset.sha256.slice(0, 12) }]
+  const number = Math.max(0, ...first.map((held) => held.number)) + 1
+  const main = file.path === undefined ? undefined : { output: file.field, path: file.path, ...file }
+  const prefixes = [...first, { number, prefix: file.sha256.slice(0, 12), main }]
+  return { row: { prefixes, versions: prefixes.length }, number }
+}
+
 export const CARD_WIDTH = 240
 
 type Flow = ReactFlowInstance<ElementNode, Edge>
@@ -397,6 +408,8 @@ export class CanvasStore {
   private renames = new Map<string, string>()
   /** When Calcifer answered each rename of `renames`, by its old name: a read begun after has it. */
   private renamedAt = new Map<string, number>()
+  /** Told each time the project is read into the canvas, or the canvas is put away. */
+  private hearing = new Set<() => void>()
   private adding = 0
   private seen = false
   private selected: Set<string>
@@ -471,6 +484,7 @@ export class CanvasStore {
     this.setHot(null)
     this.menu.set(null)
     this.viewing.set(null)
+    for (const told of [...this.hearing]) told()
   }
 
   /** A confirmed vault lock retires even an off-route store. Navigation alone keeps its work. */
@@ -511,7 +525,8 @@ export class CanvasStore {
     this.movedAt.clear(); this.moving.clear(); this.movingFrom.clear(); this.movingEdits.clear(); this.movingSince.clear(); this.renames.clear(); this.renamedAt.clear()
     this.selected.clear(); this.moreOpen.clear(); this.tools.set(new Map()); this.allAsking.set(null)
     for (const listeners of this.subscribers.values()) for (const listener of listeners) listener()
-    this.subscribers.clear(); this.named.clear()
+    for (const told of [...this.hearing]) told()
+    this.subscribers.clear(); this.named.clear(); this.hearing.clear()
     this.menu.set(null)
     this.viewing.set(null)
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
@@ -1082,6 +1097,7 @@ export class CanvasStore {
       for (const { name } of fresh) this.unsettle(name)
     }
     this.names.set(this.names.get() + 1)
+    for (const told of [...this.hearing]) told()
   }
 
   /** A run this page hasn't heard of: its progress comes on the stream, but what it says now has to be read. */
@@ -1760,19 +1776,25 @@ export class CanvasStore {
     return { ask, drop }
   }
 
-  /** `row` over what its row says, now, until a read begun after the answer says for itself, as `overlay`, and asked of Calcifer under `edit`. Refused, it goes, and the rest stays. */
-  private over<T extends { stale?: string[]; etag?: string | null }>(name: string, row: Partial<Asset>, send: (served: string, write: Write) => Promise<T>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void }) {
+  /** `row` over what its row says, now, until a read begun after the answer says for itself, as `overlay`, and asked of Calcifer under `edit`. Refused, it goes, and the rest stays.
+   *  With none yet, `send` shows it as it goes (`show`), or answers nothing when there's nothing to ask, and its step goes. */
+  private over<T extends { stale?: string[]; etag?: string | null }>(name: string, row: Partial<Asset> | null, send: (served: string, write: Write, show: (row: Partial<Asset>) => void) => Promise<T | null>, what: string, edit: string | undefined, then?: { done?(answer: T): void; refused?(): void }) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
     const id = this.ids.get(key)
     const now = () => this.views.get(this.namesById.get(id ?? "") ?? "")
-    const { ask, drop } = this.overlay(key, row)
-    this.act(key, {
-      send,
+    let shown = row ? this.overlay(key, row) : undefined
+    const show = (later: Partial<Asset>) => {
+      const held = now()
+      if (!shown && held) shown = this.overlay(held.name, later)
+    }
+    this.act<T | null>(key, {
+      send: (served, write) => send(served, write, show),
       edit,
       done: (answer) => {
-        ask.until = nextProjectOrder()
+        if (!answer) return void (edit && this.history.forget(edit))
+        if (shown) shown.ask.until = nextProjectOrder()
         this.readAfter([id])
         // A write of its own: its read back isn't news.
         const held = now()
@@ -1784,7 +1806,7 @@ export class CanvasStore {
         then?.done?.(answer)
       },
       refused: (error) => {
-        drop()
+        shown?.drop()
         if (edit) this.history.forget(edit)
         say(`Couldn't ${what} ${name}`, error)
         then?.refused?.()
@@ -1894,28 +1916,69 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const asset = this.views.get(key)?.asset
     if (!asset) return false
-    const had = asset.prefixes ?? []
-    const same = had.find((held) => held.main?.sha256 === file.sha256)
-    if (same || asset.sha256 === file.sha256) {
+    const next = nextVersion(asset, file)
+    if (!next) {
       say(`${name} has that picture already`)
       return false
     }
-    const first: VersionPrefix[] = had.length || !asset.sha256 ? had : [{ number: 1, prefix: asset.sha256.slice(0, 12) }]
-    const number = Math.max(0, ...first.map((held) => held.number)) + 1
-    const main = file.path === undefined ? undefined : { output: file.field, path: file.path, ...file }
-    const prefixes = [...first, { number, prefix: file.sha256.slice(0, 12), main }]
     const edit = merged ?? this.step(`Added ${what} to ${key}`, [key])
     let note = 0
-    this.over<VersionMoved>(key, { prefixes, versions: prefixes.length }, (served, write) => this.client.addVersion(this.projectId!, served, source, write), "add to", edit, {
+    this.over<VersionMoved>(key, next.row, (served, write) => this.client.addVersion(this.projectId!, served, source, write), "add to", edit, {
       done: (answer) => {
         if (answer.already) dismiss(note)
         if (!answer.already) this.view(key, answer.number)
       },
       refused: () => dismiss(note),
     })
-    this.view(key, number)
+    this.view(key, next.number)
     if (merged === undefined) note = this.offer(edit, `${what} joined ${name}`)
     return true
+  }
+
+  /**
+   * A file dropped on `name`, its next version. Its step and its turn are taken as it's dropped, so what's done after it lands after it, Calcifer
+   * there or not; it shows, and goes, once `held` has its bytes in the project, which is what Calcifer finds it by. `ended`: it's off its way.
+   */
+  dropVersion(name: string, what: string, field: string, held: Promise<string>, ended: () => void) {
+    const key = this.resolveName(name)
+    let off = false
+    const end = () => {
+      if (!off) ended()
+      off = true
+    }
+    // Its failure is said as its turn comes.
+    held.catch(() => {})
+    if (!this.views.get(key)?.asset) return end()
+    const id = this.ids.get(key)
+    const edit = this.step(`Added ${what} to ${key}`, [key])
+    let note = 0
+    let asked: string | undefined
+    this.over<VersionMoved>(key, null, async (served, write, show) => {
+      if (asked === undefined) {
+        const source = await held.finally(end)
+        const view = this.views.get(this.namesById.get(id ?? "") ?? "")
+        const next = view?.asset && nextVersion(view.asset, { sha256: source.slice("sha256:".length), field })
+        if (!view || !next) {
+          if (view) say(`${view.name} has that picture already`)
+          return null
+        }
+        show(next.row)
+        this.view(view.name, next.number)
+        note = this.offer(edit, `${what} joined ${view.name}`)
+        asked = source
+      }
+      return this.client.addVersion(this.projectId!, served, asked, write)
+    }, "add to", edit, {
+      done: (answer) => {
+        const now = this.namesById.get(id ?? "")
+        if (answer.already) dismiss(note)
+        else if (now) this.view(now, answer.number)
+      },
+      refused: () => {
+        end()
+        dismiss(note)
+      },
+    })
   }
 
   /** A take let go on a box: one with no tool takes it as a version, anything else with words mentions it. Whether anything did. */
@@ -2800,13 +2863,15 @@ export class CanvasStore {
 
   /**
    * Each box as `snaps` found it, shown now: one that wasn't there goes, one that went is back, the rest as it was made and where it was. What Calcifer answers
-   * settles it, as any write's answer does; refused, all of it goes and what Calcifer holds is read again.
+   * settles it, as any write's answer does; refused, all of it goes and what Calcifer holds is read again. A name put back is a rename, as `rename` has one.
    */
   private showAs(snaps: Snap[]): { settle(): void; release(): void } {
     const overlays: { ask: Asking; drop(): void }[] = []
     const back: string[] = []
     const hidden: string[] = []
     const moved: string[] = []
+    /** Each box renamed back, by its node, and the name Calcifer has for it until it's answered. */
+    const renamed: { id: string; from: string }[] = []
     for (const snap of snaps) {
       const name = (snap.node && this.namesById.get(snap.node)) || snap.name
       const now = this.deleting.has(name) ? undefined : this.views.get(name)
@@ -2827,7 +2892,10 @@ export class CanvasStore {
         this.renames.set(name, snap.name)
         this.moveName(name, snap.name, true)
         const id = this.ids.get(snap.name)
-        if (id) back.push(snap.name)
+        if (id) {
+          back.push(snap.name)
+          renamed.push({ id, from: name })
+        }
       }
       if (snap.view.asset && now.asset) {
         this.patch(snap.name, { sent: undefined })
@@ -2852,6 +2920,7 @@ export class CanvasStore {
           if (id) this.served.set(id, name)
           this.patch(name, { pending: at })
         }
+        for (const { from } of renamed) if (this.renames.has(from)) this.renamedAt.set(from, at)
         const there = names.filter((name) => !hidden.includes(name))
         if (there.length) this.readAgain(there)
       },
@@ -2860,6 +2929,14 @@ export class CanvasStore {
         for (const name of back) this.patch(name, { pending: nextProjectOrder() })
         for (const name of hidden) this.deleting.delete(name)
         for (const name of moved) this.masks.delete(name)
+        // Each name it put back goes back to what Calcifer has, and what took that name meanwhile, another writer's, shows as Calcifer has it.
+        for (const { id, from } of renamed) {
+          this.renames.delete(from)
+          this.renamedAt.delete(from)
+          const now = this.namesById.get(id)
+          if (now && now !== from) this.moveName(now, from, true)
+        }
+        if (renamed.length && this.state && this.rows && this.flow) this.reconcile()
         this.readAgain(names)
         if (this.projectId) void this.client.canvas(this.projectId).then(({ cards, seq }) => this.applyCanvas(cards, 0, seq), () => {})
       },
@@ -3124,8 +3201,22 @@ export class CanvasStore {
     const inTurn = {
       ...action,
       send: async (once: AbortSignal, outboxed: string) => {
-        const served = id && this.namesById.has(id) ? this.served.get(id) : undefined
-        return served ? action.send(served, { once, edit: action.edit, action: outboxed }) : NOT_THERE
+        let refusedAs: string | undefined
+        for (;;) {
+          const served = id && this.namesById.has(id) ? this.served.get(id) : undefined
+          if (!id || !served) return NOT_THERE
+          try {
+            return await action.send(served, { once, edit: action.edit, action: outboxed })
+          } catch (error) {
+            // Calcifer has nothing by the name the page knows it by: another writer renamed or deleted it since the page last heard. It
+            // goes again, still in its turn, under the name the stream says it has now, and gone, there's nothing to do. Its own rename on
+            // its way, or refused twice under one name, the refusal stands.
+            const unknown = error instanceof ApiError && error.status === 404 && error.body.code === "asset_unknown"
+            if (!unknown || refusedAs === served || this.namesById.get(id) !== served) throw error
+            refusedAs = served
+            await this.heardOf(id, served, once, error)
+          }
+        }
       },
       done: (answer: T | typeof NOT_THERE) => {
         if (answer !== NOT_THERE) action.done?.(answer as T)
@@ -3133,6 +3224,33 @@ export class CanvasStore {
     } as Action<T | typeof NOT_THERE>
     this.outbox.add(inTurn)
     return inTurn
+  }
+
+  /**
+   * Box `id`, which Calcifer had nothing by `served` for, until the page hears what became of it: renamed or gone, as the stream says, or
+   * found as `served` again by a read begun after. Put away, the canvas hears nothing: `refusal` stands.
+   */
+  private heardOf(id: string, served: string, signal: AbortSignal, refusal: unknown): Promise<void> {
+    if (!this.namesById.has(id) || this.served.get(id) !== served) return Promise.resolve()
+    const after = nextProjectOrder()
+    const was = this.state?.assets.find((asset) => asset.name === served)
+    this.readAgain([served])
+    return new Promise((done, failed) => {
+      const look = () => {
+        if (signal.aborted) return end(() => failed(signal.reason))
+        const read = this.began > after ? this.state?.assets.find((asset) => asset.name === served) : undefined
+        if (!this.namesById.has(id) || this.served.get(id) !== served || (read && read !== was)) return end(done)
+        if (this.retired || !this.flow) end(() => failed(refusal))
+      }
+      const end = (then: () => void) => {
+        this.hearing.delete(look)
+        signal.removeEventListener("abort", look)
+        then()
+      }
+      this.hearing.add(look)
+      signal.addEventListener("abort", look, { once: true })
+      look()
+    })
   }
 
   /** The name a new box takes now, as Calcifer would give it: what's on the canvas and what's being placed is taken. A deleted box's name is free (cl-919). */
