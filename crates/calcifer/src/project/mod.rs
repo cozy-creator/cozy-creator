@@ -5175,8 +5175,9 @@ impl Walk {
             }
             let sha256 = match output.path.as_ref().filter(|path| path.is_file()) {
                 Some(path) => folder.keep(path)?,
-                // On its way here: its machine holds it, and whatever reads it there needn't wait for this computer.
-                None if output.owed() && output.media_type != api::tree::MEDIA => {
+                // No file at its path: on its way here, or landed already where its path only names it (an encrypted project's storage). Listed
+                // by its hash either way, as its machine holds it, and `arrived_owed` takes it from there: whatever reads it needn't wait.
+                None if !output.is_checkpoint() && !output.stays && output.export_error.is_none() && output.media_type != api::tree::MEDIA => {
                     let (Some(sha256), Some(machine)) = (&output.sha256, &run.machine) else { continue };
                     let name = crate::outputs::file_name(run.number, &output.name, output.index, &output.media_type);
                     away.push((sha256.to_string(), machine.clone(), output.length, Some(name)));
