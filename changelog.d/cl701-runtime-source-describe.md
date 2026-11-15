@@ -1,0 +1,1 @@
+Local package description and publication retain a locked Runtime source directory, carried wheel or Git revision instead of requesting an unrelated registry build with the same version. This fixes describing unpublished SDK development builds; the installed execution SDK remains selected by the machine's existing compatibility policy.
