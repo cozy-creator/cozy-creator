@@ -6,7 +6,7 @@ import { ratioWords } from "../ratios"
 import { faceOf as runFace, short, type Face } from "../RunFace"
 import { type NodeState, viewState } from "../StateDot"
 import { aspectOf, failureOf, HEAD, hexOf, isPicture, makes, ratioOf, shownOf, toolName, valueIn, valuesOf } from "../shown"
-import { clock, lineOf, mentionsIn } from "../text"
+import { clock, lineAt, mentionsIn } from "../text"
 
 export interface RunContext {
   run?: Run
@@ -64,6 +64,8 @@ export interface Presentation {
   picture?: ScenePicture
   references: ScenePicture[]
   words: string
+  /** Mentions in `words` its tool can't use there (cl-944): struck through, as Focus strikes them. */
+  unused: string[]
   note: string
   error?: string
   tool: string
@@ -130,7 +132,8 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
   const tools = store.tools.get()
   const shown = shownOf(view)
   const kind = view.entity?.kind ?? shown?.field ?? view.placing?.media ?? asset?.kind ?? "file"
-  let words = asset ? lineOf(valuesOf(view), fieldsOf(asset, tools)) ?? "" : ""
+  const line = asset ? lineAt(valuesOf(view), fieldsOf(asset, tools)) : null
+  let words = line?.words ?? "", at = line?.at
   const tool = asset?.tool ? tools.get(asset.tool) : undefined
   const failed = failureOf(view) ?? (viewState(view) === "failed" ? asset?.failure : undefined)
   const output = pictureOf(view)
@@ -143,7 +146,7 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
     const said = control && input?.[control.field]
     const asked = said && typeof said === "object" && !Array.isArray(said) ? (said as { text?: unknown }).text : said
     // A known run's own input is authoritative. Until its full read arrives, another edit cannot stand in for what it was sent.
-    if (run) words = typeof asked === "string" ? asked : ""
+    if (run) { words = typeof asked === "string" ? asked : ""; at = control?.field }
     const files = new Set<string>()
     let specified = false
     const visit = (value: unknown) => {
@@ -192,6 +195,7 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
     version: asset?.kind !== "text" && shown?.number !== undefined ? `v${shown.number}` : !asset && isPicture(view) ? "v1" : undefined,
     state: view.entity ? view.linked === "failed" ? "failed" : view.linked === "making" ? "running" : null : viewState(view),
     unseen: asset?.unseen?.length ?? 0, kind, picture: output, references, words, note,
+    unused: (asset?.unused ?? []).filter((one) => one.at === at).map((one) => one.mention),
     error: failed?.message.replace(`${name}: `, "") ?? view.refused,
     tool: asset?.tool ? tool ? toolName(tool) : asset.tool : "",
     shape: shapeOf(view, tools), from, progress,

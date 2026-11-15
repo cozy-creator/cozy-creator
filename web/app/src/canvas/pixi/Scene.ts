@@ -71,7 +71,7 @@ interface Drawn {
   pictures: Map<string, Picture>
   texts: Map<string, Text>
   fullTexts: Map<string, string>
-  chips: { text: string; box: Box; missing: boolean }[]
+  chips: { text: string; box: Box; missing: boolean; unused: boolean }[]
   checker?: TilingSprite
   hits: { box: Box; part: HitPart }[]
   presentation: Presentation
@@ -123,7 +123,7 @@ export class PixiScene {
   private selectionScale = 1
   private viewBounds: Box = { x: 0, y: 0, w: 0, h: 0 }
   private checkers = new Map<string, Texture>()
-  private palette?: { theme: SceneUpdate["theme"]; colors: Palette; glow: number; alpha: number; chip: number; chipInk: number }
+  private palette?: { theme: SceneUpdate["theme"]; colors: Palette; glow: number; alpha: number; chip: number; chipInk: number; unused: number }
   private measure = document.createElement("canvas").getContext("2d")!
   private segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
   private reducedMotion = matchMedia("(prefers-reduced-motion: reduce)")
@@ -165,7 +165,8 @@ export class PixiScene {
       const gap = new Color(css.getPropertyValue("--select-gap").trim() || base.gap)
       const glow = new Color(css.getPropertyValue("--select-glow").trim() || base.select)
       this.palette = { theme: input.theme, colors: { ...base, select: select.toNumber(), gap: gap.toNumber() }, glow: glow.toNumber(), alpha: glow.alpha,
-        chip: new Color(css.getPropertyValue("--ember").trim() || base.select).toNumber(), chipInk: new Color(css.getPropertyValue("--ember2").trim() || base.ink).toNumber() }
+        chip: new Color(css.getPropertyValue("--ember").trim() || base.select).toNumber(), chipInk: new Color(css.getPropertyValue("--ember2").trim() || base.ink).toNumber(),
+        unused: new Color(css.getPropertyValue("--ood").trim() || base.failed).toNumber() }
     }
     const margin = 96 / zoom
     const screen: Box = { x: -input.camera.x / zoom - margin, y: -input.camera.y / zoom - margin, w: input.screen.width / zoom + margin * 2, h: input.screen.height / zoom + margin * 2 }
@@ -387,9 +388,9 @@ export class PixiScene {
 
   /** Native text shaping with actual chip geometry; it owns no editor, HTML snapshot or additional interaction model. */
   private words(drawn: Drawn, labels: Set<string>, x: number, y: number, width: number, lines: number, colors: Palette) {
-    const runs: { text: string; chip: boolean; missing: boolean; x: number; row: number; width: number }[] = []
+    const runs: { text: string; chip: boolean; missing: boolean; unused: boolean; x: number; row: number; width: number }[] = []
     let row = 0, cursor = 0, cut = false
-    const add = (text: string, chip: boolean, missing: boolean) => {
+    const add = (text: string, chip: boolean, missing = false, unused = false) => {
       const font = chip ? BODY * 0.9 : BODY
       let length = this.textWidth(text, font, chip ? MONO : SANS, chip) + (chip ? 10 : 0)
       if (cursor && cursor + length > width) { row++; cursor = 0 }
@@ -398,7 +399,7 @@ export class PixiScene {
       if (length > width) { text = this.truncate(text, width - (chip ? 10 : 0), font, chip ? MONO : SANS, chip); length = Math.min(width, this.textWidth(text, font, chip ? MONO : SANS, chip) + (chip ? 10 : 0)) }
       const prior = runs.at(-1)
       if (!chip && prior && !prior.chip && prior.row === row) { prior.text += text; prior.width += length }
-      else runs.push({ text, chip, missing, x: cursor, row, width: length })
+      else runs.push({ text, chip, missing, unused, x: cursor, row, width: length })
       cursor += length
       return true
     }
@@ -407,17 +408,17 @@ export class PixiScene {
       if (part.mention) {
         const mention = part.text.slice(1, -1)
         const missing = Boolean(drawn.node.view.asset?.missing?.includes(mention) || this.options.store.mentionOf(mention, drawn.node.name)?.gone)
-        add(chipWords(mention), true, missing)
+        add(chipWords(mention), true, missing, !missing && drawn.presentation.unused.includes(mention))
       } else for (const token of part.text.split(/(\s+)/)) {
         if (cut) break
         if (token.includes("\n")) { row++; cursor = 0; if (row >= lines) cut = true; continue }
-        if (this.textWidth(token, BODY, SANS) <= width) { add(token, false, false); continue }
+        if (this.textWidth(token, BODY, SANS) <= width) { add(token, false); continue }
         let piece = ""
         for (const { segment } of this.segmenter.segment(token)) {
-          if (piece && this.textWidth(piece + segment, BODY, SANS) > width) { if (!add(piece, false, false)) break; piece = "" }
+          if (piece && this.textWidth(piece + segment, BODY, SANS) > width) { if (!add(piece, false)) break; piece = "" }
           piece += segment
         }
-        if (!cut && piece) add(piece, false, false)
+        if (!cut && piece) add(piece, false)
       }
     }
     if (cut && runs.length) {
@@ -429,10 +430,12 @@ export class PixiScene {
       const top = y + run.row * BODY * 1.35 + (run.chip ? BODY * 0.05 : 0)
       if (run.chip) {
         const box = { x: x + run.x, y: top, w: run.width, h: size * 1.25 }
-        drawn.ink.roundRect(box.x, box.y, box.w, box.h, 4).fill({ color: run.missing ? colors.failed : this.palette!.chip, alpha: 0.13 })
-        this.label(drawn, labels, `words-chip-${index}`, run.text, box.x + 5, top, Math.max(0, box.w - 10), size, run.missing ? colors.failed : this.palette!.chipInk, true, true)
-        if (run.missing) drawn.ink.moveTo(box.x + 5, box.y + box.h / 2).lineTo(box.x + box.w - 5, box.y + box.h / 2).stroke({ width: 1, color: colors.failed })
-        drawn.chips.push({ text: run.text, box, missing: run.missing })
+        // Gone, or its tool can't use it here: struck through, as Focus's `.chip.missing` and `.chip.unused` are.
+        const struck = run.missing ? colors.failed : run.unused ? this.palette!.unused : undefined
+        drawn.ink.roundRect(box.x, box.y, box.w, box.h, 4).fill({ color: struck ?? this.palette!.chip, alpha: 0.13 })
+        this.label(drawn, labels, `words-chip-${index}`, run.text, box.x + 5, top, Math.max(0, box.w - 10), size, struck ?? this.palette!.chipInk, true, true)
+        if (struck !== undefined) drawn.ink.moveTo(box.x + 5, box.y + box.h / 2).lineTo(box.x + box.w - 5, box.y + box.h / 2).stroke({ width: 1, color: struck })
+        drawn.chips.push({ text: run.text, box, missing: run.missing, unused: run.unused })
       } else this.label(drawn, labels, index ? `words-${index}` : "words", run.text, x + run.x, top, Math.min(width - run.x, run.width + 1), size, colors.ink)
     })
   }
@@ -987,7 +990,7 @@ export class PixiScene {
       landing: drawn.landing ? { active: true, scale: drawn.landing.scale, alpha: drawn.landing.alpha, durationMs: 260 } : null,
       references: [...drawn.pictures].filter(([key]) => key.startsWith("reference-")).map(([key, picture]) => ({ key, ready: picture.sprite.visible, ...world({ x: picture.sprite.x, y: picture.sprite.y, w: picture.sprite.width, h: picture.sprite.height })!, ...(/^(sha256:)?[0-9a-f]{64}$/i.test(picture.displayed ?? "") ? { sha: picture.displayed!.replace(/^sha256:/, "") } : {}) })),
       words: drawn.presentation.words,
-      chips: drawn.chips.map(chip => ({ text: chip.text, missing: chip.missing, ...world(chip.box)! })),
+      chips: drawn.chips.map(chip => ({ text: chip.text, missing: chip.missing, unused: chip.unused, ...world(chip.box)! })),
       media: {
         ready: Boolean(texture), failed: Boolean(main?.failed), local, width: texture?.width ?? 0, height: texture?.height ?? 0,
         requestedWidth: this.resolution(body.w), resolution: local ? "local" : path.includes("/thumbs/") ? String(width) : "original",
