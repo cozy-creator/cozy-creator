@@ -332,9 +332,9 @@ jq -se --argjson got "${once:-null}" 'map(select(.run)) | length > 0 and all(.ru
   "$OUT/watch.ndjson" > /dev/null && J '.project_id' <<< "$once" \
   || check "watch restart: the stream's run records don't name run $n's project as GET does ($(jq -c '{project_id, project}' <<< "${once:-null}")): $(jq -sc 'map(select(.run) | .run | {project_id, project}) | unique' "$OUT/watch.ndjson")"
 # Enter on the newest row, run $n, opens it as `cozy run watch` does; q goes back, and q again quits.
-soon screen_says "$OUT/watch-ls.screen" "^ *$n .* completed" || check "watch restart: cozy run ls past the restarts doesn't list run $n completed: $(head -5 "$OUT/watch-ls.screen")"
+soon screen_says "$OUT/watch-ls.screen" "^ *[A-Z][A-Z0-9]*-$n .* completed" || check "watch restart: cozy run ls past the restarts doesn't list run $n completed: $(head -5 "$OUT/watch-ls.screen")"
 kill -USR1 "$lister" 2> /dev/null || true
-soon screen_says "$OUT/watch-ls.screen" "cozy run watch $n " && soon screen_says "$OUT/watch-ls.screen" 'completed' \
+soon screen_says "$OUT/watch-ls.screen" "cozy run watch [A-Z][A-Z0-9]*-$n " && soon screen_says "$OUT/watch-ls.screen" 'completed' \
   && ! screen_says "$OUT/watch-ls.screen" 'no such run|run_not_found' \
   || check "watch restart: cozy run ls didn't open run $n: $(head -8 "$OUT/watch-ls.screen")"
 kill "$lister" 2> /dev/null || true
