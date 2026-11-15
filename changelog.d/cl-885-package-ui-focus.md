@@ -1,1 +1,0 @@
-A package's component for one field draws it in Focus too: a field that's only a thing to set (a number, a toggle, a short choice) is grouped under the frame there, and its component, not the declared control, draws it.
