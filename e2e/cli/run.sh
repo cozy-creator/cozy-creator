@@ -680,6 +680,7 @@ case $SHARD in
   projectdb-purged) parts="db_purged logs" ;;
   projectdb-closes) parts="db_closes logs" ;;
   projectvault) parts="
+    vault_times
     shared_scratch
     projectvault
     vault_leftovers
