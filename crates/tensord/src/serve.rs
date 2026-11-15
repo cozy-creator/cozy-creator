@@ -212,6 +212,9 @@ fn run_machine(
     let stuck = crate::machine::stuck::current(&paths);
     let holder = stuck.first().map(|stuck| format!("the TensorD before this one ({})", stuck.line()));
     let (_owned, store) = own(&engine, &layout.store, holder.as_deref())?;
+    if holder.is_some() {
+        crate::storage::take_over_locks(store.root(), &generations);
+    }
     // The machine's one downloader, held for its life: it reads the datacenter volume before the
     // Hub and fills it. A variable naming no mount point (the volume was not delivered) is none.
     boot.at("cache");
