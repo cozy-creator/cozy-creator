@@ -362,6 +362,7 @@ impl LocalSources {
                 fs::copy(self.objects.store()?.path(&object).map_err(crate::storage::io_error)?, carried.join(&wheel.name))?;
             }
             let built = published::patiently(job, || self.publisher.build(&environment, &environment::Project {
+                managed_calls: false,
                 dir: &project,
                 python: &self.publisher.sdk.python,
                 locked: locked.as_ref(),

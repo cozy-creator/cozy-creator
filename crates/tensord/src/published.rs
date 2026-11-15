@@ -1264,6 +1264,7 @@ impl Publisher {
         let fetch = || self.fetch_hub(&files, source, &dir, job).map(drop);
         let (env, wheels, label) = (dir.join("env"), dir.join("wheels"), format!("{package} {release}"));
         let built = self.build(&env, &environment::Project {
+                managed_calls: false,
             dir: &project,
             python: &card.python,
             locked: Some(locked),
@@ -2175,6 +2176,8 @@ pub(crate) fn declares_models(installation: &Installation, entrypoint: &str) -> 
 /// run's Hub hosts (each one wheel, moved by TensorFS), and every package it names.
 #[derive(Debug, Default)]
 pub(crate) struct Locked {
+    /// Default project dependency closure, excluding managed-call dependency groups.
+    caller_packages: BTreeSet<String>,
     distribution: String,
     git: Vec<String>,
     local: Vec<String>,
@@ -2264,6 +2267,7 @@ pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source
         }
         seen
     };
+    locked.caller_packages = reach(roots.clone(), &[]);
     let other = reach(roots, &layer::ROOTS);
     locked.torch = reach(layer::ROOTS.map(String::from).to_vec(), &[]).into_iter()
         .filter(|name| layer::provides(name) && !other.contains(name)).collect();

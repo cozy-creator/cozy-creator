@@ -50,10 +50,12 @@ pub(crate) struct Generation {
     #[serde(default)]
     pub environment: String,
 }
-/// Another package's App installed in an environment: its calls run as child runs of its own
-/// package, from the caller's environment.
+/// Another package's App, executed from its admitted dependency environment.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Callee {
+    /// A separately prepared managed-call environment; old records share the caller's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python: Option<PathBuf>,
     pub distribution: String,
     pub version: String,
     pub application: String,
@@ -161,6 +163,14 @@ impl Catalog {
                 )))
             }
         }
+        let managed = platform::paths::venv_python(
+            &fs::canonicalize(directory.join("env"))?.join(".cozy-calls")
+        );
+        for python in record.callees.iter().filter_map(|callee| callee.python.as_ref()) {
+            if python != &managed || !python.is_file() {
+                return Err(invalid("callee interpreter does not name its held managed environment"));
+            }
+        }
         Ok(HeldGeneration {
             record,
             hold: Arc::new(hold),
@@ -209,7 +219,7 @@ impl Catalog {
     }
 }
 impl HeldGeneration {
-    /// One App's executor view, with the environment and lifetime hold unchanged.
+    /// One App's executor view, retaining the generation that owns both environments.
     pub(crate) fn application(&self, application: &str) -> io::Result<Self> {
         if application.is_empty() || application == self.record.application {
             return Ok(self.clone());
@@ -217,6 +227,7 @@ impl HeldGeneration {
         let callee = self.record.callees.iter().find(|c| c.application == application)
             .ok_or_else(|| invalid("this environment holds no such application"))?;
         let mut held = self.clone();
+        if let Some(python) = &callee.python { held.record.python = python.clone(); }
         held.record.package = callee.package.clone();
         held.record.version = callee.version.clone();
         held.record.application = callee.application.clone();
