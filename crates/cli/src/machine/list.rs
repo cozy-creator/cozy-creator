@@ -19,7 +19,7 @@ pub(crate) const HEADERS: [&str; 11] = [
 /// What `--json` keeps of a machine in a list (`--full`: all of it): the table's facts, by the record's names.
 pub(crate) const FIELDS: &[&str] = &[
     "rentals", "unanswered", "signed_out", "machines.name", "machines.placeholder", "machines.kind", "machines.state", "machines.hub", "machines.rental_id",
-    "machines.ordered", "machines.unverified", "machines.offline", "machines.unreachable", "machines.boot", "machines.reason", "machines.end_failed",
+    "machines.ordered", "machines.unverified", "machines.offline", "machines.broken", "machines.unreachable", "machines.boot", "machines.reason", "machines.end_failed",
     "machines.running", "machines.queued", "machines.rental.sku", "machines.rental.accelerator", "machines.rental.gpus",
     "machines.rental.usd_micros_per_hour", "machines.rental.spend_usd_micros", "machines.rental.spend_basis",
     "machines.rental.rented_at_ms", "machines.status.version", "machines.status.phase", "machines.status.gpus.index",
