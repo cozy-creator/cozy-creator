@@ -394,7 +394,7 @@ export function CanvasSurface(props: Props) {
 
     const inspection = {
       camera: () => ({ ...controller.getViewport() }),
-      interaction: () => ({ active: visible(), cameraDisabled: isDisabled.current, locked: Boolean(callbacks.current.locked), pointerDown, dragging: Boolean(drag), marquee: Boolean(marquee), touches: touches.size }),
+      interaction: () => ({ active: visible(), cameraDisabled: isDisabled.current, locked: Boolean(callbacks.current.locked), pointerDown, dragging: Boolean(drag), marquee: Boolean(marquee), touches: touches.size, requestedHover: hover.current, nativeHover: nativeName.current, naming: Boolean(hover.current && store.get(hover.current)?.draft !== undefined), focused: store.focusedName.get() }),
       hitTest: (point: { x: number; y: number }) => {
         const hit = scene?.hitTest(controller.screenToWorld(point))
         if (hit) return hit

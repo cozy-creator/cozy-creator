@@ -266,6 +266,14 @@ async function candidate(context, origin, directory) {
 
   // A hybrid mouse/touch session leaves a native overlay under the first finger. Exercise that actual missing-press path.
   const input = await context.newCDPSession(page);
+  await page.evaluate(() => {
+    window.__hoverEvents = [];
+    for (const type of ['pointermove', 'pointerleave', 'pointercancel']) window.addEventListener(type, event => {
+      const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+      window.__hoverEvents.push({ type, pointerType: event.pointerType, buttons: event.buttons, x: event.clientX, y: event.clientY, target: event.target?.className, hit: inspection?.hitTest({ x: event.clientX, y: event.clientY }), interaction: inspection?.interaction() });
+      if (window.__hoverEvents.length > 24) window.__hoverEvents.shift();
+    }, true);
+  });
   await input.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
   const touch = (type, points) => input.send('Input.dispatchTouchEvent', { type, touchPoints: points.map(({ x, y, id }) => ({ x, y, id, radiusX: 2, radiusY: 2, force: 1 })) });
   await passive(); await canvas.focus(); await page.keyboard.press('Escape');
@@ -347,6 +355,7 @@ async function candidate(context, origin, directory) {
   if (page) {
     seen.failedResources = await page.locator('.canvas-root').evaluate(el => el.canvasInspection?.resources()).catch(() => null);
     seen.failedInteraction = await page.locator('.canvas-root').evaluate(el => ({ interaction: el.canvasInspection?.interaction(), camera: el.canvasInspection?.camera(), names: el.canvasInspection?.names(), selected: el.canvasInspection?.selectedNames(), cards: el.canvasInspection?.names().map(name => ({ name, ...el.canvasInspection.card(name) })) })).catch(() => null);
+    seen.hoverEvents = await page.evaluate(() => window.__hoverEvents).catch(() => null);
   }
   if (page && out) await page.screenshot({ path: join(out, 'failure.png'), timeout: 5000 }).catch(() => {});
 }).finally(async () => {
