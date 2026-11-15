@@ -51,7 +51,10 @@ mod imp {
         fs, io,
         os::{
             fd::AsRawFd,
-            unix::{fs::MetadataExt, process::CommandExt},
+            unix::{
+                fs::{FileTypeExt, MetadataExt},
+                process::CommandExt,
+            },
         },
         path::{Path, PathBuf},
     };
@@ -118,14 +121,15 @@ mod imp {
         }
     }
     fn ipc(file: &File) -> Result<()> {
-        let kind = file.metadata()?.mode() & libc::S_IFMT;
-        if kind == libc::S_IFIFO {
+        // The file's type, as std reads `st_mode` on every Unix (`mode_t` is u32 on Linux, u16 on macOS).
+        let kind = file.metadata()?.file_type();
+        if kind.is_fifo() {
             return Ok(());
         }
-        if kind == libc::S_IFREG && anonymous_ram(file)? {
+        if kind.is_file() && anonymous_ram(file)? {
             return Ok(());
         }
-        if kind != libc::S_IFSOCK {
+        if !kind.is_socket() {
             return Err(denied("managed IPC manifest contains a filesystem object"));
         }
         #[cfg(target_os = "linux")]
