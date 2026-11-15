@@ -220,7 +220,7 @@ function Settings() {
         />
         Send anonymous performance data
       </label>
-      <p className="muted">Each run's package, models, versions, GPU, size and times. Never prompts, images, names or who ran it.</p>
+      <p className="muted">Each run's package, models, versions, GPU, size, times and errors, under a random install ID. Never prompts, images, names or your account.</p>
       <Failure error={ask.error} lead="Couldn't change it" />
     </Section>
   )

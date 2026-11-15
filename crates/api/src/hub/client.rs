@@ -569,12 +569,6 @@ impl Client {
             .await
     }
 
-    /// What `function` (`org/package/function`) took on each GPU, from every cozy's anonymous reports.
-    pub async fn run_times(&self, function: &str) -> Result<RunTimes, Error> {
-        self.json(self.at(Method::GET, "/v1/run-times", &[]).query(&[("function", function)]))
-            .await
-    }
-
     /// Reports runs to the Hub anonymously (cl-1006); answers how many it kept.
     pub async fn report_runs(&self, reports: &RunReports) -> Result<RunReportsKept, Error> {
         self.json(self.at(Method::POST, "/v1/run-reports", &[]).json(reports)).await

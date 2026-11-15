@@ -164,6 +164,7 @@ impl Machines {
             civitai: token(&config.civitai_token),
         };
         let local = crate::local::Local::new(&home, user_home, config);
+        let reports = crate::reports::Reports::new(config, &home);
         let me = Arc::new(Self {
             hubs: Hubs::new(&home, config.hub_url.clone()),
             providers: (providers != v1::ProviderAccess::default()).then_some(providers),
@@ -186,7 +187,7 @@ impl Machines {
             rc_ready: Notify::new(),
             lists: crate::ahead::Lists::default(),
             arrivals: tokio::sync::watch::channel(0).0,
-            reports: crate::reports::Reports::new(config),
+            reports,
             calcifer,
         });
         me.calcifer.serve_with(&me);
