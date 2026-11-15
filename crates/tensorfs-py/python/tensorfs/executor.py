@@ -29,6 +29,7 @@ from ._ext.executor import (
     Malformed,
     Map,
     MemoSettings,
+    ModelNeed,
     ModelPrefetch,
     PrepareRequest,
     Preview,
@@ -55,6 +56,7 @@ Request = (
     | ChildForget
     | GpuRelease
     | ModelPrefetch
+    | ModelNeed
     | Publish
     | CheckpointItem
     | StageMemoLookup
@@ -88,6 +90,7 @@ __all__ = [
     "Malformed",
     "Map",
     "MemoSettings",
+    "ModelNeed",
     "ModelPrefetch",
     "PrepareRequest",
     "Preview",

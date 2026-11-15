@@ -488,8 +488,8 @@ export class Client {
   }
 
   /** One asset as it is now: what a change of it costs, whatever else the project holds. */
-  asset(id: string, name: string): Promise<AssetVersions> {
-    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`)
+  asset(id: string, name: string, signal?: AbortSignal): Promise<AssetVersions> {
+    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { signal })
   }
 
   projectAddress(reference: string): Promise<ProjectAddress> {

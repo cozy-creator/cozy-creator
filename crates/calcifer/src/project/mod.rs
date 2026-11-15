@@ -3220,8 +3220,6 @@ struct Walk {
 
 /// How often what's landing tries a project that won't take it.
 const HELD_UP: std::time::Duration = std::time::Duration::from_secs(1);
-/// How long a take of this computer's waits for its files to land before it is listed without them.
-const LOCAL_LANDING: std::time::Duration = std::time::Duration::from_secs(10);
 /// What a send refused for a machine that went meanwhile says (`Machines::reach`): the job is placed again (cl-920), this many times.
 pub(crate) const GONE: [&str; 3] = ["machine_ended", "machine_offline", "machine_ending"];
 const PLACED_AGAIN: u32 = 3;
@@ -5095,14 +5093,9 @@ impl Walk {
         };
         let landed = async {
             let Some(run) = self.host.sent(&key)? else { return Ok(None) };
-            let mut ended = self.host.ended(&run.id).await?;
-            // On this computer its bytes are a moment behind: its take is listed with them, no take looking done before it's here
-            // (Paul, 11-12). Elsewhere what reads it goes now, on its machine, and the walk isn't over until the bytes are here.
-            if ended.machine.as_deref() == Some("local") && ended.output.iter().any(api::calcifer::OutputItem::owed)
-                && let Ok(Ok(here)) = tokio::time::timeout(LOCAL_LANDING, self.host.wait(&run.id)).await
-            {
-                ended = here;
-            }
+            let ended = self.host.ended(&run.id).await?;
+            // Listed now, on any machine: until its bytes are here (`arrived_owed`) its take is pending, its file absent and unsized, never
+            // done (Paul, 11-12). What reads it goes now, on its machine, and the walk isn't over until the bytes are here.
             Ok(Some((run.id, self.land_owed(&key, &ended).await?)))
         };
         let landed = landed.await;

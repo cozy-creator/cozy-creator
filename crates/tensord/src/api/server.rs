@@ -61,7 +61,8 @@ pub(crate) struct MachineIdentity {
     pub webrtc: Option<std::net::TcpListener>,
     /// Where browsers reach it; Status reports it with the port `serve` bound.
     pub player: crate::machine::player::Reach,
-    pub(crate) webrtc_port: Option<u16>,
+    /// The address `serve` bound it on.
+    pub(crate) webrtc_bound: Option<std::net::SocketAddr>,
     /// The store's directory; Status reports its filesystem.
     pub store: std::path::PathBuf,
     /// Where the store's logs rotate, and where TensorD's own log rolls.
@@ -93,12 +94,12 @@ pub(crate) async fn serve(
         }
         None => None,
     };
-    identity.webrtc_port = match &webrtc {
-        Some(listener) => Some(listener.local_addr()?.port()),
+    identity.webrtc_bound = match &webrtc {
+        Some(listener) => Some(listener.local_addr()?),
         None => None,
     };
     let mut measured = MeasuredIdentity::of(&identity);
-    measured.webrtc_port = identity.webrtc_port;
+    measured.webrtc_port = identity.webrtc_bound.map(|bound| bound.port());
     tokio::spawn(prove_readiness(port, readiness, measured));
     let tls = TlsAcceptor::from(Arc::new(tls(&identity.key_pem, &identity.cert_der)?));
     let identity = Arc::new(identity);

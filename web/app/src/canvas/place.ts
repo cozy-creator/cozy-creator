@@ -258,14 +258,17 @@ export class Placer {
       const asking = this.ask(key, bytes, dropped, edit, own, signal)
       owed()
       try {
-        then?.(await asking)
+        // Awaited apart from `then`: `then?.(await …)` skips the await with no `then`, and its refusal goes nowhere.
+        const name = await asking
+        then?.(name)
       } catch (error) {
         // What it held went since it looked: moved by another import, or dropped after a day. Send it again.
         if (!(error instanceof ApiError && error.body.code === "file_not_held")) throw error
         const digest = await bytes
         const again = this.store.outbox.owing()
         await inLine(() => this.send(key, file, digest, signal)).finally(again)
-        then?.(await this.ask(key, Promise.resolve(digest), dropped, edit, own, signal))
+        const name = await this.ask(key, Promise.resolve(digest), dropped, edit, own, signal)
+        then?.(name)
       }
     } catch (error) {
       if (!signal.aborted) say(file.name, error)
