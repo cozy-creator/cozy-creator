@@ -217,15 +217,18 @@ fn exclusive(root: &FsPath) -> Result<ProjectTransition, Error> {
     Ok(ProjectTransition { root: root.to_owned(), _access: guard })
 }
 
-/// [`exclusive`], waiting up to `within` for a request that holds the project (a read, a measurement) to finish.
-fn exclusive_within(root: &FsPath, within: Duration) -> Result<ProjectTransition, Error> {
-    let until = std::time::Instant::now() + within;
-    loop {
-        match exclusive(root) {
-            Err(busy) if busy.code == "project_busy" && std::time::Instant::now() < until => std::thread::sleep(Duration::from_millis(200)),
-            done => return done,
-        }
-    }
+/// [`exclusive`], queued: what asks for the project after it waits behind it, so it has the project once the requests already
+/// holding it end, or `project_busy` after `within`. Only from a blocking thread (`block_in_place`, `spawn_blocking`) holding no
+/// read of the project: it would wait for itself.
+fn exclusive_within(api: &Api, root: &FsPath, within: Duration) -> Result<ProjectTransition, Error> {
+    let queued = tokio::time::timeout(within, access(root).write_owned());
+    let Ok(guard) = tokio::runtime::Handle::current().block_on(queued) else {
+        let holder = if api.projects.active_requests(root) { "a project request" }
+            else if crate::local_code::private_process_active(root) { "a project tool" }
+            else { "a project read (an upload, a thumbnail or a measurement)" };
+        return Err(Error::new(Kind::Conflict, "project_busy", format!("{holder} is still running; retry after it finishes")));
+    };
+    Ok(ProjectTransition { root: root.to_owned(), _access: guard })
 }
 
 /// Upload routes are outside the project router, but must hold the same storage transition
@@ -814,7 +817,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         // a view that can no longer be opened.
         let revoked = held(root).is_some_and(|session| lapsed(&session.lock().expect("vault session")));
         // A read that holds it a moment is no reason to refuse: the lock waits for it, as it does below for what ends.
-        let busy = match held(root).filter(|_| !revoked).map(|_| exclusive_within(root, LOCK_DRAIN)) {
+        let busy = match held(root).filter(|_| !revoked).map(|_| exclusive_within(api, root, LOCK_DRAIN)) {
             Some(Ok(transition)) => {
                 let id = project_id(root).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
                 let store = api.projects.transition_store(api, &id, &transition)?;
@@ -834,10 +837,11 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
             return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![] });
         }
     }
-    // What the lock ended is still settling (its runs' last writes hold the project a moment): it waits for that as the drain
-    // above does, else answers locking with what it ended, and the sweeper locks once it has settled.
+    // A lock waits for the project as the drain above does: for the requests let in before its view was revoked (each now
+    // refused), and for what it ended, still settling (its runs' last writes hold the project a moment), else it answers
+    // locking with what it ended, and the sweeper locks once it has settled.
     let settling = !ended.is_empty();
-    let gate = if settling { exclusive_within(&root, LOCK_DRAIN) } else { exclusive(&root) };
+    let gate = if settling || ask.action == "lock" { exclusive_within(api, &root, LOCK_DRAIN) } else { exclusive(&root) };
     let mut transition = match gate {
         Ok(transition) => transition,
         Err(busy) if settling && busy.code == "project_busy" => {
@@ -857,14 +861,9 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
             Err(busy) if ask.action == "lock" && busy.code == "project_busy" && std::time::Instant::now() < draining => {
                 say(root, "lock drain", || format!("its lock waits: {}", busy.message));
                 drop(transition);
-                transition = loop {
-                    std::thread::sleep(Duration::from_millis(200));
-                    match exclusive(&root) {
-                        Ok(transition) => break transition,
-                        Err(busy) if std::time::Instant::now() >= draining => return Err(busy),
-                        Err(_) => {}
-                    }
-                };
+                // What refused it says nothing when it ends: a moment, then the project again, queued.
+                std::thread::sleep(Duration::from_millis(200));
+                transition = exclusive_within(api, &root, draining.saturating_duration_since(std::time::Instant::now()))?;
             }
             changed => break changed?,
         }

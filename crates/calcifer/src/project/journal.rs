@@ -170,7 +170,11 @@ impl Projects {
                 }
             }
         }
-        let fresh=api.calcifer.attach_project(&store).map_err(|_| Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"))?;
+        // A lock revokes the view without the gate: one that lands while this reads says so (409), not that the journal is gone.
+        let fresh=api.calcifer.attach_project(&store).map_err(|error| match error {
+            StoreError::Locked(code) => Error::new(api::error::Kind::Conflict, code, "the project was locked, or its view changed, while it was read"),
+            _ => Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"),
+        })?;
         if fresh {
             tokio::spawn(crate::hub::jobs::resume_project(api.clone(),store.project_id().into()));
             if store.resume_allowed().map_err(|_|Error::new(api::error::Kind::Conflict,"project_journal","the project journal is unavailable"))? && store.project.folder.lock()?.owes() { super::walk(api,&store.project); }
