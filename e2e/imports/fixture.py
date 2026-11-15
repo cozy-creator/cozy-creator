@@ -104,6 +104,22 @@ def name(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value).lower()
 
 
+#: A PEP 440 version of the forms uv locks: a release, an a/b/rc pre-release, .postN, .devN.
+VERSION = re.compile(r"(\d+(?:\.\d+)*)(?:(a|b|rc)(\d+))?(?:\.post(\d+))?(?:\.dev(\d+))?")
+
+
+def key(version: str) -> tuple[tuple[int, ...], tuple[int, int], int, float]:
+    """`version`'s PEP 440 order."""
+    found = VERSION.fullmatch(version)
+    if found is None:
+        raise ValueError(f"{version} is not a version this fixture orders")
+    release, kind, pre, post, dev = found.groups()
+    numbers = tuple(int(part) for part in release.split("."))
+    numbers += (0,) * (8 - len(numbers))
+    stage = (("a", "b", "rc").index(kind), int(pre)) if kind else (-1, 0) if dev and not post else (3, 0)
+    return numbers, stage, int(post) if post else -1, int(dev) if dev else float("inf")
+
+
 def load(path: Path) -> Document:
     return cast(Document, tomllib.loads(path.read_text()))
 
@@ -158,9 +174,12 @@ def prepare(source: Path, staged: Path, report: Path) -> None:
                 raise ValueError(f"{directory}: Hub dependency {dependency} has no cohort checkout")
             folder = by_name[dependency]
             version = text(table(projects[folder]["project"])["version"])
+            # The committed lock is bound to production, which holds released versions only (Paul 11-13: no
+            # prereleases for testing): it may name an older release than the cohort's source, never a newer one. The
+            # fixture relocks against the source either way (`verify`).
             versions = {text(item["version"]) for item in locked if name(text(item["name"])) == dependency}
-            if versions and versions != {version}:
-                raise ValueError(f"{directory}: locked {dependency} {versions} differs from cohort {version}")
+            if len(versions) > 1 or any(key(locked_at) > key(version) for locked_at in versions):
+                raise ValueError(f"{directory}: locked {dependency} {versions} is newer than cohort {version}")
             dependencies[dependency] = {"directory": folder, "name": dependency, "version": version}
         targets.append({"directory": directory, "name": text(table(project["project"])["name"]), "dependencies": sorted(hub_names)})
     if any(item["directory"] in {target["directory"] for target in targets} for item in dependencies.values()):
