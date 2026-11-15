@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { projectFolder, implementationRow, previewVersion, approveVersion, chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, addBoxes, storedOf } = require('./page');
+const { projectFolder, implementationRow, previewVersion, approveVersion, chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, addBoxes, storedOf, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -106,6 +106,7 @@ function replaceFile(at, text) {
   // The X is a shut box's, under the pointer.
   const deleteBox = async (name) => {
     await away();
+    await hoverBox(page, name);
     await box(name).locator('.nm').hover();
     await box(name).locator('.head [aria-label=Delete]').click();
   };
@@ -115,13 +116,13 @@ function replaceFile(at, text) {
   const keptWords = { name: 'kept_words', kind: 'image', fields: { description: 'Written\nby hand.' } };
   // Local code is a tool once something in the project names it. A real render needs no GPU this way. Its kind given, nothing reads it yet.
   addBoxes(folder, local ? [keptWords, { name: 'named_here', tool: `${drawer}/draw`, kind: 'image' }] : [keptWords]);
-  await box('kept_words').waitFor();
+  await until('kept words exist', () => canvasBox(page, 'kept_words'), Boolean);
   letGo();
   await page.unroute(listRead);
 
   // The shell: a name, Render all, and a menu holding the rest. No dock, no edges, no path, no zoom, no machine picker.
   check('no_dock', (await page.locator('.dock').count()) === 0);
-  check('no_edges', (await page.locator('.react-flow__edge, .ge').count()) === 0);
+  check('no_edges', (await page.locator('.canvas-edge, .ge').count()) === 0);
   check('top_is_minimal', (await page.locator('.top .path, .top select, .top .sum:not(.ood)').count()) === 0, await page.textContent('.top'));
   await page.click('.main-menu summary');
   const menu = await page.locator('.main-menu nav a').allTextContents();
@@ -135,12 +136,12 @@ function replaceFile(at, text) {
   // Every package the Hub lists, with nothing installed (cl-896): the isolated Hub's are qwen-image-2, minimax-h3, sdxl and birefnet.
   const resting = await until('the Hub read', async () => (await api(`/v1/tools?project=${id}`)).body, (body) => ['cozy', 'qwen-image-2', 'minimax-h3', 'sdxl', 'birefnet'].every((name) => body.tools.some((tool) => tool.package === name))).catch(() => null);
   check('every_hub_package_listed', Boolean(resting), resting && { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
-  const viewport = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+  const viewport = () => page.evaluate(() => JSON.stringify(document.querySelector('.canvas-root').canvasInspection.camera()));
   const before = await viewport();
   await page.click('.tools [aria-label="Hide the tools"]');
   await page.waitForSelector('.tools.shut');
   check('tools_fold', (await page.locator('.stage').evaluate((stage) => stage.getBoundingClientRect().left)) < 60);
-  check('folding_keeps_the_canvas', (await viewport()) === before && (await box('kept_words').count()) === 1);
+  check('folding_keeps_the_canvas', (await viewport()) === before && Boolean(await canvasBox(page, 'kept_words')));
   await page.click('.tools [aria-label="Show the tools"]');
   check('sidebar_is_only_nodes_and_tools', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools input, .tools .browse-toggle, .tools .browse, .tools .box-shelf-head').count() === 0 && !(await page.locator('.tools button').allTextContents()).some((word) => /Browse|Checkpoints|Add file/.test(word)));
 
@@ -163,8 +164,8 @@ function replaceFile(at, text) {
   const boxName = toolWire?.name;
   // Where the drop lands in Wander; editing begins only after an explicit double-click.
   const place = await page.evaluate(({ x, y }) => {
-    const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-    return { x: (x - m.e) / m.a, y: (y - m.f) / m.a };
+    const root = document.querySelector('.canvas-root'), m = root.canvasInspection.camera(), bounds = root.getBoundingClientRect();
+    return { x: (x - bounds.x - m.x) / m.zoom, y: (y - bounds.y - m.y) / m.zoom };
   }, { x: 1300, y: 900 });
   const made = await dragOut(firstTool, 1300, 900);
   // A picture tool stays in Wander; opening it and choosing New explicitly gives it an editor.
@@ -187,7 +188,7 @@ function replaceFile(at, text) {
   const home = await until('its row', async () => (await rows())[made.name], Boolean);
   check('box_at_the_drop', Math.abs(home.y - (place.y - 16)) < 3, { home, place });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(made.name)}`, { method: 'DELETE' });
-  await until('that box gone', () => box(made.name).count(), (n) => n === 0);
+  await until('that box gone', () => canvasBox(page, made.name), box => box === null);
   check('list_keeps_words', (await of('kept_words'))?.fields?.description === 'Written\nby hand.', await of('kept_words'));
 
   // Basic nodes survive a fresh read without acquiring a model. The editor is an intrinsic timeline, distinct from generative video.
@@ -201,7 +202,7 @@ function replaceFile(at, text) {
   }
   await away();
   await page.reload();
-  await page.locator('.react-flow').waitFor();
+  await page.locator('.canvas-root').waitFor();
   const afterReload = await state();
   const blank = (kind) => afterReload.assets.find((held) => held.name === blanks[kind].name);
   check('blank_media_types_persist_without_models', ['image', 'video', 'audio'].every((kind) => blank(kind)?.kind === kind && blank(kind)?.fields?.node_kind === kind && !blank(kind)?.tool && !('text' in (blank(kind)?.fields ?? {}))), { image: blank('image'), video: blank('video'), audio: blank('audio') });
@@ -213,9 +214,9 @@ function replaceFile(at, text) {
   const toolOnto = async (row, name) => {
     await away();
     await fitCanvas(page);
-    await box(name).waitFor();
+    await until('target geometry', () => canvasBox(page, name), Boolean);
     await row.scrollIntoViewIfNeeded();
-    const target = await box(name).locator('.card').boundingBox();
+    const target = (await canvasBox(page, name)).body;
     await carry(page, row, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
     await settled(page);
     check(`tool_drop_on_${name}_does_not_enter_focus`, await page.locator('[data-focused-asset]').count() === 0);
@@ -254,7 +255,7 @@ function replaceFile(at, text) {
   // Let go on bare canvas, the first from (x, y) down: a box keeps room under it for its tool and shape since cl-932 (4ae6c085a), so
   // named_here now reaches 500,600, and the tool let go there went onto it (43244714071).
   const bareFrom = (x, y) => page.evaluate(({ x, y }) => {
-    for (let at = y; at < innerHeight - 60; at += 10) if (document.elementFromPoint(x, at)?.classList.contains('react-flow__pane')) return { x, y: at };
+    for (let at = y; at < innerHeight - 60; at += 10) if (document.elementFromPoint(x, at)?.classList.contains('canvas-pixels') && !document.querySelector('.canvas-root').canvasInspection.hitTest({ x, y: at })) return { x, y: at };
     throw new Error(`no bare canvas under ${x},${y}`);
   }, { x, y });
   const dropBox = async (name, x, y) => {
@@ -293,15 +294,15 @@ function replaceFile(at, text) {
 
   // Two pictures dropped, and a box to make something of them.
   await drop(page, [{ name: 'Source-A.png', type: 'image/png', bytes: png(30) }, { name: 'Source-B.png', type: 'image/png', bytes: png(90) }], 700, 240);
-  await box('source-a').waitFor();
-  await box('source-b').waitFor();
+  await until('logical card available', () => canvasBox(page, 'source-a'), Boolean);
+  await until('logical card available', () => canvasBox(page, 'source-b'), Boolean);
   await until('both in the project', () => Promise.resolve(storedOf(folder)), (boxes) => 'source-a' in boxes && 'source-b' in boxes);
   if (local) {
     await dropBox('Sheet', 500, 600);
     check('dragged_box_is_that_tool', (await of('Sheet')).tool === tool && (await of('Sheet')).kind === 'image', await of('Sheet'));
     await api(`/v1/projects/${id}/assets/named_here`, { method: 'DELETE' });
   } else addBoxes(folder, [{ name: 'Sheet', tool, kind: 'image' }]);
-  await box('Sheet').waitFor();
+  await until('logical card available', () => canvasBox(page, 'Sheet'), Boolean);
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
   await page.mouse.click(1500, 1000);
@@ -309,8 +310,9 @@ function replaceFile(at, text) {
   await page.waitForTimeout(100);
 
   // A plain imported image keeps its deletion target at rest, with no linear counter/arrow control.
-  const atRest = box('source-a').locator('.head button[aria-label="Delete"]');
-  check('at_rest_delete_is_always_visible', await atRest.isVisible() && ((await atRest.boundingBox())?.width ?? 0) >= 24, await box('source-a').innerText());
+  const atRest = (await canvasBox(page,'source-a'))?.rendered?.controls.find(control=>control.part==='delete');
+  check('at_rest_delete_is_always_visible', Boolean(atRest)&&atRest.width>=24, atRest);
+  await hoverBox(page,'source-a');
   check('at_rest_image_has_no_linear_version_controls', await box('source-a').getByLabel('Current version', { exact: true }).count() === 0 && await box('source-a').getByRole('button', { name: /^(Previous|Next) version$/ }).count() === 0);
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
   // Open, its Render shows: open() itself waits for it (renderOf), so that's no check here.
@@ -343,8 +345,8 @@ function replaceFile(at, text) {
   // Any element dragged onto the box: its name goes in, where the caret was, and it goes back where it was with no move saved.
   await away();
   const rowsBefore = await rows();
-  const from = await box('source-b').locator('.nm').boundingBox();
-  const to = await box('Sheet').locator('.media').boundingBox();
+  const from = (await canvasBox(page,'source-b')).title;
+  const to = (await canvasBox(page,'Sheet')).body;
   await page.mouse.move(from.x + 4, from.y + 4);
   await page.mouse.down();
   await page.mouse.move(from.x + 12, from.y + 4);
@@ -357,7 +359,7 @@ function replaceFile(at, text) {
   const [[stored] = []] = rowsOf(folder, "SELECT f.value FROM fields f JOIN boxes b ON f.box = b.key WHERE b.name = 'Sheet' AND f.field = 'instructions'");
   check('file_holds_plain_text', said.includes('A sheet of <source-a> and <source-b>') && JSON.parse(stored ?? 'null')?.trim() === 'A sheet of <source-a> and <source-b>', { said, stored });
   check('drop_is_no_move', (await rows())['source-b'].x === rowsBefore['source-b'].x && (await rows())['source-b'].y === rowsBefore['source-b'].y, await rows());
-  await until('it went back', () => box('source-b').locator('.nm').boundingBox(), (now) => Math.abs(now.x - from.x) < 3 && Math.abs(now.y - from.y) < 3);
+  await until('it went back', async () => (await canvasBox(page,'source-b'))?.title, (now) => Math.abs(now.x - from.x) < 3 && Math.abs(now.y - from.y) < 3);
   await open('Sheet');
   await until('chips', () => sheetText.locator('.chip').count(), (n) => n === 2);
   // A mention reads as it's written, in its brackets, its first letter up; the file keeps it as typed.
@@ -374,11 +376,11 @@ function replaceFile(at, text) {
   // position of the new object should be primary, and then other objects should move around it to make room"), and both are saved.
   // Words can't take a picture: a picture box would take it as its version (27c5db3f5).
   const lies = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
-  const apart = async (a, b) => !lies(await box(a).boundingBox(), await box(b).boundingBox());
+  const apart = async (a,b) => !lies((await canvasBox(page,a)).bounds,(await canvasBox(page,b)).bounds);
   await away();
   const stood = await rows();
-  const carried = await box('source-b').locator('.nm').boundingBox();
-  const onto = await box('kept_words').boundingBox();
+  const carried = (await canvasBox(page,'source-b')).title;
+  const onto = (await canvasBox(page,'kept_words')).bounds;
   await page.mouse.move(carried.x + 4, carried.y + 4);
   await page.mouse.down();
   await page.mouse.move(carried.x + 12, carried.y + 4);
@@ -387,7 +389,7 @@ function replaceFile(at, text) {
   check('a_box_that_cant_take_it_doesnt_offer', (await box('kept_words').locator('.card.hot').count()) === 0 && (await page.locator('.stage[data-offering]').count()) === 0);
   // Its middle, on the screen: a little smaller, it keeps it.
   const middleOf = async (name) => {
-    const { x, y, width, height } = await box(name).boundingBox();
+    const { x,y,width,height }=(await canvasBox(page,name)).bounds;
     return { x: Math.round(x + width / 2), y: Math.round(y + height / 2) };
   };
   const letGoAt = await middleOf('source-b');
@@ -411,7 +413,7 @@ function replaceFile(at, text) {
   // Another writer's row, onto it: no window had it to settle.
   projectJson(folder, 'PATCH', '/canvas', { cards: { 'source-b': { x: held.x, y: held.y } } });
   await page.reload();
-  await box('source-a').waitFor();
+  await until('logical card available', () => canvasBox(page, 'source-a'), Boolean);
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
   await until('what lay on another came apart on opening', () => apart('source-a', 'source-b'), Boolean);
@@ -429,9 +431,9 @@ function replaceFile(at, text) {
 
   // A single click selects in Wander; a double click enters Focus.
   await away();
-  const pressed = await box('source-a').locator('.media').boundingBox();
+  const pressed=(await canvasBox(page,'source-a')).body;
   await page.mouse.click(pressed.x + pressed.width / 2, pressed.y + pressed.height / 2);
-  await page.locator('.react-flow__node.selected:has(.card[data-asset="source-a"])').waitFor();
+  await until('source-a selected', () => selectedBoxes(page), names => names?.includes('source-a'));
   check('single_click_selects_without_focus', await page.locator('[data-focused-asset]').count() === 0);
   await page.mouse.dblclick(pressed.x + pressed.width / 2, pressed.y + pressed.height / 2);
   await page.locator('[data-focused-asset="source-a"]').waitFor();
@@ -444,7 +446,7 @@ function replaceFile(at, text) {
   await until('knobs placed', rows, (now) => now.knobs);
   await away();
   await page.keyboard.press('f');
-  await box('knobs').waitFor();
+  await until('logical card available', () => canvasBox(page, 'knobs'), Boolean);
   await open('knobs');
   const knobs = box('knobs');
   // One of its fields as project.db stores it, as text.
@@ -462,7 +464,7 @@ function replaceFile(at, text) {
   // Nothing has moved the pointer since it opened. On Windows (41917007085) the box closed here by itself: this says when, and what moved.
   await page.waitForTimeout(300);
   check('a_box_in_use_stays_open', (await page.locator('.card.here[data-asset="knobs"]').count()) === 1, await boxLog(page));
-  check('the_canvas_cannot_scroll', (await page.locator('.react-flow').evaluate((el) => getComputedStyle(el).overflow)) === 'clip');
+  check('the_canvas_cannot_scroll', (await page.locator('.canvas-root').evaluate((el) => getComputedStyle(el).overflow)) === 'clip');
   await knobs.locator('label:has-text("turbo") input').click();
   await until('the toggle written', () => field('turbo'), (value) => value === 'false');
 
@@ -477,7 +479,7 @@ function replaceFile(at, text) {
     const at = await knobs.locator('.corner').boundingBox();
     const [overX, overY] = [Math.max(0, at.x + 6 + dx - (width - 40)), Math.max(0, at.y + 6 + dy - (height - 40))];
     if (overX || overY) {
-      await page.locator('.react-flow__pane').dispatchEvent('wheel', { deltaX: overX, deltaY: overY });
+      await page.locator('.canvas-pixels').dispatchEvent('wheel', { deltaX: overX, deltaY: overY });
       await settled(page);
       await knobs.locator('.nm').hover();
     }
@@ -551,7 +553,7 @@ function replaceFile(at, text) {
   await until('one beat again', () => Promise.resolve(storedBox('knobs')?.beats ?? []), (held) => held.length === 1);
   check('down_to_the_one_that_stays', (await knobBeats.count()) === 1 && (await knobs.locator('[aria-label^="Remove beat"]').count()) === 0);
   await api(`/v1/projects/${id}/assets/knobs`, { method: 'DELETE' });
-  await until('knobs gone', () => box('knobs').count(), (n) => n === 0);
+  await until('knobs gone', () => canvasBox(page, 'knobs'), box => box === null);
 
   // Another's edit merges (cl-904): of another asset, or another field, it applies; of the words being typed, the page's unsent words stand
   // and then both merge by character, with nothing asked.
@@ -613,7 +615,7 @@ function replaceFile(at, text) {
 
   // Right click: download, star, rename and delete; a box's tool changes only by a drop from the palette (Paul, 11-12).
   await away();
-  await box('source-b').locator('.nm').click({ button: 'right' });
+  {const title=(await canvasBox(page,'source-b')).title;await page.mouse.click(title.x+title.width/2,title.y+title.height/2,{button:'right'});}
   await page.waitForSelector('.asset-menu');
   check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Download,Star,Duplicate,Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
   await page.keyboard.press('Escape');
@@ -630,14 +632,14 @@ function replaceFile(at, text) {
     const fixture = join(__dirname, '..', 'project', 'tool.py');
     // Its kind given: PyPI's Runtime can't read it yet (below).
     addBoxes(folder, [{ name: 'fixture', tool: `${fixture}/told`, kind: 'image' }]);
-    await box('fixture').waitFor();
+    await until('logical card available', () => canvasBox(page, 'fixture'), Boolean);
     // Read with this machine's Runtime, as a run reads it: PyPI's can't, and this may be the first run of it here.
     execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     const wire = await until('its functions listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.filter((held) => held.local && held.id.startsWith(fixture)), (held) => held.length > 0, FIRST_RUN_MS);
     const implementationOf = (name) => wire.find((held) => held.function === name);
     const reload = async () => {
       await page.reload();
-      await page.waitForSelector('.react-flow__node');
+      await until('canvas logical cards available', () => canvasNames(page), names => names?.length > 0);
       await page.evaluate(() => { window.notReloaded = true; });
       await page.keyboard.press('f');
       await page.waitForTimeout(400);
@@ -655,7 +657,7 @@ function replaceFile(at, text) {
       const naming = box(fresh.name).locator('.focus-heading input[aria-label="Name"]');
       await naming.fill(`${name}_1`);
       await naming.press('Enter');
-      await box(`${name}_1`).waitFor();
+      await until('logical card available', () => canvasBox(page, `${name}_1`), Boolean);
       await open(`${name}_1`);
     };
 
@@ -702,7 +704,7 @@ function replaceFile(at, text) {
     check('the_last_beat_stays', (await toldBeats.count()) === 1 && (await told.locator('[aria-label^="Remove beat"]').count()) === 0, await told.innerText());
     for (const name of ['still_1', 'told_1', 'fixture']) {
       await api(`/v1/projects/${id}/assets/${name}`, { method: 'DELETE' });
-      await until(`${name} gone`, () => box(name).count(), (n) => n === 0);
+      await until(`${name} gone`, () => canvasBox(page, name), box => box === null);
     }
     // The list again, as what the project names now makes it.
     await reload();
@@ -793,7 +795,7 @@ function replaceFile(at, text) {
     await away();
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
-    await box('sounded').waitFor();
+    await until('logical card available', () => canvasBox(page, 'sounded'), Boolean);
     await open('sounded');
     const sounded = box('sounded');
     const scape = sounded.locator('.mention-text[data-field=soundscape]');
@@ -819,7 +821,7 @@ function replaceFile(at, text) {
     await away();
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
-    await box('mentioning').waitFor();
+    await until('logical card available', () => canvasBox(page, 'mentioning'), Boolean);
     await projectAction(folder, 'render', 'mentioning', '--on', 'local');
     // A project's status counts an asset's versions; one asset's status lists them.
     const madeBy = projectJson(folder, 'GET', '/assets/mentioning').versions.at(-1).runs.at(-1);
@@ -836,7 +838,7 @@ function replaceFile(at, text) {
     await page.waitForTimeout(200);
     check('clicking_text_does_not_create', JSON.stringify((await state()).assets.map((asset) => asset.name).sort()) === JSON.stringify(beforeTextClick));
     await carry(page, textRow, await openCanvas(page));
-    await box('text').waitFor();
+    await until('logical card available', () => canvasBox(page, 'text'), Boolean);
     await open('text');
     const wording = box('text');
     await wording.locator('.mention-text[data-field=text]').waitFor();
@@ -853,7 +855,7 @@ function replaceFile(at, text) {
     await away();
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
-    await box('asker').waitFor();
+    await until('logical card available', () => canvasBox(page, 'asker'), Boolean);
     // A toggle shows its function's own default, on, with nothing stored, and off is what's written. Open, it's there with the rest (cl-934).
     await open('asker');
     const bright = box('asker').locator('label:has-text("Bright") input');
@@ -868,10 +870,10 @@ function replaceFile(at, text) {
     if (await viewOther.count()) await viewOther.click();
     check('image_view_has_edit_without_description', await box('Other').getByRole('button', { name: 'Edit image', exact: true }).count() === 1 && await box('Other').locator('.desc-field').count() === 0);
     await renderOf(page, 'Other');
-    await box('Other').locator('.in-frame .mention-text[data-field=instructions]').waitFor();
+    await until('logical card available', () => canvasBox(page, 'Other').locator('.in-frame .mention-text[data-field=instructions]'), Boolean);
     check('image_edit_has_render_without_description', await box('Other').locator('button[aria-label=Render]').count() === 1 && await box('Other').locator('.desc-field').count() === 0);
     await api(`/v1/projects/${id}/assets/asker`, { method: 'DELETE' });
-    await until('asker gone', () => box('asker').count(), (n) => n === 0);
+    await until('asker gone', () => canvasBox(page, 'asker'), box => box === null);
 
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
     const [heldFile, heldTakes] = [(await of('Sheet')).sha256, await versions('Sheet')];
@@ -884,7 +886,7 @@ function replaceFile(at, text) {
     const deleted = await deleting;
     if (deleted instanceof Error) throw deleted;
     const edit = deleted.request().headers()['cozy-edit'];
-    await until('gone at once', () => box('source-a').count(), (n) => n === 0);
+    await until('gone at once', () => canvasBox(page, 'source-a'), box => box === null);
     check('no_dialog', (await page.locator('dialog, [role=dialog]').count()) === 0);
     const noted = await until('its note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-a')));
     // `mentioning` reads it too, and isn't approved: only it is named.
@@ -902,7 +904,7 @@ function replaceFile(at, text) {
     check('approved_face_has_no_warning', (await box('Sheet').locator('.status.ood, .status.bad, .warned').count()) === 0, await box('Sheet').innerText());
     check('wire_missing', (await of('Sheet')).missing?.join() === 'source-a', (await of('Sheet')).missing);
     await renderOf(page, 'Sheet');
-    await box('Sheet').locator('.chip.missing:has-text("source-a")').waitFor();
+    await until('logical card available', () => canvasBox(page, 'Sheet').locator('.chip.missing:has-text("source-a")'), Boolean);
     check('missing_chip_on_edit', (await box('Sheet').locator('.chip.missing').innerText()) === '<Source-a>', await box('Sheet').locator('.chip.missing').innerText());
     await shot('missing');
 
@@ -935,7 +937,7 @@ function replaceFile(at, text) {
     // Undo: back with its row, and nothing is missing. Its note has gone by now (10 s, Paul 11-05), so this is what its Undo sends; the button's own below.
     const back = await api(`/v1/projects/${id}/history/undo`, { method: 'POST', body: JSON.stringify({ edit }) });
     check('put_back', Boolean(edit) && back.status === 200 && back.body?.entries?.length === 1, { edit, back });
-    await box('source-a').waitFor();
+    await until('logical card available', () => canvasBox(page, 'source-a'), Boolean);
     await until('back in the project', () => Promise.resolve(storedBox('source-a')), Boolean);
     check('undo_keeps_its_description', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
     check('undo_has_its_row', Boolean((await rows())['source-a']), await rows());
@@ -946,13 +948,13 @@ function replaceFile(at, text) {
     const takes = await versions('Other');
     // Shift adds to what's selected.
     await away();
-    await box('Other').locator('.nm').click({ modifiers: ['Shift'] });
+    {const title=(await canvasBox(page,'Other')).title;await page.keyboard.down('Shift');await page.mouse.click(title.x+title.width/2,title.y+title.height/2);await page.keyboard.up('Shift');}
     await page.keyboard.press('Delete');
-    await until('the Delete key', () => box('Other').count(), (n) => n === 0);
+    await until('the Delete key', () => canvasBox(page, 'Other'), box => box === null);
     await until('no versions showing', () => of('Other'), (held) => !held);
     check('orphan_is_listed', (await state()).orphans?.some((orphan) => orphan.name === 'Other'), (await state()).orphans);
     await page.locator('.note:has-text("Other") button:has-text("Undo")').click();
-    await box('Other').waitFor();
+    await until('logical card available', () => canvasBox(page, 'Other'), Boolean);
     // The box is back as it's asked for, ahead of the file and its versions: then all its versions, in the project and on the page.
     const restored = await until('its versions back', () => versions('Other'), (n) => n === takes).catch(() => versions('Other'));
     await open('Other');
@@ -973,7 +975,7 @@ function replaceFile(at, text) {
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
     await page.waitForSelector('.nm-field');
     await page.keyboard.press('Enter');
-    await box('look').waitFor();
+    await until('logical card available', () => canvasBox(page, 'look'), Boolean);
     await until('look in the project', () => Promise.resolve(storedBox('look')), Boolean);
     // Its kind given: nothing has read shots.py on this machine yet.
     addBoxes(folder, [{ name: 'Clip', tool: `${shots}/shoot`, kind: 'video', fields: { summary: 'On <look>.' } }]);
@@ -998,7 +1000,7 @@ function replaceFile(at, text) {
     check('kept_up_to_there', told.pickup?.out_frame === 6, told);
     check('words_as_they_were', JSON.stringify(storedBox('Clip')) === clipFile && !JSON.stringify(storedOf(folder)).includes('pickup'), storedBox('Clip'));
     await open('Clip');
-    await box('Clip').locator('.take[aria-label="take 2"]').waitFor();
+    await until('logical card available', () => canvasBox(page, 'Clip').locator('.take[aria-label="take 2"]'), Boolean);
     check('takes_are_called_takes', true);
     await shot('takes');
 
@@ -1013,15 +1015,15 @@ function replaceFile(at, text) {
     check('no_machine_offers_one', true);
     await page.goBack();
     await open('Sheet');
-    await box('Sheet').locator('.status:has-text("Waits for a machine")').waitFor();
+    await until('logical card available', () => canvasBox(page, 'Sheet').locator('.status:has-text("Waits for a machine")'), Boolean);
     check('render_waits_for_a_machine', true);
   }
 
   // X and Delete work anywhere, and Undo with them, whatever can run.
   await deleteBox('source-b');
-  await until('gone', () => box('source-b').count(), (n) => n === 0);
+  await until('gone', () => canvasBox(page, 'source-b'), box => box === null);
   await page.locator('.note:has-text("source-b") button:has-text("Undo")').first().click();
-  await box('source-b').waitFor();
+  await until('logical card available', () => canvasBox(page, 'source-b'), Boolean);
   // The box is back as it's asked for, ahead of the file.
   check('delete_and_undo', Boolean(await until('back in the project', () => Promise.resolve(storedBox('source-b')), Boolean)));
 

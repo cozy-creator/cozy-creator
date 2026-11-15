@@ -14,7 +14,7 @@ const { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync 
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
 const zlib = require('zlib');
-const { calcifer, lastLook, lookAt, noStall, projectAction, projectJson, projectUrl, signIn, STEP_MS, upload } = require('./page');
+const { calcifer, lastLook, lookAt, noStall, projectAction, projectJson, projectUrl, signIn, STEP_MS, upload, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 const { runnerSpeed } = require('./speed');
 
 const failures = [];
@@ -98,38 +98,24 @@ const SAMPLER = () => {
       }
     }).observe({ type: 'long-animation-frame', buffered: true });
   } catch {}
-  const pulsing = (node) => node.getAnimations({ subtree: true }).some((one) => one.animationName === 'loading-pulse');
-  // Light, as it runs in every frame of every tab on the page's own thread: a box is read in full only until its picture is drawn, its
-  // place read once a change, and whether it pulses every fourth frame. React Flow hides a box it hasn't measured by its inline style.
-  const onScreen = (node) => {
-    const box = node.getBoundingClientRect();
-    return box.width > 0 && box.height > 0 && box.right > 0 && box.bottom > 0 && box.left < innerWidth && box.top < innerHeight;
-  };
+  // Display-object/resource timings are diagnostics. Independent screenshot probes below verify the resulting pixels.
+  const onScreen = box => box.width > 0 && box.height > 0 && box.x + box.width > 0 && box.y + box.height > 0 && box.x < innerWidth && box.y < innerHeight;
   const tick = () => {
     const now = performance.now();
     seen.frames++;
-    for (const node of document.querySelectorAll('.react-flow__node')) {
-      const name = node.querySelector('.card[data-asset]')?.dataset.asset;
-      if (!name) continue;
+    const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+    for (const name of inspection?.names() ?? []) {
+      const box = inspection.card(name), render = box?.rendered;
+      if (!render) continue;
       const row = seen.nodes[name] ??= { frame: null, preview: null, waiting: 0, pulsing: 0, onScreen: false };
-      if (row.preview !== null || node.style.visibility === 'hidden') continue;
-      if (row.frame === null) {
-        row.frame = now;
-        row.onScreen = onScreen(node);
-      }
-      const host = node.querySelector('.buffered-image');
-      const img = host?.querySelector('img');
-      if (host?.dataset.displayedSha && img?.complete && img.naturalWidth > 0) {
-        row.preview = now;
-        row.onScreen = onScreen(node);
-        continue;
-      }
-      // One on screen without its picture yet pulses, once it's been up three frames (50 ms).
+      if (row.preview !== null) continue;
+      if (row.frame === null) { row.frame = now; row.onScreen = onScreen(box.bounds); }
+      if (render.media.ready) { row.preview = now; row.onScreen = onScreen(box.bounds); continue; }
       if (seen.frames % 4 || now - row.frame <= 50) continue;
-      row.onScreen = onScreen(node);
+      row.onScreen = onScreen(box.bounds);
       if (!row.onScreen) continue;
       row.waiting++;
-      if (pulsing(node)) row.pulsing++;
+      if (render.loadingPulse?.active) row.pulsing++;
       else if (seen.misses.length < 20) seen.misses.push({ name, at: Math.round(now) });
     }
     requestAnimationFrame(tick);
@@ -141,16 +127,15 @@ const SAMPLER = () => {
 const FRAMES = (ms) => new Promise((done) => {
   const frames = [];
   const end = performance.now() + ms;
-  const pane = document.querySelector('.react-flow').getBoundingClientRect();
+  const pane = document.querySelector('.canvas-root').getBoundingClientRect();
   const tick = () => {
-    const viewport = document.querySelector('.react-flow__viewport');
+    const inspection = document.querySelector('.canvas-root')?.canvasInspection;
     const drawn = {};
-    for (const node of document.querySelectorAll('.react-flow__node')) {
-      const name = node.querySelector('.card[data-asset]')?.dataset.asset;
-      const box = node.getBoundingClientRect();
-      if (name && box.width > 0 && box.height > 0 && node.style.visibility !== 'hidden') drawn[name] = [box.x, box.y, box.width, box.height];
+    for (const name of inspection?.names() ?? []) {
+      const box = inspection.card(name);
+      if (box?.rendered) drawn[name] = [box.bounds.x, box.bounds.y, box.bounds.width, box.bounds.height];
     }
-    frames.push({ at: performance.now(), transform: viewport ? getComputedStyle(viewport).transform : null, drawn });
+    frames.push({ at: performance.now(), transform: inspection?.camera() ?? null, drawn });
     if (performance.now() < end) requestAnimationFrame(tick);
     else done({ pane: [pane.x, pane.y, pane.width, pane.height], frames });
   };
@@ -426,6 +411,27 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
       thumbnails_made: made,
       wire: wire.since(from),
     };
+    result.timing_boundary = 'display-object/resource readiness observed on animation frames; compositor pixels verified separately below';
+    await page.mouse.move(4, 4);
+    const readPixels = screenshotPixels(await page.screenshot());
+    const pixelErrors = []; let sampledPixels=0;
+    for (let n = 0; n < PICTURES; n++) {
+      const body = (await canvasBox(page, named(n)))?.rendered?.body;
+      if (!body || body.x < 0 || body.y < 64 || body.x + body.width > VIEWPORT.width || body.y + body.height > VIEWPORT.height) continue;
+      const source = screenshotPixels(readFileSync(paths[n]));
+      for (const [u, v] of [[0.33,0.33],[0.66,0.66]]) {
+        const point={x:body.x+body.width*u,y:body.y+body.height*v};
+        const uncovered=await page.evaluate(point=>{const root=document.querySelector('.canvas-root'),target=document.elementFromPoint(point.x,point.y);return Boolean(target&&root.contains(target)&&target.matches('canvas.canvas-pixels'));},point);
+        if(!uncovered)continue;
+        sampledPixels++;
+        const expected = [0,0,0]; let count = 0;
+        for (let y = Math.floor(v*SIDE)-6; y <= Math.floor(v*SIDE)+6; y++) for (let x = Math.floor(u*SIDE)-6; x <= Math.floor(u*SIDE)+6; x++) { source(x,y).forEach((value,c) => expected[c] += value); count++; }
+        expected.forEach((value,c) => expected[c] = value/count);
+        const actual = readPixels(body.x + body.width*u, body.y + body.height*v);
+        if (actual.some((value,c) => Math.abs(value-expected[c]) > 24)) pixelErrors.push({ name:named(n), actual, expected });
+      }
+    }
+    check(`${label}_displayed_picture_pixels`, pixelErrors.length === 0 && sampledPixels > 0 && result.on_screen > 0, pixelErrors);
     seen[label] = result;
     if (!bars) {
       check(`${label}_every_preview_on_screen_drawn`, result.on_screen > 0 && result.on_screen_previews_ms !== null, { on_screen: result.on_screen, previews: result.previews, all: result.all_previews_ms });
@@ -488,27 +494,24 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
     during = `pulse_${theme}`;
     await first.goto(project.url);
     const pulsing = await first.waitForFunction(() => {
-      const nodes = [...document.querySelectorAll('.react-flow__node')];
-      const loading = nodes.filter((node) => node.getAnimations({ subtree: true }).some((one) => one.animationName === 'loading-pulse'));
+      const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+      const loading = (inspection?.names() ?? []).filter(name => inspection.card(name)?.rendered?.loadingPulse?.active);
       return loading.length >= 3 ? loading.length : false;
     }, null, { timeout: 15_000 }).then((handle) => handle.jsonValue(), () => 0);
     seen[`pulse_${theme}`] = { pulsing };
     check(`${theme}_boxes_pulse_while_their_previews_are_made`, pulsing >= 3, pulsing);
     if (process.env.SHOT && pulsing) {
       // At the pulse's brightest, then at rest: what a person sees between.
-      for (const [phase, at] of [['peak', 0.999], ['rest', 0]]) {
-        await first.evaluate((at) => {
-          for (const one of document.getAnimations()) {
-            if (one.animationName !== 'loading-pulse') continue;
-            const length = one.effect.getComputedTiming().duration;
-            one.pause();
-            one.currentTime = at * length;
-          }
-        }, at);
-        await first.screenshot({ path: `${process.env.SHOT}-pulse-${theme}-${phase}.png` });
+      for (const [phase,target] of [['peak',0.08],['rest',0]]) {
+        const observed=await first.waitForFunction(target=>{
+          const i=document.querySelector('.canvas-root')?.canvasInspection;
+          const pulses=(i?.names()??[]).flatMap(name=>{const pulse=i.card(name)?.rendered?.loadingPulse;return pulse?[{name,alpha:pulse.alpha}]:[];});
+          return pulses.find(pulse=>Math.abs(pulse.alpha-target)<0.012)??(!pulses.length?{finished:true}:false);
+        },target,{timeout:5000,polling:'raf'}).then(handle=>handle.jsonValue(),()=>null);
+        seen[`pulse_${theme}`][phase]=observed;
+        await first.screenshot({path:`${process.env.SHOT}-pulse-${theme}-${phase}.png`});
       }
     }
-    await first.evaluate(() => { for (const one of document.getAnimations()) if (one.animationName === 'loading-pulse') one.play(); });
     await opening(`backfill_${theme}`, first, wire, project, { go: false, bars: false });
     await context.close();
   }
@@ -557,16 +560,15 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
     const { pane, frames } = await watching;
     const heights = {};
     for (const frame of frames) {
-      const scale = Number(/matrix\(([^,]+)/.exec(frame.transform ?? '')?.[1] ?? 1);
+      const scale = frame.transform?.zoom ?? 1;
       for (const [name, box] of Object.entries(frame.drawn)) heights[name] = Math.max(heights[name] ?? 0, box[3] / scale);
     }
     const tall = quantile(Object.values(heights).sort((a, b) => a - b), 0.5) ?? W;
     const missing = [];
     let zooms = new Set();
     for (const frame of frames) {
-      const matrix = /matrix\(([^)]+)\)/.exec(frame.transform ?? '')?.[1]?.split(',').map(Number);
-      if (!matrix) continue;
-      const [scale, , , , tx, ty] = matrix;
+      if (!frame.transform) continue;
+      const { zoom: scale, x: tx, y: ty } = frame.transform;
       zooms.add(scale.toFixed(3));
       const origin = [pane[0] + tx, pane[1] + ty];
       for (let i = 0; i < PICTURES; i++) {
@@ -588,10 +590,7 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
     const landed = Date.now();
     projectJson(projects.plain.folder, 'PATCH', '/canvas', { cards: { [value.name]: placeOf(PICTURES) } });
     const shownAt = await first.waitForFunction((name) => {
-      const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector(`.card[data-asset="${name}"]`));
-      const host = node?.querySelector('.buffered-image');
-      const img = host?.querySelector('img');
-      return host?.dataset.displayedSha && img?.complete && img.naturalWidth > 0 ? Date.now() : false;
+      return document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered?.media.ready ? Date.now() : false;
     }, value.name, { timeout: 30_000, polling: 'raf' }).then((handle) => handle.jsonValue(), () => null);
     const madeNow = [...thumbnails(stores(projects.plain))].filter((at) => !before.has(at));
     seen.landed = { import_ms: landed - landing, shown_ms: shownAt === null ? null : shownAt - landed, stored: madeNow.map((at) => at.replace(scratch, '')) };

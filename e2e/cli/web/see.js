@@ -15,7 +15,7 @@ const { exec } = require('child_process');
 const { existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { basename, join } = require('path');
-const { projectFolder, projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, addBoxes, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, storedOf, summary, until, watchBoxes, wav } = require('./page');
+const { projectFolder, projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, addBoxes, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, storedOf, summary, until, watchBoxes, wav, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -201,7 +201,7 @@ async function rest(page, handle) {
   check('reads_left_to_right', left('hero', 'shot') && left('clip', 'shot') && left('clip', 'picture') && left('clip', 'edit'), rows);
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
-  await until('every element on screen', () => page.locator('.react-flow__node').count(), (n) => n === named.length);
+  await until('every element on screen', async () => (await canvasNames(page))?.length, (n) => n === named.length);
   await shot('placed');
 
   // Its fields, on the wire.
@@ -219,7 +219,7 @@ async function rest(page, handle) {
   const kinds = { hero_art: 'image', sea_sound: 'audio', clip: 'video', picture: 'frame', edit: 'edit' };
   for (const [name, kind] of Object.entries(kinds)) check(`kind_${name}`, (await tag(page, name)) === kind, await tag(page, name));
   await away(page);
-  await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
+  await until('an unmade shot shows its words', async () => (await canvasBox(page, 'shot'))?.rendered?.words ?? '', text => text.includes('looks hard'));
   await open(page, 'shot');
   await until('its beats, each a text and a slider', () => element(page, 'shot').locator('.beat input[type=range]').evaluateAll((all) => all.map((input) => input.value).join()), (text) => text === '4,3');
   // Nothing made yet is nothing wrong: no state dot, as for one out of date (a dot is queued, running, unseen or failed: cl-932).
@@ -227,11 +227,13 @@ async function rest(page, handle) {
   // Drawn in on one box, the canvas holds only what's near it: the rest is read at rest.
   await away(page);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
+  await hoverBox(page, 'hero_art');
   await until('checkerboard under alpha', () => element(page, 'hero_art').locator('.media.alpha').count(), (n) => n === 1);
   const checker = await element(page, 'hero_art').locator('.media.alpha').evaluate((el) => ({ under: getComputedStyle(el).backgroundColor, over: getComputedStyle(el).getPropertyValue('--check2').trim() }));
   check('checkerboard_white_and_light_grey', checker.under === 'rgb(251, 251, 251)' && checker.over === '#e8e8e8', checker);
+  await hoverBox(page, 'older_art');
   check('no_checkerboard_without_alpha', (await element(page, 'older_art').locator('.media.alpha').count()) === 0);
-  const thumbUp = (name) => until(`${name}'s thumbnail`, () => element(page, name).locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
+  const thumbUp = name => until(`${name}'s thumbnail resource`, async () => (await canvasBox(page, name))?.rendered?.media.ready, Boolean);
   await thumbUp('sea_sound');
   await open(page, 'sea_sound');
   check('sound_plays', (await element(page, 'sea_sound').locator('.play').count()) === 1);
@@ -239,18 +241,24 @@ async function rest(page, handle) {
   await thumbUp('clip');
 
   // No edges at all: what reads what stays inside Calcifer.
-  check('no_edges', (await page.locator('.react-flow__edge, .ge').count()) === 0);
+  check('no_edges', (await page.locator('.canvas-edge, .ge').count()) === 0);
 
   // A video costs nothing until the pointer rests on it. Its poster is a frame that shows something, not its black first one. Its preview,
   // made as it was imported, plays from that frame, muted and looping, and goes when the pointer leaves or its box leaves the screen.
   await until('dark_open measured', () => asset('dark_open'), (held) => held.duration_ms > 0);
   const dark = element(page, 'dark_open');
   await thumbUp('dark_open');
-  const poster = await dark.locator('.media img').first().evaluate(spreadOf);
+  const posterBody = (await canvasBox(page, 'dark_open')).rendered.body;
+  const readPoster = screenshotPixels(await page.screenshot());
+  const luma = [];
+  for (let y=1;y<8;y++) for(let x=1;x<12;x++){ const c=readPoster(posterBody.x+posterBody.width*x/12,posterBody.y+posterBody.height*y/8); luma.push(.299*c[0]+.587*c[1]+.114*c[2]); }
+  const mean = luma.reduce((a,b)=>a+b,0)/luma.length;
+  const poster = { mean, spread:Math.sqrt(luma.reduce((sum,v)=>sum+(v-mean)**2,0)/luma.length) };
   check('poster_not_black', poster.spread >= 12, poster);
   await until('its preview made as it was imported', () => Promise.resolve(existsSync(previewOf(folder, imported.dark_open))), Boolean);
   check('preview_made_unasked', !thumbs.some((thumb) => thumb.preview), thumbs);
   check('no_video_before_a_hover', (await page.locator('video').count()) === 0, await videos(page));
+  await hoverBox(page, 'dark_open');
   await rest(page, dark.locator('.media'));
   const playing = await until('its preview plays', () => videos(page), (all) => all.length === 1 && all[0].preview && all[0].on && !all[0].paused && all[0].at > 0);
   check('hover_plays_the_preview', playing[0].muted && playing[0].loop, playing);
@@ -260,16 +268,17 @@ async function rest(page, handle) {
   await page.mouse.move(2, 500);
   await until('leaving stops it', () => page.locator('video').count(), (n) => n === 0);
   check('leaving_stops_it', true);
+  await hoverBox(page, 'dark_open');
   await rest(page, dark.locator('.media'));
   await until('it plays again', () => dark.locator('video.preview.on').count(), (n) => n === 1);
   // Panned away under the pointer, by a wheel that never reaches its box.
-  await page.evaluate(() => document.querySelector('.react-flow__pane').dispatchEvent(new WheelEvent('wheel', { deltaX: 6000, deltaY: 0, bubbles: true, cancelable: true })));
+  await page.evaluate(() => document.querySelector('.canvas-pixels').dispatchEvent(new WheelEvent('wheel', { deltaX: 6000, deltaY: 0, bubbles: true, cancelable: true })));
   await until('its box off screen', () => dark.count(), (n) => n === 0);
   await page.waitForTimeout(400);
   check('nothing_plays_off_screen', (await page.locator('video').count()) === 0, await videos(page));
   await page.mouse.move(2, 500);
   await page.keyboard.press('f');
-  await until('every element on screen again', () => page.locator('.react-flow__node').count(), (n) => n === named.length);
+  await until('every element on screen again', async () => (await canvasNames(page))?.length, (n) => n === named.length);
   await away(page);
 
   // A take landing shows with no reload. The strip's + goes to POST runs; what Calcifer makes itself needs no machine.
@@ -287,12 +296,12 @@ async function rest(page, handle) {
     seen.at_its_dot = { dot: await picture.locator('.state-dot').evaluateAll((dots) => dots.map((dot) => dot.className)), queue: now.queue, busy: now.busy, standing: (await asset('picture')).standing };
     throw error;
   });
-  check('a_button_selects_nothing', (await page.locator('.react-flow__node.selected').count()) === 0);
+  check('a_button_selects_nothing', (await selectedBoxes(page))?.length === 0);
   check('landed_with_no_reload', await notReloaded());
   // A walk makes each tool whose reads settled, so the cut landed too: its pieces under it. Render kept picture open, and drawn in on it the canvas draws only what's near.
   await away(page);
   await until('the cut landed', () => asset('edit'), (held) => held.standing === 'current');
-  await until('its film shows', () => element(page, 'edit').locator('.media img').count(), (n) => n > 0);
+  await thumbUp('edit');
   await open(page, 'edit');
   await element(page, 'edit').locator('.tl').waitFor();
   check('its_clips_on_a_hover', (await element(page, 'edit').locator('.tl-clip').evaluateAll((clips) => clips.map((held) => held.dataset.name))).join() === 'clip,clip_b');
@@ -354,7 +363,7 @@ async function rest(page, handle) {
   const beforeReload = await cards();
   seen.moved_since_placed = named.filter((name) => beforeReload[name].x !== rows[name].x || beforeReload[name].y !== rows[name].y);
   await page.reload();
-  await page.waitForSelector('.react-flow__node');
+  await until('canvas logical cards available', () => canvasNames(page), names => names?.length > 0);
   await page.evaluate(() => { window.notReloaded = true; });
   await open(page, 'needs');
   await until('still marked after a reload', () => needs.locator('.state-dot.failed').count(), (n) => n === 1);
@@ -380,7 +389,7 @@ async function rest(page, handle) {
   const absent = await until('absent on the wire', () => asset('older_art'), (held) => held.absent === true);
   check('wire_absent_per_file', Object.values(absent.files).every((file) => file.absent === true) && (await state()).absent > 0, absent.files);
   // In cl-898's words (e4d29f0e3): "Kept on another computer".
-  await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'Kept on another computer');
+  await until('it says so', async () => (await canvasBox(page,'older_art'))?.rendered?.labels.note?.fullText, text=>text==='Kept on another computer');
   await open(page, 'older_art');
   check('no_manual_pull', (await element(page, 'older_art').getByRole('button', { name: 'Pull', exact: true }).count()) === 0);
   check('no_hash_when_absent', !(await page.evaluate(() => document.body.innerText)).includes(older.sha256.replace('sha256:', '').slice(0, 12)));
@@ -394,7 +403,8 @@ async function rest(page, handle) {
   const inputsBefore = await inputs();
   const wasAt = (await cards()).hero_art;
   await away(page);
-  await drag(page, element(page, 'hero_art').locator('.nm'), 90, 70);
+  await hoverBox(page,'hero_art');
+  await drag(page, element(page,'hero_art').locator('.nm'),90,70);
   const movedTo = (await until('the moved row', cards, (now) => now.hero_art.x !== wasAt.x || now.hero_art.y !== wasAt.y)).hero_art;
   check('move_writes_its_row', movedTo.x > wasAt.x, { wasAt, movedTo });
   check('move_touches_no_input', (await inputs()) === inputsBefore);
@@ -459,7 +469,7 @@ async function rest(page, handle) {
     check('reads_with_no_hub', answered.assets?.length === read.assets.length, answered.assets?.length);
     check('read_with_no_hub_is_quick', seen.hub_down_read_ms < 2000, seen.hub_down_read_ms);
     await page.reload();
-    await until('the page with no Hub', () => element(page, 'shot').count(), (n) => n === 1);
+    await until('the page with no Hub',()=>canvasBox(page,'shot'),Boolean);
     check('page_with_no_hub', true);
     check('read_writes_nothing', revision() === revisionBefore, { before: revisionBefore, after: revision() });
     // And back on its Hub, or every cell after this one runs with none.
@@ -468,7 +478,7 @@ async function rest(page, handle) {
     check('restarted_on_its_hub', onHub === true, onHub);
   }
 
-  // 300 elements, on React Flow, by project-web-ui §8's three cases. What's measured is reported; what's checked is that each case really happened.
+  // 300 elements, on the production Pixi surface, by project-web-ui §8's three cases. What's measured is reported; what's checked is that each case really happened.
   const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `see-${Date.now()}` }, body: JSON.stringify({ path: projectFolder(`web-see-scale-${Date.now()}`), unencrypted: true }) });
   const scalePages = new Set();
   try {
@@ -503,26 +513,24 @@ async function rest(page, handle) {
       tab.setDefaultTimeout(STEP_MS);
       projectJson(made.id, 'PATCH', '/view', { viewport: { x, y: 60, zoom } });
       await signIn(tab, await projectUrl(made.id));
-      await tab.waitForSelector('.react-flow__node');
-      await until('every card its thumbnail', () => tab.evaluate(() => {
-        const images = [...document.querySelectorAll('.react-flow__node .media img')];
-        return images.length >= document.querySelectorAll('.react-flow__node').length && images.every((image) => image.complete);
-      }), Boolean);
+      await until('canvas logical cards available', () => canvasNames(tab), names => names?.length > 0);
+      await until('visible cards decoded', () => tab.evaluate(() => { const r = document.querySelector('.canvas-root').canvasInspection.resources(); return r.visibleCards > 0 && r.loadedCards === r.visibleCards; }), Boolean);
       await tab.waitForTimeout(500);
       return tab;
     };
-    const onScreen = (tab) => tab.evaluate(() => ({ cards: document.querySelectorAll('.react-flow__node').length, edges: document.querySelectorAll('.react-flow__edge').length }));
+    const onScreen = tab => tab.evaluate(() => ({ cards: document.querySelector('.canvas-root').canvasInspection.resources().visibleCards, edges: document.querySelectorAll('.canvas-edge, .ge').length, boundary: 'retained scene-card count, not pixel proof' }));
     seen.scale = { elements: COUNT, read_ms };
 
     let tab = await openTab(0.7, 40);
     const near = await panning(tab, 3000);
-    seen.scale.pan_70 = { ...(await onScreen(tab)), fewest_cards: near.fewest, ...summary(near.frames) };
+    seen.scale.pan_70 = { ...(await onScreen(tab)), fewest_cards: near.fewestSceneCards, ...summary(near.frames) };
     check('scale_near_panned', near.places > 10, near.places);
     await tab.close();
 
     tab = await openTab(0.7, 40);
     // A hand's pan: wheels under a pointer resting on a video mid-screen (n40), whose preview plays. The first wheel stops it, and as boxes,
     // a fifth of them videos, slide under the pointer, none starts.
+    await hoverBox(tab, 'n40');
     await rest(tab, element(tab, 'n40').locator('.media'));
     await until('a rest plays its preview', () => tab.locator('video.preview.on').count(), (n) => n === 1);
     const counting = tab.evaluate(() => new Promise((done) => {
@@ -551,36 +559,33 @@ async function rest(page, handle) {
     // so every frame measured draws all 300.
     tab = await openTab(0.11, 800);
     const far = await panning(tab, 3000);
-    seen.scale.pan_11 = { ...(await onScreen(tab)), fewest_cards: far.fewest, ...summary(far.frames) };
+    seen.scale.pan_11 = { ...(await onScreen(tab)), fewest_cards: far.fewestSceneCards, ...summary(far.frames) };
     check('scale_far_panned', far.places > 10, far.places);
-    check('scale_far_shows_all', far.fewest === COUNT && seen.scale.pan_11.edges === 0, seen.scale.pan_11);
+    check('scale_far_shows_all', far.fewestSceneCards === COUNT && seen.scale.pan_11.edges === 0, seen.scale.pan_11);
     await tab.close();
 
     // Far out, at 15%, no name, chip, ratio or wait lies on another box (Paul, 11-06; drawn at the canvas's scale, cl-890). A name sits above its box
     // (d88da410a) and what hangs from it in the room under it (e139a61c6).
     tab = await openTab(0.15, 800);
     const strays = await tab.evaluate(() => {
-      const boxes = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ node, at: node.getBoundingClientRect(), name: node.querySelector('.card')?.dataset.asset }));
-      const meets = (a, b) => a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
-      const out = [];
-      let labels = 0;
-      for (const { node, at, name } of boxes) {
-        for (const label of node.querySelectorAll('.nm, .add-on:not(.away), .ratio-rest, .rest-waiting, .state-dot')) {
-          const seen = label.getBoundingClientRect();
-          if (!seen.width || !seen.height || getComputedStyle(label).visibility === 'hidden') continue;
-          labels += 1;
-          for (const other of boxes) if (other.node !== node && meets(seen, other.at)) out.push({ name, label: label.className, on: other.name });
-        }
+      const inspection = document.querySelector('.canvas-root').canvasInspection;
+      const R = b => ({ ...b, left:b.x, top:b.y, right:b.x+b.width, bottom:b.y+b.height });
+      const boxes = inspection.names().flatMap(name => { const box = inspection.card(name); return box?.rendered ? [{ name, at:R(box.bounds), labels:Object.entries(box.rendered.labels).map(([key,label]) => ({key,...R(label)})) }] : []; });
+      const meets = (a,b) => a.left < b.right-1 && b.left < a.right-1 && a.top < b.bottom-1 && b.top < a.bottom-1;
+      const out = []; let labels = 0;
+      for (const box of boxes) for (const label of box.labels) {
+        if (!label.width || !label.height) continue;
+        labels++;
+        for (const other of boxes) if (other.name !== box.name && meets(label, other.at)) out.push({name:box.name,label:label.key,on:other.name});
       }
-      return { zoom: new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a, labels, count: out.length, out: out.slice(0, 8) };
+      return { zoom: document.querySelector('.canvas-root').canvasInspection.camera().zoom, labels, count: out.length, out: out.slice(0, 8) };
     });
     seen.scale.labels_at_15 = { zoom: strays.zoom, labels: strays.labels };
     check('far_words_stay_in_their_box', Math.abs(strays.zoom - 0.15) < 0.01 && strays.labels >= COUNT && strays.count === 0, strays);
     await tab.close();
 
     tab = await openTab(0.7, 40);
-    const name = element(tab, 'n39').locator('.nm');
-    const box = await name.boundingBox();
+    const box=(await canvasBox(tab,'n39')).title;
     let frames;
     await tab.mouse.move(box.x + 5, box.y + 5);
     await tab.mouse.down();

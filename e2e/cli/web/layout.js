@@ -16,7 +16,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, addBoxes } = require('./page');
+const { projectFolder, projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, addBoxes, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -74,12 +74,12 @@ function replaceFile(at, text) {
 /** A resting canvas at 200%: a corner may hit a box, and a zoom button's move may still be on its way. */
 async function restClose(page) {
   const state = () => page.evaluate(() => {
-    const transform = document.querySelector('.react-flow__viewport')?.style.transform;
+    const transform = JSON.stringify(document.querySelector('.canvas-root')?.canvasInspection?.camera());
     return {
       hash: location.pathname,
       open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset),
       transform,
-      zoom: transform ? new DOMMatrix(transform).a : null,
+      zoom: transform ? JSON.parse(transform)?.zoom ?? null : null,
     };
   });
   const requireRest = (at) => {
@@ -105,8 +105,8 @@ async function restClose(page) {
 function audit({ floor, fitted = true }) {
   const found = [];
   const R = (el) => el.getBoundingClientRect();
-  const zoom = Number(document.querySelector('.react-flow__viewport')?.style.transform.match(/scale\(([\d.]+)\)/)?.[1] ?? 1);
-  const name = (el) => el.closest?.('.react-flow__node')?.querySelector('.card')?.dataset.asset;
+  const zoom = document.querySelector('.canvas-root')?.canvasInspection?.camera()?.zoom ?? 1;
+  const name = (el) => el.closest?.('.canvas-node')?.querySelector('.card')?.dataset.asset;
   const where = (el) => {
     const path = [];
     for (let e = el; e && e !== document.body && path.length < 3; e = e.parentElement) {
@@ -153,7 +153,7 @@ function audit({ floor, fitted = true }) {
   for (const el of texts) {
     const style = getComputedStyle(el);
     // A box's words grow and shrink with the canvas: they're read at 100%.
-    const onCanvas = Boolean(el.closest('.react-flow__node'));
+    const onCanvas = Boolean(el.closest('.canvas-node'));
     const px = (parseFloat(style.fontSize) * scaleOf(el)) / (onCanvas ? zoom : 1);
     if (px < floor) say('illegible', el, `${px.toFixed(1)} px ${onCanvas ? 'at 100%' : 'on screen'}: "${el.textContent.trim().slice(0, 30)}"`);
     const clips = /hidden|clip/.test(style.overflowX);
@@ -219,8 +219,22 @@ function audit({ floor, fitted = true }) {
     }
   }
 
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  const rect = b => ({ ...b, left:b.x, top:b.y, right:b.x+b.width, bottom:b.y+b.height });
+  const passive = (inspection?.names() ?? []).flatMap(asset => { const box=inspection.card(asset), r=box?.rendered; return r ? [{asset,box:rect(box.bounds),body:rect(r.body),labels:Object.entries(r.labels),controls:r.controls??[]}] : []; });
+  const passiveFinding = (rule, asset, key, what) => found.push({rule,at:`canvas <${asset}> ${key}`,what});
+  for (const one of passive) {
+    for (const [key,label] of one.labels) {
+      const b=rect(label);
+      if (!onScreen(b)) continue;
+      if (label.fontSize < floor) passiveFinding('small-text',one.asset,key,`${label.fontSize}px on the canvas`);
+      if (['title','version'].includes(key) && meet(b,one.body)) passiveFinding('on-picture',one.asset,key,'label overlaps its picture');
+      for(const other of passive) if(other.asset!==one.asset && meet(b,other.box)) passiveFinding('boxes-overlap',one.asset,key,`on <${other.asset}>`);
+    }
+    for(const control of one.controls) if(control.width/zoom<28 || control.height/zoom<28) passiveFinding('small-control',one.asset,control.part,`${control.width/zoom}×${control.height/zoom}`);
+  }
   // 3. Each box: its name and × clear of its picture, its takes level with it, and what hangs under it on nothing else's.
-  const boxes = [...document.querySelectorAll('.react-flow__node')].filter((node) => visible(node) && onScreen(R(node)));
+  const boxes = [...document.querySelectorAll('.canvas-node')].filter((node) => visible(node) && onScreen(R(node)));
   // A box and all that hangs off it: its name rises above it as it's drawn larger, and what's under it hangs below.
   const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .tile-under, .refused-line')].filter(visible);
   for (const node of boxes) {
@@ -337,9 +351,9 @@ function emptyHits({ around, step }) {
   for (let y = Math.max(1, y0); y < Math.min(innerHeight - 1, y1); y += step) {
     for (let x = Math.max(1, x0); x < Math.min(innerWidth - 1, x1); x += step) {
       const stack = document.elementsFromPoint(x, y);
-      const pane = stack.findIndex((el) => el.matches('.react-flow__pane'));
-      if (pane <= 0 || stack.slice(0, pane).some((el) => paints(el, x, y))) continue;
-      const at = `${where(stack[0])}${stack[0].closest('.react-flow__node .card') ? ` <${stack[0].closest('.react-flow__node .card').dataset.asset}>` : ''}`;
+      const pane = stack.findIndex((el) => el.matches('.canvas-pixels'));
+      if (pane <= 0 || document.querySelector('.canvas-root')?.canvasInspection?.hitTest({x,y}) || stack.slice(0, pane).some((el) => paints(el, x, y))) continue;
+      const at = `${where(stack[0])}${stack[0].closest('.canvas-node .card') ? ` <${stack[0].closest('.canvas-node .card').dataset.asset}>` : ''}`;
       if (!found.has(at)) found.set(at, [Math.round(x), Math.round(y)]);
     }
   }
@@ -472,7 +486,7 @@ async function drawnEdges(page, decoder, label) {
       return {
         at: `${el.tagName.toLowerCase()}${[...el.classList].slice(0, 3).map((c) => `.${c}`).join('')}`,
         rect: [r.left, r.top, r.right, r.bottom], o, scale, samples,
-        view: [innerWidth, innerHeight, devicePixelRatio, document.querySelector('.react-flow__viewport')?.style.transform ?? ''],
+        view: [innerWidth, innerHeight, devicePixelRatio, JSON.stringify(document.querySelector('.canvas-root')?.canvasInspection?.camera()) ?? ''],
         image: style.borderImageSource,
         slices: [style.borderImageSlice, style.borderImageWidth, style.borderImageRepeat, style.borderImageOutset],
         clipping,
@@ -560,7 +574,7 @@ async function drawnEdges(page, decoder, label) {
 
 /** Where a drag pans the canvas: a point where nothing's drawn on it, and the drag's end too, inside the viewport. */
 function panPoint() {
-  const bare = (x, y) => x >= 80 && y >= 60 && x <= innerWidth - 20 && y <= innerHeight - 20 && document.elementFromPoint(x, y)?.classList.contains('react-flow__pane');
+  const bare = (x, y) => x >= 80 && y >= 60 && x <= innerWidth - 20 && y <= innerHeight - 20 && document.elementFromPoint(x, y)?.classList.contains('canvas-pixels') && !document.querySelector('.canvas-root')?.canvasInspection?.hitTest({x,y});
   for (let y = 100; y <= innerHeight - 20; y += 20) for (let x = 140; x <= innerWidth - 20; x += 20) if (bare(x, y) && bare(x - 60, y - 40)) return { x, y };
   return null;
 }
@@ -729,7 +743,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     lookAt(page);
     await signedIn(page);
     await page.goto(await projectUrl(id));
-    await page.locator('.react-flow__node').first().waitFor();
+    await until('canvas logical cards available', () => canvasNames(page), names => names?.length > 0);
     await placed();
     const look = async (state, keep, fitted = true, beforeAudit) => {
       // What opens animates in: measured once it's still. A pulse goes on forever, and is no move.
@@ -749,7 +763,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
       // How large an open box's words are on screen as the canvas draws in on it, for the record: a zoom makes them larger or smaller.
       if (/^(open|writing)-/.test(state)) {
         const least = await page.evaluate(() => {
-          const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+          const zoom = document.querySelector('.canvas-root').canvasInspection.camera().zoom;
           const sizes = [...document.querySelectorAll('.card.here, .card.here *')]
             .filter((el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && el.offsetHeight)
             .map((el) => (parseFloat(getComputedStyle(el).fontSize) * el.getBoundingClientRect().height) / el.offsetHeight);
@@ -772,7 +786,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
         await page.click(now > want ? 'button[aria-label="Zoom out"]' : 'button[aria-label="Zoom in"]');
         await settled(page);
       }
-      await until(`the camera reaches ${want}`, () => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a), (actual) => actual === want);
+      await until(`the camera reaches ${want}`, () => page.evaluate(() => document.querySelector('.canvas-root').canvasInspection.camera().zoom), (actual) => actual === want);
       await settled(page);
     };
     const home = async () => {
@@ -790,8 +804,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     }
     // Close, on a box with the most hanging off it: drawn in on it, then 200%.
     await home();
-    const near = page.locator(`.react-flow__node .card[data-asset="${names.includes('posed') ? 'posed' : 'still'}"] > .media`).first();
-    const middle = await near.boundingBox();
+    const middle = (await canvasBox(page, names.includes('posed') ? 'posed' : 'still'))?.body;
     if (middle) {
       await page.keyboard.down('Shift');
       await page.mouse.click(middle.x + middle.width / 2, middle.y + middle.height / 2);
@@ -802,63 +815,35 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
       await look('rest-close', true);
     }
     // At rest, being made, at 75%: what it says of how far it's got.
-    const making = page.locator('.react-flow__node .card[data-asset="making"] > .media').first();
     await home();
     if (names.includes('making')) {
       const makingState = () => page.evaluate(() => {
-        const media = document.querySelector('.card[data-asset="making"] > .media');
-        const rect = media?.getBoundingClientRect();
-        const left = document.querySelector('.tools')?.getBoundingClientRect().right ?? 0;
-        const top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0;
-        const viewport = document.querySelector('.react-flow__viewport');
-        const transform = viewport ? getComputedStyle(viewport).transform : null;
-        // Its render's lines, under the picture at rest (cl-932): the machine and its time, then what it's doing.
-        const progress = media?.closest('.card')?.querySelector(':scope > .tile-under .prog .face-state b');
-        const visibility = { opacityProperty: true, visibilityProperty: true };
-        const rendered = Boolean(media?.checkVisibility?.(visibility));
-        const inBounds = Boolean(rect && rect.width && rect.height && rect.left >= left && rect.top >= top && rect.right <= innerWidth && rect.bottom <= innerHeight);
-        const progressVisible = Boolean(progress?.checkVisibility?.(visibility));
-        // Its state line (cl-898): `Segment 3 of 600: Denoising - Step 2 / 5`.
-        const text = progress?.innerText ?? null;
-        let reason = null;
-        if (!media) reason = 'missing-media';
-        else if (!rendered) reason = 'hidden-media';
-        else if (!inBounds) reason = 'offscreen-media';
-        else if (!progress) reason = 'missing-progress-label';
-        else if (!progressVisible) reason = 'hidden-progress-label';
-        else if (!text) reason = 'empty-progress-text';
-        return {
-          hash: location.pathname, open: [...document.querySelectorAll('.card.here')].map((card) => card.dataset.asset),
-          selected: [...document.querySelectorAll('.react-flow__node.selected')].map((node) => node.querySelector('.card')?.dataset.asset ?? node.dataset.id),
-          zoom: transform === null ? null : new DOMMatrix(transform).a, transform, mounted: Boolean(media),
-          rect: rect && { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, rendered, inBounds, visible: rendered && inBounds,
-          progress: Boolean(progress), progressVisible, text, reason,
-        };
+        const i=document.querySelector('.canvas-root')?.canvasInspection, box=i?.card('making'), r=box?.rendered, rect=r?.body;
+        const left=document.querySelector('.tools')?.getBoundingClientRect().right??0, top=document.querySelector('.top')?.getBoundingClientRect().bottom??0;
+        const inBounds=Boolean(rect&&rect.width&&rect.height&&rect.x>=left&&rect.y>=top&&rect.x+rect.width<=innerWidth&&rect.y+rect.height<=innerHeight);
+        const progress=r?.labels.progress, count=r?.labels.count;
+        const text=[progress?.fullText??progress?.text,count?.fullText??count?.text].filter(Boolean).join(' ');
+        const reason=!r?'missing-media':!inBounds?'offscreen-media':!progress?'missing-progress-label':!text?'empty-progress-text':null;
+        return {hash:location.pathname,open:[...document.querySelectorAll('.card.here')].map(card=>card.dataset.asset),selected:i?.selectedNames()??[],zoom:i?.camera().zoom,transform:JSON.stringify(i?.camera()),mounted:Boolean(r),rect,rendered:Boolean(r),inBounds,visible:Boolean(r)&&inBounds,progress:Boolean(progress),progressVisible:Boolean(progress?.width),text,reason};
       });
       const restingMaking = (at) => at.zoom === 0.75 && at.mounted && at.visible && !at.open.length && !at.selected.length;
       const makingProgress = (at) => restingMaking(at) && at.progressVisible && /\bStep \d+ \/ \d+/.test(at.text ?? '');
-      await making.waitFor().catch(async (error) => {
-        const state = await makingState();
-        (seen.making_setup ??= []).push({ size: size.name, phase: 'mount', ...state });
-        throw new Error(`making media did not mount visibly: ${JSON.stringify(state)}`, { cause: error });
-      });
+      await until('making has rendered geometry', makingState, state => state.mounted);
       // Shift adds to a selection: rest-close leaves its box selected, and Shift+2 would fit both.
       await page.keyboard.press('Escape');
-      await page.waitForFunction(() => !document.querySelector('.card.here') && !document.querySelector('.react-flow__node.selected'));
-      const at = await making.boundingBox();
+      await page.waitForFunction(() => !document.querySelector('.card.here') && document.querySelector('.canvas-root').canvasInspection.selectedNames().length === 0);
+      const at = (await canvasBox(page,'making')).body;
       await page.keyboard.down('Shift');
       await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
       await page.keyboard.up('Shift');
-      await page.waitForFunction(() => {
-        const selected = [...document.querySelectorAll('.react-flow__node.selected')];
-        return selected.length === 1 && selected[0].querySelector('.card')?.dataset.asset === 'making';
-      });
-      (seen.making_selected ??= []).push({ size: size.name, selected: await page.evaluate(() => [...document.querySelectorAll('.react-flow__node.selected')].map((node) => ({ id: node.getAttribute('data-id'), name: node.querySelector('.card')?.dataset.asset }))) });
+      await until('making alone selected',()=>selectedBoxes(page),names=>names?.length===1&&names[0]==='making');
+      (seen.making_selected??=[]).push({size:size.name,selected:await selectedBoxes(page)});
       await page.keyboard.press('Shift+2');
       await settled(page);
       await page.keyboard.press('Escape');
-      await page.waitForFunction(() => !document.querySelector('.card.here') && !document.querySelector('.react-flow__node.selected'));
+      await page.waitForFunction(() => !document.querySelector('.card.here') && document.querySelector('.canvas-root').canvasInspection.selectedNames().length === 0);
       await zoomTo(0.75);
+      await page.mouse.move(4,4);
       const setup = await makingState();
       (seen.making_setup ??= []).push({ size: size.name, ...setup });
       if (!restingMaking(setup)) throw new Error(`making setup is not a visible resting 75% canvas: ${JSON.stringify(setup)}`);
@@ -877,9 +862,11 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     }
     await home();
     for (const asset of size.open ? [] : names) {
-      const media = page.locator(`.react-flow__node .card[data-asset="${asset}"] > .media, .react-flow__node .card[data-asset="${asset}"] > .tl`).first();
-      if (!(await media.count())) continue;
-      const at = await media.boundingBox();
+      const geometry=await canvasBox(page,asset);
+      if(!geometry?.rendered) continue;
+      const native=await hoverBox(page,asset);
+      const media=native.locator('.card > .media, .card > .tl').first();
+      const at=await media.boundingBox();
       if (!at) continue;
       await page.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
       await page.waitForTimeout(120);
@@ -958,7 +945,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
         const m = new DOMMatrix(getComputedStyle(el).transform);
         return { zoom: m.a, x: m.e, y: m.f };
       });
-      const canvas = () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform);
+      const canvas = () => page.evaluate(() => JSON.stringify(document.querySelector('.canvas-root')?.canvasInspection?.camera()));
       const around = () => focus.evaluate((held) => [...held.querySelectorAll('.focus-heading, .focus-viewer, .here-side, .here-under, .image-controls')]
         .filter((el) => el.checkVisibility())
         .map((el) => {
@@ -1028,7 +1015,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     // At rest, a drag where nothing's drawn pans the canvas.
     await home();
     const from = await page.evaluate(panPoint);
-    const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
+    const viewport = () => page.evaluate(() => JSON.stringify(document.querySelector('.canvas-root').canvasInspection.camera()));
     const before = await viewport();
     if (from) {
       await page.mouse.move(from.x, from.y);
@@ -1058,8 +1045,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     await page.click('.zoom-at');
     await look('zoom-menu', true);
     await page.keyboard.press('Escape');
-    const named = page.locator(`.react-flow__node .card[data-asset="wide_art"] > .media`).first();
-    const at = await named.boundingBox();
+    const at = (await canvasBox(page,'wide_art'))?.body;
     if (at) {
       await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2, { button: 'right' });
       const menu = await page.getByRole('menu').first().waitFor({ timeout: 5000 }).then(() => true, () => false);
@@ -1088,11 +1074,11 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     lookAt(page);
     await signedIn(page);
     await page.goto(await projectUrl(id));
-    await page.locator('.react-flow__node').first().waitFor();
+    await until('canvas logical cards available', () => canvasNames(page), names => names?.length > 0);
     await placed();
     const edges = async (state) => {
       // Still for a second: on the GPU path a box's fit can start well after its click.
-      const at = () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform);
+      const at = () => page.evaluate(() => JSON.stringify(document.querySelector('.canvas-root')?.canvasInspection?.camera()));
       for (let last = await at(), same = 0; same < 10; ) {
         await page.waitForTimeout(100);
         const now = await at();

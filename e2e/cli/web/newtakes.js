@@ -7,7 +7,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so
 // no run. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { writeFileSync } = require('fs');
+const { readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { projectFolder, addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, storedOf, until, STEP_MS, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
@@ -149,6 +149,15 @@ async function died(why) {
     await leave();
     const row = await until(`card's take ${count}`, asset, (now) => now?.versions === count && !now.making?.length, FIRST_RUN_MS);
     await until(`its wave gone with take ${count}`, async () => (await rest())?.wave ? 1 : 0, (n) => n === 0, 15_000).catch(() => {});
+    const selected = row.prefixes?.find(version => version.number === row.version)?.main ?? row;
+    if (!selected.path) throw new Error('the selected take has no source path for an independent pixel comparison');
+    const expected = screenshotPixels(readFileSync(join(folder,selected.path)))(0,0);
+    const actual = await until('selected take has its actual source color',async()=>{
+      await page.mouse.move(4,4);
+      const body=(await canvasBox(page,'card'))?.rendered?.body;
+      return body?screenshotPixels(await page.screenshot())(body.x+body.width/2,body.y+body.height/2):null;
+    },color=>color&&color.every((value,c)=>Math.abs(value-expected[c])<=18));
+    check(`take_${count}_source_pixels`,actual.every((value,c)=>Math.abs(value-expected[c])<=18),{actual,expected});
     return { row, said: await page.evaluate(() => window.said), states: await page.evaluate(() => window.states) };
   };
 

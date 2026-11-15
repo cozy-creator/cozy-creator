@@ -16,7 +16,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, addBoxes, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
+const { projectFolder, projectFromPage, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, addBoxes, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 // A still made in slow steps, so its tile is seen rendering at both zooms; it's canceled from its tile.
@@ -180,54 +180,38 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
   /** Each of these drawn: fitted until they're all in view, as a canvas draws only what's in view, wherever they were placed. */
   const seeAll = (names) => until(`${names.join(', ')} on the canvas`, async () => {
     await fitCanvas(page);
-    return Promise.all(names.map((name) => boxOf(page, name).isVisible()));
+    return Promise.all(names.map(async name => Boolean((await canvasBox(page,name))?.rendered)));
   }, (shown) => shown.every(Boolean));
   await seeAll(['still', 'shot', 'plain', 'slow', 'again', 'reel']);
   // The two this computer renders, in a row under the others.
   projectJson(project, 'PATCH', '/canvas', { cards: { slow: { x: 0, y: 560 }, again: { x: 380, y: 560 }, reel: { x: 760, y: 560 } } });
-  await until('the rows placed', () => boxOf(page, 'again').evaluate((node) => node.getBoundingClientRect().top > document.querySelector('.react-flow__node:has(.card[data-asset="still"])').getBoundingClientRect().bottom), Boolean).catch(() => {});
+  await until('the rows placed', async () => { const [a,b] = await Promise.all(['again','still'].map(name => canvasBox(page,name))); return a && b && a.bounds.y > b.bounds.y + b.bounds.height; }, Boolean).catch(() => {});
   await page.mouse.move(2, 1298);
   await page.keyboard.press('f');
   await settled(page);
 
   /** A tile as drawn: its head's parts in order, what's in its picture that can be pressed, and what hangs under it, in order. */
-  const tile = (name) => boxOf(page, name).evaluate((node) => {
-    const card = node.querySelector('.card');
-    const visible = (el) => el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
-    const head = [...card.querySelectorAll(':scope > .head > *')].filter(visible).filter((el) => !el.classList.contains('sp'));
-    const media = card.querySelector(':scope > .media');
-    const m = media.getBoundingClientRect();
-    const under = card.querySelector(':scope > .tile-under');
-    const line = under?.querySelector('.tile-line');
-    const face = under?.querySelector('.run-face');
-    const r = (el) => el && el.getBoundingClientRect();
-    return {
-      head: head.map((el) => el.className.split(' ')[0] + (el.getAttribute('aria-label') ? `[${el.getAttribute('aria-label')}]` : '') + (el.classList.contains('nm') || el.classList.contains('node-version-label') ? `:${el.textContent}` : '')),
-      pressable: [...media.querySelectorAll('button, [role=button]')].filter(visible).map((el) => el.getAttribute('aria-label') || el.textContent),
-      tool: line?.querySelector('.node-tool')?.textContent ?? null,
-      shape: line?.querySelector('.ratio-rest')?.textContent ?? null,
-      lines: face ? [...face.querySelectorAll('p')].map((p) => p.innerText.replace(/\s+/g, ' ').trim()) : null,
-      cancel: face?.querySelector('.face-cancel')?.textContent ?? null,
-      // Its numbers whole at the box's width, whatever of its words gave way (cl-953).
-      numbers: face ? ['.face-count', '.face-time'].map((selector) => {
-        const held = face.querySelector(selector);
-        if (!held) return null;
-        const [r, line] = [held.getBoundingClientRect(), held.closest('p').getBoundingClientRect()];
-        return { text: held.textContent.trim(), whole: r.width > 0 && r.right <= line.right + 0.5 && held.scrollWidth <= held.clientWidth + 1 };
-      }) : null,
-      // Under its picture: its tool and shape first, then its render.
-      ordered: (!line || r(line).top >= m.bottom - 1) && (!face || r(face).top >= (line ? r(line).bottom : m.bottom) - 1),
-      chips: node.querySelectorAll('.add-on, .add-ons').length,
-      // How far what hangs under its picture reaches, from the picture's bottom.
-      hangs: Math.max(m.bottom, ...[line, face].filter(Boolean).map((el) => r(el).bottom)) - m.bottom,
-      // What its tool is called, as many times as the tile says it; and no Models & LoRAs on it.
-      text: node.innerText,
-      stray: card.querySelectorAll(':scope > .ratio-rest, .head .node-tool').length,
-      wave: Boolean(card.querySelector(':scope > .render-wave')),
-      rect: (() => { const all = [card, under].filter(Boolean).map(r); const top = Math.min(...all.map((b) => b.top)) - 40, bottom = Math.max(...all.map((b) => b.bottom)) + 8, left = Math.min(...all.map((b) => b.left)) - 8, right = Math.max(...all.map((b) => b.right)) + 8; return { x: Math.max(0, left), y: Math.max(0, top), width: right - Math.max(0, left), height: bottom - Math.max(0, top) }; })(),
-    };
-  });
-  const zoom = () => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
+  const tile = async name => {
+    await page.mouse.move(4, 4);
+    await until(`${name} passive display objects`, async () => (await canvasBox(page,name))?.rendered, Boolean);
+    return page.evaluate(name => {
+      const i = document.querySelector('.canvas-root').canvasInspection, box = i.card(name), r = box.rendered, labels = r.labels;
+      const full = key => labels[key]?.fullText ?? labels[key]?.text ?? null;
+      const controls = r.controls ?? [], body = r.body, bottom = body.y + body.height;
+      const under = Object.entries(labels).filter(([key]) => ['tool','shape','machine','time','progress','count','cancel'].includes(key)).map(([,label]) => label);
+      const header = [r.stateDot && 'state-dot', labels.title && `nm:${full('title')}`, labels.version && `node-version-label:${full('version')}`, controls.some(c=>c.part==='delete') && 'iconb[Delete]'].filter(Boolean);
+      const all = [box.bounds,...Object.values(labels),...controls], left=Math.min(...all.map(b=>b.x))-8, top=Math.min(...all.map(b=>b.y))-8;
+      const lines = r.progress && r.progress.phase !== 'local' ? [[full('machine'),full('time')].filter(Boolean).join(''),[full('progress'),full('count')].filter(Boolean).join(' ')] : null;
+      return { head:header, pressable:controls.filter(c=>c.x<body.x+body.width&&c.x+c.width>body.x&&c.y<bottom&&c.y+c.height>body.y).map(c=>c.part),
+        tool:full('tool'),shape:full('shape'),lines,cancel:controls.some(c=>c.part==='cancel')?'Cancel':null,
+        numbers:lines?['count','time'].map(key=>labels[key]?{text:full(key).trim(),whole:labels[key].text===full(key)&&labels[key].x+labels[key].width<=body.x+body.width+.5}:null):null,
+        ordered:under.every(label=>label.y>=bottom-1) && (!labels.progress||labels.progress.y>=Math.max(bottom,...['tool','shape'].flatMap(key=>labels[key]?[labels[key].y+labels[key].height]:[]))-1),
+        chips:r.chips?.filter(chip=>chip.y>=bottom).length??0,hangs:Math.max(bottom,...under.map(label=>label.y+label.height))-bottom,
+        text:Object.values(labels).map(label=>label.fullText??label.text).join(' '),stray:['tool','shape'].filter(key=>labels[key]&&labels[key].y<body.y).length,wave:Boolean(r.wave),
+        rect:{x:Math.max(0,left),y:Math.max(0,top),width:Math.max(...all.map(b=>b.x+b.width))+8-Math.max(0,left),height:Math.max(...all.map(b=>b.y+b.height))+8-Math.max(0,top)} };
+    },name);
+  };
+  const zoom = () => page.evaluate(() => document.querySelector('.canvas-root').canvasInspection.camera().zoom);
   const zoomTo = async (want) => {
     for (let i = 0; i < 20 && Math.abs((await zoom()) - want) > 0.005; i++) {
       await page.click((await zoom()) > want ? 'button[aria-label="Zoom out"]' : 'button[aria-label="Zoom in"]');
@@ -250,6 +234,10 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
     const tiles = {};
     for (const name of ['still', 'shot', 'plain', ...(local ? ['slow'] : [])]) {
       tiles[name] = await tile(name);
+      if (name === 'still' || name === 'plain') {
+        const body=(await canvasBox(page,name)).rendered.body,read=screenshotPixels(await page.screenshot()),actual=read(body.x+body.width/2,body.y+body.height/2),expected=[name==='still'?80:150,128,128];
+        check(`tile_pixels_${name}_${want}`,actual.every((v,c)=>Math.abs(v-expected[c])<=20),{actual,expected});
+      }
       await shot(`tile-${name}-zoom-${want}`, tiles[name].rect);
     }
     await shot(`tiles-zoom-${want}`);
@@ -276,12 +264,14 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
     if (slow) check(`${z}_rendering_dot_left_of_its_name`, /^state-dot\[(Rendering|Queued)\]$/.test(slow.head[0] ?? '') && slow.head[1] === 'nm:slow', slow.head);
     if (slow) check(`${z}_rendering_lines_under_with_cancel`, slow.lines?.length === 2 && slow.cancel === 'Cancel' && slow.wave && slow.ordered && Boolean(slow.tool) && (slow.shape === null || SHAPE.test(slow.shape)), slow);
   }
-  check('no_edit_or_pick_up_at_rest', (await page.locator('.react-flow__node button:text-is("Edit"), .react-flow__node button:text-is("Pick up from here")').count()) === 0);
+  check('no_edit_or_pick_up_at_rest', (await Promise.all(['still','shot'].map(tile))).every(tile => tile.pressable.length === 0));
 
   // Cancel on the tile stops its render, and its lines go.
   if (local) {
     await zoomTo(1);
-    await boxOf(page, 'slow').locator('.tile-under .face-cancel').evaluate((button) => button.click());
+    const cancel = (await canvasBox(page,'slow')).rendered.controls.find(c=>c.part==='cancel');
+    if (!cancel) throw new Error('slow has no drawn Cancel control');
+    await page.mouse.click(cancel.x+cancel.width/2,cancel.y+cancel.height/2);
     const stopped = await until('slow stopped', async () => ({ asset: (await api(at)).body.assets.find((one) => one.name === 'slow'), lines: (await tile('slow')).lines }), (now) => !now.asset?.making?.length && now.lines === null, 60_000).catch((why) => ({ why: String(why) }));
     check('cancel_on_the_tile', !stopped.why && !stopped.asset?.versions, stopped);
   }
@@ -292,37 +282,20 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
     await post(`${at}/runs`, { names: ['again'], on: ['local'] });
     await until('again has a take', versions, (n) => n === 1, FIRST_RUN_MS);
     await settled(page);
-    const size = () => boxOf(page, 'again').evaluate((node) => {
-      const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-      const [card, box] = [node.querySelector('.card').getBoundingClientRect(), node.getBoundingClientRect()];
-      return [card.width, card.height, box.width, box.height].map((n) => Math.round((n / zoom) * 10) / 10).join('x');
-    });
+    const size = async () => { const box=(await canvasBox(page,'again')).bounds,z=(await canvasView(page)).zoom; return [box.width,box.height,box.width,box.height].map(v=>Math.round(v/z*10)/10).join('x'); };
     const before = await size();
-    await boxOf(page, 'again').evaluate((node) => {
-      const sizes = (window.againSizes = []);
-      const zoom = () => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-      const look = () => {
-        const card = node.querySelector('.card');
-        if (!card) return;
-        const [c, b] = [card.getBoundingClientRect(), node.getBoundingClientRect()];
-        // An image being made shows, in its frame, the pictures its run reads, full height, and the start of its words (cl-940).
-        const making = card.querySelector('.media .making');
-        const media = card.querySelector('.media').getBoundingClientRect();
-        const pictures = [...(making?.querySelectorAll('.making-pictures img') ?? [])].filter((img) => img.complete && img.naturalWidth > 0);
-        const now = {
-          size: [c.width, c.height, b.width, b.height].map((n) => Math.round((n / zoom()) * 10) / 10).join('x'),
-          rendering: Boolean(card.querySelector('.tile-under .run-face')),
-          pictures: pictures.length,
-          fullHeight: pictures.every((img) => Math.abs(img.getBoundingClientRect().height - media.height) < 1.5),
-          words: making?.querySelector('.making-words')?.textContent ?? '',
-          chip: making?.querySelector('.making-words .chip')?.textContent ?? '',
-        };
-        if (JSON.stringify(sizes.at(-1)) !== JSON.stringify(now)) sizes.push(now);
-      };
-      new MutationObserver(look).observe(node, { subtree: true, childList: true, attributes: true, characterData: true });
-      new ResizeObserver(look).observe(node);
-      look();
-    });
+    await page.evaluate(({name,key}) => {
+      const observations=window[key]=[];
+      const look=()=>{
+        const i=document.querySelector('.canvas-root')?.canvasInspection,box=i?.card(name),r=box?.rendered;
+        if(r){const z=i.camera().zoom,refs=(r.references??[]).filter(ref=>ref.ready);
+          const now={size:[box.bounds.width,box.bounds.height,box.bounds.width,box.bounds.height].map(v=>Math.round(v/z*10)/10).join('x'),rendering:Boolean(r.progress),pictures:refs.length,
+            fullHeight:refs.every(ref=>Math.abs(ref.height-r.body.height)<1.5),words:r.words??'',chip:r.chips?.[0]?.text??''};
+          if(JSON.stringify(observations.at(-1))!==JSON.stringify(now))observations.push(now);
+        }
+        if(!window[`${key}Stop`])requestAnimationFrame(look);
+      };look();
+    },{name:'again',key:'againSizes'});
     await post(`${at}/runs`, { names: ['again'], on: ['local'] });
     await until('again\'s second take', versions, (n) => n === 2, FIRST_RUN_MS);
     await settled(page);
@@ -332,50 +305,38 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
     check('render_leaves_its_size', sizes.some((now) => now.rendering) && sizes.every((now) => now.size === before) && (await size()) === before, { before, sizes });
     // While it's made: <plain>, full height, and its words with <plain> marked; once made, its take in their place (cl-940).
     check('making_shows_references_and_words', sizes.some((now) => now.rendering && now.pictures === 1 && now.fullHeight && /Another still, as warm as/.test(now.words) && /^<?plain>?$/i.test(now.chip)), sizes);
-    const after = await boxOf(page, 'again').evaluate((node) => ({ making: node.querySelectorAll('.media .making').length, label: node.querySelector('.node-version-label')?.textContent ?? '' }));
+    await page.evaluate(() => { window.againSizesStop=true; });
+    const afterRender=(await canvasBox(page,'again')).rendered;
+    const after={making:Object.keys(afterRender.labels).some(key=>key.startsWith('words'))?1:0,label:afterRender.labels.version?.text??'',video:afterRender.media.ready};
     check('result_replaces_them', after.making === 0 && after.label === 'v2', after);
   }
 
   // A video being made shows its summary and the pictures it reads the same way, and its take replaces them; it never resizes (cl-947).
   if (local) {
     const reelOf = async () => (await api(at)).body.assets.find((one) => one.name === 'reel');
-    const size = () => boxOf(page, 'reel').evaluate((node) => {
-      const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-      const [card, box] = [node.querySelector('.card').getBoundingClientRect(), node.getBoundingClientRect()];
-      return [card.width, card.height, box.width, box.height].map((n) => Math.round((n / zoom) * 10) / 10).join('x');
-    });
+    const size = async () => { const box=(await canvasBox(page,'reel')).bounds,z=(await canvasView(page)).zoom; return [box.width,box.height,box.width,box.height].map(v=>Math.round(v/z*10)/10).join('x'); };
     const before = await size();
-    await boxOf(page, 'reel').evaluate((node) => {
-      const seen = (window.reelSeen = []);
-      const zoom = () => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-      const look = () => {
-        const card = node.querySelector('.card');
-        if (!card) return;
-        const [c, b] = [card.getBoundingClientRect(), node.getBoundingClientRect()];
-        const making = card.querySelector('.media .making');
-        const media = card.querySelector('.media').getBoundingClientRect();
-        const pictures = [...(making?.querySelectorAll('.making-pictures img') ?? [])].filter((img) => img.complete && img.naturalWidth > 0);
-        const now = {
-          size: [c.width, c.height, b.width, b.height].map((n) => Math.round((n / zoom()) * 10) / 10).join('x'),
-          rendering: Boolean(card.querySelector('.tile-under .run-face')),
-          pictures: pictures.length,
-          fullHeight: pictures.every((img) => Math.abs(img.getBoundingClientRect().height - media.height) < 1.5),
-          words: making?.querySelector('.making-words')?.textContent ?? '',
-          chip: making?.querySelector('.making-words .chip')?.textContent ?? '',
-        };
-        if (JSON.stringify(seen.at(-1)) !== JSON.stringify(now)) seen.push(now);
-      };
-      new MutationObserver(look).observe(node, { subtree: true, childList: true, attributes: true, characterData: true });
-      new ResizeObserver(look).observe(node);
-      look();
-    });
+    await page.evaluate(({name,key}) => {
+      const observations=window[key]=[];
+      const look=()=>{
+        const i=document.querySelector('.canvas-root')?.canvasInspection,box=i?.card(name),r=box?.rendered;
+        if(r){const z=i.camera().zoom,refs=(r.references??[]).filter(ref=>ref.ready);
+          const now={size:[box.bounds.width,box.bounds.height,box.bounds.width,box.bounds.height].map(v=>Math.round(v/z*10)/10).join('x'),rendering:Boolean(r.progress),pictures:refs.length,
+            fullHeight:refs.every(ref=>Math.abs(ref.height-r.body.height)<1.5),words:r.words??'',chip:r.chips?.[0]?.text??''};
+          if(JSON.stringify(observations.at(-1))!==JSON.stringify(now))observations.push(now);
+        }
+        if(!window[`${key}Stop`])requestAnimationFrame(look);
+      };look();
+    },{name:'reel',key:'reelSeen'});
     await post(`${at}/runs`, { names: ['reel'], on: ['local'] });
     await until('reel has its take', reelOf, (row) => row?.versions === 1 && !row.making?.length, FIRST_RUN_MS);
     await settled(page);
     await page.waitForTimeout(1000);
     const samples = await page.evaluate(() => window.reelSeen);
     seen.reel_render = { before, samples };
-    const after = await boxOf(page, 'reel').evaluate((node) => ({ making: node.querySelectorAll('.media .making').length, label: node.querySelector('.node-version-label')?.textContent ?? '', video: Boolean(node.querySelector('.media .media-pixels img, .media .media-pixels video')) }));
+    await page.evaluate(() => { window.reelSeenStop=true; });
+    const afterRender=(await canvasBox(page,'reel')).rendered;
+    const after={making:Object.keys(afterRender.labels).some(key=>key.startsWith('words'))?1:0,label:afterRender.labels.version?.text??'',video:afterRender.media.ready};
     check('video_making_shows_summary_and_references', samples.some((now) => now.rendering && now.pictures === 1 && now.fullHeight && /The sea at dusk, the light of/.test(now.words) && /^<?plain>?$/i.test(now.chip)), samples);
     check('video_take_replaces_them', after.making === 0 && after.label === 'v1' && after.video, after);
     check('video_render_leaves_its_size', samples.every((now) => now.size === before) && (await size()) === before, { before, sizes: [...new Set(samples.map((now) => now.size))] });
@@ -399,21 +360,17 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
   await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png'), id), name: 'lower', exact: true, at: { x: 520, y: 2400 } });
   projectJson(project, 'PATCH', '/canvas', { cards: { upper: { x: 0, y: 2400 }, lower: { x: 520, y: 2400 } } });
   await seeAll(['upper', 'lower']);
-  await boxOf(page, 'upper').locator('.media').first().click();
+  {const b=(await canvasBox(page,'upper')).body;await page.mouse.click(b.x+b.width/2,b.y+b.height/2);}
   if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
   await page.getByRole('menuitem', { name: /^Zoom to selection/ }).click();
   await settled(page);
   await zoomTo(1);
   const stack = () => page.evaluate(() => {
     const parts = (name) => {
-      const card = document.querySelector(`.react-flow__node .card[data-asset="${name}"]`);
-      const r = (el) => el.getBoundingClientRect();
-      const media = r(card.querySelector(':scope > .media'));
-      const under = [...card.querySelectorAll(':scope > .tile-under > *')].map(r).filter((b) => b.height > 0);
-      const head = [...card.querySelectorAll(':scope > .head > *')].map(r).filter((b) => b.height > 0);
-      return { left: media.left, right: media.right, top: media.top, bottom: media.bottom, under: Math.max(media.bottom, ...under.map((b) => b.bottom)), head: Math.min(media.top, ...head.map((b) => b.top)) };
+      const r=document.querySelector('.canvas-root').canvasInspection.card(name).rendered,m=r.body,labels=Object.values(r.labels);
+      return {left:m.x,right:m.x+m.width,top:m.y,bottom:m.y+m.height,under:Math.max(m.y+m.height,...labels.filter(l=>l.y>=m.y+m.height).map(l=>l.y+l.height)),head:Math.min(m.y,...labels.filter(l=>l.y<m.y).map(l=>l.y))};
     };
-    return { upper: parts('upper'), lower: parts('lower'), zoom: new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a };
+    return { upper: parts('upper'), lower: parts('lower'), zoom: document.querySelector('.canvas-root').canvasInspection.camera().zoom };
   });
   const apart = await stack();
   const grab = { x: (apart.lower.left + apart.lower.right) / 2, y: (apart.lower.top + apart.lower.bottom) / 2 };
@@ -444,20 +401,22 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
   const sizes = () => page.evaluate(() => {
     const px = (el) => (el ? parseFloat(getComputedStyle(el).fontSize) : null);
     const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; };
-    const labels = [...document.querySelectorAll('.react-flow .card .tile-line .ratio-rest, .react-flow .card .tile-line .node-tool, .react-flow .card .head .node-version-label')];
+    const inspection=document.querySelector('.canvas-root').canvasInspection,zoom=inspection.camera().zoom;
+    const cards=inspection.names().map(name=>({name,render:inspection.card(name)?.rendered})).filter(one=>one.render);
+    const labels=cards.flatMap(one=>['shape','tool','version'].flatMap(key=>one.render.labels[key]?[one.render.labels[key]]:[]));
     const view = document.querySelector('.focus-viewport');
     return {
       body: px(document.body),
-      labels: labels.map((el) => ({ text: el.textContent, px: px(el) })),
-      trash: box(document.querySelector('.react-flow .card[data-asset="still"] .head button[aria-label="Delete"]')),
+      labels:labels.map(label=>({text:label.fullText??label.text,px:label.fontSize*zoom})),
+      trash:(()=>{const hit=inspection.card('still')?.rendered?.controls.find(c=>c.part==='delete');return hit?{w:Math.round(hit.width),h:Math.round(hit.height)}:null;})(),
       close: box(view?.querySelector('button[aria-label="Close focus"]')),
       discard: box(view?.querySelector('.take-off[aria-label^="Discard"]')),
       untool: box(view?.querySelector('.image-tool button[aria-label$=" tool"]')),
       // Its tool's words start past a selected box's ring, never under it.
       ring: (() => {
-        const card = document.querySelector('.react-flow__node.selected .card[data-asset="still"]');
-        const line = card?.querySelector(':scope > .tile-under .tile-line');
-        return line ? line.getBoundingClientRect().top - card.querySelector(':scope > .media').getBoundingClientRect().bottom : null;
+        const r=inspection.selectedNames().includes('still')&&inspection.card('still')?.rendered;
+        const line=r&&(r.labels.tool??r.labels.shape);
+        return line?line.y-r.body.y-r.body.height:null;
       })(),
       number: px(view?.querySelector('.variant-number')),
     };
@@ -468,11 +427,12 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
     await page.evaluate((dark) => localStorage.setItem('cozy.theme', dark ? 'dark' : 'paper'), dark);
     await page.reload();
     await seeAll(['still']);
-    await boxOf(page, 'still').locator('.media').first().click();
+    {const b=(await canvasBox(page,'still')).body;await page.mouse.click(b.x+b.width/2,b.y+b.height/2);}
     if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
     await page.getByRole('menuitem', { name: /^Zoom to selection/ }).click();
     await settled(page);
     await zoomTo(1);
+    await page.mouse.move(4,4);
     const tiled = await sizes();
     await shot(`look-${look}-tiles`);
     await openBox(page, 'still');
