@@ -80,7 +80,7 @@ export function pictureBox(node: SceneNode): Box {
 function pictureOf(view: ElementView): ScenePicture | undefined {
   const shown = shownOf(view)
   const own = view.preview && (!view.preview.sha256 || !shown || hexOf(shown.sha256) === view.preview.sha256)
-  if (own && view.preview && (!shown || shown.absent)) return { url: view.preview.url, kind: view.placing?.media ?? shown?.field ?? view.asset?.kind ?? "image" }
+  if (own && view.preview) return { url: view.preview.url, kind: view.placing?.media ?? shown?.field ?? view.asset?.kind ?? "image" }
   if (shown && !shown.absent && ["image", "video", "audio"].includes(shown.field)) {
     return { sha256: shown.sha256, path: shown.path, kind: shown.field, alpha: shown.alpha ?? undefined }
   }

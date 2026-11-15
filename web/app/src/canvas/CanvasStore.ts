@@ -1,5 +1,4 @@
 import type { CanvasController, CanvasNode, Viewport } from "./viewport"
-import { flushSync } from "react-dom"
 import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, lost, type OutboxPort } from "../api/outbox"
 import { nextProjectOrder } from "../api/projectOrder"
@@ -31,7 +30,6 @@ import { signal } from "../ui/signal"
 import { carriedFile } from "./carry"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
-import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo, mainText } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
@@ -337,9 +335,6 @@ export class CanvasStore {
   readonly allAsking = signal<{ fit: Fit } | null>(null)
   /** The box being worked on where it stands: the view fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
   inPlace: { name: string; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
-  /** Only the opened card has a viewport-dependent presentation. The cached value owns no DOM. */
-  private surface: { id: string; current?: ReadableProjection; pose?: Box; update?: (room?: Box, at?: Viewport) => ReadableProjection | null } | null = null
-  private surfaceFrame = 0
   /** Done with the box where it stands: what's typed is saved, and the canvas goes back. */
   leaveHere: () => void = () => {}
   /** Opens a box where it stands, as a click on it does. */
@@ -476,9 +471,6 @@ export class CanvasStore {
 
   /** Its canvas goes, and the store stays for when it's drawn again: nothing is open or held in a drag by then. */
   detach() {
-    cancelAnimationFrame(this.surfaceFrame)
-    this.surfaceFrame = 0
-    this.surface = null
     this.viewport = null
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
     this.inPlace = null
@@ -536,7 +528,6 @@ export class CanvasStore {
     this.viewing.set(null)
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
     this.inPlace = null
-    this.closeSurface()
     this.focusEntering.set(false)
     this.focusedName.set(null)
   }
@@ -750,94 +741,11 @@ export class CanvasStore {
     return { x: Math.round(node.position.x), y: Math.round(node.position.y), w: row?.w ?? this.poseOf(node.data.name)?.w ?? CARD_WIDTH }
   }
 
-  /** Mount just the opened node for its first real measurement, even when its saved picture is offscreen. */
-  openSurface(name: string) {
-    const id = this.ids.get(this.resolveName(name))
-    if (!id) return
-    this.surface = { id }
-    this.measureSurface()
-  }
-
-  private measureSurface() {
-    const id = this.surface?.id
-    const owner = this.inPlace
-    if (!id || this.surfaceFrame) return
-    this.surfaceFrame = requestAnimationFrame(() => {
-      this.surfaceFrame = 0
-      // An on-screen card binds before this frame. Only a culled one needs mounting.
-      if (this.inPlace !== owner || this.surface?.id !== id || this.surface.update) return
-      const name = this.namesById.get(id)
-      if (name) this.notify(name)
-    })
-  }
-
-  bindSurface(id: string, update: (room?: Box, at?: Viewport) => ReadableProjection | null) {
-    if (this.surface?.id !== id) return () => {}
-    this.surface.update = update
-    return () => {
-      if (this.surface?.id === id && this.surface.update === update) this.surface.update = undefined
-    }
-  }
-
-  surfaceOf(name: string): ReadableProjection | undefined {
-    const held = this.surface
-    return held && this.ids.get(this.resolveName(name)) === held.id ? held.current : undefined
-  }
-
-  drawSurface(room?: Box, at?: Viewport): ReadableProjection | null {
-    if (this.surface?.update) return this.surface.update(room, at)
-    if (room) this.measureSurface()
-    return null
-  }
-
-  /** Its frame again from what it holds now. A zoom changes nothing of it: the canvas draws it larger or smaller. */
-  refreshSurface() {
-    this.surface?.update?.()
-  }
-
-  presentSurface(id: string, current: ReadableProjection) {
-    if (this.surface?.id !== id) return
-    const name = this.namesById.get(id)
-    const pose = name && this.poseOf(name)
-    const node = this.viewport?.getNode(id)
-    if (!pose || !node) return
-    this.surface.current = current
-    this.surface.pose = pose
-    const { x, y, w: canonicalWidth } = pose
-    const { x: left, y: top, w: width, h: height } = current.bounds
-    if (node.data.width === canonicalWidth && node.bounds.w === width && node.bounds.h === height && node.position.x === x && node.position.y === y && node.bounds.x === left && node.bounds.y === top) return
-    flushSync(() => this.viewport?.updateNode(id, (queued) => ({ data: { ...queued.data, width: canonicalWidth }, position: { x, y }, bounds: current.bounds })))
-  }
-
-  closeSurface() {
-    const id = this.surface?.id
-    cancelAnimationFrame(this.surfaceFrame)
-    this.surfaceFrame = 0
-    this.surface = null
-    const name = id && this.namesById.get(id)
-    if (name) requestAnimationFrame(() => {
-      if (this.surface?.id !== id) flushSync(() => this.paintPose(name))
-    })
-  }
-
   private paintPose(name: string) {
     const id = this.ids.get(name)
     const pose = this.poseOf(name)
     const view = this.get(name)
     if (!id || !pose || !view) return
-    if (this.surface?.id === id) {
-      if (this.surface.update) {
-        if (!this.surfaceFrame) this.surfaceFrame = requestAnimationFrame(() => {
-          this.surfaceFrame = 0
-          this.surface?.update?.()
-        })
-        return
-      }
-      const before = this.surface.pose
-      if (before?.w !== pose.w || before.h !== pose.h) return this.measureSurface()
-      this.viewport?.updateNode(id, { position: { x: pose.x, y: pose.y } })
-      return
-    }
     const drawn = bodyBox(view, pose)
     this.viewport?.updateNode(id, (queued) => ({ data: { ...queued.data, width: pose.w }, position: { x: pose.x, y: pose.y }, bounds: drawn }))
   }
@@ -2194,7 +2102,6 @@ export class CanvasStore {
 
   private removeNode(name: string) {
     const id = this.ids.get(name)
-    if (this.surface?.id === id) this.surface = null
     this.unsettled.delete(name)
     this.views.delete(name)
     this.poses.delete(name)
@@ -3118,7 +3025,6 @@ export class CanvasStore {
       const box = this.laid(name, { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) })
       if (view.placing) this.rows?.set(name, row)
       else this.move(name, row)
-      if (this.surface?.id === node.id) this.paintPose(name)
       field.add(name, this.giveWay(name, field, box, { tall: this.tallOf(name), pushes: this.pushable(held) }))
     }
     this.gesture = null

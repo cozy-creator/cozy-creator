@@ -119,10 +119,10 @@ async function candidate(context, origin) {
       const project = { count, id: made.id, folder, columns: Math.ceil(Math.sqrt(count * 1.25)), imports: [], references: {} };
       manifest.projects.push(project); save('prepared.json', manifest);
       for (let first = 0; first < count; first += 100) {
-        const path = join(out, `apply-${count}-${first}.json`), input = { new: Object.fromEntries(files.slice(first, Math.min(count, first + 100)).map(file => [NAME(file.index), { kind: 'image', takes: [{ file: file.file }] }])) };
+        const path = join(out, `apply-${count}-${first}.json`), input = Object.fromEntries(files.slice(first, Math.min(count, first + 100)).map(file => [NAME(file.index), { kind: 'image', takes: [{ file: file.file }] }]));
         writeFileSync(path, JSON.stringify(input));
         const input_sha256 = hash(readFileSync(path)); cli(['apply', '-f', path, '--json'], folder);
-        project.imports.push({ first, count: Object.keys(input.new).length, input_sha256, after_sha256: hash(readFileSync(path)) });
+        project.imports.push({ first, count: Object.keys(input).length, input_sha256, after_sha256: hash(readFileSync(path)) });
         save('prepared.json', manifest);
       }
       const path = `/v1/projects/${encodeURIComponent(project.id)}`, state = await api(path), byName = new Map(state.assets.map(asset => [asset.name, asset]));

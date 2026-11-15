@@ -1,7 +1,7 @@
 import "pixi.js/unsafe-eval"
 import { Application, Container, EventsTicker } from "pixi.js"
 import { Viewport as PixiViewport } from "pixi-viewport"
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useConnection } from "../app/Connection"
 import { machinesQuery, runFullQuery } from "../api/queries"
@@ -23,6 +23,7 @@ interface Props {
   store: CanvasStore
   active: boolean
   disabled: boolean
+  locked?: boolean
   children?: ReactNode
   onSelectionChange(value: { nodes: readonly ElementNode[] }): void
   onMoveEnd(event: unknown, view: Viewport): void
@@ -44,6 +45,7 @@ export function CanvasSurface(props: Props) {
   const queries = useQueryClient()
   const privateEpoch = useSignal(privateViewEpoch)
   const loggedOut = useSignal(signedOut)
+  const helpId = useId()
   const root = useRef<HTMLDivElement>(null)
   const overlay = useRef<HTMLDivElement>(null)
   const selection = useRef<HTMLDivElement>(null)
@@ -98,9 +100,12 @@ export function CanvasSurface(props: Props) {
       if (!inBounds(x, y)) return null
       const point = controller.screenToWorld({ x, y })
       const nodes = controller.getNodes()
-      for (let i = nodes.length - 1; i >= 0; i--) {
+      const hit = scene?.hitTest(point)
+      const drawn = hit && nodes.find(node => node.data.name === hit.name && !excluded.has(node.id))
+      if (drawn) return drawn
+      for (const selected of [true, false]) for (let i = nodes.length - 1; i >= 0; i--) {
         const node = nodes[i], box = node.bounds
-        if (!excluded.has(node.id) && point.x >= box.x && point.x <= box.x + box.w && point.y >= box.y && point.y <= box.y + box.h) return node
+        if (Boolean(node.selected) === selected && !excluded.has(node.id) && point.x >= box.x && point.x <= box.x + box.w && point.y >= box.y && point.y <= box.y + box.h) return node
       }
       return null
     }
@@ -133,7 +138,8 @@ export function CanvasSurface(props: Props) {
         let run = view.run
         const box = node.bounds
         const onscreen = box.x * camera.zoom + camera.x < width && (box.x + box.w) * camera.zoom + camera.x > 0 && box.y * camera.zoom + camera.y < height && (box.y + box.h) * camera.zoom + camera.y > 0
-        if (run && store.projectId && onscreen) {
+        const rendering = view.asset?.standing === "making" || view.queued || view.asked !== undefined || Boolean(view.glimpse)
+        if (run && store.projectId && onscreen && rendering) {
           const query = runFullQuery(client, store.projectId, run.number, 0)
           const full = queries.getQueryData(query.queryKey)
           if (full) run = { ...full, ...run, request: full.request }
@@ -149,13 +155,13 @@ export function CanvasSurface(props: Props) {
         const installing = !run && pkg ? machines.flatMap(m => ownActivity(m, store.projectId)).find(o => o.kind === "install" && o.subject === pkg) : undefined
         names.push({ id: node.id, name: node.data.name, box, view, selected: Boolean(node.selected), runContext: run || installing ? { run, machine, on, installing } : undefined })
       }
-      const hiddenName = store.focusedName.get() && !store.focusEntering.get() ? store.focusedName.get()! : hover.current ?? undefined
+      const hiddenName = hover.current ? store.resolveName(hover.current) : store.focusedName.get() && !store.focusEntering.get() ? store.focusedName.get()! : undefined
       scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenName })
+      const animating = scene.advance(now)
       app.render()
       if (store.empty || names.length) controller.markDrawn()
       positionOverlay()
-      if (moved || settle-- > 0) invalidate()
-      void now
+      if (animating || moved || settle-- > 0) invalidate()
     }
     const invalidate = () => { if (!stopped && !frame && visible()) frame = requestAnimationFrame(draw) }
     update.current = invalidate
@@ -176,7 +182,7 @@ export function CanvasSurface(props: Props) {
       invalidate()
     }
     const down = (event: PointerEvent) => {
-      if (!visible() || isDisabled.current || event.button > 1) return
+      if (!visible() || callbacks.current.locked || event.button > 1) return
       if (event.pointerType === "touch") {
         touches.add(event.pointerId)
         if (touches.size > 1) {
@@ -192,7 +198,7 @@ export function CanvasSurface(props: Props) {
       const nativeTitle = event.target instanceof Element && Boolean(event.target.closest(".nm"))
       clicked = { id: event.pointerId, node, part: nativeTitle ? "title" : hit?.part ?? "body", x: event.clientX, y: event.clientY, touch: event.pointerType === "touch" }
       if (nativeInput(event.target)) return
-      if ((space || event.button === 1) && event.target !== app?.canvas) {
+      if (!isDisabled.current && (space || event.button === 1) && event.target !== app?.canvas) {
         nativePan = { point: { x: event.clientX, y: event.clientY }, camera: controller.getViewport() }
         controller.setInteractionEnabled(false); element.setPointerCapture(event.pointerId); event.preventDefault(); return
       }
@@ -214,7 +220,7 @@ export function CanvasSurface(props: Props) {
       invalidate()
     }
     const move = (event: PointerEvent) => {
-      if (isDisabled.current) return
+      if (callbacks.current.locked) return
       if (nativePan) { void controller.setViewport({ ...nativePan.camera, x: nativePan.camera.x + event.clientX - nativePan.point.x, y: nativePan.camera.y + event.clientY - nativePan.point.y }); return }
       if (touches.size > 1) return
       if (drag && drag.id !== event.pointerId) return
@@ -267,8 +273,8 @@ export function CanvasSurface(props: Props) {
       interactions(); settle = 2; invalidate()
     }
     const cancel = (event: Event) => { touches.clear(); multitouch = false; nativePan = null; space = false; element.style.cursor = ""; if (drag?.begun) store.dragDropped(drag.nodes); drag = null; marquee = null; clicked = null; pointerDown = false; if (selection.current) selection.current.hidden = true; interactions(); invalidate(); void event }
-    const double = (event: MouseEvent) => { if (!visible() || isDisabled.current) return; const node = nodeAt(event.clientX, event.clientY); if (node && !nativeInput(event.target)) callbacks.current.onNodeDoubleClick(event, node) }
-    const menu = (event: MouseEvent) => { if (!visible() || isDisabled.current) return; const node = nodeAt(event.clientX, event.clientY); if (node && !nativeInput(event.target)) callbacks.current.onNodeContextMenu(event, node) }
+    const double = (event: MouseEvent) => { if (!visible() || callbacks.current.locked) return; const node = nodeAt(event.clientX, event.clientY); if (node && !nativeInput(event.target)) callbacks.current.onNodeDoubleClick(event, node) }
+    const menu = (event: MouseEvent) => { if (!visible() || callbacks.current.locked) return; const node = nodeAt(event.clientX, event.clientY); if (node && !nativeInput(event.target)) callbacks.current.onNodeContextMenu(event, node) }
     const keyDown = (event: KeyboardEvent) => {
       if (!visible() || isDisabled.current || nativeInput(event.target)) return
       if (event.code === "Space") { space = true; element.style.cursor = "grab"; event.preventDefault() }
@@ -310,13 +316,18 @@ export function CanvasSurface(props: Props) {
         return node ? { name: node.data.name, part: "body" } : null
       },
       selectedNames: () => controller.getNodes().filter(n => n.selected).map(n => n.data.name),
+      names: () => controller.getNodes().map(n => n.data.name),
       card: (name: string) => {
         const node = controller.getNodes().find(n => n.data.name === name)
         if (!node) return null
         const box = node.bounds, a = controller.worldToScreen({ x: box.x, y: box.y }), zoom = controller.getViewport().zoom
         const view = store.get(name)
-        const body = view ? pictureBox({ id: node.id, name, box, view, selected: Boolean(node.selected) }) : { x: 0, y: HEAD, w: box.w, h: Math.max(0, box.h - HEAD) }
-        return { bounds: { x: a.x, y: a.y, width: box.w * zoom, height: box.h * zoom }, body: { x: a.x + body.x * zoom, y: a.y + body.y * zoom, width: body.w * zoom, height: body.h * zoom }, title: { x: a.x, y: a.y, width: box.w * zoom, height: HEAD * zoom } }
+        const body = view ? pictureBox({ id: node.id, name, box, view, selected: Boolean(node.selected) }) : { x: box.x, y: box.y + HEAD, w: box.w, h: Math.max(0, box.h - HEAD) }
+        const bodyAt = controller.worldToScreen(body)
+        const drawn = scene?.inspect(name)
+        const project = <T extends { x: number; y: number; width: number; height: number }>(box: T | null) => box && { ...box, ...controller.worldToScreen(box), width: box.width * zoom, height: box.height * zoom }
+        const rendered = drawn ? { ...drawn, stateDot: project(drawn.stateDot), meter: project(drawn.meter), wave: project(drawn.wave), controls: drawn.controls.map(control => ({ ...control, ...controller.worldToScreen(control), width: control.width * zoom, height: control.height * zoom })), body: { ...drawn.body, ...controller.worldToScreen(drawn.body), width: drawn.body.width * zoom, height: drawn.body.height * zoom }, labels: Object.fromEntries(Object.entries(drawn.labels).map(([key, label]) => [key, { ...label, ...controller.worldToScreen(label), width: label.width * zoom, height: label.height * zoom }])) } : null
+        return { rendered, bounds: { x: a.x, y: a.y, width: box.w * zoom, height: box.h * zoom }, body: { x: bodyAt.x, y: bodyAt.y, width: body.w * zoom, height: body.h * zoom }, title: { x: a.x, y: a.y, width: box.w * zoom, height: HEAD * zoom } }
       },
       resources: () => scene?.resourceStats() ?? null,
     }
@@ -331,10 +342,12 @@ export function CanvasSurface(props: Props) {
 
     void (async () => {
       const created = new Application()
-      await created.init({ preference: "webgl", width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, autoStart: false, sharedTicker: false, backgroundAlpha: 0, antialias: true })
+      await created.init({ preference: "webgl", width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, autoStart: false, sharedTicker: false, backgroundAlpha: 0, antialias: true, gcActive: false })
       if (stopped) { created.destroy(true, { children: true }); return }
       app = created
       EventsTicker.removeTickerListener()
+      // The scene owns resource eviction; no scheduled renderer GC needs a perpetual system ticker.
+      created.renderer.scheduler.destroy()
       created.canvas.className = "canvas-pixels canvas-pane"
       element.prepend(created.canvas)
       viewport = new PixiViewport({ screenWidth: width, screenHeight: height, events: created.renderer.events, noTicker: true, passiveWheel: false, ignoreWheelFromOtherElements: true })
@@ -366,9 +379,9 @@ export function CanvasSurface(props: Props) {
   }, [controller, store, projectId, client, queries, privateEpoch, loggedOut])
 
   const node = hovered ? controller.getNodes().find(n => n.data.name === store.resolveName(hovered)) : undefined
-  const native = node && !focused ? node : null
+  const native = node && focused !== node.data.name ? node : null
   const view = native && store.get(native.data.name)
-  return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby="canvas-help">
+  return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby={helpId}>
     {props.children}
     <div ref={overlay} className="canvas-world">
       {native && view && <div className={`canvas-node ${native.selected ? "selected" : ""}`} data-id={native.id} style={{ left: native.bounds.x, top: native.bounds.y, width: native.bounds.w, height: native.bounds.h }}>
@@ -376,7 +389,7 @@ export function CanvasSurface(props: Props) {
       </div>}
     </div>
     <div ref={selection} className="canvas-selection" hidden />
-    <span id="canvas-help" className="sr-only">Use arrow keys to select a card, Enter to open it, and Escape to return. Drag empty space to pan; Shift-drag selects a rectangle.</span>
+    <span id={helpId} className="sr-only">Use arrow keys to select a card, Enter to open it, and Escape to return. Drag empty space to pan; Shift-drag selects a rectangle.</span>
     <span className="sr-only" aria-live="polite">{accessible ?? ""}</span>
     {failed && <div className="empty-canvas" role="alert"><p>Couldn't start the canvas graphics: {failed}</p></div>}
   </div>

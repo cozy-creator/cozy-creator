@@ -32,7 +32,6 @@ import { pressBeganOutside } from "../ui/press"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
 import { keys, stepZoom, ZOOMS, ZoomControl, type ZoomItem } from "./ZoomControl"
-import { MOST_HERE } from "./readableSurface"
 
 /** The room left on the canvas by what floats over it: the tools at the left, the top bar, and the zoom control in the bottom corner. */
 const clearOf = () => ({
@@ -313,10 +312,7 @@ function Canvas({
   openedNow.current = opened
   const stage = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
-    if (active) {
-      store.refreshSurface()
-      return
-    }
+    if (active) return
     // Keep draft/import owners alive under the cover, while closing any mention
     // popup portaled outside its hidden DOM subtree. Shell pauses covered media.
     if (document.activeElement instanceof HTMLElement && stage.current?.contains(document.activeElement)) document.activeElement.blur()
@@ -383,7 +379,6 @@ function Canvas({
       setHoming(false)
       if (store.inPlace) {
         void store.save(store.inPlace.name)
-        store.closeSurface()
         store.patch(store.inPlace.name, { here: undefined, hereWords: undefined })
       }
       const owner = { name }
@@ -416,7 +411,6 @@ function Canvas({
     toolsBeforeFocus.current = null
     focusTravel.current = null
     store.inPlace = null
-    store.closeSurface()
     if (held) {
       void store.save(held.name)
       store.patch(held.name, { here: undefined, hereWords: undefined })
@@ -555,7 +549,7 @@ function Canvas({
     const nodes = flow.getNodes().filter((node) => node.selected)
     if (!nodes.length) return fit()
     aim.current = null
-    void flow.fitView({ ...fitOver(), maxZoom: MOST_HERE, bounds: nodes.map((node) => node.bounds), duration: HERE_MS })
+    void flow.fitView({ ...fitOver(), maxZoom: 2.5, bounds: nodes.map((node) => node.bounds), duration: HERE_MS })
   }, [flow, store, fit])
   const zoomItems = useCallback(
     (): ZoomItem[] => [
@@ -958,10 +952,12 @@ function Canvas({
         onDrop={drop}
       >
         <Sheet />
+        <Dots />
         <CanvasSurface
           store={store}
           active={active}
           disabled={Boolean(focusedName) || homing}
+          locked={homing}
           onSelectionChange={selectionChanged}
           onMoveEnd={moved}
           onNodeClick={nodeClicked}
@@ -972,7 +968,6 @@ function Canvas({
           onDrag={nodeDrag}
           onDragStop={nodeDragStop}
         >
-          <Dots />
           {unread ? <Unread {...unread} /> : active && <Empty choose={choose} />}
         </CanvasSurface>
         <Zoom zoomBy={zoomBy} items={zoomItems} />

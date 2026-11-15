@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
-import type { Viewport } from "./viewport"
 import { useCanvasViewport } from "./viewportContext"
-import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
@@ -28,10 +27,8 @@ import { AddOns } from "./AddOns"
 import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
-import { readableSurface } from "./readableSurface"
 import { RunFace, RunMeter, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
-import type { Box } from "./graph"
 
 const WIDEST = 1600
 const LOWEST = 90
@@ -647,11 +644,9 @@ function TileMeter({ view }: { view: ElementView }) {
 
 const CardBody = memo(function CardBody({ name, width, focused = false, snapshot }: { name: string; width: number; focused?: boolean; snapshot?: ElementView }) {
   const store = useCanvasStore()
-  const flow = useCanvasViewport()
   const live = useElement(name)
   const view = snapshot ?? live
   const here = Boolean(view?.here)
-  const owner = here ? store.inPlace : null
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
   const drawn = useSignal(store.drawn)
@@ -666,119 +661,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   useEffect(() => {
     if (store.focusing === name) store.focusing = null
   })
-  // One geometry owner for the real card, including the lower panel and its takes.
-  useLayoutEffect(() => {
-    if (focused || !here || owner?.name !== name || !self.current) return
-    const card = self.current
-    const id = store.idOf(name)
-    if (!id) return
-    const original = Array.from(card.style, (name) => [name, card.style.getPropertyValue(name), card.style.getPropertyPriority(name)] as const)
-    const apply = (style: CSSProperties) => {
-      for (const [property, value] of Object.entries(style)) {
-        const name = property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)
-        if (card.style.getPropertyValue(name) !== String(value)) card.style.setProperty(name, String(value))
-      }
-    }
-    const previous = store.surfaceOf(name)
-    let under = card.querySelector<HTMLElement>(".here-all")
-    const dimensions = () => `${card.offsetWidth}:${card.offsetHeight}:${under?.offsetWidth}:${under?.scrollHeight}`
-    let drawn = ""
-    let project: ReturnType<typeof readableSurface> | undefined
-    const update = (room?: Box, at?: Viewport) => {
-      const name = card.dataset.asset
-      if (!name) return null
-      if (store.inPlace !== owner) return null
-      // React Flow freezes its drag offset from this envelope. Its hidden lower panel must not redefine that offset mid-gesture.
-      if (store.isDragging(name)) return store.surfaceOf(name) ?? null
-      const current = store.get(name)
-      const pose = store.poseOf(name)
-      if (!current?.here || !pose || !card.isConnected) return null
-      if (!card.offsetWidth || !card.offsetHeight) return null
-      if (!room && !store.inPlace?.fitted && !store.inPlace?.moved && !store.inPlace?.pulled) return null
-      if (!project) {
-        if (previous) apply(previous.style)
-        project = readableSurface(card)
-      }
-      const viewport = at ?? flow.getViewport()
-      const projection = project(current, pose, viewport, room)
-      if (!at) {
-        apply(projection.style)
-        store.presentSurface(id, projection)
-        drawn = dimensions()
-      }
-      return room && projection.view === viewport ? null : projection
-    }
-    const unbind = store.bindSurface(id, update)
-    let scheduled = 0
-    let alive = true
-    let observed = new Set<Element>()
-    const watch = new ResizeObserver(() => {
-      if (dimensions() !== drawn) schedule()
-    })
-    const observe = () => {
-      if (!alive || !card.isConnected) return
-      // These children keep their intrinsic height inside the scrolling panel (flex-shrink: 0).
-      // The card/aperture and capped panel are our outputs, not independent measurement inputs.
-      const next = new Set(under?.children ?? [])
-      for (const part of observed) if (!next.has(part)) watch.unobserve(part)
-      for (const part of next) if (!observed.has(part)) watch.observe(part)
-      observed = next
-    }
-    const schedule = () => {
-      if (!alive || !card.isConnected || store.inPlace !== owner) return
-      if (scheduled) return
-      scheduled = requestAnimationFrame(() => {
-        scheduled = 0
-        if (!alive || !card.isConnected || store.inPlace !== owner) return
-        update()
-        store.fitHere(true)
-        observe()
-      })
-    }
-    // Our own projection changes these boxes too. Only new content dimensions need another pass.
-    const check = () => {
-      if (dimensions() !== drawn) schedule()
-    }
-    drawn = dimensions()
-    const contents = new MutationObserver(() => {
-      const next = card.querySelector<HTMLElement>(".here-all")
-      if (next !== under) {
-        under = next
-        schedule()
-      } else {
-        check()
-        if ([...(under?.children ?? [])].some((part) => !observed.has(part))) schedule()
-      }
-    })
-    contents.observe(card, { childList: true, characterData: true, subtree: true })
-    window.addEventListener("resize", schedule)
-    document.fonts.addEventListener("loadingdone", schedule)
-    // React Flow can mount a culled card while delivering its own size observations.
-    // Publish our changed dimensions on the next frame, never from that delivery.
-    const first = requestAnimationFrame(() => {
-      if (!alive || !card.isConnected || store.inPlace !== owner) return
-      // First compute the fit before a full envelope can cull a card mounted for measurement.
-      if (store.inPlace?.fitted || store.inPlace?.moved || store.inPlace?.pulled) update()
-      store.fitHere(true)
-      observe()
-    })
-    return () => {
-      alive = false
-      cancelAnimationFrame(first)
-      cancelAnimationFrame(scheduled)
-      watch.disconnect()
-      contents.disconnect()
-      window.removeEventListener("resize", schedule)
-      document.fonts.removeEventListener("loadingdone", schedule)
-      unbind()
-      const width = card.style.width
-      const priority = card.style.getPropertyPriority("width")
-      // Restore through CSSOM: a raw style attribute is refused by the native page's CSP.
-      for (const name of Array.from(card.style)) card.style.removeProperty(name)
-      for (const [name, value, priority] of original) card.style.setProperty(name, value, priority)
-      if (width) card.style.setProperty("width", width, priority)
-    }
-  }, [here, focused, name, store, flow, owner])
   // What it shows has been looked at: its dot goes (cl-928).
   const showing = view ? shownOf(view)?.number : undefined
   const unseen = view?.asset?.unseen
@@ -814,7 +696,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
   const style: CSSProperties & Record<`--${string}`, string | number> = focused
     ? { width: "100%", "--focus-footer-room": `${!fielded || cut ? 0 : (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline ? 320 : 220}px` }
-    : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
+    : { width: bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
   return (
     <div
       ref={self}
