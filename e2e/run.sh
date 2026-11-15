@@ -85,7 +85,7 @@ run_submit1() {
 run_start() {
   local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
   rm -f "$dir/$name".{ndjson,err,json,number,pid,at}
-  (cd "${RUN_PROJECT:-$PWD}" && "$@") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
+  (cd "${RUN_PROJECT:-$PWD}" && exec "$@") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
   local pid=$!
   echo "$pid" > "$dir/$name.pid"
   at=$((limit / 31))
@@ -127,19 +127,57 @@ run_number() { { grep '^{' "$1" 2> /dev/null | jq -r 'select(.run.number != null
 # run_reached <ndjson> <status>: whether the run's events reached the status.
 run_reached() { grep '^{' "$1" 2> /dev/null | jq -en --arg s "$2" 'any(inputs; .run.status? == $s)' > /dev/null 2>&1; }
 
+# run_ended <ndjson>: whether the follower said the run's terminal event, which it says last, just before it exits.
+run_ended() { grep '^{' "$1" 2> /dev/null | jq -en 'any(inputs; .type? | IN("run.completed", "run.failed", "run.canceled"))' > /dev/null 2>&1; }
+# run_alive <pid>: running; a zombie answers kill -0 too.
+run_alive() { kill -0 "$1" 2> /dev/null && ! grep -qE '^[0-9]+ \(.*\) Z' "/proc/$1/stat" 2> /dev/null; }
+
+# run_linger <dir> <name> <pid>: what a follower still running after its terminal event is doing, into <name>.linger.
+run_linger() {
+  local pid=$3 t
+  {
+    ps -o pid,ppid,stat,etime,args -p "$pid"; ps -o pid,ppid,stat,etime,args --ppid "$pid" 2> /dev/null
+    if [ -d "/proc/$pid" ]; then
+      grep -E '^(State|PPid|Threads)' "/proc/$pid/status"
+      for t in /proc/"$pid"/task/*; do
+        echo "thread ${t##*/} $(cat "$t/comm") wchan=$(cat "$t/wchan" 2> /dev/null) syscall=$(sudo -n cat "$t/syscall" 2> /dev/null)"
+        sudo -n cat "$t/stack" 2> /dev/null | sed 's/^/    /'
+      done
+      sudo -n ls -l "/proc/$pid/fd" 2> /dev/null
+      { sudo -n ss -tanpx 2> /dev/null || true; } | grep "pid=$pid,"
+    fi
+    if [ -n "${RUN_LINGER_GDB:-}" ] && sudo -n true 2> /dev/null; then
+      command -v gdb > /dev/null || sudo -n apt-get install -y -qq gdb > /dev/null 2>&1 || true
+      sudo -n timeout 120 gdb -p "$pid" -batch -ex 'info threads' -ex 'thread apply all bt 40' 2>&1 | tail -n 400
+    fi
+  } > "$1/$2.linger" 2>&1
+}
+
 # run_wait <dir> <name> [status]: run <name> followed to its end (or, given a status, until its events reach it), its
-# record in <name>.json. 0: ended (or reached the status); 1: never started, ended without reaching the status, or its
-# follower exited before the run ended (its typed error is in <name>.ndjson).
+# record in <name>.json. 0: ended (or reached the status); 1: never started, ended without reaching the status, its
+# follower exited before the run ended (its typed error is in <name>.ndjson), or its follower was still running
+# RUN_EXIT_S (default 10) s after it said the run's terminal event: it is ended then, what it was doing in <name>.linger.
 run_wait() {
-  local dir=$1 name=$2 want=${3:-} n pid
+  local dir=$1 name=$2 want=${3:-} n pid said='' lingered=''
   n=$(cat "$dir/$name.number" 2> /dev/null || true) pid=$(cat "$dir/$name.pid" 2> /dev/null || true)
   if [ -z "$n" ] || [ "$n" = none ]; then return 1; fi
-  while kill -0 "$pid" 2> /dev/null; do
+  rm -f "$dir/$name.linger"
+  while run_alive "$pid"; do
     if [ -n "$want" ] && run_reached "$dir/$name.ndjson" "$want"; then run_show "$dir" "$name" "$n"; return 0; fi
+    if [ -z "$want" ]; then
+      if [ -z "$said" ]; then run_ended "$dir/$name.ndjson" && said=$SECONDS
+      elif [ $((SECONDS - said)) -ge "${RUN_EXIT_S:-10}" ]; then
+        run_linger "$dir" "$name" "$pid"
+        echo "$name: cozy (pid $pid) still running ${RUN_EXIT_S:-10} s after the run's terminal event; ended it ($name.linger)" >&2
+        kill -9 "$pid" 2> /dev/null; lingered=1
+        break
+      fi
+    fi
     sleep 0.2
   done
   run_show "$dir" "$name" "$n"
   if [ -n "$want" ]; then run_reached "$dir/$name.ndjson" "$want"; return; fi
+  [ -z "$lingered" ] || return 1
   # The follower can end with the run still going (this computer's cozy restarted under it): the run keeps going on its
   # machine, so its record is read again until it settles, through Calcifer's own restarts.
   local s began=$SECONDS
