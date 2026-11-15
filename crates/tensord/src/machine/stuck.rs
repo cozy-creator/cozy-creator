@@ -55,9 +55,11 @@ impl Stuck {
         }
     }
 
-    /// It still lives: a thread of that birth hasn't exited.
+    /// It still lives: a thread of that birth hasn't exited. Read from its threads too: a zombie leader whose last thread still
+    /// waits in the kernel can read as exited by its own state (stuck cell, 43715143776).
     pub(crate) fn alive(&self) -> bool {
-        self.birth.ended().is_ok_and(|ended| !ended)
+        let same = platform::process::Birth::of(self.birth.pid).is_ok_and(|now| now == self.birth);
+        same && (!platform::process::threads(self.birth.pid).is_empty() || self.birth.ended().is_ok_and(|ended| !ended))
     }
 }
 

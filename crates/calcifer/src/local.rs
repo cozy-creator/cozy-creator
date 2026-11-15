@@ -305,7 +305,8 @@ fn stuck_before(record: &Path) -> String {
     let mut said = String::new();
     for stuck in all {
         let Ok(birth) = serde_json::from_value::<platform::process::Birth>(stuck["birth"].clone()) else { continue };
-        if birth.ended().unwrap_or(true) {
+        let same = platform::process::Birth::of(birth.pid).is_ok_and(|now| now == birth);
+        if !same || (platform::process::threads(birth.pid).is_empty() && birth.ended().unwrap_or(true)) {
             continue;
         }
         let thread = stuck["threads"].as_array().and_then(|threads| threads.iter().find(|t| t["state"] == "D"));

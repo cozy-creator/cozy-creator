@@ -99,17 +99,18 @@ ln -sf "$mnt/start.log" "$log"
 stuck_ready 180 || { check "stuck: the machine didn't start on the trap filesystem: $(tail -c 300 "$OUT/stuck-machine.json")"; return; }
 port=$(cat "$STUCK_ROOT/machine/api-port")
 
-step "stuck: a stop whose service takes 15 s to exit is killed at 10 s and ends as it exits"
+step "stuck: a stop whose service is slow to exit is killed at 10 s and ends as it exits"
 service=$(stuck_service) parent=$(machine_pid)
-echo "$service:15" > "$trap"
+# Each of its two log descriptors' FLUSH held 7 s: its exit takes about 14 s.
+echo "$service:7" > "$trap"
 t0=$SECONDS
 kill "$parent"
 stuck_gone "$parent" 60 || check "stuck: the machine (pid $parent) runs 60 s after its stop, its service slow to exit"
 took=$((SECONDS - t0))
-[ "$took" -ge 12 ] && [ "$took" -le 30 ] || check "stuck: a stop with a service 15 s slow to exit took ${took} s"
+[ "$took" -ge 11 ] && [ "$took" -le 25 ] || check "stuck: a stop with a service about 14 s slow to exit took ${took} s"
 stuck_log | grep -q "the service (pid $service) did not exit within 10 s; killing it" || check "stuck: TensorD's log doesn't say it killed pid $service"
 stuck_log | grep -qE "the service \(pid $service\) exited [0-9]+ s after its kill" || check "stuck: TensorD's log doesn't say pid $service exited after its kill"
-echo "stuck: stopped in ${took} s, service $service 15 s slow to exit"
+echo "stuck: stopped in ${took} s, service $service about 14 s slow to exit"
 : > "$trap"
 stuck_ready 120 || { check "stuck: the machine didn't start again after a slow stop: $(tail -c 300 "$OUT/stuck-machine.json")"; return; }
 
