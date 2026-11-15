@@ -20,36 +20,73 @@ pub(crate) struct Lifetime {
     pub cert_der: Vec<u8>,
 }
 
-/// One machine per root. Every machine on a root holds this lock (`agent.lock`) for its life,
-/// and the launcher (`cozy machine`) probes it before it starts or replaces one. The kernel releases it when the last machine process is gone. A
-/// killed predecessor's service holds it a moment longer, exiting (perhaps in uninterruptible
-/// sleep, its descriptors already closed): a live holder refuses the root, and a lock only
-/// dying processes or none hold is waited out until the kernel releases it.
-pub(crate) fn hold(layout: &Layout) -> io::Result<()> {
+/// How long an earlier machine still leaving may hold the root before this one judges it (cl-977).
+const LEAVING: std::time::Duration = std::time::Duration::from_secs((super::stuck::GRACE_S + super::stuck::STALL_S) as u64);
+
+/// The root's lock as this machine's stable parent holds it. The service it forks lets its copy go (`let_go`): a service that
+/// can't exit holds no root (cl-977).
+static ROOT: std::sync::Mutex<Option<fs::File>> = std::sync::Mutex::new(None);
+
+/// One machine per root. Every machine on a root holds this lock (`agent.lock`) for its life, and the launcher (`cozy
+/// machine`) probes it before it starts or replaces one. A live holder refuses the root. A holder recorded stuck (`stuck`, it runs
+/// no code again) is taken over at once; one still leaving is waited for on its handle at most `LEAVING`, then the root is
+/// refused, naming it: no wait here is unbounded.
+pub(crate) fn hold(layout: &Layout, stuck: &[super::stuck::Stuck]) -> io::Result<()> {
     fs::create_dir_all(&layout.state)?;
     let lock = LockFile::new(layout.state.join("agent.lock"));
     let held = match lock.try_lock(Kind::Exclusive)? {
         Some(held) => held,
-        None => {
-            let holder = lock.holder()?.and_then(|record| serde_json::from_slice::<Birth>(&record).ok());
-            // This parent before it exec'd an update (`supervise::exec`): a service of its that can't exit holds the lock it
-            // took, which keeps the root from any other machine meanwhile (cl-977).
-            if holder.as_ref() == Some(&Birth::own()?) {
-                tracing::warn!("this machine's lock is held by a service of its that can't exit; it serves on");
-                return Ok(());
-            }
-            let live = holder.filter(|birth| birth.state().is_ok_and(|state| matches!(state, State::Live | State::Stopped)));
-            if let Some(live) = live {
-                let root = layout.root.display();
-                return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("another machine owns the root {root} (pid {})", live.pid)));
-            }
-            lock.lock(Kind::Exclusive)?
-        }
+        None => match waited(&lock, layout, stuck)? {
+            Some(held) => held,
+            None => return Ok(()),
+        },
     };
     held.publish(&serde_json::to_vec(&Birth::own()?)?)?;
-    // Held by this parent and the service it forks; never by an executor (close-on-exec).
-    std::mem::forget(held);
+    // Held by this parent; never by an executor (close-on-exec), nor the service (`let_go`).
+    *ROOT.lock().unwrap() = Some(held.keep());
     Ok(())
+}
+
+/// The forked service's copy of the root's lock, closed: only its stable parent holds the root.
+#[cfg(unix)]
+pub(crate) fn let_go() {
+    drop(ROOT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take());
+}
+
+/// The lock once its holder, no live machine, lets go; `None`: taken over unheld.
+fn waited(lock: &LockFile, layout: &Layout, stuck: &[super::stuck::Stuck]) -> io::Result<Option<platform::lock::Held>> {
+    let root = layout.root.display();
+    let holder = lock.holder()?.and_then(|record| serde_json::from_slice::<Birth>(&record).ok());
+    if let Some(stuck) = holder.as_ref().and_then(|birth| stuck.iter().find(|stuck| stuck.birth == *birth)) {
+        tracing::warn!("this machine's root is held by the TensorD before this one ({}); this machine takes it over", stuck.line());
+        return Ok(None);
+    }
+    // This parent before it exec'd an update (`supervise::exec`): whatever still holds it is of this machine.
+    if holder.as_ref() == Some(&Birth::own()?) {
+        tracing::warn!("this machine's root is still held from before its update; it serves on");
+        return Ok(None);
+    }
+    let state = holder.as_ref().map(|birth| birth.state()).transpose().map_err(io::Error::other)?;
+    if let (Some(live), Some(State::Live | State::Stopped)) = (&holder, state) {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("another machine owns the root {root} (pid {})", live.pid)));
+    }
+    if let Some(exact) = holder.as_ref().and_then(|birth| platform::process::Exact::open(birth).ok().flatten()) {
+        let _ = exact.wait_for(LEAVING);
+    }
+    if let Some(held) = lock.try_lock(Kind::Exclusive)? {
+        return Ok(Some(held));
+    }
+    let by = match &holder {
+        Some(birth) => match platform::process::in_kernel(birth.pid) {
+            Some(wchan) => format!(" by pid {}, in the kernel at {wchan}", birth.pid),
+            None => format!(" by pid {}", birth.pid),
+        },
+        None => String::new(),
+    };
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!("the root {root} is still held{by} {} s after its machine ended: it can't exit, and a reboot frees it", LEAVING.as_secs()),
+    ))
 }
 
 /// Mints or reopens this root's lifetime.

@@ -51,6 +51,14 @@ impl Listeners {
         Ok(Self { api, webrtc })
     }
 
+    /// Each stops listening, in every process holding it: one that can't exit (cl-977) keeps no port from the next machine.
+    #[cfg(unix)]
+    pub(crate) fn close(&self) {
+        for socket in std::iter::once(&self.api).chain(self.webrtc.as_ref()) {
+            let _ = rustix::net::shutdown(socket, rustix::net::Shutdown::Both);
+        }
+    }
+
     /// Each on its slot for the program this process execs next.
     #[cfg(unix)]
     pub(crate) fn hand_on(&self) -> bool {

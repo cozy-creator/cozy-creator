@@ -315,7 +315,7 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
                     gpu_bytes: gpus.iter().map(|(_, bytes)| bytes).sum(), gpus: gpus.into_iter().map(|(gpu, _)| gpu).collect(),
                 }
             })
-            .chain(identity.stuck.lock().unwrap().iter().map(|s| v1::StuckProcess {
+            .chain(identity.stuck.now().iter().map(|s| v1::StuckProcess {
                 pid: s.birth.pid,
                 command: "the TensorD before this one".into(),
                 wchan: s.wchan(),

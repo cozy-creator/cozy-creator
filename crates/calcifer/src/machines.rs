@@ -104,7 +104,8 @@ pub(crate) struct Machines {
 }
 
 /// How long a rental may say nothing after an update restarted it before this computer calls it broken (cl-977). Its own
-/// restart, with a TensorD before it that can't exit, takes about 3 minutes at most (`tensord::machine::stuck`).
+/// restart past a TensorD before it that can't exit takes about 6 minutes at most (`tensord::machine::stuck`: 10 s to exit, up
+/// to 5 × 60 s killed while it still moves, then 60 s for a fresh process to open the GPUs).
 const UPDATE_RETURN_MS: i64 = 10 * 60_000;
 
 /// What Calcifer last heard of a machine, never stored.
@@ -528,7 +529,7 @@ impl Machines {
     /// follows it. Callers share one start.
     /// Whether this computer's machine runs and is followed: `local_up` returns at once.
     pub(crate) fn local_runs(&self) -> bool {
-        !lock(&self.seen).get("local").is_some_and(|seen| seen.stopped) && self.local.running()
+        !lock(&self.seen).get("local").is_some_and(|seen| seen.stopped) && self.local.running() && self.local.silent().is_none()
     }
 
     pub(crate) async fn local_up(self: &Arc<Self>) -> Result<(), Error> {
@@ -540,13 +541,43 @@ impl Machines {
         if self.local_runs() {
             return Ok(());
         }
+        // A start that isn't answering is refused at once until it serves or exits (cl-977).
+        if let Some(refusal) = self.local.silent() {
+            self.local_silent(&refusal);
+            return Err(refusal);
+        }
         // TensorD admits this controller's key from the home as it starts.
         self.owner_key()?;
-        let endpoint = match self.local.serving().await {
-            Some(endpoint) => endpoint,
-            None => self.local.start().await?,
+        let me = self.clone();
+        let answered = move |endpoint| match me.put_local(Some(endpoint), true) {
+            Ok(()) => me.calcifer.machine_changed(),
+            Err(e) => warn!("this computer's machine serves, late: {}", e.message),
         };
+        let started = match self.local.serving().await {
+            Ok(Some(endpoint)) => Ok(endpoint),
+            Ok(None) => self.local.start(answered).await,
+            Err(refusal) => Err(refusal),
+        };
+        let endpoint = started.inspect_err(|refusal| {
+            if refusal.code == "machine_not_answering" {
+                self.local_silent(refusal);
+            }
+        })?;
         self.put_local(Some(endpoint), true)
+    }
+
+    /// `local` isn't answering (cl-977): `machine ls`/`show` and the page say why, and placement takes it as unreachable until
+    /// it serves (its first frame clears it) or exits.
+    fn local_silent(&self, refusal: &Error) {
+        {
+            let mut seen = lock(&self.seen);
+            let seen = seen.entry("local".into()).or_default();
+            seen.stopped = false;
+            seen.since.get_or_insert(crate::store::now_ms());
+            seen.unreachable = Some(refusal.message.clone());
+        }
+        self.calcifer.touch("local");
+        self.calcifer.machine_changed();
     }
 
     /// What `text` names. A rental id names its machine whatever its state. A name or former

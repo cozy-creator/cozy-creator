@@ -23,8 +23,6 @@ use rustix::{
     io::Errno,
     process::{getpid, kill_process, wait, Pid, Signal, WaitOptions, WaitStatus},
 };
-#[cfg(unix)]
-use std::sync::OnceLock;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::io::{self, Read, Write};
@@ -34,19 +32,23 @@ use std::fs::File;
 #[cfg(windows)]
 use platform::{ipc::{LocalListener, LocalStream}, process::{Birth, Exact}};
 
-use super::{net::Listeners, provider::ProviderSelf, stuck::Stuck, update::Recovered};
+#[cfg(unix)]
+use super::net::Listeners;
+use super::{provider::ProviderSelf, stuck::Stuck, update::Recovered};
 
 /// The write end of the readiness pipe, kept in the service for its word that it is leaving.
-#[cfg(unix)]
-static PARENT: OnceLock<File> = OnceLock::new();
+static PARENT: std::sync::OnceLock<ReadyPipe> = std::sync::OnceLock::new();
 
 /// The service's exit: its parent hears the code first, so it waits for the exit only so long (cl-977).
 pub(crate) fn leave(code: i32) -> ! {
-    #[cfg(unix)]
     if let Some(mut pipe) = PARENT.get() {
-        if pipe.write_all(&[b'x', code as u8]).is_ok() {
+        let said = pipe.write_all(&[b'x', code as u8]).is_ok();
+        #[cfg(unix)]
+        if said {
             platform::process::leaving();
         }
+        #[cfg(windows)]
+        let _ = said;
     }
     std::process::exit(code)
 }
@@ -70,6 +72,7 @@ pub(crate) fn supervise(
             if acknowledged != [b'a'] {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid supervisor acknowledgment"));
             }
+            let _ = PARENT.set(pipe.try_clone()?);
             return Ok(Ready(Some(pipe)));
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -91,9 +94,10 @@ pub(crate) fn supervise(
         if tests::wait_before_open() {
             service.wait()?;
         }
-        let mut pipe = match Exact::open(&Birth::of(service.pid())?)? {
+        let process = Exact::open(&Birth::of(service.pid())?)?;
+        let pipe = match &process {
             Some(process) => loop {
-                let Some(pipe) = listener.accept_unless(&process)? else { break None };
+                let Some(pipe) = listener.accept_unless(process)? else { break None };
                 match platform::handles::peer(&pipe) {
                     Ok(peer) if peer.pid == service.pid() => {
                         let mut pipe = pipe;
@@ -110,10 +114,33 @@ pub(crate) fn supervise(
             },
             None => None,
         };
-        let code = service.wait()?.code().unwrap_or(1);
+        let mut said = Said::follow(pipe)?;
+        let code = match process {
+            Some(process) => match wait_service(&mut service, &process, &said)? {
+                Ok(code) => {
+                    said.settle();
+                    code
+                }
+                // It stays, unkillable; the next service takes over beside it.
+                Err(stuck) => {
+                    let code = stuck.code.unwrap_or(1);
+                    tracing::error!("{}, {} s after its kill; it stays until Windows lets it go, and the next service starts", stuck.line(),
+                        (super::lifecycle::now_ms() - stuck.killed_unix_ms) / 1000);
+                    if let Err(error) = super::stuck::record(paths, stuck) {
+                        tracing::warn!("recording the stuck service: {error}");
+                    }
+                    code
+                }
+            },
+            None => {
+                let code = service.wait()?.code().unwrap_or(1);
+                said.settle();
+                code
+            }
+        };
         // What the service left running ends with it.
         drop(service);
-        let ready = pipe.as_mut().is_some_and(|pipe| pipe.read(&mut [0u8; 1]).unwrap_or(0) == 1);
+        let ready = said.ready();
         if code == 0 {
             std::process::exit(0);
         }
@@ -174,6 +201,7 @@ pub(crate) fn supervise(paths: &super::update::Paths, provider: Option<ProviderS
                     std::process::exit(1);
                 }
                 platform::process::unblock_signals()?;
+                super::identity::let_go();
                 let pipe = File::from(write);
                 let _ = PARENT.set(pipe.try_clone()?);
                 return Ok(Ready(Some(pipe)));
@@ -201,7 +229,7 @@ pub(crate) fn supervise(paths: &super::update::Paths, provider: Option<ProviderS
         };
         let ready = said.ready();
         if stopping || code == 0 {
-            std::process::exit(code);
+            end(code, listeners);
         }
         // An activated binary is exec'd as the loop recovers its published activation.
         if code == super::update::REPLACE_EXIT || code == super::binary::EXEC_EXIT {
@@ -216,7 +244,7 @@ pub(crate) fn supervise(paths: &super::update::Paths, provider: Option<ProviderS
             match super::update::rollback_pending(paths, &cause)? {
                 Recovered::Nothing => {
                     tracing::error!("{cause}; stopping");
-                    std::process::exit(code);
+                    end(code, listeners);
                 }
                 Recovered::Restored => tracing::warn!("{cause}; update rolled back"),
                 Recovered::Exec(launch) => {
@@ -241,9 +269,19 @@ fn exec(paths: &super::update::Paths, launch: &std::path::Path, provider: Option
         false => io::Error::other("cannot hand on its listeners"),
     };
     signals.block()?;
+    // What it placed for the exec (listeners, the provider credential) reaches nothing this image starts.
+    platform::process::cloexec_from(3);
     let cause = format!("cannot run {}: {error}", launch.display());
     tracing::error!("{cause}");
     super::update::rollback_pending(paths, &cause).map(drop)
+}
+
+/// This parent's exit. A service it leaves stuck (cl-977) holds the listeners it forked with: they stop listening first, so the
+/// machine that starts next can bind their ports.
+#[cfg(unix)]
+fn end(code: i32, listeners: &Listeners) -> ! {
+    listeners.close();
+    std::process::exit(code)
 }
 
 /// Places `fd` at `at` for the re-executed machine to inherit.
@@ -359,6 +397,80 @@ fn wait_service(child: Pid, signals: &SupervisorSignals, said: &mut Said) -> io:
             },
         }
     }
+}
+
+/// What the service wrote on its pipe, read by a thread of its own: `r` once ready, `x<code>` as it leaves (`leaving` set).
+#[cfg(windows)]
+struct Said {
+    bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    leaving: std::sync::Arc<platform::signal::Signal>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Said {
+    fn follow(pipe: Option<LocalStream>) -> io::Result<Self> {
+        let leaving = std::sync::Arc::new(platform::signal::Signal::new().map_err(io::Error::other)?);
+        let mut said = Self { bytes: Default::default(), leaving, reader: None };
+        let Some(mut pipe) = pipe else { return Ok(said) };
+        let (bytes, woken) = (said.bytes.clone(), said.leaving.clone());
+        // A service that can't exit may keep its end open: this thread then waits with it.
+        said.reader = Some(std::thread::Builder::new().name("service-pipe".into()).spawn(move || {
+            let mut chunk = [0u8; 64];
+            while let Ok(n @ 1..) = pipe.read(&mut chunk) {
+                let mut said = bytes.lock().unwrap();
+                said.extend_from_slice(&chunk[..n]);
+                if said.contains(&b'x') {
+                    woken.set();
+                }
+            }
+        })?);
+        Ok(said)
+    }
+
+    /// Everything it wrote, once it exited (its end closed with it).
+    fn settle(&mut self) {
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+
+    fn ready(&self) -> bool {
+        self.bytes.lock().unwrap().contains(&b'r')
+    }
+
+    fn code(&self) -> Option<i32> {
+        let bytes = self.bytes.lock().unwrap();
+        let at = bytes.iter().position(|b| *b == b'x')?;
+        bytes.get(at + 1).map(|code| i32::from(*code))
+    }
+}
+
+/// The service's exit code, or `Err` stuck: once it says it is leaving it has `GRACE_S`, is then terminated, and one still there
+/// with no progress for `STALL_S` (at most `STALLS` of them) is stuck, as on Linux (cl-977). Until it says so it serves, unbounded.
+#[cfg(windows)]
+fn wait_service(service: &mut platform::process::Tree, process: &Exact, said: &Said) -> io::Result<Result<i32, Stuck>> {
+    use super::stuck::{GRACE_S, STALLS, STALL_S};
+    use std::{os::windows::io::AsHandle, time::Duration};
+    platform::signal::wait_any(&[process.as_handle(), said.leaving.waitable()]).map_err(io::Error::other)?;
+    let pid = process.birth().pid;
+    if !process.wait_for(Duration::from_secs(GRACE_S.into())).map_err(io::Error::other)? {
+        tracing::warn!("the service (pid {pid}) did not exit within {GRACE_S} s; terminating it");
+        let _ = service.kill();
+        let killed = super::lifecycle::now_ms();
+        let mut seen = platform::process::meter(pid);
+        let mut stalls = 0;
+        while !process.wait_for(Duration::from_secs(STALL_S.into())).map_err(io::Error::other)? {
+            let now = platform::process::meter(pid);
+            stalls += 1;
+            if now == seen || stalls >= STALLS {
+                return Ok(Err(Stuck { birth: process.birth().clone(), killed_unix_ms: killed, threads: vec![], code: said.code() }));
+            }
+            seen = now;
+        }
+        tracing::info!("the service (pid {pid}) exited {} s after it was terminated", (super::lifecycle::now_ms() - killed) / 1000);
+    }
+    Ok(Ok(service.wait()?.code().unwrap_or(1)))
 }
 
 #[cfg(unix)]

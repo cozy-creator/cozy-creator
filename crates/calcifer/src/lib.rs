@@ -1634,7 +1634,7 @@ impl Calcifer {
             }
             // This computer's machine starts when a run needs it; a run it was never sent fails
             // when it cannot start, saying why.
-            // Its start is shown while it lasts: nothing but TensorD's own answer or exit ends it.
+            // Its start is shown while it lasts, at most `local::START` (cl-977).
             if name == "local"
                 && let Some(machines) = self.machines()
                 && let Err(e) = {
@@ -1648,8 +1648,14 @@ impl Calcifer {
                     self.waiting(id, format!("local cannot start: {}", e.message));
                     pause.wait(wake, None).await;
                 } else {
+                    // Not answering (cl-977): an `any` run goes to another machine, as from one offline.
+                    let any = !run.pinned && run.wants == "any" && e.code == "machine_not_answering";
                     let reason = Reason { code: e.code, message: e.message, next: e.next, ..Default::default() };
-                    match self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), reason)) {
+                    let left = match any {
+                        true => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
+                        false => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), reason)),
+                    };
+                    match left {
                         Ok(events) => self.publish(id, events),
                         Err(e) => warn!(run = %id, "{e}"),
                     }
@@ -1705,13 +1711,13 @@ impl Calcifer {
                 && let Some(broken) = self.broken(&name)
             {
                 let left = match (run.pinned, run.wants.as_str()) {
-                    (false, "any") => self.store.unplace(id.as_str()),
-                    _ => self.store.fail(id.as_str(), Reason {
+                    (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
+                    _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
                         code: "machine_broken".into(),
                         message: format!("{name} is broken: {}", broken.message),
                         next: vec![format!("cozy run {} … --on new", run.target)],
                         ..Default::default()
-                    }),
+                    })),
                 };
                 match left {
                     Ok(events) => self.publish(id, events),

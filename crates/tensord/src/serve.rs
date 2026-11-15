@@ -69,13 +69,14 @@ fn run(lifetime: Lifetime) -> io::Result<()> {
     if lifetime == Lifetime::Rental {
         grant.provider = ProviderSelf::take(&grant.layout.root, &config.provider);
     }
-    identity::hold(&grant.layout)?;
+    let paths = update::Paths::new(&grant.layout.engine(), &grant.layout.root);
+    // A TensorD before this one that can't exit (cl-977) holds nothing this one waits on.
+    identity::hold(&grant.layout, &crate::machine::stuck::current(&paths))?;
     if let Some(key) = grant.developer_key.as_deref() {
         if let Err(error) = ssh::start(key) {
             tracing::warn!("{error}");
         }
     }
-    let paths = update::Paths::new(&grant.layout.engine(), &grant.layout.root);
     // The stable parent holds the listeners: a service that can't exit keeps no port from the next (cl-977).
     #[cfg(unix)]
     let listeners = {
@@ -278,18 +279,26 @@ fn run_machine(
         gpus.clear();
     }
     gpu_problems.iter().for_each(|problem| tracing::error!("{problem}"));
+    // GPUs the driver lists that a fresh process can't open serve nothing: an executor would fail or hang the same way.
     let broken = match (stuck.first(), opened) {
-        (Some(before), Err(why)) if !gpus.is_empty() => {
-            let message = format!("the TensorD before this one can't exit ({}), and its GPUs can't be opened: {why}", before.line());
-            tracing::error!("broken: {message}; it takes no work, and a rental releases itself");
-            Some(::api::machine::Broken { code: "stuck_in_driver".into(), message })
-        }
-        (Some(before), _) => {
-            tracing::warn!("the TensorD before this one can't exit ({}); its GPUs still open, so this one serves", before.line());
+        (_, Ok(())) | (_, Err(_)) if gpus.is_empty() => None,
+        (Some(before), Err(receipt::Unopened::Refused(why) | receipt::Unopened::Silent(why))) => Some((
+            "stuck_in_driver",
+            format!("the TensorD before this one can't exit ({}), and its GPUs can't be opened: {why}", before.line()),
+        )),
+        (None, Err(receipt::Unopened::Silent(why))) => Some(("stuck_in_driver", format!("its GPUs can't be opened: {why}"))),
+        (None, Err(receipt::Unopened::Refused(why))) => Some(("gpus_unusable", format!("its GPUs can't be opened: {why}"))),
+        (before, Ok(())) => {
+            if let Some(before) = before {
+                tracing::warn!("the TensorD before this one can't exit ({}); its GPUs still open, so this one serves", before.line());
+            }
             None
         }
-        (None, _) => None,
     };
+    let broken = broken.map(|(code, message)| {
+        tracing::error!("broken: {message}; it takes no work, and a rental releases itself");
+        ::api::machine::Broken { code: code.into(), message }
+    });
     if let Some(broken) = &broken {
         lifecycle.broken(&broken.message);
     }
@@ -399,7 +408,7 @@ fn run_machine(
         gpu_memory_limit,
         mode: mode.name(),
         torch,
-        stuck: watch_stuck(stuck, paths.clone()),
+        stuck: crate::machine::stuck::Before::watch(stuck, paths.clone(), broken.is_some()),
         broken,
     };
     // The boot answer ends before the API takes its listener: one server answers at a time.
@@ -422,27 +431,6 @@ fn run_machine(
     loop {
         std::thread::park();
     }
-}
-
-/// The TensorDs before this one that can't exit, each shown until its exit, which a thread of its own waits on (cl-977).
-fn watch_stuck(stuck: Vec<crate::machine::stuck::Stuck>, paths: crate::machine::update::Paths) -> Arc<std::sync::Mutex<Vec<crate::machine::stuck::Stuck>>> {
-    let shown = Arc::new(std::sync::Mutex::new(stuck.clone()));
-    for before in stuck {
-        let (shown, paths, pid) = (shown.clone(), paths.clone(), before.birth.pid);
-        let watching = std::thread::Builder::new().name(format!("stuck-{pid}")).spawn(move || {
-            if let Ok(Some(exact)) = platform::process::Exact::open(&before.birth) {
-                let _ = exact.wait();
-            }
-            tracing::info!("pid {pid}, the TensorD before this one, exited");
-            crate::machine::stuck::exited(&paths, &before.birth);
-            shown.lock().unwrap().retain(|shown| shown.birth != before.birth);
-            crate::activity::status_changed();
-        });
-        if let Err(error) = watching {
-            tracing::warn!("pid {pid}, the TensorD before this one, stays shown: {error}");
-        }
-    }
-    shown
 }
 
 /// The image's Runtime interpreter and the executors' Runtime wheel, when both are here: the

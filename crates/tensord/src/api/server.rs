@@ -79,7 +79,7 @@ pub(crate) struct MachineIdentity {
     /// Where its PyTorch layer comes from.
     pub torch: crate::published::layer::Torch,
     /// The TensorDs before this one that can't exit, each until it does (cl-977).
-    pub stuck: Arc<std::sync::Mutex<Vec<crate::machine::stuck::Stuck>>>,
+    pub stuck: Arc<crate::machine::stuck::Before>,
     /// Why nothing can run here (cl-977).
     pub broken: Option<api::machine::Broken>,
 }

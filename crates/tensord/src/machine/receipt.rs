@@ -108,19 +108,24 @@ pub(crate) struct Gpu {
 /// How long the process that opens the GPUs (`probe_gpus`) may take to answer, and with contexts to exit too.
 const OPENING_S: u64 = 60;
 
+/// Why a fresh process didn't open the GPUs: it answered why (no CUDA, say), or it is stuck (in the driver), silent past `OPENING_S`.
+pub(crate) enum Unopened {
+    Refused(String),
+    Silent(String),
+}
+
 /// The driver's inventory (NVML) and each GPU's memory class (CUDA's device attributes), which a process of its own reads
 /// (`probe_gpus`): TensorD never initializes CUDA itself, so its own exit never waits in the driver (cl-977). With `contexts`
 /// that process also opens each GPU as an executor does and must exit, within `OPENING_S`: whether a fresh process can still
 /// use them, the last answer an error saying why not. No NVIDIA driver is a CPU machine.
-pub(crate) fn gpus(visible: Option<&str>, contexts: bool) -> (Vec<Gpu>, Vec<String>, Result<(), String>) {
+pub(crate) fn gpus(visible: Option<&str>, contexts: bool) -> (Vec<Gpu>, Vec<String>, Result<(), Unopened>) {
     let (mut probed, mut problems) = platform::gpu::probe(visible);
     let opened = match probed.is_empty() {
         true => Ok(()),
         false => opened(&probed, contexts).map(|classes| probed.iter_mut().zip(classes).for_each(|(gpu, class)| gpu.memory_class = class)),
     };
-    match &opened {
-        Err(why) if !contexts => tracing::warn!("the GPUs' memory classes are unread: {why}"),
-        _ => {}
+    if let (Err(Unopened::Refused(why)), false) = (&opened, contexts) {
+        tracing::warn!("the GPUs' memory classes are unread: {why}");
     }
     let gpus = (probed.into_iter())
         .filter_map(|gpu| {
@@ -136,12 +141,12 @@ pub(crate) fn gpus(visible: Option<&str>, contexts: bool) -> (Vec<Gpu>, Vec<Stri
 
 /// `<this binary> probe-gpus`'s answer for `gpus`, in their order; an error when it refused, or didn't answer (and with
 /// `contexts` exit) within `OPENING_S`.
-fn opened(gpus: &[platform::gpu::Gpu], contexts: bool) -> Result<Vec<Option<platform::gpu::MemoryClass>>, String> {
+fn opened(gpus: &[platform::gpu::Gpu], contexts: bool) -> Result<Vec<Option<platform::gpu::MemoryClass>>, Unopened> {
     use std::io::BufRead;
     let ids: Vec<&str> = gpus.iter().map(|gpu| gpu.pci_bus_id.as_str()).collect();
     let program = match cfg!(target_os = "linux") {
         true => PathBuf::from("/proc/self/exe"),
-        false => std::env::current_exe().map_err(|e| format!("this binary's path: {e}"))?,
+        false => std::env::current_exe().map_err(|e| Unopened::Refused(format!("this binary's path: {e}")))?,
     };
     let mut command = std::process::Command::new(program);
     // `cozy machine probe-gpus`, or the `tensord` binary's `probe-gpus`.
@@ -153,8 +158,8 @@ fn opened(gpus: &[platform::gpu::Gpu], contexts: bool) -> Result<Vec<Option<plat
         command.arg("--contexts");
     }
     command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
-    let mut child = command.spawn().map_err(|e| format!("a process to open the GPUs: {e}"))?;
-    let stdout = child.stdout.take().ok_or("no answer from the process opening the GPUs")?;
+    let mut child = command.spawn().map_err(|e| Unopened::Refused(format!("a process to open the GPUs: {e}")))?;
+    let stdout = child.stdout.take().ok_or_else(|| Unopened::Refused("no answer from the process opening the GPUs".into()))?;
     let pid = child.id();
     let (said, heard) = std::sync::mpsc::channel();
     // A process stuck in the driver answers nothing: this thread waits on it for as long as it lives, unwaited on.
@@ -166,14 +171,15 @@ fn opened(gpus: &[platform::gpu::Gpu], contexts: bool) -> Result<Vec<Option<plat
             let _ = said.send(Some(line));
             let _ = said.send(child.wait().ok().map(|status| status.to_string()));
         })
-        .map_err(|e| format!("a thread to wait on the GPUs' process: {e}"))?;
+        .map_err(|e| Unopened::Refused(format!("a thread to wait on the GPUs' process: {e}")))?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(OPENING_S);
     let wait = || heard.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
-    let unanswered = |what: &str| format!("a new process opening them (pid {pid}) didn't {what} in {OPENING_S} s");
+    let unanswered = |what: &str| Unopened::Silent(format!("a new process opening them (pid {pid}) didn't {what} in {OPENING_S} s"));
     let line = wait().ok().flatten().ok_or_else(|| unanswered("answer"))?;
-    let answer: serde_json::Value = serde_json::from_str(&line).map_err(|_| format!("the process opening them answered {:?}", line.trim()))?;
+    let answer: serde_json::Value =
+        serde_json::from_str(&line).map_err(|_| Unopened::Refused(format!("the process opening them answered {:?}", line.trim())))?;
     if let Some(why) = answer["error"].as_str() {
-        return Err(why.to_owned());
+        return Err(Unopened::Refused(why.to_owned()));
     }
     if contexts {
         wait().map_err(|_| unanswered("exit"))?;

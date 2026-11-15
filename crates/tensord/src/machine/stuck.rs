@@ -56,6 +56,63 @@ impl Stuck {
     }
 }
 
+/// The TensorDs before this service that can't exit, shown in its Status until each does (cl-977). Each exit is waited on where
+/// the kernel gives a handle, and judged as Status is read where it doesn't (a leader still exiting may have none). A machine
+/// they left broken starts again once the last is gone, so a fresh service opens its GPUs again.
+pub(crate) struct Before {
+    shown: std::sync::Mutex<Vec<Stuck>>,
+    paths: Paths,
+    broken: bool,
+}
+
+impl Before {
+    pub(crate) fn watch(stuck: Vec<Stuck>, paths: Paths, broken: bool) -> std::sync::Arc<Self> {
+        let before = std::sync::Arc::new(Self { shown: std::sync::Mutex::new(stuck.clone()), paths, broken });
+        for one in stuck {
+            let (watched, pid) = (before.clone(), one.birth.pid);
+            let watching = std::thread::Builder::new().name(format!("stuck-{pid}")).spawn(move || {
+                match platform::process::Exact::open(&one.birth) {
+                    Ok(Some(exact)) => drop(exact.wait()),
+                    _ if one.alive() => return tracing::info!("pid {pid}, the TensorD before this one, has no handle to wait on; Status judges it"),
+                    _ => {}
+                }
+                watched.exited(&one.birth);
+            });
+            if let Err(error) = watching {
+                tracing::warn!("pid {pid}, the TensorD before this one, is judged only as Status is read: {error}");
+            }
+        }
+        before
+    }
+
+    /// Those still there.
+    pub(crate) fn now(&self) -> Vec<Stuck> {
+        let shown = self.shown.lock().unwrap().clone();
+        let (alive, gone): (Vec<Stuck>, Vec<Stuck>) = shown.into_iter().partition(Stuck::alive);
+        gone.iter().for_each(|one| self.exited(&one.birth));
+        alive
+    }
+
+    fn exited(&self, birth: &Birth) {
+        let left = {
+            let mut shown = self.shown.lock().unwrap();
+            let before = shown.len();
+            shown.retain(|one| one.birth != *birth);
+            if shown.len() == before {
+                return;
+            }
+            shown.len()
+        };
+        tracing::info!("pid {}, the TensorD before this one, exited", birth.pid);
+        exited(&self.paths, birth);
+        crate::activity::status_changed();
+        if self.broken && left == 0 {
+            tracing::warn!("what left this machine broken exited: it starts again, to open its GPUs");
+            super::supervise::leave(super::update::REPLACE_EXIT);
+        }
+    }
+}
+
 /// Adds `stuck` to the record the next service reads.
 pub(crate) fn record(paths: &Paths, stuck: Stuck) -> io::Result<()> {
     let mut all = read(paths);

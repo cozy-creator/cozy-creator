@@ -472,6 +472,9 @@ pub(crate) fn state_cell(m: &Machine) -> String {
     if m.state != MachineState::Ended && m.status.as_ref().is_some_and(|status| !status.slowed().is_empty()) {
         cell += " · slow";
     }
+    if let Some(stuck) = m.status.as_ref().map(|status| status.stuck.len()).filter(|n| *n > 0 && m.state != MachineState::Ended) {
+        cell += &format!(" · {stuck} stuck");
+    }
     match m.unreachable_since_ms {
         Some(at) if m.state == MachineState::Ready && m.offline.is_none() && unreachable_since(m).is_none() => {
             cell += &format!(" (unreachable for {})", clock(now_ms() - at))
@@ -569,7 +572,6 @@ fn end_failed(m: &Machine) -> Option<String> {
     Some(format!("{} was not shut down{billing}: {why}. `cozy machine end {}` asks again.", m.called(), m.handle()))
 }
 
-/// What an offline machine's owner can do: it is kept, never replaced, and refuses runs meanwhile.
 /// Why nothing runs on it, and what becomes of it (cl-977).
 fn broken(m: &Machine) -> Option<String> {
     let broken = m.broken.as_ref().filter(|_| m.state != MachineState::Ended)?;
@@ -577,11 +579,13 @@ fn broken(m: &Machine) -> Option<String> {
         (MachineKind::Rental, _) if m.status.as_ref().is_some_and(|s| s.phase == "releasing") => "it is releasing itself",
         (MachineKind::Rental, true) if broken.code == "silent_after_update" => "this computer ends it",
         (MachineKind::Rental, _) => "it releases itself once nothing runs there",
-        _ => "it takes no work until what's stuck exits (a reboot ends it)",
+        _ if broken.code == "stuck_in_driver" => "it takes no work until what's stuck exits (a reboot ends it)",
+        _ => "it takes no work until its GPUs open: `cozy machine update local` checks them again",
     };
     Some(format!("{} ({}); {then}", broken.message, broken.code))
 }
 
+/// What an offline machine's owner can do: it is kept, never replaced, and refuses runs meanwhile.
 fn offline(m: &Machine) -> Option<String> {
     let r = m.rental.as_ref().filter(|_| m.offline.is_some())?;
     Some(format!(
