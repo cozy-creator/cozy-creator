@@ -231,6 +231,9 @@ export class CanvasController {
     const plugins = this.binding?.viewport.plugins
     if (!plugins) return
     for (const name of ["drag", "pinch", "wheel", "decelerate"]) {
+      const plugin = plugins.get(name)
+      // Drag.resume clears its pointer anchor, so repeated enablement must not interrupt a hand still on the canvas.
+      if (!plugin || plugin.paused === !enabled) continue
       if (enabled) plugins.resume(name)
       else plugins.pause(name)
     }
