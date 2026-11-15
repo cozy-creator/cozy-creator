@@ -106,13 +106,17 @@ def main() -> int:
 
     # The run's own record is in project.db, which this holds: its machine's journal says where it ended.
     run_id = json.loads(request(project_path(project, f"/runs/{run}")))["id"]
+    # One TensorD journal for every project's runs keeps a project run's id digested with its project (cl-984): its id
+    # and its attempts' (`<id>~<n>`), as TensorD keys them.
+    project_id = json.loads(request(project_path(project, "/address")))["id"]
+    keyed = ["p:" + hashlib.sha256(f"{project_id}\0{identity}".encode()).hexdigest()
+             for identity in [run_id, *(f"{run_id}~{n}" for n in range(1, 21))]]
 
     def executed() -> str | None:
-        # One TensorD journal for every project's runs (cl-984).
         for path in (Path.home() / ".cozy").rglob("executions.sqlite3"):
             with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as worker:
-                row = worker.execute("SELECT state FROM executions WHERE request_id = ? OR request_id LIKE ? || '~%' ORDER BY id DESC",
-                                     (run_id, run_id)).fetchone()
+                row = worker.execute(f"SELECT state FROM executions WHERE request_id IN ({','.join('?' * len(keyed))}) ORDER BY id DESC",
+                                     keyed).fetchone()
             if row:
                 return cast(str, row[0])  # cast: a TEXT column
         return None
