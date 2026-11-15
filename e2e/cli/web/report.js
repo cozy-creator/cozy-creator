@@ -1,5 +1,5 @@
 // Playwright's JSON report, as web.sh's web_suite says it: `FAILED web-<cell>: <step>: <error>` for each failure, a cell of the lane that never
-// ran included, then each cell's time and the 1-minute load as it ended, and the lane's wall time.
+// ran included, then each cell's time and the 1-minute load as it ended, what else it noted, and the lane's wall time.
 //   node report.js <report.json> <cell...>
 const { readFileSync } = require('fs');
 const { basename } = require('path');
@@ -34,6 +34,7 @@ const walk = (suite) => {
       const result = test.results.at(-1);
       const load = result?.annotations?.find((note) => note.type === 'load')?.description ?? '?';
       lines.push(`TIME ${name}: ${result ? (result.duration / 1000).toFixed(1) : '?'} s, load ${load}, ${test.status}`);
+      for (const note of result?.annotations ?? []) if (note.type !== 'load') lines.push(`NOTE ${name}: ${note.type} ${note.description ?? ''}`);
       if (test.status === 'skipped') console.log(`FAILED ${name}: skipped, which no cell is`);
       if (test.status !== 'unexpected' && test.status !== 'flaky') continue;
       for (const error of result?.errors?.length ? result.errors : [{ message: `${result?.status ?? 'no result'}` }]) console.log(`FAILED ${name}: ${stepOf(result?.steps, error.message)}: ${said(error.message)}`);

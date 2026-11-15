@@ -2,12 +2,14 @@
 // secret said once, saved, then a picture dropped and downloaded; outside
 // its mount the folder holds no plaintext copy of it. `cozy` locks it while a second tab is open: every tab is covered at once, and neither
 // the DOM, Web Storage, Cache Storage nor IndexedDB keeps a name or a picture. Unlocked with the passphrase and locked from the page, then
-// unlocked with the recovery secret, each time the canvas back with no reload; decrypted, its files and history are kept.
+// unlocked with the recovery secret, each time the canvas back with no reload; decrypted, its files and history are kept. A first drop on an
+// unowned canvas asks for a project and sends nothing until it's made and its secret saved; its draft shows once the project's lock is read.
+// How long each encrypted project took to make is in the cell's report (`vault_create`).
 // `@vault`: on the job with the filesystem driver, sharing its Calcifer, so it touches only its own projects.
 const { randomBytes, createHash } = require('crypto');
 const { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('fs');
 const { dirname, join, relative } = require('path');
-const { test: base, expect, box, canvasIdle, middle, png } = require('./fixtures');
+const { test: base, expect, box, canvasIdle, middle, openPoint, png } = require('./fixtures');
 
 const test = base.extend({
   /** Encrypted projects the cell made ({id, path}): each locked again before its folder goes, as a person locks one before deleting it. */
@@ -117,6 +119,13 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
   const at = (rest = '') => `/v1/projects/${encodeURIComponent(made.id)}${rest}`;
   const vault = () => api.get(at('/vault'));
   const assetOf = async (asked) => (await api.get(at())).assets.find((row) => row.name === asked);
+  /** How long an encrypted project took to make, in ms, in the cell's report: the press to its answer (`server` of it in Calcifer), to its
+   *  recovery secret shown, and from Done to the project usable; `total` is the press to usable, less the time the cell took to tick the box. */
+  const took = (which, answer, { pressed, answeredAt, shownAt, done, usableAt }) => {
+    const { requestStart, responseStart } = answer.request().timing();
+    const times = { answered: answeredAt - pressed, server: Math.round(responseStart - requestStart), shown: shownAt - pressed, usable: usableAt - done, total: shownAt - pressed + usableAt - done };
+    test.info().annotations.push({ type: 'vault_create', description: `${which} ${JSON.stringify(times)}` });
+  };
   /** What step 1 left on this document: gone if the page loaded again. */
   const kept = () => page.evaluate(() => window.__vaultDocument);
 
@@ -148,8 +157,10 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     expect.soft(readFileSync(join(full, 'notes.txt'), 'utf8') === 'already here\n' && !existsSync(join(full, 'project.db')), 'nothing in it changed').toBe(true);
     await asked(join(dirname(project.path), name));
     const answered = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects', { timeout: 60_000 });
+    const pressed = Date.now();
     await page.getByRole('button', { name: 'Create project', exact: true }).click();
     const answer = await answered;
+    const answeredAt = Date.now();
     expect(answer.ok(), `POST /v1/projects: ${answer.status()}`).toBe(true);
     expect.soft(answer.headers()['cache-control'] ?? '', 'the answer with its recovery secret is never cached').toContain('no-store');
     ({ recovery_secret: recovery, ...made } = await answer.json());
@@ -160,13 +171,16 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
 
     const saving = page.getByRole('region', { name: 'Save recovery secret' });
     await expect(saving.locator('pre')).toBeVisible({ timeout: 60_000 });
+    const shownAt = Date.now();
     await expect.soft(saving, 'it says to save it').toContainText('Save this somewhere safe');
     expect.soft((await saving.locator('pre').innerText()).trim() === recovery, 'the page shows the recovery secret it was given').toBe(true);
     await saving.getByLabel('I saved this somewhere away from this computer').check();
+    const done = Date.now();
     await saving.getByRole('button', { name: 'Done', exact: true }).click();
     await expect(page, 'it opens at its address').toHaveURL(`${api.origin}/p/${made.code}`);
     await expect(saving, 'shown once').toHaveCount(0);
     await expect(page.locator('.stage')).toBeVisible();
+    took('from the page', answer, { pressed, answeredAt, shownAt, done, usableAt: Date.now() });
     expect.soft(await vault(), 'encrypted and unlocked, locking after 30 idle minutes').toMatchObject({ encrypted: true, state: 'unlocked', idle_timeout_s: 1800 });
     expect.soft(existsSync(join(made.path, 'project.db')), 'no plaintext project.db in its folder').toBe(false);
     expect.soft((await keptIn(page, { 'the passphrase': passphrase, 'the recovery secret': recovery })).webStorage, 'Web Storage holds neither secret').toEqual([]);
@@ -287,4 +301,104 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     expect.soft(filesUnder(made.path).some(holds), 'its folder holds the picture, now in ordinary storage').toBe(true);
     expect.soft(existsSync(join(made.path, 'project.db')), 'its project.db in its folder').toBe(true);
   });
+
+  await test.step('implicit canvas creation waits for secure setup', async () => {
+    const writes = [];
+    const written = (request) => {
+      const url = new URL(request.url());
+      if (request.method() === 'PUT' && /^\/v1\/(project-)?files\//.test(url.pathname)) writes.push({ route: url.pathname.split('/').slice(0, 3).join('/'), project: url.searchParams.get('project') });
+    };
+    page.on('request', written);
+    // A global route keeps an unowned canvas behind its drawer: a first drop there asks for a project.
+    await page.goto(`${api.origin}/runs`);
+    await expect(page.locator('.empty-canvas')).toBeVisible();
+    const dropped = Buffer.concat([png(109), randomBytes(16)]);
+    const droppedDigest = `sha256:${createHash('sha256').update(dropped).digest('hex')}`;
+    await drop(page, [{ name: 'new_private_drop.png', type: 'image/png', bytes: dropped }], await openPoint(page));
+    const setup = page.getByRole('region', { name: 'New project', exact: true });
+    await expect(setup, 'it asks for a project first').toBeVisible();
+    expect.soft(writes, 'nothing sent before its project is set up').toEqual([]);
+    await setup.getByLabel("New project's folder", { exact: true }).fill(join(dirname(project.path), `web-vault-implicit-${randomBytes(3).toString('hex')}`));
+    await expect.soft(setup.getByLabel('Create without encryption'), 'encrypted unless asked').not.toBeChecked();
+    await setup.getByLabel('Passphrase', { exact: true }).fill(passphrase);
+    await setup.getByLabel('Confirm passphrase', { exact: true }).fill(passphrase);
+    const answered = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects', { timeout: 60_000 });
+    const pressed = Date.now();
+    await setup.getByRole('button', { name: 'Create project', exact: true }).click();
+    const answer = await answered;
+    const answeredAt = Date.now();
+    expect(answer.ok(), `POST /v1/projects: ${answer.status()}`).toBe(true);
+    const { recovery_secret: secret, ...implicit } = await answer.json();
+    removeAfter(implicit.path);
+    vaults.push(implicit);
+    const saving = page.getByRole('region', { name: 'Save recovery secret' });
+    await expect(saving.locator('pre')).toBeVisible({ timeout: 60_000 });
+    const shownAt = Date.now();
+    expect.soft(Boolean(secret) && (await saving.locator('pre').innerText()).trim() === secret, 'the page shows the recovery secret it was given').toBe(true);
+    expect.soft(writes, 'nothing sent before its recovery secret is saved').toEqual([]);
+    // The drop's draft (its name field, there since the drop) goes on into the project, kept in memory, and is covered from when the page
+    // moves to the project until its lock is read: when it moved, the first read of its lock begun after, when the field was hidden, whether
+    // it was covered and kept meanwhile, and when it showed again, each on the page's clock. Watched in the page: no request is held.
+    await page.evaluate(({ id, code }) => {
+      const seen = window.__adoption = { moved: null, read: null, hidden: null, covered: false, kept: false, field: null };
+      for (const name of ['pushState', 'replaceState']) {
+        const was = history[name];
+        history[name] = function (...args) {
+          const out = was.apply(this, args);
+          if (seen.moved === null && location.pathname.startsWith(`/p/${code}`)) seen.moved = performance.now();
+          return out;
+        };
+      }
+      performance.clearResourceTimings();
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (seen.read === null && seen.moved !== null && entry.startTime >= seen.moved && new URL(entry.name).pathname === `/v1/projects/${id}/vault`) seen.read = entry.responseEnd;
+        }
+      }).observe({ type: 'resource' });
+      const look = () => {
+        if (seen.moved === null || seen.field !== null) return;
+        const fields = [...document.querySelectorAll('.nm-field')];
+        const shown = fields.some((field) => field.checkVisibility());
+        if (seen.hidden === null) {
+          if (!shown) seen.hidden = performance.now();
+          else return;
+        }
+        if (shown) seen.field = performance.now();
+        else {
+          seen.covered ||= Boolean(document.querySelector('.gate')?.checkVisibility());
+          seen.kept ||= fields.length === 1;
+        }
+      };
+      new MutationObserver(look).observe(document, { subtree: true, childList: true, attributes: true });
+    }, { id: implicit.id, code: implicit.code });
+    await saving.getByLabel('I saved this somewhere away from this computer').check();
+    const done = Date.now();
+    await saving.getByRole('button', { name: 'Done', exact: true }).click();
+    const naming = page.getByRole('textbox', { name: 'Name', exact: true });
+    await expect(naming).toBeVisible({ timeout: 60_000 });
+    took('by a first drop', answer, { pressed, answeredAt, shownAt, done, usableAt: Date.now() });
+    await expect(page, 'it opens at its address, still on runs').toHaveURL(`${api.origin}/p/${implicit.code}/runs`);
+    await expect.poll(() => page.evaluate(() => window.__adoption?.read ?? null), { message: "its lock read once it's opened" }).not.toBeNull();
+    const adoption = await page.evaluate(() => window.__adoption ?? 'the page loaded again: the draft is lost');
+    expect.soft(typeof adoption === 'object' && adoption.hidden !== null && adoption.covered && adoption.kept && adoption.field >= adoption.read, `the draft is kept and covered until its lock is read: ${JSON.stringify(adoption)}`).toBe(true);
+    await naming.fill('new_private_drop');
+    await naming.press('Enter');
+    const implicitAt = `/v1/projects/${encodeURIComponent(implicit.id)}`;
+    await expect.poll(async () => (await api.get(implicitAt)).assets.find((row) => row.name === 'new_private_drop')?.sha256 ?? null, { message: 'the drop lands in its new project', timeout: 60_000 }).toBe(droppedDigest);
+    page.off('request', written);
+    expect.soft(writes.length > 0 && writes.every((write) => write.route === '/v1/project-files' && write.project === implicit.id), `its bytes go to the new project's own store: ${JSON.stringify(writes)}`).toBe(true);
+    expect.soft(await api.get(`${implicitAt}/vault`), 'encrypted and unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
+    expect.soft(existsSync(join(implicit.path, 'project.db')), 'no plaintext project.db in its folder').toBe(false);
+    // Panned, it keeps nothing of its view in Web Storage.
+    await canvasIdle(page);
+    const open = await openPoint(page);
+    await page.mouse.move(open.x, open.y);
+    await page.mouse.down();
+    await page.mouse.move(open.x + 24, open.y + 16, { steps: 4 });
+    await page.mouse.up();
+    await canvasIdle(page);
+    const stored = await page.evaluate((id) => ['cozy.view:', 'cozy.selection:', 'cozy.more:'].filter((prefix) => localStorage.getItem(prefix + id) !== null), implicit.id);
+    expect.soft(stored, 'it keeps nothing of its view in Web Storage').toEqual([]);
+  });
+
 });
