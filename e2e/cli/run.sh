@@ -665,6 +665,7 @@ case $SHARD in
     db_closes
     old_takes
     db_migrate
+    db_legacy
     db_opens
     db_migrate_large
     db_waits
@@ -692,6 +693,8 @@ case $SHARD in
   projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
+  # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984).
+  projectdb-legacy) parts="db_legacy logs" ;;
   # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
   projectdb-migrate-large) parts="db_migrate_large logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).

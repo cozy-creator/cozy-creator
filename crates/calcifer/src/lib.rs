@@ -26,6 +26,7 @@ mod hub;
 mod health;
 mod kept;
 mod legacy_cleanup;
+mod legacy_status;
 mod lanes;
 mod link;
 mod local;

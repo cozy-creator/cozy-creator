@@ -226,6 +226,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/unpin", post(unpin))
         .route("/v1/projects/{id}/rename", post(rename))
+        .route("/v1/projects/{id}/legacy", get(legacy))
         .route("/v1/projects/{id}/machines", put(machines))
         .route("/v1/projects/{id}/reclaim", post(reclaim))
         .route("/v1/projects/{id}/assets", post(assets::create))
@@ -2198,6 +2199,16 @@ async fn reclaim(
 /// it, what renders going say of it, its row on the canvas, and its box's name and every `<from>`, unless the project has moved to `to` already. A name is no input, so
 /// what stood on the text that said `from` stands on the text that says `to`. The lock goes before the text, and the old name finds its row until the text says so: a read
 /// between is never of an empty box. Nothing on disk moves.
+/// `GET /v1/projects/{id}/legacy`: its history from before projects kept their own: imported, and still in Calcifer's store (cl-984).
+async fn legacy(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Json<api::calcifer::LegacyHistory>, Refusal> {
+    // As a project read does: what can be imported is, first.
+    let journal = api.projects.store(&api, &id).await.map_err(Refusal)?;
+    let (project, root) = journal.execution_scope();
+    let (project, root) = (project.to_owned(), root.to_owned());
+    let history = tokio::task::block_in_place(|| crate::legacy_status::project(api.calcifer.maintenance_store(), &journal, &root, &project))?;
+    Ok(Json(history))
+}
+
 async fn rename(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
