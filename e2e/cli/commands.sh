@@ -1208,24 +1208,17 @@ cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$
 # cl-998: a command a run carries out ends a failed run as a typed refusal: after the run's events (`--json`), the envelope with
 # the run's reason code and its next step. Each run here fails on the machine: an install whose build has no module, a model file
 # whose tensor runs past its end, the same file uploaded.
-run_failures() {
-[ -n "$LOCAL" ] || return 0
-step "a failed run's command is a typed refusal (cl-998)"
-local root=$OUT/run-failures project bad account code
-project=$root/project bad=$root/bad.safetensors
-mkdir -p "$root"
-cozy --json new --unencrypted "$project" > "$root/new.json" 2>&1 || { check "run failures: cozy new: $(tail -c 300 "$root/new.json")"; return 0; }
-# refused <name> <exit code>: a failed run among its events, its exit non-zero, and its last line the envelope with that run's code.
-refused() {
-  [ "$2" != 0 ] || check "run failures: $1 exited 0"
-  python3 - "$root/$1.ndjson" <<'PY' || check "run failures: $1 isn't a typed refusal: $(tail -c 500 "$root/$1.ndjson") $(tail -c 300 "$root/$1.err")"
+# run_refused <dir> <name> <exit code>: a failed run among its events, its exit non-zero, and its last line the envelope with that run's code.
+run_refused() {
+[ "$3" != 0 ] || check "run failures: $2 exited 0"
+python3 - "$1/$2.ndjson" <<'PY' || check "run failures: $2 isn't a typed refusal: $(tail -c 500 "$1/$2.ndjson") $(tail -c 300 "$1/$2.err")"
 import json, sys
 lines = []
 for line in open(sys.argv[1]):
-    try:
-        lines.append(json.loads(line))
-    except ValueError:
-        pass
+  try:
+      lines.append(json.loads(line))
+  except ValueError:
+      pass
 failed = [line["run"] for line in lines if isinstance(line, dict) and line.get("type") in ("run.failed", "run.canceled")]
 assert failed, "no failed run among its events"
 code = (failed[-1].get("reason") or {}).get("code") or "run_failed"
@@ -1234,12 +1227,20 @@ assert error.get("code") == code, f"its envelope says {error.get('code')!r}, its
 assert error.get("next"), "its envelope names no next step"
 PY
 }
+
+run_failures() {
+[ -n "$LOCAL" ] || return 0
+step "a failed run's command is a typed refusal (cl-998)"
+local root=$OUT/run-failures project bad account code
+project=$root/project bad=$root/bad.safetensors
+mkdir -p "$root"
+cozy --json new --unencrypted "$project" > "$root/new.json" 2>&1 || { check "run failures: cozy new: $(tail -c 300 "$root/new.json")"; return 0; }
 # package install: its code builds no module (`uv pip install --editable` fails on the machine; uv lock, here, doesn't build it).
 cp -r "$here/weightless" "$root/nomodule"
 sed -i 's/^module-name = "e2e_weightless"/module-name = "e2e_no_such_module"/' "$root/nomodule/pyproject.toml"
 sed -i 's/^name = "e2e-weightless"/name = "e2e-no-module"/' "$root/nomodule/pyproject.toml"
 code=0; (cd "$project" && cozy --json package install "$root/nomodule" --on local) > "$root/install.ndjson" 2> "$root/install.err" || code=$?
-refused install "$code"
+run_refused "$root" install "$code"
 # model install: a .safetensors file whose one tensor runs past its end.
 python3 - "$bad" <<'PY'
 import json, struct, sys
@@ -1247,14 +1248,14 @@ header = json.dumps({"w": {"dtype": "F32", "shape": [1024], "data_offsets": [0, 
 open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header)
 PY
 code=0; cozy --json model install "$bad" local/e2e-cl998-bad --on local > "$root/download.ndjson" 2> "$root/download.err" || code=$?
-refused download "$code"
+run_refused "$root" download "$code"
 # model upload: the same file, signed in to the suite's Hub, then signed out again.
 if [ -z "${E2E_HUB_LOG:-}" ] || [ -z "${E2E_HUB_EMAIL:-}" ]; then
   check "run failures: e2e/isolated.sh named no Hub log or email to sign in with"
 elif signin "$E2E_HUB_EMAIL" > "$root/login.json"; then
   account=$(cozy --json whoami | jq -r '.account // empty')
-  code=0; cozy --json model upload "$bad" "${account:-e2e}/cl998-bad-$RANDOM" --on local > "$root/upload.ndjson" 2> "$root/upload.err" || code=$?
-  refused upload "$code"
+  code=0; cozy --json model upload "$bad" "${account:-e2e}/cl998-bad-$RANDOM" --lane bf16 --on local > "$root/upload.ndjson" 2> "$root/upload.err" || code=$?
+  run_refused "$root" upload "$code"
   cozy --json logout > "$root/logout.json" 2>&1 || check "run failures: logout: $(tail -c 300 "$root/logout.json")"
 else
   check "run failures: cozy login failed: $(tail -c 300 "$root/login.json")"
