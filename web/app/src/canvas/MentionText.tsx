@@ -66,6 +66,18 @@ function caretIn(box: HTMLElement): number | null {
   return read(held).length
 }
 
+/** The caret at the end of `el`'s words. Where a browser puts no selection (WebKit, in what isn't shown yet: Focus while it enters), there's
+ *  none and nothing throws; Focus puts the caret there once it's shown (cl-973). */
+export function caretToEnd(el: HTMLElement) {
+  const selection = document.getSelection()
+  if (!selection) return
+  const end = document.createRange()
+  end.selectNodeContents(el)
+  end.collapse(false)
+  selection.removeAllRanges()
+  selection.addRange(end)
+}
+
 /** The caret `offset` into what `box` says: in words where it falls in them, else just after the chip it falls in. */
 function caretAt(box: HTMLElement, offset: number) {
   const selection = document.getSelection()
@@ -315,8 +327,7 @@ export function MentionText({
     if (!focus || !box.current) return
     box.current.focus({ preventScroll: true })
     // Typing goes on from what it says.
-    window.getSelection()?.selectAllChildren(box.current)
-    window.getSelection()?.collapseToEnd()
+    caretToEnd(box.current)
   }, [focus])
 
   useEffect(() => {
