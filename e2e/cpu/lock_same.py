@@ -37,9 +37,17 @@ def key(version: str) -> tuple[tuple[int, ...], tuple[int, int], int, float]:
     return numbers, stage, int(post) if post else -1, int(dev) if dev else float("inf")
 
 
+#: The open RC's Runtime build a lock binds (`0.47.0.dev2287+g1a53ab3c`, its wheel on the `rc-<x>` release): each Runtime merge
+#: replaces it and nothing relocks (RELEASING.md), so any build of the minor is the same lock.
+RC_BUILD = re.compile(r"(\d+\.\d+\.\d+)\.dev\d+\+g[0-9a-f]+")
+RC_FILE = re.compile(r'(url = "https://github\.com/cozy-creator/cozy-runtime/releases/download/rc-[^"]*"(?:, hash = )?)("sha256:[0-9a-f]{64}")?')
+
+
 def normal(text: str, origin: str) -> str:
     if origin:
         text = text.replace(origin.rstrip("/") + "/v1/index/", PRODUCTION + "/v1/index/")
+    text = RC_FILE.sub(lambda m: m.group(1) + ('"sha256:*"' if m.group(2) else ""), text)
+    text = RC_BUILD.sub(r"\1.devRC", text)
     return HUB_FILE.sub(r'\1"sha256:*"', text)
 
 
