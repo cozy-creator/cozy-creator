@@ -2284,6 +2284,15 @@ pub struct LegacyFolder {
     pub runs: u64,
 }
 
+/// `GET` and `PUT /v1/settings`: this computer's settings Calcifer holds, in config.toml's `[calcifer]`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Settings {
+    /// Each run's function, package, versions, GPU, size and times go to the Hub anonymously: never its prompts, inputs,
+    /// outputs or names, and nothing that says who ran it (cl-1006).
+    pub send_performance_data: bool,
+}
+
 /// `GET /v1/status`: this Calcifer at a glance. It never waits on a Hub.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

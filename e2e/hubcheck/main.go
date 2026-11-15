@@ -3,9 +3,10 @@
 // Each mismatch is one JSON line in <out>/hub-mismatches.jsonl: a request that breaks the document is the client's
 // drift, a response that breaks it the document's. A route the document lacks is a mismatch; an operation marked
 // `x-raw-body` (pages, redirects, bytes) has its status checked, not its body. Object fields follow the document's
-// additionalProperties policy. <out>/hub-calls.json counts the calls of each operation.
+// additionalProperties policy. <out>/hub-calls.json counts the calls of each operation. Each call of an operation --keep names
+// is one JSON line in <out>/hub-kept.jsonl: its body, its answer, and whether it carried a credential.
 //
-//	hubcheck --hub http://127.0.0.1:8819 --out DIR [--listen 127.0.0.1:0] [--spec FILE]
+//	hubcheck --hub http://127.0.0.1:8819 --out DIR [--listen 127.0.0.1:0] [--spec FILE] [--keep "POST /v1/run-reports,..."]
 //
 // It prints the address it listens on, then serves until it is ended.
 package main
@@ -51,6 +52,17 @@ type checker struct {
 	out    *os.File
 	calls  map[string]int
 	counts string
+	keep   map[string]bool
+	kept   *os.File
+}
+
+// Kept is one call of an operation --keep names.
+type Kept struct {
+	Operation  string          `json:"operation"`
+	Credential bool            `json:"credential"`
+	Body       json.RawMessage `json:"body"`
+	Status     int             `json:"status"`
+	Answer     json.RawMessage `json:"answer"`
 }
 
 func main() {
@@ -59,6 +71,7 @@ func main() {
 	out := flag.String("out", "", "where mismatches and call counts go")
 	listen := flag.String("listen", "127.0.0.1:0", "the address cozy calls instead of the Hub")
 	spec := flag.String("spec", "", "an API document file instead of the Hub's own GET /openapi.yaml")
+	keep := flag.String("keep", "", "operations (`METHOD /route`, comma-separated) whose calls go to hub-kept.jsonl whole")
 	flag.Parse()
 	if *out == "" {
 		fail(errors.New("--out is required"))
@@ -78,7 +91,17 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	c := &checker{doc: doc, out: file, calls: map[string]int{}, counts: filepath.Join(*out, "hub-calls.json")}
+	c := &checker{doc: doc, out: file, calls: map[string]int{}, counts: filepath.Join(*out, "hub-calls.json"), keep: map[string]bool{}}
+	for _, operation := range strings.Split(*keep, ",") {
+		if operation = strings.TrimSpace(operation); operation != "" {
+			c.keep[operation] = true
+		}
+	}
+	if len(c.keep) > 0 {
+		if c.kept, err = os.Create(filepath.Join(*out, "hub-kept.jsonl")); err != nil {
+			fail(err)
+		}
+	}
 	c.proxy = &httputil.ReverseProxy{Rewrite: func(r *httputil.ProxyRequest) {
 		r.SetURL(upstream)
 		r.Out.Host = upstream.Host
@@ -201,6 +224,10 @@ func (c *checker) check(w http.ResponseWriter, r *http.Request, route *routers.R
 	}
 	at.Status = recorder.status
 	c.count(r.Method + " " + route.Path)
+	if c.keep[r.Method+" "+route.Path] {
+		c.save(Kept{Operation: r.Method + " " + route.Path, Credential: r.Header.Get("Authorization") != "",
+			Body: asJSON(body), Status: recorder.status, Answer: asJSON(recorder.body.Bytes())})
+	}
 	if op.Responses.Status(recorder.status) == nil && op.Responses.Default() == nil {
 		c.mismatch(at, "response", "", fmt.Errorf("status %d is not documented", recorder.status))
 		return
@@ -266,6 +293,22 @@ func (c *checker) record(m Mismatch) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, _ = c.out.Write(append(line, '\n'))
+}
+
+func (c *checker) save(kept Kept) {
+	line, _ := json.Marshal(kept)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, _ = c.kept.Write(append(line, '\n'))
+}
+
+// asJSON is bytes as JSON: themselves when they are JSON, else a string of them.
+func asJSON(b []byte) json.RawMessage {
+	if json.Valid(b) {
+		return b
+	}
+	quoted, _ := json.Marshal(string(b))
+	return quoted
 }
 
 func (c *checker) count(operation string) {

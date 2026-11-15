@@ -43,6 +43,7 @@ parse "$@"
 . "$(dirname "$0")/egress.sh"
 . "$(dirname "$0")/stuck.sh"
 . "$(dirname "$0")/rentalself.sh"
+. "$(dirname "$0")/reports.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -527,6 +528,7 @@ case $SHARD in
     run_playback
     hub_away
     lock_refresh
+    performance_data
     bound_runs
     own_references
     lane_fit
@@ -573,6 +575,7 @@ case $SHARD in
     run_playback
     hub_away
     lock_refresh
+    performance_data
     logs
   " ;;
   executors) parts="
