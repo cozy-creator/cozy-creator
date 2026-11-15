@@ -118,6 +118,19 @@ async fn plan_scoped(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) 
     }
 }
 
+/// The project a model upload's `run:KEY-N` source is a run of. Its weights output is in that project's store (cl-984), so
+/// uploading it is that project's work (cl-993).
+async fn source_project(api: &Arc<Api>, ask: &RunRequest) -> Result<Option<String>, Refusal> {
+    let source = ask.input.as_ref().and_then(|input| input.get("source")).and_then(|source| source.as_str());
+    let Some(run) = source.filter(|_| ask.target == job::MODEL_UPLOAD).and_then(|source| source.strip_prefix("run:")) else {
+        return Ok(None);
+    };
+    match api::calcifer::project::run_name(run.split('#').next().unwrap_or(run)) {
+        Some((key, _)) if key != api::calcifer::project::MACHINE_KEY => crate::api::keyed_project(api, &key).await,
+        _ => Ok(None),
+    }
+}
+
 /// What a job's request or quote comes to: its answer, or the call it plans (a quantization's), which its caller then asks
 /// as any run, under the same key. The call never runs inside the job's own future: nested, the two overflowed a worker's
 /// stack (cl-974).
@@ -128,8 +141,11 @@ pub(crate) enum Job<T> {
 
 /// Records the job `ask` names under `key` as the ask `digest` names, and starts it: `Submitted`, as any run's. The same key
 /// again answers the recorded run.
-pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunRequest) -> Result<Job<Submitted>, Error> {
+pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, mut ask: RunRequest) -> Result<Job<Submitted>, Error> {
     let calcifer = &api.calcifer;
+    if ask.project.is_none() {
+        ask.project = source_project(api, &ask).await.map_err(|Refusal(e)| e)?;
+    }
     if ask.project.is_none() { if let Some(code)=&ask.code { crate::maintenance_source::require(api,code)?; } }
     let project = match ask.project.as_deref() {
         Some(named) => Some({ let store = api.projects.store(api, named).await?; store.project_id().to_owned() }),

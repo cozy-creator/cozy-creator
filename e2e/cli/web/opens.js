@@ -339,7 +339,7 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
     }, theme);
     const wire = new Wire(base);
     const errors = [];
-    // Each tab signs in: a session is the tab's.
+    // Each tab opens the page itself.
     const tab = async (label) => {
       const page = await context.newPage();
       page.on('pageerror', (error) => errors.push(`${label}: ${error.message}`));
@@ -378,7 +378,7 @@ const quantile = (values, q) => (values.length ? values[Math.min(values.length -
         on_screen_frames: shown.map(([, row]) => row.frame).filter((at) => at !== null).sort((a, b) => a - b),
         on_screen_previews: shown.map(([, row]) => row.preview).filter((at) => at !== null).sort((a, b) => a - b),
         trace: {
-          reads: api.map((entry) => [`${path(entry).replace(/project-[0-9a-f]+/, 'P')}${new URL(entry.name).search.replace(/media=[^&]+&?/, '')}`, Math.round(entry.startTime), Math.round(entry.responseEnd)]).sort((a, b) => a[2] - b[2]).slice(0, 24),
+          reads: api.map((entry) => [`${path(entry).replace(/project-[0-9a-f]+/, 'P')}${new URL(entry.name).search}`, Math.round(entry.startTime), Math.round(entry.responseEnd)]).sort((a, b) => a[2] - b[2]).slice(0, 24),
           long: (opens?.long ?? []).filter(({ at }) => at < 3000),
         },
         waiting: rows.filter(([, row]) => row.waiting > 0).length,

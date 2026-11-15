@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, openCanvas, png, launch, noStall, settled, until, wav, rowsOf, addBoxes, assetsOf, storedOf, fitCanvas, observeResizes } = require('./page');
+const { holderToken, projectFolder, projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, openCanvas, png, launch, noStall, settled, until, wav, rowsOf, addBoxes, assetsOf, storedOf, fitCanvas, observeResizes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -129,12 +129,11 @@ async function placedInView(page, expected) {
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI} ${e.sourceFile}:${e.lineNumber} ${e.sample}`));
   });
 
-  // Sign in: the link's code becomes a session, and leaves the URL.
+  // The page, as Calcifer's own (cl-985): nothing to sign in with, and no credential kept in the browser, the lock record's bearer least of all.
   await signIn(page);
   await page.waitForSelector('.top');
-  check('code_left_the_url', !page.url().includes('code='), page.url());
-  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
-  check('session_kept', Boolean(session?.token && session?.media), session);
+  const kept = await page.evaluate(() => [localStorage, sessionStorage].flatMap((store) => Object.keys(store).map((key) => `${key}=${store.getItem(key)}`)));
+  check('no_credential_kept', !kept.some((entry) => entry.includes(holderToken())) && (await context.cookies()).length === 0, { kept, cookies: (await context.cookies()).length });
 
   // A project of its own, by name, from the Projects drawer.
   const projectName = `web-place-${Date.now()}`;
@@ -145,8 +144,7 @@ async function placedInView(page, expected) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
   const state = await page.evaluate(async (id) => {
-    const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
-    return (await fetch(`/v1/projects/${id}`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
+    return (await fetch(`/v1/projects/${id}`, { headers: { 'cozy-project-storage': '3' } })).json();
   }, id);
   const folder = state.path;
   seen.project = { id, folder };
@@ -545,7 +543,7 @@ async function placedInView(page, expected) {
     await page.route(canvasRead, async (route) => {
       if (route.request().method() !== 'GET' || read) return route.fallback();
       read = true;
-      const answer = await route.fetch();
+      const answer = await route.fetch({ headers: { ...route.request().headers(), authorization: `Bearer ${holderToken()}` } });
       await held;
       await route.fulfill({ response: answer }).catch(() => {});
     });

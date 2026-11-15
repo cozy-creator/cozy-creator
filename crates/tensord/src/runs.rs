@@ -274,12 +274,14 @@ fn refused(code: &'static str, message: impl Into<String>) -> Refused {
 }
 
 /// A warm choice made present (`Runs::present`): its header, the commit naming it, its result
-/// row, and the folder it was admitted from.
+/// row, the folder it was admitted from, and the store that holds it when that is not the machine's: a project's run's weights
+/// output is in that project's store (cl-984), read there by an upload that is the project's work (cl-993).
 struct Present {
     header: ObjectRef,
     tree: Option<ObjectRef>,
     row: Value,
     folder: Option<model_folder::Folder>,
+    own_store: Option<Arc<crate::storage::Store>>,
 }
 
 /// A commit's repo files (configs, a tokenizer), which go with its header.
@@ -700,8 +702,11 @@ impl Runs {
             let choice = &stored::ModelChoice { parameter: parameter.to_owned(), ..choice.clone() };
             // On a base, cut to components, or with files added, a Hub checkpoint is referenced too: its header and tree are enough.
             let structure = base.is_some() || !adds.is_empty() || !kept.is_empty();
-            let Present { mut header, mut tree, mut row, folder } = self.present(actor, id, spec, choice, structure, observe, stoppable)?;
-            let upload_store = folder.as_ref().map_or(publisher.store().as_ref(), |folder| &folder.store);
+            let Present { mut header, mut tree, mut row, folder, own_store } = self.present(actor, id, spec, choice, structure, observe, stoppable)?;
+            if own_store.is_some() && destination.starts_with("local/") {
+                return Err(refused("invalid_request", "a project's run's weights output stays in its project: upload it to a Hub model"));
+            }
+            let upload_store = folder.as_ref().map_or(own_store.as_deref().unwrap_or(publisher.store().as_ref()), |folder| &folder.store);
             if !kept.is_empty() {
                 if folder.is_some() {
                     return Err(refused("invalid_request", "a CozyTensors folder uploads as it is; cut a model to components"));
@@ -873,6 +878,7 @@ impl Runs {
             })
         };
         let folder = model_folder::prepare(self, actor, spec, choice, stoppable)?;
+        let mut own_store = None;
         // Each model's header, and the tree that names it when one does.
         let (header, tree, row) = if let Some(folder) = &folder {
             let row = json!({"parameter": choice.parameter, "source": choice.source, "tree": folder.tree.id()});
@@ -914,7 +920,7 @@ impl Runs {
             publisher.held_for(&self.service, hub_access().ok(), &held, self.order(id, spec, 0)).map_err(|(code, message)| refused(code, message))?;
             let row = json!({"parameter": choice.parameter, "checkpoint": format!("sha256:{sha256}")});
             (held, None, row)
-        } else if let Some(named) = if destination.is_empty() { None } else { held_tree(publisher.store(), choice)? } {
+        } else if let Some(named) = if destination.is_empty() { None } else { self.held_named(id, choice, &mut own_store)? } {
             // A Hub commit held here is the request's to publish only as the Hub serves it to its account.
             let named = match named.tree.is_some() && !named.model.starts_with("local/") {
                 true => publisher.checkpoint(&self.service, hub_access()?, named, self.order(id, spec, 0)).map_err(|(code, message)| refused(code, message))?,
@@ -957,7 +963,25 @@ impl Runs {
                 "checkpoint": header.id(), "bytes": {"hub": landed.origin, "volume": landed.volume, "local": landed.local}});
             (header, named.tree, row)
         };
-        Ok(Present { header, tree, row, folder })
+        Ok(Present { header, tree, row, folder, own_store })
+    }
+
+    /// A commit held here for an upload (`held_tree`): in the machine's store, else in run `id`'s own, which is then `own_store`.
+    fn held_named(&self, id: &str, choice: &stored::ModelChoice, own_store: &mut Option<Arc<crate::storage::Store>>)
+        -> Result<Option<crate::published::Named>, Refused> {
+        let machine = held_tree(self.publisher.store(), choice);
+        if matches!(machine, Ok(Some(_))) {
+            return machine;
+        }
+        let own = self.service.engine.store_for(id).map_err(|e| refused("checkpoint_absent", e.to_string()))?;
+        if own.root() == self.publisher.store().root() {
+            return machine;
+        }
+        let named = held_tree(&own, choice)?;
+        if named.is_some() {
+            *own_store = Some(own);
+        }
+        Ok(named)
     }
     /// What run `id` reads of the models its call waits on (`selected`), as its function's (cl-967); none for a private one.
     fn record_reads(&self, id: &str, selected: &[(String, Vec<String>)]) {

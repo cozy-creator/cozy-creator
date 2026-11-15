@@ -1,5 +1,3 @@
-import { ownedBirth } from "../app/session"
-import type { BrowserSession } from "./calcifer"
 import { PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION } from "./calcifer"
 
 export interface Playback {
@@ -25,25 +23,28 @@ export interface Transport {
 export const TAB = crypto.randomUUID().slice(0, 4)
 
 /** This origin's Calcifer. Only a relative API path is ever followed. */
-/** The storage proof's 401: the session is gone, said as Calcifer said it. */
-class SessionRefused extends Error {
+/** The storage proof's refusal: Calcifer won't answer this page, said as it said it. */
+class Refused extends Error {
   readonly response: Response
   constructor(response: Response) {
-    super("This page's session ended")
+    super("Calcifer won't answer this page")
     this.response = response
   }
 }
 
-export function sameOrigin(session: () => BrowserSession | null): Transport {
+/** An answer as Calcifer gives a refusal, made here. */
+const refusal = (status: number, kind: string, code: string, message: string) =>
+  new Response(JSON.stringify({ error: { kind, code, message, next: ["reload"] } }), { status, headers: { "Content-Type": "application/json" } })
+
+export function sameOrigin(): Transport {
   const resolve = (path: string) => {
     const url = new URL(path, location.origin)
     if (url.origin !== location.origin || !url.pathname.startsWith("/v1/")) throw new Error(`Not an API path: ${path}`)
     return url
   }
+  // What can't send a header loads as any of this page's own requests: Calcifer answers its own page (cl-980).
   const media = (path: string) => {
     const url = resolve(path)
-    const held = session()?.media
-    if (held) url.searchParams.set("media", held)
     return url.pathname + url.search
   }
   const projects = new Map<string, { epoch: number; blocked: boolean; active: AbortController }>()
@@ -62,32 +63,33 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     const epoch = state.epoch
     return { signal: state.active.signal, check: () => { if (state!.blocked || state!.epoch !== epoch) throw new DOMException("Project view retired", "AbortError") } }
   }
-  // The token whose storage proof stands: proven once, not before each request. A refused session or an unreachable Calcifer proves it
-  // again. What's written as the page goes (`keepalive`) leaves at once on the proof this page made for its token: it has no later turn, and
-  // Firefox fails what's in flight as soon as the page navigates, before `pagehide`, which drops the standing proof (cl-973).
-  let proven: string | null = null
-  let provenOnce: string | null = null
-  const unproven = (keepalive?: boolean) => {
-    const token = session()?.token
-    return proven !== token && !(keepalive && provenOnce === token)
-  }
+  // Whether Calcifer has said it speaks project storage protocol 3 to this page's user: said once, not before each request. An
+  // unreachable Calcifer is asked again. What's written as the page goes (`keepalive`) leaves at once on the proof this page made: it
+  // has no later turn, and Firefox fails what's in flight as soon as the page navigates, before `pagehide`, which drops the standing
+  // proof (cl-973).
+  let proven = false
+  let provenOnce = false
+  const unproven = (keepalive?: boolean) => !proven && !(keepalive && provenOnce)
+  // The restart guard: the Calcifer this page first proved, its account and its process. Another account answering is refused;
+  // another process (Calcifer restarted) keeps the tab working, but is sent no passphrase or recovery secret until the page is
+  // reloaded (design/calcifer-access.md).
+  let pinned: { principal: string; birth: string } | null = null
+  let restarted = false
   const storage = async (signal?: AbortSignal | null) => {
-    const token = session()?.token
-    if (!token) throw new Error("A browser session is required before opening project data")
-    if (proven === token) return
-    const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { Authorization: `Bearer ${token}`, [PROJECT_STORAGE_HEADER]: PROJECT_STORAGE_VERSION } })
-    // The session gone: that answer is the caller's, so the page's one no-session state follows, wherever it asked from (cl-980).
-    if (response.status === 401) throw new SessionRefused(response)
+    if (proven) return
+    const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { [PROJECT_STORAGE_HEADER]: PROJECT_STORAGE_VERSION } })
+    if (response.status === 403) throw new Refused(response)
     const capability = response.ok ? await response.json() : null
-    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
-    const principal = [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("")
-    // The owned browser's authority is one Calcifer's; a signed-in tab's outlives a restart, so it takes the birth Calcifer proves for it.
-    const birth = ownedBirth ?? capability?.daemon_birth
-    if (session()?.token !== token || capability?.version !== 3 || typeof birth !== "string" || !birth || capability?.daemon_birth !== birth || capability?.principal !== principal) {
-      throw new Error("Calcifer cannot prove project storage protocol 3 for this private session")
+    if (capability?.version !== 3 || typeof capability?.daemon_birth !== "string" || !String(capability?.principal ?? "").startsWith("user:")) {
+      throw new Error("Calcifer cannot prove project storage protocol 3 for this page")
     }
-    proven = provenOnce = token
+    pinned ??= { principal: capability.principal, birth: capability.daemon_birth }
+    if (capability.principal !== pinned.principal) throw new Refused(refusal(403, "forbidden", "other_user", "Another account answers at this page's address"))
+    if (capability.daemon_birth !== pinned.birth) restarted = true
+    proven = provenOnce = true
   }
+  // What carries a passphrase or a recovery secret: an encrypted project's creation, a vault unlock or recovery.
+  const secret = (body: RequestInit["body"]) => typeof body === "string" && /"(passphrase|recovery_secret)"\s*:\s*"/.test(body)
   const needsStorage = (path: string) => ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/events"].some((prefix) => path.startsWith(prefix))
   return {
     channel: false,
@@ -104,17 +106,20 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
       const project = guard(path)
       const signal = project ? (init.signal ? AbortSignal.any([init.signal, project.signal]) : project.signal) : init.signal
       if (needsStorage(path) && unproven(init.keepalive)) {
-        try { await storage(signal) } catch (error) { if (error instanceof SessionRefused) return error.response; throw error }
+        try { await storage(signal) } catch (error) { if (error instanceof Refused) return error.response; throw error }
+      }
+      if (secret(init.body)) {
+        // Proven again right before a secret leaves: the Calcifer it goes to is the one this page opened on.
+        proven = false
+        try { await storage(signal) } catch (error) { if (error instanceof Refused) return error.response; throw error }
+        if (restarted) return refusal(409, "conflict", "calcifer_restarted", "Calcifer restarted since this page opened: reload the page before entering a passphrase")
       }
       project?.check()
       const headers = new Headers(init.headers)
-      const token = session()?.token
-      if (token) headers.set("Authorization", `Bearer ${token}`)
       headers.set("Cozy-Client", `page ${TAB}`)
       headers.set(PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION)
       let response: Response
-      try { response = await fetch(resolve(path), { ...init, signal, headers }) } catch (error) { proven = null; throw error }
-      if (response.status === 401) proven = null
+      try { response = await fetch(resolve(path), { ...init, signal, headers }) } catch (error) { proven = false; throw error }
       try { project?.check() } catch (error) { void response.body?.cancel(); throw error }
       return response
     },
