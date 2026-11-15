@@ -10,7 +10,7 @@ const { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFi
 const { homedir } = require('node:os');
 const { extname, join, resolve } = require('node:path');
 const { inflateSync } = require('node:zlib');
-const { png, openCanvas } = require('./page');
+const { png, MP4, openCanvas } = require('./page');
 
 const STEP = 30_000;
 const CLI_BUDGET = 120_000; // Fixture setup is separate from interaction timing on the shared machine.
@@ -236,6 +236,12 @@ async function candidate(context, origin, directory) {
   await page.mouse.click(p.x, p.y);
   await until('single click selected', () => inspect('selectedNames'), names => names.join() === 'pixi_source');
   check('single_click_does_not_focus', await page.locator('[data-focused-asset]').count() === 0);
+  await page.keyboard.press('Enter');
+  await page.locator('[data-focused-asset="pixi_source"]:not([data-entering])').waitFor();
+  check('mouse_selection_then_enter_opens_focus', true);
+  await page.keyboard.press('Escape'); await page.locator('[data-focused-asset]').waitFor({ state: 'detached' }); await settled();
+  await canvas.focus(); await page.keyboard.press('Escape'); await page.keyboard.press('Enter'); await settled();
+  check('cleared_selection_enter_does_not_reopen_old_card', await page.locator('[data-focused-asset]').count() === 0);
   p = await point('pixi_source', 'title');
   await page.mouse.click(p.x, p.y);
   await name.waitFor(); await name.fill('pixi_renamed'); await name.press('Enter');
@@ -341,6 +347,31 @@ async function candidate(context, origin, directory) {
   await new Promise(done => setTimeout(done, 1500));
   const idleAfter = await inspect('resources');
   check('idle_canvas_stops_rendering', idleBefore.frames === idleAfter.frames && !idleAfter.scheduledFrame, { before: idleBefore.frames, after: idleAfter.frames, scheduled: idleAfter.scheduledFrame });
+
+  during = 'real video import';
+  await page.getByLabel('Add a file', { exact: true }).setInputFiles({ name: 'pixi_movie.mp4', mimeType: 'video/mp4', buffer: MP4 });
+  await name.waitFor(); await name.fill('pixi_movie'); await name.press('Enter');
+  await until('video import persisted', () => asset('pixi_movie'), value => value?.sha256 === `sha256:${digest(MP4)}` && value.duration_ms > 0);
+  await fit(); await passive();
+  p = await point('pixi_movie');
+  await page.mouse.move(p.x, p.y);
+  const preview = page.locator('.canvas-node[data-id] video.preview');
+  await until('stationary mouse starts real video preview', () => preview.evaluate(video => !video.paused && video.currentTime > .1 && video.videoWidth > 0 && video.muted).catch(() => false), Boolean);
+  check('first_stationary_hover_plays_video', true);
+  const priorPreview = await preview.elementHandle();
+  await passive();
+  check('leaving_hover_releases_video_decoder', await priorPreview.evaluate(video => video.paused && !video.getAttribute('src') && video.readyState === 0));
+  await priorPreview.dispose();
+  const approvedBefore = await asset('pixi_movie'), approvalWrites = [];
+  const approval = request => { if (request.method() === 'POST' && /\/(approve|unpin)$/.test(new URL(request.url()).pathname)) approvalWrites.push(new URL(request.url()).pathname); };
+  page.on('request', approval);
+  p = await point('pixi_movie'); await page.mouse.click(p.x, p.y); await page.keyboard.press('Enter');
+  await page.locator('[data-focused-asset="pixi_movie"]:not([data-entering])').waitFor(); await settled();
+  const approvedAfter = await asset('pixi_movie');
+  check('enter_opens_current_mouse_selection', new URL(page.url()).pathname.endsWith('/assets/pixi_movie'));
+  check('enter_does_not_also_toggle_video_approval', approvalWrites.length === 0 && approvedAfter.approved === approvedBefore.approved && approvedAfter.pinned === approvedBefore.pinned, { approvalWrites, before: { approved: approvedBefore.approved, pinned: approvedBefore.pinned }, after: { approved: approvedAfter.approved, pinned: approvedAfter.pinned } });
+  page.off('request', approval);
+  await page.keyboard.press('Escape'); await page.locator('[data-focused-asset]').waitFor({ state: 'detached' }); await passive(); await settled();
   check('all_api_requests_same_origin', apiOrigins.size === 1 && apiOrigins.has(origin), [...apiOrigins]);
   check('no_csp_violations', violations.length === 0, violations);
   check('no_page_errors', errors.length === 0, errors);
