@@ -4,7 +4,8 @@
 // so and shows none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
 // rendering, and their takes go.
 // A failed take stays red, its error with Copy, through a reload, until its trash deletes it. The take watched in Focus is the one drawn
-// when it lands, through a reload; its run's warnings are the box's, never a note.
+// when it lands, through a reload; its run's warnings are the box's, never a note. Two boxes rendered at once: the one whose tool is warm
+// starts before the other's install ends.
 const { writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, box, canvasIdle, focus, middle, openPoint, fixtureTool, png } = require('./fixtures');
@@ -48,6 +49,38 @@ def warned(payload: Drawing, out: Outputs) -> Warned:
     """A still of one colour, and a warning."""
     image = out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
     return Warned(image, payload.instructions.text, ["${WARNED}"])
+`;
+// A tool of an environment of its own (tool.py's and tomli-w): its first render installs it.
+const INSTALLS = `# /// script
+# requires-python = ">=3.12"
+# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19", "tomli-w>=1"]
+# ///
+"""The render cell's tool that needs an install: a still of one colour."""
+
+import os
+
+import msgspec
+from cozy_runtime.author import App, ImageFrame, Outputs
+from cozy_runtime.fields import Image, Prompt
+from cozy_runtime.media import ImageFile
+
+app = App()
+SIDE = 16
+
+
+class Drawing(msgspec.Struct, kw_only=True):
+    instructions: Prompt[Image] = Prompt()
+
+
+class Picture(msgspec.Struct):
+    image: ImageFile
+    prompt: str
+
+
+@app.tool(label="Installs", named="installed", accelerator=False)
+def installed(payload: Drawing, out: Outputs) -> Picture:
+    """A still of one colour, once its environment is installed."""
+    return Picture(out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"), payload.instructions.text)
 `;
 
 const softly = expect.configure({ soft: true });
@@ -383,5 +416,29 @@ test('render', async ({ page, project, api, cli }) => {
     await expect.soft(focused(page).getByRole('button', { name: 'Warnings', exact: true })).toHaveAttribute('title', new RegExp(WARNED));
     await pull();
     expect.soft(notes.filter((text) => text.includes(WARNED)), 'no note says a warning').toEqual([]);
+  });
+
+  await test.step("Render two boxes at once: the one whose tool is warm starts before the other's install ends", async () => {
+    // One render of both, so they're ready in one turn of its walk: `eager` on tool.py, warm and read by this project in the first step;
+    // `fresh` on installs.py, whose first render installs it (cl-973: a box that can start now never waits for another's install).
+    const installs = join(project.path, 'installs.py');
+    writeFileSync(installs, INSTALLS);
+    await project.add({ name: 'eager', tool: STILL, kind: 'image', fields: { instructions: 'Ready now.' }, at: { x: 720, y: 420 } });
+    await project.add({ name: 'fresh', tool: `${installs}/installed`, kind: 'image', fields: { instructions: 'Once installed.' }, at: { x: 1080, y: 420 } });
+    const runs = async () => (await api.get(project.at('/runs?limit=1000'))).runs;
+    const earlier = new Set((await runs()).map((run) => run.id));
+    const rendering = cli('--json', 'render', 'eager', 'fresh', '--on', 'local');
+    const takes = async () => ({ eager: (await project.asset('eager'))?.versions ?? 0, fresh: (await project.asset('fresh'))?.versions ?? 0 });
+    await expect.poll(takes, { message: 'both takes', timeout: 120_000 }).toEqual({ eager: 1, fresh: 1 });
+    const rendered = await rendering;
+    expect.soft(rendered.code, `cozy render: ${rendered.stderr.slice(-400)}`).toBe(0);
+    const made = (await runs()).filter((run) => !earlier.has(run.id));
+    const install = made.find((run) => run.kind === 'warm' && run.target === 'install local/installs');
+    const eager = made.find((run) => run.kind === 'call' && run.target === 'local/tool/still');
+    const fresh = made.find((run) => run.kind === 'call' && run.target === 'local/installs/installed');
+    const times = (run) => run && { number: run.number, status: run.status, created: run.created_at_ms, started: run.started_at_ms, ended: run.settled_at_ms };
+    const said = JSON.stringify({ install: times(install), eager: times(eager), fresh: times(fresh) });
+    expect.soft([install, eager, fresh].map((run) => run?.status), `fresh's install, eager's call, fresh's call: ${said}`).toEqual(['completed', 'completed', 'completed']);
+    expect.soft(eager?.started_at_ms < install?.settled_at_ms, `eager's call starts before fresh's install ends: ${said}`).toBe(true);
   });
 });
