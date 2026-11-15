@@ -2966,7 +2966,7 @@ fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
             // This task can outlive its importer and must drain before storage is replaced.
             let _access = access;
             let _permit = permit;
-            let measured = project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock));
+            let measured = crate::tools::quietly(|| project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock)));
             // What was read before this finished said nothing of how long a clip is.
             crate::events::project_settled(&dir);
             measured
