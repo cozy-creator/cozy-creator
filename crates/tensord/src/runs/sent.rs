@@ -176,7 +176,13 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
     // A project's own local package may leave it (`cozy package uninstall local/x` in it); any other private removal or
     // warm set stays unsupported.
     let own_local = matches!(&source, crate::runs::Source::Release { package, .. } if package.starts_with("local/"));
-    if local_private.is_some() && ((remove && !own_local) || set.is_some() || (warm && (spec.payload.is_some() || !models.is_empty() || !spec.entrypoint.is_empty()))) {
+    // A project's run's weights output uploaded to a Hub model: the export its owner asked for, read from the project's store
+    // (cl-993). No other model enters or leaves a project by a warm.
+    let destination = spec.weights_destination.trim_start_matches("model://");
+    let export = warm && set.is_none() && spec.payload.is_none() && spec.entrypoint.is_empty() && !destination.is_empty()
+        && !destination.starts_with("local/")
+        && matches!(models.as_slice(), [choice] if choice.manifest.is_some() && choice.model.starts_with("local/") && choice.source.is_empty());
+    if local_private.is_some() && !export && ((remove && !own_local) || set.is_some() || (warm && (spec.payload.is_some() || !models.is_empty() || !spec.entrypoint.is_empty()))) {
         return Err(Error::validation("private_warm_unsupported", "private project warm sets and administrative removal are not supported; ordinary public model warming stays available"));
     }
     Ok((crate::runs::Spec {
