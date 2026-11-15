@@ -153,7 +153,7 @@ kill "$STUCK_FS" 2> /dev/null || true
 stuck_ready 120 || check "stuck: the machine didn't start again off the trap filesystem"
 }
 
-# A start whose every write to its log is held: Calcifer's deadline (3 min) refuses it, naming why and the next command; it is refused
+# A start whose every write to its log is held: Calcifer's deadline (5 min) refuses it, naming why and the next command; it is refused
 # at once while silent, placement takes no run there, and it serves once the filesystem answers.
 stuck_silent() {
 local trap=$1 t0 took code
@@ -161,12 +161,12 @@ step "stuck: a start that hangs is refused at Calcifer's deadline"
 machine_stop || check "stuck: the machine did not stop"
 echo writes > "$trap"
 t0=$SECONDS code=0
-timeout 300 cozy --json machine show local > "$OUT/stuck-silent.json" 2>&1 || code=$?
+timeout 420 cozy --json machine show local > "$OUT/stuck-silent.json" 2>&1 || code=$?
 took=$((SECONDS - t0))
 grep -q '"machine_not_answering"' "$OUT/stuck-silent.json" || check "stuck: a hung start (exit $code, ${took} s) isn't refused machine_not_answering: $(tail -c 400 "$OUT/stuck-silent.json")"
 grep -q "local's TensorD isn't answering" "$OUT/stuck-silent.json" || check "stuck: the refusal doesn't say local's TensorD isn't answering"
 grep -q 'cozy machine logs local' "$OUT/stuck-silent.json" || check "stuck: the refusal names no next command: $(tail -c 300 "$OUT/stuck-silent.json")"
-[ "$took" -ge 170 ] && [ "$took" -le 230 ] || check "stuck: the hung start was refused after ${took} s (the deadline: 180 s)"
+[ "$took" -ge 290 ] && [ "$took" -le 350 ] || check "stuck: the hung start was refused after ${took} s (the deadline: 300 s)"
 t0=$SECONDS
 cozy --json machine show local > "$OUT/stuck-silent-again.json" 2>&1 || true
 [ $((SECONDS - t0)) -le 10 ] || check "stuck: while silent, machine show local waited $((SECONDS - t0)) s"

@@ -26,7 +26,7 @@ use crate::store::Endpoint;
 /// How long this computer's machine may take to serve once started (cl-977). Past it, it isn't answering, and local takes no
 /// work until it serves or exits. TensorD's own waits on the way are bounded well below it: 70 s for its root's lock, 60 s for a
 /// fresh process to open its GPUs, 60 s per executor stuck in the kernel.
-pub(crate) const START: Duration = Duration::from_secs(180);
+pub(crate) const START: Duration = Duration::from_secs(300);
 
 pub(crate) struct Local {
     root: PathBuf,
