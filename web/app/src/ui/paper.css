@@ -145,6 +145,26 @@
 .paper-landscape > * {
   --landscape-scale: calc(var(--landscape-size) * var(--rung));
 }
+/* The boxes come first (Sheet.tsx): until the landscape's pictures are decoded after the boxes' first frame, it's the cream they're on, and
+   then they fade in over it. */
+.paper-landscape {
+  background: var(--paper-cream);
+}
+.paper-landscape > * {
+  transition: opacity 400ms ease;
+}
+.paper-landscape:not([data-art]) > * {
+  opacity: 0;
+}
+.paper-landscape:not([data-art]) > *,
+.paper-landscape:not([data-art]) > *::after {
+  background-image: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .paper-landscape > * {
+    transition: none;
+  }
+}
 .paper-landscape-mountains,
 .paper-landscape-hills,
 .paper-landscape-meadow {
