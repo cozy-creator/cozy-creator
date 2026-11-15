@@ -74,6 +74,41 @@ function wav(hz = 440, seconds = 1, rate = 8000) {
   return Buffer.concat([head, data]);
 }
 
+/** Decode Chrome's 8-bit RGB/RGBA screenshot in Node, independently of browser Canvas2D/GPU readback. */
+function screenshotPixels(bytes) {
+  if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('screenshot is not PNG');
+  const chunks = [];
+  let width, height, channels;
+  for (let at = 8; at < bytes.length;) {
+    const length = bytes.readUInt32BE(at), type = bytes.toString('ascii', at + 4, at + 8), data = bytes.subarray(at + 8, at + 8 + length);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0); height = data.readUInt32BE(4);
+      channels = data[9] === 2 ? 3 : data[9] === 6 ? 4 : 0;
+      if (data[8] !== 8 || !channels || data[12] !== 0) throw new Error('unsupported screenshot PNG format');
+    }
+    if (type === 'IDAT') chunks.push(data);
+    at += length + 12;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(chunks)), stride = width * channels, decoded = Buffer.alloc(stride * height);
+  if (raw.length !== (stride + 1) * height) throw new Error('screenshot PNG length differs');
+  const paeth = (a, b, c) => { const p = a + b - c, x = Math.abs(p - a), y = Math.abs(p - b), z = Math.abs(p - c); return x <= y && x <= z ? a : y <= z ? b : c; };
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    if (filter > 4) throw new Error('unknown screenshot PNG filter');
+    for (let x = 0; x < stride; x++) {
+      const at = y * stride + x, a = x >= channels ? decoded[at - channels] : 0, b = y ? decoded[at - stride] : 0, c = y && x >= channels ? decoded[at - stride - channels] : 0;
+      decoded[at] = raw[y * (stride + 1) + 1 + x] + [0, a, b, Math.floor((a + b) / 2), paeth(a, b, c)][filter];
+    }
+  }
+  const read = (x, y) => {
+    x = Math.round(x); y = Math.round(y);
+    if (x < 0 || x >= width || y < 0 || y >= height) throw new Error('pixel probe is offscreen');
+    return [...decoded.subarray((y * width + x) * channels, (y * width + x) * channels + 3)];
+  };
+  read.width = width; read.height = height;
+  return read;
+}
+
 async function until(what, read, wanted, ms = STEP_MS) {
   const deadline = Date.now() + ms;
   let last;
@@ -118,6 +153,7 @@ async function pointAt(page, locator) {
 /** Read-only product geometry, never evidence that the renderer presented its pixels. Null while the surface is unavailable. */
 const canvasView = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.camera() ?? null);
 const canvasBox = (page, name) => page.evaluate((name) => document.querySelector('.canvas-root')?.canvasInspection?.card(name) ?? null, name);
+const canvasNames = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.names() ?? null);
 const selectedBoxes = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.selectedNames() ?? null);
 
 // The camera still across three looks: a slow runner can draw one frame of a move in longer than a look. Missing geometry never settles.
@@ -748,4 +784,4 @@ async function chooseModel(page, name, id, operation) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { projectFolder, addBoxes, assetsOf, storedOf, integrity, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, canvasView, canvasBox, selectedBoxes, hoverBox, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };
+module.exports = { projectFolder, addBoxes, assetsOf, storedOf, integrity, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, canvasView, canvasBox, canvasNames, selectedBoxes, hoverBox, screenshotPixels, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };
