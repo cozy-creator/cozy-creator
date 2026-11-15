@@ -454,6 +454,7 @@ WEB_2=(
   live
   delete-undo
   canvas-nav
+  resize
 )
 WEB_3=(
   focus
