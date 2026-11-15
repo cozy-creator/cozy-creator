@@ -321,6 +321,8 @@ web_proof() {
   # What died on another Hub doesn't leave the next proof on it.
   [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
   folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null)
+  # Its walk's decisions, kept in the project with calcifer.diagnostics on (calcifer_diagnostics), before the project goes.
+  [ -z "$folder" ] || cp "$folder/.vault-calcifer/diagnostics/walk.log" "$OUT/web-$pass-walk.log" 2> /dev/null || true
   # A project's machine storage (`.vault-machine`) may still be settling a canceled run: its leftovers never end the suite.
   case $folder in */web-*) rm -rf "$folder" 2> /dev/null || { sleep 5; rm -rf "$folder"; } || true ;; esac
 }

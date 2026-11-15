@@ -268,10 +268,15 @@ impl Host {
                     }
                     std::future::pending().await
                 };
-                let watcher = Host::new(&self.api);
+                let (watcher, began, number, job) = (Host::new(&self.api), std::time::Instant::now(), run.number, job.unwrap_or("-"));
+                crate::private_io::diagnose(path, || format!("{job} waits for its install on {on}, run {number}"));
+                let said = |how: &str| crate::private_io::diagnose(path, || format!("{job}'s install on {on}, run {number}, {how} in {} ms", began.elapsed().as_millis()));
                 tokio::select! {
-                    ended = watcher.wait(&run.id) => drop(ended?),
-                    () = canceled_meanwhile => return Err(canceled()),
+                    ended = watcher.wait(&run.id) => drop(ended.inspect(|_| said("ended"))?),
+                    () = canceled_meanwhile => {
+                        said("left: canceled");
+                        return Err(canceled());
+                    }
                 }
             }
         }).await
