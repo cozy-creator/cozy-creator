@@ -1170,7 +1170,8 @@ pub(crate) struct Python {
     pub full: String,
 }
 
-/// The cozy-runtime `root`'s uv.lock holds, as uv asks for it (`cozy-runtime==0.45.1`), if it holds one.
+/// The Runtime source this copied project's lock holds, as uv asks for it. A local SDK or
+/// carried wheel is not interchangeable with the index's build of the same version.
 pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
     #[derive(Deserialize)]
     struct Lock {
@@ -1187,11 +1188,33 @@ pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
     let locked = lock.package.into_iter().find(|p| p.name == "cozy-runtime")?;
-    // The open RC's Runtime is no index's: a lock takes its newest pure wheel by URL (`floor::rc_runtime`).
-    Some(match locked.source.get("url").and_then(toml::Value::as_str) {
-        Some(url) => format!("cozy-runtime @ {url}"),
-        None => format!("cozy-runtime=={}", locked.version),
-    })
+    if let Some(url) = locked.source.get("url").and_then(toml::Value::as_str) {
+        return Some(format!("cozy-runtime @ {url}"));
+    }
+    for kind in ["path", "directory", "editable"] {
+        if let Some(path) = locked.source.get(kind).and_then(toml::Value::as_str) {
+            let path = std::path::absolute(root.join(path)).ok()?;
+            let url = url::Url::from_file_path(path).ok()?;
+            return Some(format!("cozy-runtime @ {url}"));
+        }
+    }
+    if let Some(git) = locked.source.get("git").and_then(toml::Value::as_str) {
+        // uv locks a resolved commit after '#', with the requested branch/rev in the query.
+        // The describer takes the resolved commit, retaining a subdirectory when present.
+        let (head, commit) = git.split_once('#').unwrap_or((git, ""));
+        let (repository, query) = head.split_once('?').unwrap_or((head, ""));
+        let directory = url::form_urlencoded::parse(query.as_bytes())
+            .find_map(|(key, value)| (key == "subdirectory").then(|| value.into_owned()));
+        let revision = if commit.is_empty() { String::new() } else { format!("@{commit}") };
+        let fragment = directory.map_or_else(String::new, |directory| {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("subdirectory", &directory)
+                .finish();
+            format!("#{query}")
+        });
+        return Some(format!("cozy-runtime @ git+{}{revision}{fragment}", repository.trim_start_matches("git+")));
+    }
+    Some(format!("cozy-runtime=={}", locked.version))
 }
 
 /// The SDK is always cozy-runtime: the one named (a version, or an RC build's wheel URL), an authoritative lock, else
