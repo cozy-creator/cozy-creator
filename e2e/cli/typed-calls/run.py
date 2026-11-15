@@ -16,10 +16,31 @@ import os
 import re
 import struct
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
+from typing import TypedDict, cast
+
+type Json = None | bool | int | float | str | list[Json] | dict[str, Json]
+type JsonObject = dict[str, Json]
 
 
-def main():
+class CheckedRun(TypedDict):
+    run: JsonObject
+    watched: JsonObject
+    result: JsonObject
+
+
+def as_object(value: object) -> JsonObject:
+    assert isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return cast(JsonObject, value)
+
+
+def as_text(value: Json) -> str:
+    assert isinstance(value, str), value
+    return value
+
+
+def main() -> None:
     parser = argparse.ArgumentParser()
     binary = "cozy.exe" if os.name == "nt" else "cozy"
     parser.add_argument("--cozy", default=str(Path.home() / ".cozy" / "bin" / binary))
@@ -34,9 +55,9 @@ def main():
     if not re.fullmatch(r"[a-z][a-z0-9-]+", args.model_prefix):
         parser.error("model-prefix must be a fresh lowercase local model name prefix")
     args.out.mkdir(parents=True, exist_ok=False)
-    commands = []
+    commands: list[dict[str, object]] = []
 
-    def cli(label, *words, success=True):
+    def cli(label: str, *words: str | Path, success: bool = True) -> list[JsonObject]:
         command = [args.cozy, "--json", *map(str, words)]
         print(json.dumps({"case": label, "command": command}), flush=True)
         with (
@@ -44,7 +65,7 @@ def main():
             (args.out / (label + ".stderr")).open("w") as stderr,
         ):
             ran = subprocess.run(
-                command, cwd=args.project, stdout=stdout, stderr=stderr
+                command, cwd=args.project, stdout=stdout, stderr=stderr, check=False
             )
         commands.append(
             {"case": label, "command": command, "exit_code": ran.returncode}
@@ -58,14 +79,14 @@ def main():
                 "private request unexpectedly succeeded",
             )
         return [
-            json.loads(line)
+            as_object(json.loads(line))
             for line in (args.out / (label + ".ndjson")).read_text().splitlines()
             if line.strip()
         ]
 
-    def terminal(rows):
+    def terminal(rows: Sequence[JsonObject]) -> JsonObject:
         ended = [
-            row["run"]
+            as_object(row["run"])
             for row in rows
             if row.get("type") in ("run.completed", "run.failed", "run.canceled")
         ]
@@ -74,7 +95,7 @@ def main():
         )
         return ended[-1]
 
-    def run(label, *inputs):
+    def run(label: str, *inputs: str) -> CheckedRun:
         rows = cli(
             label,
             "run",
@@ -87,11 +108,11 @@ def main():
         )
         record = terminal(rows)
         assert record["status"] == "completed", (label, record.get("reason"))
-        handle = record.get("name") or str(record["number"])
+        handle = as_text(record.get("name") or str(record["number"]))
         watched = cli(label + "-watch", "run", "watch", handle, "--once", "--full")[-1]
         assert watched["status"] == "completed"
         assert watched["result"] == record["result"], (label, "watch/result mismatch")
-        result = record["result"]
+        result = as_object(record["result"])
         assert result["child_installed"] is False, (
             label,
             "callee implementation visible in caller",
@@ -116,11 +137,11 @@ def main():
     result = media["result"]
     assert result["error"] == ""
     assert result["prime"] is True  # generated request default number=17
-    assert re.fullmatch(r"[0-9a-f]{16}", result["fingerprint"])
+    assert re.fullmatch(r"[0-9a-f]{16}", as_text(result["fingerprint"]))
     assert result["child_python"] and result["python"] != result["child_python"]
     assert result["descendant_python"] == result["child_python"]
-    assert ".cozy-calls" in Path(result["child_python"]).parts
-    assert result["image"]["media_type"] == "image/png"
+    assert ".cozy-calls" in Path(as_text(result["child_python"])).parts
+    assert as_object(result["image"])["media_type"] == "image/png"
     pngs = list((args.out / "exports/media").glob("*.png"))
     assert len(pngs) == 1, pngs
     from PIL import Image
@@ -138,7 +159,7 @@ def main():
     assert result["child_request"], result
     assert result["image"] is None
 
-    model_results = []
+    model_results: list[CheckedRun] = []
     for label, value in (("one", 1.25), ("two", -2.5)):
         filename = args.out / (label + ".safetensors")
         header = json.dumps(
@@ -163,9 +184,11 @@ def main():
         made = run("model-" + label, "choice=" + reference)
         result = made["result"]
         assert result["value"] == value, result
-        assert re.fullmatch(r"sha256:[0-9a-f]{64}", result["checkpoint"]), result
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", as_text(result["checkpoint"])), (
+            result
+        )
         assert result["child_python"] and result["python"] != result["child_python"]
-        assert ".cozy-calls" in Path(result["child_python"]).parts
+        assert ".cozy-calls" in Path(as_text(result["child_python"])).parts
         model_results.append(made)
     assert (
         model_results[0]["result"]["checkpoint"]
@@ -182,10 +205,11 @@ def main():
         success=False,
     )
     assert any(
-        row.get("error", {}).get("code") == "callable_internal" for row in private
+        as_object(row.get("error", {})).get("code") == "callable_internal"
+        for row in private
     ), private
 
-    summary = {
+    summary: dict[str, object] = {
         "media": media,
         "failure": failure,
         "models": model_results,
