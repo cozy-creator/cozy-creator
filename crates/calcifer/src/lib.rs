@@ -150,6 +150,28 @@ impl Here {
 /// A turn to write one object to one machine, and the number of the run whose turn it is.
 type Turn = Arc<(tokio::sync::Mutex<()>, Mutex<u64>)>;
 
+/// A cancel asked inside a project's edit, until that edit ends: its run's driver cancels it at its machine meanwhile, and looks again
+/// once it ends, committed or not.
+struct Canceling {
+    calcifer: Arc<Calcifer>,
+    id: RunId,
+}
+
+impl Canceling {
+    fn new(calcifer: &Arc<Calcifer>, id: &RunId) -> Self {
+        lock(&calcifer.canceling).insert(id.as_str().to_owned());
+        calcifer.wake(id);
+        Self { calcifer: calcifer.clone(), id: id.clone() }
+    }
+}
+
+impl Drop for Canceling {
+    fn drop(&mut self) {
+        lock(&self.calcifer.canceling).remove(self.id.as_str());
+        self.calcifer.wake(&self.id);
+    }
+}
+
 /// What a run is doing now, never stored: the latest of each live event, the stage moving
 /// bytes with its last few seconds of (when, bytes moved): its rate, and what says its time left.
 #[derive(Default)]
@@ -907,19 +929,15 @@ impl Calcifer {
     /// Asks for the run's cancellation: unsent, it ends here; sent, its machine ends it.
     pub(crate) fn cancel(self: &Arc<Self>, id: &RunId) -> Result<Option<Run>, Error> {
         if let store::RunStore::Project(store) = self.run_store(id.as_str())? && store.acting() {
-            // Asked from inside the project's own edit (a delete of what the run makes), which holds its writer until it commits:
-            // its machine is told now, and the request is kept once the edit lets the writer go.
-            lock(&self.canceling).insert(id.as_str().to_owned());
-            self.wake(id);
-            // Straight to its machine: the run's driver may itself be waiting on that writer to keep the run's progress.
+            // Asked from inside the project's own edit (a cancel, or a delete of what the run makes), which holds its writer until it
+            // commits: the request is written in that edit's transaction, kept with it or not at all, and nothing sends the run
+            // meanwhile (its send waits on that writer). Its machine is told now, as its driver may itself be waiting on that writer
+            // to keep the run's progress; once the edit ends, its driver looks again.
+            let canceling = Canceling::new(self, id);
             self.stop_at_machine(id);
-            let (me, id) = (self.clone(), id.clone());
-            std::thread::spawn(move || {
-                if let Ok(events) = me.with_run_store(id.as_str(), |store| store.request_cancel(id.as_str())) { me.publish(&id, events); }
-                lock(&me.canceling).remove(id.as_str());
-                me.wake(&id);
-            });
-            return Ok(None);
+            if store.cancel_in_act(id.as_str(), move |events| canceling.calcifer.publish(&canceling.id, events)) {
+                return Ok(None);
+            }
         }
         let events = self.with_run_store(id.as_str(), |store| store.request_cancel(id.as_str()))?;
         self.publish(id, events);

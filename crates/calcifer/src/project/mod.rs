@@ -154,6 +154,8 @@ pub(crate) struct Project {
     walker: Mutex<Walker>,
     /// Whether its one walker is going. Admission and the terminal board share this lock.
     walking: Mutex<bool>,
+    /// The installs its walk's jobs wait on (`host::Installs`).
+    installs: Arc<host::Installs>,
     /// Tells the walker something was asked.
     asked: Notify,
     /// Held while a cut is made.
@@ -362,6 +364,7 @@ impl Projects {
                     told: Mutex::default(),
                     walker: Mutex::default(),
                     walking: Mutex::new(false),
+                    installs: Arc::default(),
                     asked: Notify::new(),
                     cutting: Arc::default(),
                     rendering: Arc::default(),
@@ -902,6 +905,7 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
         return project.asked.notify_one();
     }
     let active = project.jobs.begin();
+    project.installs.clear();
     let walk = Walk::new(api, project);
     let api = api.clone();
     tokio::spawn(async move {
@@ -2776,6 +2780,8 @@ fn stop_jobs(api: &Api, project: &Project, wanted: &dyn Fn(&str, &str) -> bool, 
     for job in &dropped {
         project.jobs.ended(Job { id: job.key.clone(), asset: job.asset.clone(), state: JobState::Canceled, why: Some(why(&job.asset)), ..Job::default() });
     }
+    // What they waited on to be made ready ends with them, unless something else waits on it.
+    project.installs.cancel(api, &dropped.iter().map(|job| job.key.clone()).collect::<Vec<_>>());
     let store = api.calcifer.project_store(&project.id).map_err(|error|Error::new(Kind::Conflict,"project_journal",error.to_string()))?;
     let mut canceled = vec![];
     for run in running {
@@ -3305,7 +3311,7 @@ struct Followed {
 impl Walk {
     fn new(api: &Arc<Api>, project: &Arc<Project>) -> Self {
         Self {
-            host: Host::for_project(api, &project.id),
+            host: Host::for_project(api, &project.id, project.installs.clone()),
             project: project.clone(),
             began: Instant::now(),
             tally: Mutex::default(),
@@ -3764,7 +3770,7 @@ impl Walk {
             return Ok(None);
         }
         let Wanted { machine, hub, with, kind, made } = wanted;
-        let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine)).await?;
+        let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), Some(key)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
         let mut payload = Map::new();
         for field in ["models", "lora"] {
@@ -3783,7 +3789,7 @@ impl Walk {
                 if crate::private_io::of_path(&self.folder().dir)?.is_some() {
                     return Ok(None);
                 }
-                v1::Source::Local(self.host.ready(path, machine, hub).await?.source)
+                v1::Source::Local(self.host.ready(path, machine, hub, Some(key)).await?.source)
             }
         };
         let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
@@ -3795,7 +3801,7 @@ impl Walk {
     async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Result<placement::Job, String> {
         let api = self.host.api();
         let limit = late.unwrap_or(std::time::Duration::MAX);
-        let package = match tokio::time::timeout(limit, self.host.package(hub, with, &self.folder().dir, &on)).await {
+        let package = match tokio::time::timeout(limit, self.host.package(hub, with, &self.folder().dir, &on, Some(key.as_str()))).await {
             Err(_) => return Err(format!("{with} didn't say within {} s what it calls", limit.as_secs())),
             Ok(Err(e)) => return Err(format!("{with}: {}", e.message)),
             Ok(Ok(package)) => package,
@@ -4579,7 +4585,7 @@ impl Walk {
                 }
             }
             let with = doc.target(i);
-            let package = self.again(|| self.host.package(&target.hub, &with, &self.folder().dir, &target.on)).await?;
+            let package = self.again(|| self.host.package(&target.hub, &with, &self.folder().dir, &target.on, Some(key.as_str()))).await?;
             if let Some(moved) = &package.moved {
                 self.say(match moved.level {
                     api::calcifer::NoteLevel::Warning => Told::Warning { message: moved.message.clone(), name: None },
@@ -4689,8 +4695,11 @@ impl Walk {
             self.submit(&key, input, &package, asset, pending, &settling, &stands, member, &unused).await
         };
         let sent = sent.await;
-        if sent.is_err() {
-            self.folder().update_walk(|walk| settle(&mut walk.walk))?;
+        match &sent {
+            // Canceled while it waited for its install, which ended with it if nothing else waited on it: nothing sent, nothing failed.
+            Err(e) if e.code == host::CANCELED => return Ok(()),
+            Err(_) => self.folder().update_walk(|walk| settle(&mut walk.walk))?,
+            Ok(()) => {}
         }
         sent
     }
@@ -4875,7 +4884,7 @@ impl Walk {
             Some(path) => {
                 let prepared = self.again(|| async {
                     let scope = crate::private_io::of_path(&self.folder().dir)?;
-                    crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await
+                    crate::private_io::context(scope, self.host.ready(path, &placed, &hub, Some(key))).await
                 }).await.map_err(named)?;
                 staged.extend(prepared.files);
                 warnings.extend(prepared.from.map(|from| Warning { code: api::calcifer::FROM_SOURCE.into(), message: from.line() }));
@@ -4891,7 +4900,7 @@ impl Walk {
             models,
             ..Default::default()
         };
-        let submit = SubmitRun { project: None,
+        let submit = SubmitRun { project: Some(self.project.id.clone()),
             on: placed,
             hub,
             kind: RunKind::Call,
@@ -4899,7 +4908,7 @@ impl Walk {
             spec,
             inputs: staged,
             held,
-            out: Some(landing(&self.folder().dir)),
+            out: Some(landing(&self.project.root)),
             warnings,
             agreed: None,
             stays: package.callable(&renderer.function).map(|callable| api::calcifer::tool::stays(&callable)).unwrap_or_default(),
@@ -4919,7 +4928,11 @@ impl Walk {
         }
         let sent = match member.on() == Some(&submit.on) {
             true => match member.submit(key, submit.clone()).await {
-                Err(_) => self.send_run(key, submit).await,
+                // Its batch never reached Calcifer's record, or met a moment's outage: sent alone, under the same key, as often as that takes.
+                Err(e) if e.transient() || e.code == host::UNSENT => {
+                    warn!("{name}'s run is sent alone, as its batch wasn't: {}", e.message);
+                    self.send_run(key, submit).await
+                }
                 sent => sent,
             },
             false => {

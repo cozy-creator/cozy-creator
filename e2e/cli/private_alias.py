@@ -101,9 +101,8 @@ def main() -> None:
     input_bytes = (folder / "input.txt").read_bytes()
     source_canary = re.search(rb"XS160_SOURCE_[0-9a-f]{32}", source_bytes)
     assert source_canary, "first run the owned synthetic private_execution.py fixture"
-    # The project's machine journal is in its own view, which a remount moves; the global journals hold none of it.
-    assert not installations(home, project_id), "private local-code installations reached the global machine journal"
-    before = installations(view / ".vault-machine", project_id)
+    # One machine journal (cl-984): its local-code installation bindings are under the project's own actor key.
+    before = installations(home, project_id)
     assert before, "private local-code installation was not retained before remount"
     def snapshot(rows: set[tuple[str, str, str, str]]) -> list[dict[str, object]]:
         return [{"journal": path, "actor": actor, "alias": alias, "record": json.loads(record)}
@@ -147,8 +146,7 @@ def main() -> None:
     proof["ids"].append(remounted["id"])
     proof["ids"] = target_history(args.cli, args.out, "remount-target-history", proof)
     (folder / "target-proof.json").write_text(json.dumps(proof))
-    assert not installations(home, project_id), "remount put private local-code installations in the global machine journal"
-    after = installations(after_view / ".vault-machine", project_id)
+    after = installations(home, project_id)
     (args.out / "bindings-after.json").write_text(json.dumps(snapshot(after), indent=2))
     assert before.issubset(after), "remount rewrote/deleted historical installation bindings"
     assert len(after) > len(before), "the new physical mount did not receive its own installation binding"

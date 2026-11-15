@@ -495,10 +495,7 @@ impl Updates {
     }
 
     fn running(&self) -> Vec<String> {
-        let mut running = self.engine.with_journal(|journal| journal.started()).unwrap_or_default();
-        // A project's work is named by no id here: its protected execution in flight is work too.
-        if crate::private_io::machine_jobs(i64::MAX).map_or(true, |(working, _)| working) { running.push("protected project execution".into()); }
-        running
+        self.engine.with_journal(|journal| journal.started()).unwrap_or_default()
     }
 
     /// The build toolchain, probed once and again after each install.

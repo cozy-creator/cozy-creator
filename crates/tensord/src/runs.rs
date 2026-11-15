@@ -554,9 +554,6 @@ impl Runs {
 
     /// Prepare accepted run `run` on a thread of its own, which ends the run unless it binds.
     pub(crate) fn prepare_later(self: &Arc<Self>, actor: &str, run: &str, mut spec: Spec) -> io::Result<()> {
-        if self.service.engine.awaiting_project_custody(run) {
-            return Err(io::Error::new(io::ErrorKind::WouldBlock,"project_storage_migration_pending: legacy execution requires its verified project custody claim"));
-        }
         // The accepted record is authoritative, including inherited internal child scope.
         // A closed/unavailable private view is an error, never ordinary preparation.
         spec.local_private = self.service.engine.private_storage(run)?;
@@ -1361,7 +1358,6 @@ impl Runs {
     /// resumes, a private one waits for its owner's next run.
     fn member(&self, held: HeldGeneration, installation: &Installation, plan: Option<Plan>, level: Level,
         hub: Option<hub::Source>, payload: Option<api::machine::Json>) -> Arc<Member> {
-        let plan = plan.map(|plan| plan.in_scope(crate::private_io::current().as_ref()));
         let hub = hub.or_else(|| {
             let own = self.own_hub.clone().filter(|own| {
                 installation.hub.is_empty() || hub::origin_key(&own.origin).as_deref() == Some(installation.hub.as_str())
@@ -1376,10 +1372,6 @@ impl Runs {
     /// the background: a restarted machine re-warms without its controller. A member whose
     /// installation is gone leaves the set.
     pub(crate) fn restore_warm_sets(&self) -> io::Result<()> {
-        // The old ordinary journal has no project custody proof for warm model choices or
-        // authored inputs. Keep those exact preferences for migration; never replay them at
-        // global startup merely because their historical actor was unscoped.
-        if crate::private_io::current().is_none() {return Ok(());}
         let Some(gpu) = self.service.gpu() else {
             return Ok(());
         };
@@ -1667,6 +1659,11 @@ impl Runs {
         inputs: Vec<InputFile>,
         passed: Vec<stored::ModelChoice>,
     ) -> Result<Execution, Refused> {
+        // A project's run calls inside its project's scope, where its installations are (cl-984).
+        let scope = self.service.engine.private_storage(&parent.id)?;
+        if crate::private_io::current() != scope {
+            return crate::private_io::within(scope, || self.child(parent, request, intent, application, entrypoint, input, inputs, passed));
+        }
         let actor = parent.submission.as_ref().map(|s| s.actor.clone()).unwrap_or_default();
         // A call the same attempt made already is its run: nothing prepares.
         if let Some(existing) = self.existing(&actor, request, intent, None)? {
@@ -1804,6 +1801,10 @@ impl Runs {
         self: &Arc<Self>, parent: &Execution, application: &str, entrypoint: &str,
         passed: Vec<stored::ModelChoice>,
     ) -> Result<(), Refused> {
+        let scope = self.service.engine.private_storage(&parent.id)?;
+        if crate::private_io::current() != scope {
+            return crate::private_io::within(scope, || self.prefetch(parent, application, entrypoint, passed));
+        }
         let actor = parent.submission.as_ref().map(|s| s.actor.clone()).unwrap_or_default();
         let spec = self.child_spec(&actor, &parent.id, application, entrypoint,
             json!({}), vec![], "", &passed)?;

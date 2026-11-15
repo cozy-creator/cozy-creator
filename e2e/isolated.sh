@@ -203,6 +203,7 @@ case $key in
   # Models & LoRAs, the VAE slot, the triggers of SDXL's, Ideogram 4's and Krea 2's LoRAs (`prompts`) and heavy.py's BiRefNet; macOS and
   # Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes prompts'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
+  cli:env-cost) needs='packages birefnet' ;;
   cli:plan) needs='packages birefnet downloads' ;;
   cli:) needs='packages birefnet downloads loras vaes fits parts' ;;
   cli:*) needs='packages' ;;

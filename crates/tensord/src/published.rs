@@ -360,18 +360,6 @@ impl Publisher {
         })
     }
 
-    pub(crate) fn for_project(&self, root: &Path, store: Arc<Store>) -> io::Result<Arc<Self>> {
-        // All provider downloads, source conversions and refs default to the project store.
-        // Authentication is never treated as proof that the resulting weights are public.
-        let machine = Machine::new(store.clone(), None)?;
-        let mut sdk = self.sdk.clone();
-        sdk.uv = sdk.uv.in_project(root);
-        if matches!(sdk.torch, layer::Torch::Own { .. }) { sdk.torch = layer::Torch::Own { engine: root.to_owned(), wanted: Arc::default() }; }
-        Ok(Arc::new(Self { sdk, scope_namespace: self.scope_namespace.clone(), machine,
-            store, making: Mutex::default(), building: Mutex::default(), layer: Mutex::default(), refreshing: Arc::default() }))
-    }
-    pub(crate) fn process_namespace(&self) -> &str { &self.scope_namespace }
-    pub(crate) fn origin_machine(&self) -> Arc<Machine> { self.machine.clone() }
     /// This machine's PyTorch layer: its base's, read once. A machine with no image installs its
     /// own base the first time a package needs one, at the version `hub` names (`follow`), else
     /// the newest for its accelerator; none when it cannot (offline), and packages then install
@@ -405,7 +393,7 @@ impl Publisher {
     /// holds torch.
     fn install_torch(&self, engine: &Path, wanted: Option<&str>, job: &Job) -> Result<PathBuf, Failure> {
         job.stage("installing this machine's PyTorch".into());
-        let staging = engine.join(api::machine::project_area::TORCH_STAGING);
+        let staging = engine.join(".torch.partial");
         let _ = fs::remove_dir_all(&staging);
         let (dir, py) = (staging.to_string_lossy(), platform::paths::venv_python(&staging));
         let torch = wanted.map_or("torch".into(), |version| format!("torch=={version}"));
@@ -413,7 +401,7 @@ impl Publisher {
             .and_then(|()| self.uv(&["pip", "install", "--python", &py.to_string_lossy(), "--torch-backend", "auto", &torch, "torchvision", "torchaudio"], &[], job))
             .and_then(|()| {
                 let version = layer::torch_version(&staging).ok_or(("torch_missing", "uv installed no torch".to_string()))?;
-                let base = engine.join(api::machine::project_area::torch_base(&version));
+                let base = engine.join(format!("torch-{version}"));
                 let _ = fs::remove_dir_all(&base); // no base: it holds no torch
                 fs::rename(&staging, &base).map_err(io_failure)?;
                 tracing::info!("installed this machine's PyTorch {version}");
@@ -765,13 +753,12 @@ impl Publisher {
                 Ok(())
             }).map_err(|e| e.to_string())
         };
-        let private = crate::private_io::current();
-        let spawned = std::thread::Builder::new().name("name-refresh".into()).spawn(move || crate::private_io::within(private, || {
+        let spawned = std::thread::Builder::new().name("name-refresh".into()).spawn(move || {
             if let Err(why) = read() {
                 tracing::info!(name = %done, "a held model name stands: reading it again failed: {why}");
             }
             refreshing.lock().unwrap().remove(&done);
-        }));
+        });
         if let Err(error) = spawned {
             tracing::warn!("a held model name is not read again: {error}");
             self.refreshing.lock().unwrap().remove(&unspawned);
@@ -1329,7 +1316,8 @@ impl Publisher {
     /// Held shared through one environment build, so `reclaim` removes nothing from the cache
     /// between uv's own per-command holds either.
     pub(super) fn uv_cache_hold(&self) -> io::Result<File> {
-        let cache = crate::private_io::cache_root(self.uv_cache(), api::machine::project_area::UV_CACHE)?;
+        // The machine's one uv cache: every project's environments are built from it (cl-984).
+        let cache = self.uv_cache();
         fs::create_dir_all(&cache)?;
         let lock = File::options()
             .create(true)
@@ -1459,9 +1447,7 @@ impl Publisher {
                 // (`patiently`), and a cancel ends the plan.
                 Err(failure) if slot["on_demand"] == true && !matches!(failure.0, CANCELED | UNREACHABLE) => {
                     let (parameter, refusal) = unbound_slot(slot, &request.choices, failure);
-                    if crate::private_io::current().is_none() {
-                        tracing::info!(slot = %parameter, code = %refusal.0, "an on-demand slot is unbound: {}", refusal.1);
-                    }
+                    tracing::info!(slot = %parameter, code = %refusal.0, "an on-demand slot is unbound: {}", refusal.1);
                     unbound.insert(parameter, refusal);
                 }
                 Err(failure) => return Err(failure),

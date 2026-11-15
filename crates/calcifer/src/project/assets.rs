@@ -36,8 +36,9 @@ fn tool_name(tool: &str) -> Option<String> {
     format::plain_name(&tool::first_of(tool::package_word(package.split('@').next()?)))
 }
 
+/// No box by that name: another writer may have renamed or deleted it, which a client hears of on its stream.
 fn own_lines(name: &str) -> Error {
-    Error::new(Kind::Usage, "project_edit", format!("the project has no box {name}")).next("cozy status")
+    Error::new(Kind::NotFound, "asset_unknown", format!("the project has no box {name}")).next("cozy status")
 }
 
 /// What `tool` makes, as the project last read it, else as reading it now says: none when it can't be read, which refuses nothing.
@@ -245,7 +246,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             let bound = async {
                 let hub = api.machines.hubs.default_origin();
                 let on = [crate::runs::default_on(&api)];
-                let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on).await?;
+                let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on, None).await?;
                 let function = package.maker()?.map(|maker| maker.function).unwrap_or_default();
                 let callable = package.callable(&function).ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function {function}", package.name)))?;
                 let (fields, reserved, stand) = (doc.inputs_of(i), package.reserved(), &model.stand);

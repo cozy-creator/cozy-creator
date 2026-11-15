@@ -88,7 +88,7 @@ fn current_native_append_and_committed_wal_reload_remain_authoritative() {
     let before = load(&writer, &path).unwrap();
     let old: Vec<u8> = writer.query_row("SELECT snapshot FROM crdt_document WHERE id=1", [], |row| row.get(0)).unwrap();
     let mut after = changed(&before, "current native words");
-    assert!(commit(&mut writer, &path, &before, &mut after, &Extra::default(), || (), || ()).unwrap().is_some());
+    assert!(commit(&mut writer, &path, &before, &mut after, &Extra::default(), vec![], || (), || ()).unwrap().is_some());
     let appended: Vec<u8> = writer.query_row("SELECT snapshot FROM crdt_document WHERE id=1", [], |row| row.get(0)).unwrap();
     assert!(appended.len() > old.len() && appended.starts_with(&old));
     writer.execute("UPDATE fields SET value='\"projection only\"'", []).unwrap();
@@ -108,9 +108,9 @@ fn stale_native_commit_rolls_back_projection_and_canonical_state() {
     let before = load(&first, &path).unwrap();
     let stale = load(&second, &path).unwrap();
     let mut winning = changed(&before, "winner");
-    commit(&mut first, &path, &before, &mut winning, &Extra::default(), || (), || ()).unwrap();
+    commit(&mut first, &path, &before, &mut winning, &Extra::default(), vec![], || (), || ()).unwrap();
     let mut losing = changed(&stale, "stale");
-    assert_eq!(commit(&mut second, &path, &stale, &mut losing, &Extra::default(), || (), || ()).unwrap_err().code, "project_changed");
+    assert_eq!(commit(&mut second, &path, &stale, &mut losing, &Extra::default(), vec![], || (), || ()).unwrap_err().code, "project_changed");
     assert_eq!(load(&second, &path).unwrap().written.boxes[0].fields[0].1, serde_json::json!("winner"));
     let projection: String = second.query_row("SELECT value FROM fields WHERE field='instructions'", [], |row| row.get(0)).unwrap();
     assert_eq!(projection, "\"winner\"");
