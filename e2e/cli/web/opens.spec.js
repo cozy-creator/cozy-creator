@@ -260,6 +260,9 @@ const test = base.extend({
   },
 });
 
+// Its trace keeps no DOM snapshots: taking one walks the whole page on its thread, ~20 ms inside the very frames this cell times.
+test.use({ trace: { mode: 'retain-on-failure', snapshots: false } });
+
 test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signIn }, testInfo) => {
   const speed = runnerSpeed();
   const BAR = Object.fromEntries(Object.entries(BARS).map(([name, ms]) => [name, Math.round(ms * speed.factor)]));
