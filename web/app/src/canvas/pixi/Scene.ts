@@ -3,6 +3,7 @@ import type { Client } from "../../api/client"
 import type { CanvasStore } from "../CanvasStore"
 import type { Box } from "../graph"
 import { bandOf, HEAD, nameZoomOf, SUB_ROW, hexOf } from "../shown"
+import { chipWords, withMentions } from "../text"
 import { MediaCache, MIN_TEXTURE_WIDTH, THUMB_SOURCE_WIDTH, type MediaHandle, type MediaRequest } from "./MediaCache"
 import { pictureBox, present, type EntitySlot, type Presentation, type SceneNode, type ScenePicture } from "./presentation"
 
@@ -67,6 +68,7 @@ interface Drawn {
   pictures: Map<string, Picture>
   texts: Map<string, Text>
   fullTexts: Map<string, string>
+  chips: { text: string; box: Box; missing: boolean }[]
   checker?: TilingSprite
   hits: { box: Box; part: HitPart }[]
   presentation: Presentation
@@ -97,7 +99,7 @@ export class PixiScene {
   private clock?: ReturnType<typeof setTimeout>
   private fontEpoch = 0
   private checkers = new Map<string, Texture>()
-  private palette?: { theme: SceneUpdate["theme"]; colors: Palette; glow: number; alpha: number }
+  private palette?: { theme: SceneUpdate["theme"]; colors: Palette; glow: number; alpha: number; chip: number; chipInk: number }
   private measure = document.createElement("canvas").getContext("2d")!
   private segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
   private reducedMotion = matchMedia("(prefers-reduced-motion: reduce)")
@@ -128,7 +130,8 @@ export class PixiScene {
       const select = new Color(css.getPropertyValue("--select").trim() || base.select)
       const gap = new Color(css.getPropertyValue("--select-gap").trim() || base.gap)
       const glow = new Color(css.getPropertyValue("--select-glow").trim() || base.select)
-      this.palette = { theme: input.theme, colors: { ...base, select: select.toNumber(), gap: gap.toNumber() }, glow: glow.toNumber(), alpha: glow.alpha }
+      this.palette = { theme: input.theme, colors: { ...base, select: select.toNumber(), gap: gap.toNumber() }, glow: glow.toNumber(), alpha: glow.alpha,
+        chip: new Color(css.getPropertyValue("--ember").trim() || base.select).toNumber(), chipInk: new Color(css.getPropertyValue("--ember2").trim() || base.ink).toNumber() }
     }
     const zoom = Math.max(0.0001, input.camera.zoom)
     const margin = 96 / zoom
@@ -144,7 +147,7 @@ export class PixiScene {
         const ground = new Graphics(), pixels = new Container(), ink = new Graphics(), labels = new Container()
         container.addChild(ground, pixels, ink, labels)
         this.layer.addChild(container)
-        drawn = { node, container, ground, pixels, ink, labels, pictures: new Map(), texts: new Map(), fullTexts: new Map(), hits: [], presentation: present(this.options.store, node), signature: "", tools, context: node.runContext, fontEpoch: this.fontEpoch, alive: true }
+        drawn = { node, container, ground, pixels, ink, labels, pictures: new Map(), texts: new Map(), fullTexts: new Map(), chips: [], hits: [], presentation: present(this.options.store, node), signature: "", tools, context: node.runContext, fontEpoch: this.fontEpoch, alive: true }
         this.records.set(node.id, drawn)
       }
       const previous = drawn.node
@@ -248,6 +251,7 @@ export class PixiScene {
     body.x -= node.box.x; body.y -= node.box.y
     const { ground, ink } = drawn
     ground.clear(); ink.clear()
+    drawn.chips = []
     drawn.stateDot = undefined; drawn.meterBox = undefined
     drawn.hits = []
     const labels = new Set<string>()
@@ -272,9 +276,9 @@ export class PixiScene {
       if (show.words && (!show.picture || node.view.asset?.standing === "making")) {
         const textHeight = Math.min(body.h - 16, BODY * 1.35 * 4)
         const overPicture = show.picture || show.references.length
-        const y = overPicture ? body.y + body.h - textHeight - 8 : body.y + 12
-        if (overPicture) ink.rect(body.x, y - 6, body.w, textHeight + 14).fill({ color: colors.card, alpha: 0.88 })
-        this.label(drawn, labels, "words", show.words, 12, y, body.w - 24, BODY, colors.ink, false, false, Math.max(1, Math.floor(textHeight / (BODY * 1.25))))
+        const y = body.y + 12
+        if (overPicture) ink.roundRect(body.x + 6, y - 6, body.w - 12, textHeight + 12, 5).fill({ color: colors.card, alpha: 0.84 })
+        this.words(drawn, labels, 12, y, body.w - 24, Math.max(1, Math.floor(textHeight / (BODY * 1.35))), colors)
       }
       if (show.duration && !far) this.label(drawn, labels, "duration", show.duration, Math.max(8, body.w - 72), body.y + body.h - 28, 64, BODY, 0xffffff, true)
       if (show.progress?.phase === "local") {
@@ -333,6 +337,58 @@ export class PixiScene {
         drawn.hits.push({ box: { x: x - 2, y: top, w: 30, h: 30 }, part: node.view.placing ? "cancel" : "delete" })
       }
     }
+  }
+
+  /** Native text shaping with actual chip geometry; it owns no editor, HTML snapshot or additional interaction model. */
+  private words(drawn: Drawn, labels: Set<string>, x: number, y: number, width: number, lines: number, colors: Palette) {
+    const runs: { text: string; chip: boolean; missing: boolean; x: number; row: number; width: number }[] = []
+    let row = 0, cursor = 0, cut = false
+    const add = (text: string, chip: boolean, missing: boolean) => {
+      const font = chip ? BODY * 0.9 : BODY
+      let length = this.textWidth(text, font, chip ? MONO : SANS, chip) + (chip ? 10 : 0)
+      if (cursor && cursor + length > width) { row++; cursor = 0 }
+      if (row >= lines) { cut = true; return false }
+      if (!cursor && !text.trim()) return true
+      if (length > width) { text = this.truncate(text, width - (chip ? 10 : 0), font, chip ? MONO : SANS, chip); length = Math.min(width, this.textWidth(text, font, chip ? MONO : SANS, chip) + (chip ? 10 : 0)) }
+      const prior = runs.at(-1)
+      if (!chip && prior && !prior.chip && prior.row === row) { prior.text += text; prior.width += length }
+      else runs.push({ text, chip, missing, x: cursor, row, width: length })
+      cursor += length
+      return true
+    }
+    for (const part of withMentions(drawn.presentation.words)) {
+      if (cut) break
+      if (part.mention) {
+        const mention = part.text.slice(1, -1)
+        const missing = Boolean(drawn.node.view.asset?.missing?.includes(mention) || this.options.store.mentionOf(mention, drawn.node.name)?.gone)
+        add(chipWords(mention), true, missing)
+      } else for (const token of part.text.split(/(\s+)/)) {
+        if (cut) break
+        if (token.includes("\n")) { row++; cursor = 0; if (row >= lines) cut = true; continue }
+        if (this.textWidth(token, BODY, SANS) <= width) { add(token, false, false); continue }
+        let piece = ""
+        for (const { segment } of this.segmenter.segment(token)) {
+          if (piece && this.textWidth(piece + segment, BODY, SANS) > width) { if (!add(piece, false, false)) break; piece = "" }
+          piece += segment
+        }
+        if (!cut && piece) add(piece, false, false)
+      }
+    }
+    if (cut && runs.length) {
+      const last = runs.at(-1)!
+      last.text = this.truncate(last.text + "…", Math.min(width - last.x, last.width + BODY), last.chip ? BODY * 0.9 : BODY, last.chip ? MONO : SANS, last.chip)
+    }
+    runs.forEach((run, index) => {
+      const size = run.chip ? BODY * 0.9 : BODY
+      const top = y + run.row * BODY * 1.35 + (run.chip ? BODY * 0.05 : 0)
+      if (run.chip) {
+        const box = { x: x + run.x, y: top, w: run.width, h: size * 1.25 }
+        drawn.ink.roundRect(box.x, box.y, box.w, box.h, 4).fill({ color: run.missing ? colors.failed : this.palette!.chip, alpha: 0.13 })
+        this.label(drawn, labels, `words-chip-${index}`, run.text, box.x + 5, top, Math.max(0, box.w - 10), size, run.missing ? colors.failed : this.palette!.chipInk, true, true)
+        if (run.missing) drawn.ink.moveTo(box.x + 5, box.y + box.h / 2).lineTo(box.x + box.w - 5, box.y + box.h / 2).stroke({ width: 1, color: colors.failed })
+        drawn.chips.push({ text: run.text, box, missing: run.missing })
+      } else this.label(drawn, labels, index ? `words-${index}` : "words", run.text, x + run.x, top, Math.min(width - run.x, run.width + 1), size, colors.ink)
+    })
   }
 
   private drawUnder(drawn: Drawn, labels: Set<string>, colors: Palette, zoom: number) {
@@ -792,6 +848,8 @@ export class PixiScene {
       wave: drawn.wave ? { active: true, x: body.x, y: body.y, width: body.w, height: body.h, animation: this.reducedMotion.matches ? "none" : "render-wave", alpha: drawn.wave.alpha, spread: drawn.wave.spread, cycleMs: 2400, reducedMotion: this.reducedMotion.matches } : null,
       loadingPulse: drawn.loadingPulse ? { active: true, alpha: drawn.loadingPulse.alpha, cycleMs: 2800, reducedMotion: this.reducedMotion.matches } : null,
       references: [...drawn.pictures].filter(([key]) => key.startsWith("reference-")).map(([key, picture]) => ({ key, ready: picture.sprite.visible, x: drawn.node.box.x + picture.sprite.x, y: drawn.node.box.y + picture.sprite.y, width: picture.sprite.width, height: picture.sprite.height })),
+      words: drawn.presentation.words,
+      chips: drawn.chips.map(chip => ({ text: chip.text, missing: chip.missing, ...world(chip.box)! })),
       media: {
         ready: Boolean(texture), failed: Boolean(main?.failed), local, width: texture?.width ?? 0, height: texture?.height ?? 0,
         requestedWidth: this.resolution(body.w), resolution: local ? "local" : path.includes("/thumbs/") ? String(width) : "original",
