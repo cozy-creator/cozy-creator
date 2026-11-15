@@ -445,6 +445,8 @@ export function CanvasSurface(props: Props) {
       stops.push(() => { created.canvas.removeEventListener("webglcontextlost", lost); created.canvas.removeEventListener("webglcontextrestored", restored) })
       element.prepend(created.canvas)
       viewport = new PixiViewport({ screenWidth: width, screenHeight: height, events: created.events, noTicker: true, passiveWheel: false, ignoreWheelFromOtherElements: true })
+      // Move the camera through one GPU group transform, without repacking every card's child transforms on each pan.
+      viewport.enableRenderGroup()
       viewport.drag({ wheel: true }).pinch().wheel({ wheelZoom: false, trackpadPinch: true, smooth: false }).clampZoom({ minScale: ZOOMS[0], maxScale: ZOOMS[ZOOMS.length - 1] })
       stage.addChild(viewport)
       const world = new Container({ eventMode: "none", interactiveChildren: false })
