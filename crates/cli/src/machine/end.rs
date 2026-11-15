@@ -269,7 +269,8 @@ pub(crate) async fn update(
     let Some(run) = run else {
         return up_to_date(ctx, &m, &m.status.clone().unwrap_or_default());
     };
-    let run = crate::run::follow(ctx, run).await?;
+    // A failed update is this command's refusal, typed (its run's reason), not a bare exit status.
+    let run = crate::run::carry_out(ctx, run).await?;
     if run.status != calcifer::Status::Completed {
         return Ok(crate::run::exit_code(&run));
     }

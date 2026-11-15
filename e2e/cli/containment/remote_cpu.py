@@ -218,16 +218,17 @@ class Worker:
         self.stage("add")
         self.native.document("machine", "add", self.name, reach, "--fingerprint", fingerprint)
         updates: list[str] = []
-        for flag, version in (("runtime", ready.get("runtime")), ("tensorfs", ready.get("tensorfs"))):
-            if version: updates += ["--" + flag, version]
+        for flag, candidate in (("runtime", ready.get("runtime")), ("tensorfs", ready.get("tensorfs"))):
+            if candidate and Path(candidate).is_file():
+                # A wheel as this user reads it: its own copy beside its cozy, not the runner's workspace.
+                mine = self.binary.parent / Path(candidate).name
+                self.call("candidates", ["install", "-m", "644", str(Path(candidate).resolve()), str(mine)])
+                candidate = str(mine)
+            if candidate: updates += ["--" + flag, candidate]
         if updates:
-            self.stage("update")
-            words = ("machine", "update", self.name, *updates, "-y")
-            completed = subprocess.run([str(self.native.cli), "--json", *words], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if completed.returncode:
-                self.native.failure = self.native.failure or Native.failure_facts(completed, words)
-                self.receipt.synthetic_text("remote_cpu_cli_output", stdout=completed.stdout, stderr=completed.stderr)
-                raise Failure("cli_exit")
+            # A build no release vouches for only its machine's owner installs, never a controller it authorized (xs-196
+            # `update_owner_only`): this user's own cozy moves its machine to the candidates.
+            self.call("update", [str(self.binary), "--json", "machine", "update", "local", *updates, "-y"], user=True)
         self.receipt.add("remote_cpu_worker", default_user_home=True, loopback=True, fingerprint_pinned=True,
                          public_controller_authorized=True, binary_sha256=sha(self.native.cli.read_bytes()))
 
