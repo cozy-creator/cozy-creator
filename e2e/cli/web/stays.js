@@ -12,6 +12,8 @@ const { homedir } = require('os');
 const { join } = require('path');
 const { calcifer, signIn, STEP_MS, launch, lastLook, lookAt, newProject, noStall, removeGeneratedProject, until } = require('./page');
 
+const { canvasNames } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -90,7 +92,7 @@ function watch() {
   await stays(page, 'home_opens_nothing', '/');
 
   await page.goto(`${base}/p/${gone.code}`);
-  await page.locator('.react-flow__node').first().waitFor();
+  await until('project cards on the canvas', () => canvasNames(page), (names) => names?.length > 0);
   check('opens', (await page.locator('.unread, .gate').count()) === 0);
 
   // Calcifer killed and back with the session kept: the tab goes on where it is.
@@ -100,7 +102,7 @@ function watch() {
     await restarted;
     await until('back', () => page.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('offline')));
     await stays(page, 'restart_stays', `/p/${gone.code}`);
-    check('restart_keeps_the_canvas', (await page.locator('.unread, .gate').count()) === 0 && (await page.locator('.react-flow__node').count()) > 0);
+    check('restart_keeps_the_canvas', (await page.locator('.unread, .gate').count()) === 0 && (await canvasNames(page))?.length > 0);
   }
 
   // Its folder deleted under the open tab: said in place, in plain words, and the page stays.
@@ -122,7 +124,7 @@ function watch() {
 
   // The session ended (as a Calcifer that keeps none would), then a restart: one plain state, in place, and the page stays.
   await page.goto(`${base}/p/${kept.code}`);
-  await page.locator('.react-flow__node').first().waitFor();
+  await until('project cards on the canvas', () => canvasNames(page), (names) => names?.length > 0);
   const { token } = JSON.parse(await page.evaluate(() => sessionStorage.getItem('cozy.session')));
   const ended = await fetch(`${base}/v1/session`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
   check('session_ended', ended.status === 204, ended.status);

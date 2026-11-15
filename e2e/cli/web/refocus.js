@@ -13,6 +13,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openCanvas, png, settled, until, upload } = require('./page');
 
+const { canvasBox, canvasView } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -64,7 +66,7 @@ async function died(why) {
     writeFileSync(join(folder, `${name}.png`), png(shade, 480, 320));
     const made = await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, `${name}.png`), id), name, exact: true, at: { x, y: 200 } }) });
     if (made.status >= 300) throw new Error(`${name}: ${JSON.stringify(made)}`);
-    await boxOf(page, name).waitFor();
+    await until(`${name} on the canvas`, () => canvasBox(page, name), Boolean);
   }
   await fitCanvas(page);
   await settled(page);
@@ -80,15 +82,12 @@ async function died(why) {
   await settled(page);
 
   /** Where the canvas is: its pan and zoom. */
-  const viewport = () => page.evaluate(() => {
-    const [, x, y, zoom] = document.querySelector('.react-flow__viewport').style.transform.match(/translate\(([-\d.]+)px,\s*([-\d.]+)px\)\s*scale\(([-\d.]+)\)/) ?? [];
-    return { x: Number(x), y: Number(y), zoom: Number(zoom) };
-  });
+  const viewport = () => canvasView(page);
   const same = (a, b) => Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.zoom - b.zoom) < 0.0005;
   const focused = (name) => page.locator(`[data-focused-asset="${name}"]:not([data-entering])`);
   /** Opened as a person opens it: a double click on its picture. */
   const enter = async (name) => {
-    const media = await boxOf(page, name).locator('.media').first().boundingBox();
+    const media = (await canvasBox(page, name)).body;
     await page.mouse.dblclick(media.x + media.width / 2, media.y + media.height / 2);
     await focused(name).waitFor();
     await settled(page);
@@ -128,7 +127,7 @@ async function died(why) {
 
   // Left at once, while the canvas is still on its way in; by the browser's Back; and in again before it's back, then out.
   const media = async (name) => {
-    const box = await boxOf(page, name).locator('.media').first().boundingBox();
+    const box = (await canvasBox(page, name)).body;
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   };
   let point = await media('one');
@@ -249,7 +248,7 @@ async function died(why) {
     await page.setViewportSize({ width, height });
     await page.evaluate((dark) => localStorage.setItem('cozy.theme', dark ? 'dark' : 'paper'), dark);
     await page.reload();
-    await boxOf(page, 'one').waitFor();
+    await until('one on the canvas', () => canvasBox(page, 'one'), Boolean);
     await settled(page);
     const from = await viewport();
     await shot(`${look}-canvas`);

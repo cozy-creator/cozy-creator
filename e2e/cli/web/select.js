@@ -9,6 +9,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, settled, signIn, STEP_MS, until, upload } = require('./page');
 
+const { canvasBox, selectedBoxes } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -68,15 +70,15 @@ async function died(why) {
     await api(`${at}/imports`, 'POST', { source: await upload(session.token, path, id), name, exact: true, at: { x: 100 + i * 420, y: 100 } });
   }
   await api(`${at}/assets`, 'POST', { tool: '', kind: 'text', name: 'words', exact: true, fields: { text: 'hello there', node_kind: 'text' }, at: { x: 100, y: 500 } });
-  for (const name of ['first', 'second', 'words']) await boxOf(page, name).waitFor();
+  for (const name of ['first', 'second', 'words']) await until(`${name} on the canvas`, () => canvasBox(page, name), Boolean);
   await fitCanvas(page);
 
-  const node = (name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`).first();
+  const node = (name) => canvasBox(page, name);
   const middle = async (name) => {
-    const { x, y, width, height } = await node(name).locator('.media').first().boundingBox();
+    const { x, y, width, height } = (await node(name)).body;
     return { x: x + width / 2, y: y + height / 2 };
   };
-  const selected = () => page.locator('.react-flow__node.selected .card').evaluateAll((cards) => cards.map((card) => card.dataset.asset));
+  const selected = () => selectedBoxes(page);
   const open = () => page.evaluate(() => ({ focused: document.querySelector('[data-focused-asset]')?.dataset.focusedAsset ?? null, path: location.pathname }));
   const opened = async (name) => {
     const now = await open();
@@ -107,11 +109,11 @@ async function died(why) {
 
   // Backspace deletes it; Undo brings it back.
   await page.keyboard.press('Backspace');
-  await until('the box gone', () => node('first').count(), (n) => n === 0);
+  await until('the box gone', () => node('first'), (box) => box === null);
   await until('the asset gone', () => asset('first'), (row) => !row);
-  check('backspace_deletes_the_selected_box', (await node('second').count()) === 1 && Boolean(await asset('second')));
+  check('backspace_deletes_the_selected_box', Boolean(await node('second')) && Boolean(await asset('second')));
   await page.keyboard.press('ControlOrMeta+z');
-  await until('the box back', () => node('first').count(), (n) => n === 1);
+  await until('the box back', () => node('first'), Boolean);
   check('undo_brings_it_back', Boolean(await until('the asset back', () => asset('first'), Boolean)));
 
   // A double click opens it; Backspace there deletes it, and Undo brings it back.
@@ -125,9 +127,9 @@ async function died(why) {
   await page.keyboard.press('Backspace');
   await until('the open box gone', () => asset('second'), (row) => !row);
   await page.locator('[data-focused-asset]').waitFor({ state: 'detached' });
-  check('backspace_deletes_the_open_box', (await node('second').count()) === 0 && !(await open()).path.includes('/assets/'), await open());
+  check('backspace_deletes_the_open_box', (await node('second')) === null && !(await open()).path.includes('/assets/'), await open());
   await page.keyboard.press('ControlOrMeta+z');
-  await until('the open box back', () => node('second').count(), (n) => n === 1);
+  await until('the open box back', () => node('second'), Boolean);
   check('undo_brings_the_open_box_back', Boolean(await until('its asset back', () => asset('second'), Boolean)));
 
   // Delete works as Backspace does.
@@ -136,7 +138,7 @@ async function died(why) {
   await page.mouse.click(point.x, point.y);
   await page.keyboard.press('Delete');
   await until('deleted by Delete', () => asset('first'), (row) => !row);
-  check('delete_deletes_the_selected_box', (await node('first').count()) === 0);
+  check('delete_deletes_the_selected_box', (await node('first')) === null);
   await page.keyboard.press('ControlOrMeta+z');
   await until('back again', () => asset('first'), Boolean);
 

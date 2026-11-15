@@ -10,6 +10,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, settled, signIn, STEP_MS, until, upload } = require('./page');
 
+const { canvasBox, canvasView, selectedBoxes, screenshotPixels } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -72,7 +74,7 @@ const NAMES = ['light', 'dark', 'middle'];
     await api(`${at}/imports`, 'POST', { source: await upload(session.token, path, id), name, exact: true, at: { x: i * 300, y: 0 } });
   }
 
-  const zoomOf = () => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
+  const zoomOf = async () => (await canvasView(page)).zoom;
   const zoomTo = async (wanted) => {
     await page.mouse.move(2, 500);
     await page.keyboard.press('ControlOrMeta+0');
@@ -84,47 +86,68 @@ const NAMES = ['light', 'dark', 'middle'];
     return zoomOf();
   };
   const middle = async (name) => {
-    const { x, y, width, height } = await boxOf(page, name).locator('.media').first().boundingBox();
+    const { x, y, width, height } = (await canvasBox(page, name)).body;
     return { x: x + width / 2, y: y + height / 2 };
   };
-  /** Each box's ring as drawn on screen: its width and offset in screen pixels, its colour, and whether it glows. */
-  const rings = () => page.evaluate(() => {
-    const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-    const probe = document.createElement('div');
-    probe.style.color = 'var(--select)';
-    document.body.append(probe);
-    const select = getComputedStyle(probe).color;
-    probe.style.color = 'var(--cur)';
-    const cur = getComputedStyle(probe).color;
-    probe.style.color = 'var(--line2)';
-    const line = getComputedStyle(probe).color;
-    probe.remove();
-    const out = { select, cur, line, zoom, boxes: {} };
-    for (const node of document.querySelectorAll('.react-flow__node')) {
-      const media = node.querySelector('.card > .media');
-      if (!media) continue;
-      const style = getComputedStyle(media);
-      out.boxes[node.querySelector('.card').dataset.asset] = {
-        selected: node.classList.contains('selected'),
-        style: style.outlineStyle,
-        width: parseFloat(style.outlineWidth) * zoom,
-        color: style.outlineColor,
-        // The glow is the ring's colour, faded.
-        glow: style.boxShadow.includes(select.slice(4, -1)),
-      };
+  const colors = () => page.evaluate(() => {
+    const probe = document.createElement('span'); document.body.append(probe);
+    const rgb = (token) => {
+      probe.style.color = `var(${token})`;
+      const color = getComputedStyle(probe).color;
+      const values = color.match(/[\d.]+/g).map(Number).slice(0, 3);
+      return color.startsWith('color(') ? values.map(value => value * 255) : values;
+    };
+    const result = { select: rgb('--select'), cur: rgb('--cur'), line: rgb('--line2') };
+    probe.remove(); return result;
+  });
+  let baseline;
+  const near = (a, b, tolerance = 28) => a.every((v,i) => Math.abs(v-b[i]) <= tolerance);
+  /** Read full-colour strokes along four rays through actual screenshot pixels, in CSS pixels. */
+  const edge = (read, body, color, dpr) => {
+    const ray = [t => [body.x+t, body.y+body.height/2], t => [body.x+body.width-t, body.y+body.height/2],
+      t => [body.x+body.width/2, body.y+t], t => [body.x+body.width/2, body.y+body.height-t]];
+    return ray.map(point => {
+      const at = t => { const [x,y] = point(t); return read(x*dpr,y*dpr); };
+      let width = 0, run = 0, first = null;
+      for (let t=-20; t<=20; t+=0.5) {
+        if (near(at(t), color)) { run+=0.5; if (first === null) first=t; width=Math.max(width,run); } else run=0;
+      }
+      let glow = false;
+      if (baseline && first !== null) for (let t=first-3; t>=first-11; t-=1) {
+        const [x,y] = point(t), base = baseline(x*dpr,y*dpr), drawn=at(t);
+        const toward=color.map((v,i)=>v-base[i]), change=drawn.map((v,i)=>v-base[i]);
+        const size=toward.reduce((sum,v)=>sum+v*v,0), alpha=change.reduce((sum,v,i)=>sum+v*toward[i],0)/size;
+        if (alpha>0.015 && alpha<0.65 && change.some(v=>Math.abs(v)>=3) && near(drawn,base.map((v,i)=>v+alpha*toward[i]),8)) glow=true;
+      }
+      return { width, glow };
+    });
+  };
+  const rings = async () => {
+    const palette = await colors(), selected = await selectedBoxes(page), dpr = await page.evaluate(() => devicePixelRatio);
+    const read=screenshotPixels(await page.screenshot()), out={ ...palette, zoom:await zoomOf(), boxes:{} };
+    for (const name of NAMES) {
+      const body=(await canvasBox(page,name)).body, sides=edge(read,body,palette.select,dpr), hovered=edge(read,body,palette.line,dpr);
+      out.boxes[name]={selected:selected.includes(name),width:Math.min(...sides.map(side=>side.width)),glow:sides.filter(side=>side.glow).length>=2,hoverWidth:Math.min(...hovered.map(side=>side.width)),sides};
     }
     return out;
-  });
-  /** The rings once `ok` holds of them (a selection is a render away), else as they are when it never does, for the check to judge. */
-  const ringsWhen = (ok) => until('the rings as wanted', rings, ok, 5000).catch(rings);
-  const ringed = (box, look) => box && box.selected && box.style === 'solid' && box.width >= 3 - 0.05 && box.color === look.select && box.glow;
-  // Unselected, no ring: an outline-style of none still reports a width.
-  const bare = (box, look) => box && !box.selected && !(box.style === 'solid' && box.color === look.select) && !box.glow;
+  };
+  const ringsWhen = (ok) => until('the displayed rings as wanted', rings, ok, 5000).catch(rings);
+  const ringed = box => box?.selected && box.width >= 3 - 0.05 && box.glow;
+  const bare = box => box && !box.selected && box.width < 0.5;
+  const rememberBare = async () => {
+    await page.mouse.move(2,500);
+    await until('native overlay off',()=>page.locator('.canvas-node').count(),n=>n===0);
+    baseline=await until('three real pictures drawn',async()=> {
+      const read=screenshotPixels(await page.screenshot()),dpr=await page.evaluate(()=>devicePixelRatio);
+      for (const [i,name] of NAMES.entries()) { const b=(await canvasBox(page,name)).body; if (!near(read((b.x+b.width/2)*dpr,(b.y+b.height/2)*dpr),[[250,250,250],[8,8,8],[128,128,128]][i],12)) return null; }
+      return read;
+    },Boolean);
+  };
 
   for (const theme of ['paper', 'dark']) {
     await page.evaluate((theme) => localStorage.setItem('cozy.theme', theme), theme);
     await page.goto(canvas);
-    for (const name of NAMES) await boxOf(page, name).waitFor();
+    for (const name of NAMES) await until(`${name} on the canvas`, () => canvasBox(page,name), Boolean);
     check(`${theme}_theme_shown`, (await page.evaluate(() => document.documentElement.dataset.theme ?? 'paper')) === theme);
     await fitCanvas(page);
     for (const zoom of [1, 0.25]) {
@@ -132,6 +155,9 @@ const NAMES = ['light', 'dark', 'middle'];
       seen[`${tag}_zoom`] = await zoomTo(zoom);
       // At the zoom it says: a ring judged at 1 when 0.25 was asked proves nothing of 0.25.
       check(`${tag}_at_its_zoom`, Math.abs(seen[`${tag}_zoom`] - zoom) < 0.01, seen[`${tag}_zoom`]);
+      await page.keyboard.press('Escape');
+      await until('selection cleared', () => selectedBoxes(page), names => names.length === 0);
+      await rememberBare();
       // One, by a click.
       const point = await middle('middle');
       await page.mouse.click(point.x, point.y);
@@ -153,37 +179,32 @@ const NAMES = ['light', 'dark', 'middle'];
     await zoomTo(1);
     const point = await middle('light');
     await page.mouse.move(point.x, point.y);
-    const look = await ringsWhen((now) => now.boxes.light?.style === 'solid');
-    check(`${theme}_hover_is_not_selection`, bare(look.boxes.light, look) && look.boxes.light.style === 'solid' && look.boxes.light.width < 3, look.boxes.light);
-    check(`${theme}_selection_is_not_the_check_green`, look.select !== look.cur && look.select !== look.line, { select: look.select, cur: look.cur, line: look.line });
+    const look = await ringsWhen((now) => now.boxes.light?.hoverWidth > 0);
+    check(`${theme}_hover_is_not_selection`, bare(look.boxes.light, look) && look.boxes.light.hoverWidth > 0 && look.boxes.light.hoverWidth < 3, look.boxes.light);
+    check(`${theme}_selection_is_not_the_check_green`, JSON.stringify(look.select) !== JSON.stringify(look.cur) && JSON.stringify(look.select) !== JSON.stringify(look.line), { select: look.select, cur: look.cur, line: look.line });
     await page.mouse.move(2, 500);
 
     // The box-select rectangle, while it's drawn: Shift and a drag from open canvas over all three.
     await fitCanvas(page);
-    const first = await boxOf(page, 'light').locator('.media').first().boundingBox();
-    const last = await boxOf(page, 'middle').locator('.media').first().boundingBox();
+    await rememberBare();
+    const first = (await canvasBox(page, 'light')).body;
+    const last = (await canvasBox(page, 'middle')).body;
     const from = { x: first.x - 40, y: first.y - 60 };
     const to = { x: last.x + last.width + 40, y: last.y + last.height + 60 };
+    const beforeMarquee=screenshotPixels(await page.screenshot());
     await page.keyboard.down('Shift');
     await page.mouse.move(from.x, from.y);
     await page.mouse.down();
     await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 4 });
     await page.mouse.move(to.x, to.y, { steps: 4 });
-    const rect = await page.evaluate(() => {
-      const el = document.querySelector('.react-flow__selection');
-      if (!el) return null;
-      const style = getComputedStyle(el);
-      const probe = document.createElement('div');
-      probe.style.color = 'var(--select)';
-      document.body.append(probe);
-      const select = getComputedStyle(probe).color;
-      probe.remove();
-      return { width: parseFloat(style.borderTopWidth), color: style.borderTopColor, select, fill: style.backgroundColor };
-    });
+    const rect = await page.locator('.canvas-selection:not([hidden])').boundingBox();
+    const dpr=await page.evaluate(()=>devicePixelRatio), drawn=screenshotPixels(await page.screenshot()), palette=await colors();
+    const border=rect ? edge(drawn,rect,palette.select,dpr) : [];
+    const filled=rect ? drawn((rect.x+8)*dpr,(rect.y+8)*dpr) : null;
     await shot(`${theme}-box-select`);
     await page.mouse.up();
     await page.keyboard.up('Shift');
-    check(`${theme}_box_select_rectangle_shows`, Boolean(rect) && rect.width >= 1.5 && rect.color === rect.select && rect.fill !== 'rgba(0, 0, 0, 0)', rect);
+    check(`${theme}_box_select_rectangle_shows`, Boolean(rect) && border.every(side=>side.width>=1.5) && filled !== null && filled.some((value,i)=>Math.abs(value-beforeMarquee((rect.x+8)*dpr,(rect.y+8)*dpr)[i])>=3), rect);
     const after = await ringsWhen((now) => NAMES.every((name) => ringed(now.boxes[name], now)));
     check(`${theme}_box_select_rings_all`, NAMES.every((name) => ringed(after.boxes[name], after)), after);
     await shot(`${theme}-box-selected`);

@@ -11,6 +11,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, openCanvas, png, launch, noStall, settled, until, wav, rowsOf, addBoxes, assetsOf, storedOf, fitCanvas, observeResizes } = require('./page');
 
+const { canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -19,8 +21,7 @@ function check(name, ok, detail) {
   if (!ok) failures.push(name);
 }
 
-const names = (page) => page.evaluate(() => [...document.querySelectorAll('.react-flow__node .nm, .react-flow__node .nm-field')]
-  .map((el) => el.value ?? el.textContent).sort());
+const names = async (page) => (await canvasNames(page) ?? []).sort();
 const element = boxOf;
 /** Every box's fields as project.db stores them, as one text. */
 const stored = (folder) => JSON.stringify(storedOf(folder));
@@ -78,19 +79,14 @@ const constants = (folder) => {
 
 /** The exact view in which a row may be culled; this reads no API or client data. */
 function placementState(expected) {
-  const viewport = document.querySelector('.react-flow__viewport');
-  const pane = document.querySelector('.react-flow__pane')?.getBoundingClientRect();
-  const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector('.card[data-asset="raced"]'));
-  const own = node && new DOMMatrix(getComputedStyle(node).transform);
-  const matrix = viewport && new DOMMatrix(getComputedStyle(viewport).transform);
-  const point = matrix?.transformPoint(new DOMPoint(expected.x, expected.y));
-  const projected = point && pane ? { x: point.x + pane.left, y: point.y + pane.top, width: expected.w * Math.hypot(matrix.a, matrix.b) } : null;
+  const root=document.querySelector('.canvas-root'), inspection=root?.canvasInspection, pane=root?.getBoundingClientRect(), view=inspection?.camera();
+  const box=inspection?.card('raced')?.bounds;
+  const projected=view && pane ? {x:expected.x*view.zoom+view.x+pane.left,y:expected.y*view.zoom+view.y+pane.top,width:expected.w*view.zoom}:null;
   return {
-    node: own ? { x: Math.round(own.e), y: Math.round(own.f) } : null,
-    projected, expected_visible: Boolean(projected && projected.x >= pane.left && projected.x < pane.right && projected.y >= pane.top && projected.y < pane.bottom),
-    viewport: viewport?.style.transform, matrix: matrix?.toString(), zoom: document.querySelector('.zoom-at')?.textContent,
-    pane: pane && [pane.left, pane.top, pane.right, pane.bottom], mounted: document.querySelectorAll('.react-flow__node').length,
-    open: document.querySelector('.card.here')?.dataset.asset, focus: `${document.activeElement?.tagName}.${document.activeElement?.className}`,
+    node:box && view ? {x:Math.round((box.x-pane.left-view.x)/view.zoom),y:Math.round((box.y-pane.top-view.y)/view.zoom)}:null,
+    projected,expected_visible:Boolean(projected && projected.x>=pane.left && projected.x<pane.right && projected.y>=pane.top && projected.y<pane.bottom),
+    viewport:view,zoom:document.querySelector('.zoom-at')?.textContent,pane:pane && [pane.left,pane.top,pane.right,pane.bottom],logical:inspection?.names().length,
+    open:document.querySelector('[data-focused-asset]')?.dataset.focusedAsset,focus:`${document.activeElement?.tagName}.${document.activeElement?.className}`,
   };
 }
 
@@ -174,12 +170,22 @@ async function placedInView(page, expected) {
   check('rows_written', true);
   // Calcifer may fetch its ffmpeg for the first of these. The picture shows the file dropped, and no copy of it takes its place (cl-918); the video
   // and the sound show Calcifer's thumbnails.
-  const thumbs = await until('thumbnails up', () => page.evaluate(() => ({
-    up: [...document.querySelectorAll('.react-flow__node .media')].filter((media) => [...media.querySelectorAll('img')].some((img) => img.naturalWidth > 0)).length,
-    made: [...document.querySelectorAll('.react-flow__node .media img')].filter((img) => img.naturalWidth > 0 && !img.src.startsWith('blob:')).length,
-    own: [...document.querySelectorAll('.react-flow__node .card[data-asset="kyogre_art_1"] .media img')].map((img) => img.getAttribute('src')),
-    none: [...document.querySelectorAll('.media-note')].map((note) => note.textContent),
-  })), (now) => (now.up === 3 && now.made === 2) || now.none.includes('No preview'), 5 * STEP_MS);
+  const pictureOnCanvas = async name => {
+    const before=await canvasView(page), native=await hoverBox(page,name);
+    if (JSON.stringify(await canvasView(page))!==JSON.stringify(before)) throw new Error(`${name} was outside the preserved view`);
+    await until(`${name} native thumbnail ready`,()=>native.locator('.media img').evaluateAll(images=>images.some(image=>image.complete && image.naturalWidth>0)),Boolean,5*STEP_MS);
+    const sources=await native.locator('.media img').evaluateAll(images=>images.filter(image=>image.complete && image.naturalWidth>0).map(image=>image.getAttribute('src')));
+    const body=(await canvasBox(page,name)).body,dpr=await page.evaluate(()=>devicePixelRatio),sample=read=>[[0.25,0.25],[0.75,0.25],[0.25,0.75],[0.75,0.75]].map(([x,y])=>read((body.x+body.width*x)*dpr,(body.y+body.height*y)*dpr));
+    const expected=sample(screenshotPixels(await page.screenshot()));
+    await page.mouse.move(20,20);
+    await until('native overlay released',()=>page.locator('.canvas-node').count(),n=>n===0);
+    const actual=await until(`${name} passive pixels match its native picture`,async()=>sample(screenshotPixels(await page.screenshot())),pixels=>pixels.every((rgb,i)=>rgb.every((channel,c)=>Math.abs(channel-expected[i][c])<=30)));
+    return {name,sources,expected,actual};
+  };
+  const thumbnails=[];
+  for (const name of ['kyogre_art_1','clash_take','sea_sound']) thumbnails.push(await pictureOnCanvas(name));
+  const thumbs={up:thumbnails.length,made:thumbnails.flatMap(item=>item.sources).filter(src=>!src.startsWith('blob:')).length,own:thumbnails.find(item=>item.name==='kyogre_art_1').sources};
+  seen.thumbnail_pixels=thumbnails;
   check('thumbnails', thumbs.up === 3 && thumbs.made === 2 && thumbs.own.length === 1 && thumbs.own[0].startsWith('blob:'), thumbs);
   if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-dropped.png` });
 
@@ -222,7 +228,7 @@ async function placedInView(page, expected) {
   // Let go on bare canvas, the nearest to 900,650: on a box of pictures they'd be its next version (place.ts join). Where the coast comes
   // races the first drop, and Hero_Shot pushes it down onto 900,650 from its home right of clash_take (Windows 43288869140).
   const bare = await page.evaluate(() => {
-    const open = (x, y) => [[0, 0], [-40, -40], [40, -40], [-40, 40], [40, 40]].every(([dx, dy]) => document.elementFromPoint(x + dx, y + dy)?.classList.contains('react-flow__pane'));
+    const open = (x, y) => [[0, 0], [-40, -40], [40, -40], [-40, 40], [40, 40]].every(([dx, dy]) => document.elementFromPoint(x + dx, y + dy)?.classList.contains('canvas-pane') && !document.querySelector('.canvas-root').canvasInspection.hitTest({x:x+dx,y:y+dy}));
     const spots = [];
     for (let y = 120; y <= innerHeight - 120; y += 20) {
       for (let x = 320; x <= innerWidth - 120; x += 20) if (open(x, y)) spots.push({ x, y });
@@ -246,13 +252,14 @@ async function placedInView(page, expected) {
   check('same_file_two_elements', (await names(page)).includes('kyogre_art_2'), await names(page));
 
   // Dragged: its row in project.db moves by what the mouse did, and no input changes.
-  const box = await element(page, 'clash_take').locator('.nm').boundingBox();
+  const box = (await canvasBox(page,'clash_take')).title;
   const was = rows(folder).clash_take;
-  const zoom = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
+  const zoom = (await canvasView(page)).zoom;
   const storedBeforeMove = stored(folder);
   // Somewhere clear, the nearest at least 120 off: let go on another box, it would stay there a little smaller and push that aside.
   const { dx, dy } = await page.evaluate((name) => {
-    const rects = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.nm')?.textContent, rect: node.getBoundingClientRect() }));
+    const inspection=document.querySelector('.canvas-root').canvasInspection;
+    const rects=inspection.names().map(name=>{const b=inspection.card(name).bounds;return {name,rect:{left:b.x,top:b.y,right:b.x+b.width,bottom:b.y+b.height}};});
     const mine = rects.find((held) => held.name === name).rect;
     const others = rects.filter((held) => held.name !== name).map((held) => held.rect);
     const gap = 32;
@@ -277,19 +284,11 @@ async function placedInView(page, expected) {
   check('move_touches_no_input', stored(folder) === storedBeforeMove);
 
   // A drag on the empty canvas moves it and selects nothing; with Shift it selects instead.
-  const empty = await page.evaluate(() => {
-    const pane = document.querySelector('.react-flow__pane').getBoundingClientRect();
-    for (let y = pane.top + 140; y < pane.bottom - 140; y += 40) {
-      for (let x = pane.left + 340; x < pane.right - 140; x += 40) {
-        if (document.elementFromPoint(x, y)?.classList.contains('react-flow__pane')) return { x, y };
-      }
-    }
-    return null;
-  });
+  const empty = await openCanvas(page);
   check('empty_canvas_found', empty !== null);
-  const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
+  const viewport = async () => JSON.stringify(await canvasView(page));
   const held = await viewport();
-  const selected = () => page.locator('.react-flow__node.selected').count();
+  const selected = async () => (await selectedBoxes(page)).length;
   const selectedBefore = await selected();
   await page.mouse.move(empty.x, empty.y);
   await page.mouse.down();
@@ -302,7 +301,7 @@ async function placedInView(page, expected) {
   await page.mouse.move(empty.x, empty.y);
   await page.mouse.down();
   await page.mouse.move(empty.x + 40, empty.y + 40, { steps: 4 });
-  const drawing = await page.locator('.react-flow__selection').count();
+  const drawing = await page.locator('.canvas-selection:not([hidden])').count();
   await page.mouse.up();
   await page.keyboard.up('Shift');
   check('shift_draws_a_selection', drawing === 1 && (await viewport()) === moved);
@@ -312,15 +311,15 @@ async function placedInView(page, expected) {
   const shown = await page.evaluate(() => document.body.innerText + [...document.querySelectorAll('[title],[aria-label]')].map((el) => el.title + el.ariaLabel).join(' '));
   check('hash_not_shown', hashes.every((hash) => !shown.includes(hash)));
 
-  const viewportNow = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+  const viewportNow = viewport;
 
   // Reload restores everything: names, positions, viewport, thumbnails.
   const namesBefore = await names(page);
   // By name, each element with a file has its picture back, whatever was up before. The coast is an element with none.
   const withFiles = Object.keys(constants(folder)).sort();
-  const picturesUp = () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node')].filter((node) => [...node.querySelectorAll('.media img')].some((img) => img.naturalWidth > 0)).map((node) => node.querySelector('.nm')?.textContent).sort());
+  const picturesUp = async () => { const shown=[]; for(const name of withFiles) { await pictureOnCanvas(name); shown.push(name); } return shown.sort(); };
   check('elements_are_its_files_and_its_words', JSON.stringify(namesBefore) === JSON.stringify([...withFiles, 'coast'].sort()), { namesBefore, withFiles });
-  const places = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.nm')?.textContent, getComputedStyle(node).transform]).sort()));
+  const places=()=>page.evaluate(()=>{const root=document.querySelector('.canvas-root'),o=root.getBoundingClientRect(),i=root.canvasInspection,v=i.camera();return Object.fromEntries(i.names().sort().map(name=>{const b=i.card(name).bounds;return [name,[Math.round((b.x-o.left-v.x)/v.zoom*100)/100,Math.round((b.y-o.top-v.y)/v.zoom*100)/100]];}));});
   const placesBefore = await places();
   await new Promise((done) => setTimeout(done, 300));
   const viewportBefore = await viewportNow();
@@ -390,11 +389,12 @@ async function placedInView(page, expected) {
     const middle = (row) => ({ x: row.x + row.w / 2, y: row.y + tall(row.w) / 2 });
     const apart = (a, b) => Math.round(Math.hypot(middle(a).x - middle(b).x, middle(a).y - middle(b).y));
     const lying = () => page.evaluate(() => {
-      const cards = [...document.querySelectorAll('.react-flow__node .card')].map((card) => ({ name: card.dataset.asset, rect: card.getBoundingClientRect() }));
+      const i=document.querySelector('.canvas-root').canvasInspection;
+      const cards=i.names().map(name=>{const b=i.card(name).bounds;return {name,rect:{left:b.x,top:b.y,right:b.x+b.width,bottom:b.y+b.height}};});
       const on = (a, b) => a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
       return cards.flatMap((a, i) => cards.slice(i + 1).filter((b) => on(a.rect, b.rect)).map((b) => `${a.name} on ${b.name}`));
     });
-    const zoomNow = () => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
+    const zoomNow = async () => (await canvasView(page)).zoom;
     // Rows that have stopped changing, both what the page wrote and what it shows.
     const settledRows = (name) => until(`${name} settled`, async () => {
       const one = JSON.stringify(rows(folder));
@@ -406,16 +406,17 @@ async function placedInView(page, expected) {
     const letGo = async (name, dy) => {
       const before = rows(folder);
       const zoom = await zoomNow();
-      const media = await element(page, name).locator('.media').first().boundingBox();
+      const media = (await canvasBox(page,name)).body;
       const [x, y] = [media.x + media.width / 2, media.y + media.height / 2];
       await page.mouse.move(x, y);
       await page.mouse.down();
       await page.mouse.move(x, y - 3);
       await page.mouse.move(x, y + dy * zoom, { steps: 10 });
-      const held = await element(page, name).evaluate((node) => {
-        const { e, f } = new DOMMatrix(getComputedStyle(node).transform);
-        return { e, f };
-      });
+      const held = await page.evaluate(name => {
+        const root=document.querySelector('.canvas-root'), origin=root.getBoundingClientRect(), inspection=root.canvasInspection;
+        const box=inspection.card(name).bounds, view=inspection.camera();
+        return {e:(box.x-origin.left-view.x)/view.zoom,f:(box.y-origin.top-view.y)/view.zoom};
+      },name);
       await page.mouse.up();
       // It lands, and what it lies on goes aside, in one write.
       // A row not there (between writes, or gone: let go on a picture, a box joins it) is not yet its write.
@@ -458,7 +459,7 @@ async function placedInView(page, expected) {
     // The chain in view at a zoom where a box has its corner (0.2 and up, CanvasHost's far band), whatever the whole layout fits at: the five
     // selected, zoomed to (Shift+2), and let go of.
     for (const [i, name] of CHAIN.entries()) {
-      const media = await element(page, name).locator('.media').first().boundingBox();
+      const media = (await canvasBox(page,name)).body;
       if (i) await page.keyboard.down('Shift');
       await page.mouse.click(media.x + media.width / 2, media.y + media.height / 2);
       if (i) await page.keyboard.up('Shift');
@@ -469,7 +470,7 @@ async function placedInView(page, expected) {
     // B pulled 100 wider by its corner, live: each after it goes right as little as keeps a gap of 16, or what it had if less.
     const before = rows(folder);
     const zoom = await zoomNow();
-    await element(page, 'chain_b').locator('.media').first().hover();
+    await hoverBox(page,'chain_b');
     const corner = await element(page, 'chain_b').locator('.corner').boundingBox();
     const originalFrom = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
     const originalTo = { x: originalFrom.x + 100 * zoom, y: originalFrom.y };
@@ -482,8 +483,8 @@ async function placedInView(page, expected) {
     await page.evaluate(() => {
       const events = [];
       const record = (event) => {
-        const matrix = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-        events.push({ type: event.type, at_ms: performance.now(), x: event.clientX, y: event.clientY, pointerId: event.pointerId, buttons: event.buttons, trusted: event.isTrusted, asset: event.target.closest('.card')?.dataset.asset, camera: { x: matrix.e, y: matrix.f, zoom: matrix.a } });
+        const matrix = document.querySelector('.canvas-root').canvasInspection.camera();
+        events.push({ type: event.type, at_ms: performance.now(), x: event.clientX, y: event.clientY, pointerId: event.pointerId, buttons: event.buttons, trusted: event.isTrusted, asset: event.target.closest('.card')?.dataset.asset, camera: matrix });
       };
       const types = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'lostpointercapture'];
       types.forEach((type) => document.addEventListener(type, record, true));
@@ -496,8 +497,8 @@ async function placedInView(page, expected) {
       await page.mouse.move(to.x, to.y, { steps: 10 });
       await page.waitForTimeout(300);
       live = await page.evaluate((names) => Object.fromEntries(names.map((name) => {
-        const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector(`.card[data-asset="${name}"]`));
-        return [name, Math.round(new DOMMatrix(getComputedStyle(node).transform).e)];
+        const root=document.querySelector('.canvas-root'),i=root.canvasInspection,v=i.camera(),b=i.card(name).bounds;
+        return [name,Math.round((b.x-root.getBoundingClientRect().left-v.x)/v.zoom)];
       })), CHAIN);
     } finally {
       try { await page.mouse.up(); }

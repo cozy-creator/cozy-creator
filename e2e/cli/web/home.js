@@ -13,6 +13,8 @@ const { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } = req
 const { dirname, join } = require('path');
 const { addBoxes, calcifer, launch, lastLook, lookAt, newProject, noStall, projectFolder, removeGeneratedProject, signIn, STEP_MS, until } = require('./page');
 
+const { canvasBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -98,7 +100,7 @@ const CODE = /\/p\/([0-9A-HJKMNP-TV-Z]{9})$/;
   // A tab opens its project.
   await page.click(`nav.ptabs a.ptab[href="/p/${a.code}"]`);
   await page.waitForURL(`${base}/p/${a.code}`);
-  await page.locator('.react-flow__node').first().waitFor();
+  await until('first project card', () => canvasBox(page, 'only_a'), Boolean);
   check('picker_opens', (await page.locator('main.gate, .unread').count()) === 0);
 
   // From one project to another: the frame stays, and every frame draws a canvas, never a blank screen.
@@ -106,13 +108,13 @@ const CODE = /\/p\/([0-9A-HJKMNP-TV-Z]{9})$/;
     window.__frames = [];
     window.__sampling = true;
     const look = () => {
-      window.__frames.push({ top: Boolean(document.querySelector('header.top')), canvas: Boolean(document.querySelector('.react-flow')), gate: Boolean(document.querySelector('main.gate')) });
+      window.__frames.push({ top: Boolean(document.querySelector('header.top')), canvas: Boolean(document.querySelector('.canvas-root')), gate: Boolean(document.querySelector('main.gate')) });
       if (window.__sampling) requestAnimationFrame(look);
     };
     requestAnimationFrame(look);
   });
   await page.click(`nav.ptabs a.ptab[href="/p/${b.code}"]`);
-  await page.locator('.card[data-asset="only_b"]').waitFor({ state: 'attached' });
+  await until('second project card', () => canvasBox(page, 'only_b'), Boolean);
   await until('the next project checked', () => page.locator('main.gate').count(), (count) => count === 0);
   const frames = await page.evaluate(() => { window.__sampling = false; return window.__frames; });
   const blank = frames.filter((frame) => !frame.top || !frame.canvas || frame.gate);
@@ -152,7 +154,7 @@ const CODE = /\/p\/([0-9A-HJKMNP-TV-Z]{9})$/;
   // + without encryption: made, and opened.
   await askFor(page, folders.plain, { encrypted: false });
   await page.waitForURL(CODE);
-  await page.locator('.react-flow').waitFor();
+  await page.getByRole('region', { name: 'Project canvas', exact: true }).waitFor();
   const plainCode = CODE.exec(page.url())[1];
   const plainRow = (await index()).find((row) => row.code === plainCode);
   check('plus_unencrypted_opens', Boolean(plainRow) && plainRow.path === realpathSync(folders.plain) && existsSync(join(folders.plain, 'project.db')) && (await page.locator('main.gate, .unread').count()) === 0, plainRow);
@@ -166,7 +168,7 @@ const CODE = /\/p\/([0-9A-HJKMNP-TV-Z]{9})$/;
   await page.getByLabel('I saved this somewhere away from this computer').check();
   await recovery.getByRole('button', { name: 'Done', exact: true }).click();
   await page.waitForURL(CODE);
-  await page.locator('.react-flow').waitFor();
+  await page.getByRole('region', { name: 'Project canvas', exact: true }).waitFor();
   await until('the encrypted project readable', () => page.locator('main.gate').count(), (count) => count === 0);
   check('plus_encrypted_opens', !existsSync(join(folders.enc, 'project.db')) && vaultOf(folders.enc, 'status').encrypted === true);
   check('recovery_shown_once', (await page.locator('[aria-label="Save recovery secret"]').count()) === 0);

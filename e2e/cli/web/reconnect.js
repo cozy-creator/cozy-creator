@@ -8,6 +8,8 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
 const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, drop, png, noStall, until } = require('./page');
 
+const { canvasBox, canvasView, hoverBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -16,12 +18,16 @@ function check(name, ok, detail) {
   if (!ok) failures.push(name);
 }
 
-const place = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) }).evaluate((node) => getComputedStyle(node).transform);
+const place = async (page, name) => {
+  const box = (await canvasBox(page, name)).bounds, view = await canvasView(page);
+  const origin = await page.locator('.canvas-root').boundingBox();
+  return `${Math.round((box.x - origin.x - view.x) / view.zoom)},${Math.round((box.y - origin.y - view.y) / view.zoom)}`;
+};
 
 async function drag(page, name, dx, dy) {
-  const box = await page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) }).locator('.nm').boundingBox();
-  const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
   await page.bringToFront();
+  const box = (await until(`${name} on the canvas`, () => canvasBox(page, name), Boolean)).title;
+  const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
   await page.mouse.move(x, y);
   await page.mouse.down();
   await page.mouse.move(x + 2, y);
@@ -68,12 +74,14 @@ async function drag(page, name, dx, dy) {
     const card = (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).cards?.[name];
     return card ? `${card.x},${card.y}` : null;
   };
-  await until('the element landed', () => first.locator('.nm:text-is("here")').count().then(async (n) => n === 1 && (await first.locator('.card .status.mak').count()) === 0), Boolean);
+  await until('the element landed', async () => Boolean(await canvasBox(first, 'here')) && Boolean(await row('here')), Boolean);
+  const native = await hoverBox(first, 'here');
+  await until('the import no longer pending', () => native.locator('.status.mak').count(), (n) => n === 0);
 
   // Two tabs, one stream: a move in one reaches the other by it.
   const streamsAlone = streams;
   const second = await open(url);
-  await second.waitForSelector('.nm:text-is("here")');
+  await until('here on the canvas', () => canvasBox(second, 'here'), Boolean);
   const before = await place(second, 'here');
   await drag(first, 'here', 120, 80);
   await until('the other tab follows', () => place(second, 'here'), (now) => now !== before);
@@ -83,7 +91,7 @@ async function drag(page, name, dx, dy) {
   await first.close();
   await until('the stream handed on', () => Promise.resolve(streams), (n) => n === streamsAlone + 1);
   const third = await open(url);
-  await third.waitForSelector('.nm:text-is("here")');
+  await until('here on the canvas', () => canvasBox(third, 'here'), Boolean);
   const atHandover = await place(second, 'here');
   await drag(third, 'here', -60, 50);
   await until('followed after the handover', () => place(second, 'here'), (now) => now !== atHandover);
@@ -98,7 +106,7 @@ async function drag(page, name, dx, dy) {
     await until('back', () => third.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('offline')));
     seen.said_during_restart = said;
     check('no_sign_in_needed', (await third.locator('.gate').count()) === 0 && (await third.evaluate(() => sessionStorage.getItem('cozy.session'))) === held);
-    check('still_on_canvas', (await third.locator('.nm:text-is("here")').count()) === 1);
+    check('still_on_canvas', Boolean(await canvasBox(third, 'here')));
     const wasRow = await row('here');
     const otherWas = await place(second, 'here');
     await drag(third, 'here', 90, 40);
@@ -107,7 +115,7 @@ async function drag(page, name, dx, dy) {
     await until('the other tab still follows', () => place(second, 'here'), (now) => now !== otherWas);
     check('the_other_tab_follows_after_the_restart', (await second.locator('.pill.warn').allTextContents()).every((line) => !line.includes('offline')));
     await third.reload();
-    await third.waitForSelector('.nm:text-is("here")');
+    await until('here on the canvas', () => canvasBox(third, 'here'), Boolean);
     check('reload_after_restart', true);
   }
 

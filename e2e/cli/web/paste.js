@@ -11,6 +11,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, projectFromPage, projectUrl, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, until, upload } = require('./page');
 
+const { canvasBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -65,7 +67,7 @@ async function died(why) {
   writeFileSync(join(folder, 'cat.mp4'), MP4);
   for (const [name, file, x] of [['Azul_3', 'azul.png', 80], ['walk', 'walk.mp4', 480], ['cat', 'cat.mp4', 880]]) {
     await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, file), id), name, exact: true, at: { x, y: 80 } }) });
-    await box(name).waitFor();
+    await until(`${name} on the canvas`, () => canvasBox(page, name), Boolean);
   }
 
   // H3's Shot, its beats' words the prompts Paul pastes into.
@@ -146,7 +148,7 @@ async function died(why) {
   check('typing_marks_each_mention_at_once', JSON.stringify(known(seen.typed_at_once)) === JSON.stringify(marked), seen.typed_at_once);
   seen.typed_settled = await settled(typedInto);
   check('typing_marks_the_same_as_pasting', JSON.stringify(seen.typed_settled) === JSON.stringify(after[0]), { typed: seen.typed_settled, pasted: after[0] });
-  await page.locator('.react-flow__pane').first().click({ position: { x: 5, y: 5 } }).catch(() => {});
+  await closeBox(page);
 
   // Loaded again, each beat is marked as it was when pasted.
   await page.goto(await projectUrl(id, '/assets/scene'));

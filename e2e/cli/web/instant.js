@@ -14,6 +14,8 @@ const { rmSync } = require('fs');
 const { join } = require('path');
 const { projectFolder, implementationRow, projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, lookAt, openBox, renderOf, settled, storedOf, until } = require('./page');
 
+const { canvasBox, canvasView, canvasNames, hoverBox, screenshotPixels, fitCanvas } = require('./page');
+
 const failures = [];
 const seen = {};
 let during = 'the start';
@@ -103,10 +105,12 @@ async function loseAnswers(page, method, path, times) {
     const clock = (window.dropped = {});
     document.querySelector('.stage').addEventListener('letgo', () => {
       clock.drop = performance.now();
-      clock.boxes = document.querySelectorAll('.card[data-asset]').length;
+      clock.names = document.querySelector('.canvas-root').canvasInspection.names();
+      clock.boxes = clock.names.length;
       requestAnimationFrame(() => {
         clock.frame = performance.now();
-        clock.after = document.querySelectorAll('.card[data-asset]').length;
+        clock.afterNames = document.querySelector('.canvas-root').canvasInspection.names();
+        clock.after = clock.afterNames.length;
       });
     }, true);
   });
@@ -115,13 +119,14 @@ async function loseAnswers(page, method, path, times) {
     const { pathname, search } = new URL(request.url());
     if (request.method() === 'GET' && pathname.startsWith(`/v1/projects/${id}`)) reads.push(`${pathname.slice(`/v1/projects/${id}`.length) || '/'}${search}`);
   });
+  const beforeDropPixels = screenshotPixels(await page.screenshot());
   const posts = await hold(page, 'POST', '**/v1/projects/*/assets');
   await carry(page, await editor(), { x: 1100, y: 800 });
   await until('the frame after the drop', () => page.evaluate(() => window.dropped.frame), Boolean);
   const dropped = await page.evaluate(() => window.dropped);
   seen.drop = { frame_ms: dropped.frame - dropped.drop, boxes: [dropped.boxes, dropped.after] };
   check('box_in_the_frame_of_the_drop', dropped.after === dropped.boxes + 1, seen.drop);
-  const name = await page.locator('.card.landing').first().getAttribute('data-asset');
+  const name = dropped.afterNames.find(name => !dropped.names.includes(name));
   check('box_named_before_any_answer', Boolean(name) && !hasAsset(name), { name });
   check('a_pending_tool_drop_stays_in_Wander', await page.locator('[data-focused-asset]').count() === 0);
   // Its one POST is out and held: asked once, not yet (and not twice).
@@ -129,15 +134,23 @@ async function loseAnswers(page, method, path, times) {
   check('post_is_held', posts.calls.length === 1, posts.calls.length);
 
   // Moved and typed in while nothing is saved: each keeps its place in line, and nothing on screen says so.
-  const head = await box(name).locator('.head').boundingBox();
+  const pending = (await canvasBox(page,name)).bounds, pendingPixels = screenshotPixels(await page.screenshot()), dpr = await page.evaluate(() => devicePixelRatio);
+  const changes = [];
+  for (let y=pending.y;y<pending.y+pending.height;y+=4) for (let x=pending.x;x<pending.x+pending.width;x+=4) {
+    if (x<0 || y<0 || x*dpr>=pendingPixels.width || y*dpr>=pendingPixels.height) continue;
+    const a=beforeDropPixels(x*dpr,y*dpr),b=pendingPixels(x*dpr,y*dpr); if (a.some((v,i)=>Math.abs(v-b[i])>12)) changes.push([x,y]);
+  }
+  check('pending_card_has_real_pixels_before_the_answer', changes.length>8, { changedPixels:changes.length, pending });
+  const head = (await canvasBox(page,name)).title;
   await page.mouse.move(head.x + 100, head.y + 8);
   await page.mouse.down();
   await page.mouse.move(head.x + 160, head.y + 48, { steps: 3 });
   await page.mouse.up();
-  const place = () => box(name).evaluate((card) => getComputedStyle(card.closest('.react-flow__node')).transform);
+  const place = async () => { const b=(await canvasBox(page,name)).bounds,v=await canvasView(page),o=await page.locator('.canvas-root').boundingBox(); return JSON.stringify([Math.round((b.x-o.x-v.x)/v.zoom*100)/100,Math.round((b.y-o.y-v.y)/v.zoom*100)/100]); };
   const moved = await place();
   check('nothing_saved_yet', !hasAsset(name) && !(name in (await cards())));
   // Nothing on it says it's waiting: no status line, progress or queued/rendering dot (Card.tsx, StateDot.tsx).
+  await hoverBox(page,name);
   check('no_spinner_on_it', (await box(name).locator('.status, .prog, .media-making').count()) + (await box(name).getByRole('img', { name: /^(Queued|Rendering)$/ }).count()) === 0, await box(name).innerText());
   reads.length = 0;
   await posts.release();
@@ -147,49 +160,49 @@ async function loseAnswers(page, method, path, times) {
   check('own_echo_moves_nothing', (await place()) === moved, { moved, now: await place() });
   check('own_echo_reads_no_whole_project', !reads.some((read) => read === '/' || read === '/canvas'), reads);
   seen.reads_after_a_drop = reads.slice();
-  check('one_box', (await box(name).count()) === 1 && count(name) === 1, names());
+  check('one_box', Boolean(await canvasBox(page,name)) && count(name) === 1, names());
 
   // An answer lost: the same key again, and one asset.
   const lost = await loseAnswers(page, 'POST', '**/v1/projects/*/assets', 2);
   await carry(page, await editor(), { x: 400, y: 900 });
   const second = `${name}_2`;
-  await box(second).waitFor();
+  await until('second on the canvas', () => canvasBox(page,second), Boolean);
   await until('its answer came at last', () => Promise.resolve(lost.keys.length), (n) => n >= 3);
   await lost.done();
   await until('in the project', () => Promise.resolve(hasAsset(second)), Boolean);
-  await until('both on the page', () => page.locator(`.card[data-asset^="${name}"]`).count(), (n) => n === 2, 5000).catch(() => {});
+  await until('both on the page', async () => (await canvasNames(page)).filter(item => item.startsWith(name)).length, (n) => n === 2, 5000);
   check('retried_with_one_key', new Set(lost.keys).size === 1, lost.keys);
-  check('retried_makes_one', count(name) === 2 && (await page.locator(`.card[data-asset^="${name}"]`).count()) === 2, names());
+  check('retried_makes_one', count(name) === 2 && (await canvasNames(page)).filter(item => item.startsWith(name)).length === 2, names());
 
   // Another writer takes the name while this one's asked: the box takes what it got, and the other shows.
   const stalled = await hold(page, 'POST', '**/v1/projects/*/assets');
   await carry(page, await editor(), { x: 400, y: 200 });
   const third = `${name}_3`;
-  await box(third).waitFor();
+  await until('third on the canvas', () => canvasBox(page,third), Boolean);
   projectJson(folder, 'POST', '/assets', { tool: 'cozy/edit', name: third, exact: true, fields: {} });
   await until('the other in the project', () => Promise.resolve(hasAsset(third)), Boolean);
   await stalled.release();
-  await box(`${name}_4`).waitFor();
+  await until('renamed optimistic card on the canvas', () => canvasBox(page,`${name}_4`), Boolean);
   // What a writer elsewhere adds lands wherever it's free, which may be off screen.
-  await page.keyboard.press('f');
+  await fitCanvas(page);
   await settled(page);
-  const shown = await page.locator('.card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset));
-  check('another_writers_name_renames_it', (await box(third).count()) === 1 && (await box(`${name}_4`).count()) === 1 && hasAsset(`${name}_4`), { shown, names: names() });
+  const shown = await canvasNames(page);
+  check('another_writers_name_renames_it', Boolean(await canvasBox(page,third)) && Boolean(await canvasBox(page,`${name}_4`)) && hasAsset(`${name}_4`), { shown, names: names() });
 
   // Refused: Calcifer holds no such file. The box goes, one line says why, and what's behind it in line goes on.
   const notes = () => page.locator('.notes .note .line').allInnerTexts();
-  const boxes = await page.locator('.card[data-asset]').count();
+  const boxes = (await canvasNames(page)).length;
   const refusing = await hold(page, 'POST', '**/v1/projects/*/imports');
   // A take let go there that this Calcifer never held, as a carry lets one go.
   await page.evaluate(() => {
     const take = { sha256: '0'.repeat(64), field: 'image', name: 'never_held' };
     document.elementFromPoint(900, 200).dispatchEvent(new CustomEvent('letgo', { bubbles: true, detail: { load: { take }, x: 900, y: 200 } }));
   });
-  await box('never_held').waitFor({ timeout: 2000 });
+  await until('refused optimistic card first shown', () => canvasBox(page,'never_held'), Boolean, 2000);
   check('refused_box_shows_first', true);
   await refusing.release();
-  await box('never_held').waitFor({ state: 'detached' });
-  check('refused_rolls_back', (await page.locator('.card[data-asset]').count()) === boxes && !hasAsset('never_held'));
+  await until('refused optimistic card removed', () => canvasBox(page,'never_held'), box => box === null);
+  check('refused_rolls_back', (await canvasNames(page)).length === boxes && !hasAsset('never_held'));
   const said = await until('one line', notes, (lines) => lines.some((line) => /Couldn't take out never_held/.test(line)));
   check('refused_says_one_line', said.filter((line) => /never_held/.test(line)).length === 1, said);
 
@@ -197,8 +210,8 @@ async function loseAnswers(page, method, path, times) {
   // nothing asked (cl-904: Automerge text).
   projectJson(folder, 'POST', '/assets', { tool: '', name: 'words', exact: true, fields: { text: 'A storm.' } });
   // Nothing held open: what's open lies over what's below it.
-  await page.keyboard.press('f');
-  await box('words').waitFor();
+  await fitCanvas(page);
+  await until('words on the canvas', () => canvasBox(page,'words'), Boolean);
   await settled(page);
   await openBox(page, 'words');
   await box('words').locator('.mention-text[data-field="text"]').click();
@@ -257,16 +270,16 @@ async function loseAnswers(page, method, path, times) {
     const waits = await hold(page, 'POST', '**/v1/projects/*/assets');
     await carry(page, await editor(), { x: 1100, y: 200 });
     const fifth = `${name}_5`;
-    await box(fifth).waitFor();
+    await until('queued card on the canvas', () => canvasBox(page,fifth), Boolean);
     const restarted = new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
     await waits.release();
     await restarted;
     await until('it landed after the restart', () => Promise.resolve(hasAsset(fifth)), Boolean);
     // A while for a second landing, then all of it in view: the canvas draws only what's in view, and "once" counts what's drawn.
     await page.waitForTimeout(800);
-    await page.keyboard.press('f');
+    await fitCanvas(page);
     await settled(page);
-    const shown = await box(fifth).count();
+    const shown = (await canvasNames(page)).filter(item => item === fifth).length;
     check('restart_mid_queue_lands_once', shown === 1 && count(fifth) === 1 && !hasAsset(`${name}_6`), { shown, held: count(fifth), names: names() });
     await until('the top bar says nothing waits', () => page.locator('.top .pill').allInnerTexts(), (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
     check('nothing_left_saying_not_saved', true);
@@ -281,10 +294,10 @@ async function loseAnswers(page, method, path, times) {
     const primed = (await stillRuns()).length;
     addBoxes(folder, [{ name: 'fixture', tool: `${TOOL}/still`, kind: 'image', fields: { instructions: 'a whale' } }]);
     // Another writer's box, with no row: the page puts it where there's room in view, so it's drawn there (cl-972: it went below a fitted view with room).
-    const drawn = await box('fixture').waitFor({ timeout: 15_000 }).then(() => true, () => false);
-    const at = drawn ? await box('fixture').boundingBox() : null;
+    const drawn = await until('fixture on the canvas', () => canvasBox(page,'fixture'), Boolean, 15_000).then(() => true, () => false);
+    const at = drawn ? (await canvasBox(page,'fixture')).bounds : null;
     check('another_writers_box_drawn_in_view', Boolean(at) && at.x >= 0 && at.y >= 0 && at.x < 1600 && at.y < 1100, { at, row: (await cards()).fixture });
-    await box('fixture').waitFor();
+    await until('fixture on the canvas', () => canvasBox(page,'fixture'), Boolean);
     await openBox(page, 'fixture');
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
     await (await renderOf(page, 'fixture')).click();
@@ -324,7 +337,7 @@ async function loseAnswers(page, method, path, times) {
   }
   await page.reload();
   await page.waitForSelector('.ptabs .ptab.on');
-  await box(name).waitFor();
+  await until('card on the canvas', () => canvasBox(page,name), Boolean);
   const tab = (project) => page.getByTitle(project.path, { exact: true });
   // The open project's tab: its title is its folder, then what a click on it does (cl-958).
   const opened = (project) => page.locator('.ptab.on[aria-current="page"]').and(page.getByTitle(new RegExp(`^${project.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\n`)));
@@ -334,14 +347,14 @@ async function loseAnswers(page, method, path, times) {
   await page.mouse.move(1340, 960, { steps: 3 });
   await page.mouse.up();
   await settled(page);
-  const view = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+  const view = async () => JSON.stringify(await canvasView(page));
   const kept = await view();
   await tab(second_project).click();
   await opened(second_project).waitFor();
   await page.waitForSelector('.empty-canvas');
-  check('a_tab_opens_its_project', (await box(name).count()) === 0, await here.innerText());
+  check('a_tab_opens_its_project', (await canvasBox(page,name)) === null, await here.innerText());
   await page.getByTitle(folder, { exact: true }).click();
-  await box(name).waitFor({ timeout: 2000 });
+  await until('card on the canvas', () => canvasBox(page,name), Boolean, 2000);
   check('back_shows_its_boxes_at_once', true);
   await settled(page);
   check('each_project_keeps_its_view', (await view()) === kept, { kept, now: await view() });
@@ -354,9 +367,9 @@ async function loseAnswers(page, method, path, times) {
     await until('the Timeline implementation still there', async () => (await editor()).count(), (n) => n === 1);
     await carry(page, await editor(), { x: 1200, y: 300 });
     await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Video Timeline/.test(line)).length, (n) => n === 1);
-    check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
+    check('a_drop_on_what_cant_be_read_rolls_back', (await canvasNames(page))?.length === 0);
     await page.getByTitle(folder, { exact: true }).click();
-    await box(name).waitFor();
+    await until('card on the canvas', () => canvasBox(page,name), Boolean);
   }
   await dropMade();
 

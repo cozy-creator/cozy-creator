@@ -18,6 +18,8 @@ const { prepareCurrentSeed, seedCurrentProject } = require('./current-seed');
 // Reuse one native producer, prepared before cold/start memory and timing samples.
 prepareCurrentSeed();
 
+const { canvasBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -198,7 +200,7 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
       // The page shows it, and asks nothing more of it: it's open while it does. The one it showed before closes.
       await page.goto(await projectUrl(imported.state.id));
       // By its title: a name is drawn breakable after its underscores (cl-958's <wbr>), which its text no longer matches whole.
-      await page.waitForSelector('.react-flow__node .nm[title="shot_0"]', { timeout: 120_000 });
+      await until('shot_0 on the canvas', () => canvasBox(page, 'shot_0'), Boolean, 120_000);
       await page.waitForTimeout(1000);
       if (readable && !held(folder)) notHeld.push(folder);
       if (i > 0) {

@@ -10,6 +10,8 @@ const { join } = require('path');
 const { createInterface } = require('readline');
 const { projectUrl, PYTHON, calcifer, signIn, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, pointAt, rowsOf, until } = require('./page');
 
+const { canvasBox, hoverBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -99,14 +101,14 @@ function deletionEvidence(page, pathname, events) {
     await signIn(page);
     await page.waitForSelector('.top');
     await page.goto(await projectUrl(id));
-    await boxOf(page, 'goes').waitFor();
+    await until('goes on the canvas', () => canvasBox(page, 'goes'), Boolean);
 
     holder = await holdDatabase(join(folder, 'project.db'), events);
     evidence = deletionEvidence(page, `/v1/projects/${encodeURIComponent(id)}/assets/goes`, events);
-    const shut = page.locator('.react-flow__node .card[data-asset="goes"]');
+    const shut = await hoverBox(page, 'goes');
     await pointAt(page, shut.locator('.nm'));
     await shut.locator('.head [aria-label=Delete]').click();
-    await until('gone from the canvas', () => page.locator('.react-flow__node .card[data-asset="goes"]').count(), (n) => n === 0);
+    await until('gone from the canvas', () => canvasBox(page, 'goes'), (box) => box === null);
     check('shown_at_once', true);
     const refusal = await until('this delete answers file_held while the lock is held', () => Promise.resolve(evidence.replies.find((reply) => reply.status === 503 && reply.body?.error?.code === 'file_held')), Boolean);
     check('refused_while_held', holder.held(), refusal);

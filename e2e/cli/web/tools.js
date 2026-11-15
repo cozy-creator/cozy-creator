@@ -13,6 +13,8 @@ const { existsSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { projectFolder, implementationRow, projectFromPage, MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav, addBoxes, storedOf } = require('./page');
 
+const { canvasBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -97,12 +99,12 @@ function replaceFile(at, text) {
 
   // A picture, another, a video and a sound, each a box; and the every-type tool, read as a run reads it.
   await drop(page, [{ name: 'Coast.png', type: 'image/png', bytes: png(40) }, { name: 'Amy.png', type: 'image/png', bytes: png(160) }, { name: 'Walk.mp4', type: 'video/mp4', bytes: MP4 }, { name: 'Hum.wav', type: 'audio/wav', bytes: wav() }], 900, 300);
-  for (const name of ['coast', 'amy', 'walk', 'hum']) await box(name).waitFor();
+  for (const name of ['coast', 'amy', 'walk', 'hum']) await until(`${name} on the canvas`, () => canvasBox(page,name), Boolean);
   await until('all four in the project', () => Promise.resolve(storedOf(folder)), (boxes) => ['coast', 'amy', 'walk', 'hum'].every((name) => name in boxes));
   // Named first, it's read by PyPI's Runtime, which knows no tool; the install a run makes on this machine's Runtime takes its place. Its kind is
   // given, so Calcifer makes the box without reading the tool.
   addBoxes(folder, [{ name: 'shot', tool: `${fixture}/shot`, kind: 'video', fields: { plate: '<walk>' } }]);
-  await box('shot').waitFor();
+  await until('shot on the canvas', () => canvasBox(page,'shot'), Boolean);
   // No box shows a description field for now (cl-900, Paul 11-12: "remove all of the 'description' boxes since they are confusing"): a
   // picture, a video, a sound, a box with a tool; a stored one stays in the file.
   await api(`/v1/projects/${id}/assets/walk`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'A walk by the sea' } }) });
@@ -162,7 +164,7 @@ function replaceFile(at, text) {
   const editQwen = await implementationRow(page, 'edit_image', qwen.id);
   // Left a moment ago, Focus's canvas is still on its way back: measured mid-way, the drop lands on another box.
   await require('./page').settled(page);
-  const target = await box(choosing.name).locator('.media').boundingBox();
+  const target = (await canvasBox(page,choosing.name)).body;
   await require('./page').carry(page, editQwen, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   await until('dragged tool attaches to image holder', () => of(choosing.name), (asset) => asset.tool === qwen.id);
   await require('./page').settled(page);
@@ -186,7 +188,7 @@ function replaceFile(at, text) {
   const configured = await until('the palette back', listed, (rows) => rows.length > 0, 10_000).catch(() => listed());
   check('model_configuration_keeps_category_structure', JSON.stringify(configured) === JSON.stringify(atRest), { atRest, configured });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
-  await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);
+  await until('model-choice node removed', () => canvasBox(page,choosing.name), (box) => box === null);
   // The rest stand beside it, in reach while it's worked on.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const at = cards.shot;
@@ -315,14 +317,14 @@ function replaceFile(at, text) {
   // A point of a box's picture a person can reach, where a press moves the box: what floats over it, and the box being worked on, may cover the
   // rest, and its × at rest is over its top.
   const reach = (name) => page.evaluate((name) => {
-    const node = document.querySelector(`.react-flow__node:has(.card[data-asset="${name}"])`);
-    const at = (node.querySelector('.card > .media') ?? node).getBoundingClientRect();
-    for (let y = at.top + 4; y < Math.min(at.bottom, innerHeight); y += 8) for (let x = at.left + 4; x < Math.min(at.right, innerWidth); x += 8) {
-      const el = document.elementFromPoint(x, y);
-      if (el?.closest('.react-flow__node')?.querySelector('.card')?.dataset.asset === name && !el.closest('button')) return { x, y };
+    const root=document.querySelector('.canvas-root'), inspection=root?.canvasInspection, at=inspection?.card(name)?.body;
+    if (!at) return null;
+    for (let y=at.y+4;y<Math.min(at.y+at.height,innerHeight);y+=8) for (let x=at.x+4;x<Math.min(at.x+at.width,innerWidth);x+=8) {
+      const el=document.elementFromPoint(x,y);
+      if (el && root.contains(el) && !el.closest('button,input,textarea,select,[contenteditable]') && inspection.hitTest({x,y})?.name===name) return {x,y};
     }
     return null;
-  }, name);
+  },name);
   const carry = async (from, to, look) => {
     await to.evaluate((el) => el.scrollIntoView({ block: 'nearest' }));
     const start = await reach(from);
@@ -339,9 +341,10 @@ function replaceFile(at, text) {
   await more('shot');
   // Focus leaves the canvas right of its fields in view: the two carried in stand there, one over the other, the others out of the way.
   const strip = await page.evaluate(() => {
-    const at = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+    const at = document.querySelector('.canvas-root').canvasInspection.camera();
+    const origin = document.querySelector('.canvas-root').getBoundingClientRect();
     const right = Math.max(...[...document.querySelectorAll('.focus-viewport .focus-card > .here-under, .focus-viewport .focus-card .media')].map((el) => el.getBoundingClientRect().right));
-    return { x: Math.round((right + 24 - at.e) / at.a), y: Math.round((150 - at.f) / at.a), h: Math.round((innerHeight - 170) / at.a) };
+    return { x: Math.round((right + 24 - origin.left - at.x) / at.zoom), y: Math.round((150 - origin.top - at.y) / at.zoom), h: Math.round((innerHeight - 170) / at.zoom) };
   });
   seen.strip = strip;
   await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { coast: { x: strip.x, y: strip.y }, walk: { x: strip.x, y: strip.y + Math.round(strip.h / 2) }, amy: { x: strip.x + 4000, y: strip.y }, hum: { x: strip.x + 4000, y: strip.y + 1000 } } }) });

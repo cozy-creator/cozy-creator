@@ -6,6 +6,8 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, projectFromPage, signIn, STEP_MS, until } = require('./page');
 
+const { hoverBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -63,10 +65,10 @@ async function died(why) {
   seen.others = images.slice(1).map((tool) => tool.id);
   await api(`${at}/assets`, 'POST', { name: 'tooled', exact: true, kind: 'image', tool: images[0].id, fields: {}, at: { x: 300, y: 200 } });
   await until('the box has its tool', async () => (await api(at)).assets.find((row) => row.name === 'tooled'), (row) => row?.tool === images[0].id);
-  await boxOf(page, 'tooled').waitFor();
+  await hoverBox(page, 'tooled');
   await fitCanvas(page);
 
-  await page.locator('.react-flow__node:has(.card[data-asset="tooled"]) .nm').first().click({ button: 'right' });
+  await boxOf(page, 'tooled').locator('.nm').first().click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
   const items = await page.locator('.asset-menu [role=menuitem]').allTextContents();
   seen.items = items;

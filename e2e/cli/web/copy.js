@@ -12,6 +12,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, projectUrl, settled, signIn, STEP_MS, until, upload } = require('./page');
 
+const { canvasBox, canvasView, selectedBoxes, hoverBox, openCanvas, screenshotPixels } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -95,7 +97,7 @@ async function died(why) {
   const otherFile = (await asset('other'))?.sha256;
   const held0 = bytesHeld();
 
-  for (const name of ['hei', 'words', 'other']) await boxOf(page, name).waitFor();
+  for (const name of ['hei', 'words', 'other']) await until(`${name} on the canvas`, () => canvasBox(page, name), Boolean);
   await fitCanvas(page);
   const quiet = async () => {
     await page.evaluate(() => {
@@ -103,32 +105,31 @@ async function died(why) {
       document.getSelection()?.removeAllRanges();
     });
   };
-  const selected = () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node.selected .card')].map((card) => card.dataset.asset).sort());
+  const selected = async () => (await selectedBoxes(page)).sort();
   /** Only `names` selected, by Shift and a click on each one's name, as a person adds to a selection. */
   const pick = async (...picked) => {
     await quiet();
     await page.keyboard.press('Escape');
     await until('nothing selected', selected, (now) => now.length === 0);
-    for (const name of picked) await boxOf(page, name).locator('.nm').first().click({ modifiers: ['Shift'] });
+    for (const name of picked) await (await hoverBox(page, name)).locator('.nm').first().click({ modifiers: ['Shift'] });
     return until(`${picked.join(' and ')} selected`, selected, (now) => now.join() === [...picked].sort().join());
   };
-  /** A point on the canvas with nothing on it. */
-  const empty = () => page.evaluate(() => {
-    const pane = document.querySelector('.react-flow__pane').getBoundingClientRect();
-    for (let y = pane.bottom - 80; y > pane.top + 80; y -= 30) {
-      for (let x = pane.right - 120; x > pane.left + 80; x -= 30) {
-        if (document.elementFromPoint(x, y)?.classList.contains('react-flow__pane')) return { x, y };
-      }
-    }
-    return null;
-  });
-  /** Where a point on the screen is on the canvas. */
-  const onCanvas = (point) => page.evaluate(({ x, y }) => {
-    const pane = document.querySelector('.react-flow__pane').getBoundingClientRect();
-    const [, tx, ty, zoom] = document.querySelector('.react-flow__viewport').style.transform.match(/translate\((-?[\d.]+)px, *(-?[\d.]+)px\) scale\(([\d.]+)\)/).map(Number);
-    return { x: (x - pane.left - tx) / zoom, y: (y - pane.top - ty) / zoom };
-  }, point);
-  const shows = (name) => until(`${name} shows its picture`, () => boxOf(page, name).locator('img').evaluateAll((images) => images.some((image) => image.complete && image.naturalWidth > 0)).catch(() => false), Boolean).catch(() => false);
+  const empty = () => openCanvas(page);
+  /** Where a screen point lies in world coordinates. */
+  const onCanvas = async ({ x, y }) => {
+    const pane = await page.locator('.canvas-root').boundingBox(), view = await canvasView(page);
+    return { x: (x - pane.x - view.x) / view.zoom, y: (y - pane.y - view.y) / view.zoom };
+  };
+  const displayedPixels = async (name) => {
+    await page.mouse.move(20, 20);
+    await until('native overlay off', () => page.locator('.canvas-node').count(), (n) => n === 0);
+    const body = (await canvasBox(page, name)).body;
+    const read = screenshotPixels(await page.screenshot());
+    const dpr = await page.evaluate(() => devicePixelRatio);
+    return [[0.3, 0.3], [0.7, 0.3], [0.3, 0.7], [0.7, 0.7]].map(([x,y]) => read((body.x + body.width*x)*dpr, (body.y + body.height*y)*dpr));
+  };
+  const originalPixels = await until('original picture is drawn', () => displayedPixels('hei'), (samples) => samples.every((rgb, i) => [40, 80].some((red) => Math.abs(rgb[0] - red) <= 18) && Math.abs(rgb[1] - (i % 2 ? 0.7 : 0.3) * 255) <= 20 && Math.abs(rgb[2] - (i >= 2 ? 0.7 : 0.3) * 255) <= 20));
+  const shows = (name) => until(`${name} shows the same picture`, () => displayedPixels(name), (samples) => samples.every((rgb,i) => rgb.every((channel,c) => Math.abs(channel-originalPixels[i][c]) <= 18))).then(() => true, () => false);
   const newest = async () => (await api(`${at}/history`)).body?.entries?.[0] ?? null;
 
   // Ctrl+C, and Ctrl+V with the pointer on the canvas.
@@ -160,7 +161,8 @@ async function died(why) {
   const entry = await newest();
   seen.entry = entry;
   check('one_entry_of_the_history', ['hei_2', 'words_2'].every((name) => entry?.names?.includes(name)), entry);
-  check('copy_shows_the_picture', await shows('hei_2'), await boxOf(page, 'hei_2').innerHTML().catch(() => null));
+  await fitCanvas(page);
+  check('copy_shows_the_picture', await shows('hei_2'), { originalPixels, copy: await displayedPixels('hei_2') });
   await shot('pasted');
   // Zoomed to what's selected, both are drawn: a box off the view isn't.
   await quiet();
@@ -174,8 +176,8 @@ async function died(why) {
   await page.keyboard.press('ControlOrMeta+z');
   const undone = await until('both undone', names, (now) => now.length === 3).catch(async () => names());
   check('undo_removes_the_copies', undone.join() === 'hei,other,words', undone);
-  await until('gone from the canvas', () => page.locator('.card[data-asset="hei_2"], .card[data-asset="words_2"]').count(), (n) => n === 0).catch(() => null);
-  check('undo_clears_the_canvas', (await page.locator('.card[data-asset="hei_2"], .card[data-asset="words_2"]').count()) === 0);
+  await until('gone from the canvas', async () => [await canvasBox(page, 'hei_2'), await canvasBox(page, 'words_2')], (boxes) => boxes.every((box) => box === null));
+  check('undo_clears_the_canvas', !(await canvasBox(page, 'hei_2')) && !(await canvasBox(page, 'words_2')));
 
   // With the pointer off the canvas, beside what was copied.
   await page.mouse.move(page.viewportSize().width / 2, 10);
@@ -205,7 +207,7 @@ async function died(why) {
   await quiet();
   await page.keyboard.press('Escape');
   const before = (await rows()).other;
-  const handle = await boxOf(page, 'other').locator('.nm').first().boundingBox();
+  const handle = (await canvasBox(page, 'other')).title;
   const [x, y] = [handle.x + handle.width / 2, handle.y + handle.height / 2];
   await page.keyboard.down('Alt');
   await page.mouse.move(x, y);
@@ -225,7 +227,7 @@ async function died(why) {
 
   // Duplicate on a box's menu.
   await quiet();
-  await boxOf(page, 'words').locator('.nm').first().click({ button: 'right' });
+  await (await hoverBox(page, 'words')).locator('.nm').first().click({ button: 'right' });
   const menu = page.locator('.asset-menu');
   await menu.waitFor();
   const items = await menu.locator('[role=menuitem]').allTextContents();
