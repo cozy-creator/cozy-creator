@@ -1,6 +1,7 @@
 # e2e/run.sh: how every suite runs `cozy` and reads what a run made (e2e/lib.sh, release-gate/gate.sh and its suites).
 # RUN_CLI is the cozy to call (default `cozy`). A run is kept in <dir> under its <name>: <name>.ndjson (its events),
-# <name>.err, <name>.number (`none`: it never got one) and <name>.json, its whole record (`cozy run watch --once --json --full`).
+# <name>.err, <name>.number (`none`: it never got one), <name>.id (what names it from any folder: `run_handle`) and <name>.json,
+# its whole record (`cozy run watch --once --json --full`).
 # A run belongs to a project (`run_project`): its outputs land in the project's files/, and `run_output` downloads them by
 # their digest (`cozy run watch -o`): Calcifer's paths are its own (cl-819).
 #
@@ -84,7 +85,7 @@ run_submit1() {
 
 run_start() {
   local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
-  rm -f "$dir/$name".{ndjson,err,json,number,pid,at}
+  rm -f "$dir/$name".{ndjson,err,json,number,id,pid,at}
   (cd "${RUN_PROJECT:-$PWD}" && exec "$@") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
   local pid=$!
   echo "$pid" > "$dir/$name.pid"
@@ -103,18 +104,16 @@ run_start() {
   done
   [ -n "$n" ] || n=$(run_number "$dir/$name.ndjson")
   echo "${n:-none}" > "$dir/$name.number"
+  [ -z "$n" ] || run_handle "$dir/$name.ndjson" > "$dir/$name.id"
   [ -z "$n" ] || echo "$n"
 }
 
 # API warming stays available to fixtures after the public CLI option is removed.
 run_warm_submit() {
-  local dir=$1 name=$2 target=$3 stage=() n; shift 3
+  local dir=$1 name=$2 target=$3 stage=(); shift 3
   [[ $target != .* ]] || target="$PWD/$target"
   [ -z "${RUN_CODE_STAGE:-}" ] || stage=(--stage-code "$RUN_CODE_STAGE")
-  n=$(run_start "$dir" "$name" python3 "$RUN_WARM_API" --cozy "${COZY:-$RUN_CLI}" "${stage[@]}" "$target" "$@")
-  # A warm names no project: its run is read outside any (run_show).
-  echo "$HOME" > "$dir/$name.at"
-  [ -z "$n" ] || echo "$n"
+  run_start "$dir" "$name" python3 "$RUN_WARM_API" --cozy "${COZY:-$RUN_CLI}" "${stage[@]}" "$target" "$@"
 }
 
 run_warm_cell() {
@@ -124,6 +123,13 @@ run_warm_cell() {
 }
 # Its events' lines (a merged stderr's are not JSON).
 run_number() { { grep '^{' "$1" 2> /dev/null | jq -r 'select(.run.number != null) | .run.number' 2> /dev/null || true; } | head -1; }
+# run_handle <ndjson>: the run's name (`KEY-N`, cl-987), else its id: either names it from any folder, where a bare number names a
+# run of the project it is asked in (a model upload's run is no project's: its number read in one names another run or none).
+run_handle() {
+  { grep '^{' "$1" 2> /dev/null | jq -r 'select(.run.number != null) | if (.run.name // "") != "" then .run.name else .run.id // empty end' 2> /dev/null || true; } | head -1
+}
+# run_ref <dir> <name> <number>: what names run <number> of <name> to `cozy run watch`: its <name>.id, else the number.
+run_ref() { if [ "$(cat "$1/$2.number" 2> /dev/null)" = "$3" ] && [ -s "$1/$2.id" ]; then cat "$1/$2.id"; else echo "$3"; fi; }
 # run_reached <ndjson> <status>: whether the run's events reached the status.
 run_reached() { grep '^{' "$1" 2> /dev/null | jq -en --arg s "$2" 'any(inputs; .run.status? == $s)' > /dev/null 2>&1; }
 
@@ -145,10 +151,6 @@ run_linger() {
       done
       sudo -n ls -l "/proc/$pid/fd" 2> /dev/null
       { sudo -n ss -tanpx 2> /dev/null || true; } | grep "pid=$pid,"
-    fi
-    if [ -n "${RUN_LINGER_GDB:-}" ] && sudo -n true 2> /dev/null; then
-      command -v gdb > /dev/null || sudo -n apt-get install -y -qq gdb > /dev/null 2>&1 || true
-      sudo -n timeout 120 gdb -p "$pid" -batch -ex 'info threads' -ex 'thread apply all bt 40' 2>&1 | tail -n 400
     fi
   } > "$1/$2.linger" 2>&1
 }
@@ -179,22 +181,25 @@ run_wait() {
   if [ -n "$want" ]; then run_reached "$dir/$name.ndjson" "$want"; return; fi
   [ -z "$lingered" ] || return 1
   # The follower can end with the run still going (this computer's cozy restarted under it): the run keeps going on its
-  # machine, so its record is read again until it settles, through Calcifer's own restarts.
-  local s began=$SECONDS
-  while s=$(run_get "$dir" "$name" .status); { [ -z "$s" ] || [ "$s" = queued ] || [ "$s" = in_progress ]; } && [ $((SECONDS - began)) -lt 10800 ]; do
+  # machine, so its record is read again until it settles, through Calcifer's own restarts. One that said the terminal event
+  # leaves a settled run, read once: a record that can't be read then is said, not waited on (cl-992: 90 min of reads).
+  local s began=$SECONDS limit=10800
+  ! run_ended "$dir/$name.ndjson" || limit=0
+  while s=$(run_get "$dir" "$name" .status); { [ -z "$s" ] || [ "$s" = queued ] || [ "$s" = in_progress ]; } && [ $((SECONDS - began)) -lt "$limit" ]; do
     sleep 15; run_show "$dir" "$name" "$n"
   done
   case $s in completed | failed | canceled) return 0 ;; esac
+  [ -n "$s" ] || echo "$name: no record of run $(run_ref "$dir" "$name" "$n") (cozy run watch $(run_ref "$dir" "$name" "$n") --once)" >&2
   return 1
 }
 
 # run_show <dir> <name> <number>: the run's record now, into <name>.json (kept as it was when the read fails). `run
-# show` exits non-zero for a run that failed or was canceled: the record is what it printed. A number names a run of
-# the project it was asked in: read where run_start asked it, or where <name>.at says.
+# show` exits non-zero for a run that failed or was canceled: the record is what it printed. Read by its name or id
+# (`run_ref`) where run_start asked it, or where <name>.at says.
 run_show() {
   local at
   at=$(cat "$1/$2.at" 2> /dev/null || echo "${RUN_PROJECT:-$PWD}")
-  (cd "$at" && "$RUN_CLI" --json --full run watch "$3" --once) > "$1/$2.json.new" 2> /dev/null || true
+  (cd "$at" && "$RUN_CLI" --json --full run watch "$(run_ref "$1" "$2" "$3")" --once) > "$1/$2.json.new" 2> /dev/null || true
   if jq -e .status "$1/$2.json.new" > /dev/null 2>&1; then
     mv "$1/$2.json.new" "$1/$2.json"
   else
@@ -230,7 +235,7 @@ run_outputs() {
   [ -n "$n" ] && [ "$n" != none ] || return 0
   # JSON's paths belong to Calcifer and are not sent; the CLI says each downloaded path on stderr.
   out=$(cd "$1" && pwd)/$2.out
-  (cd "${RUN_PROJECT:-$PWD}" && "$RUN_CLI" run watch "$n" --once -o "$out") > /dev/null 2> "$1/$2.export.err" || true
+  (cd "${RUN_PROJECT:-$PWD}" && "$RUN_CLI" run watch "$(run_ref "$1" "$2" "$n")" --once -o "$out") > /dev/null 2> "$1/$2.export.err" || true
   while IFS= read -r line; do
     while IFS= read -r name; do
       case "$line" in

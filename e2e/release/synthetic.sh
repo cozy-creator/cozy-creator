@@ -25,7 +25,7 @@ release_synthetic_checks() (
   }
   RUN_CLI=cozy
   . "$E2E/run.sh"
-  # A verb's cozy exits as its run's terminal event is said (cl-992: `model upload` stayed 90 min after run.completed).
+  # A verb's cozy exits within RUN_EXIT_S of saying its run's terminal event (cl-992).
   watched() {
     local name=$1 code=0; shift
     { [ -n "$(run_submit "$OUT" "$name" "$@")" ] && run_wait "$OUT" "$name" && [ "$(run_get "$OUT" "$name" .status)" = completed ]; } || code=1
