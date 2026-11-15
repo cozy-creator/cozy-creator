@@ -78,7 +78,7 @@ def main() -> int:
                "files": files, "paths": paths, "on": ["local"], "hub": hub,
                "project": str(args.project.resolve(strict=True))}
     key = str(uuid.uuid4())
-    followed: set[int] = set()
+    followed: set[str] = set()
     while True:
         call = urllib.request.Request(base + "/v1/run-estimates", data=json.dumps(request).encode(), headers={
             **headers, "Content-Type": "application/json", "Idempotency-Key": key,
@@ -94,13 +94,13 @@ def main() -> int:
                 raise ValueError("Calcifer returned no estimate")
             print(json.dumps(answer))
             return 0
-        number = preparing["number"]
+        # Its KEY-N names it from this script's folder, which is no project's (cl-987).
+        name = str(preparing["name"])
         # Local preparation installs code with a WARM run; the requested model function never runs.
-        if preparing["kind"] != "warm" or number in followed:
+        if preparing["kind"] != "warm" or name in followed:
             raise ValueError("Calcifer did not finish the local-code preparation")
-        followed.add(number)
-        # Run numbers are the project's own (#2858): the warm run is watched from the project it was asked in.
-        subprocess.run([args.cozy, "--json", "run", "watch", str(number)], cwd=args.project.resolve(), stdout=sys.stderr, check=True)
+        followed.add(name)
+        subprocess.run([args.cozy, "--json", "run", "watch", name], stdout=sys.stderr, check=True)
 
 
 if __name__ == "__main__":
