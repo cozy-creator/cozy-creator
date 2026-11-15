@@ -4,7 +4,7 @@
 // drawn at the canvas's scale, cl-890); a prompt over a picture is bold, 4.5:1 or more against its surface (cl-901). A render's Cancel shows at
 // 1 and at 0.5, and the Focus frame fits the window. Each finding names its rule, where, and what (layout.js's rules, measured).
 const { randomUUID } = require('crypto');
-const { test, expect, canvasCard, canvasNames, canvasIdle, hoverBox, focus, fixtureTool, observeStill, screenshotPixels, MP4, png } = require('./fixtures');
+const { test, expect, canvasCard, canvasNames, canvasIdle, hoverBox, focus, fixtureTool, observeStill, screenshotPixels, MP4, png, pointerOffCanvas } = require('./fixtures');
 
 test.use({
   launchOptions: {
@@ -101,8 +101,12 @@ function audit({ floor, focused }) {
     if (!painted || painted.dragging) continue;
     const bounds = rect(card.bounds), body = rect(painted.body);
     const labels = Object.entries(painted.labels).filter(([, label]) => label.text && label.width >= 1 && label.height >= 1);
+    const controls = painted.controls.flatMap(control => {
+      if (!control.paint) { inspectFailure('missing-control-paint', asset, control.part, 'no drawn stroke/fill bounds'); return []; }
+      return [{ part: control.part, ...control.paint }];
+    });
     const hung = [{ part: 'card', rect: bounds }, ...labels.map(([key, label]) => ({ part: key, rect: rect(label) })),
-      ...painted.controls.map(control => ({ part: control.part, rect: rect(control) }))];
+      ...controls.map(control => ({ part: control.part, rect: rect(control) }))];
     if (painted.stateDot) hung.push({ part: 'state dot', rect: rect(painted.stateDot) });
     if (onScreen(bounds)) boxes.push({ name: asset, hung });
     for (const [key, label] of labels) {
@@ -117,11 +121,11 @@ function audit({ floor, focused }) {
         && within(at, { left: 0, top: 0, right: innerWidth, bottom: innerHeight }, 0)
         && root.contains(document.elementFromPoint(at.left + at.width / 2, at.top + at.height / 2))) pixels.push({ name: asset, key, ...label });
     }
-    for (let i = 0; i < painted.controls.length; i++) for (let j = i + 1; j < painted.controls.length; j++) {
-      const [a, b] = [painted.controls[i], painted.controls[j]];
+    for (let i = 0; i < controls.length; i++) for (let j = i + 1; j < controls.length; j++) {
+      const [a, b] = [controls[i], controls[j]];
       if (meet(rect(a), rect(b))) inspectFailure('overlap', asset, a.part, `on ${b.part}: ${round(rect(a))} and ${round(rect(b))}`);
     }
-    for (const control of painted.controls) {
+    for (const control of controls) {
       const at = rect(control);
       if (at.left < bounds.left - 1 || at.right > bounds.right + 1) inspectFailure('outside', asset, control.part, `${round(at)} past the box's width ${round(bounds)}`);
     }
@@ -192,7 +196,7 @@ function textPixels(read, labels, ink, dpr) {
 }
 
 async function passive(page) {
-  await page.mouse.move(2, 500);
+  await pointerOffCanvas(page);
   await expect(page.locator('.canvas-node')).toHaveCount(0);
   // Runs/loading may animate forever. Only finite arrival/movement must settle before measuring geometry.
   await expect.poll(() => page.evaluate(() => {
@@ -262,9 +266,9 @@ test('layout', async ({ page, project, api }) => {
       let painted;
       await expect.poll(async () => {
         painted = (await canvasCard(page, 'making'))?.rendered;
-        return Boolean(painted?.controls.some(control => control.part === 'cancel') && painted.labels.cancel?.text === 'Cancel');
+        return Boolean(painted?.controls.some(control => control.part === 'cancel' && control.paint) && painted.labels.cancel?.text === 'Cancel');
       }, { message: `Cancel is actually in the passive scene at ${zoom}` }).toBe(true);
-      const r = painted.controls.find(control => control.part === 'cancel');
+      const r = painted.controls.find(control => control.part === 'cancel').paint;
       expect.soft(Boolean(r) && r.x >= 0 && r.y >= 0 && r.x + r.width <= 1600 && r.y + r.height <= 1000, `and on screen at ${zoom}: ${JSON.stringify(r)}`).toBe(true);
       const look = await page.evaluate(() => {
         const root = document.querySelector('.canvas-root'), inspection = root.canvasInspection;
@@ -292,7 +296,7 @@ test('layout', async ({ page, project, api }) => {
       for (let i = 0; i < 2; i++) await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
       await canvasIdle(page);
       await expect(zoomButton).toHaveText('25%');
-      await page.mouse.move(2, 500);
+      await pointerOffCanvas(page);
       await looked('at 0.25');
       await zoomMenu('Zoom to 50%');
       await looked('at 0.5');
@@ -312,7 +316,7 @@ test('layout', async ({ page, project, api }) => {
       await expect(prompt).toBeVisible();
       // Edit fits the frame again as it opens its words: looked at once they're at rest.
       await expect.poll(() => observeStill(page, 300, '.focus-viewport .in-frame .mention-text'), { message: 'the words at rest' }).toEqual([]);
-      await page.mouse.move(2, 500);
+      await pointerOffCanvas(page);
       await looked('busy in Focus, written over its picture', true);
       const drawn = await prompt.evaluate(legibility);
       expect.soft(drawn.weight, `the prompt over the picture is bold: ${JSON.stringify(drawn)}`).toBeGreaterThanOrEqual(700);

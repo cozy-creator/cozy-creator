@@ -6,7 +6,7 @@
 const { createHash } = require('crypto');
 const { readdirSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasIdle, focus, middle, png, TEXT_END, canvasCard, canvasNames, canvasPoint, canvasVisible, selectedNames } = require('./fixtures');
+const { test, expect, box, canvasIdle, focus, middle, png, TEXT_END, canvasCard, canvasNames, canvasPoint, canvasVisible, selectedNames, pointerOffCanvas } = require('./fixtures');
 const { drag, drawn, rows, rowsOf } = require('./geometry');
 
 const WORDS = 'a lighthouse in <hei.2> beside <other>';
@@ -85,7 +85,7 @@ test('box-actions', async ({ page, project, api }) => {
     expect.soft((await project.asset('words_2')).fields?.text, "the copy's mention names the copy").toBe('a lighthouse in <hei_2.2> beside <other>');
     expect.soft((await project.asset('words')).fields?.text, 'the words copied are as they were').toBe(WORDS);
     expect.soft(files(), 'no bytes copied').toBe(held);
-    await page.mouse.move(2, 500);
+    await pointerOffCanvas(page);
     await page.keyboard.press('ControlOrMeta+z');
     await expect.poll(names, { message: 'one Undo takes both back' }).toEqual(before);
     for (const name of ['hei_2', 'words_2']) await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes(name), { timeout: 1000 }).toBe(false);

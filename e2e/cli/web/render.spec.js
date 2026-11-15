@@ -8,7 +8,7 @@
 // starts before the other's install ends.
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasIdle, focus, middle, openPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, openPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels, pointerOffCanvas } = require('./fixtures');
 
 const TOOL = fixtureTool('tool.py');
 const STILL = `${TOOL}/still`;
@@ -348,7 +348,7 @@ test('render', async ({ page, project, api, cli }) => {
   await test.step('Cancel one box while it waits for its input and another while it renders', async () => {
     await hoverBox(page, 'after');
     await face(page, 'after').getByRole('button', { name: "Cancel after's render", exact: true }).click();
-    await page.mouse.move(2, 500);
+    await pointerOffCanvas(page);
     await expect.poll(() => settled(project, 'after'), { message: 'after canceled, its take gone' }).toEqual({ takes: 0, making: 0, versions: 0 });
     await softly.poll(() => renderState(page, 'after')).toBeNull();
     await expect.poll(() => renderState(page, 'slow'), { message: 'slow renders', timeout: 90_000 }).toMatch(/^Drawing/);
@@ -373,7 +373,7 @@ test('render', async ({ page, project, api, cli }) => {
     expect(run, "slow's run").toBeTruthy();
     await hoverBox(page, 'slow');
     await face(page, 'slow').getByRole('button', { name: "Cancel slow's render", exact: true }).click();
-    await page.mouse.move(2, 500);
+    await pointerOffCanvas(page);
     await expect.poll(() => settled(project, 'slow'), { message: 'slow canceled, its take gone', timeout: 30_000 }).toEqual({ takes: 0, making: 0, versions: 0 });
     await softly.poll(async () => (await api.get(project.at(`/runs/${run}`))).status, { message: `run ${run}` }).toBe('canceled');
     await softly.poll(() => renderState(page, 'slow')).toBeNull();

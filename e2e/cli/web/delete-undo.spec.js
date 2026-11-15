@@ -3,7 +3,7 @@
 // and approval, Redo takes it again. Backspace in a prompt edits only its words. A deleted box that another reads is named as gone there and
 // resolves nowhere, until Undo (cl-919); an API client's delete undoes from the page; and an undo a later edit would clobber is refused, saying
 // which.
-const { test, expect, canvasIdle, focus, middle, png, fixtureTool, canvasNames, canvasPoint, canvasVisible, selectedNames, hoverBox } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, png, fixtureTool, canvasNames, canvasPoint, canvasVisible, selectedNames, hoverBox, pointerOffCanvas } = require('./fixtures');
 const { rowsOf } = require('./geometry');
 
 // Four pictures to delete four ways, each with two takes and the first approved; then F, G reading it, H for an API client, K to clobber.
@@ -79,7 +79,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
   });
 
   await test.step('Ctrl+Z twice, the top bar Undo, then Ctrl+Shift+Z', async () => {
-    await page.mouse.move(2, 500);
+    await pointerOffCanvas(page);
     await page.keyboard.press('ControlOrMeta+z');
     await back('d4', 'the first Ctrl+Z');
     await page.keyboard.press('ControlOrMeta+z');

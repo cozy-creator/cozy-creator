@@ -1,7 +1,7 @@
 // select (cl-973 core cell 3), at zoom 1 and 0.25: a click selects a box and opens nothing; Shift adds one; a Shift-drag selects exactly
 // what it touches; Ctrl+A selects all; a click on the canvas clears it; a hover never looks selected. A selected box has a ring of the
 // selection's own colour, with its glow, 3 px or more on screen.
-const { test, expect, canvasCard, canvasNames, canvasPoint, canvasIdle, selectedNames, hoverBox, openPoint, png, screenshotPixels, zoomOf } = require('./fixtures');
+const { test, expect, canvasCard, canvasNames, canvasPoint, canvasIdle, selectedNames, hoverBox, openPoint, png, screenshotPixels, zoomOf, pointerOffCanvas } = require('./fixtures');
 
 // Pictures 240 wide on the canvas, a row of three and one under them, clear of each other.
 const PLACES = { A: { x: 0, y: 0 }, B: { x: 360, y: 0 }, C: { x: 720, y: 0 }, D: { x: 0, y: 380 } };
@@ -131,7 +131,7 @@ async function rings(page) {
 }
 
 async function passive(page) {
-  await page.mouse.move(2, 500);
+  await pointerOffCanvas(page);
   await expect(page.locator('.canvas-node')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.resources()?.scheduledFrame), { message: 'the passive scene is presented and idle' }).toBe(false);
 }
@@ -259,7 +259,7 @@ test('select', async ({ page, project }) => {
         }
         expect.soft(hovered, 'a hover has no glow').toMatchObject({ glow: false });
         expect.soft(await selectedNames(page)).not.toContain('D');
-        await page.mouse.move(2, 500);
+        await pointerOffCanvas(page);
       });
     });
   }
