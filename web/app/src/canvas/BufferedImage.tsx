@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react"
-import { THUMB_TRIES, thumbWait, whenThumb } from "../api/thumbs"
+import { THUMB_TRIES, thumbPending, thumbWait, whenThumb } from "../api/thumbs"
 import { useConnection } from "../app/Connection"
 import { useCanvasStore } from "./context"
 
@@ -20,8 +20,12 @@ interface Picture extends Source {
   ready: boolean
   dead: boolean
   running: boolean
-  /** How many times it wasn't there yet. */
+  /** Request/cache-bust generation, including accepted pending checks. */
   tries: number
+  /** Consecutive genuine failures; an accepted pending response does not spend this budget. */
+  errors: number
+  pendingChecks: number
+  probe?: AbortController
   /** Stops waiting to ask again. */
   wait?: () => void
 }
@@ -117,6 +121,7 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
   const discard = (buffer: Buffer, picture: Picture) => {
     picture.dead = true
     picture.running = false
+    picture.probe?.abort()
     picture.image.removeAttribute("src")
     picture.wait?.()
     picture.image.remove()
@@ -154,31 +159,50 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
    *  there; one still on its way here, later each time. */
   const load = (buffer: Buffer, picture: Picture) => {
     const id = project
-    if (!id || buffer.stopped || picture.dead || picture.ready || picture.running) return
+    if (!id || buffer.stopped || picture.dead || picture.ready || picture.running || picture.errors >= THUMB_TRIES) return
     picture.running = true
+    const attempt = picture.tries
+    const current = () => !buffer.stopped && !picture.dead && store.active && store.projectId === id
+      && buffer.pictures.get(picture.key) === picture && picture.tries === attempt
+    const base = picture.path ? client.file(id, picture.path) : client.thumb(id, picture.sha)
+    const path = attempt ? `${base}${base.includes("?") ? "&" : "?"}try=${attempt}` : base
+    let imageRequested = false
     void (async () => {
       // A box's first picture asked once the frame it's drawn in is up: fifty requests set up at once held a project's first frame
       // ~100 ms (web-opens A/B 43395065723).
       if (!buffer.displayed && !picture.tries) await new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0)))
-      if (buffer.stopped || picture.dead) return
-      const base = picture.path ? client.file(id, picture.path) : client.thumb(id, picture.sha)
-      const url = await client.transport.src(picture.tries ? `${base}${base.includes("?") ? "&" : "?"}try=${picture.tries}` : base)
-      if (buffer.stopped || picture.dead) return
+      if (!current()) return
+      const url = await client.transport.src(path)
+      if (!current()) return
       picture.image.src = url
+      imageRequested = true
       await picture.image.decode()
-      if (buffer.stopped || picture.dead) return
+      if (!current()) return
       picture.running = false
       picture.ready = true
+      picture.errors = 0
+      picture.pendingChecks = 0
       reveal(buffer, picture)
       refresh(buffer)
-    })().catch(() => {
-      if (buffer.stopped || picture.dead) return
-      if (picture.tries + 1 < THUMB_TRIES) {
+    })().catch(async () => {
+      if (!current()) return
+      let pending = false
+      // Original files retain their existing load/retry path. Only a failed thumbnail needs readiness classification.
+      if (!picture.path && imageRequested) {
+        const probe = new AbortController()
+        picture.probe = probe
+        try { pending = await thumbPending(client.transport, path, probe.signal) } catch { /* Unknown failures remain bounded. */ }
+        finally { if (picture.probe === probe) picture.probe = undefined }
+        if (probe.signal.aborted || !current()) return
+      }
+      if (pending) { picture.errors = 0; picture.pendingChecks = Math.min(5, picture.pendingChecks + 1) }
+      else picture.errors++
+      if (picture.errors < THUMB_TRIES) {
         picture.tries++
-        picture.wait = whenThumb(id, picture.sha, thumbWait(picture.tries), () => {
+        picture.wait = whenThumb(id, picture.sha, thumbWait(pending ? picture.pendingChecks : picture.errors), () => {
           picture.wait = undefined
           picture.running = false
-          if (!buffer.stopped && !picture.dead) refresh(buffer)
+          if (!buffer.stopped && !picture.dead && store.active && store.projectId === id && buffer.pictures.get(picture.key) === picture && picture.tries === attempt + 1) refresh(buffer)
         })
         return
       }
@@ -202,6 +226,10 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
     if (buffer.stopped) return
     const selected = buffer.pictures.get(buffer.selected)
     if (selected?.ready) reveal(buffer, selected)
+    else if (selected && selected.errors >= THUMB_TRIES) {
+      if (buffer.displayed?.sha !== selected.sha) hide(buffer)
+      setFailed(true)
+    }
     const keep = new Set(buffer.wanted)
     // A far jump keeps the previous picture while loading without growing the decoded-image budget.
     if (buffer.displayed && !keep.has(buffer.displayed.key)) {
@@ -223,7 +251,7 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
       image.decoding = "async"
       const source = buffer.sources.get(key)
       if (!source) continue
-      const picture: Picture = { ...source, image, ready: false, dead: false, running: false, tries: 0 }
+      const picture: Picture = { ...source, image, ready: false, dead: false, running: false, tries: 0, errors: 0, pendingChecks: 0 }
       buffer.pictures.set(key, picture)
       buffer.queue.push(picture)
     }

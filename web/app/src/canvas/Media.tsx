@@ -4,7 +4,7 @@ import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.
 import type { Client } from "../api/client"
 import { runFullQuery, runQuery } from "../api/queries"
 import { holdMedia, playingHere } from "../api/events"
-import { THUMB_TRIES, thumbWait, whenThumb } from "../api/thumbs"
+import { THUMB_TRIES, thumbPending, thumbWait, whenThumb } from "../api/thumbs"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
 import type { MainFile } from "../api/calcifer"
@@ -75,9 +75,9 @@ export function Thumb({
   onSize?: (aspect: number) => void
   onShown?: () => void
 }) {
-  const { client } = useConnection()
+  const { client, bridge, privateViewEpoch, signedOut } = useConnection()
   const store = useCanvasStore()
-  const [image, setImage] = useState<{ path: string; src: string; request: number; live: () => boolean }>()
+  const [image, setImage] = useState<{ path: string; src: string; request: number; live: () => boolean; failed: () => void }>()
   const [loaded, setLoaded] = useState<string>()
   const nextRequest = useRef(0)
   const [failedPath, setFailedPath] = useState<string>()
@@ -88,31 +88,50 @@ export function Thumb({
   const [tries, setTries] = useState<{ base?: string; n: number }>({ n: 0 })
   const attempt = tries.base === base ? tries.n : 0
   const path = base && attempt ? `${base}&try=${attempt}` : base
-  const wait = useRef<(() => void) | undefined>(undefined)
-  useEffect(() => () => wait.current?.(), [])
-  const failed = (at: string) => {
-    if (!projectId || attempt + 1 >= THUMB_TRIES) return setFailedPath(at)
-    setImage(undefined)
-    wait.current?.()
-    wait.current = whenThumb(projectId, sha256, thumbWait(attempt + 1), () => setTries({ base, n: attempt + 1 }))
-  }
+  const latestPath = useRef(path)
+  latestPath.current = path
+  const retries = useRef<{ base?: string; errors: number; pending: number }>({ errors: 0, pending: 0 })
   useEffect(() => {
-    if (!path) return
-    let live = true
-    const epoch = projectId ? mediaEpoch.get(projectId) ?? 0 : 0
-    const current = () => live && (!projectId || (mediaEpoch.get(projectId) ?? 0) === epoch)
+    if (!path || !projectId) return
+    let live = true, checking = false
+    let wait: (() => void) | undefined
+    let probe: AbortController | undefined
+    const epoch = mediaEpoch.get(projectId) ?? 0
+    const projectEpoch = bridge.projectEpoch(projectId)
     const request = ++nextRequest.current
+    const current = () => live && !probe?.signal.aborted && nextRequest.current === request && latestPath.current === path
+      && store.active && store.projectId === projectId && !signedOut.get() && (mediaEpoch.get(projectId) ?? 0) === epoch && bridge.projectEpoch(projectId) === projectEpoch
+    if (retries.current.base !== base) retries.current = { base, errors: 0, pending: 0 }
+    const retry = retries.current
+    const failed = async (checkPending: boolean) => {
+      if (!current() || checking) return
+      checking = true
+      let pending = false
+      if (checkPending) {
+        probe = new AbortController()
+        try { pending = await thumbPending(client.transport, path, probe.signal) } catch { /* An unknown failure still uses the bounded error budget. */ }
+      }
+      if (!current()) return
+      if (pending) { retry.errors = 0; retry.pending = Math.min(5, retry.pending + 1) }
+      else if (++retry.errors >= THUMB_TRIES) { setFailedPath(path); return }
+      setImage(undefined)
+      wait = whenThumb(projectId, sha256, thumbWait(pending ? retry.pending : retry.errors), () => {
+        wait = undefined
+        if (current()) setTries({ base, n: attempt + 1 })
+      })
+    }
+    const stop = () => { live = false; probe?.abort(); wait?.() }
+    const unwatch = privateViewEpoch.subscribe(() => { if (bridge.projectEpoch(projectId) !== projectEpoch) stop() })
+    const unsign = signedOut.subscribe(() => { if (signedOut.get()) stop() })
     void client.transport.src(path).then((src) => {
       if (!current()) { if (src.startsWith("blob:")) URL.revokeObjectURL(src); return }
       setFailedPath(undefined)
-      setImage({ path, src, request, live: current })
-    }, () => {
-      if (live) failed(path)
-    })
+      setImage({ path, src, request, live: current, failed: () => { void failed(true) } })
+    }, () => { void failed(false) })
     return () => {
-      live = false
+      unwatch(); unsign(); stop()
     }
-  }, [client, path])
+  }, [client, bridge, privateViewEpoch, signedOut, store, projectId, path])
   // A strip that can't be made leaves the poster under it as it was.
   if (path && failedPath === path) return strip || wave ? null : <span className="media-note">No preview</span>
   const waiting = pulse && loaded !== path ? <span className="thumb-wait" /> : null
@@ -129,12 +148,14 @@ export function Thumb({
       style={frame === undefined ? undefined : { transform: `translateX(${(-frame * 100) / (strip ?? 1)}%)` }}
       onError={() => {
         if (image.path !== path || !image.live()) return
-        failed(image.path)
+        image.failed()
       }}
       onLoad={(event) => {
         if (image.path !== path || !image.live()) return
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
+        retries.current.errors = 0
+        retries.current.pending = 0
         arrived.add(drawn)
         setLoaded(image.path)
         onShown?.()
