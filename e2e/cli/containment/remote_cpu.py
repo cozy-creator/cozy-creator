@@ -217,8 +217,24 @@ class Worker:
         require(isinstance(reach, str) and urlsplit("//" + reach).hostname in {"127.0.0.1", "::1", "localhost"}, "fixture_failure")
         self.stage("add")
         self.native.document("machine", "add", self.name, reach, "--fingerprint", fingerprint)
+        runtime = ready.get("runtime")
+        if runtime and Path(runtime).is_file():
+            # This controller is refused a build no release vouches for (xs-196), as a typed error: the envelope after the
+            # update run's events.
+            self.stage("controller_refused")
+            words = ("machine", "update", self.name, "--runtime", runtime, "-y")
+            refused = subprocess.run([str(self.native.cli), "--json", *words], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                code = json.loads(refused.stdout.splitlines()[-1])["error"]["code"]
+            except (IndexError, ValueError, KeyError, TypeError):
+                code = None
+            if refused.returncode != 1 or code != "update_owner_only":
+                self.native.failure = self.native.failure or Native.failure_facts(refused, words)
+                self.receipt.synthetic_text("remote_cpu_cli_output", stdout=refused.stdout, stderr=refused.stderr)
+                raise Failure("controller_update_not_refused")
+            self.receipt.add("remote_cpu_controller_update", refused=True, error_envelope=True, code_update_owner_only=True)
         updates: list[str] = []
-        for flag, candidate in (("runtime", ready.get("runtime")), ("tensorfs", ready.get("tensorfs"))):
+        for flag, candidate in (("runtime", runtime), ("tensorfs", ready.get("tensorfs"))):
             if candidate and Path(candidate).is_file():
                 # A wheel as this user reads it: its own copy beside its cozy, not the runner's workspace.
                 mine = self.binary.parent / Path(candidate).name

@@ -159,7 +159,7 @@ _FAILURE_CODES = frozenset({
     'browser_ownership_distinct', 'busy_edit_resume', 'busy_lock_lost_b_draft',
     'caf_crash_page_ready', 'caf_crash_browser_tree_not_retired', 'caf_crash_profile_not_retired',
     'chrome_missing', 'cli_exit', 'closed_health_sink',
-    'cold_page_ready', 'composed_candidate_not_ready', 'core_control_not_authorized',
+    'cold_page_ready', 'composed_candidate_not_ready', 'controller_update_not_refused', 'core_control_not_authorized',
     'core_pattern_invalid', 'crash_page_ready', 'crashed_browser_tree_not_retired',
     'crashed_profile_not_retired', 'csrf_no_store_refusal', 'development_config_changed',
     'development_config_shape', 'development_hosted_only', 'development_native_bearer_bridge_present',
