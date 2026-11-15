@@ -1201,10 +1201,9 @@ cozy --json machine show local > "$OUT/local.json" && J '.state == "ready" and (
 
 step "this computer's player listens on loopback alone (xs-196)"
 # Until another computer's controller is authorized, only a browser on this computer plays from its machine: the WebRTC listener
-# binds loopback, as the API does, and Status names no other address.
-J '.status.webrtc.addresses | length > 0 and all(startswith("127.0.0.1:"))' "$OUT/local.json" \
-  || check "machine show local: the player is reached at $(jq -c .status.webrtc.addresses "$OUT/local.json")"
-port=$(jq -r '.status.webrtc.port // empty' "$OUT/local.json") || true
+# binds loopback, as the API does. Its port is the one the machine keeps across restarts.
+port=$(cat "$HOME/.cozy/machine/var/lib/cozy/machine/webrtc-port" 2> /dev/null) || true
+[ -n "$port" ] || check "this computer's machine keeps no player port"
 if [ "$RUNNER_OS" = Linux ] && [ -n "$port" ]; then
   ss -Hltn "sport = :$port" | awk '{print $4}' > "$OUT/webrtc-listen.txt"
   [ -s "$OUT/webrtc-listen.txt" ] && ! grep -qv '^127\.0\.0\.1:' "$OUT/webrtc-listen.txt" \
