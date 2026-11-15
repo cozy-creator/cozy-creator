@@ -2,7 +2,7 @@
 #![allow(unsafe_code)]
 #[cfg(unix)]
 use std::{net::Ipv4Addr, ptr};
-use std::{fmt, net::{IpAddr, SocketAddr}};
+use std::{fmt, net::{IpAddr, SocketAddr}, time::SystemTime};
 
 /// Every IPv4 address on an interface. None where the OS will not list them.
 #[cfg(unix)]
@@ -62,10 +62,20 @@ impl fmt::Display for User {
 /// kernel's word for it. Linux reads `/proc/net/tcp{,6}`, whose rows name each socket's owner; macOS asks libproc for the sockets
 /// of this account's processes, and Windows for the connection's owning process, then its token. None when nothing matches: the
 /// connection is gone or closing (only an established socket counts: a closed one's row names root), it's in another network
-/// namespace, or (macOS, Windows) its process is one this account may not inspect. The error is a code saying which step failed.
-pub fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Result<User, &'static str> {
+/// namespace, or (macOS, Windows) its process is one this account may not inspect. `accepted` is when the connection was accepted:
+/// Windows names a connection by the pid that made it, so a process that started after it (that pid reused) is never its owner. The
+/// error is a code saying which step failed.
+pub fn tcp_peer_user(peer: SocketAddr, local: SocketAddr, accepted: SystemTime) -> Result<User, &'static str> {
     let (peer, local) = (canonical(peer), canonical(local));
-    sys::tcp_peer_user(peer, local)
+    sys::tcp_peer_user(peer, local, accepted)
+}
+
+/// The cheap answer, where there is one, before the full lookup: Linux's is the lookup itself; macOS asks the process that held the
+/// last one (a browser's network process); Windows, the connection table it read last, if that's newer than the connection. None:
+/// only the full lookup can say.
+pub fn tcp_peer_user_quick(peer: SocketAddr, local: SocketAddr, accepted: SystemTime) -> Option<Result<User, &'static str>> {
+    let (peer, local) = (canonical(peer), canonical(local));
+    sys::quick(peer, local, accepted)
 }
 
 /// An IPv4-mapped IPv6 address as its IPv4, as a listener on IPv4 sees it.
@@ -82,17 +92,22 @@ mod sys {
         mem,
         net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
         os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd},
+        time::SystemTime,
     };
 
     use super::{User, canonical};
 
     /// The kernel's sock_diag, asked for the one socket by its four addresses: its uid and inode, with no scan of every socket
     /// (what `ss` asks). `/proc/net/tcp{,6}` where the netlink family is closed (a seccomp sandbox).
-    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Result<User, &'static str> {
+    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr, _accepted: SystemTime) -> Result<User, &'static str> {
         match diag(peer, local) {
             Err(Closed) => proc_tables(peer, local),
             Ok(found) => found,
         }
+    }
+
+    pub(super) fn quick(peer: SocketAddr, local: SocketAddr, accepted: SystemTime) -> Option<Result<User, &'static str>> {
+        Some(tcp_peer_user(peer, local, accepted))
     }
 
     const NETLINK_SOCK_DIAG: libc::c_int = 4;
@@ -166,7 +181,7 @@ mod sys {
         groups: u32,
     }
 
-    /// The netlink family is closed here: no answer either way.
+    /// No answer from netlink either way (closed here, or no tcp_diag): `/proc` is asked.
     struct Closed;
 
     fn words(ip: IpAddr) -> [u32; 4] {
@@ -235,8 +250,8 @@ mod sys {
         // SAFETY: the kernel wrote at least a header at the buffer's 8-aligned start.
         let header = unsafe { answer.as_ptr().cast::<Header>().read() };
         if header.kind == NLMSG_ERROR {
-            // No such socket (ENOENT): another namespace's, or gone.
-            return Ok(Err("no_socket"));
+            // ENOENT is both "no such socket" and "no tcp_diag in this kernel": /proc says which.
+            return Err(Closed);
         }
         if header.kind != SOCK_DIAG_BY_FAMILY || got < mem::size_of::<Header>() + mem::size_of::<Message>() {
             return Ok(Err("diag_unreadable"));
@@ -288,6 +303,7 @@ mod sys {
         mem,
         net::{Ipv4Addr, Ipv6Addr, SocketAddr},
         sync::atomic::{AtomicI32, Ordering},
+        time::SystemTime,
     };
 
     use super::{User, canonical};
@@ -448,54 +464,67 @@ mod sys {
         (written == size).then(|| User(info.pbi_uid.to_string())).ok_or("process_unreadable")
     }
 
-    /// The process holding the socket, among this account's: another account's are closed to it anyway.
-    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Result<User, &'static str> {
+    /// Whether `pid` holds the established socket from `peer` to `local`, counting the sockets and TCP sockets it looked at.
+    fn holds(pid: libc::pid_t, peer: SocketAddr, local: SocketAddr, seen: &mut (u32, u32)) -> bool {
+        let empty = libc::proc_fdinfo { proc_fd: 0, proc_fdtype: 0 };
+        // SAFETY: a writable buffer of the size given; a pid gone since is an error, and holds nothing.
+        let Some(fds) = listed(empty, |buffer, bytes| unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, buffer, bytes) }) else { return false };
+        for fd in fds.iter().filter(|fd| fd.proc_fdtype == libc::PROX_FDTYPE_SOCKET as u32) {
+            // SAFETY: plain integers, for which all zeroes is a value.
+            let mut info: SocketFdinfo = unsafe { mem::zeroed() };
+            let size = mem::size_of::<SocketFdinfo>() as c_int;
+            // SAFETY: a writable record of the size given.
+            let written = unsafe { libc::proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, (&raw mut info).cast(), size) };
+            seen.0 += 1;
+            if written < size || info.psi.kind != SOCKINFO_TCP {
+                continue;
+            }
+            seen.1 += 1;
+            // SAFETY: `soi_kind` says the union holds a `tcp_sockinfo`.
+            let socket = unsafe { info.psi.proto.tcp };
+            let ini = socket.ini;
+            if socket.state == TSI_S_ESTABLISHED && address(ini.vflag, ini.laddr, ini.lport) == Some(peer) && address(ini.vflag, ini.faddr, ini.fport) == Some(local) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The process that held the last one: a browser's connections all come from its one network process.
+    pub(super) fn quick(peer: SocketAddr, local: SocketAddr, _accepted: SystemTime) -> Option<Result<User, &'static str>> {
+        let last = LAST.load(Ordering::Relaxed);
+        (last > 0 && holds(last, peer, local, &mut (0, 0))).then(|| owner(last))
+    }
+
+    /// The process holding the socket, among this account's: another account's are closed to it anyway. It's the holder now that
+    /// counts, whoever made the socket.
+    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr, _accepted: SystemTime) -> Result<User, &'static str> {
         let uid = rustix::process::geteuid().as_raw();
         // SAFETY: a writable buffer of the size given.
-        let mut pids = listed(libc::pid_t::default(), |buffer, bytes| unsafe { libc::proc_listpids(PROC_UID_ONLY, uid, buffer, bytes) }).ok_or("no_processes")?;
-        // The process that held the last one first: a browser's connections all come from its one network process.
-        let last = LAST.load(Ordering::Relaxed);
-        if let Some(at) = pids.iter().position(|pid| *pid == last) {
-            pids.swap(0, at);
-        }
-        let (mut sockets, mut tcp) = (0, 0);
+        let pids = listed(libc::pid_t::default(), |buffer, bytes| unsafe { libc::proc_listpids(PROC_UID_ONLY, uid, buffer, bytes) }).ok_or("no_processes")?;
+        let mut seen = (0, 0);
         for pid in pids.into_iter().filter(|pid| *pid > 0) {
-            let empty = libc::proc_fdinfo { proc_fd: 0, proc_fdtype: 0 };
-            // SAFETY: a writable buffer of the size given; a pid gone since is an error, skipped.
-            let Some(fds) = listed(empty, |buffer, bytes| unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, buffer, bytes) }) else { continue };
-            for fd in fds.iter().filter(|fd| fd.proc_fdtype == libc::PROX_FDTYPE_SOCKET as u32) {
-                // SAFETY: plain integers, for which all zeroes is a value.
-                let mut info: SocketFdinfo = unsafe { mem::zeroed() };
-                let size = mem::size_of::<SocketFdinfo>() as c_int;
-                // SAFETY: a writable record of the size given.
-                let written = unsafe { libc::proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, (&raw mut info).cast(), size) };
-                sockets += 1;
-                if written < size || info.psi.kind != SOCKINFO_TCP {
-                    continue;
-                }
-                tcp += 1;
-                // SAFETY: `soi_kind` says the union holds a `tcp_sockinfo`.
-                let tcp = unsafe { info.psi.proto.tcp };
-                let ini = tcp.ini;
-                if tcp.state == TSI_S_ESTABLISHED && address(ini.vflag, ini.laddr, ini.lport) == Some(peer) && address(ini.vflag, ini.faddr, ini.fport) == Some(local) {
-                    LAST.store(pid, Ordering::Relaxed);
-                    return owner(pid);
-                }
+            if holds(pid, peer, local, &mut seen) {
+                LAST.store(pid, Ordering::Relaxed);
+                return owner(pid);
             }
         }
         // Which of the steps found nothing.
-        Err(match (sockets, tcp) { (0, _) => "no_sockets", (_, 0) => "no_tcp", _ => "no_socket" })
+        Err(match seen { (0, _) => "no_sockets", (_, 0) => "no_tcp", _ => "no_socket" })
     }
 }
 
 #[cfg(windows)]
 mod sys {
     use std::{
-        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+        net::{Ipv4Addr, Ipv6Addr, SocketAddr},
         ptr,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::{SystemTime, UNIX_EPOCH},
     };
-
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use windows_sys::Win32::{
         Foundation::{ERROR_INSUFFICIENT_BUFFER, FILETIME, NO_ERROR},
@@ -503,10 +532,7 @@ mod sys {
             GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
             TCP_TABLE_OWNER_PID_CONNECTIONS,
         },
-        System::{
-            SystemInformation::GetSystemTimePreciseAsFileTime,
-            Threading::{GetProcessTimes, PROCESS_QUERY_LIMITED_INFORMATION},
-        },
+        System::Threading::{GetProcessTimes, PROCESS_QUERY_LIMITED_INFORMATION},
     };
 
     use super::User;
@@ -546,44 +572,56 @@ mod sys {
         None
     }
 
-    fn owning_pid(peer: SocketAddr, local: SocketAddr) -> Option<u32> {
-        match (peer.ip(), local.ip()) {
-            (IpAddr::V4(_), IpAddr::V4(_)) => {
-                let buffer = table(AF_INET)?;
-                let table = buffer.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
-                // SAFETY: the call filled a table whose count says how many rows follow it.
-                let rows = unsafe {
-                    std::slice::from_raw_parts(ptr::addr_of!((*table).table).cast::<MIB_TCPROW_OWNER_PID>(), (*table).dwNumEntries as usize)
-                };
-                let v4 = |address: u32, at: u32| SocketAddr::from((Ipv4Addr::from(address.to_ne_bytes()), port(at)));
-                rows.iter().find(|row| row.dwState == ESTABLISHED && v4(row.dwLocalAddr, row.dwLocalPort) == peer && v4(row.dwRemoteAddr, row.dwRemotePort) == local).map(|row| row.dwOwningPid)
-            }
-            (IpAddr::V6(_), IpAddr::V6(_)) => {
-                let buffer = table(AF_INET6)?;
-                let table = buffer.as_ptr().cast::<MIB_TCP6TABLE_OWNER_PID>();
-                // SAFETY: as above.
-                let rows = unsafe {
-                    std::slice::from_raw_parts(ptr::addr_of!((*table).table).cast::<MIB_TCP6ROW_OWNER_PID>(), (*table).dwNumEntries as usize)
-                };
-                let v6 = |address: [u8; 16], at: u32| SocketAddr::from((Ipv6Addr::from(address), port(at)));
-                rows.iter().find(|row| row.dwState == ESTABLISHED && v6(row.ucLocalAddr, row.dwLocalPort) == peer && v6(row.ucRemoteAddr, row.dwRemotePort) == local).map(|row| row.dwOwningPid)
-            }
-            _ => None,
-        }
+    /// An established connection's two ends and the pid that made it.
+    type Row = (SocketAddr, SocketAddr, u32);
+
+    /// The connections of the family last read, and when: a quick answer for a connection accepted before then.
+    static LAST: Mutex<[Option<(SystemTime, Vec<Row>)>; 2]> = Mutex::new([None, None]);
+
+    /// Every established connection of `peer`'s family, read now, and kept as the last.
+    fn rows(peer: SocketAddr) -> Option<Vec<Row>> {
+        let read_at = SystemTime::now();
+        let found: Vec<Row> = if peer.is_ipv4() {
+            let buffer = table(AF_INET)?;
+            let table = buffer.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
+            // SAFETY: the call filled a table whose count says how many rows follow it.
+            let rows = unsafe {
+                std::slice::from_raw_parts(ptr::addr_of!((*table).table).cast::<MIB_TCPROW_OWNER_PID>(), (*table).dwNumEntries as usize)
+            };
+            let v4 = |address: u32, at: u32| SocketAddr::from((Ipv4Addr::from(address.to_ne_bytes()), port(at)));
+            rows.iter().filter(|row| row.dwState == ESTABLISHED).map(|row| (v4(row.dwLocalAddr, row.dwLocalPort), v4(row.dwRemoteAddr, row.dwRemotePort), row.dwOwningPid)).collect()
+        } else {
+            let buffer = table(AF_INET6)?;
+            let table = buffer.as_ptr().cast::<MIB_TCP6TABLE_OWNER_PID>();
+            // SAFETY: as above.
+            let rows = unsafe {
+                std::slice::from_raw_parts(ptr::addr_of!((*table).table).cast::<MIB_TCP6ROW_OWNER_PID>(), (*table).dwNumEntries as usize)
+            };
+            let v6 = |address: [u8; 16], at: u32| SocketAddr::from((Ipv6Addr::from(address), port(at)));
+            rows.iter().filter(|row| row.dwState == ESTABLISHED).map(|row| (v6(row.ucLocalAddr, row.dwLocalPort), v6(row.ucRemoteAddr, row.dwRemotePort), row.dwOwningPid)).collect()
+        };
+        LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner)[usize::from(!peer.is_ipv4())] = Some((read_at, found.clone()));
+        Some(found)
+    }
+
+    fn pid_of(rows: &[Row], peer: SocketAddr, local: SocketAddr) -> Option<u32> {
+        rows.iter().find(|(near, far, _)| *near == peer && *far == local).map(|(_, _, pid)| *pid)
     }
 
     fn filetime(time: FILETIME) -> u64 {
         (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
     }
 
-    /// The owning process's token's user. Another account's process or token is closed to this one: none. The process opened must
-    /// be older than the table read: its handle holds its pid from then on, and one made after the read (a pid freed and reused)
-    /// isn't the one whose row it was.
-    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Result<User, &'static str> {
-        let mut asked = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-        // SAFETY: a writable FILETIME.
-        unsafe { GetSystemTimePreciseAsFileTime(&mut asked) };
-        let pid = owning_pid(peer, local).ok_or("no_socket")?;
+    /// `time` as a FILETIME counts it: 100 ns since 1601.
+    fn as_filetime(time: SystemTime) -> u64 {
+        let since = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+        u64::try_from(since.as_nanos() / 100).unwrap_or(u64::MAX).saturating_add(116_444_736_000_000_000)
+    }
+
+    /// The token's user of the process `pid` names, if that process started before the connection was accepted. Windows lists a
+    /// connection under the pid that made it, even after that process exits while another holds the socket: a process started since
+    /// (that pid reused) never made it. Its handle holds the pid from the open on. Another account's process or token is closed.
+    fn owner(pid: u32, accepted: SystemTime) -> Result<User, &'static str> {
         let process = crate::ipc::open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION).map_err(|_| "process_closed")?;
         let handle = std::os::windows::io::AsRawHandle::as_raw_handle(&process);
         let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
@@ -592,9 +630,26 @@ mod sys {
         if unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
             return Err("process_closed");
         }
-        if filetime(created) > filetime(asked) {
+        if filetime(created) > as_filetime(accepted) {
             return Err("process_changed");
         }
         crate::ipc::token_user(handle).map(User).map_err(|_| "token_closed")
+    }
+
+    /// The table read last, if it was read after the connection was accepted (so the connection is in it).
+    pub(super) fn quick(peer: SocketAddr, local: SocketAddr, accepted: SystemTime) -> Option<Result<User, &'static str>> {
+        let pid = {
+            let last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (read_at, rows) = last[usize::from(!peer.is_ipv4())].as_ref()?;
+            if *read_at < accepted { return None; }
+            pid_of(rows, peer, local)?
+        };
+        Some(owner(pid, accepted))
+    }
+
+    pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr, accepted: SystemTime) -> Result<User, &'static str> {
+        let rows = rows(peer).ok_or("no_table")?;
+        let pid = pid_of(&rows, peer, local).ok_or("no_socket")?;
+        owner(pid, accepted)
     }
 }

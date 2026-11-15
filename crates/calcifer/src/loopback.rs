@@ -9,7 +9,7 @@ use std::{
     fmt,
     net::SocketAddr,
     sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use axum::{
@@ -29,31 +29,38 @@ use crate::api::{Api, Refusal, bearer, refuse};
 pub(crate) struct Peer {
     pub(crate) addr: SocketAddr,
     pub(crate) local: Option<SocketAddr>,
+    /// When it was accepted: no process started after it made it (Windows names a connection by its maker's pid).
+    accepted: SystemTime,
     user: Arc<OnceCell<(Result<User, &'static str>, Duration)>>,
 }
 
 impl Connected<IncomingStream<'_, TcpListener>> for Peer {
     fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
-        Peer { addr: *stream.remote_addr(), local: stream.io().local_addr().ok(), user: Arc::default() }
+        Peer { addr: *stream.remote_addr(), local: stream.io().local_addr().ok(), accepted: SystemTime::now(), user: Arc::default() }
     }
 }
 
 impl Peer {
     async fn user(&self) -> Result<&User, &'static str> {
-        let (peer, local) = (self.addr, self.local);
+        let (peer, local, accepted) = (self.addr, self.local, self.accepted);
         let found = self.user.get_or_init(|| async move {
             let began = Instant::now();
-            (lookup(peer, local).await, began.elapsed())
+            (lookup(peer, local, accepted).await, began.elapsed())
         });
         found.await.0.as_ref().map_err(|why| *why)
     }
 }
 
-async fn lookup(peer: SocketAddr, local: Option<SocketAddr>) -> Result<User, &'static str> {
+async fn lookup(peer: SocketAddr, local: Option<SocketAddr>, accepted: SystemTime) -> Result<User, &'static str> {
     let local = local.ok_or("no_listener")?;
-    // A few at a time: macOS's lookup reads every socket of this account's processes.
+    // The cheap answer first, which waits for no turn: another account filling the turns can't hold back the owner's browser.
+    let quick = tokio::task::spawn_blocking(move || platform::net::tcp_peer_user_quick(peer, local, accepted)).await.map_err(|_| "lookup_failed")?;
+    if let Some(found) = quick {
+        return found;
+    }
+    // A few at a time: macOS's full lookup reads every socket of this account's processes, Windows' every connection.
     let _turn = LOOKUPS.acquire().await.map_err(|_| "lookup_failed")?;
-    tokio::task::spawn_blocking(move || platform::net::tcp_peer_user(peer, local)).await.map_err(|_| "lookup_failed")?
+    tokio::task::spawn_blocking(move || platform::net::tcp_peer_user(peer, local, accepted)).await.map_err(|_| "lookup_failed")?
 }
 
 /// Tests only (`[calcifer] diagnostics`): each answer says what its checks took, as `Server-Timing` (guard, admit, peer: the
