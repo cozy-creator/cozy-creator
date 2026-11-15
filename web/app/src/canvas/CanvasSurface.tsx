@@ -196,7 +196,8 @@ export function CanvasSurface(props: Props) {
           if (run && store.projectId && onscreen && rendering) {
             const query = runFullQuery(client, store.projectId, run.number, 0)
             const full = queries.getQueryData(query.queryKey)
-            if (full) run = { ...full, ...run, request: full.request }
+            // The full read is fetched once: only what was asked (fixed for a run) comes from it, every live field from the run itself.
+            if (full) run = { ...run, request: full.request }
             else if (!requestedRuns.has(run.number)) {
               requestedRuns.add(run.number)
               void queries.ensureQueryData(query).then(invalidate, () => {})
