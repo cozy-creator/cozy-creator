@@ -191,6 +191,9 @@ chrome=$(web_chrome)
 if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1; then
   STANDS=stand-p web_proof prepares "$chrome" "$pw" ''
   jq -c '.seen.timeline // empty' "$OUT/web-prepares.json" 2> /dev/null || true
+  # The walk's placement and fetch-ahead lines, beside the cell's evidence (the whole diagnostics log is too big to collect).
+  grep -aE "fetches ahead|fetched ahead|isn't planned|goes to|upcoming|web-prepares" "$HOME/.cozy/calcifer/diagnostics.log" 2> /dev/null \
+    | tail -400 > "$OUT/web-prepares.calcifer.log" || true
 else
   check "web-prepares: no Chrome or playwright here (${chrome:-none}): $(tail -c 300 "$OUT/web-npm.log" 2> /dev/null)"
 fi

@@ -3969,12 +3969,21 @@ impl Walk {
         }
         let placed = plan::plan(&pictures, &planned, now);
         let mut walker = self.project.walker.lock().expect("walker lock");
-        for ((at, _), placement) in jobs.iter().zip(placed) {
+        for ((at, job), placement) in jobs.iter().zip(placed) {
             let unsent = &unsent[*at];
             let Some((_, chosen)) = placement.chosen else {
                 walker.placed.remove(&unsent.key);
-                walker.foreseen.remove(&unsent.key);
                 walker.starts.remove(&unsent.key);
+                // A waiting job none of its machines was planned for goes where a ready one would at its turn: the first of them,
+                // which fetches ahead for it.
+                match (unsent.ready, job.on.first()) {
+                    (false, Some(first)) => {
+                        let why = placement.offers.iter().map(|offer| placement::said(offer, now)).collect::<Vec<_>>().join("; ");
+                        info!("{dir}: {} waits, and no machine was planned for it ({why}): {first} fetches ahead for it", unsent.key);
+                        walker.foreseen.insert(unsent.key.clone(), Some(first.clone()));
+                    }
+                    _ => drop(walker.foreseen.remove(&unsent.key)),
+                }
                 if unsent.ready {
                     let why = match placement.offers.is_empty() {
                         true => "none of its machines answered".to_owned(),
