@@ -32,13 +32,30 @@ mkdir -p "$seed"
 log() { echo "$(date -u +%H:%M:%SZ) isolated Hub: $*"; }
 cozy() { "$cozy_bin" "$@"; }
 J() { jq -e "$@" > /dev/null; }
+if [ -n "${COZY_TEST_SEED_SDK:-}" ]; then
+  export E2E_SEED_COHORT=$seed/cohort.json
+  cohort_args=(--cohort "$COZY_TEST_SEED_SDK" --origin "$COZY_TEST_HUB_ORIGIN")
+  uv run -q --no-project "$here/seed_sdk.py" record "${cohort_args[@]}" \
+    ${packages:+--packages "$packages"} --runtime-ref "${E2E_SELECTED_RUNTIME_REF:-}" \
+    --packages-ref "${E2E_SELECTED_PACKAGES_REF:-}" --receipt "$E2E_SEED_COHORT" > "$seed/cohort.txt"
+  cat "$seed/cohort.txt"
+  [ -z "${GITHUB_STEP_SUMMARY:-}" ] || { printf '\n### Isolated seed cohort\n\n'; cat "$seed/cohort.txt"; } >> "$GITHUB_STEP_SUMMARY"
+fi
 
-# publish <dir>: a package's own directory published at the root, from a copy (publication writes its lock).
+# publish <dir> [cohort]: a package's copy; only cohort sources take the selected SDK.
+# Deliberate old-floor/negative fixtures keep their own requirements and source selection.
 publish() {
   local copy=$seed/packages/${1##*/}
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$1" "$copy"
+  if [ "${2:-}" = cohort ]; then
+    [ -n "${COZY_TEST_SEED_SDK:-}" ] || { echo "no selected SDK reached isolated package seeding" >&2; return 1; }
+    uv run -q --no-project "$here/seed_sdk.py" pin --project "$copy" "${cohort_args[@]}" || return 1
+  fi
   (cd "$copy" && cozy --json package publish --root -y) > "$seed/publish-${1##*/}.json" 2>&1 \
     || { echo "publishing ${1##*/} at the isolated Hub's root failed: $(tail -c 600 "$seed/publish-${1##*/}.json")" >&2; return 1; }
+  if [ "${2:-}" = cohort ]; then
+    uv run -q --no-project "$here/seed_sdk.py" verify --project "$copy" "${cohort_args[@]}" --receipt "$E2E_SEED_COHORT" || return 1
+  fi
   log "published ${1##*/} $(sed -n 's/^version = "\(.*\)"$/\1/p' "$copy/pyproject.toml" | head -1) at the root"
 }
 
@@ -252,7 +269,7 @@ if [ "$suite" = cpu ]; then
   [ -z "$packages" ] || dependencies=$(hub_dependencies ${only//,/ })
   if [ -n "$dependencies" ]; then
     for dependency in $dependencies; do
-      publish "$packages/$dependency" || log "$dependency not published: $(tail -c 300 "$seed/publish-$dependency.json" | tr '\n' ' ')"
+      publish "$packages/$dependency" cohort || { echo "$dependency could not be seeded from the selected cohort" >&2; exit 1; }
     done
     sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
     systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
@@ -283,7 +300,7 @@ if [ "$suite" = imports ]; then
   systemctl --user set-environment SSL_CERT_FILE="$SSL_CERT_FILE"
   systemctl --user restart cozy-calcifer > "$seed/imports-calcifer-restart.log" 2>&1
   while IFS= read -r dependency; do
-    publish "$staged/$dependency"
+    publish "$staged/$dependency" cohort
   done < <(jq -r '.dependencies[].directory' "$report")
   while IFS= read -r package; do
     python3 "$here/package-lock.py" --cozy "$cozy_bin" --root "$staged/$package" > "$seed/imports-lock-$package.json" \
@@ -317,10 +334,10 @@ if [ -n "$needs" ]; then
     sed -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$tools/$f" > "$tools/$f.next" && mv "$tools/$f.next" "$tools/$f"
   done
   publish "$tools"
-  for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
+  for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
   [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944).
-  case $key in cli: | cli:web-suite) publish "$packages/moss-image" ;; esac
+  case $key in cli: | cli:web-suite) publish "$packages/moss-image" cohort ;; esac
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
   # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
   if [[ " $needs " == *" catalog "* ]]; then
@@ -330,7 +347,7 @@ if [ -n "$needs" ]; then
     for dir in "$packages"/*/; do
       dir=${dir%/} && case ${dir##*/} in qwen-image-2 | minimax-h3 | sdxl | birefnet) continue ;; esac
       grep -q '^\[project.entry-points."cozy.application"\]' "$dir/pyproject.toml" 2> /dev/null || continue
-      publish "$dir" || log "${dir##*/} not published: $(tail -c 300 "$seed/publish-${dir##*/}.json" | tr '\n' ' ')"
+      publish "$dir" cohort || { echo "${dir##*/} could not be seeded from the selected cohort" >&2; exit 1; }
     done
     # A release locked to the Runtime before this one, as flux-3-klein 0.7.0 is on production (run 46790): the palette leaves it out.
     old=$seed/e2e-runtime-044
