@@ -41,7 +41,12 @@ struct Silent {
     pid: u32,
     began: Instant,
     before: Option<SystemTime>,
+    /// What was stuck when it was judged silent (`stuck_now`).
+    stuck: String,
 }
+
+/// How long the look at what's stuck may take: a read on a filesystem that stopped answering waits for good.
+const LOOK: Duration = Duration::from_secs(2);
 
 impl Local {
     pub(crate) fn new(home: &Home, user_home: &Path, config: &config::Config) -> Self {
@@ -111,7 +116,7 @@ impl Local {
         match tokio::time::timeout(START, answered).await {
             Ok(endpoint) => Ok(endpoint),
             Err(_) if !self.running() => Ok(None),
-            Err(_) => Err(self.not_answering(None, began)),
+            Err(_) => Err(not_answering(began, &self.stuck(None))),
         }
     }
 
@@ -134,29 +139,12 @@ impl Local {
             *silent = None;
             return None;
         }
-        let (pid, began) = (started.pid, started.began);
-        drop(silent);
-        Some(self.not_answering(Some(pid), began))
+        Some(not_answering(started.began, &started.stuck))
     }
 
-    /// `machine_not_answering`: how long since it started, what is stuck (an earlier TensorD that can't exit, a process of its in
-    /// the kernel), its log's last line, and the next command.
-    fn not_answering(&self, pid: Option<u32>, began: Instant) -> Error {
-        let mut message = format!("local's TensorD isn't answering: it hasn't served {} s after it started", began.elapsed().as_secs());
-        message += &stuck_before(&self.root.join("var/lib/cozy/tensord/update/stuck.json"));
-        for member in pid.map(platform::process::tree).unwrap_or_default() {
-            let pid = member.birth().pid;
-            if let Some(wchan) = platform::process::in_kernel(pid) {
-                let at = Some(&wchan).filter(|w| !w.is_empty()).map(|w| format!(" at {w}")).unwrap_or_default();
-                message += &format!("; pid {pid} is in the kernel{at}");
-            }
-        }
-        if let Some(line) = std::fs::read_to_string(self.start_log()).ok().as_deref().and_then(platform::process::last_line) {
-            message += &format!("; its log ends: {line}");
-        }
-        Error::new(Kind::Unavailable, "machine_not_answering", message)
-            .remedy("local takes no work until it serves; `--on new` rents a machine, or name another")
-            .next("cozy machine logs local")
+    /// What is stuck now (`stuck_now`), for a start that isn't answering.
+    fn stuck(&self, pid: Option<u32>) -> String {
+        stuck_now(self.root.clone(), self.start_log(), pid)
     }
 
     /// Another computer's controller is authorized to use this machine (`cozy machine
@@ -227,9 +215,10 @@ impl Local {
             }
             Ok(Err(why)) => Err(failed(why)),
             Err(_) => {
-                let refusal = self.not_answering(Some(pid), began);
+                let stuck = self.stuck(Some(pid));
+                let refusal = not_answering(began, &stuck);
                 warn!("{}", refusal.message);
-                *self.silent.lock().unwrap() = Some(Silent { pid, began, before });
+                *self.silent.lock().unwrap() = Some(Silent { pid, began, before, stuck });
                 // Its answer, or its exit, judged as each comes: no deadline now, and nothing sampled.
                 tokio::spawn(async move {
                     if let Ok(endpoint) = wait.served().await {
@@ -269,6 +258,38 @@ impl Answer {
             }
             self.woke.notified().await;
         }
+    }
+}
+
+/// `machine_not_answering`: how long since it started, what is stuck, and the next command.
+fn not_answering(began: Instant, stuck: &str) -> Error {
+    let message = format!("local's TensorD isn't answering: it hasn't served {} s after it started{stuck}", began.elapsed().as_secs());
+    Error::new(Kind::Unavailable, "machine_not_answering", message)
+        .remedy("local takes no work until it serves; `--on new` rents a machine, or name another")
+        .next("cozy machine logs local")
+}
+
+/// What is stuck: an earlier TensorD that can't exit (`stuck.json`), a process of this start's in the kernel, its log's last line.
+/// Read on a thread of its own and waited for at most `LOOK`: the files may be on a filesystem that stopped answering.
+fn stuck_now(root: PathBuf, log: PathBuf, pid: Option<u32>) -> String {
+    let (said, heard) = std::sync::mpsc::channel();
+    let looking = std::thread::Builder::new().name("local-stuck".into()).spawn(move || {
+        let mut stuck = stuck_before(&root.join("var/lib/cozy/tensord/update/stuck.json"));
+        for member in pid.map(platform::process::tree).unwrap_or_default() {
+            let pid = member.birth().pid;
+            if let Some(wchan) = platform::process::in_kernel(pid) {
+                let at = Some(&wchan).filter(|w| !w.is_empty()).map(|w| format!(" at {w}")).unwrap_or_default();
+                stuck += &format!("; pid {pid} is in the kernel{at}");
+            }
+        }
+        if let Some(line) = std::fs::read_to_string(&log).ok().as_deref().and_then(platform::process::last_line) {
+            stuck += &format!("; its log ends: {line}");
+        }
+        let _ = said.send(stuck);
+    });
+    match looking {
+        Ok(_) => heard.recv_timeout(LOOK).unwrap_or_else(|_| format!("; its files don't answer a read in {} s", LOOK.as_secs())),
+        Err(_) => String::new(),
     }
 }
 

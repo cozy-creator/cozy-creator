@@ -4,7 +4,8 @@
 
 The trap file says what goes unanswered until it is emptied: a pid, every FLUSH from that process's threads (its exit closes its
 files there, so its last thread sits in the kernel, D state, as muromisan's TensorD sat in the NVIDIA driver); `writes`, every
-WRITE (a process logging there hangs as on a network filesystem that stopped). Everything else is answered at once.
+WRITE (a process logging there hangs as on a network filesystem that stopped). Everything else is answered at once. No request is
+held past MAX_HOLD, so a cell that dies midway leaves nothing waiting for good.
 """
 import errno
 import os
@@ -12,6 +13,8 @@ import sys
 import time
 
 from fuse import FUSE, FuseOSError, Operations, fuse_get_context
+
+MAX_HOLD = 600
 
 
 class Trap(Operations):
@@ -37,8 +40,8 @@ class Trap(Operations):
 
     def _hold(self, what):
         _, _, tid = fuse_get_context()
-        held = False
-        while True:
+        held, began = False, time.monotonic()
+        while time.monotonic() - began < MAX_HOLD:
             said = self._said()
             if not (said == what or (what == "flush" and said.isdigit() and self._of(tid, said))):
                 break

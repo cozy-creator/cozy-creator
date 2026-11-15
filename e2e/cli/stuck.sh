@@ -52,6 +52,12 @@ stuck_watch_connections() {
     sleep 20
   done
 }
+# run <name> [--on local]: a weightless run (reverse) followed at most 240 s, into $OUT/stuck-<name>.ndjson; its exit.
+stuck_run() {
+  local name=$1 text=stuck$RANDOM
+  shift
+  (cd "$RUN_PROJECT" && timeout 240 cozy --json run "$here/weightless/reverse" "text=$text" "$@" > "$OUT/stuck-$name.ndjson" 2>&1)
+}
 # settled <seconds>: no update run on local left unsettled, within that long.
 stuck_settled() {
   for _ in $(seq "$1"); do
@@ -136,7 +142,7 @@ cozy machine ls > "$OUT/stuck-ls.txt" 2>&1 || true
 grep -qE '^local .*1 stuck' "$OUT/stuck-ls.txt" || check "stuck: machine ls doesn't mark local stuck: $(grep '^local' "$OUT/stuck-ls.txt")"
 J '.broken == null' "$OUT/stuck-machine.json" || check "stuck: a machine with no GPU is broken: $(jq -c .broken "$OUT/stuck-machine.json")"
 stuck_settled 120 || { check "stuck: the update run never settled: $(jq -c '[.runs[]? | select(.kind == "update") | {number, status, waiting}]' "$OUT/stuck-runs.json")"; stuck_diagnose unsettled; }
-stuck_ready 60 && stuck_settled 5 && { (cd "$here" && cell stuck-after-update ./weightless/reverse "text=stuck$RANDOM") || check "stuck: no run went to the machine after its update"; }
+stuck_run after-update --on local || check "stuck: no run went to the machine after its update: $(tail -c 300 "$OUT/stuck-after-update.ndjson")"
 echo "stuck: updated in ${took} s past pid $first, which waits in the kernel"
 
 step "stuck: a stop and a start beside a TensorD that can't exit"
@@ -148,7 +154,7 @@ stuck_ready 120 || { check "stuck: the machine didn't start beside pid $first: $
 took=$((SECONDS - t0))
 [ "$(cat "$STUCK_ROOT/machine/api-port")" = "$port" ] || check "stuck: the machine left its port $port to the stuck pid $first: now $(cat "$STUCK_ROOT/machine/api-port")"
 J --argjson pid "$first" 'any(.status.stuck[]?; .pid == $pid)' "$OUT/stuck-machine.json" || check "stuck: after its start, pid $first isn't listed"
-stuck_ready 60 && { (cd "$here" && cell stuck-after-start ./weightless/reverse "text=stuck$RANDOM") || check "stuck: no run went to the machine started beside pid $first"; }
+stuck_run after-start --on local || check "stuck: no run went to the machine started beside pid $first: $(tail -c 300 "$OUT/stuck-after-start.ndjson")"
 echo "stuck: started in ${took} s beside pid $first, on port $port"
 
 step "stuck: a stop whose service can't exit"
@@ -212,8 +218,8 @@ cozy --json machine ls > "$OUT/stuck-silent-ls.json" 2>&1 || true
 J '.machines[]? | select(.name == "local") | (.unreachable // "") | contains("isn'"'"'t answering")' "$OUT/stuck-silent-ls.json" \
   || check "stuck: machine ls doesn't say local isn't answering: $(jq -c '.machines[]? | select(.name == "local") | {state, unreachable}' "$OUT/stuck-silent-ls.json")"
 t0=$SECONDS
-(cd "$here" && ALLOW="TensorD isn't answering" cell stuck-silent-run ./weightless/reverse "text=silent$RANDOM")
-[ -f "$OUT/stuck-silent-run.refused" ] || check "stuck: a run on a silent local wasn't refused saying it isn't answering"
+! stuck_run silent-run --on local || check "stuck: a run on a silent local completed"
+grep -q "TensorD isn't answering" "$OUT/stuck-silent-run.ndjson" || check "stuck: a run on a silent local wasn't refused saying it isn't answering: $(tail -c 300 "$OUT/stuck-silent-run.ndjson")"
 [ $((SECONDS - t0)) -le 30 ] || check "stuck: a run on a silent local took $((SECONDS - t0)) s to be refused"
 echo "stuck: a hung start refused after ${took} s"
 # A run with no --on is never placed back on the silent local: it waits for a machine (or is refused naming why), and goes there once
@@ -234,7 +240,7 @@ fi
 step "stuck: released, the silent start serves"
 : > "$trap"
 stuck_ready 90 || check "stuck: the machine didn't serve once its log answered: $(tail -c 300 "$OUT/stuck-machine.json")"
-stuck_ready 60 && { (cd "$here" && cell stuck-after-silent ./weightless/reverse "text=late$RANDOM") || check "stuck: no run went to the machine once it served"; }
+stuck_run after-silent --on local || check "stuck: no run went to the machine once it served: $(tail -c 300 "$OUT/stuck-after-silent.ndjson")"
 for _ in $(seq 120); do kill -0 "$any" 2> /dev/null || break; sleep 1; done
 kill "$any" 2> /dev/null || true
 wait "$any" 2> /dev/null || true
