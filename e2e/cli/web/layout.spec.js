@@ -123,10 +123,11 @@ function audit({ floor, focused }) {
       const [a, b] = [painted.controls[i], painted.controls[j]];
       if (meet(rect(a), rect(b))) inspectFailure('overlap', asset, a.part, `on ${b.part}: ${round(rect(a))} and ${round(rect(b))}`);
     }
-    // A box's own Delete and Cancel: in it, and a press on one is that control of that box. Where its hit area ends is the scene's choice.
+    // A box's own Delete and Cancel: within its width (Cancel hangs under it, with the render's line), and a press on one is that control of
+    // that box. Where its hit area ends is the scene's choice.
     for (const control of painted.controls) {
       const at = rect(control), middle = { x: at.left + at.width / 2, y: at.top + at.height / 2 };
-      if (!within({ left: middle.x, top: middle.y, right: middle.x, bottom: middle.y }, bounds, 0)) inspectFailure('outside', asset, control.part, `its middle ${Math.round(middle.x)},${Math.round(middle.y)} outside the box ${round(bounds)}`);
+      if (middle.x < bounds.left || middle.x > bounds.right) inspectFailure('outside', asset, control.part, `its middle ${Math.round(middle.x)},${Math.round(middle.y)} past the box's width ${round(bounds)}`);
       else if (within(at, { left: 0, top: 0, right: innerWidth, bottom: innerHeight }, 0) && !covers.some((over) => meet(at, over, 0))) {
         const hit = inspection.hitTest(middle);
         if (hit?.name !== asset || hit?.part !== control.part) inspectFailure('unreachable', asset, control.part, `a press on its middle is ${JSON.stringify(hit)}`);
@@ -199,8 +200,8 @@ function textPixels(read, labels, ink, dpr) {
 }
 
 async function passive(page) {
-  // On open canvas, so no box is under the pointer at any zoom and none mounts its card.
-  const { x, y } = await openPoint(page);
+  // On open canvas, so no box is under the pointer at any zoom and none mounts its card; in Focus the canvas takes no hover.
+  const { x, y } = (await page.locator('[data-focused-asset]').count()) ? { x: 2, y: 500 } : await openPoint(page);
   await page.mouse.move(x, y);
   await expect(page.locator('.canvas-node')).toHaveCount(0);
   // Runs/loading may animate forever. Only finite arrival/movement must settle before measuring geometry.
