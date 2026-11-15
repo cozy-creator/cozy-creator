@@ -61,6 +61,7 @@ export function CanvasSurface(props: Props) {
   const [overlayVersion, setOverlayVersion] = useState(0)
   const [failed, setFailed] = useState<string | null>(null)
   const hover = useRef<string | null>(null)
+  const nativeName = useRef<string | null>(null)
   const update = useRef<() => void>(() => {})
   const isActive = useRef(active)
   isActive.current = active
@@ -75,8 +76,10 @@ export function CanvasSurface(props: Props) {
 
   useLayoutEffect(() => {
     hover.current = hovered
+    // Keep passive pixels and hit geometry until React has actually committed their native replacement.
+    nativeName.current = native?.data.name ?? null
     update.current()
-  }, [hovered, focused, entering, overlayVersion])
+  }, [hovered, focused, entering, overlayVersion, active])
   useEffect(() => { enabled.current(); update.current() }, [active, disabled])
 
   useEffect(() => {
@@ -173,7 +176,7 @@ export function CanvasSurface(props: Props) {
         names.push({ id: node.id, name: node.data.name, box, view, selected: Boolean(node.selected), gliding: node.gliding, dragging, offering: dragging && offering, runContext: run || installing ? { run, machine, on, installing } : undefined })
       }
       const hiddenNames = new Set<string>()
-      if (hover.current) hiddenNames.add(store.resolveName(hover.current))
+      if (nativeName.current) hiddenNames.add(nativeName.current)
       if (store.focusedName.get() && !store.focusEntering.get()) hiddenNames.add(store.focusedName.get()!)
       scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenNames })
       const animating = scene.advance(now)

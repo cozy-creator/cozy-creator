@@ -34,7 +34,7 @@ const sameNode = (a: CanvasNode, b: CanvasNode) => a.id === b.id && a.type === b
 /** CanvasStore owns document edits; this owns the camera and the small logical scene published to its renderer. */
 export class CanvasController {
   private view: Viewport
-  private ended: Viewport
+  private moving = false
   private nodes: readonly CanvasNode[] = []
   private byId = new Map<string, CanvasNode>()
   private cameras = new Set<CameraListener>()
@@ -48,7 +48,6 @@ export class CanvasController {
 
   constructor(initial: Viewport = { x: 0, y: 0, zoom: 1 }, private limits: Limits = { minZoom: 0.05, maxZoom: 4 }) {
     this.view = validView(initial) ? { ...initial } : { x: 0, y: 0, zoom: 1 }
-    this.ended = this.view
   }
 
   getViewport = (): Viewport => this.view
@@ -144,6 +143,7 @@ export class CanvasController {
   private publish(view: Viewport) {
     if (sameView(view, this.view)) return
     this.view = { ...view }
+    this.moving = true
     for (const listener of this.cameras) listener(this.view)
   }
 
@@ -158,8 +158,8 @@ export class CanvasController {
   }
 
   private end() {
-    if (this.animation || sameView(this.ended, this.view)) return
-    this.ended = this.view
+    if (this.animation || !this.moving) return
+    this.moving = false
     for (const listener of this.endings) listener(this.view)
   }
 
@@ -169,6 +169,7 @@ export class CanvasController {
     this.animation = null
     cancelAnimationFrame(held.frame)
     held.resolve(false)
+    this.end()
   }
 
   /** Programmatic Focus moves may exceed Wander's zoom limits. Only fitting and hand gestures clamp them. */
@@ -176,7 +177,7 @@ export class CanvasController {
     if (!validView(view)) return Promise.resolve(false)
     this.cancelMove()
     const target = { ...view }
-    if (sameView(this.view, target)) return Promise.resolve(true)
+    if (sameView(this.view, target)) { this.end(); return Promise.resolve(true) }
     if (!this.binding || !Number.isFinite(duration) || duration <= 0) {
       this.place(target)
       this.end()
