@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
-import type { NodeProps, Viewport } from "@xyflow/react"
-import { useReactFlow } from "@xyflow/react"
-import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useCanvasViewport } from "./viewportContext"
+import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
@@ -16,7 +15,7 @@ import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapeNear } from "./controls"
 import { useDragScroll } from "./dragScroll"
-import { downloadable, Media, Preview, Thumb, usePreview } from "./Media"
+import { downloadable, Media, Preview, Thumb, usePreview, type PreviewHover } from "./Media"
 import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
@@ -29,10 +28,8 @@ import { AddOns } from "./AddOns"
 import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
-import { readableSurface } from "./readableSurface"
 import { RunFace, RunMeter, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
-import type { Box } from "./graph"
 
 const WIDEST = 1600
 const LOWEST = 90
@@ -108,7 +105,7 @@ function TakeName({ view }: { view: ElementView }) {
     <div className="take-name">
       <button
         type="button"
-        className="chip nodrag"
+        className="chip canvas-control"
         title={`Copy <${name}>`}
         onPointerDown={(event) => carryOnMove(event.nativeEvent, { name }, event.currentTarget)}
         onClick={() => void navigator.clipboard?.writeText(`<${name}>`).then(() => say(`Copied <${name}>`), () => say(`<${name}>`))}
@@ -172,7 +169,7 @@ function FocusActions({ view, name }: { view: ElementView; name: string }) {
   if (!view.asset?.tool) return null
   const next = nextTake(store, view, name, tools)
   return (
-    <div className="focus-actions nodrag nopan">
+    <div className="focus-actions canvas-control">
       {next.adds && (
         <button type="button" className={`tb take add focus-new ${next.on && !watched(view) ? "on" : ""}`} aria-label={next.label} title={next.title} onClick={next.write}>
           <Icon name="plus" />
@@ -219,7 +216,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
   const row = (
     <div
       ref={side ? undefined : list}
-      className="takes nodrag nopan nowheel"
+      className="takes canvas-control"
       onWheel={(event) => {
         if (!side) event.currentTarget.scrollLeft += event.deltaX || event.deltaY
       }}
@@ -307,7 +304,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
     </div>
   )
   return side ? (
-    <div ref={list} className={`here-side ${asset.kind === "image" ? "image-history" : ""} nodrag nopan nowheel`}>
+    <div ref={list} className={`here-side ${asset.kind === "image" ? "image-history" : ""} canvas-control`}>
       {row}
     </div>
   ) : (
@@ -324,7 +321,7 @@ function OrbitToggle({ view, name }: { view: ElementView; name: string }) {
   if (beingMade(view) && !view.hereWords) {
     return (
       <label className="row orbit-toggle">
-        <input className="nodrag" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={false} disabled />
+        <input className="canvas-control" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={false} disabled />
         <span>Orbit</span>
         <span className="muted">Plays</span>
       </label>
@@ -340,7 +337,7 @@ function OrbitToggle({ view, name }: { view: ElementView; name: string }) {
   }
   return (
     <label className="row orbit-toggle">
-      <input className="nodrag" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={on} onChange={(event) => flip(event.target.checked)} />
+      <input className="canvas-control" type="checkbox" role="switch" aria-label="Orbit: drag to turn" checked={on} onChange={(event) => flip(event.target.checked)} />
       <span>Orbit</span>
       <span className="muted">{on ? "Drag to turn" : "Plays"}</span>
     </label>
@@ -359,7 +356,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
     return (
       <div className="beats">
         {rows.map((row, i) => (
-          <button key={i} type="button" className="nodrag" style={{ flexGrow: lasts(row) }} onClick={() => store.patch(name, { hereWords: true })}>
+          <button key={i} type="button" className="canvas-control" style={{ flexGrow: lasts(row) }} onClick={() => store.patch(name, { hereWords: true })}>
             {lasts(row)}
             {total.unit ?? ""}
           </button>
@@ -379,7 +376,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
         <button
           key={i}
           type="button"
-          className="nodrag"
+          className="canvas-control"
           style={{ flexGrow: lasts[i] || 1 }}
           title={piece}
           onClick={() => store.seek(name, lasts.slice(0, i).reduce((sum, ms) => sum + ms, 0) / 1000)}
@@ -393,7 +390,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
 
 function Act({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <button type="button" className="act nodrag" onClick={onClick}>
+    <button type="button" className="act canvas-control" onClick={onClick}>
       {label}
     </button>
   )
@@ -439,7 +436,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
 function Corner({ name, view, width, focused = false }: { name: string; view: ElementView; width: number; focused?: boolean }) {
   const store = useCanvasStore()
   const focusResize = useFocusResize()
-  const flow = useReactFlow()
+  const flow = useCanvasViewport()
   const tools = useSignal(store.tools)
   const control = view.asset && reshapes(view) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
   const validRatio = (ratio: unknown): ratio is string => typeof ratio === "string" && ratio.split(":").length === 2 && ratio.split(":").map(Number).every((value) => value > 0 && Number.isFinite(value))
@@ -514,7 +511,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
     <>
       {badge && <span className="ratio-rest" data-output-aspect={label} title="Output aspect ratio">
         {label}
-        {hasOverride && <button type="button" className="ratio-clear nodrag nopan" aria-label={dynamic ? "Auto aspect ratio" : `Reset aspect ratio to ${defaultShape}`} title={dynamic ? "Back to Auto" : `Reset to ${defaultShape}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); resetShape() }}><Icon name="close" /></button>}
+        {hasOverride && <button type="button" className="ratio-clear canvas-control" aria-label={dynamic ? "Auto aspect ratio" : `Reset aspect ratio to ${defaultShape}`} title={dynamic ? "Back to Auto" : `Reset to ${defaultShape}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); resetShape() }}><Icon name="close" /></button>}
       </span>}
       {nearest && !badge && (
         <div className="ratio-live">
@@ -522,7 +519,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
         </div>
       )}
       <div
-        className="corner nodrag nopan"
+        className="corner canvas-control"
         role="slider"
         aria-label="Its size"
         aria-valuenow={Math.round(width)}
@@ -536,7 +533,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
           event.currentTarget.setPointerCapture(event.pointerId)
           // Canvas pixels per screen pixel: the zoom's, or focused, the frame's against its box.
           const frame = event.currentTarget.closest(".media")?.getBoundingClientRect()
-          const inverse = focused && frame?.width ? pose.w / frame.width : 1 / flow.getZoom()
+          const inverse = focused && frame?.width ? pose.w / frame.width : 1 / flow.getViewport().zoom
           from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), inverse, pixels: focused && frame ? { w: frame.width, h: frame.height } : undefined, owner: store.inPlace }
           if (focused && control) focusResize?.start()
           if (store.inPlace) store.inPlace.pulled = true
@@ -572,7 +569,7 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
     <span className="ratio-rest">
       {ratioWords(held)}
       {view.here && (
-        <button type="button" className="ratio-clear nodrag" aria-label={field.auto ? "Auto shape" : `Reset aspect ratio to ${fallback}`} title={field.auto ? "Use automatic aspect ratio" : `Reset to ${fallback}`} onClick={() => field.auto ? store.unshape(name, field.field) : void store.setField(name, field.field, fallback)}>
+        <button type="button" className="ratio-clear canvas-control" aria-label={field.auto ? "Auto shape" : `Reset aspect ratio to ${fallback}`} title={field.auto ? "Use automatic aspect ratio" : `Reset to ${fallback}`} onClick={() => field.auto ? store.unshape(name, field.field) : void store.setField(name, field.field, fallback)}>
           <Icon name="close" />
         </button>
       )}
@@ -646,13 +643,11 @@ function TileMeter({ view }: { view: ElementView }) {
 }
 
 
-const CardBody = memo(function CardBody({ name, width, focused = false, snapshot, selected }: { name: string; width: number; focused?: boolean; snapshot?: ElementView; selected?: boolean }) {
+const CardBody = memo(function CardBody({ name, width, focused = false, snapshot, selected, previewHover }: { name: string; width: number; focused?: boolean; snapshot?: ElementView; selected?: boolean; previewHover?: PreviewHover }) {
   const store = useCanvasStore()
-  const flow = useReactFlow<ElementNode>()
   const live = useElement(name)
   const view = snapshot ?? live
   const here = Boolean(view?.here)
-  const owner = here ? store.inPlace : null
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
   const drawn = useSignal(store.drawn)
@@ -667,119 +662,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   useEffect(() => {
     if (store.focusing === name) store.focusing = null
   })
-  // One geometry owner for the real card, including the lower panel and its takes.
-  useLayoutEffect(() => {
-    if (focused || !here || owner?.name !== name || !self.current) return
-    const card = self.current
-    const id = store.idOf(name)
-    if (!id) return
-    const original = Array.from(card.style, (name) => [name, card.style.getPropertyValue(name), card.style.getPropertyPriority(name)] as const)
-    const apply = (style: CSSProperties) => {
-      for (const [property, value] of Object.entries(style)) {
-        const name = property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)
-        if (card.style.getPropertyValue(name) !== String(value)) card.style.setProperty(name, String(value))
-      }
-    }
-    const previous = store.surfaceOf(name)
-    let under = card.querySelector<HTMLElement>(".here-all")
-    const dimensions = () => `${card.offsetWidth}:${card.offsetHeight}:${under?.offsetWidth}:${under?.scrollHeight}`
-    let drawn = ""
-    let project: ReturnType<typeof readableSurface> | undefined
-    const update = (room?: Box, at?: Viewport) => {
-      const name = card.dataset.asset
-      if (!name) return null
-      if (store.inPlace !== owner) return null
-      // React Flow freezes its drag offset from this envelope. Its hidden lower panel must not redefine that offset mid-gesture.
-      if (store.isDragging(name)) return store.surfaceOf(name) ?? null
-      const current = store.get(name)
-      const pose = store.poseOf(name)
-      if (!current?.here || !pose || !card.isConnected) return null
-      if (!card.offsetWidth || !card.offsetHeight) return null
-      if (!room && !store.inPlace?.fitted && !store.inPlace?.moved && !store.inPlace?.pulled) return null
-      if (!project) {
-        if (previous) apply(previous.style)
-        project = readableSurface(card)
-      }
-      const viewport = at ?? flow.getViewport()
-      const projection = project(current, pose, viewport, room)
-      if (!at) {
-        apply(projection.style)
-        store.presentSurface(id, projection)
-        drawn = dimensions()
-      }
-      return room && projection.view === viewport ? null : projection
-    }
-    const unbind = store.bindSurface(id, update)
-    let scheduled = 0
-    let alive = true
-    let observed = new Set<Element>()
-    const watch = new ResizeObserver(() => {
-      if (dimensions() !== drawn) schedule()
-    })
-    const observe = () => {
-      if (!alive || !card.isConnected) return
-      // These children keep their intrinsic height inside the scrolling panel (flex-shrink: 0).
-      // The card/aperture and capped panel are our outputs, not independent measurement inputs.
-      const next = new Set(under?.children ?? [])
-      for (const part of observed) if (!next.has(part)) watch.unobserve(part)
-      for (const part of next) if (!observed.has(part)) watch.observe(part)
-      observed = next
-    }
-    const schedule = () => {
-      if (!alive || !card.isConnected || store.inPlace !== owner) return
-      if (scheduled) return
-      scheduled = requestAnimationFrame(() => {
-        scheduled = 0
-        if (!alive || !card.isConnected || store.inPlace !== owner) return
-        update()
-        store.fitHere(true)
-        observe()
-      })
-    }
-    // Our own projection changes these boxes too. Only new content dimensions need another pass.
-    const check = () => {
-      if (dimensions() !== drawn) schedule()
-    }
-    drawn = dimensions()
-    const contents = new MutationObserver(() => {
-      const next = card.querySelector<HTMLElement>(".here-all")
-      if (next !== under) {
-        under = next
-        schedule()
-      } else {
-        check()
-        if ([...(under?.children ?? [])].some((part) => !observed.has(part))) schedule()
-      }
-    })
-    contents.observe(card, { childList: true, characterData: true, subtree: true })
-    window.addEventListener("resize", schedule)
-    document.fonts.addEventListener("loadingdone", schedule)
-    // React Flow can mount a culled card while delivering its own size observations.
-    // Publish our changed dimensions on the next frame, never from that delivery.
-    const first = requestAnimationFrame(() => {
-      if (!alive || !card.isConnected || store.inPlace !== owner) return
-      // First compute the fit before a full envelope can cull a card mounted for measurement.
-      if (store.inPlace?.fitted || store.inPlace?.moved || store.inPlace?.pulled) update()
-      store.fitHere(true)
-      observe()
-    })
-    return () => {
-      alive = false
-      cancelAnimationFrame(first)
-      cancelAnimationFrame(scheduled)
-      watch.disconnect()
-      contents.disconnect()
-      window.removeEventListener("resize", schedule)
-      document.fonts.removeEventListener("loadingdone", schedule)
-      unbind()
-      const width = card.style.width
-      const priority = card.style.getPropertyPriority("width")
-      // Restore through CSSOM: a raw style attribute is refused by the native page's CSP.
-      for (const name of Array.from(card.style)) card.style.removeProperty(name)
-      for (const [name, value, priority] of original) card.style.setProperty(name, value, priority)
-      if (width) card.style.setProperty("width", width, priority)
-    }
-  }, [here, focused, name, store, flow, owner])
   // What it shows has been looked at: its dot goes (cl-928).
   const showing = view ? shownOf(view)?.number : undefined
   const unseen = view?.asset?.unseen
@@ -815,7 +697,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
   const style: CSSProperties & Record<`--${string}`, string | number> = focused
     ? { width: "100%", "--focus-footer-room": `${!fielded || cut ? 0 : (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline ? 320 : 220}px` }
-    : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
+    : { width: bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
   return (
     <div
       ref={self}
@@ -858,7 +740,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           </span>
         )}
         {view.draft === undefined && here && warned ? (
-          <button type="button" className="iconb warned nodrag" aria-label="Warnings" title={noHash(view.warnings!.join("\n"))} onClick={() => store.patch(name, { warned: !view.warned })}>
+          <button type="button" className="iconb warned canvas-control" aria-label="Warnings" title={noHash(view.warnings!.join("\n"))} onClick={() => store.patch(name, { warned: !view.warned })}>
             !
           </button>
         ) : null}
@@ -866,7 +748,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           // Open or not, its trash can deletes it, with Undo (cl-939): Esc or a click off it leaves.
           <button
             type="button"
-            className="iconb nodrag"
+            className="iconb canvas-control"
             aria-label="Delete"
             title="Delete this box"
             onClick={() => {
@@ -878,14 +760,14 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           </button>
         ) : view.placing ? (
           // Its × stays as it was dropped: past the point of no return, the moment Calcifer is being asked, it does nothing.
-          <button type="button" className="iconb nodrag" aria-label="Cancel" onClick={() => view.placing?.stage !== "adding" && cancel()}>
+          <button type="button" className="iconb canvas-control" aria-label="Cancel" onClick={() => view.placing?.stage !== "adding" && cancel()}>
             <Icon name="close" />
           </button>
         ) : (
           view.draft === undefined &&
           (asset || view.landed) &&
           !lite && (
-            <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete this box" onClick={() => store.remove([name])}>
+            <button type="button" className="iconb canvas-control" aria-label="Delete" title="Delete this box" onClick={() => store.remove([name])}>
               <Icon name="trash" />
             </button>
           )
@@ -894,12 +776,12 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       )}
       {focused && !view.placing && !cut && <FocusActions view={view} name={name} />}
       {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text"} zooms={!plays} under={plays ? <VideoTransport name={name} view={view} /> : undefined}>
-        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
+        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width} previewHover={previewHover}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && editing && view.continuing && <LeadIn name={name} view={view} />}
           {here && !focused && !view.hereWords && asset && shownVersion?.main && (
             <div
-              className="take-out nodrag nopan"
+              className="take-out canvas-control"
               onPointerDown={(event) => {
                 const tile = self.current?.querySelector<HTMLElement>(`.take[data-take="${shownVersion.number}"]`)
                 carryOnMove(event.nativeEvent, asset.kind === "image" ? { name } : { take: taken(store, name, asset, { ...shownVersion, main: shownVersion.main! }) }, tile ?? event.currentTarget)
@@ -919,13 +801,13 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {drawn && !here && !focused && <TileMeter view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
-        <div className="rest-asking nodrag nopan nowheel">
+        <div className="rest-asking canvas-control">
           <Asking name={name} fit={view.asking.fit} />
         </div>
       )}
       {here && asset && asset.kind !== "text" && (!asset.timeline || cut) && <Takes view={view} name={name} width={width} side focused={focused} />}
       {here && asset && !cut && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
-        <div className="here-under nodrag nopan nowheel">
+        <div className="here-under canvas-control">
           <div className="here-all">
             {(asset.kind !== "text" || asset.tool) && <>
               {editing && asset.kind === "video" && !asset.timeline && <ContinueFrom name={name} view={view} />}
@@ -951,8 +833,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   )
 })
 
-/** Thin, as React Flow renders it: identity and body width come from one geometry publication. */
-export function Card({ data, selected }: NodeProps<ElementNode>) {
+/** Native interaction overlay: identity and body width come from one geometry publication. */
+export function Card({ data, selected, previewHover }: Pick<ElementNode, "data" | "selected"> & { previewHover?: PreviewHover }) {
   const store = useCanvasStore()
   const focused = useSignal(store.focusedName)
   const entering = useSignal(store.focusEntering)
@@ -964,7 +846,7 @@ export function Card({ data, selected }: NodeProps<ElementNode>) {
   const atRest = focused === data.name && entering && resting.current ? { ...resting.current, here: undefined, hereWords: undefined } : undefined
   return (
     <>
-      <CardBody name={data.name} width={data.width} snapshot={atRest} selected={selected} />
+      <CardBody name={data.name} width={data.width} snapshot={atRest} selected={selected} previewHover={previewHover} />
       <AddOns name={data.name} />
     </>
   )

@@ -39,7 +39,7 @@ export function ToolLine({ name, view, width }: { name: string; view: ElementVie
   const [picking, setPicking] = useState(false)
   if (!view.asset?.tool) return null
   return (
-    <div className="image-controls tool-line nodrag nopan nowheel" style={{ "--image-control-width": `${width}px` } as CSSProperties}>
+    <div className="image-controls tool-line canvas-control" style={{ "--image-control-width": `${width}px` } as CSSProperties}>
       <div className="image-version-row">
         <ToolName name={name} />
         <ModelsButton name={name} open={picking} onToggle={() => setPicking((now) => !now)} />

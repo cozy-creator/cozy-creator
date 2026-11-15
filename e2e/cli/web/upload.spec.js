@@ -6,7 +6,7 @@
 const { createHash } = require('crypto');
 const { readdirSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasIdle, MP4, photo, png, wav } = require('./fixtures');
+const { test, expect, canvasIdle, MP4, photo, png, wav, canvasCard, canvasNames, canvasVisible, screenshotPixels } = require('./fixtures');
 const { dropFiles } = require('./hands');
 
 const hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -28,18 +28,26 @@ const TWENTY = [
 ];
 
 /** Every box of `names` as it's drawn, by name: its card's rect and its picture's. */
-const drawn = (page, names) => page.evaluate((names) => Object.fromEntries([...document.querySelectorAll('.react-flow__node .card[data-asset]')]
-  .filter((card) => names.includes(card.dataset.asset))
-  .map((card) => {
-    const at = card.getBoundingClientRect();
-    const media = card.querySelector('.media');
-    const img = media?.querySelector('.media-pixels img');
-    return [card.dataset.asset, { x: at.x, y: at.y, w: at.width, h: at.height, media: media && media.offsetWidth / media.offsetHeight, picture: img?.naturalWidth ? img.naturalWidth / img.naturalHeight : null }];
-  })), names);
+const drawn = (page, names) => page.evaluate((names) => {
+  const scene = document.querySelector('.canvas-root').canvasInspection;
+  return Object.fromEntries(names.flatMap(name => {
+    const card = scene.card(name), shown = card?.rendered;
+    if (!card) return [];
+    const native = document.querySelector(`.canvas-node:has(.card[data-asset=${JSON.stringify(name)}])`);
+    if (native?.checkVisibility()) {
+      const at = native.getBoundingClientRect(), media = native.querySelector('.media')?.getBoundingClientRect(), img = native.querySelector('.media-pixels img');
+      return [[name, { x: at.x, y: at.y, w: at.width, h: at.height, media: media ? media.width / media.height : null, picture: img?.complete && img.naturalWidth ? img.naturalWidth / img.naturalHeight : null }]];
+    }
+    if (!shown) return [];
+    const view = scene.camera(), pane = document.querySelector('.canvas-root').getBoundingClientRect();
+    const at = { x: pane.x + view.x + shown.transform.x * view.zoom, y: pane.y + view.y + shown.transform.y * view.zoom, width: card.bounds.width * shown.transform.scaleX, height: card.bounds.height * shown.transform.scaleY }, media = shown.body;
+    return [[name, { x: at.x, y: at.y, w: at.width, h: at.height, media: media.width / media.height, picture: shown.media.ready ? shown.media.width / shown.media.height : null }]];
+  }));
+}, names);
 
 /** A point on open canvas with a `w`×`h` room under it and to its right, clear of every box and of what floats over the canvas. */
 const room = (page, w, h) => page.evaluate(({ w, h }) => {
-  const open = (x, y) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane');
+  const open = (x, y) => document.elementFromPoint(x, y)?.classList.contains('canvas-pane') && !document.querySelector('.canvas-root')?.canvasInspection?.hitTest({ x, y });
   for (let y = 120; y + h < innerHeight - 20; y += 40) {
     for (let x = 340; x + w < innerWidth - 20; x += 40) {
       let clear = true;
@@ -53,36 +61,39 @@ const room = (page, w, h) => page.evaluate(({ w, h }) => {
 /** Every frame from now, each box of `names`: where and how big it's drawn, its picture and its head, from the frame it's first drawn. */
 const watch = (page, names) => page.evaluate((names) => {
   const seen = (window.dropWatch = { first: {}, changes: [], bad: [], stop: false });
-  const sample = (node) => {
-    const card = node.querySelector('.card');
-    const media = card?.querySelector('.media');
-    const imgs = [...(media?.querySelectorAll('.media-pixels img') ?? [])];
+  const sample = (name) => {
+    const scene = document.querySelector('.canvas-root')?.canvasInspection, card = scene?.card(name), shown = card?.rendered;
+    if (!card) return null;
+    const zoom = scene.camera().zoom;
+    const native = document.querySelector(`.canvas-node:has(.card[data-asset=${JSON.stringify(name)}])`);
+    if (native?.checkVisibility()) {
+      const root = document.querySelector('.canvas-root').getBoundingClientRect(), view = scene.camera(), r = native.getBoundingClientRect();
+      const media = native.querySelector('.media'), body = media?.getBoundingClientRect(), img = media?.querySelector('.media-pixels img');
+      const host = img?.closest('.buffered-image'), src = img?.getAttribute('src') ?? '', sha = host?.dataset.displayedSha?.replace(/^sha256:/, '');
+      return { pos: [(r.x - root.x - view.x) / zoom, (r.y - root.y - view.y) / zoom], w: r.width / zoom, h: r.height / zoom, mw: body?.width / zoom, mh: body?.height / zoom, srcs: src.startsWith('blob:') ? 'local' : 'remote', local: src.startsWith('blob:'), sha, decoded: Boolean(img?.complete && img.naturalWidth > 0), head: native.querySelector('.head .nm')?.textContent, wrong: [native.classList.contains('glide') && 'glide', native.querySelector('.card.landing') && 'landing', native.querySelector('.prog') && 'progress', native.querySelector('.state-dot.queued, .state-dot.running') && 'state dot'].filter(Boolean) };
+    }
+    if (!shown) return null;
     return {
-      pos: node.style.transform,
-      w: card?.offsetWidth, h: card?.offsetHeight, mw: media?.offsetWidth, mh: media?.offsetHeight,
-      srcs: imgs.map((img) => img.getAttribute('src')).join(' '),
-      decoded: imgs.length > 0 && imgs.every((img) => img.complete && img.naturalWidth > 0),
-      head: card?.querySelector('.head')?.textContent,
+      pos: [shown.transform.x, shown.transform.y],
+      w: card.bounds.width / zoom * shown.transform.scaleX, h: card.bounds.height / zoom * shown.transform.scaleY,
+      mw: shown.body.width / zoom, mh: shown.body.height / zoom,
+      srcs: shown.media.local ? 'local' : 'remote', local: shown.media.local, sha: shown.media.sha,
+      decoded: shown.media.ready, head: shown.labels.title?.fullText,
+      wrong: [shown.glide?.active && 'glide', shown.landing?.active && 'landing', shown.progress && 'progress', ['queued', 'running'].includes(shown.state) && 'state dot'].filter(Boolean),
     };
   };
-  const at = (pos) => (/translate\(([-\d.e]+)px, ?([-\d.e]+)px\)/.exec(pos ?? '') ?? []).slice(1).map(Number);
-  const same = (a, b) => {
-    const [p, q] = [at(a.pos), at(b.pos)];
-    return p.length === 2 && q.length === 2 && Math.abs(p[0] - q[0]) < 0.01 && Math.abs(p[1] - q[1]) < 0.01
-      && ['w', 'h', 'mw', 'mh'].every((side) => Math.abs(a[side] - b[side]) <= 0.5) && a.srcs === b.srcs && a.head === b.head;
-  };
+  const same = (a, b) => a.pos.every((value, i) => Math.abs(value - b.pos[i]) < 0.01)
+    && ['w', 'h', 'mw', 'mh'].every(side => Math.abs(a[side] - b[side]) <= 0.5) && a.srcs === b.srcs && (!a.sha || !b.sha || a.sha === b.sha) && a.head === b.head;
   const tick = () => {
     if (seen.stop) return;
     const when = Math.round(performance.now());
-    for (const node of document.querySelectorAll('.react-flow__node')) {
-      const name = node.querySelector('.card')?.dataset.asset;
-      if (!names.includes(name) || getComputedStyle(node).visibility !== 'visible') continue;
-      const now = sample(node);
+    for (const name of names) {
+      const now = sample(name);
+      if (!now) continue;
       const first = seen.first[name];
       if (!first) seen.first[name] = { ...now, at: when };
       else if (!same(first, now) && seen.changes.length < 40) seen.changes.push({ name, at: when, first, now });
-      const wrong = [node.classList.contains('glide') && 'glide', node.querySelector('.card.landing') && 'landing', node.querySelector('.prog') && 'progress', node.querySelector('.state-dot.queued, .state-dot.running') && 'state dot'].filter(Boolean);
-      if (wrong.length && seen.bad.length < 40) seen.bad.push({ name, at: when, wrong });
+      if (now.wrong.length && seen.bad.length < 40) seen.bad.push({ name, at: when, wrong: now.wrong });
     }
     requestAnimationFrame(tick);
   };
@@ -94,30 +105,36 @@ test.use({ viewport: { width: 1920, height: 1200 } });
 test('upload', { tag: '@engines' }, async ({ page, project, guards }) => {
   // The .txt's import, refused on purpose.
   guards.allow(/status of 400\b.*\/v1\/projects\/[^/ ]+\/imports$/);
-  const names = page.locator('.react-flow__node .card[data-asset]');
   const assets = async () => Object.fromEntries((await project.assets()).map((asset) => [asset.name, asset]));
   const coast = png(60);
   /** Where each box stands on the canvas, by name: its node's place in canvas units, and its card's size. */
-  const places = () => names.evaluateAll((cards) => Object.fromEntries(cards.map((card) => {
-    const node = card.closest('.react-flow__node');
-    return [card.dataset.asset, `${node.style.transform} ${card.offsetWidth}x${card.offsetHeight}`];
-  })));
+  const places = () => page.evaluate(() => {
+    const root = document.querySelector('.canvas-root'), scene = root.canvasInspection, view = scene.camera(), pane = root.getBoundingClientRect();
+    const fixed = value => Math.round(value * 1000) / 1000;
+    return Object.fromEntries(scene.names().flatMap(name => {
+      const card = scene.card(name), shown = card?.rendered, native = document.querySelector(`.canvas-node:has(.card[data-asset=${JSON.stringify(name)}])`);
+      const r = native?.checkVisibility() ? native.getBoundingClientRect() : null;
+      if (!shown && !r) return [];
+      const at = r ? [(r.x - pane.x - view.x) / view.zoom, (r.y - pane.y - view.y) / view.zoom, r.width / view.zoom, r.height / view.zoom] : [shown.transform.x, shown.transform.y, card.bounds.width / view.zoom * shown.transform.scaleX, card.bounds.height / view.zoom * shown.transform.scaleY];
+      return [[name, at.map(fixed)]];
+    }));
+  });
 
   await test.step('a PNG, an MP4 and a WAV dropped together, Add files, a .txt beside a PNG, and the same PNG twice', async () => {
     // Two across and two down, as the page lays out a drop of three.
     const spot = await room(page, 600, 560);
     const at = { x: spot.x + 124, y: spot.y + 20 };
     await dropFiles(page, [{ name: 'Coast.png', type: 'image/png', bytes: coast }, { name: 'Take.mp4', type: 'video/mp4', bytes: MP4 }, { name: 'Sea.wav', type: 'audio/wav', bytes: wav() }], at);
-    for (const name of ['coast', 'take', 'sea']) await expect(box(page, name)).toBeVisible();
+    for (const name of ['coast', 'take', 'sea']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
     await expect.soft(page.locator('.nm-field'), 'several dropped: none asks its name').toHaveCount(0);
-    const first = await box(page, 'coast').boundingBox();
+    const first = (await canvasCard(page, 'coast')).bounds;
     expect.soft(first.x <= at.x && at.x <= first.x + first.width && first.y <= at.y && at.y <= first.y + first.height, `the first where it was let go: ${JSON.stringify(first)}`).toBe(true);
     await expect.poll(async () => {
       const held = await assets();
       return ['coast', 'take', 'sea'].map((name) => held[name]?.kind);
     }, { message: 'each a box of its kind' }).toEqual(['image', 'video', 'audio']);
     for (const name of ['coast', 'take', 'sea']) {
-      await expect.poll(() => box(page, name).locator('.media img').evaluateAll((all) => all.some((img) => img.complete && img.naturalWidth > 0)), { message: `${name}'s picture, poster or waveform`, timeout: 60_000 }).toBe(true);
+      await expect.poll(async () => (await canvasCard(page, name))?.rendered?.media.ready ?? false, { message: `${name}'s picture, poster or waveform`, timeout: 60_000 }).toBe(true);
     }
 
     const chooser = page.waitForEvent('filechooser');
@@ -138,7 +155,7 @@ test('upload', { tag: '@engines' }, async ({ page, project, guards }) => {
     await expect.poll(async () => Object.values(await assets()).filter((asset) => plain(asset.sha256) === hex(coast)).map((asset) => asset.name).sort(), { message: 'the same PNG twice: two boxes' }).toHaveLength(2);
     await expect.poll(() => page.locator('.notes .note .line').allTextContents(), { message: 'the .txt refused in one line' }).toEqual(expect.arrayContaining([expect.stringContaining('notes.txt')]));
     expect.soft((await page.locator('.notes .note .line').allTextContents()).filter((line) => line.includes('notes.txt')), 'one line').toHaveLength(1);
-    await expect.soft(box(page, 'notes'), 'nothing of it on the canvas').toHaveCount(0);
+    await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes('notes'), { message: 'nothing of it on the canvas' }).toBe(false);
     expect.soft(Object.keys(await assets()), 'nor in the project').not.toContain('notes');
     expect.soft(readdirSync(join(project.path, 'files')).length, 'the same PNG twice: one file').toBe(filesBefore);
   });
@@ -177,13 +194,24 @@ test('upload', { tag: '@engines' }, async ({ page, project, guards }) => {
     const firsts = Object.entries(seen.first);
     expect.soft(firsts.map(([name]) => name).sort(), 'each drawn').toEqual([...pictures].sort());
     expect.soft(firsts.filter(([, one]) => !one.decoded).map(([name]) => name), 'first drawn without its picture decoded').toEqual([]);
-    expect.soft(firsts.filter(([, one]) => !one.srcs.startsWith('blob:') || one.srcs.includes(' ')).map(([name, one]) => `${name}: ${one.srcs}`), 'first drawn with other than its own file').toEqual([]);
+    expect.soft(firsts.filter(([name, one]) => !one.local || (one.sha && one.sha !== hex(TWENTY.find(file => file.name === name).bytes))).map(([name, one]) => `${name}: ${one.srcs}`), 'first drawn with other than its own file').toEqual([]);
     expect.soft(seen.changes.slice(0, 6), 'moved, resized or swapped after it was drawn').toEqual([]);
     expect.soft(seen.bad.slice(0, 6), 'a progress bar, a pulsing dot, a landing or a glide').toEqual([]);
     const shapes = TWENTY.map(({ name, aspect }) => ({ name, aspect, drawn: seen.first[name] && seen.first[name].mw / seen.first[name].mh }));
     expect.soft(shapes.filter(({ aspect, drawn: shown }) => !(shown && Math.abs(shown / aspect - 1) < 0.02)), "drawn at other than its picture's shape").toEqual([]);
     const turnedRows = TWENTY.filter(({ turn }) => turn).map(({ name, aspect }) => ({ name, aspect, measured: dims(measured[name]).width / dims(measured[name]).height }));
     expect.soft(turnedRows.filter(({ aspect, measured: ratio }) => !(Math.abs(ratio / aspect - 1) < 0.02)), 'a turned JPEG measured other than as it stands').toEqual([]);
+    const shot = screenshotPixels(await page.screenshot({ scale: 'css' }));
+    for (const [index, file] of TWENTY.entries()) {
+      const body = (await canvasCard(page, file.name)).body;
+      const pixels = [[0.65, 0.25], [0.85, 0.25], [0.65, 0.75], [0.85, 0.75]].map(([u, v]) => ({ u, v, rgb: shot(body.x + body.width * u, body.y + body.height * v) }));
+      if (file.type === 'image/png') for (const { u, v, rgb } of pixels) {
+        const expected = [20 + index * 12, 255 * u, 255 * v];
+        expect.soft(Math.max(...rgb.map((value, i) => Math.abs(value - expected[i]))), `${file.name} source pixels ${u},${v}`).toBeLessThanOrEqual(32);
+      } else {
+        expect.soft(new Set(pixels.map(({ rgb }) => rgb.map(v => Math.round(v / 8)).join())).size, `${file.name} JPEG paints a nonuniform picture`).toBeGreaterThan(1);
+      }
+    }
     placed = await drawn(page, pictures);
   });
 
@@ -194,7 +222,7 @@ test('upload', { tag: '@engines' }, async ({ page, project, guards }) => {
     const name = page.getByRole('textbox', { name: 'Name', exact: true });
     await expect(name).toBeFocused();
     await page.keyboard.press('Escape');
-    await expect(box(page, 'never'), 'gone from the canvas').toHaveCount(0);
+    await expect.poll(async () => (await canvasNames(page)).includes('never'), { message: 'gone from the canvas' }).toBe(false);
     await expect.poll(async () => Object.keys(await assets()).sort(), { message: 'nothing in the project' }).toEqual(before);
     const stood = await places();
     expect.soft(Object.keys(stood).sort(), 'every box drawn').toEqual(before);
@@ -209,7 +237,7 @@ test('upload', { tag: '@engines' }, async ({ page, project, guards }) => {
 
   await test.step('no hash shows on the page', async () => {
     const digests = Object.values(await assets()).map((asset) => plain(asset.sha256)).filter(Boolean);
-    const shown = await page.evaluate(() => document.body.innerText + [...document.querySelectorAll('[title],[aria-label]')].map((el) => `${el.title} ${el.ariaLabel}`).join(' '));
+    const shown = await page.evaluate(() => document.body.innerText + [...document.querySelectorAll('[title],[aria-label]')].map((el) => `${el.title} ${el.ariaLabel}`).join(' ') + (() => { const scene = document.querySelector('.canvas-root').canvasInspection; return scene.names().flatMap(name => Object.values(scene.card(name)?.rendered?.labels ?? {}).map(label => label.text)).join(' '); })());
     expect.soft(digests.length, 'files held').toBeGreaterThan(20);
     expect.soft(digests.filter((digest) => shown.includes(digest)), 'a hash on the page').toEqual([]);
   });

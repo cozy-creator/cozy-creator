@@ -7,7 +7,7 @@
 const { execFileSync } = require('child_process');
 const { createHash, randomBytes } = require('crypto');
 const { dirname, join } = require('path');
-const { test, expect, box, canvasIdle, fixtureTool, focus, middle, openPoint, png } = require('./fixtures');
+const { test, expect, canvasIdle, fixtureTool, focus, middle, openPoint, png, canvasCard, canvasNames, canvasPoint, canvasVisible, canvasText, canvasLabel, hoverBox } = require('./fixtures');
 
 const PLACES = { shot: { x: 0, y: 0 }, named: { x: 0, y: 420 }, spare: { x: 360, y: 420 }, words: { x: 720, y: 420 }, still: { x: 1080, y: 420 } };
 const STILL = `${fixtureTool('tool.py')}/still`;
@@ -36,10 +36,10 @@ print(json.dumps({"seq": seq and seq[0], "boxes": boxes, "canvas": canvas}))`;
 }
 
 /** Where `name` is drawn on the canvas: its node's flow position. */
-const placeOf = (page, name) => box(page, name).evaluate((card) => {
-  const [, x, y] = card.closest('.react-flow__node').style.transform.match(/translate\((-?[\d.]+)px, *(-?[\d.]+)px\)/);
-  return [Math.round(Number(x)), Math.round(Number(y))];
-});
+const placeOf = async (page, name) => {
+  const card = await canvasCard(page, name), at = card?.rendered?.transform ?? card?.position;
+  return at ? [Math.round(at.x), Math.round(at.y)] : null;
+};
 
 /** The top bar's word on Calcifer and what waits for it, and everything it says. */
 const status = (page) => page.locator('header.top').getByRole('status');
@@ -56,7 +56,7 @@ async function fitAll(page) {
 
 /** `name` dragged by its name, as a hand does. */
 async function drag(page, name, dx, dy) {
-  const { x, y } = await middle(box(page, name).locator('.nm'));
+  const { x, y } = await middle((await hoverBox(page, name)).locator('.nm'));
   await page.mouse.move(x, y);
   await page.mouse.down();
   await page.mouse.move(x + 8, y + 2);
@@ -117,12 +117,12 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await expect(page.locator('.stage')).toBeVisible();
   };
   await fitAll(page);
-  for (const name of Object.keys(PLACES)) await expect(box(page, name)).toBeVisible();
-  await expect(page.locator('.react-flow__node [data-state="unseen"]')).toHaveCount(0);
+  for (const name of Object.keys(PLACES)) await expect.poll(() => canvasVisible(page, name), {  }).toBe(true);
+  await expect.poll(() => page.evaluate(() => { const scene = document.querySelector('.canvas-root').canvasInspection; return scene.names().filter(name => scene.card(name)?.rendered?.unseen); })).toEqual([]);
   // Both projects read once, as a person has them open.
   await reach(other);
   await reach(project);
-  await expect(box(page, 'shot')).toBeVisible();
+  await expect.poll(() => canvasVisible(page, 'shot'), {  }).toBe(true);
   await expect(bar(page)).toHaveCount(0);
   await page.evaluate(() => { window.unreloaded = true; });
   // Calcifer away: what the page asks of it, its calls and its own files (a frame's sheet, its icons), fails as the browser says in its
@@ -152,7 +152,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
       await expect.soft(text, 'what is typed shows at once').toHaveText(words, AT_ONCE);
       await leave(page, region);
     }
-    await expect.soft(box(page, 'words'), 'its words at rest').toContainText(SECOND, AT_ONCE);
+    await expect.configure({ soft: true }).poll(() => canvasText(page, 'words'), { message: 'its words at rest', ...AT_ONCE }).toContain(SECOND);
 
     const from = await placeOf(page, 'shot');
     await drag(page, 'shot', 160, 40);
@@ -163,14 +163,14 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     expect.soft(moved, 'the second move shows at once').not.toEqual(once);
 
     // A tap on its name at rest renames it.
-    const name = await middle(box(page, 'named').locator('.nm'));
+    const name = await middle((await hoverBox(page, 'named')).locator('.nm'));
     await page.mouse.click(name.x, name.y);
     await expect(page.getByRole('textbox', { name: 'Name' })).toBeFocused();
     await page.keyboard.press('ControlOrMeta+a');
     await page.keyboard.type('renamed');
     await page.keyboard.press('Enter');
-    await expect.soft(box(page, 'renamed'), 'the rename shows at once').toBeVisible(AT_ONCE);
-    await expect.soft(box(page, 'named')).toHaveCount(0, AT_ONCE);
+    await expect.configure({ soft: true }).poll(() => canvasVisible(page, 'renamed'), { message: 'the rename shows at once', ...AT_ONCE }).toBe(true);
+    await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes('named'), { ...AT_ONCE }).toBe(false);
 
     // A double tap on a take approves it.
     const region = await focus(page, 'shot');
@@ -182,30 +182,30 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await drop(page, 'late.png', LATE, await openPoint(page));
     await expect(page.getByRole('textbox', { name: 'Name' })).toBeFocused();
     await page.keyboard.press('Enter');
-    await expect.soft(box(page, 'late'), 'the drop shows at once').toBeVisible(AT_ONCE);
+    await expect.configure({ soft: true }).poll(() => canvasVisible(page, 'late'), { message: 'the drop shows at once', ...AT_ONCE }).toBe(true);
 
     // On a picture box it's that box's next version, no box of its own: its step and its turn are taken as it's dropped.
-    await drop(page, 'joined.png', JOINED, await middle(box(page, 'renamed').locator('.media').first()));
+    await drop(page, 'joined.png', JOINED, await canvasPoint(page, 'renamed'));
 
     // Deleted last, so Undo takes back the delete.
-    const head = await middle(box(page, 'spare').locator('.nm'));
+    const head = await middle((await hoverBox(page, 'spare')).locator('.nm'));
     await page.mouse.move(head.x, head.y);
-    const trash = await middle(box(page, 'spare').getByRole('button', { name: 'Delete', exact: true }));
+    const trash = await middle((await hoverBox(page, 'spare')).getByRole('button', { name: 'Delete', exact: true }));
     await page.mouse.click(trash.x, trash.y);
-    await expect.soft(box(page, 'spare'), 'the delete shows at once').toHaveCount(0, AT_ONCE);
+    await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes('spare'), { message: 'the delete shows at once', ...AT_ONCE }).toBe(false);
     const clear = await openPoint(page);
     await page.mouse.click(clear.x, clear.y);
     await page.keyboard.press('ControlOrMeta+z');
-    await expect.soft(box(page, 'spare'), 'its Undo shows at once').toBeVisible(AT_ONCE);
+    await expect.configure({ soft: true }).poll(() => canvasVisible(page, 'spare'), { message: 'its Undo shows at once', ...AT_ONCE }).toBe(true);
 
     await reach(other);
     await reach(project);
-    await expect(box(page, 'shot')).toBeVisible();
-    const names = await page.locator('.react-flow__node .card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset).sort());
+    await expect.poll(() => canvasVisible(page, 'shot'), {  }).toBe(true);
+    const names = (await canvasNames(page)).sort();
     expect.soft(names, 'a tab away and back keeps every box').toEqual(['late', 'renamed', 'shot', 'spare', 'still', 'words']);
     expect.soft(await placeOf(page, 'shot'), 'and the move').toEqual(moved);
-    await expect.soft(box(page, 'words'), 'and the words').toContainText(SECOND);
-    await expect.soft(box(page, 'shot').locator('.node-version-label'), 'and the approval').toHaveText(`v${approve}`);
+    await expect.configure({ soft: true }).poll(() => canvasText(page, 'words'), { message: 'and the words',  }).toContain(SECOND);
+    await expect.configure({ soft: true }).poll(() => canvasLabel(page, 'shot', 'version'), { message: 'and the approval' }).toBe(`v${approve}`);
     // The person's changes: two saves, the moves as one, the rename, the approval, the file, the file on a box, the delete and its undo.
     // What the page keeps of its own view (what's selected, where the canvas is) is no change of theirs.
     await expect.soft(status(page), 'every edit counted in the top bar, and only those').toHaveText(/^Calcifer offline: 9 changes waiting/);
@@ -258,7 +258,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     const clear = await openPoint(page);
     await page.mouse.click(clear.x, clear.y);
     await page.keyboard.press('ControlOrMeta+Shift+z');
-    await expect.soft(box(page, 'spare'), 'Redo shows at once').toHaveCount(0, AT_ONCE);
+    await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes('spare'), { message: 'Redo shows at once', ...AT_ONCE }).toBe(false);
     await expect.configure({ soft: true }).poll(async () => Boolean(await project.asset('spare')), { message: 'Redo landed' }).toBe(false);
   });
 
@@ -299,7 +299,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await page.reload();
     await expect(page.locator('.stage')).toBeVisible();
     await fitAll(page);
-    await expect.soft(box(page, 'words'), 'the page loads with no Hub').toBeVisible();
+    await expect.configure({ soft: true }).poll(() => canvasVisible(page, 'words'), { message: 'the page loads with no Hub',  }).toBe(true);
     await expect.soft(page.getByRole('complementary', { name: 'Tools' }).getByText(/^only what's installed/), 'the palette says what it lists').toBeVisible();
 
     const region = await focus(page, 'still');

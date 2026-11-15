@@ -17,10 +17,10 @@ export function Asking({ name, fit, all }: { name?: string; fit: Fit; all?: bool
         ))}
       {fit.rent && <p>{fit.rent.line}</p>}
       <div className="row">
-        <button type="button" className="tb primary nodrag" onClick={() => (all ? store.rentForAll() : name && store.rentInstead(name))}>
+        <button type="button" className="tb primary canvas-control" onClick={() => (all ? store.rentForAll() : name && store.rentInstead(name))}>
           {card ? `Rent ${article(card)} ${card}` : "Rent a GPU"}
         </button>
-        <button type="button" className="tb nodrag" onClick={() => (all ? store.renderAllHere() : name && store.renderHere(name))}>
+        <button type="button" className="tb canvas-control" onClick={() => (all ? store.renderAllHere() : name && store.renderHere(name))}>
           Run here anyway
         </button>
       </div>
