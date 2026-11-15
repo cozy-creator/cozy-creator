@@ -276,6 +276,13 @@ class Receipt:
         self.value["cases"][case] = facts
         self.save()
 
+    def synthetic_text(self, case: str, **texts: bytes) -> None:
+        """What a command said about the remote fixture's synthetic Unix user and its machine, which hold nothing
+        private: its last 2 KiB as text, so a failure there says why."""
+        require(re.fullmatch(r"[a-z][a-z0-9_]*", case) and all(re.fullmatch(r"[a-z][a-z0-9_]*", key) for key in texts), "receipt_schema")
+        self.value["cases"][case] = {key: value[-2048:].decode(errors="replace") for key, value in texts.items()}
+        self.save()
+
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.value, sort_keys=True, indent=2) + "\n")

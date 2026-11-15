@@ -189,6 +189,8 @@ class Worker:
         if completed.returncode:
             failed = Failure("fixture_failure")
             self.failure(failed, completed=completed, cleanup=cleanup)
+            if user:
+                self.receipt.synthetic_text("remote_cpu_cli_output", stdout=completed.stdout, stderr=completed.stderr)
             raise failed
         return completed.stdout
 
@@ -220,7 +222,12 @@ class Worker:
             if version: updates += ["--" + flag, version]
         if updates:
             self.stage("update")
-            self.native.command("machine", "update", self.name, *updates, "-y")
+            words = ("machine", "update", self.name, *updates, "-y")
+            completed = subprocess.run([str(self.native.cli), "--json", *words], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if completed.returncode:
+                self.native.failure = self.native.failure or Native.failure_facts(completed, words)
+                self.receipt.synthetic_text("remote_cpu_cli_output", stdout=completed.stdout, stderr=completed.stderr)
+                raise Failure("cli_exit")
         self.receipt.add("remote_cpu_worker", default_user_home=True, loopback=True, fingerprint_pinned=True,
                          public_controller_authorized=True, binary_sha256=sha(self.native.cli.read_bytes()))
 
