@@ -9,6 +9,7 @@ const MIB = 1024 * 1024
 const CACHE_BYTES = 768 * MIB
 const UNUSED_BYTES = 64 * MIB
 const LOADS = 6
+const span = (name: string, start: number) => { try { performance.measure(name, { start, end: performance.now() }) } catch { /* diagnostics only */ } }
 
 export interface MediaRequest {
   /** Project-relative API path, or an import's existing blob URL. Never logged. */
@@ -41,6 +42,7 @@ interface Entry {
   failed: boolean
   controller?: AbortController
   waiting?: () => void
+  asked?: number
 }
 
 type FailureStage = "fetch" | "http" | "decode" | "texture"
@@ -83,7 +85,7 @@ export class MediaCache {
     const key = this.key(request)
     let entry = this.entries.get(key)
     if (!entry) {
-      entry = { key, request, listeners: new Set(), pins: 0, bytes: 0, tries: 0, failed: false }
+      entry = { key, request, listeners: new Set(), pins: 0, bytes: 0, tries: 0, failed: false, asked: performance.now() }
       this.entries.set(key, entry)
     }
     const held = entry
@@ -140,6 +142,9 @@ export class MediaCache {
     let image: HTMLImageElement | undefined
     let stage: FailureStage = "fetch"
     let httpStatus: number | undefined
+    let at = performance.now()
+    if (entry.asked !== undefined) span("cozy.thumb.queued", entry.asked)
+    const step = (name: string) => { span(name, at); at = performance.now() }
     const live = () => !this.stopped && this.visible && !controller.signal.aborted && this.entries.get(entry.key) === entry && entry.pins > 0
     try {
       const { request } = entry
@@ -155,6 +160,7 @@ export class MediaCache {
         raw = await createImageBitmap(image)
       } else {
         const response = await this.client.transport.fetch(request.path, { signal: controller.signal })
+        step("cozy.thumb.fetch")
         httpStatus = response.status
         if (response.status === 202 && request.sha256) {
           await response.body?.cancel()
@@ -174,12 +180,14 @@ export class MediaCache {
           throw new Error("Thumbnail is not available")
         }
         const blob = await response.blob()
+        step("cozy.thumb.body")
         if (!live()) return
         blobBytes = blob.size
         this.sourceBytes += blobBytes
         this.fetchedBytes += blobBytes
         stage = "decode"
         raw = await createImageBitmap(blob)
+        step("cozy.thumb.decode")
       }
       if (!live()) return
       entry.aspect = raw.width / raw.height
@@ -189,11 +197,13 @@ export class MediaCache {
         ? await createImageBitmap(raw, { resizeWidth: width, resizeHeight: Math.max(1, Math.round(width / entry.aspect)), resizeQuality: "high" })
         : raw
       if (bitmap !== raw) raw.close()
+      step("cozy.thumb.resize")
       raw = undefined
       if (!live()) return
       // skipCache: no global reference survives project close/vault lock. Keep the bitmap for WebGL context restoration.
       stage = "texture"
       entry.texture = Texture.from(bitmap, true)
+      step("cozy.thumb.texture")
       entry.bitmap = bitmap
       entry.bytes = bitmap.width * bitmap.height * 4
       this.residentBytes += entry.bytes

@@ -97,6 +97,7 @@ export function CanvasSurface(props: Props) {
   useEffect(() => {
     const element = root.current
     if (!element) return
+    performance.mark("cozy.canvas.mount")
     let graphicsLost = false
     let stopped = false, frame = 0, settle = 0, renderer: WebGLRenderer | null = null, stage: Container | null = null, viewport: PixiViewport | null = null
     let revision = 0, painted = -1, animating = false
@@ -213,13 +214,17 @@ export function CanvasSurface(props: Props) {
         const hiddenNames = new Set<string>()
         if (nativeName.current) hiddenNames.add(nativeName.current)
         if (store.focusedName.get() && !store.focusEntering.get()) hiddenNames.add(store.focusedName.get()!)
+        const began = performance.now()
         scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenNames })
+        try { performance.measure("cozy.canvas.update", { start: began, end: performance.now(), detail: names.length }) } catch { /* diagnostics only */ }
         releasedBodies.current.clear()
       }
       const wasAnimating = animating
       if (refresh || animating) animating = scene.advance(now)
       if (refresh || animating || wasAnimating) {
+        const began = performance.now()
         renderer.render({ container: stage })
+        try { performance.measure("cozy.canvas.render", { start: began, end: performance.now() }) } catch { /* diagnostics only */ }
         if (renderer.context.isLost) return
         scene.didRender()
         renderFrames++
@@ -460,11 +465,13 @@ export function CanvasSurface(props: Props) {
 
     void (async () => {
       // Pixi 8.23 applies the major-caveat gate in this probe, not in WebGLRenderer's context attributes.
+      const initFrom = performance.now()
       if (!isWebGLSupported(true)) throw new Error("Accelerated WebGL is not available in this browser.")
       const created = new WebGLRenderer()
       await created.init({ width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias: true, gcActive: false })
       if (stopped) { created.destroy({ removeView: true, releaseGlobalResources: true }); return }
       renderer = created
+      try { performance.measure("cozy.canvas.init", { start: initFrom, end: performance.now() }) } catch { /* diagnostics only */ }
       stage = new Container()
       const gl = created.gl, info = gl.getExtension("WEBGL_debug_renderer_info")
       const backend = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER))

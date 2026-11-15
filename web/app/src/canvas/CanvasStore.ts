@@ -785,6 +785,7 @@ export class CanvasStore {
 
   applyState(state: Project) {
     if (this.retired) return
+    performance.mark("cozy.state", { detail: state.assets.length })
     this.state = state
     this.began = state.began ?? 0
     const ahead = state.board?.ahead ?? []
@@ -795,6 +796,7 @@ export class CanvasStore {
   /** `GET canvas`: every row, but what this page moved since that read began: it can't know. */
   applyCanvas(cards: Record<string, Card>, began = 0, seq?: number) {
     if (this.retired) return
+    performance.mark("cozy.canvas.rows")
     this.heard(seq)
     if (cards === this.cardsRead) return
     this.cardsRead = cards
@@ -899,6 +901,7 @@ export class CanvasStore {
   }
 
   private reconcile() {
+    performance.mark("cozy.reconcile")
     if (!this.drawn.get()) requestAnimationFrame(() => setTimeout(() => this.drawn.set(true)))
     const state = this.state!
     const rows = this.rows!
