@@ -1,0 +1,1 @@
+`cozy open` in a locked encrypted project asks for its passphrase or recovery secret at a terminal again, unlocks it, then opens it, as 0.25.0 did; `--json` and pipes still refuse with `project_locked`, naming `cozy vault unlock`. The prompt of `cozy vault unlock` takes either credential too (cl-1002).

@@ -257,7 +257,7 @@ test = "pr: agent, the file, a kind, a tool's block and one field of it in words
 
 [open]
 "--port" = "pr: entrypoint parser, loopback listener and preserved config tests"
-test = "pr: entrypoints, local authenticated URL and expiry; web-open redeems the link in a browser; page_http (commands) refuses what must be"
+test = "pr: entrypoints, local authenticated URL and expiry; web-open redeems the link in a browser; page_http (commands) refuses what must be; open_unlocks (projectvault), a locked project unlocked at a terminal by passphrase or recovery secret, refused with --json or from a pipe"
 
 ["vault"]
 "--directory" = "pr: projectvault: convert and rekey from outside the backing folder"

@@ -70,7 +70,7 @@ fn mounting(e: project_mount::Error) -> Error {
 }
 fn key(e: project_vault::Error) -> Error {
     match e {
-        rejected @ project_vault::Error::Unlock => Error::new(Kind::Credential, "vault_unlock_failed", rejected.to_string()),
+        rejected @ (project_vault::Error::Unlock | project_vault::Error::Recovery) => Error::new(Kind::Credential, "vault_unlock_failed", rejected.to_string()),
         other => error("vault_key", other),
     }
 }

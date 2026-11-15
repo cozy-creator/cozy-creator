@@ -688,6 +688,7 @@ case $SHARD in
   projectvault) parts="
     vault_times
     shared_scratch
+    open_unlocks
     projectvault
     vault_leftovers
     vault_swapped
