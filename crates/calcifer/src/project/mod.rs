@@ -3806,12 +3806,9 @@ impl Walk {
 
     /// What `wanted`'s machine has ready for job `key` (`PUT /v1/upcoming`): the function its text names, else the first of its package
     /// that makes this kind, with its model choices; and the function, as its row says it. None: its package makes nothing of the kind.
-    /// Local code is installed there first, as a call's is.
+    /// Local code is installed there first, as a call's is. A project's published code and its models are the machine's, as every
+    /// project's are (Paul, 11-13); an encrypted project's local code goes with the run that calls it.
     async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
-        // A machine-wide list is no project's: what a project's job will read comes with its own run, in its own storage.
-        if crate::private_io::of_path(&self.folder().dir)?.is_some() {
-            return Ok(None);
-        }
         let Wanted { machine, hub, with, kind, made } = wanted;
         let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine), host::Wait::Job(key, None)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
@@ -3828,11 +3825,12 @@ impl Walk {
         let source = match &renderer.local {
             None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
             Some(path) => {
-                // A private project's code goes with the run that calls it.
-                if crate::private_io::of_path(&self.folder().dir)?.is_some() {
+                // Staged in its project's storage scope, as its call's are; an encrypted project's code goes with the run that calls it.
+                let scope = crate::private_io::of_path(&self.folder().dir)?;
+                if scope.as_ref().is_some_and(|scope| !scope.storage.ordinary) {
                     return Ok(None);
                 }
-                v1::Source::Local(self.host.ready(path, machine, hub, host::Wait::Job(key, None)).await?.source)
+                v1::Source::Local(crate::private_io::context(scope, self.host.ready(path, machine, hub, host::Wait::Job(key, None))).await?.source)
             }
         };
         let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
