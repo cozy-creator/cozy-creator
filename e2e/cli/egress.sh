@@ -31,7 +31,7 @@ PY
   REDIRECTOR=$!
   for _ in $(seq 50); do curl -s -o /dev/null "$E2E_REDIRECT/missing-ready" && break; sleep 0.2; done
 }
-redirector_stop() { [ -z "$REDIRECTOR" ] || kill "$REDIRECTOR" 2> /dev/null; REDIRECTOR=''; }
+redirector_stop() { [ -z "$REDIRECTOR" ] || kill "$REDIRECTOR" 2> /dev/null || true; REDIRECTOR=''; }
 
 egress() {
 step "no fetch reaches the metadata address or the machine's files (xs-196 D)"
@@ -138,8 +138,8 @@ for name in metadata redirect; do
 done
 grep -qx /model.safetensors "$dir/asked.log" || check "egress: TensorD never asked the declared origin, so its redirect proves nothing"
 J '.presigned.outcome.status == "failed"' "$dir/machine.json" || check "egress: the presigned source did not fail: $(jq -c .presigned "$dir/machine.json" 2> /dev/null | head -c 300)"
-# The presigned query appears in no answer and no log of this computer's cozy.
-leaked=$(grep -rlsI --exclude-dir=bin "$secret" "$dir"/import-*.json "$dir/machine.json" "$HOME/.cozy" 2> /dev/null | head -3)
+# The presigned query appears in no answer and no log of this computer's cozy (the run's own spec keeps the source it was sent).
+leaked=$({ grep -lsI "$secret" "$dir"/import-*.json; jq -c '.presigned' "$dir/machine.json" | grep -l "$secret"; grep -rlsI --include='*.log*' "$secret" "$HOME/.cozy"; } 2> /dev/null | head -3 || true)
 [ -z "$leaked" ] || check "egress: the presigned query is in $leaked"
 echo "egress: $(jq -c 'map_values(.refusal.code // .outcome.status)' "$dir/machine.json" 2> /dev/null)"
 }

@@ -172,7 +172,7 @@ pub(crate) fn text(machine: &Machine, stop: &Stop, url: String) -> Result<String
         .await
         .map(|()| bytes)
     })?;
-    String::from_utf8(bytes).map_err(|e| Refusal { code: Code::ORIGIN_REFUSED, detail: format!("{}: {e}", tensorfs::fetch::shown(url)) })
+    String::from_utf8(bytes).map_err(|e| Refusal { code: Code::ORIGIN_REFUSED, detail: format!("{}: {e}", tensorfs::fetch::shown(&url)) })
 }
 
 fn land(blob: &Path, dir: &Path, file: &str) -> io::Result<PathBuf> {
