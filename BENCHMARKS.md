@@ -146,10 +146,18 @@ On 0.25.0, Cozy's H3 takes 190.5 s on two 4090s against 321.0 s on one (1.69×).
   - A useless attention mask kept PyTorch off its fastest attention kernel: about 0.19 s a step. Fixed in the
     0.25.0 release, ideogram-4 0.9.0 (1.25 → 1.07 s a step).
   - Ideogram's published weights are fp8, and GeForce Ada runs fp8 at half speed: about 0.25 s a step. ComfyUI runs an
-    int8 ConvRot conversion of the same weights. Cozy's int8 lane is in progress.
-  - Norms, modulation and rotary embeddings run as separate ops. ComfyUI fuses them: about 0.2 s a step. Not started.
+    int8 ConvRot conversion of the same weights. Cozy's int8 lane is done for 0.26.0: 1.007 → 0.800 s a step on the
+    same 4090 (40 s an image, against 50 s), same quality. Pod-session 43314998395.
+  - Norms, modulation and rotary embeddings run as separate ops. ComfyUI fuses them: about 0.2 s a step. In progress.
 - **H3 and Qwen-Image on the slow-link 4090:** 8% and 5% slower. On healthy 4090s Cozy wins H3; Qwen-Image hasn't been
   re-measured on one.
+
+## Coming in 0.26.0 (measured on its release candidate)
+
+- **Ideogram 4:** int8 lane, 0.80 s a step on the RTX 4090, against ComfyUI's 0.55. The fused ops above are next.
+- **H3 Turbo 15 s on one RTX 5090:** 230 s on the candidate, against 269 s for Cozy 0.25.0 on the same pod
+  (pod-session 43455948344). This isn't a same-pod ComfyUI pair yet: 0.26.0's release gate re-runs the full table above,
+  and this page updates with it.
 
 ## Not measured
 
