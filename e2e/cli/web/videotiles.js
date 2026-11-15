@@ -128,6 +128,35 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   await closeBox(page);
   await fitCanvas(page);
 
+  // The first physical move mounts the sparse native card. Rest there without a second move: the mount must retain that hover intent.
+  await page.mouse.move(4, 500);
+  await until('the prior native card left', () => page.locator('.canvas-node').count(), count => count === 0);
+  const stationaryPoint = await until('imported video has an uncovered passive body', () => page.evaluate(() => {
+    const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
+    const body = inspection?.card('imported')?.rendered?.body;
+    if (!body) return null;
+    const point = { x: body.x + body.width / 2, y: body.y + body.height / 2 };
+    const target = document.elementFromPoint(point.x, point.y);
+    return target?.matches('canvas.canvas-pixels') && inspection.hitTest(point)?.name === 'imported' ? point : null;
+  }), Boolean);
+  await page.evaluate(() => {
+    window.stationaryHoverMoves = 0;
+    window.stationaryHoverListener = event => { if (event.pointerType === 'mouse') window.stationaryHoverMoves++; };
+    document.addEventListener('pointermove', window.stationaryHoverListener, true);
+  });
+  await page.mouse.move(stationaryPoint.x, stationaryPoint.y);
+  const stationary = await until('the first stationary hover plays its video', () => boxOf(page, 'imported').locator('video.preview').evaluate(video => ({
+    at: video.currentTime, paused: video.paused, muted: video.muted, loop: video.loop, width: video.videoWidth,
+  })).catch(() => null), value => value && !value.paused && value.width > 0 && value.at > 0.3, 45_000);
+  const hoverMoves = await page.evaluate(() => {
+    document.removeEventListener('pointermove', window.stationaryHoverListener, true);
+    delete window.stationaryHoverListener;
+    return window.stationaryHoverMoves;
+  });
+  check('first_stationary_hover_starts_the_video_preview', hoverMoves === 1 && stationary.at > 0.3 && stationary.muted && stationary.loop,
+    { moves: hoverMoves, ...stationary });
+  await shot('first-stationary-hover');
+
   // Under a resting pointer, each plays: its poster first, then its preview, muted and looping.
   const rest = async (name) => {
     await page.mouse.move(4, 500);
