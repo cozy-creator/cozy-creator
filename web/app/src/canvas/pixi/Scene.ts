@@ -1,4 +1,4 @@
-import { Container, Graphics, Rectangle, Sprite, Text, Texture, TilingSprite } from "pixi.js"
+import { CanvasTextMetrics, Container, Graphics, Rectangle, Sprite, Text, Texture, TilingSprite } from "pixi.js"
 import type { Client } from "../../api/client"
 import type { CanvasStore } from "../CanvasStore"
 import type { Box } from "../graph"
@@ -672,6 +672,9 @@ export class PixiScene {
     this.input = undefined
     this.measure.canvas.width = 0
     this.measure.canvas.height = 0
+    // Pixi 8.23's global LRU retains the actual last 1,000 title/prompt strings after renderer.destroy(true). Its public clearMetrics
+    // only drops font measurements; retire the text measurements as well at this project's private-view boundary.
+    ;(CanvasTextMetrics as unknown as { _measurementCache: { clear(): void } })._measurementCache.clear()
   }
 }
 
