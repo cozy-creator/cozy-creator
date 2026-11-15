@@ -152,6 +152,7 @@ function ProjectSync({ id }: { id: string }) {
   useEffect(() => {
     store.readAgain = (names) => bridge.readAgain(id, names)
     store.forget = (names) => bridge.forget(id, names)
+    store.forgotten = (names) => bridge.forgotten(id, names)
   }, [bridge, store, id])
   return null
 }
