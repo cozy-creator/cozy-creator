@@ -43,28 +43,9 @@ for name in ("caller", "child", "leaf"):
     project.write_text(text)
 print(json.dumps({"sdk": sdk, "fixture": str(fixture)}, indent=2))
 PY
-uv lock --project "$fixture/caller" > "$root/lock.log" 2>&1 \
-  || { check "typed calls: root lock failed: $(tail -c 500 "$root/lock.log")"; return; }
-python3 - "$root/prepare.json" <<'PY' || { check "typed calls: lock did not retain the selected SDK bytes"; return; }
-import json, sys, tomllib
-from pathlib import Path
-receipt = json.loads(Path(sys.argv[1]).read_text())
-packages = tomllib.loads((Path(receipt["fixture"]) / "caller/uv.lock").read_text())["package"]
-for name, expected in receipt["sdk"].items():
-    selected = [package for package in packages if package["name"] == name]
-    assert len(selected) == 1, (name, selected)
-    assert selected[0]["source"] == {"path": expected["path"]}, selected
-    assert [wheel["hash"] for wheel in selected[0]["wheels"]] == ["sha256:" + expected["sha256"]], selected
-PY
-# Use the public generator and this same pair. It reads the root lock without importing either callee.
-local distribution module
-for distribution in leaf child; do
-  if [ "$distribution" = leaf ]; then module=$fixture/child/typed_child/leaf_calls.py
-  else module=$fixture/caller/typed_caller/child_calls.py; fi
-  uv run --no-project --with "$CAND_RT" --with "$CAND_TFS" cozy-runtime --dir "$fixture/caller" calls "xs198-typed-$distribution" "$module" \
-    > "$root/generate-$distribution.log" 2>&1 \
-    || { check "typed calls: $distribution references failed: $(tail -c 500 "$root/generate-$distribution.log")"; return; }
-done
+uv run --no-project "$here/typed-calls/references.py" --prepared "$root/prepare.json" --out "$root/references" \
+  > "$root/references.log" 2>&1 \
+  || { check "typed calls: reference qualification failed: $(tail -c 1000 "$root/references.log")"; return; }
 uv run --no-project "$here/typed-calls/run.py" --cozy "$COZY" --project "$RUN_PROJECT" \
   --fixture "$fixture" --out "$root/cases" --argv-log "$OUT/argv.log" \
   --model-prefix "e2e-typed-${GITHUB_RUN_ID:-local}-$RANDOM" > "$root/run.log" 2>&1 \

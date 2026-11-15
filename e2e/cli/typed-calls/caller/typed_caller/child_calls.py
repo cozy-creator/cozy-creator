@@ -20,6 +20,7 @@ class Result(msgspec.Struct, kw_only=True, frozen=True):
     python: str
     descendant_python: str
     fingerprint: str
+    squared: int
 
 class shade_assetsRequest(msgspec.Struct, kw_only=True, frozen=True):
     number: int = 17
@@ -43,14 +44,14 @@ class WeightResult(msgspec.Struct, kw_only=True, frozen=True):
 
 shade: Operation[Request, Result] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='shade',
-    declaration='sha256:34c532584c51e1fb8ec65e90d16ac350e77c62ff289db11260128e5d6b176d93', request=Request, result=Result,
+    declaration='sha256:81c19bd2f9a1acd6eac07893d44c5b3b0a8547e8cb0f953e6005343758a68790', request=Request, result=Result,
     models=(), assets_parameter='',
     wire_request=None,
 )
 
 shade_assets: Operation[shade_assetsRequest, Result] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='shade_assets',
-    declaration='sha256:a12c25e722ce0a583b1592a4643cdafd531d7dbfea4f2e017be67d61aefeacc2', request=shade_assetsRequest, result=Result,
+    declaration='sha256:52cfc8258b769b7f4f424e9455ebb8807cc5435400964eb020ebc150483ed28c', request=shade_assetsRequest, result=Result,
     models=(), assets_parameter='pictures',
     wire_request=_shade_assetsWireRequest,
 )
