@@ -1,6 +1,7 @@
 // A shot rendered segment by segment plays all it has made so far while the next renders (cl-907), with project/segments.py, H3's
-// stand-in: three segments of 10 s, each after the first taking 30 s. Segment 1 lands: rendered from its words, the box stays on them and
-// its take's tile plays segment 1 silent; the tile picked, the box shows it with nothing over it, waiting on the one transport and track a
+// stand-in: three beats of 10 s, a segment each, each after the first taking 30 s. As each segment lands, the run's progress has the frames
+// it reached, and on the box each beat's are done (cl-885: H3's joined `Segments 1-2 of 3` read as none). Segment 1 lands: rendered from its
+// words, the box stays on them and its take's tile plays segment 1 silent; the tile picked, the box shows it with nothing over it, waiting on the one transport and track a
 // finished take has (cl-965), and it seeks and plays with its sound. Segments 1-2 land as one video where it was paused. At rest it plays
 // silent. Played as the take lands, the take takes its place, the frame not moved or resized by a pixel, and plays on from there; the
 // render's lines stay, saying it's done (Paul, 11-12). Screenshots of it rendering and landed at 1440x900 and 1920x1080, paper and dark.
@@ -93,10 +94,11 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   writeFileSync(fixture, `${readFileSync(FIXTURE, 'utf8')}\n# ${id}\n`);
   // A box names it, so the project lists it; its first run installs it, by the CLI as a person's would (as tools.js).
   // The new project's one box: a video box, its kind given before its tool is read.
-  addBoxes(folder, [{ name: 'shot', tool: `${fixture}/segments`, kind: 'video', fields: { summary: 'Along the coast, segment after segment.', segments: 3, seconds: 10, wait: 30 } }]);
+  const beats = ['The cliffs.', 'The lighthouse.', 'The harbour.'].map((description) => ({ description, duration: 10 }));
+  addBoxes(folder, [{ name: 'shot', tool: `${fixture}/segments`, kind: 'video', fields: { summary: 'Along the coast, segment after segment.', beats, wait: 30 } }]);
   const box = boxOf(page, 'shot');
   await box.waitFor();
-  execFileSync(process.env.COZY, ['--json', 'run', `${fixture}/segments`, 'segments=1', 'seconds=1', 'wait=0', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: RUN_MS });
+  execFileSync(process.env.COZY, ['--json', 'run', `${fixture}/segments`, 'beats:=[{"duration":1}]', 'wait=0', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: RUN_MS });
   await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/segments`), Boolean, RUN_MS);
 
   await openBox(page, 'shot');
@@ -114,6 +116,15 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   const tile = box.locator('.take.making').first();
   const tiled = await until('segment 1 on its take\'s tile', () => tile.locator('video.take-glimpse').evaluate((el) => ({ at: el.currentTime, muted: el.muted, ready: el.readyState })).catch(() => null), (now) => now?.ready >= 2 && now.at > 0, RUN_MS);
   check('its_tile_plays_what_is_made_silent', tiled.muted, tiled);
+  // What it has reached, as the run says it and as each beat on the box shows it: segment 1 is beat 1, 240 frames.
+  const reached = async () => (await api(`/v1/projects/${id}/runs/${making}?detail=full`)).body.video_progress ?? null;
+  const done = () => box.locator('.beat-progress').evaluateAll((bars) => bars.map((bar) => Number(bar.getAttribute('aria-valuenow'))));
+  const states = (now) => now?.segments.map((one) => one.status).join();
+  const after1 = await until('segment 1 reached', reached, (now) => now?.completed_frames >= 240 && states(now) === 'completed,in_progress,pending', 15_000).catch(reached);
+  const bars1 = await until('beat 1 done on the box', done, (now) => now[0] === 100, 10_000).catch(done);
+  seen.reached_1 = { after1, bars1 };
+  check('segment_1_reached_as_it_lands', after1?.completed_frames === 240 && states(after1) === 'completed,in_progress,pending', after1);
+  check('beat_1_done_as_segment_1_lands', JSON.stringify(bars1) === '[100,0,0]', bars1);
   // The tile picked, it's looked at: opened, it waits with its controls and its sound on, seeks, and plays.
   await tile.click();
   const first = await until('segment 1 on the box', facts, (now) => now?.label === 'Segment 1 of 3' && now.ready >= 1, RUN_MS);
@@ -147,6 +158,9 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   const second = await until('segments 1-2 on the box', facts, (now) => now?.label === 'Segments 1-2 of 3' && now.ready >= 1 && near(now.duration, 20), 90_000);
   seen.segments_1_2 = second;
   check('segments_1_2_are_one_twenty_second_video', near(second.duration, 20) && near(second.seekable, 20), second);
+  const after2 = await until('segments 1-2 reached', reached, (now) => now?.completed_frames >= 480 && states(now) === 'completed,completed,in_progress', 15_000).catch(reached);
+  seen.reached_2 = after2;
+  check('segments_1_2_reached_as_they_land', after2?.completed_frames === 480 && states(after2) === 'completed,completed,in_progress', after2);
   check('it_stays_where_it_was', near(second.at, paused, 0.3) && second.paused, { paused, second });
   const file2 = await bytes(second.rev);
   check('segments_1_2_have_picture_and_sound', file2.includes('avc1') && file2.includes('mp4a') && file2.length > file1.length, { first: file1.length, second: file2.length });
