@@ -231,7 +231,7 @@ export function CanvasSurface(props: Props) {
       boundary.mapEvent(touch)
     }
     const down = (event: PointerEvent) => {
-      if (!visible() || callbacks.current.locked || event.button > 1) return
+      if (!visible() || event.button > 1) return
       stopHoverPreview()
       if (nativeInput(event.target)) return
       element.focus({ preventScroll: true })
@@ -250,6 +250,8 @@ export function CanvasSurface(props: Props) {
       const nativeTitle = event.target instanceof Element && Boolean(event.target.closest(".nm"))
       clicked = { id: event.pointerId, node, part: nativeTitle ? "title" : hit?.part ?? "body", x: event.clientX, y: event.clientY, touch: event.pointerType === "touch" }
       if (space || event.button === 1) clicked = null
+      // Returning from Focus locks camera/drag gestures; clicks can still reopen a card before the return finishes.
+      if (callbacks.current.locked) return
       if (!isDisabled.current && (space || event.button === 1) && event.target !== renderer?.canvas) {
         nativePan = { id: event.pointerId, point: { x: event.clientX, y: event.clientY }, camera: controller.getViewport() }
         controller.setInteractionEnabled(false); element.setPointerCapture(event.pointerId); event.preventDefault(); return
@@ -343,7 +345,7 @@ export function CanvasSurface(props: Props) {
       if (selection.current) selection.current.hidden = true
       interactions(); invalidate()
     }
-    const double = (event: MouseEvent) => { if (!visible() || callbacks.current.locked) return; const node = nodeAt(event.clientX, event.clientY); if (node && !nativeInput(event.target)) callbacks.current.onNodeDoubleClick(event, node) }
+    const double = (event: MouseEvent) => { if (!visible()) return; const node = nodeAt(event.clientX, event.clientY); if (node && !nativeInput(event.target)) callbacks.current.onNodeDoubleClick(event, node) }
     const menu = (event: MouseEvent) => { if (!visible() || callbacks.current.locked) return; const node = nodeAt(event.clientX, event.clientY); if (node && !nativeInput(event.target)) callbacks.current.onNodeContextMenu(event, node) }
     const keyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !nativeInput(event.target) && (pointerDown || drag || marquee || nativePan)) cancel()
