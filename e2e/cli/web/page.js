@@ -109,23 +109,27 @@ async function removeGeneratedProject(folder, prefix) {
   }
 }
 
-// The pointer on it, as a person's. A locator's hover that retries scrolls the canvas to centre what it's after, and React Flow scrolls back within
-// milliseconds, which leaves the pointer over another box: that box opens, and this one closes (macOS, 41927957996: `web-nodes-died.json`).
+// The pointer on a mounted native control, without scrolling its canvas to reveal it. For a passive card, use hoverBox first.
 async function pointAt(page, locator) {
   const { x, y, width, height } = await locator.boundingBox();
   await page.mouse.move(x + width / 2, y + height / 2);
 }
 
-// The canvas still: drawn in on a box or gone back, a person reaches for what's there once it stops moving. Still across three looks, as a slow
-// runner can draw one frame of a move in longer than a look.
+/** Read-only product geometry, never evidence that the renderer presented its pixels. Null while the surface is unavailable. */
+const canvasView = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.camera() ?? null);
+const canvasBox = (page, name) => page.evaluate((name) => document.querySelector('.canvas-root')?.canvasInspection?.card(name) ?? null, name);
+const selectedBoxes = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.selectedNames() ?? null);
+
+// The camera still across three looks: a slow runner can draw one frame of a move in longer than a look. Missing geometry never settles.
 async function settled(page) {
-  const at = () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform);
-  for (let last = await at(), still = 0; still < 3; ) {
-    await page.waitForTimeout(100);
-    const now = await at();
+  let last, still = 0;
+  await until('the canvas camera settled', () => canvasView(page), (view) => {
+    if (!view) { still = 0; return false; }
+    const now = JSON.stringify(view);
     still = now === last ? still + 1 : 0;
     last = now;
-  }
+    return still >= 3;
+  });
 }
 
 /** The actual fit action, independent of what control last had keyboard focus. */
@@ -200,18 +204,49 @@ function observeResizes() {
   });
 }
 
-// The asset's current surface: Focus while open, otherwise its Wander node.
-const boxOf = (page, name) => page.locator(`[data-focused-asset="${name}"], .react-flow__node:has(.card[data-asset="${name}"])`).first();
+// A mounted native surface only: Focus, or the sparse Wander card under the pointer. Use canvasBox for passive geometry/existence,
+// and await hoverBox before reading a Wander card's controls. No hidden rich card tree stands in for the GPU scene.
+const boxOf = (page, name) => page.locator(`[data-focused-asset=${JSON.stringify(name)}], .canvas-node:has(.card[data-asset=${JSON.stringify(name)}])`).first();
 async function closeBox(page) {
   // By the address, as the page has it: after a reload the box is on its way, and not there to count yet, and `page.url()` hears of a move a moment late.
   // Left already, by a click off it say, the canvas may still be on its way back.
   if (!(await page.evaluate(() => location.pathname.includes('/assets/')))) return settled(page);
-  await page.locator('.card.here').waitFor();
-  await page.keyboard.press('Escape');
-  await page.locator('.card.here').waitFor({ state: 'detached' });
+  await page.locator('[data-focused-asset]').waitFor();
+  await page.getByRole('button', { name: 'Close focus', exact: true }).click();
+  await page.locator('[data-focused-asset]').waitFor({ state: 'detached' });
   await settled(page);
 }
-// A double click works on a box where it stands: the middle of it, where there's nothing else to press.
+
+/** A body point that is actually reachable: native popovers and another card can cover otherwise valid geometry. */
+const reachableBox = (page, name) => page.evaluate((name) => {
+  const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
+  const box = inspection?.card(name)?.body;
+  if (!box || box.width <= 0 || box.height <= 0) return null;
+  for (const [x, y] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+    const point = { x: box.x + box.width * x, y: box.y + box.height * y };
+    const target = document.elementFromPoint(point.x, point.y);
+    if (target && root.contains(target) && !target.closest('button, input, textarea, select, [contenteditable]') && inspection.hitTest(point)?.name === name) return point;
+  }
+  return null;
+}, name);
+
+async function reachBox(page, name) {
+  await until(`${name} has canvas geometry`, () => canvasBox(page, name), Boolean);
+  if (!(await reachableBox(page, name))) await fitCanvas(page);
+  return until(`${name} in reach`, () => reachableBox(page, name), Boolean);
+}
+
+/** Mount the real native card by hovering it. No inspection method changes selection, the camera, or the document. */
+async function hoverBox(page, name) {
+  const focused = page.locator(`[data-focused-asset=${JSON.stringify(name)}]`);
+  if (await focused.count()) { await focused.waitFor(); return boxOf(page, name); }
+  await closeBox(page);
+  const point = await reachBox(page, name);
+  await page.mouse.move(point.x, point.y);
+  const native = boxOf(page, name);
+  await native.waitFor();
+  return native;
+}
 /** An open box's Render. Image tools enter their explicit Edit mode before rendering. */
 async function renderOf(page, name) {
   const here = page.locator(`.card.here[data-asset="${name}"]`).first();
@@ -236,39 +271,26 @@ async function renderOf(page, name) {
 }
 
 async function openBox(page, name) {
-  // By the address too: a box left a moment ago can still say so, and reaching for it finds it gone (macOS, 41977214625).
-  // Open, it's in Focus; on a page loaded at its address its canvas card says `here` too, and Focus is the later.
-  const card = page.locator(`.card.here[data-asset="${name}"]`);
-  if (await page.evaluate((asked) => location.pathname.endsWith(`/assets/${encodeURIComponent(asked)}`), name)) return card.last().waitFor();
-  await closeBox(page);
-  // After a drag d3-drag swallows clicks at the window until its zero timer, which a cell can beat and a hand can't. This timer runs after that one.
-  await page.evaluate(() => new Promise((done) => setTimeout(done, 0)));
-  const media = page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first();
-  const middle = async () => {
-    const { x, y, width, height } = await media.boundingBox();
-    return { x: x + width / 2, y: y + height / 2 };
-  };
-  const reached = async () => (await media.count()) > 0 && page.evaluate(({ x, y, name }) => document.elementFromPoint(x, y)?.closest('.card')?.dataset.asset === name, { ...(await middle()), name });
-  // A box just made takes a moment to draw. Off the view it isn't drawn, or it's under what floats over it: F brings it all in, as for a person.
-  await media.waitFor({ state: 'attached', timeout: 1500 }).catch(() => {});
-  if (!(await reached())) {
-    await page.keyboard.press('f');
-    await settled(page);
-    await until(`${name} in reach`, reached, Boolean);
+  const card = page.locator(`[data-focused-asset=${JSON.stringify(name)}]:not([data-entering])`);
+  if (await page.evaluate((asked) => location.pathname.endsWith(`/assets/${encodeURIComponent(asked)}`), name)) {
+    await card.waitFor();
+    return settled(page);
   }
-  const { x, y } = await middle();
-  const before = await page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform);
+  await closeBox(page);
+  const { x, y } = await reachBox(page, name);
   // A click only selects it: a double click opens it (Paul, 11-12).
   await page.mouse.dblclick(x, y);
-  await card.last().waitFor();
-  // The canvas draws in on it: a person reaches for it once it's there. Its move starts a frame after entry, which a slow runner draws late.
-  await until(`the canvas drawing in on ${name}`, () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform), (now) => now !== before, 2000).catch(() => {});
+  await card.waitFor();
   await settled(page);
 }
 
 // A point on open canvas, clear of every box and what floats over it: where a take dragged out lands as a box of its own.
 const openCanvas = (page) => page.evaluate(() => {
-  for (let y = innerHeight - 60; y > 120; y -= 30) for (let x = innerWidth - 60; x > 320; x -= 30) if (document.elementFromPoint(x, y)?.classList.contains('react-flow__pane')) return { x, y };
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (!inspection) throw new Error('the canvas inspection is unavailable');
+  for (let y = innerHeight - 60; y > 120; y -= 30) for (let x = innerWidth - 60; x > 320; x -= 30) {
+    if (document.elementFromPoint(x, y)?.classList.contains('canvas-pane') && !inspection.hitTest({ x, y })) return { x, y };
+  }
   throw new Error('no open canvas to drop on');
 });
 
@@ -301,18 +323,19 @@ async function drop(page, files, x, y) {
 // The tab a proof is on, and what it looked like when the proof died: a thrown wait says only what it waited for.
 let looking;
 const lookAt = (page) => { looking = page; };
-// What opens and closes boxes, in order, in the page: the pointer between them, focus, a box or the canvas moving, a node coming or going.
-// For a tab that isn't measuring anything's speed.
+// Input, Focus and sparse native-card mounts, in order. A native mount is not a passive scene card appearing or disappearing.
+// This observer is for failure diagnosis on a tab that isn't measuring speed; it never polls the renderer.
 const watchBoxes = (page) => page.addInitScript(() => {
   const log = (window.boxLog = []);
   const say = (line) => {
     log.push(`${Math.round(performance.now())} ${line}`);
     if (log.length > 300) log.shift();
   };
-  const boxOf = (el) => el?.closest?.('.react-flow__node')?.querySelector('.card')?.dataset.asset ?? null;
+  const boxOf = (el) => el?.closest?.('.canvas-node')?.querySelector('.card')?.dataset.asset ?? el?.closest?.('[data-focused-asset]')?.dataset.focusedAsset ?? null;
   let under = null;
   document.addEventListener('pointerover', ({ target, clientX, clientY }) => {
-    const now = boxOf(target);
+    const root = target.closest?.('.canvas-root');
+    const now = boxOf(target) ?? root?.canvasInspection?.hitTest({ x: clientX, y: clientY })?.name ?? null;
     if (now !== under) say(`pointer ${under} -> ${now} at ${clientX},${clientY}`);
     under = now;
   }, true);
@@ -325,16 +348,16 @@ const watchBoxes = (page) => page.addInitScript(() => {
   document.addEventListener('scroll', ({ target }) => say(`scrolled ${target.className ?? 'document'} to ${target.scrollLeft},${target.scrollTop}`), true);
   new MutationObserver((records) => {
     for (const { type, target, attributeName, oldValue, addedNodes, removedNodes } of records) {
-      for (const node of addedNodes) if (node.classList?.contains('react-flow__node')) say(`added ${boxOf(node)} ${node.style.transform}`);
-      for (const node of removedNodes) if (node.classList?.contains('react-flow__node')) say(`removed ${node.dataset.id}`);
+      for (const node of addedNodes) if (node.classList?.contains('canvas-node')) say(`native mounted ${boxOf(node)} ${node.style.left},${node.style.top}`);
+      for (const node of removedNodes) if (node.classList?.contains('canvas-node')) say(`native unmounted ${node.dataset.id}`);
       if (type !== 'attributes') continue;
       if (attributeName === 'class' && target.classList.contains('card')) {
         const [was, is] = [/\bactive\b/.test(oldValue ?? ''), target.classList.contains('active')];
         if (was !== is) say(`${target.dataset.asset} ${is ? 'opens' : 'closes'}`);
       }
-      if (attributeName === 'style' && !oldValue?.includes(target.style.transform)) {
-        if (target.classList.contains('react-flow__viewport')) say(`canvas moved to ${target.style.transform}`);
-        if (target.classList.contains('react-flow__node')) say(`${boxOf(target)} moved to ${target.style.transform}`);
+      if (attributeName === 'style') {
+        if (target.classList.contains('canvas-world') && !oldValue?.includes(target.style.transform)) say(`canvas moved to ${target.style.transform}`);
+        if (target.classList.contains('canvas-node')) say(`${boxOf(target)} native geometry ${target.style.left},${target.style.top} ${target.style.width}x${target.style.height}`);
       }
     }
   }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style'], attributeOldValue: true });
@@ -343,6 +366,9 @@ const boxLog = (page) => page.evaluate(() => ({
   log: window.boxLog?.slice(-40),
   focus: `${document.activeElement?.tagName}.${document.activeElement?.className}`,
   under: [...document.querySelectorAll(':hover')].at(-1)?.className,
+  camera: document.querySelector('.canvas-root')?.canvasInspection?.camera(),
+  selected: document.querySelector('.canvas-root')?.canvasInspection?.selectedNames(),
+  resources: document.querySelector('.canvas-root')?.canvasInspection?.resources(),
 }));
 /** This computer's Calcifer, where its lock ($HOLDER) says: what serves each cell's page, unless $PAGE_ORIGIN does. */
 const calcifer = () => process.env.PAGE_ORIGIN ?? `http://${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).address}`;
@@ -412,26 +438,32 @@ function noStall(seen, died) {
   watch.unref();
 }
 
-/** The frames while a pan goes on, how many places the viewport went, as a pan that didn't move proves nothing, and the fewest cards on
- *  screen at any moment of it. It goes 480 px left and back. */
-const panning = (page, ms) => page.evaluate((ms) => new Promise((done) => {
-  const pane = document.querySelector('.react-flow__pane');
-  const viewport = document.querySelector('.react-flow__viewport');
+/** Frame intervals and actual camera movement while wheel events pan 480 px left and back. Scene counters are metadata only:
+ *  `fewestSceneCards` includes overscan, and proves neither visibility nor decoded pixels. Cells must check their screenshots separately. */
+const panning = (page, ms) => page.evaluate((ms) => new Promise((done, fail) => {
+  if (!Number.isFinite(ms) || ms <= 0) return fail(new Error('pan duration must be positive'));
+  const pane = document.querySelector('.canvas-pane');
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (!pane || !inspection) return fail(new Error('the canvas is unavailable for a pan'));
+  const rect = pane.getBoundingClientRect();
   const frames = [];
   const places = new Set();
-  let [last, sign, count, fewest] = [performance.now(), 1, 0, Infinity];
+  let [last, sign, count, fewestSceneCards, frame] = [performance.now(), 1, 0, Infinity, 0];
   const end = last + ms;
+  const late = setTimeout(() => { cancelAnimationFrame(frame); fail(new Error('the canvas stopped delivering pan samples')); }, ms + 10_000);
   const step = (now) => {
+    const resources = inspection.resources();
+    if (!Number.isFinite(resources?.visibleCards)) { clearTimeout(late); fail(new Error('the scene has no card counter')); return; }
     frames.push(now - last);
     last = now;
-    places.add(getComputedStyle(viewport).transform);
-    fewest = Math.min(fewest, document.querySelectorAll('.react-flow__node').length);
+    places.add(JSON.stringify(inspection.camera()));
+    fewestSceneCards = Math.min(fewestSceneCards, resources.visibleCards);
     if (++count % 40 === 0) sign = -sign;
-    pane.dispatchEvent(new WheelEvent('wheel', { deltaX: sign * 12, deltaY: 0, bubbles: true, cancelable: true }));
-    if (now < end) requestAnimationFrame(step);
-    else done({ frames: frames.slice(1), places: places.size, fewest });
+    pane.dispatchEvent(new WheelEvent('wheel', { clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2, deltaX: sign * 12, deltaY: 0, bubbles: true, cancelable: true }));
+    if (now < end) frame = requestAnimationFrame(step);
+    else { clearTimeout(late); done({ frames: frames.slice(1), places: places.size, fewestSceneCards }); }
   };
-  requestAnimationFrame(step);
+  frame = requestAnimationFrame(step);
 }), ms);
 
 /** A run of frame times as its median, its 95th and how many. */
@@ -703,8 +735,8 @@ async function approveVersion(page, name, wanted) {
 /** Replace the tool with a real compatible implementation dragged from its category. */
 async function chooseModel(page, name, id, operation) {
   const folder = (await projectFromPage(page)).path;
-  const card = boxOf(page, name);
   const tool = await implementationRow(page, operation, id);
+  const card = await hoverBox(page, name);
   const target = await card.locator('.media').boundingBox();
   await carry(page, tool, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   await until(`tool ${id} attached`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.tool), (held) => held === id);
@@ -716,4 +748,4 @@ async function chooseModel(page, name, id, operation) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { projectFolder, addBoxes, assetsOf, storedOf, integrity, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };
+module.exports = { projectFolder, addBoxes, assetsOf, storedOf, integrity, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, canvasView, canvasBox, selectedBoxes, hoverBox, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };
