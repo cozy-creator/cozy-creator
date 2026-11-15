@@ -309,8 +309,15 @@ impl Seal {
         if let Some(root) = &self.tensorfs_home {
             imposed.insert("TENSORFS_HOME".into(), path(root.clone()));
         }
-        // The origins this machine's operator declared local, and no others, for the executor's fetches.
-        let local = tensorfs::fetch::local_origins();
+        // The origins this machine's operator declared local, and TensorD's own Hub gateway, which is how executors read
+        // a run's Hub under its capability (cl-675): no others, for the executor's fetches.
+        let mut local = tensorfs::fetch::local_origins().to_vec();
+        match crate::gateway::url() {
+            Ok(gateway) => local.push(gateway),
+            Err(error) => tracing::warn!("the Hub gateway: {error}"),
+        }
+        local.sort();
+        local.dedup();
         if !local.is_empty() {
             imposed.insert("TENSORFS_LOCAL_ORIGINS".into(), local.join(","));
         }
