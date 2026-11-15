@@ -15,11 +15,14 @@ import os
 import ssl
 import sys
 import time
+from typing import Any
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 command, pem, address, fingerprint, out, *rest = sys.argv[1:]
 key = load_pem_private_key(open(pem, "rb").read(), None)
+assert isinstance(key, Ed25519PrivateKey), f"{pem} is no Ed25519 key"
 host, port = address.split("://")[-1].rsplit(":", 1)
 tls = ssl.create_default_context()
 tls.check_hostname, tls.verify_mode = False, ssl.CERT_NONE
@@ -32,7 +35,9 @@ def b64(raw: bytes) -> str:
 def connect(timeout: int = 60) -> http.client.HTTPSConnection:
     connection = http.client.HTTPSConnection(host.strip("[]"), int(port), context=tls, timeout=timeout)
     connection.connect()
-    leaf = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
+    peer = connection.sock.getpeercert(binary_form=True)
+    assert isinstance(peer, bytes), f"{address} presents no certificate"
+    leaf = hashlib.sha256(peer).hexdigest()
     assert leaf == fingerprint.removeprefix("sha256:"), f"{address} presents the leaf {leaf}, not {fingerprint}"
     return connection
 
@@ -60,7 +65,7 @@ def put(data: bytes) -> str:
     return digest
 
 
-def outcome(run: str) -> dict:
+def outcome(run: str) -> dict[str, Any]:
     """The run's outcome, read from its event stream."""
     connection = connect(timeout=900)
     connection.request("GET", f"/v1/runs/{run}/events", headers={"authorization": f"Cozy-Cap {token}", "accept": "text/event-stream"})
@@ -70,13 +75,14 @@ def outcome(run: str) -> dict:
         if line.startswith("event:"):
             event = line[6:].strip()
         elif line.startswith("data:") and event == "outcome":
-            return json.loads(line[5:])["event"]["outcome"]
+            said: dict[str, Any] = json.loads(line[5:])["event"]["outcome"]
+            return said
     return {"status": "no outcome"}
 
 
-def batch(specs: dict[str, dict]) -> dict:
+def batch(specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Each spec sent as one run; its refusal, or the outcome it came to."""
-    stamp, said = time.time_ns(), {}
+    stamp, said = time.time_ns(), dict[str, Any]()
     runs = [{"id": f"e2e-egress-{name}-{stamp}", "spec": spec} for name, spec in specs.items()]
     status, body = call("POST", "/v1/runs/batch", json.dumps({"runs": runs}).encode())
     assert status == 200, f"POST /v1/runs/batch: {status} {body[:300]!r}"
@@ -88,7 +94,10 @@ def batch(specs: dict[str, dict]) -> dict:
 
 if command == "models":
     redirect, secret = rest
-    warm = lambda *models: {"kind": "warm", "models": list(models)}
+
+    def warm(*models: dict[str, str]) -> dict[str, Any]:
+        return {"kind": "warm", "models": list(models)}
+
     said = batch({
         "path": warm({"parameter": "model", "source": "/etc/hostname"}),
         "added": warm({"parameter": "model", "source": "hf://cozy-e2e/none"}, {"parameter": "add:transformer/notes.txt", "source": "/etc/hostname"}),
@@ -98,7 +107,7 @@ if command == "models":
     })
 elif command == "media":
     package, *inputs = rest
-    files = []
+    files: list[dict[str, Any]] = []
     for root, dirs, names in os.walk(package):
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
         for name in sorted(n for n in names if not n.startswith(".")):
@@ -106,7 +115,7 @@ elif command == "media":
             data = open(path, "rb").read()
             files.append({"name": os.path.relpath(path, package), "digest": put(data), "length": len(data)})
     manifest = put(json.dumps({"package": "local/e2e-clip", "release": "0.1.0", "files": files, "project": ""}).encode())
-    specs = {}
+    specs: dict[str, dict[str, Any]] = {}
     for named in inputs:
         name, path = named.split("=", 1)
         data = open(path, "rb").read()
