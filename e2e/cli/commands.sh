@@ -638,9 +638,9 @@ ls -d "$HOME"/.cozy/calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 \
 (cd "$out" && cozy --json model quantize zhengpeng7/birefnet --lane int8 --package "$here/weightless" --on local) > "$out/quantize.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q '"code": *"not_logged_in"' "$out/quantize.json" \
   || check "machine checkout: model quantize --package outside a project: exit $code, not not_logged_in: $(tail -c 300 "$out/quantize.json")"
-(cd "$out" && cozy --json package uninstall local/e2e-weightless --on local) > "$out/uninstall.json" 2>&1 \
-  && J '(.removed | length) > 0 and (.failed // []) == []' "$out/uninstall.json" \
-  || check "machine checkout: package uninstall local/e2e-weightless outside a project: $(tail -c 300 "$out/uninstall.json")"
+(cd "$out" && cozy --json package uninstall local/e2e-weightless --on local) > "$out/uninstall.json" 2> "$out/uninstall.err" \
+  && J '(.removed | any(.package == "local/e2e-weightless")) and (.failed // []) == []' "$out/uninstall.json" \
+  || check "machine checkout: package uninstall local/e2e-weightless outside a project: $(tail -c 300 "$out/uninstall.json") $(tail -c 200 "$out/uninstall.err")"
 code=0; (cd "$out" && cozy --json run "$here/weightless/reverse" text=outside) > "$out/run.json" 2> "$out/run.err" || code=$?
 [ "$code" = 2 ] && J '.error.code == "not_in_a_project"' "$out/run.json" \
   || check "machine checkout: a call outside a project: exit $code, not not_in_a_project as a Hub package's: $(tail -c 300 "$out/run.json")"
