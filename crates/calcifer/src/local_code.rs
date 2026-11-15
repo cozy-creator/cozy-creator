@@ -869,7 +869,13 @@ pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
             || ("local_install_unfinished".to_owned(), format!("its install is {:?}", run.status).to_lowercase(), vec![]),
             |r| (r.code, r.message, r.next),
         );
-        let failed = Error::new(Kind::Unavailable, "local_install_failed", format!("the machine did not install this code: {message}")).cause(code);
+        // Its machine ended before it accepted the install: a machine gone, which a render places again (`project::GONE`).
+        let lost = code == "machine_lost" && run.accepted_at_ms.is_none();
+        let failed = match lost {
+            true => Error::new(Kind::Unavailable, "machine_ended", format!("the machine ended before it installed this code: {message}")),
+            false => Error::new(Kind::Unavailable, "local_install_failed", format!("the machine did not install this code: {message}")),
+        }
+        .cause(code);
         return Err(next.into_iter().chain([format!("cozy run watch {}", run.number)]).fold(failed, Error::next));
     }
     let mut result = run.result.unwrap_or_default();

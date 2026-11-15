@@ -4300,9 +4300,10 @@ impl Walk {
                     graph.read_again(|job_ask| lock.walk.asks.iter().any(|other| other.id == job_ask && other.digest == ask.digest), &reading.nodes);
                 }
                 let gone = |name: &str| names.as_ref().is_some_and(|names| !names.contains(&name_key(name)));
-                // With several machines it stays here while its planned machine has no GPU for it, so nothing commits early to the wrong
-                // queue; it is placed again as their Status moves.
-                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free { .. }) && placed.get(&key).is_some_and(|placed| placed.soonest.waits_ms(now_ms()) > 0) {
+                // With several machines it stays here while its planned machine has no GPU for it, or is still on its way (a rental
+                // booting, whose boot counts as its preparation: no wait past it), so nothing commits early to the wrong queue or to a
+                // machine that may never serve; it is placed again as their Status moves, or once that machine serves or ends.
+                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free { .. }) && placed.get(&key).is_some_and(|placed| placed.soonest.ready_at_ms.is_some() || placed.soonest.waits_ms(now_ms()) > 0) {
                     acts.push(Act::Held { id });
                     continue;
                 }
