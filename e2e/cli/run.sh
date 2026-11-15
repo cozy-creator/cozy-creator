@@ -538,6 +538,7 @@ case $SHARD in
     hostile_media
     egress
     hostile_inputs
+    private_weights
     unseen
     machine_checkout
     local_edits
@@ -621,6 +622,7 @@ case $SHARD in
     hostile_media
     egress
     hostile_inputs
+    private_weights
     machine_show_runs
     writes_once
     project_stream
