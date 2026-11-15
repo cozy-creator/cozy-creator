@@ -9,7 +9,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFile } = require('child_process');
 const { appendFileSync } = require('fs');
 const { join } = require('path');
-const { projectFolder, calcifer, lastLook, lookAt, projectAction, projectFromPage, signIn, STEP_MS, until } = require('./page');
+const { projectFolder, calcifer, lastLook, lookAt, projectAction, projectFromPage, signIn, STEP_MS, until, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -25,17 +25,8 @@ const TOOL = join(__dirname, '..', 'project', 'latents.py');
 
 /** The box named `name` as the page draws it: its preview, if one shows, and whether how far it's got is over it. */
 const LOOK = (name) => {
-  const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector('.nm')?.textContent === name);
-  const layer = node?.querySelector('.latent-preview');
-  const img = layer?.querySelector('img');
-  const shown = Boolean(img?.complete && img.naturalWidth > 0);
-  return {
-    drawn: Boolean(node),
-    preview: shown ? { tag: layer.dataset.preview, width: img.naturalWidth, opacity: Number(getComputedStyle(img).opacity) } : null,
-    progress: Boolean(node?.querySelector('.prog')),
-    making: Boolean(node?.querySelector('.media-making')),
-    take: Boolean(node?.querySelector('.media-pixels img')),
-  };
+  const box = document.querySelector('.canvas-root')?.canvasInspection?.card(name), drawn = box?.rendered;
+  return { drawn: Boolean(drawn), preview: drawn?.latent ?? null, progress: Boolean(drawn?.progress), making: ['queued', 'running'].includes(drawn?.state), take: Boolean(drawn?.media.ready), body: drawn?.body };
 };
 
 (async () => {
@@ -77,7 +68,15 @@ const LOOK = (name) => {
     });
   });
   const project = (...words) => projectAction(folder, ...words);
-  const look = () => page.evaluate(LOOK, 'shown');
+  const look = async () => {
+    await page.mouse.move(4, 4);
+    const now = await page.evaluate(LOOK, 'shown');
+    if (now.body && (now.preview || now.take)) {
+      const read = screenshotPixels(await page.screenshot()), b = now.body;
+      now.pixels = [[0.25,0.25],[0.75,0.25],[0.25,0.75],[0.75,0.75]].map(([x,y]) => read(b.x + b.width*x, b.y + b.height*y));
+    }
+    return now;
+  };
 
   // Its environment readied first, so the render watched is all steps.
   during = 'readying the tool';
@@ -90,6 +89,7 @@ const LOOK = (name) => {
   const first = await until('a preview on its box', look, (now) => now.preview !== null || now.take, RUN_MS);
   await shot('previewing');
   seen.previews = { first };
+  check('preview_pixels_are_not_a_flat_placeholder', first.pixels?.some(color => color.some((value, c) => Math.abs(value - first.pixels[0][c]) > 12)), first.pixels);
   check('a_preview_shows_while_it_renders', first.preview !== null && !first.take, first);
   check('the_preview_is_under_how_far_it_has_got', first.progress, first);
   check('the_preview_is_faded', first.preview !== null && first.preview.opacity < 1, first.preview);
@@ -103,7 +103,7 @@ const LOOK = (name) => {
     return now;
   }, (now) => tags.size >= 2 || now.take, RUN_MS);
   seen.previews.tags = [...tags];
-  check('newer_previews_replace_it', tags.size >= 2, { tags: [...tags], now: moved });
+  check('newer_previews_replace_it', tags.size >= 2 && JSON.stringify(first.pixels) !== JSON.stringify(moved.pixels), { tags: [...tags], now: moved });
 
   during = 'the take replacing it';
   const landed = await until('its take', look, (now) => now.take && !now.preview && !now.making, RUN_MS);

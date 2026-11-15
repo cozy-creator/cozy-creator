@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectFromPage, projectJson, projectUrl, rowsOf, settled, signIn, STEP_MS, until } = require('./page');
+const { projectFolder, addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectFromPage, projectJson, projectUrl, rowsOf, settled, signIn, STEP_MS, until, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -37,48 +37,56 @@ const ALL = COLUMNS.flatMap((column) => column.names);
 
 /** What's drawn, in the page: each box's place on the canvas, its name's lines and size, and what any of its names lies on. */
 function audit() {
-  const R = (el) => el.getBoundingClientRect();
+  const root = document.querySelector('.canvas-root'), inspection = root.canvasInspection;
+  const { x, y, zoom } = inspection.camera(), origin = root.getBoundingClientRect();
+  const rect = b => ({ ...b, left: b.x, top: b.y, right: b.x + b.width, bottom: b.y + b.height });
   const meet = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
-  const shown = (el) => el.checkVisibility?.({ opacityProperty: true, visibilityProperty: true }) && R(el).width >= 1 && R(el).height >= 1;
-  const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-  const boxes = [...document.querySelectorAll('.react-flow__node')].map((node) => {
-    const at = node.style.transform.match(/translate\(([-\d.]+)px, ?([-\d.]+)px\)/);
-    return {
-      node,
-      name: node.querySelector('.card')?.dataset.asset,
-      at: at ? [Number(at[1]), Number(at[2])] : null,
-      media: node.querySelector(':scope .card > .media, :scope .card > .tl'),
-      labels: [...node.querySelectorAll(':scope .card > .head > *')].filter((el) => !el.matches('.sp') && shown(el)),
-      nm: node.querySelector(':scope .card > .head .nm'),
-    };
+  const boxes = inspection.names().flatMap(name => {
+    const box = inspection.card(name), rendered = box?.rendered;
+    if (!rendered) return [];
+    return [{ name, at: [(box.bounds.x - origin.x - x) / zoom, (box.bounds.y - origin.y - y) / zoom], box: rect(box.bounds),
+      media: rect(rendered.body), labels: Object.entries(rendered.labels).filter(([key]) => ['title', 'version'].includes(key)).map(([key, label]) => ({ key, ...rect(label) })), nm: rendered.labels.title }];
   });
-  const lines = [];
-  const on = [];
-  const cut = [];
-  const sizes = {};
+  const lines = [], on = [], cut = [], sizes = {}, pixelRegions = [];
   for (const box of boxes) {
-    if (box.nm && shown(box.nm)) {
-      const range = document.createRange();
-      range.selectNodeContents(box.nm);
-      const tops = new Set([...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top)));
-      if (tops.size > 1) lines.push({ name: box.name, lines: tops.size });
-      const style = getComputedStyle(box.nm);
-      sizes[box.name] = { canvas: parseFloat(style.fontSize), screen: Math.round(parseFloat(style.fontSize) * zoom * 10) / 10 };
-      if (box.nm.scrollWidth > box.nm.clientWidth + 1 && style.textOverflow !== 'ellipsis') cut.push({ name: box.name, why: 'cut with no ellipsis' });
-      if (box.nm.title !== box.name) cut.push({ name: box.name, why: `its title is ${JSON.stringify(box.nm.title)}` });
+    if (box.nm) {
+      if (box.nm.text.includes('\n')) lines.push({ name: box.name, lines: box.nm.text.split('\n').length });
+      sizes[box.name] = { canvas: box.nm.fontSize, screen: Math.round(box.nm.fontSize * zoom * 10) / 10 };
+      if (box.nm.text !== box.name && !box.nm.text.endsWith('…')) cut.push({ name: box.name, why: 'cut with no ellipsis' });
+      if (box.nm.title !== box.name) cut.push({ name: box.name, why: 'the full hover title is absent' });
+      pixelRegions.push({ name: box.name, ...box.nm });
     }
     for (const label of box.labels) {
-      const r = R(label);
-      const what = `${box.name}'s ${label.className.split(' ')[0]}`;
-      if (box.media && shown(box.media) && meet(r, R(box.media))) on.push(`${what} on its picture`);
-      for (const other of boxes) {
-        if (other === box) continue;
-        if (meet(r, R(other.node))) on.push(`${what} on ${other.name}`);
-        for (const theirs of other.labels) if (meet(r, R(theirs))) on.push(`${what} on ${other.name}'s ${theirs.className.split(' ')[0]}`);
+      const what = `${box.name}'s ${label.key}`;
+      if (meet(label, box.media)) on.push(`${what} on its picture`);
+      for (const other of boxes) if (other !== box) {
+        if (meet(label, other.box)) on.push(`${what} on ${other.name}`);
+        for (const theirs of other.labels) if (meet(label, theirs)) on.push(`${what} on ${other.name}'s ${theirs.key}`);
       }
     }
   }
-  return { zoom, count: boxes.length, at: Object.fromEntries(boxes.map((box) => [box.name, box.at])), lines, on, cut, sizes };
+  return { zoom, count: boxes.length, at: Object.fromEntries(boxes.map(box => [box.name, box.at])), lines, on, cut, sizes, pixelRegions };
+}
+
+// The diagnostics describe retained glyph geometry; a separate compositor screenshot must contain contrasting ink in those regions.
+async function labelPixels(page, regions) {
+  await page.mouse.move(4, 4);
+  const read = screenshotPixels(await page.screenshot()), viewport = page.viewportSize();
+  const density = read.width / viewport.width;
+  const dark = await page.evaluate(() => document.documentElement.dataset.theme === 'dark');
+  const failures = []; let checked = 0;
+  for (const box of regions) {
+    if (box.width < 1 || box.height < 1 || box.x < 0 || box.y < 64 || box.x + box.width > viewport.width || box.y + box.height > viewport.height) continue;
+    checked++;
+    let ink = 0;
+    for (let y = Math.floor(box.y * density); y < Math.ceil((box.y + box.height) * density); y++) for (let x = Math.floor(box.x * density); x < Math.ceil((box.x + box.width) * density); x++) {
+      const pixel = read(x, y), light = pixel[0] * 0.2126 + pixel[1] * 0.7152 + pixel[2] * 0.0722;
+      if (dark ? light > 100 : light < 170) ink++;
+    }
+    if (!ink) failures.push(box.name);
+  }
+  if (!checked) failures.push('no visible label region was sampled');
+  return failures;
 }
 
 (async () => {
@@ -137,18 +145,18 @@ function audit() {
       // Where it opens: the project's own view (project.db), as see.js and zoom.js set it.
       projectJson(made.id, 'PATCH', '/view', { viewport: { x: Math.round((size.width + 230) / 2 - at.x * zoom), y: Math.round(size.height / 2 - at.y * zoom), zoom } });
       await tab.goto(await projectUrl(made.id));
-      await tab.waitForSelector('.react-flow__node');
-      await until('every picture drawn', () => tab.evaluate(() => [...document.querySelectorAll('.react-flow__node .media img')].every((image) => image.complete)), Boolean);
+      await until('canvas names available', () => canvasNames(tab), names => names?.length > 0);
+      await until('visible image resources decoded', async () => { const cards = await Promise.all(COLUMNS.filter(c => c.kind === 'image').flatMap(c => c.names).map(async name => (await canvasBox(tab,name))?.rendered)); const visible = cards.filter(Boolean); return visible.length > 0 && visible.every(card => card.media.ready); }, Boolean);
       await settled(tab);
       return tab;
     };
 
     // Each box's height as the page draws it, then all laid out as close as the layout keeps them.
     let tab = await open('paper', 0.1, { x: 4000, y: 0 });
-    await until('every box on the page', () => tab.evaluate(() => document.querySelectorAll('.react-flow__node').length), (n) => n === ALL.length);
+    await until('every box on the page', async () => (await canvasNames(tab))?.length, n => n === ALL.length);
     const heights = () => tab.evaluate(() => {
-      const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-      return Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.card')?.dataset.asset, Math.round((node.getBoundingClientRect().height / zoom) * 10) / 10]));
+      const inspection = document.querySelector('.canvas-root').canvasInspection, zoom = inspection.camera().zoom;
+      return Object.fromEntries(inspection.names().map(name => [name, Math.round(inspection.card(name).bounds.height / zoom * 10) / 10]));
     });
     // Each picture at its own shape (a box is 16:9 until its picture's size arrives, then pushes aside what it lies on): the tall one
     // tall, and nothing changing.
@@ -183,6 +191,8 @@ function audit() {
       await settled(tab);
       await tab.waitForFunction(() => !document.getAnimations().some((held) => held.playState === 'running' && held.effect?.getComputedTiming().iterations !== Infinity), null, { timeout: 5000 }).catch(() => {});
       const now = await tab.evaluate(audit);
+      const missingInk = await labelPixels(tab, now.pixelRegions);
+      check(`label_pixels_${how}_${looks.length}`, missingInk.length === 0, missingInk);
       const moved = [];
       for (const [name, at] of Object.entries(now.at)) {
         if (!at) continue;
@@ -203,16 +213,18 @@ function audit() {
     for (let i = 0; i < 20 && at.zoom < 1 - 0.001; i++) at = await press('Zoom in');
     check('back_at_100', Math.abs(at.zoom - 1) < 0.005, at.zoom);
     // A long name cut short says itself whole under the pointer: its title, on what the pointer finds there.
-    const hover = await tab.evaluate((names) => names.map((name) => {
-      const nm = document.querySelector(`.react-flow__node .card[data-asset="${name}"] > .head .nm`);
-      if (!nm) return { name, found: false };
-      const r = nm.getBoundingClientRect();
-      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      return { name, cut: nm.scrollWidth > nm.clientWidth, title: nm.title, under_pointer: hit === nm || nm.contains(hit) };
-    }), LONG);
+    const hover = [];
+    for (const name of LONG) {
+      const native = await hoverBox(tab, name), nm = native.locator('.head .nm');
+      await nm.hover();
+      hover.push(await nm.evaluate((element, name) => {
+        const r = element.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return { name, cut: element.scrollWidth > element.clientWidth, title: element.title, under_pointer: hit === element || element.contains(hit) };
+      }, name));
+    }
     seen.hover = hover;
     check('a_long_name_is_cut_and_says_itself_under_the_pointer', hover.every((one) => one.found !== false && one.cut && one.title === one.name && one.under_pointer), hover);
-    const pane = await tab.locator('.react-flow__pane').boundingBox();
+    const pane = await tab.locator('.canvas-pixels').boundingBox();
     await tab.mouse.move(pane.x + pane.width / 2, pane.y + pane.height / 2);
     await tab.keyboard.down('Control');
     for (let i = 0; i < 12; i++) await tab.mouse.wheel(0, 120);
@@ -236,6 +248,8 @@ function audit() {
         for (const zoom of [1, 0.45, 0.25, FARTHEST]) {
           const view = await open(theme, zoom, middle, size);
           const now = await view.evaluate(audit);
+          const missingInk = await labelPixels(view, now.pixelRegions);
+          check(`label_pixels_${size.width}_${theme}_${zoom}`, missingInk.length === 0, missingInk);
           shots.push({ size: `${size.width}x${size.height}`, theme, zoom, lines: now.lines, on: now.on, sizes: Object.values(now.sizes).map((one) => one.screen) });
           if (process.env.SHOT) await view.screenshot({ path: `${process.env.SHOT}-${size.width}x${size.height}-${theme}-${Math.round(zoom * 100)}.png` });
           await view.close();

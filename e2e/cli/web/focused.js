@@ -5,7 +5,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
+const { projectFolder, boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const NAME = 'focus_image';
 // web/app/src/canvas/ratios.ts's: a pull within about 2% of one is it, and past that free (Paul, 11-13).
@@ -86,7 +86,7 @@ async function died(error) {
   // The words last run (cl-909): New begins from them.
   await api(`${at}/assets/${NAME}`, 'PATCH', { tool: tool.id, fields: { [promptField]: '<self.1> make her smile' } });
   await until('ten image states are retained', asset, (item) => item?.versions === 10 && item.version === 1);
-  await boxOf(page, NAME).waitFor();
+  await until('the image has canvas geometry', () => canvasBox(page, NAME), Boolean);
   await fitCanvas(page);
   const tools = page.locator('aside.tools');
   if (await tools.locator('[aria-label="Show the tools"]').count()) await tools.getByLabel('Show the tools', { exact: true }).click();
@@ -95,25 +95,20 @@ async function died(error) {
   const focus = page.locator(`[data-focused-asset="${NAME}"]`);
   const card = focus.locator('.card.focus-card');
   const history = card.locator('.image-history.here-side');
-  const camera = () => page.evaluate(() => {
-    const matrix = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-    return { x: matrix.e, y: matrix.f, zoom: matrix.a };
-  });
+  const camera = () => canvasView(page);
   const palette = () => page.evaluate(() => ({ shut: document.querySelector('aside.tools')?.classList.contains('shut'), saved: localStorage.getItem('cozy.tools-shut') }));
   const sameCamera = (before, after) => Math.abs(before.x - after.x) < 0.5 && Math.abs(before.y - after.y) < 0.5 && Math.abs(before.zoom - after.zoom) < 0.0001;
   const sameRect = (before, after) => ['x', 'y', 'width', 'height'].every((key) => Math.abs(before[key] - after[key]) < 2);
   const wanderPoint = async () => {
-    const media = boxOf(page, NAME).locator('.media');
-    await media.waitFor();
-    return media.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      const left = Math.max(rect.left, document.querySelector('aside.tools')?.getBoundingClientRect().right ?? 0);
-      const right = Math.min(rect.right, innerWidth - 8);
-      const top = Math.max(rect.top, 64);
-      const bottom = Math.min(rect.bottom, innerHeight - 12);
+    const box = await canvasBox(page, NAME);
+    if (!box?.rendered?.body) throw new Error('the Wander image has no rendered body');
+    return page.evaluate((rect) => {
+      const left = Math.max(rect.x, document.querySelector('aside.tools')?.getBoundingClientRect().right ?? 0);
+      const right = Math.min(rect.x + rect.width, innerWidth - 8);
+      const top = Math.max(rect.y, 64), bottom = Math.min(rect.y + rect.height, innerHeight - 12);
       if (right <= left || bottom <= top) throw new Error('the Wander image has no visible click target');
       return { x: (left + right) / 2, y: (top + bottom) / 2 };
-    });
+    }, box.rendered.body);
   };
   const focusByDoubleClick = async () => {
     const point = await wanderPoint();
@@ -181,9 +176,23 @@ async function died(error) {
   };
 
   const wideSha = (await asset()).prefixes.find((version) => version.number === 1).main.sha256.replace(/^sha256:/, '');
-  const wanderBuffer = boxOf(page, NAME).locator('.media-pixels > .buffered-image');
-  const wanderFittedPicture = await until('the fitted Wander image is decoded', () => decodedOf(wanderBuffer),
+  const wanderDecoded = async () => {
+    await page.mouse.move(4, 4);
+    const box = await canvasBox(page, NAME), media = box?.rendered?.media;
+    if (!media) return { loaded: false };
+    return { sha: media.sha, requested: media.requestedWidth, resolution: media.resolution, displayed: media.width, width: media.width, loaded: media.ready };
+  };
+  const checkWanderPixels = async (label) => {
+    await page.mouse.move(4, 4);
+    const point = await wanderPoint(), body = (await canvasBox(page, NAME)).rendered.body;
+    const read = screenshotPixels(await page.screenshot());
+    const actual = read(point.x, point.y);
+    const expected = [35, (point.x - body.x) / body.width * 255, (point.y - body.y) / body.height * 255];
+    check(label, actual.every((value, c) => Math.abs(value - expected[c]) <= 18), { actual, expected });
+  };
+  const wanderFittedPicture = await until('the fitted Wander image is decoded', wanderDecoded,
     (picture) => picture.loaded && picture.sha === wideSha && picture.requested > 0 && picture.width >= picture.requested);
+  await checkWanderPixels('fitted_Wander_pixels_match_the_selected_file');
   // Wander's supported UI range ends at 400%; Focus separately exercises the original beyond 450%.
   await page.locator('.zoom-at').click();
   await page.getByRole('menuitem', { name: /^Zoom to 100%/ }).click();
@@ -195,10 +204,11 @@ async function died(error) {
     await settled(page);
   }
   const wanderZoom = await until('the Wander UI reaches 400 percent', camera, (position) => Math.abs(position.zoom - 4) < 0.001);
-  const wanderSharpPicture = await until('Wander decodes enough image pixels for the enlarged canvas node', () => decodedOf(wanderBuffer),
+  const wanderSharpPicture = await until('Wander decodes enough image pixels for the enlarged canvas node', wanderDecoded,
     (picture) => picture.loaded && picture.sha === wideSha && picture.requested > wanderFittedPicture.requested
       && picture.width >= Math.min(4096, picture.requested) && picture.displayed === picture.width
       && (picture.requested <= 2048 || picture.resolution === 'original'));
+  await checkWanderPixels('zoomed_Wander_pixels_match_the_selected_file');
   check('free_roam_zoom_increases_decoded_image_resolution', wanderSharpPicture.width > wanderFittedPicture.width && Math.abs(wanderZoom.zoom - 4) < 0.001, { fitted: wanderFittedPicture, zoomed: wanderSharpPicture });
   check('free_roam_quality_check_keeps_the_selected_asset_on_the_canvas', await page.locator('[data-focused-asset]').count() === 0 && (await asset()).version === 1);
   await fitCanvas(page);
@@ -207,7 +217,7 @@ async function died(error) {
   const expanded = await palette();
   const selectionPoint = await wanderPoint();
   await page.mouse.click(selectionPoint.x, selectionPoint.y);
-  await page.locator(`.react-flow__node.selected:has(.card[data-asset="${NAME}"])`).waitFor();
+  await until('single click selected the image', () => selectedBoxes(page), names => names?.includes(NAME));
   check('single_click_selects_without_entering_focus_or_moving_the_camera', await page.locator('[data-focused-asset]').count() === 0 && sameCamera(wander, await camera()));
   await boxOf(page, NAME).locator('.head .nm').click();
   const inlineName = boxOf(page, NAME).locator('.head input[aria-label="Name"]');
@@ -478,7 +488,7 @@ async function died(error) {
   await settled(page);
   check('clicking_the_empty_focus_background_exits_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
 
-  // Drag a real four-node selection, so one gesture can exercise both React Flow stop callbacks.
+  // Drag a real four-node selection; one pointer gesture must apply the group operation exactly once.
   const referenceTools = (await api(`/v1/tools?project=${id}&palette=true`)).tools;
   const reference = referenceTools.map((tool) => ({ tool, prompt: tool.fields.find((field) => field.type === 'prompt' || field.type === 'words') }))
     .find(({ tool, prompt }) => tool.makes === 'image' && prompt?.type === 'prompt' && (!prompt.takes || prompt.takes.includes('image')));
@@ -505,15 +515,15 @@ async function died(error) {
   page.off('response', observeImports);
   check('bulk_imports_reach_the_client_before_fitting', clientImports.size === 4);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-  const sourceNodes = bulkNames.map((name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`));
+  const sourceBounds = () => Promise.all(bulkNames.map(async name => (await canvasBox(page, name))?.bounds));
   await until('all four imported nodes are visible after a synchronized refit', async () => {
     await fitCanvas(page);
-    return { visible: await Promise.all(sourceNodes.map((node) => node.isVisible())), camera: await camera() };
-  }, (view) => view.visible.every(Boolean));
-  const bounds = await Promise.all(sourceNodes.map((node) => node.boundingBox()));
+    return { bounds: await sourceBounds(), camera: await camera(), viewport: page.viewportSize() };
+  }, view => view.bounds.every(box => box && box.x + box.width > 0 && box.y + box.height > 0 && box.x < view.viewport.width && box.y < view.viewport.height));
+  const bounds = await sourceBounds();
   const enclosing = { left: Math.min(...bounds.map((box) => box.x)) - 12, top: Math.min(...bounds.map((box) => box.y)) - 12,
     right: Math.max(...bounds.map((box) => box.x + box.width)) + 12, bottom: Math.max(...bounds.map((box) => box.y + box.height)) + 12 };
-  const pane = await page.locator('.react-flow').boundingBox();
+  const pane = await page.locator('.canvas-root').boundingBox();
   const navigation = await page.locator('.top').boundingBox();
   const paletteBounds = await tools.boundingBox();
   enclosing.left = Math.max(enclosing.left, pane.x + 8, paletteBounds.x + paletteBounds.width + 8);
@@ -527,13 +537,12 @@ async function died(error) {
   await page.mouse.move(enclosing.right, enclosing.bottom, { steps: 16 });
   await page.mouse.up();
   await page.keyboard.up('Shift');
-  const selected = await until('four image nodes are selected by the pointer rectangle', () => page.locator('.react-flow__node.selected .card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset).sort()),
-    (names) => JSON.stringify(names) === JSON.stringify([...bulkNames].sort()));
+  const selected = await until('four image nodes are selected by the pointer rectangle', async () => (await selectedBoxes(page))?.sort(),
+    names => JSON.stringify(names) === JSON.stringify([...bulkNames].sort()));
   check('bulk_reference_drop_uses_four_actually_selected_nodes', selected.length === 4);
-  const selection = page.locator('.react-flow__nodesselection-rect');
-  await selection.waitFor();
-  const group = await selection.boundingBox();
-  const destination = await boxOf(page, NAME).locator('.media').boundingBox();
+  // A group drag begins on any selected card; no renderer-owned selection DOM rectangle is needed.
+  const group = (await canvasBox(page, bulkNames[0])).body;
+  const destination = (await canvasBox(page, NAME)).body;
   const stamp = (item) => item ? { name: item.name, tool: item.tool, version: item.version, approved: item.approved, pinned: item.pinned, sha: item.sha256, versions: item.versions,
     sources: (item.prefixes ?? []).map((version) => [version.number, version.main?.sha256]) } : null;
   const projectBeforeBulk = await state();
@@ -585,10 +594,10 @@ async function died(error) {
   if (!videoTool) throw new Error('the H3 video tool metadata needed by the Summary/Beats fixture is unavailable');
   const VIDEO = 'focus_video';
   await api(`${at}/assets`, 'POST', { name: VIDEO, exact: true, kind: 'video', tool: videoTool.id, fields: { description: 'Stored asset description stays out of the UI.', summary: '<focus_image.1> A focused video scene.', beats: [{ duration: 5, description: '<focus_image.2> A large focused video beat.' }, { duration: 5, description: '<focus_image.1> The second focused video beat.' }] }, at: { x: 1100, y: 600, w: 360 } });
-  await boxOf(page, VIDEO).waitFor();
+  await until('video geometry available', () => canvasBox(page, VIDEO), Boolean);
   await fitCanvas(page);
   const videoWander = await camera();
-  const videoTile = await boxOf(page, VIDEO).locator('.media').boundingBox();
+  const videoTile = (await canvasBox(page, VIDEO)).body;
   await page.mouse.dblclick(videoTile.x + videoTile.width / 2, videoTile.y + videoTile.height / 2);
   const videoFocus = page.locator(`[data-focused-asset="${VIDEO}"]`);
   await videoFocus.waitFor();
@@ -700,7 +709,7 @@ async function died(error) {
   const holder = newHolder.assets.find((item) => !beforeBasicDrop.has(item.name));
   check('a_basic_palette_drop_does_not_enter_focus', holder.kind === 'image' && !holder.tool && await page.locator('[data-focused-asset]').count() === 0);
   await fitCanvas(page);
-  const holderRect = await boxOf(page, holder.name).locator('.media').boundingBox();
+  const holderRect = (await canvasBox(page, holder.name)).body;
   await canvasTool.scrollIntoViewIfNeeded();
   await carry(page, canvasTool, { x: holderRect.x + holderRect.width / 2, y: holderRect.y + holderRect.height / 2 });
   await until('the dragged implementation attaches to the holder', state, (value) => value.assets.find((item) => item.name === holder.name)?.tool === canvasToolId);

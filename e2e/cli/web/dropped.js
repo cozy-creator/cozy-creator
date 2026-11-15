@@ -8,7 +8,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if
 // anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, drop, lastLook, launch, lookAt, noStall, photo, png, settled, until } = require('./page');
+const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, drop, lastLook, launch, lookAt, noStall, photo, png, settled, until, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -73,9 +73,9 @@ const PICTURES = [
   seen.project = { id, folder: (await api(at)).body.path };
 
   // Far enough out that all twenty are drawn: none culled, so none is drawn for the first time by a pan.
-  const pane = page.locator('.react-flow__pane');
+  const pane = page.locator('.canvas-pixels');
   await pane.waitFor();
-  const scale = () => page.evaluate(() => Number(/scale\(([\d.]+)\)/.exec(document.querySelector('.react-flow__viewport')?.style.transform ?? '')?.[1] ?? 1));
+  const scale = async () => (await canvasView(page)).zoom;
   await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
   for (let i = 0; i < 8 && (await scale()) > 0.42; i++) {
     await page.keyboard.press('-');
@@ -85,62 +85,64 @@ const PICTURES = [
   seen.zoom = await scale();
   check('zoomed_out_not_far', seen.zoom <= 0.42 && seen.zoom >= 0.2, seen.zoom);
 
-  // Every frame, every box: where and how big it's drawn, its picture and its head, from the frame it's first drawn.
+  // Display-object diagnostics catch transient placement/resource changes; independent screenshots below establish actual pixels.
   await page.evaluate(() => {
     const boxes = (window.dropWatch = { first: {}, changes: [], bad: [], loads: [], frames: 0, stop: false });
-    const sample = (node) => {
-      const card = node.querySelector('.card');
-      const media = card?.querySelector('.media');
-      const imgs = [...(media?.querySelectorAll('.media-pixels img') ?? [])];
-      return {
-        name: card?.dataset.asset,
-        pos: node.style.transform,
-        w: card?.offsetWidth,
-        h: card?.offsetHeight,
-        mw: media?.offsetWidth,
-        mh: media?.offsetHeight,
-        srcs: imgs.map((img) => img.getAttribute('src')).join(' '),
-        drawn: imgs.length > 0 && imgs.every((img) => img.complete && img.naturalWidth > 0),
-        head: card?.querySelector('.head')?.textContent,
-        visible: getComputedStyle(node).visibility === 'visible',
-      };
-    };
-    // Where it's drawn, to a hundredth of a pixel: a box's origin is worked out in floats.
-    const at = (pos) => (/translate\(([-\d.e]+)px, ?([-\d.e]+)px\)/.exec(pos ?? '') ?? []).slice(1).map(Number);
-    const near = (a, b) => a.length === 2 && b.length === 2 && Math.abs(a[0] - b[0]) < 0.01 && Math.abs(a[1] - b[1]) < 0.01;
-    const same = (a, b) => near(at(a.pos), at(b.pos)) && Math.abs(a.w - b.w) <= 0.5 && Math.abs(a.h - b.h) <= 0.5 && Math.abs(a.mw - b.mw) <= 0.5 && Math.abs(a.mh - b.mh) <= 0.5 && a.srcs === b.srcs && a.head === b.head;
     const tick = () => {
       if (boxes.stop) return;
-      boxes.frames += 1;
-      const when = Math.round(performance.now());
-      for (const node of document.querySelectorAll('.react-flow__node')) {
-        const id = node.dataset.id;
-        const now = sample(node);
-        if (!now.visible) continue;
-        const first = boxes.first[id];
-        if (!first) boxes.first[id] = { ...now, at: when };
-        else if (!same(first, now) && boxes.changes.length < 60) boxes.changes.push({ id, at: when, first, now });
-        const wrong = [node.classList.contains('glide') && 'glide', node.querySelector('.card.landing') && 'landing', node.querySelector('.prog') && 'progress', node.querySelector('.state-dot.queued, .state-dot.running') && 'state dot'].filter(Boolean);
-        if (wrong.length && boxes.bad.length < 60) boxes.bad.push({ id, at: when, wrong });
+      boxes.frames++;
+      const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+      const zoom = inspection?.camera().zoom;
+      for (const name of inspection?.names() ?? []) {
+        const box = inspection.card(name), render = box?.rendered;
+        if (!render) continue;
+        const now = { name, pos: JSON.stringify([box.bounds.x, box.bounds.y]), w: box.bounds.width / zoom, h: box.bounds.height / zoom,
+          mw: render.body.width / zoom, mh: render.body.height / zoom, srcs: render.media.local ? 'local' : render.media.resolution,
+          drawn: render.media.ready, head: render.labels.title?.text, visible: true };
+        const first = boxes.first[name];
+        if (!first) { boxes.first[name] = { ...now, at: Math.round(performance.now()) }; if (now.drawn) boxes.loads.push({ id: name, src: now.srcs }); }
+        else if (['pos', 'srcs', 'head'].some(key => first[key] !== now[key]) || ['w','h','mw','mh'].some(key => Math.abs(first[key] - now[key]) > 0.5)) {
+          if (boxes.changes.length < 60) boxes.changes.push({ id: name, first, now });
+        }
+        const wrong = [render.progress && 'progress', ['queued', 'running'].includes(render.state) && 'state dot'].filter(Boolean);
+        if (wrong.length && boxes.bad.length < 60) boxes.bad.push({ id: name, wrong });
       }
       requestAnimationFrame(tick);
     };
-    document.addEventListener('load', (event) => {
-      const node = event.target instanceof HTMLImageElement && event.target.closest('.react-flow__node');
-      if (node) boxes.loads.push({ id: node.dataset.id, src: event.target.getAttribute('src') });
-    }, true);
     requestAnimationFrame(tick);
   });
+  const poses = async () => Object.fromEntries(await Promise.all(PICTURES.map(async ({ name }) => {
+    const box = await canvasBox(page, name), zoom = (await canvasView(page)).zoom;
+    return [name, box && { pos: JSON.stringify([box.bounds.x, box.bounds.y]), w: box.bounds.width / zoom, h: box.bounds.height / zoom }];
+  })));
+  const pixelsOf = async () => {
+    await page.mouse.move(4, 4);
+    const read = screenshotPixels(await page.screenshot());
+    const result = {};
+    for (const { name } of PICTURES) {
+      const body = (await canvasBox(page, name))?.rendered?.body;
+      if (!body) return null;
+      result[name] = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]].map(([x, y]) => read(body.x + body.width * x, body.y + body.height * y));
+    }
+    return result;
+  };
+  const pngPixelsMatch = (pixels) => pixels && PICTURES.slice(0, 15).every((picture, i) => pixels[picture.name].every((color, quadrant) => {
+    if ([12, 13].includes(i) && quadrant % 2 === 0) return true;
+    const expected = [20 + i * 12, quadrant % 2 ? 191 : 64, quadrant >= 2 ? 191 : 64];
+    return color.every((channel, c) => Math.abs(channel - expected[c]) <= 20);
+  }));
 
   const files = PICTURES.map(({ name, type, ext, bytes }) => ({ name: `${name}.${ext}`, type, bytes }));
   const dropped = Date.now();
   await drop(page, files, 700, 160);
   const assets = async () => (await api(at)).body?.assets ?? [];
-  const landed = await until('all twenty landed', () => page.evaluate(() => document.querySelectorAll('.react-flow__node .head [aria-label="Delete"]').length), (n) => n === PICTURES.length, 5 * STEP_MS);
+  const landed = await until('all twenty landed', async () => (await assets()).length, (n) => n === PICTURES.length, 5 * STEP_MS);
   seen.landed_ms = Date.now() - dropped;
   check('twenty_boxes', landed === PICTURES.length, landed);
   await shot('placed');
-  const placed = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.dataset.id, { pos: node.style.transform, w: node.querySelector('.card')?.offsetWidth, h: node.querySelector('.card')?.offsetHeight }])));
+  const placed = await poses();
+  const firstPixels = await until('all dropped PNGs have their actual colors', pixelsOf, pngPixelsMatch);
+  check('dropped_image_pixels', pngPixelsMatch(firstPixels), firstPixels);
   // Calcifer measures each file after its import: that read comes back to the page too, and changes nothing on it.
   // As a box reads it: its first version's file, else its own.
   const dims = (row) => {
@@ -149,7 +151,9 @@ const PICTURES = [
   };
   const measured = await until('all twenty measured', assets, (rows) => rows.length === PICTURES.length && rows.every((row) => dims(row).width && dims(row).height), 3 * STEP_MS);
   await page.waitForTimeout(10_000);
-  const later = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.dataset.id, { pos: node.style.transform, w: node.querySelector('.card')?.offsetWidth, h: node.querySelector('.card')?.offsetHeight }])));
+  const later = await poses();
+  const laterPixels = await pixelsOf();
+  check('displayed_pixels_do_not_change_after_import', JSON.stringify(firstPixels) === JSON.stringify(laterPixels), { firstPixels, laterPixels });
   const watched = await page.evaluate(() => {
     window.dropWatch.stop = true;
     return window.dropWatch;
@@ -160,10 +164,10 @@ const PICTURES = [
   seen.frames = watched.frames;
   check('each_drawn_once_each_frame', ids.length === PICTURES.length, ids.length);
   check('each_box_first_drawn_with_its_picture', ids.every((id) => watched.first[id].drawn), ids.filter((id) => !watched.first[id].drawn).map((id) => watched.first[id]));
-  check('each_box_first_drawn_with_its_own_file', ids.every((id) => watched.first[id].srcs.startsWith('blob:') && !watched.first[id].srcs.includes(' ')), ids.map((id) => watched.first[id].srcs));
+  check('each_box_first_drawn_with_its_own_file', ids.every((id) => watched.first[id].srcs === 'local'), ids.map((id) => watched.first[id].srcs));
   check('nothing_moves_resizes_or_swaps_after_it_is_drawn', watched.changes.length === 0, watched.changes.slice(0, 6));
   check('no_progress_dot_landing_or_glide', watched.bad.length === 0, watched.bad.slice(0, 6));
-  const xy = (pos) => (/translate\(([-\d.e]+)px, ?([-\d.e]+)px\)/.exec(pos ?? '') ?? []).slice(1).map(Number);
+  const xy = (pos) => JSON.parse(pos ?? '[]');
   const kept = Object.keys(placed).length === PICTURES.length && Object.entries(placed).every(([id, box]) => {
     const [a, b] = [xy(box.pos), xy(later[id]?.pos)];
     return later[id] && a.length === 2 && b.length === 2 && Math.abs(a[0] - b[0]) < 0.01 && Math.abs(a[1] - b[1]) < 0.01 && box.w === later[id].w && box.h === later[id].h;
@@ -189,13 +193,16 @@ const PICTURES = [
 
   // A reload: the same shapes, from what Calcifer measured, and each picture's thumbnail upright in it.
   await page.reload();
-  await page.waitForSelector('.react-flow__node .card');
-  const reloaded = await until('every thumbnail up after a reload', () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node')].map((node) => {
-    const card = node.querySelector('.card');
-    const media = card?.querySelector('.media');
-    const img = media?.querySelector('.buffered-image[data-displayed-sha] img');
-    return { name: card?.dataset.asset, w: card?.offsetWidth, h: card?.offsetHeight, media: media && media.offsetWidth / media.offsetHeight, picture: img && img.naturalWidth / img.naturalHeight };
-  })), (all) => all.length === PICTURES.length && all.every((box) => box.picture), 3 * STEP_MS);
+  await until('all twenty logical cards after reload', () => canvasNames(page), names => names?.length === PICTURES.length);
+  const reloaded = await until('every thumbnail decoded after a reload', async () => Promise.all(PICTURES.map(async ({ name }) => {
+    const box = await canvasBox(page, name), zoom = (await canvasView(page)).zoom, render = box?.rendered;
+    return { name, w: box?.bounds.width / zoom, h: box?.bounds.height / zoom,
+      media: render && render.body.width / render.body.height, picture: render?.media.ready && render.media.width / render.media.height };
+  })), all => all.length === PICTURES.length && all.every(box => box.picture), 3 * STEP_MS);
+  const reloadPixels = await until('reloaded PNGs retain their displayed colors', pixelsOf, pngPixelsMatch);
+  check('reloaded_image_pixels', pngPixelsMatch(reloadPixels), reloadPixels);
+  const upright = PICTURES.filter(picture => picture.turn).every(({ name }) => reloadPixels[name].every((color, i) => color.every((channel, c) => Math.abs(channel - firstPixels[name][i][c]) <= 25)));
+  check('turned_JPEG_pixels_match_before_and_after_reload', upright, { firstPixels, reloadPixels });
   await shot('reloaded');
   const before = Object.fromEntries(ids.map((id) => [watched.first[id].name, watched.first[id]]));
   check('a_reload_keeps_each_shape', reloaded.every((box) => before[box.name] && Math.abs(box.w - before[box.name].w) <= 1 && Math.abs(box.h - before[box.name].h) <= 1), reloaded.map((box) => ({ ...box, before: before[box.name] && { w: before[box.name].w, h: before[box.name].h } })));

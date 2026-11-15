@@ -10,7 +10,7 @@ const { execFileSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, projectAction, projectFromPage, signIn, STEP_MS, until, upload } = require('./page');
+const { projectFolder, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, projectAction, projectFromPage, signIn, STEP_MS, until, upload, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -112,7 +112,7 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   // The canvas draws only the boxes in view: fitted to them first (again, until the page has their new places), then each is there.
   await until('each box in view', async () => {
     await fitCanvas(page);
-    return (await Promise.all(names.map((name) => boxOf(page, name).isVisible()))).every(Boolean);
+    return (await Promise.all(names.map((name) => canvasBox(page, name)))).every(box => box?.rendered);
   }, Boolean);
 
   // A box whose take was played in Focus: its playhead is the open box's (Pick up from here), not what its tile shows at rest.
@@ -133,7 +133,7 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
     await page.mouse.move(4, 500);
     // The last box's preview stopped with the pointer gone, before this one's is looked for.
     await until('no preview playing', () => page.locator('video.preview.on').count(), (n) => n === 0, 5000).catch(() => {});
-    const media = boxOf(page, name).locator('.media').first();
+    const media = (await hoverBox(page, name)).locator('.media').first();
     const poster = await until(`${name}'s poster`, () => media.locator('.scrub img').evaluate((el) => el.complete && el.naturalWidth > 0).catch(() => false), Boolean, 60_000).catch(() => false);
     const { x, y, width, height } = await media.boundingBox();
     await page.mouse.move(x + width / 2 - 12, y + height / 2, { steps: 2 });

@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, GPU, STEP_MS, addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectJson, projectUrl, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { projectFolder, GPU, STEP_MS, addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectJson, projectUrl, removeGeneratedProject, settled, signIn, summary, until, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 const { runnerSpeed } = require('./speed');
 
 const failures = [];
@@ -57,10 +57,7 @@ const BEFORE = {
 };
 
 /** The view as the page has it. */
-const VIEW = () => {
-  const [, x, y, zoom] = document.querySelector('.react-flow__viewport').style.transform.match(/translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([\d.]+)\)/).map(Number);
-  return { x, y, zoom };
-};
+const VIEW = () => document.querySelector('.canvas-root').canvasInspection.camera();
 
 /** Each layer of what the canvas is drawn on, and the dots: what scales each by, as the page set it. */
 const geometryOf = (page) => page.evaluate(`(() => {
@@ -104,8 +101,8 @@ const samplesOf = (page) => page.evaluate(() => {
   const kind = (x, y) => {
     const element = document.elementFromPoint(x, y);
     if (!element) return null;
-    if (element.closest('.react-flow__node .media')) return 'box';
-    return element.classList.contains('react-flow__pane') ? 'open' : null;
+    if (document.querySelector('.canvas-root').canvasInspection.hitTest({ x, y })?.part === 'body') return 'box';
+    return element.classList.contains('canvas-pixels') ? 'open' : null;
   };
   const out = { gap, open: [], boxes: [], between: [] };
   const across = Math.max(1, Math.ceil(innerWidth / gap / 48));
@@ -120,11 +117,14 @@ const samplesOf = (page) => page.evaluate(() => {
   }
   // Each box's picture, 2 px in from its edge (past what a dot beside it draws), where it's on screen and topmost, and drawn: the canvas
   // stops at the app bar (se-132: its renderer is clipped there, and the paper and its dots go on behind the bar).
-  const renderer = document.querySelector('.react-flow__renderer');
+  const renderer = document.querySelector('.canvas-root');
   const clipped = Number(/inset\(([\d.]+)px/.exec(getComputedStyle(renderer).clipPath)?.[1] ?? 0);
   const drawnFrom = renderer.getBoundingClientRect().top + clipped;
-  for (const media of document.querySelectorAll('.react-flow__node .media')) {
-    const box = media.getBoundingClientRect();
+  const inspection = renderer.canvasInspection;
+  for (const name of inspection.names()) {
+    const body = inspection.card(name)?.rendered?.body;
+    if (!body) continue;
+    const box = { left: body.x, top: body.y, right: body.x + body.width, bottom: body.y + body.height };
     const [left, top, right, bottom] = [Math.max(0, box.left + 2), Math.max(0, drawnFrom + 2, box.top + 2), Math.min(innerWidth, box.right - 2), Math.min(innerHeight, box.bottom - 2)];
     if (right > left && bottom > top && kind((left + right) / 2, (top + bottom) / 2) === 'box') out.boxes.push([left, top, right, bottom]);
   }
@@ -224,16 +224,16 @@ async function blanksIn({ picture, k }) {
 
 /** A pan or a zoom by the wheel, a step each frame for `ms`, there and back: each frame's time, and how many views it went through. */
 const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((done) => {
-  const pane = document.querySelector('.react-flow__pane');
+  const pane = document.querySelector('.canvas-pixels');
   const box = pane.getBoundingClientRect();
-  const viewport = document.querySelector('.react-flow__viewport');
+  const inspection = document.querySelector('.canvas-root').canvasInspection;
   const [frames, views] = [[], new Set()];
   let [last, sign, count] = [performance.now(), 1, 0];
   const end = last + ms;
   const step = (now) => {
     frames.push(now - last);
     last = now;
-    views.add(viewport.style.transform);
+    views.add(JSON.stringify(inspection.camera()));
     // A zoom: 20 frames out by 0.973 each (to 0.57 of where it was), 20 back. A pan: 40 frames 12 px each way.
     if (++count % (kind === 'zoom' ? 20 : 40) === 0) sign = -sign;
     const by = kind === 'zoom' ? { deltaY: sign * 20, ctrlKey: true } : { deltaX: sign * 12 };
@@ -299,8 +299,8 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
       }, THEMES[theme]);
       projectJson(made.id, 'PATCH', '/view', { viewport: view });
       await signIn(tab, url);
-      await tab.waitForSelector('.react-flow__node .media img');
-      await until('every picture drawn', () => tab.evaluate(() => [...document.querySelectorAll('.react-flow__node .media img')].every((image) => image.complete)), Boolean);
+      await until('visible cards available', () => canvasNames(tab), names => names?.length > 0);
+      await until('visible image resources decoded', () => tab.evaluate(() => { const r = document.querySelector('.canvas-root').canvasInspection.resources(); return r.visibleCards > 0 && r.loadedCards === r.visibleCards; }), Boolean);
       await settled(tab);
       await drawn(tab);
       return tab;

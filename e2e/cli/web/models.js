@@ -12,7 +12,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
+const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -96,8 +96,8 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   if (made.status >= 300) throw new Error(`the Shot box: ${JSON.stringify(made)}`);
   const still = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: imageTool.id, kind: 'image', name: 'still', exact: true, fields: { instructions: 'A lighthouse.' }, at: { x: 700, y: 80 } }) });
   if (still.status >= 300) throw new Error(`the Image box: ${JSON.stringify(still)}`);
-  await boxOf(page, 'scene').waitFor();
-  await boxOf(page, 'still').waitFor();
+  await until('scene geometry', () => canvasBox(page, 'scene'), Boolean);
+  await until('still geometry', () => canvasBox(page, 'still'), Boolean);
   await fitCanvas(page);
 
   // H3 in Focus: every field at once.
@@ -316,8 +316,8 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await page.setViewportSize({ width: 1920, height: 1080 });
   await page.waitForTimeout(300);
   const barCheck = await page.evaluate(() => {
-    // What the canvas draws (its renderer: the pane and every box on it), not React Flow's own frame around it.
-    const canvas = document.querySelector('.react-flow__renderer');
+    // The viewport-sized render surface is clipped below application controls.
+    const canvas = document.querySelector('.canvas-root');
     // The bar's own controls, as shown: a closed menu's items keep a layout but aren't drawn, and an open menu's hang over the canvas on a
     // panel of their own.
     const bar = document.querySelector('.top').getBoundingClientRect();
@@ -347,7 +347,7 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
         if (canvasHere.length) onRow.push({ x: Math.round(x), y: Math.round(y), canvas: String(canvasHere[0].className) });
       }
     }
-    const overlapping = [...document.querySelectorAll('.react-flow__node')].flatMap((node) => {
+    const overlapping = [...document.querySelectorAll('.canvas-node')].flatMap((node) => {
       const parts = [node, ...node.querySelectorAll('.nm')];
       const reached = controls.filter(({ box }) => parts.some((part) => meets(part.getBoundingClientRect(), box))).map(({ el }) => label(el));
       return reached.length ? [{ node: node.querySelector('.card')?.dataset.asset, controls: reached }] : [];

@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectUrl, importFile, projectJson, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { projectFolder, projectUrl, importFile, projectJson, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -24,8 +24,8 @@ const near = (a, b, by = 0.005) => Math.abs(a - b) <= by;
 
 /** The view as the page draws it, and the canvas point at the middle of what's visible: what − and + zoom about. */
 const view = (page) => page.evaluate(() => {
-  const [, x, y, zoom] = document.querySelector('.react-flow__viewport').style.transform.match(/translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([\d.]+)\)/).map(Number);
-  const pane = document.querySelector('.react-flow').getBoundingClientRect();
+  const { x, y, zoom } = document.querySelector('.canvas-root').canvasInspection.camera();
+  const pane = document.querySelector('.canvas-root').getBoundingClientRect();
   const left = document.querySelector('.tools')?.getBoundingClientRect().right ?? pane.left;
   const right = document.querySelector('.drawer')?.getBoundingClientRect().left ?? pane.right;
   const [cx, cy] = [(left + right) / 2 - pane.left, pane.height / 2];
@@ -80,11 +80,25 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
       watch(tab);
       projectJson(made.id, 'PATCH', '/view', { viewport: { x, y: 60, zoom } });
       await signIn(tab, await projectUrl(made.id));
-      await tab.waitForSelector('.react-flow__node');
-      await until('every card its thumbnail', () => tab.evaluate(() => {
-        const images = [...document.querySelectorAll('.react-flow__node .media img')];
-        return images.length >= document.querySelectorAll('.react-flow__node').length && images.every((image) => image.complete);
+      await until('canvas names available', () => canvasNames(tab), names => names?.length === COUNT);
+      await until('visible cards have decoded resources', () => tab.evaluate(() => {
+        const i = document.querySelector('.canvas-root').canvasInspection, r = i.resources();
+        return r.visibleCards > 0 && r.loadedCards === r.visibleCards;
       }), Boolean);
+      await tab.mouse.move(4, 4);
+      const body = await tab.evaluate(() => {
+        const root = document.querySelector('.canvas-root'), i = root.canvasInspection;
+        for (const name of i.names()) {
+          const b = i.card(name)?.rendered?.body;
+          if (!b || b.x < 0 || b.y < 64 || b.x + b.width >= innerWidth || b.y + b.height >= innerHeight) continue;
+          const point = {x:b.x+b.width/2,y:b.y+b.height/2}, target = document.elementFromPoint(point.x,point.y);
+          if (target && root.contains(target) && i.hitTest(point)?.name === name) return b;
+        }
+        return null;
+      });
+      if (!body) throw new Error('no visible passive image pixel sample in this fixture');
+      const pixel = screenshotPixels(await tab.screenshot())(body.x + body.width / 2, body.y + body.height / 2);
+      check(`passive_thumbnail_pixels_${zoom}`, Math.abs(pixel[0] - 140) < 20 && Math.abs(pixel[1] - 128) < 20 && Math.abs(pixel[2] - 128) < 20, pixel);
       await settled(tab);
       return tab;
     };
@@ -97,14 +111,14 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
       new MutationObserver((changes) => (window.zoomChanges += changes.length)).observe(document.querySelector('.zoom'), { subtree: true, childList: true, attributes: true, characterData: true });
     });
     const at70 = await panning(tab, 3000);
-    seen.pan_70 = { fewest_cards: at70.fewest, ...summary(at70.frames) };
+    seen.pan_70 = { fewest_cards: at70.fewestSceneCards, ...summary(at70.frames) };
     check('pan_70_panned', at70.places > 10, at70.places);
     check('pan_leaves_the_control_alone', (await tab.evaluate(() => window.zoomChanges)) === 0, await tab.evaluate(() => window.zoomChanges));
     await tab.close();
     tab = await openTab(0.11, 800);
     const at11 = await panning(tab, 3000);
-    seen.pan_11 = { fewest_cards: at11.fewest, ...summary(at11.frames) };
-    check('pan_11_shows_all', at11.places > 10 && at11.fewest === COUNT, seen.pan_11);
+    seen.pan_11 = { fewest_cards: at11.fewestSceneCards, ...summary(at11.frames) };
+    check('pan_11_shows_all', at11.places > 10 && at11.fewestSceneCards === COUNT, seen.pan_11);
     await tab.close();
 
     tab = await openTab(0.7, 40);
@@ -156,10 +170,10 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     await tab.click('.zoom-menu >> text=Zoom to fit');
     await settled(tab);
     const fitted = await view(tab);
-    const inside = await tab.evaluate(() => [...document.querySelectorAll('.react-flow__node')].filter((node) => {
-      const box = node.getBoundingClientRect();
-      return box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
-    }).length);
+    const inside = await tab.evaluate(() => {
+      const i = document.querySelector('.canvas-root').canvasInspection;
+      return i.names().filter(name => { const box = i.card(name).bounds; return box.x >= 0 && box.y >= 0 && box.x + box.width <= innerWidth && box.y + box.height <= innerHeight; }).length;
+    });
     check('menu_fit_all', inside === COUNT && shows(fitted), { inside, ...fitted });
     await tab.keyboard.press('Shift+Digit0');
     await settled(tab);
@@ -170,32 +184,21 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
 
     // A box on the canvas is drawn at its scale, words and all (cl-890): at 50%, 100% and 200% each of its words is the same part of its
     // height, and in and back out it's just as it was. Each part where it is in the box, in canvas pixels.
-    const n0 = await boxOf(tab, 'n0').locator('.media').first().boundingBox();
+    const n0 = (await canvasBox(tab, 'n0')).body;
     await tab.keyboard.down('Shift');
     await tab.mouse.click(n0.x + n0.width / 2, n0.y + n0.height / 2);
     await tab.keyboard.up('Shift');
     await tab.keyboard.press('Shift+Digit2');
     await settled(tab);
     const look = () => tab.evaluate(() => {
-      const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector('.card')?.dataset.asset === 'n0');
-      const card = node?.querySelector('.card');
-      if (!card) return null;
-      const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-      const base = card.getBoundingClientRect();
-      const pathOf = (el) => {
-        const path = [];
-        for (let e = el; e && e !== node; e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
-        return path.join('.');
-      };
-      const shown = (el) => el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && el.getBoundingClientRect().height > 0;
-      const own = (el) => [...el.childNodes].some((one) => one.nodeType === 3 && one.textContent.trim());
-      const all = [...node.querySelectorAll('*')].filter(shown);
-      const inCanvas = (r) => [r.left - base.left, r.top - base.top, r.width, r.height].map((v) => Math.round((v / zoom) * 10) / 10);
-      return {
-        zoom,
-        words: all.filter(own).map((el) => ({ at: pathOf(el), said: el.textContent.trim().slice(0, 24), part: el.getBoundingClientRect().height / base.height, font: getComputedStyle(el).fontSize, name: el.matches('.head .nm'), screen: parseFloat(getComputedStyle(el).fontSize) * zoom })),
-        parts: all.map((el) => [pathOf(el), ...inCanvas(el.getBoundingClientRect())]),
-        style: card.getAttribute('style'),
+      const i = document.querySelector('.canvas-root').canvasInspection, box = i.card('n0'), rendered = box?.rendered;
+      if (!rendered) return null;
+      const zoom = i.camera().zoom, base = box.bounds;
+      const labels = Object.entries(rendered.labels);
+      return { zoom,
+        words: labels.map(([key, label]) => ({ at: key, said: label.text.slice(0,24), part: label.height / base.height, font: `${label.fontSize}px`, name: key === 'title', screen: label.fontSize * zoom })),
+        parts: labels.map(([key, label]) => [key, ...[label.x - base.x, label.y - base.y, label.width, label.height].map(v => Math.round(v / zoom * 10) / 10)]),
+        style: JSON.stringify({ width: base.width / zoom, height: base.height / zoom }),
       };
     });
     const zoomAt = async (label) => {
@@ -231,7 +234,7 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     await shot(tab, 'zoom-here');
     await closeBox(tab);
     const back = await view(tab);
-    check('box_left', !(await tab.locator('.card.here').count()) && (await boxOf(tab, 'n0').count()) === 1 && (await tab.locator('.zoom').isVisible()) && shows(back), back);
+    check('box_left', !(await tab.locator('.card.here').count()) && Boolean(await canvasBox(tab, 'n0')) && (await tab.locator('.zoom').isVisible()) && shows(back), back);
     await tab.close();
   } catch (error) {
     await lastLook();

@@ -9,7 +9,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { projectFolder, addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, storedOf, until, STEP_MS } = require('./page');
+const { projectFolder, addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, storedOf, until, STEP_MS, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 // A still made in steps of `pace` s, so a render lasts long enough to be seen at rest.
@@ -99,60 +99,48 @@ async function died(why) {
   writeFileSync(tool, TOOL);
   // Its kind given, Calcifer reads nothing of the tool before its first render installs it.
   addBoxes(folder, [{ name: 'card', tool: `${tool}/draw`, kind: 'image', fields: { instructions: 'A still of one colour.', pace: 0.6 } }]);
-  const rest = page.locator('.react-flow__node .card[data-asset="card"]');
+  const rest = async () => (await canvasBox(page, 'card'))?.rendered;
   const here = page.locator('.card.here[data-asset="card"]');
   const take = (number) => here.locator(`.take[data-take="${number}"]`);
-  const nameDots = () => rest.locator('.head .state-dot.unseen').count();
-  const label = () => rest.locator('.node-version-label').textContent().catch(() => null);
+  const nameDots = async () => (await rest())?.state === 'unseen' ? 1 : 0;
+  const label = async () => (await rest())?.labels.version?.text ?? null;
   const leave = async () => {
     for (let i = 0; i < 3 && (await here.count()); i++) {
       await page.keyboard.press('Escape');
       await page.waitForTimeout(200);
     }
     await here.waitFor({ state: 'detached' });
-    await rest.waitFor();
+    await until('card rendered at rest', rest, Boolean);
   };
   // Its box at rest, each change: rendering, its wave (a sibling of its picture, the picture's size, breathing) and the take it shows.
   const watch = () => page.evaluate(() => {
-    const said = (window.said = []);
-    const look = () => {
-      const card = document.querySelector('.react-flow__node .card[data-asset="card"]');
-      if (!card) return;
-      const wave = card.querySelector(':scope > .render-wave');
-      const media = card.querySelector(':scope > .media');
-      const [w, m] = [wave?.getBoundingClientRect(), media?.getBoundingClientRect()];
-      if (!m) return;
-      const now = {
-        rendering: card.classList.contains('rendering'),
-        wave: Boolean(wave),
-        outside: Boolean(wave && media && !media.contains(wave) && Math.abs(w.top - m.top) < 1.5 && Math.abs(w.bottom - m.bottom) < 1.5 && Math.abs(w.width - m.width) < 1.5),
-        breathes: wave ? getComputedStyle(wave, '::before').animationName : '',
-        shows: card.querySelector('.node-version-label')?.textContent ?? '',
-        line: card.querySelector('.run-face .face-machine')?.textContent ?? '',
-        meter: card.querySelector('.tile-meter')?.getAttribute('aria-valuenow') ?? null,
-        // The meter along the top of the box, its picture's top edge (Paul, 11-12).
-        meterAtTop: (() => { const at = card.querySelector('.tile-meter')?.getBoundingClientRect(); return at ? Math.abs(at.top - m.top) < 2 : null; })(),
-        size: (() => {
-          const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-          const [c, n] = [card.getBoundingClientRect(), card.closest('.react-flow__node').getBoundingClientRect()];
-          return [c.width, c.height, n.width, n.height].map((v) => Math.round((v / zoom) * 10) / 10).join('x');
-        })(),
-      };
-      if (JSON.stringify(said.at(-1)) !== JSON.stringify(now)) said.push(now);
-    };
-    // Its state dot, wherever the box is shown: left of its name at rest, or in Focus's header. Each change, and where it was.
-    const states = (window.states = []);
-    const dot = () => {
-      const rest = document.querySelector('.react-flow__node .card[data-asset="card"]');
+    cancelAnimationFrame(window.newTakeWatch ?? 0);
+    const said = (window.said = []), states = (window.states = []);
+    const tick = () => {
+      const i = document.querySelector('.canvas-root')?.canvasInspection, box = i?.card('card'), rest = box?.rendered;
+      if (rest) {
+        const zoom = i.camera().zoom, m = rest.body, wave = rest.wave;
+        const now = {
+          rendering: ['queued', 'running'].includes(rest.state), wave: Boolean(wave),
+          outside: Boolean(wave && Math.abs(wave.y - m.y) < 1.5 && Math.abs(wave.height - m.height) < 1.5 && Math.abs(wave.width - m.width) < 1.5),
+          breathes: wave?.animation ?? '', shows: rest.labels.version?.text ?? '',
+          line: [rest.labels.machine?.text, rest.labels.time?.text].filter(Boolean).join(''),
+          meter: rest.progress?.fraction == null ? null : Math.round(rest.progress.fraction * 100),
+          meterAtTop: rest.meter ? Math.abs(rest.meter.y - m.y) < 2 : null,
+          size: [box.bounds.width, box.bounds.height, box.bounds.width, box.bounds.height].map(v => Math.round(v / zoom * 10) / 10).join('x'),
+        };
+        if (JSON.stringify(said.at(-1)) !== JSON.stringify(now)) said.push(now);
+      }
       const focus = document.querySelector('[data-focused-asset="card"] .focus-title');
-      const [held, name] = rest ? [rest.querySelector('.head .state-dot'), rest.querySelector('.head .nm')] : focus ? [focus.querySelector('.state-dot'), focus.querySelector('.focus-name')] : [null, null];
-      if (!rest && !focus) return;
-      const now = { state: held?.dataset.state ?? '', where: rest ? 'rest' : 'focus', left: held && name ? held.getBoundingClientRect().right <= name.getBoundingClientRect().left + 0.5 : null };
-      if (states.at(-1)?.state !== now.state || states.at(-1)?.where !== now.where) states.push(now);
+      if (rest || focus) {
+        const held = focus?.querySelector('.state-dot'), name = focus?.querySelector('.focus-name');
+        const now = rest ? { state: rest.state ?? '', where: 'rest', left: rest.state ? Boolean(rest.stateDot && rest.labels.title && rest.stateDot.x + rest.stateDot.width <= rest.labels.title.x + 0.5) : null }
+          : { state: held?.dataset.state ?? '', where: 'focus', left: held && name ? held.getBoundingClientRect().right <= name.getBoundingClientRect().left + 0.5 : null };
+        if (states.at(-1)?.state !== now.state || states.at(-1)?.where !== now.where) states.push(now);
+      }
+      window.newTakeWatch = requestAnimationFrame(tick);
     };
-    new MutationObserver(() => { look(); dot(); }).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
-    look();
-    dot();
+    tick();
   });
   const render = async (count) => {
     await openBox(page, 'card');
@@ -160,7 +148,7 @@ async function died(why) {
     await (await renderOf(page, 'card')).click();
     await leave();
     const row = await until(`card's take ${count}`, asset, (now) => now?.versions === count && !now.making?.length, FIRST_RUN_MS);
-    await until(`its wave gone with take ${count}`, () => rest.locator('.render-wave').count(), (n) => n === 0, 15_000).catch(() => {});
+    await until(`its wave gone with take ${count}`, async () => (await rest())?.wave ? 1 : 0, (n) => n === 0, 15_000).catch(() => {});
     return { row, said: await page.evaluate(() => window.said), states: await page.evaluate(() => window.states) };
   };
 
@@ -169,7 +157,7 @@ async function died(why) {
   seen.first_render = first.said;
   const going = first.said.filter((now) => now.rendering);
   check('rendering_breathes_at_rest', going.length > 0 && going.every((now) => now.wave && now.outside && now.breathes === 'render-wave'), first.said);
-  check('wave_gone_after', (await rest.locator('.render-wave').count()) === 0 && !(await rest.evaluate((card) => card.classList.contains('rendering'))));
+  check('wave_gone_after', !(await rest())?.wave && !['queued', 'running'].includes((await rest())?.state));
   check('first_take_shown', (await until('take 1 shown', label, (text) => text === 'v1', 15_000).catch(() => null)) === 'v1', await label());
   check('first_take_no_dot', (await nameDots()) === 0 && !first.row.unseen?.length && !first.states.some((now) => now.state === 'unseen'), { row: first.row, states: first.states });
   await shot('first');
@@ -179,11 +167,8 @@ async function died(why) {
   await take(1).dblclick();
   await until('take 1 approved', asset, (row) => row.pinned && row.approved === 1);
   await leave();
-  const sized = await rest.evaluate((card) => {
-    const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-    const [c, n] = [card.getBoundingClientRect(), card.closest('.react-flow__node').getBoundingClientRect()];
-    return [c.width, c.height, n.width, n.height].map((v) => Math.round((v / zoom) * 10) / 10).join('x');
-  });
+  const beforeSecond = await canvasBox(page, 'card'), beforeZoom = (await canvasView(page)).zoom;
+  const sized = [beforeSecond.bounds.width, beforeSecond.bounds.height, beforeSecond.bounds.width, beforeSecond.bounds.height].map(v => Math.round(v / beforeZoom * 10) / 10).join('x');
   const second = await render(2);
   seen.second_render = second.said;
   const kept = second.said.filter((now) => now.rendering);
@@ -204,7 +189,7 @@ async function died(why) {
 
   // A reload keeps it: it's Calcifer's, not the page's. It's no project data: project.db's boxes say nothing of it.
   await page.reload();
-  await rest.waitFor();
+  await until('card rendered at rest', rest, Boolean);
   check('reload_keeps_name_dot', (await until('the dot after a reload', nameDots, (n) => n === 1, 15_000).catch(() => 0)) === 1);
   check('not_in_the_project', !/unseen/.test(JSON.stringify(storedOf(folder))), storedOf(folder));
 
@@ -225,10 +210,10 @@ async function died(why) {
   check('looking_clears_it', looked !== null && looked.approved === 1, looked ?? (await asset()));
   check('take_dot_cleared', (await until('its take dot gone', () => take(2).locator('.take-unseen').count(), (n) => n === 0, 15_000).catch(() => 1)) === 0);
   await leave();
-  check('name_dot_cleared', (await nameDots()) === 0 && (await rest.locator('.head .state-dot').count()) === 0);
+  check('name_dot_cleared', (await nameDots()) === 0 && !(await rest())?.state);
   check('approved_shown_again', (await label()) === 'v1', await label());
   await page.reload();
-  await rest.waitFor();
+  await until('card rendered at rest', rest, Boolean);
   // Its take drawn again, from the same read that carries its dots: only then does no dot mean something.
   await until('its take drawn again', label, (text) => text === 'v1', 15_000).catch(() => {});
   check('reload_keeps_it_seen', (await nameDots()) === 0 && !(await asset()).unseen?.length);

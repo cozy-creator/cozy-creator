@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, implementationRow, previewVersion, approveVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, upload, rowsOf, addBoxes, storedOf } = require('./page');
+const { projectFolder, implementationRow, previewVersion, approveVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, upload, rowsOf, addBoxes, storedOf, canvasBox, canvasView, canvasNames, selectedBoxes, hoverBox, screenshotPixels } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -90,10 +90,10 @@ async function died(why) {
     return post(`${at}/imports`, { source: await upload(held?.token, path, id), name, exact: true, at: { x: 260, y: 100 } });
   };
   /** A box's pictures as drawn: how many loaded, and what it says instead of one. */
-  const drawn = (where) => where.evaluate((card) => ({
-    up: [...card.querySelectorAll('.media img')].filter((img) => img.complete && img.naturalWidth > 0).length,
-    notes: [...card.querySelectorAll('.media-note')].map((note) => note.textContent),
-  }));
+  const drawn = async name => {
+    const render = (await canvasBox(page, name))?.rendered;
+    return { up: render?.media.ready ? 1 : 0, notes: render?.labels.note ? [render.labels.note.fullText ?? render.labels.note.text] : [] };
+  };
 
   // Mentions, in boxes another writer made: its words kept whatever comes.
   const words = 'Two lines,\nkept as they are.';
@@ -114,7 +114,7 @@ async function died(why) {
   await until('fixed placed', async () => (await api(`${at}/canvas`)).body?.cards?.fixed, Boolean);
   await page.keyboard.press('f');
   await settled(page);
-  await box('fixed').waitFor();
+  await until('fixed geometry', () => canvasBox(page, 'fixed'), Boolean);
   const fixed = await until('its reads', () => asset('fixed'), (row) => row?.reads?.length === 3);
   check('versions_are_reads', fixed.reads.map((read) => `${read.name}.${read.version ?? ''}`).sort().join() === 'Abr.,Abr.1,Abr.2', fixed.reads);
   check('no_cycle_of_versions', !(await state()).warnings?.some((line) => /made from it/.test(line.message)), (await state()).warnings);
@@ -140,8 +140,12 @@ async function died(why) {
   check('a_typed_name_ending_so_is_refused', (await post(`${at}/assets`, { tool: '', name: 'b.8', fields: { text: 'x' }, exact: true })).status === 400);
 
   // A camera's JPEG has its thumbnail, not "No preview" (cl-888: FFmpeg took it for an image2 sequence, which Calcifer refuses).
-  await box('other').waitFor();
-  const photoAtRest = await until('the photo drawn', () => drawn(box('other').locator('.card')), (now) => now.up > 0 || now.notes.length > 0, 5 * STEP_MS).catch((why) => String(why));
+  await until('photo geometry', () => canvasBox(page, 'other'), Boolean);
+  const photoAtRest = await until('the photo drawn', () => drawn('other'), (now) => now.up > 0 || now.notes.length > 0, 5 * STEP_MS).catch((why) => String(why));
+  await page.mouse.move(4, 4);
+  const photoBody = (await canvasBox(page, 'other')).rendered.body, readPhoto = screenshotPixels(await page.screenshot());
+  const photoPixels = [[.2,.2],[.8,.2],[.2,.8],[.8,.8]].map(([x,y]) => readPhoto(photoBody.x+photoBody.width*x,photoBody.y+photoBody.height*y));
+  check('photo_pixels_are_present', photoPixels.some(color => color.some((value,c) => Math.abs(value-photoPixels[0][c])>3)), photoPixels);
   check('a_photo_has_its_thumbnail', photoAtRest.up > 0 && !photoAtRest.notes?.length, photoAtRest);
 
   // A rename rewrites what says it, and only that.
@@ -151,7 +155,7 @@ async function died(why) {
   check('rename_keeps_versions', (await asset('Ada')).versions === 3 && (await asset('Ada')).version === 3, await asset('Ada'));
 
   // Deleting a version something reads: it stays read, a render fails clearly, and Undo brings it back.
-  await box('Ada').waitFor();
+  await until('renamed Ada is on canvas', () => canvasBox(page, 'Ada'), Boolean);
   const before = (await asset('fixed')).inputs;
   const gone = await api(`${at}/assets/Ada/versions/2`, { method: 'DELETE' });
   check('delete_names_what_reads_it', JSON.stringify(gone.body.read_by) === '["fixed"]', gone.body);
@@ -166,7 +170,7 @@ async function died(why) {
   const shut = async () => {
     await page.keyboard.press('Escape');
     await page.goto(await projectUrl(id));
-    await page.locator('.react-flow__viewport').waitFor();
+    await until('canvas camera available', () => canvasView(page), Boolean);
     await settled(page);
   };
   const open = async (name) => {
@@ -185,7 +189,7 @@ async function died(why) {
     const media = node.querySelector('.media-pixels').getBoundingClientRect();
     const viewer = node.querySelector('.focus-viewer').getBoundingClientRect();
     const controls = node.querySelector('.image-controls')?.getBoundingClientRect();
-    const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+    const zoom = document.querySelector('.canvas-root').canvasInspection.camera().zoom;
     return { width: media.width, height: media.height, zoom, viewer: { x: viewer.x, y: viewer.y, width: viewer.width, height: viewer.height }, controls: controls ? { x: controls.x, y: controls.y, width: controls.width, height: controls.height } : null };
   });
   const stableRoomAndZoom = (before, after) => Math.abs(before.zoom - after.zoom) < 0.001 && ['x', 'y', 'width', 'height'].every((field) => Math.abs(before.viewer[field] - after.viewer[field]) < 2);
@@ -342,7 +346,7 @@ async function died(why) {
     await shut();
     await fitCanvas(page);
     const row = await implementationRow(page, 'edit_image', tool.id);
-    const target = await box(name).locator('.card').boundingBox();
+    const target = (await canvasBox(page, name)).body;
     await carryTo(page, row, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   };
   const wordsBefore = (await asset('words')).fields.text;
