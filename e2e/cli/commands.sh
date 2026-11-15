@@ -239,6 +239,12 @@ refused run-on-local run birefnet/remove_background --input "$OUT/refused.yaml" 
 (in_project "$RUN_PROJECT" --json run "$here/weightless/reverse" --describe > "$OUT/describe-code.json" 2> "$OUT/describe-code.err") \
   && J '.fields | any(.name == "text")' "$OUT/describe-code.json" \
   || check "cozy run ./weightless/reverse --describe: $(tail -c 300 "$OUT/describe-code.json") $(tail -c 200 "$OUT/describe-code.err")"
+# Outside any project, local code is the machine's, on every OS (cl-990).
+mkdir -p "$OUT/outside-projects"
+(cd "$OUT/outside-projects" && cozy --json run "$here/weightless/reverse" --describe > "$OUT/describe-outside.json" 2> "$OUT/describe-outside.err") \
+  && J '.fields | any(.name == "text")' "$OUT/describe-outside.json" \
+  || check "outside a project: cozy run ./weightless/reverse --describe: $(tail -c 300 "$OUT/describe-outside.json") $(tail -c 200 "$OUT/describe-outside.err")"
+(cd "$OUT/outside-projects" && refused install-code-outside package install "$here/weightless")
 refused install package install birefnet
 refused install-code package install "$here/weightless"
 refused remove package uninstall birefnet
@@ -598,6 +604,37 @@ local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
 [ "$(curl -sS -o "$OUT/unseen-list.json" -w '%{http_code}' -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'Content-Type: application/json' \
   -d '{"add": "/work/weightless"}' "http://$(jq -r .address "$lock")/v1/tools/list")" = 400 ] && J '.error.code == "tool_list_local"' "$OUT/unseen-list.json" \
   || check "unseen: a path added to the tool list: $(cat "$OUT/unseen-list.json")"
+}
+
+# cl-990 (Paul 11-13: installed packages are the machine's): a checkout installed from outside any project is a machine-wide
+# package, its install one of Calcifer's own runs, its copy and environment in the machine's stores (read as the imports suite
+# reads them); it uninstalls there, and its recipe gets as far as the sign-in a model's header needs. A call needs a project,
+# as a Hub package's does. In a project, local code is still the project's own.
+machine_checkout() {
+step "a checkout outside any project is a machine-wide package (cl-990)"
+[ -n "$LOCAL" ] || return 0
+local out=$OUT/machine-checkout py code=0
+mkdir -p "$out"
+(cd "$out" && cozy --json package install "$here/weightless" --on local -y) > "$out/install.ndjson" 2> "$out/install.err" \
+  || { check "machine checkout: package install outside a project: $(tail -c 300 "$out/install.ndjson") $(tail -c 200 "$out/install.err")"; return; }
+py=$(python3 -I "$here/../imports/generation.py" "$HOME/.cozy" "$out/install.ndjson" e2e-weightless 0.1.0 2> "$out/generation.err") \
+  && [ -x "$py" ] && echo "machine checkout: its environment is the machine's: $py" \
+  || check "machine checkout: no installation in the machine's store: $(cat "$out/generation.err")"
+case $py in "$RUN_PROJECT"/*) check "machine checkout: its environment is the project's: $py" ;; esac
+ls -d "$HOME"/.cozy/calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 \
+  || check "machine checkout: Calcifer holds no machine copy: $(ls "$HOME/.cozy/calcifer/code" 2> /dev/null | head -3)"
+(cd "$out" && cozy --json model quantize zhengpeng7/birefnet --lane int8 --package "$here/weightless" --on local) > "$out/quantize.json" 2>&1 || code=$?
+[ "$code" != 0 ] && grep -q '"code": *"not_logged_in"' "$out/quantize.json" \
+  || check "machine checkout: model quantize --package outside a project: exit $code, not not_logged_in: $(tail -c 300 "$out/quantize.json")"
+(cd "$out" && cozy --json package uninstall local/e2e-weightless --on local) > "$out/uninstall.json" 2> "$out/uninstall.err" \
+  && J '(.removed | any(.package == "local/e2e-weightless")) and (.failed // []) == []' "$out/uninstall.json" \
+  || check "machine checkout: package uninstall local/e2e-weightless outside a project: $(tail -c 300 "$out/uninstall.json") $(tail -c 200 "$out/uninstall.err")"
+code=0; (cd "$out" && cozy --json run "$here/weightless/reverse" text=outside) > "$out/run.json" 2> "$out/run.err" || code=$?
+[ "$code" = 2 ] && J '.error.code == "not_in_a_project"' "$out/run.json" \
+  || check "machine checkout: a call outside a project: exit $code, not not_in_a_project as a Hub package's: $(tail -c 300 "$out/run.json")"
+in_project "$RUN_PROJECT" --json run "$here/weightless" --describe > "$out/describe-project.json" 2> "$out/describe-project.err" \
+  && ls -d "$RUN_PROJECT"/.vault-calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 \
+  || check "machine checkout: in a project, its copy is not the project's: $(tail -c 300 "$out/describe-project.err")"
 }
 
 # cl-820: local code edited between runs on `local`, as cl-817's edit.sh timed it (an edit took 7.9 s read in place, 10.2 s once it

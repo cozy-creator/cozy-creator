@@ -278,8 +278,9 @@ pub struct OutputTarget {
 }
 
 /// `POST /v1/objects/held`: which of these objects (`sha256:<hex>`) the machine holds for this
-/// signer.
+/// signer. Calcifer's `POST /v1/files/held` and `/v1/project-files/held` take it too.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct HeldRequest {
     pub digests: Vec<String>,
@@ -288,6 +289,7 @@ pub struct HeldRequest {
 /// What the machine holds of each object asked, in the order asked; a stored object is held
 /// whole, and asking renews it, as a `HEAD` does.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct HeldAnswer {
     pub held: Vec<HeldObject>,
@@ -295,6 +297,7 @@ pub struct HeldAnswer {
 
 /// One object asked: the byte ranges of `digest` the machine holds.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct HeldObject {
     pub digest: String,
@@ -515,11 +518,18 @@ pub struct RunSpec {
 }
 
 /// The caller's provider tokens, for models a run makes from a provider source.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderAccess {
     pub huggingface: String,
     pub civitai: String,
+}
+
+/// The tokens are never printed.
+impl std::fmt::Debug for ProviderAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderAccess").finish_non_exhaustive()
+    }
 }
 
 /// A published release by name (th-245): a machine that holds no installation of it reads its
@@ -597,7 +607,8 @@ pub struct ModelChoice {
     /// machine makes the slot's model from, under these reviewed `profiles` (none: the one its
     /// headers select); never with repository or manifest. A model-only warm upload also accepts
     /// `input://<field>` naming its retained tree input: a plain CozyTensors folder, without
-    /// selectors or conversion profiles. Missing folder payload must already be at the endpoint.
+    /// selectors or conversion profiles. Missing folder payload must already be at the endpoint. A
+    /// file reaches a machine only as `object://`: a path on it is refused, `local_model_path_refused`.
     pub source: String,
     pub profiles: Vec<String>,
     /// The base component a LoRA source was trained on, as its uploader says (`--trained-on`);

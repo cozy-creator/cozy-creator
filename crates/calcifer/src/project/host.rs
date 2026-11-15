@@ -10,6 +10,7 @@ use std::{
 
 use api::{
     calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
+    config::Origin,
     error::{Error, Kind},
     ids::{Digest, RunId},
     interface::{self, Call, Interface, Slot},
@@ -293,6 +294,27 @@ impl Host {
         }
         let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
         self.published(hub, with, Some(&first)).await
+    }
+
+    /// The package `with` names for a job waiting for another's output (cl-905), never made ready on a machine for it: local code as
+    /// the static describer reads it on the first of `on`'s machines, with the manifest a machine installs; a published one as `package`
+    /// has it. Its install is neither asked for nor waited on, so the job is placed and its machine fetches ahead meanwhile.
+    pub(crate) async fn foreseen(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
+        let scope = crate::private_io::of_path(folder)?;
+        crate::private_io::context(scope, async {
+            let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
+            let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
+            let Some(found) = local_code::target(with, Some(folder), &home) else { return self.published(hub, with, Some(&first)).await };
+            let (path, named) = found?;
+            let code = local_code::own(&self.api, &path)?;
+            let hubs = &self.api.machines.hubs;
+            let hub = if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() };
+            // Its estimate names it by this (`Package::estimated`): without it, no machine quotes it.
+            let manifest = local_code::source(hubs.home(), &code, hubs, &Origin::parse(&hub)?).await?.source.manifest;
+            let (name, document) = local_code::describe(&self.api, &code, &first, &hub).await?;
+            let release = manifest.trim_start_matches("sha256:").chars().take(12).collect();
+            Ok(Package { name, release, local: Some(path), manifest, moved: None, named, document })
+        }).await
     }
 
     /// Local code `with`, from `folder`, as described for a read that runs nothing: never made ready on a machine.

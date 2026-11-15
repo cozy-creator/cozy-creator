@@ -607,6 +607,7 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     // Its answer is kept with it, in its transaction (cl-885), as `moving` says it.
     let (number, already) = folder.act(|| {
         let (number, already) = joined(folder, &doc, i, &kept)?;
+        folder.keep_shapes([&kept])?;
         let noun = noun(&doc, &folder.lock()?, i);
         super::keyed::answering(StatusCode::OK, &VersionMoved { already, ..moving(folder, &name, number, noun, false)? });
         Ok((number, already))

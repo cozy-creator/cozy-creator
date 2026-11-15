@@ -120,7 +120,7 @@ async fn blocking<T: Send + 'static>(
 }
 
 impl Client {
-    fn import_access(&self, sources: &[String], control: &Control) -> Result<Access> {
+    fn import_access(&self, control: &Control) -> Result<Access> {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Failure {
             kind: Kind::Unsupported,
             detail: "conversion needs the caller's active Tokio runtime".into(),
@@ -135,10 +135,6 @@ impl Client {
             None => Access::from_env(),
         };
         Ok(Access {
-            // A supplied loopback source is the existing explicit local-source carve-out.
-            allow_local: sources
-                .iter()
-                .any(|s| crate::fetch::policy::is_loopback_origin(s)),
             token,
             runtime: Some(runtime),
             cancelled: Some(control.cancelled.clone()),
@@ -156,7 +152,7 @@ impl Client {
             return fail(Kind::Invalid, "convert needs a source");
         }
         let control = Arc::new(Control::default());
-        let access = self.import_access(sources, &control)?;
+        let access = self.import_access(&control)?;
         let (sources, store) = (sources.to_owned(), self.store.clone());
         let converter = options.converter.map(str::to_owned);
         let source_variant = options.source_variant.map(str::to_owned);

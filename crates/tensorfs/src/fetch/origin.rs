@@ -59,7 +59,7 @@ impl std::fmt::Debug for Location {
         match self {
             Self::File(path) => f.debug_tuple("File").field(path).finish(),
             Self::Url { url, .. } => f.debug_struct("Url").field("url", &super::net::shown(url)).finish_non_exhaustive(),
-            Self::Authenticated { url, .. } => f.debug_struct("Authenticated").field("url", url).finish_non_exhaustive(),
+            Self::Authenticated { url, .. } => f.debug_struct("Authenticated").field("url", &super::net::shown(url)).finish_non_exhaustive(),
         }
     }
 }

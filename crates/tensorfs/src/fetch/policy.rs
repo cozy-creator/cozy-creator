@@ -19,16 +19,73 @@
 //! the socket connects to, with SNI/Host still carrying the hostname, so a name that
 //! answers publicly during the check cannot answer privately during the connect.
 //!
-//! `allow_local` is the dev carve-out and it is explicit: loopback/private addresses and
-//! plaintext http, admitted only when the caller declared a local deployment (a loopback
-//! hub, a test origin). "I trust this host" and "I accept a private address" stay separate
-//! statements — conflating them is how a localhost dev setting becomes a production
-//! metadata read.
+//! **Local origins are the operator's declaration, per origin.** Loopback/private addresses and
+//! plaintext http are admitted only for the exact origins (`scheme://host:port`) the process's
+//! operator declared ([`declare_local`]: cozy's `local_origins` and its configured Hub; else
+//! `TENSORFS_LOCAL_ORIGINS`), at the first URL and at every redirect hop alike. Nothing a run, a
+//! package or a Hub answer names widens it: a declared loopback Hub that redirects to
+//! 169.254.169.254 is refused at that hop. "I trust this host" and "I accept a private address"
+//! stay separate statements.
 
 use crate::err::{refuse, Code, Result};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// The origins this process's operator declared local: set once, before any fetch.
+static LOCAL: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Declares the origins a loopback or private address and plaintext http are admitted for, the
+/// operator's configuration and never request data. The first declaration stands; one that would
+/// change it is refused. Undeclared, the process reads `TENSORFS_LOCAL_ORIGINS` (comma-separated).
+pub fn declare_local<S: AsRef<str>>(origins: impl IntoIterator<Item = S>) -> Result<()> {
+    let mut declared = Vec::new();
+    for origin in origins {
+        let origin = origin.as_ref().trim();
+        match origin_of(origin) {
+            Some(key) => declared.push(key),
+            None => return refuse(Code::SOURCE_NOT_ALLOWED, format!("{origin:?} is not an http(s) origin to declare local")),
+        }
+    }
+    declared.sort();
+    declared.dedup();
+    if *LOCAL.get_or_init(|| declared.clone()) != declared {
+        return refuse(Code::SOURCE_NOT_ALLOWED, "this process declared its local origins already");
+    }
+    Ok(())
+}
+
+/// The declared local origins, as a child process is given them (`TENSORFS_LOCAL_ORIGINS`).
+pub fn local_origins() -> &'static [String] {
+    LOCAL.get_or_init(|| {
+        let text = std::env::var("TENSORFS_LOCAL_ORIGINS").unwrap_or_default();
+        let mut declared: Vec<String> = text.split(',').filter_map(|o| origin_of(o.trim())).collect();
+        declared.sort();
+        declared.dedup();
+        declared
+    })
+}
+
+/// Whether `url`'s origin is one the operator declared local.
+pub fn is_local(url: &str) -> bool {
+    origin_of(url).is_some_and(|origin| local_origins().contains(&origin))
+}
+
+/// Whether any declared local origin is on `host`: what the resolver, which sees no port, admits
+/// after [`SourcePolicy::check`] judged the whole URL.
+fn local_host(host: &str) -> bool {
+    let host = host.trim_matches(['[', ']']);
+    local_origins().iter().any(|origin| {
+        let parsed = super::net::Url::parse(origin).ok();
+        parsed.as_ref().and_then(|u| u.host_str()).is_some_and(|at| at.trim_matches(['[', ']']).eq_ignore_ascii_case(host))
+    })
+}
+
+/// `scheme://host[:port]` of an http(s) URL, the default port omitted.
+fn origin_of(url: &str) -> Option<String> {
+    let parsed = super::net::Url::parse(url).ok()?;
+    matches!(parsed.scheme(), "http" | "https").then(|| parsed.origin().ascii_serialization())
+}
 
 /// The address classes no downloader in this tree connects to — the port of
 /// `egress._CLASSES`, same names, same order. Returns why `address` is not fetchable, or
@@ -152,11 +209,8 @@ pub struct SourcePolicy {
     /// Any host, set in code alone for bytes held to a digest the caller already has: no
     /// host vouches for anything there. Addresses are still checked.
     pub any_host: bool,
-    /// Loopback/private addresses and plaintext http, for a deployment that DECLARED it
-    /// is local (a loopback dev hub, a test origin). Never inferred here.
-    pub allow_local: bool,
     /// Plaintext http to a public address, for bytes the caller judges itself. It reaches no
-    /// address `allow_local` would not: that stays a separate statement.
+    /// private address: only a declared local origin does ([`declare_local`]).
     pub plaintext: bool,
     /// Redirect hop budget. 0 refuses every redirect — a presigned GET has no business
     /// redirecting; a provider handler (tfs-052) that needs hops declares them.
@@ -226,7 +280,7 @@ impl SourcePolicy {
     /// redirect hop passes here again.
     pub(crate) fn check(&self, url: &str) -> Result<()> {
         let (https, host) = self.admit(url)?;
-        self.addresses_for(&host, https).map(drop)
+        self.addresses_for(&host, https, is_local(url)).map(drop)
     }
 
     /// Everything [`check`](Self::check) refuses before resolving: shape, scheme and allowlist.
@@ -234,12 +288,12 @@ impl SourcePolicy {
     pub(crate) fn admit(&self, url: &str) -> Result<(bool, String)> {
         let (scheme, host) = split_url(url)?;
         let https = scheme == "https";
-        if !https && !self.allow_local && !self.plaintext {
+        if !https && !self.plaintext && !is_local(url) {
             return refuse(
                 Code::SOURCE_NOT_ALLOWED,
                 format!(
-                    "{host}: plaintext http to a host outside a declared-local deployment — \
-                     artifact bytes travel over https"
+                    "{host}: plaintext http to an origin this computer's operator did not declare local \
+                     (`local_origins`) — artifact bytes travel over https"
                 ),
             );
         }
@@ -260,10 +314,10 @@ impl SourcePolicy {
     /// Every answer for `host`, each checked: what the client dials (its port set by the URL). The
     /// scheme was checked with the URL, so a fake-IP answer passes here as it would over https.
     pub(crate) fn addresses(&self, host: &str) -> Result<Vec<SocketAddr>> {
-        self.addresses_for(host, true)
+        self.addresses_for(host, true, local_host(host))
     }
 
-    fn addresses_for(&self, host: &str, https: bool) -> Result<Vec<SocketAddr>> {
+    fn addresses_for(&self, host: &str, https: bool, local: bool) -> Result<Vec<SocketAddr>> {
         let addrs = self.resolved.lookup(host).map_err(|error| crate::err::Refusal {
             code: if crate::descriptors::exhausted(&error) { Code::FD_HEADROOM } else { Code::HUB_UNREACHABLE },
             detail: format!("{host}: name resolution failed ({error}); an address this module cannot check is not an address it will connect to"),
@@ -271,7 +325,7 @@ impl SourcePolicy {
         if addrs.is_empty() {
             return refuse(Code::HUB_UNREACHABLE, format!("{host} resolved to nothing"));
         }
-        if !self.allow_local {
+        if !local {
             let named = host.parse::<IpAddr>().is_err();
             for addr in &addrs {
                 // Fake-IP DNS (some datacenters' transparent proxies) answers every name in
@@ -297,21 +351,6 @@ impl SourcePolicy {
             }
         }
         Ok(addrs)
-    }
-}
-
-/// Whether every answer for the URL's host is loopback — the one fact that lets a caller
-/// DECLARE a local deployment from its own hub base (`pull` does exactly this, as
-/// cozy-runtime's `local_hub` did).
-pub fn is_loopback_origin(url: &str) -> bool {
-    let Ok((_, host)) = split_url(url) else {
-        return false;
-    };
-    match resolve(&host, 0) {
-        Ok(addrs) => {
-            !addrs.is_empty() && addrs.iter().all(|a| blocked(a.ip()).contains("loopback"))
-        }
-        Err(_) => false,
     }
 }
 

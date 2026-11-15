@@ -31,8 +31,8 @@ use std::os::{fd::AsRawFd, unix::process::ExitStatusExt};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ExecutorConfig {
-    /// Machine-verified project scope; private processes have their own protected cwd for their whole lifetime.
-    pub private: bool,
+    /// Its code is a project's own (cl-984): it runs from its root, in that project.
+    pub within: bool,
     pub python: PathBuf,
     pub root: PathBuf,
     pub socket: PathBuf,
@@ -232,6 +232,8 @@ pub(crate) struct DeviceExecutor {
     cancellation: Cancellation,
     /// Where its stderr stood when the request it serves began.
     log_from: u64,
+    /// The stderr of the call it serves, in that call's scratch (`Invoke.scratch`, cl-984).
+    call_log: Option<PathBuf>,
     memo: Option<Arc<crate::memo::Memo>>,
     lookahead: Arc<Mutex<LookaheadState>>,
 }
@@ -779,10 +781,12 @@ impl DeviceExecutor {
             .stdin(Stdio::null())
             .stdout(File::create(config.root.join("stdout.log"))?)
             .stderr(File::create(config.root.join("stderr.log"))?);
-        if config.private {
+        if config.within {
             command.current_dir(&config.root);
-            platform::private_exec::limit_cores(&mut command).map_err(io::Error::from)?;
         }
+        // Any executor may hold an encrypted project's call (cl-984): none writes a core.
+        #[cfg(unix)]
+        platform::private_exec::limit_cores(&mut command).map_err(io::Error::from)?;
         // Its generation and kernel namespace stay held while it lives, past this machine's death.
         crate::launch_identity::inherit(
             &mut command,
@@ -946,6 +950,7 @@ impl DeviceExecutor {
             retained: Vec::new(),
             cancellation,
             log_from: 0,
+            call_log: None,
             memo: None,
             lookahead: Arc::default(),
         };
@@ -994,11 +999,19 @@ impl DeviceExecutor {
     /// stderr written from here on.
     pub(crate) fn begin_request(&mut self) {
         self.log_from = fs::metadata(self.root.join("stderr.log")).map_or(0, |m| m.len());
+        self.call_log = None;
+    }
+    /// The call it serves runs in `scratch` (`Invoke.scratch`), its output there.
+    pub(crate) fn scratch_call(&mut self, scratch: &Path) {
+        self.call_log = Some(scratch.join("stderr.log"));
     }
     /// The end of the stderr of the request it serves (its whole life before the first), as
     /// much as its triage bundle keeps.
     pub(crate) fn stderr_tail(&self) -> String {
-        crate::process::tail_from(&self.root.join("stderr.log"), self.log_from, crate::triage::MAX_STDERR)
+        match &self.call_log {
+            Some(log) => crate::process::tail_from(log, 0, crate::triage::MAX_STDERR),
+            None => crate::process::tail_from(&self.root.join("stderr.log"), self.log_from, crate::triage::MAX_STDERR),
+        }
     }
     pub(crate) fn line(&self) -> Line {
         Line(Arc::downgrade(&self.writer))

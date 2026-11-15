@@ -38,6 +38,7 @@ parse "$@"
 . "$(dirname "$0")/render.sh"
 . "$(dirname "$0")/source.sh"
 . "$(dirname "$0")/envcost.sh"
+. "$(dirname "$0")/egress.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -424,11 +425,6 @@ for at in 1 2 1; do
 done
 in_project "$RUN_PROJECT" --json package uninstall local/one_script --on local > "$OUT/uninstall-one-script.json" 2>&1 \
   || check "package uninstall local/one_script failed: $(tail -c 300 "$OUT/uninstall-one-script.json")"
-# Outside any project, a local package is refused typed, naming where to go.
-mkdir -p "$OUT/outside-projects"
-code=0; (cd "$OUT/outside-projects" && cozy --json package uninstall local/one_script --on local) > "$OUT/uninstall-outside.json" 2> "$OUT/uninstall-outside.err" || code=$?
-[ "$code" != 0 ] && J '.error.code == "project_required" and (.error.next | index("cozy new"))' "$OUT/uninstall-outside.json" \
-  || check "package uninstall outside a project: exit $code, not project_required naming cozy new: $(tail -c 300 "$OUT/uninstall-outside.json")"
 }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
@@ -468,7 +464,10 @@ case $SHARD in
     orbit_angles
     old_runtime
     hostile_media
+    egress
+    hostile_inputs
     unseen
+    machine_checkout
     local_edits
     path_manifest
     rental_end
@@ -541,6 +540,8 @@ case $SHARD in
     orbit_angles
     old_runtime
     hostile_media
+    egress
+    hostile_inputs
     machine_show_runs
     writes_once
     project_stream
@@ -653,6 +654,7 @@ case $SHARD in
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="
+    shared_scratch
     projectvault
     vault_leftovers
     vault_web
@@ -698,6 +700,7 @@ case $SHARD in
   local-code) parts="
     uv_at_once
     unseen
+    machine_checkout
     local_edits
     hub_dependency
     hub_published

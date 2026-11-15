@@ -128,6 +128,15 @@ impl<'a> Sender<'a> {
         Ok(!owned)
     }
 
+    /// The package at `path` as local code from here: in a project, that project's (its copy and generation are the project's);
+    /// outside any, the machine's, as a Hub package is (Paul 11-13: installed packages are machine-wide). The project, if any.
+    pub(crate) async fn local_code(ctx: &'a Context, path: &Path) -> Result<(LocalCode, Option<String>), Error> {
+        match crate::project::here(ctx).await? {
+            Some(project) => Ok((Self::for_project(ctx, &project).await?.code(path).await?, Some(project))),
+            None => Ok((Self::independent_code(ctx, path).await?, None)),
+        }
+    }
+
     /// Maintenance may stage code only after every actual source path is proven outside a project.
     pub(crate) async fn independent_code(ctx: &'a Context, path: &Path) -> Result<LocalCode, Error> {
         let plan = source_plan(path).await?;

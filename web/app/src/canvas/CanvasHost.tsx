@@ -325,7 +325,29 @@ function Canvas({
   /** The canvas as it was before this visit to Focus: kept from its first box through every other opened from it, until the canvas is back there (cl-955). */
   const visit = useRef<Viewport | null>(null)
   /** On its way back from Focus: the canvas takes no hand until it's there, so a wheel still gliding can't stop it at the box's zoom. */
-  const [homing, setHoming] = useState(false)
+  const [homing, setHomingState] = useState(false)
+  /** The stage says `data-moving` while its camera moves: a glide asked for, a hand's pan or zoom, the way back from Focus. On the element, not in
+   *  state, so a pan renders nothing. What a test waits out. */
+  const motion = useRef({ glides: 0, hand: false, homing: false })
+  const showMotion = useCallback(() => {
+    const { glides, hand, homing } = motion.current
+    stage.current?.toggleAttribute("data-moving", glides > 0 || hand || homing)
+  }, [])
+  const setHoming = useCallback((on: boolean) => {
+    motion.current.homing = on
+    showMotion()
+    setHomingState(on)
+  }, [showMotion])
+  /** A camera move asked for: moving from now, until it lands or should have. */
+  const glide = useCallback((move: Promise<boolean>, then?: () => void) => {
+    motion.current.glides += 1
+    showMotion()
+    landing(move, () => {
+      motion.current.glides -= 1
+      showMotion()
+      then?.()
+    })
+  }, [showMotion])
   const wheeled = useRef(0)
   useEffect(() => {
     const wheel = () => {
@@ -361,7 +383,7 @@ function Canvas({
       store.focusEntering.set(false)
     }
     // A move cut short (a wheel, a key, another move) never ends: Focus shows once its time is up all the same.
-    landing(flow.setViewport(viewport, { duration: HERE_MS }), arrived)
+    glide(flow.setViewport(viewport, { duration: HERE_MS }), arrived)
   }
   /** Focus one asset while preserving Wander's camera and palette state. */
   const writeHere = useCallback(
@@ -395,7 +417,7 @@ function Canvas({
       store.focusEntering.set(Boolean(focusTravel.current))
       store.focusedName.set(name)
     },
-    [store, flow],
+    [store, flow, setHoming],
   )
   store.openHere = (name: string) => {
     writeHere(name)
@@ -434,8 +456,8 @@ function Canvas({
       visit.current = null
       setHoming(false)
     }
-    landing(flow.setViewport(back, { duration: HERE_MS }), home)
-  }, [store, flow])
+    glide(flow.setViewport(back, { duration: HERE_MS }), home)
+  }, [store, flow, setHoming, glide])
   const leaveHere = useCallback(() => {
     const name = store.inPlace?.name ?? store.focusedName.get()
     if (!name) return
@@ -520,9 +542,9 @@ function Canvas({
       const view = { x: x - ((x - from.x) * to) / from.zoom, y: y - ((y - from.y) * to) / from.zoom, zoom: to }
       aim.current = { view, until: performance.now() + HERE_MS }
       if (store.inPlace) store.inPlace.moved = true
-      void flow.setViewport(view, { duration: HERE_MS })
+      glide(flow.setViewport(view, { duration: HERE_MS }))
     },
-    [flow, store, aimed],
+    [flow, store, aimed, glide],
   )
   const zoomBy = useCallback((by: 1 | -1) => {
     if (store.focusedName.get()) {
@@ -538,8 +560,8 @@ function Canvas({
       return
     }
     aim.current = null
-    void flow.fitView({ ...fitOver(), duration: HERE_MS })
-  }, [flow, store])
+    glide(flow.fitView({ ...fitOver(), duration: HERE_MS }))
+  }, [flow, store, glide])
   /** What's selected, else the box worked on. */
   const fitSelected = useCallback(() => {
     if (store.focusedName.get()) {
@@ -549,8 +571,8 @@ function Canvas({
     const nodes = flow.getNodes().filter((node) => node.selected)
     if (!nodes.length) return fit()
     aim.current = null
-    void flow.fitView({ ...fitOver(), maxZoom: 2.5, bounds: nodes.map((node) => node.bounds), duration: HERE_MS })
-  }, [flow, store, fit])
+    glide(flow.fitView({ ...fitOver(), maxZoom: 2.5, bounds: nodes.map((node) => node.bounds), duration: HERE_MS }))
+  }, [flow, store, fit, glide])
   const zoomItems = useCallback(
     (): ZoomItem[] => [
       { label: "Zoom in", keys: keys("Mod", "+"), run: () => zoomBy(1) },
@@ -643,12 +665,19 @@ function Canvas({
     [placer, flow, store],
   )
 
+  const moving = useCallback(() => {
+    motion.current.hand = true
+    showMotion()
+  }, [showMotion])
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
+      // A programmed glide is counted separately from the hand's camera movement.
+      motion.current.hand = false
+      showMotion()
       if (store.focusedName.get() || visit.current) return
       if (store.projectId) keepViewport(store.projectId, viewport)
     },
-    [store, keepViewport],
+    [store, keepViewport, showMotion],
   )
 
   const selectionChanged = useCallback(
@@ -962,6 +991,7 @@ function Canvas({
           active={active}
           disabled={Boolean(focusedName) || homing}
           locked={homing}
+          onMoveStart={moving}
           onSelectionChange={selectionChanged}
           onMoveEnd={moved}
           onNodeClick={nodeClicked}

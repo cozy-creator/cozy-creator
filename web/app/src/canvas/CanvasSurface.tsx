@@ -28,6 +28,7 @@ interface Props {
   children?: ReactNode
   onReady?(): void
   onSelectionChange(value: { nodes: readonly ElementNode[] }): void
+  onMoveStart?(): void
   onMoveEnd(event: unknown, view: Viewport): void
   onNodeClick(event: MouseEvent, node: ElementNode): void
   onNodeDoubleClick(event: MouseEvent, node: ElementNode): void
@@ -342,7 +343,7 @@ export function CanvasSurface(props: Props) {
       resources: () => scene ? { ...scene.resourceStats(), graphics, frames: renderFrames, scheduledFrame: Boolean(frame), automaticTicker: false } : null,
     }
     Object.defineProperty(element, "canvasInspection", { value: inspection, configurable: true })
-    stops.push(controller.subscribeCamera(() => { positionOverlay(); settle = 2; invalidate() }), controller.subscribeCameraEnd(view => callbacks.current.onMoveEnd(null, view)), controller.subscribeNodes(() => { announceSelection(); setOverlayVersion(v => v + 1); invalidate() }), store.sceneRevision.subscribe(() => {
+    stops.push(controller.subscribeCamera(() => { callbacks.current.onMoveStart?.(); positionOverlay(); settle = 2; invalidate() }), controller.subscribeCameraEnd(view => callbacks.current.onMoveEnd(null, view)), controller.subscribeNodes(() => { announceSelection(); setOverlayVersion(v => v + 1); invalidate() }), store.sceneRevision.subscribe(() => {
       const name = hover.current
       if (name && store.get(name)?.name !== hoveredBefore) { hoveredBefore = store.get(name)?.name ?? ""; setOverlayVersion(v => v + 1) }
       // A fresh import owns a native name field until it is accepted.
@@ -411,7 +412,7 @@ export function CanvasSurface(props: Props) {
     {props.children}
     <div ref={overlay} className="canvas-world">
       {native && view && <div className={`canvas-node ${native.selected ? "selected" : ""}`} data-id={native.id} style={{ left: native.bounds.x, top: native.bounds.y, width: native.bounds.w, height: native.bounds.h }}>
-        {native.type === "entity" ? <EntityCard data={native.data} /> : <Card data={native.data} />}
+        {native.type === "entity" ? <EntityCard data={native.data} /> : <Card data={native.data} selected={native.selected} />}
       </div>}
     </div>
     <div ref={selection} className="canvas-selection" hidden />

@@ -558,6 +558,7 @@ fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resu
         if let Ok(mut model) = project.model.try_lock() { *model = None; }
         *project.told.lock().expect("project told") = None;
         crate::events::release_project_readers(&project.id);
+        crate::local_code::forget_readings(&project.id);
         project.folder.close_connections(available)?;
         api.projects.open.lock().expect("projects lock").remove(&project.id);
         crate::events::project_closed(&project.id);

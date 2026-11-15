@@ -407,7 +407,6 @@ async fn conform(url: &str, write: bool, token_env: Option<&str>, json: bool) ->
     let _ = fs::remove_dir_all(&scratch);
     let policy = fetch::SourcePolicy {
         any_host: true,
-        allow_local: fetch::is_loopback_origin(url),
         max_redirects: 5,
         ..Default::default()
     };
