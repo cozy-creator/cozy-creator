@@ -678,6 +678,7 @@ case $SHARD in
   projectdb-closes) parts="db_closes logs" ;;
   projectvault) parts="
     shared_scratch
+    open_unlocks
     projectvault
     vault_leftovers
     vault_swapped
