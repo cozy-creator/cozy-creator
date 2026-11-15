@@ -2231,7 +2231,7 @@ impl Pool {
     /// parent's first import, waited for. Its refusal's code and line; None where nothing imports
     /// ahead for it (no fork, it binds no model, the host has no room): its first call says then.
     pub(crate) fn import_verdict(self: &Arc<Self>, held: &HeldGeneration, stop: &crate::stop::Stop) -> Option<(&'static str, String)> {
-        if crate::private_io::current().is_some_and(|scope| !scope.ordinary) || crate::private_io::is_private_path(&held.record.python) { return None; }
+        if crate::private_io::is_private_path(&held.record.python) { return None; }
         self.prespawn(held.clone());
         let parent = self.zygotes.lock().unwrap().get(&parent_app(held))?.clone();
         // Package code runs here, and may not end: the install's cancel still does, and wakes the wait.
@@ -2947,7 +2947,7 @@ impl Pool {
             }
             None => {
                 let born = Mutex::new(vec![]);
-                let created = self.new_session(engine, held, &plan, start, None, |birth, cancel| {
+                let created = self.new_session(engine, held, &plan, start, |birth, cancel| {
                     born.lock().unwrap().push(birth.clone());
                     serve(cancel);
                     Ok(())
@@ -3169,7 +3169,7 @@ impl Pool {
     /// machine holds at most one parent imported ahead of its request. Past it, only its import
     /// pages are read ahead; its parent starts when its call does.
     pub(crate) fn prespawn(self: &Arc<Self>, held: HeldGeneration) {
-        if crate::private_io::current().is_some_and(|scope| !scope.ordinary) || crate::private_io::is_private_path(&held.record.python) { return; }
+        if crate::private_io::is_private_path(&held.record.python) { return; }
         {
             let zygotes = self.zygotes.lock().unwrap();
             if zygotes.contains_key(&parent_app(&held)) {
@@ -3203,7 +3203,7 @@ impl Pool {
     /// that never served one (Paul, 10-29: a laptop must not hold half its RAM for packages it
     /// is not using). A parent a request used stays until the machine's idle exit.
     pub(crate) fn installed(self: &Arc<Self>, held: HeldGeneration) {
-        if crate::private_io::current().is_some_and(|scope| !scope.ordinary) || crate::private_io::is_private_path(&held.record.python) { return; }
+        if crate::private_io::is_private_path(&held.record.python) { return; }
         self.kernel_boot(held.clone());
         if self.config.host.mode == HostMode::Shared {
             let key = parent_app(&held);
@@ -3314,7 +3314,7 @@ impl Pool {
     /// device (`Start.import_only`), to fork executors from.
     fn import_only(&self, held: &HeldGeneration) -> ZygoteState {
         let started = (|| {
-            let (root, socket, directory) = self.executor_endpoint()?;
+            let (root, socket, directory) = self.executor_endpoint(held)?;
             let spawned = Instant::now();
             let mut executor = DeviceExecutor::spawn_owned(
                 self.executor_config(held, root, socket, 0, self.devices.len().min(1) as u32)?,
@@ -3357,31 +3357,32 @@ impl Pool {
 
     /// A new executor root and its socket path. The socket is named through this process's
     /// descriptor of the root (Linux `sun_path` limit).
-    fn executor_endpoint(&self) -> io::Result<(PathBuf, PathBuf, File)> { self.executor_endpoint_in(None) }
-
-    fn executor_endpoint_in(&self, private: Option<&Path>) -> io::Result<(PathBuf, PathBuf, File)> {
-        let base = private.map(|path| path.join("executors")).unwrap_or_else(|| self.root.clone());
+    /// Its root is with its code (cl-984): the machine's for an installed package, its project's (`.vault-machine/executors`)
+    /// for a project's own code, whose interface, logs and caches are the project's.
+    fn executor_endpoint(&self, held: &HeldGeneration) -> io::Result<(PathBuf, PathBuf, File)> {
+        let area = crate::private_io::area_of(&held.record.python)?;
+        let base = area.as_ref().map_or_else(|| self.root.clone(), |area| area.join("executors"));
         fs::create_dir_all(&base)?;
         let root = base.join(crate::uuid::simple());
         fs::create_dir(&root)?;
         let directory = platform::durable::open_dir(&root)?;
         // Linux names it through this process's descriptor of the root; elsewhere it is the
-        // root's own, or a short private one when that is too long.
+        // root's own, or a short private one when that is too long. A project's may be on a filesystem that holds no
+        // socket inode (securefs): its socket is a short one outside, named by a digest.
         #[cfg(target_os = "linux")]
-        let socket = if private.is_some() {
-            // securefs holds regular data, but cannot create AF_UNIX socket inodes.
-            // IPC stays in the kernel; only its opaque owner-only endpoint is outside.
-            crate::device_executor::socket_path(&root, "executor")?
-        } else { PathBuf::from(format!(
-            "/proc/{}/fd/{}/executor",
-            std::process::id(),
-            std::os::fd::AsRawFd::as_raw_fd(&directory)
-        )) };
+        let socket = match area {
+            Some(_) => crate::device_executor::socket_path(&root, "executor")?,
+            None => PathBuf::from(format!("/proc/{}/fd/{}/executor", std::process::id(), std::os::fd::AsRawFd::as_raw_fd(&directory))),
+        };
         #[cfg(not(target_os = "linux"))]
         let socket = crate::device_executor::socket_path(&root, "executor")?;
         Ok((root, socket, directory))
     }
 
+    /// The machine's executor of `held` on the lane from `start`: every project's runs share it, each call in its own
+    /// scratch inside its project (cl-984). Its own files are with its code: a project's own code's executor keeps its JIT
+    /// scope (bytecode, compiler caches, temporary files), home and working directory in that project, as it does its root;
+    /// the kernel store is the machine's.
     fn executor_config(
         &self,
         held: &HeldGeneration,
@@ -3389,39 +3390,33 @@ impl Pool {
         socket: PathBuf,
         start: usize,
         degree: u32,
-    ) -> io::Result<ExecutorConfig> { self.executor_config_in(held, root, socket, start, degree, None) }
-
-    fn executor_config_in(&self, held: &HeldGeneration, root: PathBuf, socket: PathBuf, start: usize, degree: u32, private: Option<&api::machine::LocalPrivateStorage>) -> io::Result<ExecutorConfig> {
-        let private_root = private.map(crate::private_io::root).transpose()?;
-        let mut seal = Seal::prepare(
-            private_root.as_deref().unwrap_or(&self.root),
-            &self.incarnation,
-            &held.record.identity,
-            &self.lane_devices(start, degree)?,
-        )?;
+    ) -> io::Result<ExecutorConfig> {
+        let area = crate::private_io::area_of(&held.record.python)?;
+        let mut seal = Seal::prepare(&self.root, &self.incarnation, &held.record.identity, &self.lane_devices(start, degree)?)?;
+        if let Some(area) = &area {
+            seal.within(area, &self.incarnation)?;
+        }
         // A group's NCCL seal (NVLS off, peer memory only over NVLink).
         seal.group = degree > 1;
-        seal.tensorfs_home = Some(match private { Some(scope) => crate::private_io::store(scope)?.root().to_path_buf(), None => self.store.root().to_path_buf() });
+        seal.tensorfs_home = Some(self.store.root().to_path_buf());
         let mut environment = match &self.config.toolchain {
             Some(dir) => crate::machine::toolchain::environment(&self.config.environment, dir, ""),
             None => self.config.environment.clone(),
         };
-        if private.is_some() {
-            let tmp = seal.imposed().get("TMPDIR").cloned().ok_or_else(|| io::Error::other("private executor has no protected temporary directory"))?;
+        if let Some(area) = &area {
+            let tmp = seal.imposed().get("TMPDIR").cloned().ok_or_else(|| io::Error::other("an executor has no temporary directory"))?;
             fs::create_dir_all(&tmp)?;
             environment.insert("TEMP".into(), tmp.clone());
             environment.insert("TMP".into(), tmp);
-            let private_root = private_root.as_ref().expect("verified private root");
-            // Every writable place a library reaches by default is the project's: an encrypted project's executor writes nothing outside its view.
-            for (name, relative) in [("HOME", "home"), ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"), ("XDG_CACHE_HOME", "cache"),
-                ("MPLCONFIGDIR", "matplotlib"), ("UV_CACHE_DIR", "uv-cache"), ("UV_TOOL_DIR", "uv-tools")] {
-                let path = private_root.join(relative);
+            for (name, relative) in [("HOME", "home"), ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"),
+                ("XDG_CACHE_HOME", "cache"), ("MPLCONFIGDIR", "matplotlib")] {
+                let path = area.join(relative);
                 fs::create_dir_all(&path)?;
                 environment.insert(name.into(), path.to_string_lossy().into_owned());
             }
         }
         Ok(ExecutorConfig {
-            private: private.is_some(),
+            within: area.is_some(),
             python: held.record.python.clone(),
             root,
             socket,
@@ -3453,7 +3448,6 @@ impl Pool {
         start: usize,
         calls: Option<&Arc<crate::calls::Calls>>,
     ) -> io::Result<Option<Postprocess>> {
-        let plan = self.private_plan(engine, id, plan)?;
         let key = plan.executor.clone();
         let mut disposition = Disposition::default();
         if plan.degree > 0 {
@@ -3465,18 +3459,8 @@ impl Pool {
             self.report_faults(lane, post);
         }
         self.finish_returned(engine, id, &key, start, &disposition)?;
+        engine.drop_scratch(id);
         result
-    }
-
-    /// An encrypted project's runs have executors of their own, whose scratch is its view; every other run's executors are
-    /// the machine's, shared by all of them (cl-984).
-    fn private_plan(&self, engine: &Engine, id: &str, mut plan: Plan) -> io::Result<Plan> {
-        if let Some(scope) = engine.private_storage(id)?.filter(|scope| !scope.ordinary) {
-            let identity = tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&serde_json::json!([scope.project_id, scope.generation])));
-            let prefix = format!("private-{identity}:");
-            if !plan.executor.starts_with(&prefix) { plan.executor = format!("{prefix}{}", plan.executor); }
-        }
-        Ok(plan)
     }
 
     pub(crate) fn memo_for_private(&self, scope: &api::machine::LocalPrivateStorage) -> io::Result<Arc<crate::memo::Memo>> {
@@ -3537,7 +3521,6 @@ impl Pool {
         disposition: &mut Disposition,
     ) -> io::Result<Option<Postprocess>> {
         let private = engine.private_storage(id)?;
-        let plan = self.private_plan(engine, id, plan)?;
         // Retain the exact cancellation object registered for this invocation. Removing its
         // map entry cannot revoke a Halt clone another thread already took.
         let cancellation = Mutex::new(None::<Cancellation>);
@@ -3597,7 +3580,7 @@ impl Pool {
                     born.lock().unwrap().extend(executor_births(birth, &[]));
                     engine.register_managed(id, birth.clone(), stops(cancel.clone()))
                 };
-                let created = self.new_session(engine, &held, &plan, start, private.as_ref().filter(|scope| !scope.ordinary), on_birth);
+                let created = self.new_session(engine, &held, &plan, start, on_birth);
                 let births = born.into_inner().unwrap();
                 *disposition = Disposition::Unknown(births.clone());
                 match created {
@@ -3688,20 +3671,18 @@ impl Pool {
         held: &HeldGeneration,
         plan: &Plan,
         start: usize,
-        private: Option<&api::machine::LocalPrivateStorage>,
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
         let launched = Instant::now();
-        let private_root = private.map(crate::private_io::root).transpose()?;
-        let (root, socket, directory) = self.executor_endpoint_in(private_root.as_deref())?;
-        let config = self.executor_config_in(held, root, socket, start, plan.degree, private)?;
+        let (root, socket, directory) = self.executor_endpoint(held)?;
+        let config = self.executor_config(held, root, socket, start, plan.degree)?;
         // A forked child takes its lane and seal with its environment, so a group forks from
         // the same import-only parent (sealed to the first GPU) as a single GPU does.
         let mut config = Some(config);
         let mut forked = None;
         // A parent found dead is replaced at once: importing a new one costs this executor
         // what a spawn would, and the next ones fork again.
-        for _ in 0..(if private.is_some() { 0 } else { 2 }) {
+        for _ in 0..2 {
             let Some((zygote, start)) = self.zygote(held) else {
                 break;
             };
@@ -3747,13 +3728,13 @@ impl Pool {
         };
         executor.retain_until_exit(directory);
         executor.retain_until_exit(WakeOnExit(Arc::downgrade(engine)));
-        executor.keep_memo(match private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
+        executor.keep_memo(self.memo.clone());
         if plan.degree > 0 {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
             let tenant = Tenant { plan: plan.executor.clone(), start, width: plan.degree as usize, exact };
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
-                private_project: private.map(|scope| scope.project_id.clone()).or_else(|| crate::private_io::project_of(&held.record.python)),
+                private_project: crate::private_io::project_of(&held.record.python),
                 birth: executor.birth.clone(), env: plan.executor.clone(), constructions: Default::default(), start,
                 lookahead: (plan.degree == 1).then(|| executor.lookahead()),
             });
@@ -3772,8 +3753,9 @@ impl Pool {
         });
         let ledger = in_ledger(&executor.hello.tensorfs_version);
         Ok(Session {
-            // A project's own local code ends with the project too (`close_private_namespace`).
-            private_project: private.map(|scope| scope.project_id.clone()).or_else(|| crate::private_io::project_of(&held.record.python)),
+            // An executor of a project's own local code (its generation in the project) ends with the project's files
+            // (`close_private_namespace`).
+            private_project: crate::private_io::project_of(&held.record.python),
             ledger,
             env: plan.executor.clone(),
             start,
@@ -4042,6 +4024,10 @@ impl Pool {
         let spool = engine.staging(id)?;
         let spool_owner = crate::execution::Spool(spool.clone());
         let input_store = engine.store_for(id)?;
+        // What the call writes by default stays in its project (cl-984): its folder there, and its project's store.
+        let scratch = engine.scratch(id)?;
+        session.executor.scratch_call(&scratch);
+        let store = engine.private_storage(id)?.map(|_| input_store.root().to_path_buf());
         let inputs = stage_inputs(
             &input_store,
             &spool,
@@ -4091,6 +4077,8 @@ impl Pool {
                 unbound: plan.unbound.clone(),
                 weights,
                 display_limit: self.display_limit(&lane),
+                scratch: Some(scratch),
+                store,
             })),
             &mut callbacks,
         );

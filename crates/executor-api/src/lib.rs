@@ -250,6 +250,14 @@ pub struct Invoke {
     /// Start's `display_limit` as the display uses it now, read again for each request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub display_limit: Vec<u64>,
+    /// This call's own folder inside its project (the machine's for a call of none), cl-984. While it runs, the
+    /// executor's temporary files, working directory, HOME and stdout/stderr are `tmp/`, `work/`, `home/`, `stdout.log`
+    /// and `stderr.log` there; `work/`, `tmp/` and `home/` go after it. None: the executor's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch: Option<PathBuf>,
+    /// The TensorFS store of this call's own checkpoints (its sources and weights outputs); none: the executor's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<PathBuf>,
 }
 
 /// Warm a loaded construction at `level`; with a `payload`, also prepare its entrypoint's program.
