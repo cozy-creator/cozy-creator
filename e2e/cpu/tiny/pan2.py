@@ -14,8 +14,9 @@ from diffusers import AutoencoderKLWan, FlowMatchEulerDiscreteScheduler, PAN2Tra
 from tokenizers import AddedToken, Regex, Tokenizer, models as token_models, pre_tokenizers
 from transformers import Qwen3_5TextConfig, Qwen3_5TextModel
 
-from cell import Cell, Json, module, save, size
+from cell import Cell, Json, module, save
 from tiny import _shared, qwen3_5
+from tiny._video import video
 
 REF = "ifm/pan2@0.1.0"
 _CAPTION = json.dumps({"video_style": "A fixed tabletop shot.", "lighting": "Daylight.",
@@ -86,8 +87,8 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
 _SMALL: dict[str, Json] = {"prompt": _CAPTION, "duration_s": 1, "seed": 7, "steps": 1,
                            "guidance": 1.0, "prompt_upsampling": False}
 CELLS: list[Cell] = [
-    {"entry": "generate", "name": "text", "payload": dict(_SMALL), "check": size(1248, 704)},
-    {"entry": "generate", "name": "cfg", "payload": {**_SMALL, "guidance": 2.5}},
+    {"entry": "generate", "name": "text", "payload": dict(_SMALL), "check": video(1248, 704, 25)},
+    {"entry": "generate", "name": "cfg", "payload": {**_SMALL, "guidance": 2.5}, "check": video(1248, 704, 25)},
     {"entry": "generate", "name": "first-frame", "payload": {**_SMALL, "aspect_ratio": "16:9", "guidance": 2.5},
-     "files": {"first_frame": _shared.picture("opening", 96, 64)}, "check": size(1248, 704)},
+     "files": {"first_frame": _shared.picture("opening", 96, 64)}, "check": video(1248, 704, 25)},
 ]

@@ -14,8 +14,9 @@ from diffusers import (AutoencoderKLLTX2Audio, AutoencoderKLLTX2Video, FlowMatch
 from diffusers.pipelines.ltx2.vocoder import LTX2VocoderWithBWE
 from transformers import Gemma4UnifiedConfig, Gemma4UnifiedForConditionalGeneration
 
-from cell import Cell, Json, module, save, size
+from cell import Cell, Json, module, save
 from tiny import _shared
+from tiny._video import video
 
 REF = "lightricks/ltx-2.5@0.1.0"
 _SPECIALS = ("<unk>", "<pad>", "<bos>", "<eos>", "<start_of_turn>", "<end_of_turn>", "<image>")
@@ -73,10 +74,10 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         mel_bins=8, resolution=32, in_channels=2, output_channels=2,
     )), out / "audio_vae")
     save(module(LTX2VocoderWithBWE(
-        hidden_channels=32, in_channels=16, out_channels=2, num_mel_channels=8,
+        hidden_channels=128, in_channels=16, out_channels=2, num_mel_channels=8,
         act_fn="leaky_relu", antialias=False, resnet_kernel_sizes=(3,), resnet_dilations=((1, 3, 5),),
         upsample_factors=(5, 2, 2, 2, 2, 2), upsample_kernel_sizes=(11, 4, 4, 4, 4, 4),
-        bwe_hidden_channels=32, bwe_in_channels=16, bwe_out_channels=2,
+        bwe_hidden_channels=64, bwe_in_channels=16, bwe_out_channels=2,
         bwe_act_fn="leaky_relu", bwe_antialias=False, bwe_resnet_kernel_sizes=(3,),
         bwe_resnet_dilations=((1, 3, 5),), bwe_upsample_factors=(6, 5, 2, 2, 2),
         bwe_upsample_kernel_sizes=(12, 11, 4, 4, 4), filter_length=128, window_length=128, hop_length=80,
@@ -97,8 +98,8 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
 _SMALL: dict[str, Json] = {"prompt": "A red ball rolls across a wooden table. Quiet room tone.",
                            "duration_s": 1, "resolution": "720p", "seed": 7}
 CELLS: list[Cell] = [
-    {"entry": "generate", "name": "text-audio", "payload": dict(_SMALL), "check": size(1280, 704)},
-    {"entry": "generate", "name": "silent", "payload": {**_SMALL, "audio": False}},
+    {"entry": "generate", "name": "text-audio", "payload": dict(_SMALL), "check": video(1280, 704, 25, 48000)},
+    {"entry": "generate", "name": "silent", "payload": {**_SMALL, "audio": False}, "check": video(1280, 704, 25)},
     {"entry": "generate", "name": "first-frame", "payload": {**_SMALL, "aspect_ratio": "16:9"},
-     "files": {"first_frame": _shared.picture("opening", 96, 64)}, "check": size(1280, 704)},
+     "files": {"first_frame": _shared.picture("opening", 96, 64)}, "check": video(1280, 704, 25, 48000)},
 ]
