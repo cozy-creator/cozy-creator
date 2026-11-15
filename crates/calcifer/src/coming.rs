@@ -1,13 +1,14 @@
 //! A machine on its way (cl-915, Paul 11-12: "the planner … should take into account what machines are coming online"): a rental
 //! booting or ordered, quoted as its machine will quote once it serves. It should serve when its Hub's word says
 //! (`Hubs::on_its_way`); then it is quoted as a machine that holds nothing (`placement::Picture`, `api::estimate::quote`), the runs
-//! already sent to it ahead of the jobs asked, each timed by this computer's runs on its card, else its Hub's runs of that card, else not
-//! at all (a minute, as a machine assumes).
+//! already sent to it ahead of the jobs asked, each timed by this computer's runs on its card, else our measurement of that card
+//! (cl-1004), else its Hub's runs of that card, else another card's scaled by the Hub's speeds, else not at all (a minute, as a machine
+//! assumes).
 use std::sync::Arc;
 
 use api::{
     calcifer::{Kind, MachineKind, MachineState, On, Status},
-    estimate::{Scaling, UNKNOWN_MS},
+    estimate::Scaling,
     machine::{self as v1, Basis, JobSize},
 };
 
@@ -66,14 +67,22 @@ pub(crate) async fn picture(api: &Arc<Api>, coming: &Coming) -> Picture {
 }
 
 /// What a run of `target` (`org/pkg/fn@release`, `local/pkg/fn`) of `size` takes on one GPU of `way`'s card, and what that stands on:
-/// this computer's runs on that card, else `hub`'s of it (a published function's), else nothing (a minute).
+/// this computer's runs on that card; else none, where we measured it there, as the estimator reads that itself (cl-1004); else
+/// `hub`'s runs of it there (a published function's); else ours or this computer's on another card, scaled by the Hub's speeds; else
+/// nothing (0: the estimator's minute).
 pub(crate) async fn card_time(api: &Arc<Api>, hub: &str, way: &OnItsWay, target: &str, size: &JobSize) -> (f64, Basis) {
     if let Some(ms) = api.calcifer.card_ms(target, &way.card, size) {
         return (ms, Basis::Prior);
     }
-    match hub_ms(api, hub, way, target, size).await {
+    if api::estimate::reference(target, &way.card, size).is_some() {
+        return (0.0, Basis::Reference);
+    }
+    if let Some(ms) = hub_ms(api, hub, way, target, size).await {
+        return (ms, Basis::Prior);
+    }
+    match api.calcifer.card_scaled_ms(target, &way.card, size) {
         Some(ms) => (ms, Basis::Prior),
-        None => (UNKNOWN_MS, Basis::None),
+        None => (0.0, Basis::None),
     }
 }
 

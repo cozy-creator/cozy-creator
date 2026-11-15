@@ -28,6 +28,7 @@ import { AddOns } from "./AddOns"
 import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
+import { SlowNotice } from "./RenderTime"
 import { RunFace, RunMeter, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
 
@@ -682,6 +683,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const looking = here && asset?.kind !== "image" && !view.hereWords && paints(view, tools)
   // An Edit in Focus is a video editor: its cut playing in the frame, its timeline under it, its versions beside it (cl-957).
   const cut = focused && Boolean(asset?.timeline)
+  // Under it: its fields and Render, or what it says (Status).
+  const under = here && Boolean(asset) && !cut && (asset?.kind !== "image" || editing) && !(asset?.kind === "video" && !asset.timeline && !editing)
   // Any other video in Focus plays on the same transport and track, its segments on it (cl-965).
   const plays = focused && asset?.kind === "video" && !asset.timeline && !editing
   // Its fields show under it, Render first (cl-938).
@@ -806,16 +809,27 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         </div>
       )}
       {here && asset && asset.kind !== "text" && (!asset.timeline || cut) && <Takes view={view} name={name} width={width} side focused={focused} />}
-      {here && asset && !cut && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
+      {/* Slow here, opened from Render's row where nothing else is under the box (cl-1004). */}
+      {here && asset && !under && view.slowOpen && (
+        <div className="here-under canvas-control">
+          <div className="here-all">
+            <SlowNotice name={name} view={view} />
+          </div>
+        </div>
+      )}
+      {under && asset && (
         <div className="here-under canvas-control">
           <div className="here-all">
             {(asset.kind !== "text" || asset.tool) && <>
+              {/* Slow here, opened from Render's row: in Focus first under the frame, else right under Render (cl-1004). */}
+              {focused && <SlowNotice name={name} view={view} />}
               {editing && asset.kind === "video" && !asset.timeline && <ContinueFrom name={name} view={view} />}
               {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
               {/* With no tool, a picture or a video asks nothing and has nothing to render (Paul, 11-12). */}
               {!looking && (asset.kind !== "image" || editing) && Boolean(asset.tool) && <AssetEdit name={name} view={view} editing={editing} focused={focused} actions={editing && !focused && <RenderButton name={name} view={view} />} />}
+              {!focused && <SlowNotice name={name} view={view} />}
               {asset.kind !== "image" && !view.hereWords && <TakeName view={view} />}
               {view.warned && warned ? (
                 <div className="warned-lines">

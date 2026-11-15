@@ -19,6 +19,8 @@ const STROKES = {
   redo: "M12.5 4.5L16 8l-3.5 3.5M16 8H8.5a4.5 4.5 0 000 9H12",
   history: "M10 3.5a6.5 6.5 0 110 13 6.5 6.5 0 010-13zM10 6.5V10l2.5 1.6",
   orbit: "M16.2 8.6A6.5 6.5 0 104 12.6M16.5 3.8v4.8h-4.8",
+  /** Something to know before going on: a render that would be slow where it goes (cl-1004). */
+  warning: "M10 3.2l7.3 13H2.7zM10 8.2v3.8M10 14.4v.1",
   /** Scissors: a clip cut in two at the playhead. */
   split: "M7.5 6a2 2 0 11-4 0 2 2 0 014 0zM7.5 14a2 2 0 11-4 0 2 2 0 014 0zM7.2 7.1L16 13.5M7.2 12.9L16 6.5",
 } as const

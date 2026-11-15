@@ -169,6 +169,7 @@ function useMachines(store: CanvasStore, pinned: string[]) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
   useEffect(() => {
     store.machines = () => names
+    store.machineSet.set(key)
     if (names.length) store.machineUp()
   }, [store, key])
   return isPending ? null : names

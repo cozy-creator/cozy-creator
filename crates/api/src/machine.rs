@@ -1044,19 +1044,42 @@ pub struct JobSize {
     pub steps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u64>,
+    /// Its media's seconds: every `duration` in its input, summed (a shot's beats).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<f64>,
+    /// The pictures and videos it reads, where its caller counted them (a box's mentions and slots): no unit of its time, but which
+    /// measured request it is most like (`estimate::reference`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refs: Option<u32>,
 }
 
 impl JobSize {
     /// A run's size as its input says: `megapixels`, else `width` by `height`; `frames`, `steps`,
-    /// `tokens`. The one reading, for callers and the machine's history alike.
+    /// `tokens`, and every `duration` summed. The one reading, for callers and the machine's history alike.
     pub fn of(input: &serde_json::Value) -> Self {
+        fn durations(value: &serde_json::Value) -> f64 {
+            match value {
+                serde_json::Value::Object(map) => map
+                    .iter()
+                    .map(|(key, value)| match (key.as_str(), value.as_f64()) {
+                        ("duration", Some(seconds)) => seconds.max(0.0),
+                        _ => durations(value),
+                    })
+                    .sum(),
+                serde_json::Value::Array(items) => items.iter().map(durations).sum(),
+                _ => 0.0,
+            }
+        }
         let number = |key: &str| input.get(key).and_then(serde_json::Value::as_f64).filter(|n| *n > 0.0);
         let count = |key: &str| input.get(key).and_then(serde_json::Value::as_u64).filter(|n| *n > 0);
+        let seconds = durations(input);
         JobSize {
             megapixels: number("megapixels").or_else(|| Some(number("width")? * number("height")? / 1e6)),
             frames: count("frames"),
             steps: count("steps"),
             tokens: count("tokens"),
+            seconds: (seconds > 0.0).then_some(seconds),
+            refs: None,
         }
     }
 
@@ -1067,8 +1090,9 @@ impl JobSize {
             self.frames.zip(other.frames).map(|(a, b)| (a as f64, b as f64)),
             self.steps.zip(other.steps).map(|(a, b)| (a as f64, b as f64)),
             self.tokens.zip(other.tokens).map(|(a, b)| (a as f64, b as f64)),
+            self.seconds.zip(other.seconds),
         ];
-        each.into_iter().flatten().map(|(a, b)| a / b).product()
+        each.into_iter().flatten().filter(|(_, b)| *b > 0.0).map(|(a, b)| a / b).product()
     }
 }
 
@@ -1109,6 +1133,8 @@ pub enum Basis {
     Measured,
     /// The caller's `prior_ms`.
     Prior,
+    /// Our measurement of it on this card (`estimate::reference`), scaled to its size.
+    Reference,
     /// Nothing: a minute is assumed.
     #[default]
     None,
