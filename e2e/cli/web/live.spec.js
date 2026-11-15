@@ -1,8 +1,8 @@
 // live (cl-973 core cell 16): the canvas, open and never reloaded, shows each change the CLI (`cozy apply`) and an API client make within
-// 1.2 s of its command returning, and keeps words being typed meanwhile; Runs shows the CLI's run live to its end with its log, and Cancel
-// asks inline before it acts; Machines lists what `cozy machine ls` does; tabs share one `GET /v1/events`, which the second takes on when
-// the first closes. The CLI has no verb that renames or moves a box (a node file holds kind, description, text, approved, takes and rev):
-// those two are the API's.
+// 1.2 s of its command returning, and keeps words being typed meanwhile, a save of them sent as the API renames the box going again under
+// its new name with nothing said to fail; Runs shows the CLI's run live to its end with its log, and Cancel asks inline before it acts;
+// Machines lists what `cozy machine ls` does; tabs share one `GET /v1/events`, which the second takes on when the first closes. The CLI has
+// no verb that renames or moves a box (a node file holds kind, description, text, approved, takes and rev): those two are the API's.
 const { mkdirSync, writeFileSync } = require('fs');
 const { test, expect, box, canvasIdle, focus, fixtureTool, png } = require('./fixtures');
 
@@ -36,6 +36,21 @@ function watchCanvas() {
     look();
   });
   window.notReloaded = true;
+}
+
+/** In the page: every note line shown from here on (`window.notesSaid`), however soon it goes. */
+function recordNotes() {
+  const said = (window.notesSaid = []);
+  const seen = new WeakSet();
+  const look = () => {
+    for (const line of document.querySelectorAll('.notes .note .line')) {
+      if (seen.has(line) || !line.textContent) continue;
+      seen.add(line);
+      said.push(line.textContent);
+    }
+  };
+  look();
+  new MutationObserver(look).observe(document.body, { subtree: true, childList: true, characterData: true });
 }
 
 /** `act`, then how long from its return until `spec` holds on the canvas: within LIVE_MS. */
@@ -157,6 +172,41 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
       .toMatchObject({ text: 'Second CLI words TYPED-MEANWHILE', description: 'Said by the CLI meanwhile' });
     expect.soft(notFound.filter((method) => method === 'GET').length, 'the reads held past its rename found nothing by its old name').toBeGreaterThanOrEqual(reads.calls.length);
     expect.soft(notFound.filter((method) => method !== 'GET'), 'no write went under its old name').toEqual([]);
+    expect.soft(await page.evaluate(() => window.notReloaded), 'the canvas was never reloaded').toBe(true);
+  });
+
+  await test.step('a typed save on its way as the API renames its box: it goes again under the new name, and nothing is refused', async () => {
+    // More typed in cli_typed, its save held, as a slow network holds it, until the API's rename has returned: it reaches Calcifer under the
+    // old name, which 404s (this cell's doing, as is the page's read of that name after it). The page hears the rename and sends the same
+    // words under the new name, in their turn, with nothing more typed and nothing said to have failed.
+    guards.allow(/status of 404\b.*\/v1\/projects\/[^/ ]+\/assets\/cli_typed$/);
+    await page.evaluate(recordNotes);
+    const saved = [];
+    const named = (path) => [project.at('/assets/cli_typed'), project.at('/assets/cli_raced')].includes(path);
+    page.on('response', (answer) => {
+      const path = new URL(answer.url()).pathname;
+      if (answer.request().method() === 'PATCH' && named(path)) saved.push(`${answer.status()} ${path.slice(project.at('/assets/').length)}`);
+    });
+    const region = await focus(page, 'cli_typed');
+    const words = region.getByRole('textbox', { name: 'Text', exact: true });
+    await words.click();
+    await page.keyboard.press('ControlOrMeta+End');
+    const saves = await hold(page, 'PATCH', project.at('/assets/cli_typed'));
+    await page.keyboard.type(' IN-THE-WINDOW');
+    await expect.poll(() => saves.calls.length, { message: 'its words sent at the pause, and held' }).toBe(1);
+    await api.post(project.at('/rename'), { from: 'cli_typed', to: 'cli_raced' });
+    await saves.release();
+    const typed = 'Second CLI words TYPED-MEANWHILE IN-THE-WINDOW';
+    // Still in the words, nothing more typed: the save goes on by itself.
+    await softly.poll(async () => (await project.asset('cli_raced'))?.fields, { message: 'the typed words saved under the new name' })
+      .toMatchObject({ text: typed, description: 'Said by the CLI meanwhile' });
+    await softly.poll(() => saved, { message: 'its save refused under the old name, then made under the new' }).toEqual(['404 cli_typed', '200 cli_raced']);
+    await expect.soft(region, 'Focus follows the rename').toHaveAttribute('data-focused-asset', 'cli_raced');
+    await expect.soft(words, 'what was typed, kept').toHaveText(typed);
+    expect.soft((await page.evaluate(() => window.notesSaid)).filter((line) => line.startsWith("Couldn't")), 'nothing said it failed').toEqual([]);
+    expect.soft(await project.asset('cli_typed'), 'nothing left under the old name').toBeUndefined();
+    await page.keyboard.press('Escape');
+    await canvasIdle(page);
     expect.soft(await page.evaluate(() => window.notReloaded), 'the canvas was never reloaded').toBe(true);
   });
 

@@ -1,8 +1,8 @@
 // instant (cl-973 core cell 17), local-first (Paul, 11-05): a tool box is drawn in the frame it's dropped with its POST held, and what's
 // typed in it and its move show at once and land after it, in order; an answer lost after it landed is sent again under the same
 // Idempotency-Key and makes one asset and one history entry; a rename refused because another writer took the name meanwhile rolls back
-// with one line saying why; and a delete with project.db held by another program shows, says in the top bar that it waits, and saves once
-// it's let go.
+// with one line saying why; a delete with project.db held by another program shows, says in the top bar that it waits, and saves once
+// it's let go; and an Undo of a rename refused because another writer took the old name meanwhile leaves one box under each name.
 const { spawn } = require('child_process');
 const { join } = require('path');
 const { createInterface } = require('readline');
@@ -262,5 +262,37 @@ test('instant', async ({ page, project, api, guards }) => {
     await expect.soft(box(page, second)).toHaveCount(0);
     expect.soft((await project.assets()).map((asset) => asset.name).sort(), 'what else is there stays').toEqual([first, 'taken'].sort());
     expect.soft((await lines()).filter((line) => /Couldn't delete/.test(line)), 'nothing refused').toEqual([]);
+  });
+
+  await test.step("a rename undone while another writer takes the name it puts back: refused, one box under each name", async () => {
+    // The page's rename lands; its Undo shows at once and is held while another writer takes the old name, so Calcifer refuses it (that 409
+    // is this cell's doing). The box goes back to the name Calcifer has for it, and the other writer's box shows under the name it took.
+    guards.allow(/status of 409\b.*\/v1\/projects\/[^/ ]+\/history\/undo\b/);
+    const name = await middle(box(page, first).locator('.nm'));
+    await page.mouse.click(name.x, name.y);
+    const field = page.getByRole('textbox', { name: 'Name', exact: true });
+    await field.fill('renamed');
+    await field.press('Enter');
+    await expect.poll(async () => (await project.assets()).map((asset) => asset.name).sort(), { message: 'the rename landed' }).toEqual(['renamed', 'taken']);
+    const undos = await hold(page, 'POST', project.at('/history/undo'));
+    const open = await centre(page, 320);
+    await page.mouse.click(open.x, open.y);
+    await page.keyboard.press('ControlOrMeta+z');
+    await expect.soft(box(page, first), 'its Undo shows at once').toHaveCount(1);
+    await expect.soft(box(page, 'renamed')).toHaveCount(0);
+    await expect.poll(() => undos.calls.length, { message: 'its Undo asked, and held' }).toBe(1);
+    await project.add({ name: first, kind: 'text', fields: { text: "Another writer's, again" } });
+    const answered = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === project.at('/history/undo'));
+    await undos.release();
+    expect.soft((await answered).status(), 'the Undo refused').toBe(409);
+    await expect.soft(box(page, 'renamed'), 'back under the name Calcifer has for it').toContainText('Typed while it was held');
+    await expect.soft(box(page, first), "the other writer's box, under the name it took").toContainText("Another writer's, again");
+    await expect.soft(box(page, 'renamed'), 'one box each').toHaveCount(1);
+    await expect.soft(box(page, first)).toHaveCount(1);
+    const taken = first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await softly.poll(async () => (await lines()).filter((line) => line.startsWith("Couldn't undo")), { message: 'one line says why' })
+      .toEqual([expect.stringMatching(new RegExp(`^Couldn't undo .*\\b${taken} is taken\\b`))]);
+    expect.soft((await project.asset('renamed'))?.fields?.text, 'its words where they were').toBe('Typed while it was held');
+    expect.soft((await project.asset(first))?.fields?.text).toBe("Another writer's, again");
   });
 });

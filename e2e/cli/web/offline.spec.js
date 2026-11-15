@@ -1,7 +1,8 @@
 // offline (cl-973 core cell 23, solo): Calcifer away, the page stays the person's (Paul, 11-06: "the UI should always remain responsive, even
 // if calcifer is offline, and then we sync the changes in when calcifer comes back online"). Stopped, every edit shows at once, through a tab
 // away and back, counted in the top bar, with nothing over the canvas and nothing in project.db; started, all of it lands in order with no
-// reload, and history keeps Redo. Killed with -9 while words are typed, the page says so and comes back with its session and every character.
+// reload (a picture dropped on a box as its next version too, whatever its bytes waited for), and history keeps Redo. Killed with -9 while
+// words are typed, the page says so and comes back with its session and every character.
 // With no Hub, the page loads, the palette says it lists only what's installed, a local tool renders, and Rent says why it lists nothing.
 const { execFileSync } = require('child_process');
 const { createHash, randomBytes } = require('crypto');
@@ -11,6 +12,7 @@ const { test, expect, box, canvasIdle, fixtureTool, focus, middle, openPoint, pn
 const PLACES = { shot: { x: 0, y: 0 }, named: { x: 0, y: 420 }, spare: { x: 360, y: 420 }, words: { x: 720, y: 420 }, still: { x: 1080, y: 420 } };
 const STILL = `${fixtureTool('tool.py')}/still`;
 const LATE = png(77);
+const JOINED = png(55);
 const FIRST = 'A lighthouse at dusk.';
 const SECOND = 'A lighthouse at dawn.';
 const BEFORE = 'Typed through a restart:';
@@ -144,7 +146,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
   });
 
   let moved;
-  await test.step('typed twice, moved twice, renamed, approved, a picture dropped, one deleted and undone, a tab away and back', async () => {
+  await test.step('typed twice, moved twice, renamed, approved, a picture dropped, one dropped on a box, one deleted and undone, a tab away and back', async () => {
     for (const words of [FIRST, SECOND]) {
       const { region, text } = await typeOver(page, 'words', words);
       await expect.soft(text, 'what is typed shows at once').toHaveText(words, AT_ONCE);
@@ -182,6 +184,9 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await page.keyboard.press('Enter');
     await expect.soft(box(page, 'late'), 'the drop shows at once').toBeVisible(AT_ONCE);
 
+    // On a picture box it's that box's next version, no box of its own: its step and its turn are taken as it's dropped.
+    await drop(page, 'joined.png', JOINED, await middle(box(page, 'renamed').locator('.media').first()));
+
     // Deleted last, so Undo takes back the delete.
     const head = await middle(box(page, 'spare').locator('.nm'));
     await page.mouse.move(head.x, head.y);
@@ -201,9 +206,9 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     expect.soft(await placeOf(page, 'shot'), 'and the move').toEqual(moved);
     await expect.soft(box(page, 'words'), 'and the words').toContainText(SECOND);
     await expect.soft(box(page, 'shot').locator('.node-version-label'), 'and the approval').toHaveText(`v${approve}`);
-    // The person's changes: two saves, the moves as one, the rename, the approval, the file, the delete and its undo. What the page keeps
-    // of its own view (what's selected, where the canvas is) is no change of theirs.
-    await expect.soft(status(page), 'every edit counted in the top bar, and only those').toHaveText(/^Calcifer offline: 8 changes waiting/);
+    // The person's changes: two saves, the moves as one, the rename, the approval, the file, the file on a box, the delete and its undo.
+    // What the page keeps of its own view (what's selected, where the canvas is) is no change of theirs.
+    await expect.soft(status(page), 'every edit counted in the top bar, and only those').toHaveText(/^Calcifer offline: 9 changes waiting/);
     await expect.soft(page.getByRole('dialog'), 'nothing over the canvas').toHaveCount(0);
     await expect.soft(page.getByRole('alertdialog')).toHaveCount(0);
     await expect.soft(page.locator('main.gate')).toHaveCount(0);
@@ -231,14 +236,20 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
       words: SECOND, shot: { approved: approve, pinned: true, at: moved }, renamed: true, named: false, spare: true,
       late: `sha256:${createHash('sha256').update(LATE).digest('hex')}`,
     });
+    const joined = createHash('sha256').update(JOINED).digest('hex');
+    await expect.configure({ soft: true }).poll(async () => (await project.asset('renamed'))?.prefixes?.some((version) => version.main?.sha256?.endsWith(joined)) ?? false, { message: 'the picture dropped on renamed landed, its next version' }).toBe(true);
     const stored = held(project.path);
     expect.soft(stored.boxes.words?.text, 'project.db holds the last words').toBe(SECOND);
     expect.soft(JSON.stringify(stored.boxes), 'and never the first').not.toContain(FIRST);
-    // Newest first, as it was done: the file dropped before the delete, which was undone.
+    // Newest first, as it was done: the file dropped, then the one dropped on a box, before the delete, which was undone.
     const { entries } = await api.get(project.at('/history?limit=50'));
     const deleted = entries.findIndex((entry) => entry.words === 'Deleted spare');
+    const late = entries.findIndex((entry) => entry.words === 'Added late');
+    const version = entries.findIndex((entry) => /^Added \w+ \d+ to renamed$/.test(entry.words));
     expect.soft(entries[deleted]?.undone, 'history: the delete, undone').toBeTruthy();
-    expect.soft(entries.findIndex((entry) => entry.words === 'Added late'), 'history: the drop before the delete').toBeGreaterThan(deleted);
+    expect.soft(late, 'history: the drop before the delete').toBeGreaterThan(deleted);
+    expect.soft(version, `history: the drop on a box after the drop, before the delete: ${entries.map((entry) => entry.words).join(' | ')}`).toBeGreaterThan(deleted);
+    expect.soft(version).toBeLessThan(late);
     expect.soft(await page.evaluate(() => window.unreloaded), 'no reload').toBe(true);
     await expect.soft(page.locator('.notes .note .line').filter({ hasText: /^Couldn't/ }), 'nothing refused').toHaveCount(0);
     // History keeps Redo: nothing was done after the undo. Done again, by its key, it deletes the box again.
