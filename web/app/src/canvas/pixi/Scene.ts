@@ -89,6 +89,8 @@ interface Drawn {
   stateDot?: Box
   meterBox?: Box
   alive: boolean
+  /** Its native card stands over it: kept, unseen, with its pictures, so leaving it shows the same pixels at once. */
+  hidden?: boolean
 }
 
 const inside = (point: { x: number; y: number }, box: Box) => point.x >= box.x && point.y >= box.y && point.x <= box.x + box.w && point.y <= box.y + box.h
@@ -176,7 +178,7 @@ export class PixiScene {
     for (const node of input.nodes) {
       let drawn = this.records.get(node.id)
       // A target outside the viewport must not remove a card while its visible pixels are still sliding there.
-      if (input.hiddenNames?.has(node.name) || (!inView(node.box) && !((node.gliding || drawn?.glide) && drawn && inView(this.glidedBox(drawn, now))))) continue
+      if (!inView(node.box) && !((node.gliding || drawn?.glide) && drawn && inView(this.glidedBox(drawn, now)))) continue
       live.add(node.id)
       if (!drawn) {
         const container = new Container({ eventMode: "none" })
@@ -186,6 +188,10 @@ export class PixiScene {
         drawn = { node, container, ground, pixels, ink, labels, pictures: new Map(), texts: new Map(), fullTexts: new Map(), chips: [], hits: [], presentation: present(this.options.store, node), signature: "", tools, context: node.runContext, fontEpoch: this.fontEpoch, alive: true }
         this.records.set(node.id, drawn)
       }
+      // Under its native card it is only hidden, never dropped: re-made on leaving, its picture was decoded again and flashed.
+      const hidden = Boolean(input.hiddenNames?.has(node.name))
+      if (Boolean(drawn.hidden) !== hidden) { drawn.hidden = hidden; drawn.container.visible = !hidden }
+      if (hidden) continue
       const previous = drawn.node
       const moved = previous.box.x !== node.box.x || previous.box.y !== node.box.y || previous.box.w !== node.box.w || previous.box.h !== node.box.h
       if (node.dragging || this.reducedMotion.matches || !this.visible || (moved && !node.gliding)) drawn.glide = undefined
@@ -755,6 +761,7 @@ export class PixiScene {
     let animated = false
     const zoom = Math.max(0.0001, this.input.camera.zoom)
     for (const drawn of this.records.values()) {
+      if (drawn.hidden) continue
       if (drawn.glide) {
         if (this.reducedMotion.matches || now - drawn.glide.began >= GLIDE_MS) drawn.glide = undefined
         else animated = true
@@ -874,7 +881,7 @@ export class PixiScene {
 
   private scheduleClock() {
     if (this.clock || !this.visible || this.stopped) return
-    const ticking = (drawn: Drawn) => Boolean(drawn.presentation.progress?.time) && this.onScreen(drawn)
+    const ticking = (drawn: Drawn) => !drawn.hidden && Boolean(drawn.presentation.progress?.time) && this.onScreen(drawn)
     let needed = false
     for (const drawn of this.records.values()) if (ticking(drawn)) { needed = true; break }
     if (!needed) return
@@ -903,7 +910,7 @@ export class PixiScene {
     for (const drawn of this.records.values()) {
       const view = drawn.node.view
       const unseen = view.asset?.unseen
-      if (!unseen?.length || drawn.container.alpha <= 0 || this.options.store.get(drawn.node.name) !== view) continue
+      if (drawn.hidden || !unseen?.length || drawn.container.alpha <= 0 || this.options.store.get(drawn.node.name) !== view) continue
       const shown = shownOf(view)
       if (!shown || shown.number === undefined || !unseen.includes(shown.number)) continue
       const world = (box: Box): Box => ({ x: drawn.container.x + box.x * drawn.container.scale.x, y: drawn.container.y + box.y * drawn.container.scale.y, w: box.w * drawn.container.scale.x, h: box.h * drawn.container.scale.y })
@@ -922,7 +929,7 @@ export class PixiScene {
     const records = [...this.records.values()]
     for (const selected of [true, false]) for (let i = records.length - 1; i >= 0; i--) {
       const drawn = records[i]
-      if (drawn.node.selected !== selected || excluded?.has(drawn.node.id)) continue
+      if (drawn.hidden || drawn.node.selected !== selected || excluded?.has(drawn.node.id)) continue
       const local = { x: (point.x - drawn.container.x) / drawn.container.scale.x, y: (point.y - drawn.container.y) / drawn.container.scale.y }
       for (let n = drawn.hits.length - 1; n >= 0; n--) if (inside(local, drawn.hits[n].box)) return { name: drawn.node.name, part: drawn.hits[n].part }
     }
@@ -942,21 +949,23 @@ export class PixiScene {
   }
 
   resourceStats() {
-    let labels = 0, labelBytes = 0, loadedCards = 0, latentBytes = 0, activeLatents = 0
+    let labels = 0, labelBytes = 0, loadedCards = 0, latentBytes = 0, activeLatents = 0, visibleCards = 0
     for (const drawn of this.records.values()) {
+      if (drawn.hidden) continue
+      visibleCards++
       labels += drawn.texts.size
       for (const label of drawn.texts.values()) labelBytes += Math.ceil(label.width) * Math.ceil(label.height) * (label.resolution ?? 1) ** 2 * 4
       if (drawn.pictures.get("main")?.current?.texture) loadedCards++
       if (drawn.latent) activeLatents++
       if (drawn.latent?.bitmap) latentBytes += drawn.latent.bitmap.width * drawn.latent.bitmap.height * 4
     }
-    return { ...this.cache.resourceStats(), totalCards: this.input?.nodes.length ?? 0, visibleCards: this.records.size, loadedCards, labels, estimatedLabelBytes: labelBytes, latentBytes, activeLatents, activeDecoders: 0, sceneUpdates: this.sceneUpdates, cardPaints: this.cardPaints }
+    return { ...this.cache.resourceStats(), totalCards: this.input?.nodes.length ?? 0, visibleCards, loadedCards, labels, estimatedLabelBytes: labelBytes, latentBytes, activeLatents, activeDecoders: 0, sceneUpdates: this.sceneUpdates, cardPaints: this.cardPaints }
   }
 
   /** Read-only geometry of actual retained display objects. This is diagnostics, never proof that the GPU presented their pixels. */
   inspect(name: string) {
     const drawn = [...this.records.values()].find((record) => record.node.name === name)
-    if (!drawn || !this.visible) return null
+    if (!drawn || !this.visible || drawn.hidden) return null
     const body = pictureBox(drawn.node)
     const main = drawn.pictures.get("main")
     const texture = main?.current?.texture
@@ -989,7 +998,7 @@ export class PixiScene {
       words: drawn.presentation.words,
       chips: drawn.chips.map(chip => ({ text: chip.text, missing: chip.missing, ...world(chip.box)! })),
       media: {
-        ready: Boolean(texture), failed: Boolean(main?.failed), local, width: texture?.width ?? 0, height: texture?.height ?? 0,
+        ready: Boolean(texture), failed: Boolean(main?.failed), local, width: texture?.width ?? 0, height: texture?.height ?? 0, texture: texture?.uid ?? null,
         requestedWidth: this.resolution(body.w), resolution: local ? "local" : path.includes("/thumbs/") ? String(width) : "original",
         ...(sha ? { sha: sha.replace(/^sha256:/, "") } : {}),
       },
