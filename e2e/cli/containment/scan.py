@@ -37,6 +37,11 @@ def places(home: Path, temp: Path, **extra: Path) -> dict[str, Path]:
 class Scanner:
     def __init__(self) -> None:
         self.markers: list[bytes] = []
+        # A locked project's identity (its id, its name) found anywhere but in its own folder (`homes`) is a trace (cl-984).
+        self.identities: list[bytes] = []
+        self.homes: list[Path] = []
+        # Its folder's path is all that may stay outside it, so its name inside that path is no trace: the path is cut out first.
+        self.allowed: list[bytes] = []
         self.images: set[bytes] = set()
         self.counts: Counter[str] = Counter()
         self.matches: set[str] = set()
@@ -45,9 +50,16 @@ class Scanner:
         raw = value.encode() if isinstance(value, str) else value
         self.markers.append(raw)
 
-    def patterns(self) -> list[bytes]:
+    def identity(self, folder: Path, *values: str) -> None:
+        """`values` name the project in `folder`: a trace anywhere outside that folder but in its path."""
+        self.identities.extend(value.encode() for value in values)
+        self.homes.append(folder)
+        for path in {str(folder), str(folder.resolve())}:
+            self.allowed.extend(sorted({path.encode(), quote(path, safe="").encode(), quote(path).encode(), json.dumps(path)[1:-1].encode()}, key=len, reverse=True))
+
+    def patterns(self, markers: list[bytes] | None = None) -> list[bytes]:
         patterns: set[bytes] = set()
-        for raw in self.markers:
+        for raw in self.markers if markers is None else markers:
             patterns.update((raw, raw.hex().encode(), base64.b64encode(raw), base64.urlsafe_b64encode(raw)))
             try:
                 value = raw.decode()
@@ -57,6 +69,8 @@ class Scanner:
         return sorted(patterns, key=len, reverse=True)
 
     def found(self, content: bytes, label: str, patterns: list[bytes]) -> None:
+        for allowed in self.allowed:
+            content = content.replace(allowed, b"")
         if any(pattern in content for pattern in patterns):
             self.matches.add(label)
 
@@ -160,6 +174,8 @@ class Scanner:
         """`scan` as root, which reads OS-private folders (systemd PrivateTmp, sudo apt state) an
         unprivileged walk cannot. Markers travel on stdin; None if the scan process failed."""
         request = {"markers": [marker.hex() for marker in self.markers], "images": [image.hex() for image in self.images],
+                   "identities": [value.hex() for value in self.identities], "homes": [str(home) for home in self.homes],
+                   "allowed": [value.hex() for value in self.allowed],
                    "roots": [str(root) for root in roots], "excluded": [str(root) for root in excluded_roots],
                    "receipt": str(receipt), "classes": {name: str(root) for name, root in classes.items()}}
         done = subprocess.run(["sudo", "-n", sys.executable, "-E", "-s", str(Path(__file__).resolve())],
@@ -168,8 +184,10 @@ class Scanner:
 
     def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path] | None = None) -> dict[str, object]:
         self.counts.clear(); self.matches.clear()
-        patterns = self.patterns()
-        require(patterns, "scan_markers_missing")
+        inside = self.patterns()
+        require(inside, "scan_markers_missing")
+        outside = self.patterns(self.markers + self.identities)
+        homes = [home.absolute() for home in self.homes] + [home.resolve() for home in self.homes]
         excluded = [path.resolve() for path in excluded_roots]
         # Caller-fixed product locations only: counts per closed class name, never a path.
         places = sorted((classes or {}).items(), key=lambda item: len(item[1].parts), reverse=True)
@@ -177,7 +195,7 @@ class Scanner:
             return next((name for name, root in places if path.absolute().is_relative_to(root)), "other")
         labels: dict[str, str] = {}
         seen: set[tuple[int, int]] = set()
-        overlap = max(map(len, patterns)) - 1
+        overlap = max(map(len, outside + self.allowed)) * 2
         for root in roots:
             if not root.exists():
                 continue
@@ -192,6 +210,7 @@ class Scanner:
                     path = parent / name
                     if path == receipt or any(path.absolute().is_relative_to(skip) for skip in excluded):
                         continue
+                    patterns = inside if any(path.absolute().is_relative_to(home) for home in homes) else outside
                     label = sha(os.fsencode(path))
                     labels.setdefault(label, place(path) if places else "other")
                     self.found(os.fsencode(path), label, patterns)
@@ -246,6 +265,9 @@ if __name__ == "__main__":
     scanner = Scanner()
     for marker in request["markers"]:
         scanner.add(bytes.fromhex(marker))
+    scanner.identities = [bytes.fromhex(value) for value in request["identities"]]
+    scanner.homes = [Path(home) for home in request["homes"]]
+    scanner.allowed = [bytes.fromhex(value) for value in request["allowed"]]
     scanner.images.update(bytes.fromhex(image) for image in request["images"])
     result = scanner.scan([Path(root) for root in request["roots"]], [Path(root) for root in request["excluded"]],
                           Path(request["receipt"]), {name: Path(root) for name, root in request["classes"].items()})

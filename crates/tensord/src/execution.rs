@@ -317,9 +317,7 @@ impl Engine {
     pub(crate) fn close_private_storage(&self, project_id: &str) -> io::Result<()> {
         self.assert_private_idle(project_id)?;
         self.private_roots.lock().unwrap().remove(project_id);
-        // A closing project leaves no older page image of its rows in the machine journal's WAL (cl-984).
-        self.journal.lock().unwrap().truncate_wal();
-        Ok(())
+        self.journal.lock().unwrap().retire_project(project_id)
     }
     /// Keeps `objects` from the store's eviction while this machine runs, until the next sweep
     /// judges them again (`Objects::sweep`). Called once the journal names them.

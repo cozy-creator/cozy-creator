@@ -576,7 +576,9 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     }
     if !done.is_dir() {
         let project = Project::read(sent.clone())?;
-        let say = |line: &str| tracing::info!("{}: {line}", project.name);
+        // A project's own code is the project's: nothing of it in Calcifer's log (cl-984).
+        let private = crate::private_io::current().is_some();
+        let say = |line: &str| if !private { tracing::info!("{}: {line}", project.name) };
         let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let part = done.with_extension(format!("part-{}-{nanos}", std::process::id()));

@@ -9,7 +9,13 @@ specific)". A project keeps its own data: its page state, run history, input and
 where the project is; locking hides it, deleting removes it. Installed packages (one environment per package release, local
 code's by its lock), PyTorch, uv's cache and Pythons, models, LoRAs and Hub weights are the machine's, shared by every project.
 One TensorD engine serves every project: its executors take any project's runs, each run's inputs and outputs in its
-project's spool and store. TensorD's journal keeps a project run's row with its payloads in the project.
+project's spool and store. TensorD's journal keeps a project run's row with its payloads in the project, and its object
+bookkeeping (uploads, uses, run objects, held memos) in `.vault-machine/objects.sqlite3`.
+
+Paul, 2026-11-15: once an encrypted project is locked "there is no traces of it on the computer elsewhere, in any way. There are
+no temp files leftover, no records of the prompts or the runs, etc." At lock, TensorD retires every machine journal row of the
+project's runs and every row its scope keyed, and Calcifer's index keeps only an opaque handle and the folder, so a list can offer
+Unlock; unlocking registers it again from its own project.db. The containment shard's lock scans prove it (`e2e/cli/containment`).
 
 
 All project data that Cozy stores automatically belongs in the project's directory. For an encrypted project, durable contents belong inside its encrypted filesystem. This includes run identities and history, inputs, outputs, logs and errors, retry records, derived caches, source, execution scratch, browser project preferences and private execution bookkeeping. An encrypted outside journal or a hash-only outside execution index is still a violation.

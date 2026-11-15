@@ -624,8 +624,13 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
         if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) {
             let state = reported_status(api, root);
             crate::events::project_vault(&keybag.info().project_id, &state.state);
-            if state.state != "locked" && !CONVERTING.lock().expect("vault conversions").contains(root) {
+            let converting = CONVERTING.lock().expect("vault conversions").contains(root);
+            if state.state != "locked" && !converting {
                 return Err(error("project_migration_pending", "the project is closed, but legacy data outside it still needs a verified storage update"));
+            }
+            // Locked, nothing of it stays here but its folder (cl-984).
+            if !converting {
+                api.calcifer.store().project_locked(&keybag.info().project_id, root).map_err(|e| error("vault_index", e.to_string()))?;
             }
         }
     }

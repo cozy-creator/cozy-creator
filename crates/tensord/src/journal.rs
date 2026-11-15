@@ -859,6 +859,28 @@ impl Journal {
         Ok(())
     }
 
+    /// A locking project leaves nothing here (cl-984): every row of its runs and every row its scope keyed goes, their
+    /// pages overwritten and the WAL emptied. Its history is its own (Calcifer's project journal); its runs are idle.
+    pub(crate) fn retire_project(&mut self, project_id: &str) -> io::Result<()> {
+        let prefix = format!("local-private:{}:{}:", project_id.len(), project_id);
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let ids: Vec<i64> = {
+            let mut statement = tx.prepare("SELECT id FROM executions WHERE json_extract(invocation,'$.local_private.project_id')=?1").map_err(db_error)?;
+            let rows = statement.query_map([project_id], |row| row.get(0)).map_err(db_error)?;
+            rows.collect::<Result<_, _>>().map_err(db_error)?
+        };
+        for id in ids {
+            delete_execution(&tx, id)?;
+        }
+        for (table, column) in [("installations", "actor"), ("preparations", "actor"), ("warm_sets", "actor"), ("resolutions", "actor"), ("native_outputs", "actor"),
+            ("held_names", "name"), ("objects", "actor"), ("held_memos", "actor"), ("held_memo_objects", "actor"), ("update_run_ids", "actor")] {
+            tx.execute(&format!("DELETE FROM {table} WHERE substr({column},1,length(?1))=?1"), [&prefix]).map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)?;
+        self.truncate_wal();
+        Ok(())
+    }
+
     /// Whether execution `id` is still journaled here.
     pub(crate) fn holds_execution(&self, id: u64) -> io::Result<bool> {
         self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE id=?1)", [id], |row| row.get(0)).map_err(db_error)
@@ -867,8 +889,6 @@ impl Journal {
     /// Deletes `ids`' executions and every row of theirs, their pages overwritten (cl-984): a project's legacy worker
     /// history once Calcifer imported it into the project. Answers the objects only they named, and their triage subjects.
     pub(crate) fn retire_executions(&mut self, ids: &[u64]) -> io::Result<(Vec<tensorfs::format::ObjectRef>, Vec<String>)> {
-        const OWNED: [&str; 13] = ["public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied", "run_log_lengths",
-            "package_log_dropped", "run_calls", "triage", "run_objects", "run_specs", "root_times", "cold_times"];
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
         let (mut objects, mut subjects) = (vec![], vec![]);
         for id in ids {
@@ -905,10 +925,7 @@ impl Journal {
             }
             let triage: Option<String> = tx.query_row("SELECT record FROM triage WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
             subjects.extend(triage.and_then(|record| serde_json::from_str::<Value>(&record).ok()?.get("subject_id")?.as_str().map(String::from)));
-            for table in OWNED {
-                tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
-            }
-            tx.execute("DELETE FROM executions WHERE id=?1", [id]).map_err(db_error)?;
+            delete_execution(&tx, *id as i64)?;
         }
         // Their objects' uses, uploads and held memos name them too.
         for object in &objects {
@@ -1563,6 +1580,16 @@ pub(crate) struct HeldMemo {
     pub record: Vec<u8>,
     pub objects: Vec<String>,
 }
+/// Execution `id` and every row keyed by it.
+fn delete_execution(tx: &rusqlite::Transaction<'_>, id: i64) -> io::Result<()> {
+    for table in ["public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied", "run_log_lengths",
+        "package_log_dropped", "run_calls", "triage", "run_objects", "run_specs", "root_times", "cold_times"] {
+        tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
+    }
+    tx.execute("DELETE FROM executions WHERE id=?1", [id]).map_err(db_error)?;
+    Ok(())
+}
+
 /// A run's held memo, in its project's bookkeeping when it has one.
 fn hold_memo(tx: &rusqlite::Transaction<'_>, scope: Option<&api::machine::LocalPrivateStorage>, held: &HeldMemo) -> io::Result<()> {
     let Some(scope) = scope else { return crate::project_objects::hold(tx, held, MAX_HELD_MEMOS) };
