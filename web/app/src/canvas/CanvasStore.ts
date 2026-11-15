@@ -2193,7 +2193,6 @@ export class CanvasStore {
   }
 
   private removeNode(name: string) {
-    this.forget([name])
     const id = this.ids.get(name)
     if (this.surface?.id === id) this.surface = null
     this.unsettled.delete(name)
@@ -2706,6 +2705,7 @@ export class CanvasStore {
       this.deleting.set(name, NOT_YET)
       this.rows?.delete(name)
       this.removeNode(name)
+      this.forget([name])
       this.outbox.add<AssetDeleted>({
         send: (once, action) => this.client.deleteAsset(this.projectId!, this.served.get(id) ?? name, { once, edit, action }),
         done: () => {
@@ -2716,6 +2716,7 @@ export class CanvasStore {
         refused: (error) => {
           this.deleting.delete(name)
           this.bringBack(box)
+          this.readAgain([name])
           this.history.forget(edit)
           dismiss(note)
           say(`Couldn't delete ${name}`, error)
@@ -2890,6 +2891,7 @@ export class CanvasStore {
         this.deleting.set(name, NOT_YET)
         this.rows?.delete(name)
         this.removeNode(name)
+        this.forget([name])
         hidden.push(name)
         continue
       }
