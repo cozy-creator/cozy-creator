@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { machinesQuery, maintenanceRunsQuery, projectQuery, runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
-import type { Machine } from "../../api/calcifer"
+import type { Machine, Operation } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
 import { Bar } from "../common"
 import { runName as runLabel, workWords } from "../runs/words"
@@ -36,7 +36,11 @@ function MarkOf({ mark }: { mark: Mark }) {
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
-const numbers = (runs: number[]) => (runs.length === 1 ? `run ${runs[0]}` : `runs ${runs.join(", ")}`)
+// The runs waiting on it by name, `KEY-N` (cl-987).
+const numbers = (operation: Operation) => {
+  const runs = operation.names?.length ? operation.names : operation.runs.map(String)
+  return runs.length === 1 ? `run ${runs[0]}` : `runs ${runs.join(", ")}`
+}
 
 function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; to: (rest?: string) => string }) {
   if (doing.kind === "boot")
@@ -57,7 +61,7 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
         <span className="kind">{doing.kind === "download" ? "Download" : "Install"}</span>
         {doing.kind === "download" && fraction !== undefined && <Bar fraction={fraction} />}
         <span className="said">
-          {doing.kind === "download" ? fetchedWords(operation) : sentence(operation.stage || "installing")} · for {numbers(operation.runs)}
+          {doing.kind === "download" ? fetchedWords(operation) : sentence(operation.stage || "installing")} · for {numbers(operation)}
         </span>
       </li>
     )

@@ -1516,6 +1516,9 @@ pub struct Operation {
     /// The runs waiting on it, by number: this computer's own runs, or those of `project`.
     #[serde(default)]
     pub runs: Vec<u64>,
+    /// The same runs by name, `KEY-N` (cl-987).
+    #[serde(default)]
+    pub names: Vec<String>,
     /// The project whose runs wait on it, shown to its own views only; none for this computer's own work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
