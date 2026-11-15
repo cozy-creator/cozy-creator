@@ -520,7 +520,7 @@ case $SHARD in
   # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.
   env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
-  ondemand) parts="ondemand_ahead ondemand_need logs" ;;
+  ondemand) parts="ondemand_ahead ondemand_need ondemand_install logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
   plan) parts="estimate_line plan_picks plan_published prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
