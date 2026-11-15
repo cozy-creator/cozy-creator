@@ -11,4 +11,7 @@ for row in "${live[@]}"; do
   say "rental $name $rid $st $sku $price micro-USD/h"
   cozy machine show "$name" > "$OUT/show-$name.txt" 2>&1
   while IFS= read -r line; do say "  $line"; done < <(head -80 "$OUT/show-$name.txt")
+  cozy machine show "$name" --json > "$OUT/show-$name.json" 2>&1
+  say "  limits: $(jq -c '[paths(scalars) as $p | select($p | map(tostring) | join(".") | test("limit|cap|vram"; "i"))
+    | {($p | map(tostring) | join(".")): getpath($p)}] | add' "$OUT/show-$name.json" 2>/dev/null)"
 done
