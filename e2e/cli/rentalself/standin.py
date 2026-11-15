@@ -23,15 +23,15 @@ REFUSALS = 2
 LEASE_SECONDS = 4
 
 
-def serve(dir, case):
+def serve(dir: str, case: str) -> None:
     events = open(os.path.join(dir, "events.jsonl"), "a", buffering=1)
     lock = threading.Lock()
 
-    def note(kind, **fields):
+    def note(kind: str, **fields: object) -> None:
         with lock:
             events.write(json.dumps({"at": time.time(), "kind": kind, **fields}) + "\n")
 
-    def answer(handler, status, body=None):
+    def answer(handler: http.server.BaseHTTPRequestHandler, status: int, body: object = None) -> None:
         raw = b"" if body is None else json.dumps(body).encode()
         handler.send_response(status)
         handler.send_header("Content-Type", "application/json")
@@ -42,20 +42,20 @@ def serve(dir, case):
     class Hub(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def log_message(self, *_):
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
-        def body(self):
+        def body(self) -> bytes:
             return self.rfile.read(int(self.headers.get("Content-Length") or 0))
 
-        def do_GET(self):
+        def do_GET(self) -> None:
             if self.path == "/v1/worker/rental/authorized-keys":
                 worker = self.headers.get("X-Cozy-Worker-ID", "")
                 note("check_in", worker=worker)
                 return answer(self, 200, {"worker_id": worker, "authorized_keys": [], "lease_seconds": LEASE_SECONDS})
             answer(self, 404, {"error": {"code": "worker.route_not_found", "message": self.path, "remedy": "none"}})
 
-        def do_POST(self):
+        def do_POST(self) -> None:
             self.body()
             if self.path == "/v1/worker/rental/release":
                 note("release")
@@ -70,10 +70,10 @@ def serve(dir, case):
     class Provider(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def log_message(self, *_):
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
-        def do_DELETE(self):
+        def do_DELETE(self) -> None:
             asks[0] += 1
             if asks[0] <= REFUSALS:
                 note("end", path=self.path, status=503)
@@ -91,7 +91,7 @@ def serve(dir, case):
     tls = os.path.join(dir, "tls")
     os.makedirs(tls, exist_ok=True)
 
-    def openssl(*args):
+    def openssl(*args: str) -> None:
         subprocess.run(["openssl", *args], check=True, capture_output=True)
 
     openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1", "-subj", "/CN=stand-in hub CA",
@@ -120,35 +120,37 @@ def serve(dir, case):
     signal.sigwait({signal.SIGTERM, signal.SIGINT})
 
 
-def verdict(dir, case):
-    events = [json.loads(line) for line in open(os.path.join(dir, "events.jsonl"))]
-    ends = [e for e in events if e["kind"] == "end"]
-    taken = [e for e in events if e["kind"] == "taken"]
+def verdict(dir: str, case: str) -> None:
+    raw = [json.loads(line) for line in open(os.path.join(dir, "events.jsonl"))]
+    # (kind, when) of each request, in order.
+    events: list[tuple[str, float]] = [(str(event["kind"]), float(event["at"])) for event in raw]
+    ends = [at for kind, at in events if kind == "end"]
+    taken = [at for kind, at in events if kind == "taken"]
     exited = os.path.exists(os.path.join(dir, "exited"))
-    wrong = []
+    wrong: list[str] = []
     if not taken:
         wrong.append(f"{case}: the pod stopped without its provider taking it ({len(ends)} provider asks, "
                      f"{'exited on its own' if exited else 'still running'}): it may still bill")
     elif len(ends) != REFUSALS + 1:
         wrong.append(f"{case}: {len(ends)} provider asks before it was taken, want {REFUSALS + 1} (two refused, then taken)")
     if case == "idle-ended":
-        releases = [e for e in events if e["kind"] == "release"]
+        releases = [at for kind, at in events if kind == "release"]
         if not releases:
             wrong.append("idle-ended: it never asked its Hub to release it")
-        elif ends and ends[0]["at"] < releases[0]["at"]:
+        elif ends and ends[0] < releases[0]:
             wrong.append("idle-ended: it asked its provider to end it before its Hub refused the release")
-        check_ins = [e["at"] for e in events if e["kind"] == "check_in"]
-        last = taken[0]["at"] if taken else events[-1]["at"]
+        check_ins = [at for kind, at in events if kind == "check_in"]
+        last = taken[0] if taken else events[-1][1]
         gaps = [b - a for a, b in zip(check_ins, check_ins[1:])] + ([last - check_ins[-1]] if check_ins else [])
         if len(check_ins) < 4:
             wrong.append(f"idle-ended: {len(check_ins)} check-ins over its life, want one each {LEASE_SECONDS // 2} s")
         elif max(gaps) > LEASE_SECONDS:
             wrong.append(f"idle-ended: a {max(gaps):.1f} s gap between check-ins, more than its {LEASE_SECONDS} s lease")
-        if releases and not any(at > releases[0]["at"] for at in check_ins):
+        if releases and not any(at > releases[0] for at in check_ins):
             wrong.append("idle-ended: no check-in after it released itself, while it waited on its provider")
     for line in wrong:
         print(line)
 
 
 if __name__ == "__main__":
-    {"serve": serve, "verdict": verdict}[sys.argv[1]](sys.argv[2], sys.argv[3])
+    (serve if sys.argv[1] == "serve" else verdict)(sys.argv[2], sys.argv[3])
