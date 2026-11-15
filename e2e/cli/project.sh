@@ -418,14 +418,14 @@ python3 "$here/project/terminal.py" "$OUT/runs.screen" "$COZY" run ls --all > /d
 soon screen_says "$OUT/runs.screen" 'TARGET' || check "live: cozy run ls drew nothing"
 (cd "$R" && in_project "$R" run "$here/project/draw.py" instructions=live) > "$OUT/live-run.txt" 2>&1 || check "live: a run: $(tail -c 300 "$OUT/live-run.txt")"
 n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls in the project failed"
-soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: cozy run ls does not show run $n completed: $(head -5 "$OUT/runs.screen")"
+soon screen_says "$OUT/runs.screen" "^ *[A-Z][A-Z0-9]*-$n .* completed" || check "live: cozy run ls does not show run $n completed: $(head -5 "$OUT/runs.screen")"
 
 if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
   step "a project: a live view across a Calcifer restart, the branch resync takes"
   systemctl --user restart cozy-calcifer || check "live: systemctl --user restart cozy-calcifer failed"
   (cd "$R" && in_project "$R" run "$here/project/draw.py" instructions=restarted) > "$OUT/live-restarted.txt" 2>&1 || check "live: a run after the restart: $(tail -c 300 "$OUT/live-restarted.txt")"
   n=$(cd "$R" && in_project "$R" --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls after the restart failed"
-  soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: past a restart, cozy run ls does not show run $n: $(head -5 "$OUT/runs.screen")"
+  soon screen_says "$OUT/runs.screen" "^ *[A-Z][A-Z0-9]*-$n .* completed" || check "live: past a restart, cozy run ls does not show run $n: $(head -5 "$OUT/runs.screen")"
   ADDR=$(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder") TOKEN=$(jq -r .token "$HOME/.cozy/calcifer/calcifer.lock.holder")
 fi
 code=0; kill "$term" 2> /dev/null || true; wait "$term" || code=$?

@@ -333,9 +333,9 @@ jq -se --argjson got "${once:-null}" 'map(select(.run)) | length > 0 and all(.ru
   "$OUT/watch.ndjson" > /dev/null && J '.project_id' <<< "$once" \
   || check "watch restart: the stream's run records don't name run $n's project as GET does ($(jq -c '{project_id, project}' <<< "${once:-null}")): $(jq -sc 'map(select(.run) | .run | {project_id, project}) | unique' "$OUT/watch.ndjson")"
 # Enter on the newest row, run $n, opens it as `cozy run watch` does; q goes back, and q again quits.
-soon screen_says "$OUT/watch-ls.screen" "^ *$n .* completed" || check "watch restart: cozy run ls past the restarts doesn't list run $n completed: $(head -5 "$OUT/watch-ls.screen")"
+soon screen_says "$OUT/watch-ls.screen" "^ *[A-Z][A-Z0-9]*-$n .* completed" || check "watch restart: cozy run ls past the restarts doesn't list run $n completed: $(head -5 "$OUT/watch-ls.screen")"
 kill -USR1 "$lister" 2> /dev/null || true
-soon screen_says "$OUT/watch-ls.screen" "cozy run watch $n " && soon screen_says "$OUT/watch-ls.screen" 'completed' \
+soon screen_says "$OUT/watch-ls.screen" "cozy run watch [A-Z][A-Z0-9]*-$n " && soon screen_says "$OUT/watch-ls.screen" 'completed' \
   && ! screen_says "$OUT/watch-ls.screen" 'no such run|run_not_found' \
   || check "watch restart: cozy run ls didn't open run $n: $(head -8 "$OUT/watch-ls.screen")"
 kill "$lister" 2> /dev/null || true
@@ -354,7 +354,7 @@ step "a run followed across a Calcifer restart"
 local code n
 (cd "$here" && in_project "$RUN_PROJECT" run "$here/weightless/wait" seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
 local follower=$!
-for _ in $(seq 120); do n=$(grep -oE '^run [0-9]+ ' "$OUT/across.txt" | head -1 | grep -oE '[0-9]+') && break; sleep 0.5; done
+for _ in $(seq 120); do n=$(grep -oE '^run [A-Z][A-Z0-9]*-[0-9]+ ' "$OUT/across.txt" | head -1 | cut -d' ' -f2) && [ -n "$n" ] && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"
 systemctl --user restart cozy-calcifer || check "systemctl --user restart cozy-calcifer failed"
 wait "$follower" || true
@@ -458,6 +458,7 @@ case $SHARD in
     time_left
     broken_answers
     run_filters
+    project_keys
     run_playback
     hub_away
     lock_refresh
@@ -533,6 +534,7 @@ case $SHARD in
     second_project
     yaml_requests
     run_filters
+    project_keys
     bound_runs
     own_references
     lane_fit

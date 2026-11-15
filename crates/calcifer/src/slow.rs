@@ -244,7 +244,7 @@ impl Calcifer {
         }
         let message = format!(
             "run {} has run {} so far, {times:.1}× the {} {} takes here ({}){}",
-            row.number,
+            self.run_name(&row),
             minutes(took),
             minutes(allowed),
             row.target.split('@').next().unwrap_or_default(),
@@ -283,7 +283,7 @@ impl Calcifer {
         let causes = self.causes(&row, &machine, Some(outcome), width, &bar);
         let message = format!(
             "run {} took {}, {times:.1}× the {} {} takes here ({}){}",
-            row.number,
+            self.run_name(&row),
             minutes(took_ms),
             minutes(allowed),
             row.target.split('@').next().unwrap_or_default(),
