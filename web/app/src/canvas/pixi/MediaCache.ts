@@ -237,11 +237,11 @@ export class MediaCache {
   }
 
   resourceStats() {
-    let bytes = 0, pinnedBytes = 0, textures = 0, pinnedTextures = 0, failed = 0, queued = 0
+    let bytes = 0, pinnedBytes = 0, textures = 0, pinnedTextures = 0, failed = 0, queued = 0, minimumWidth = Infinity, minimumPinnedWidth = Infinity
     for (const entry of this.entries.values()) {
       bytes += entry.bytes
-      if (entry.texture) textures++
-      if (entry.pins) { pinnedBytes += entry.bytes; if (entry.texture) pinnedTextures++ }
+      if (entry.texture) { textures++; minimumWidth = Math.min(minimumWidth, entry.texture.width) }
+      if (entry.pins) { pinnedBytes += entry.bytes; if (entry.texture) { pinnedTextures++; minimumPinnedWidth = Math.min(minimumPinnedWidth, entry.texture.width) } }
       if (entry.failed) failed++
       else if (entry.pins && !entry.texture && !entry.controller) queued++
     }
@@ -251,7 +251,8 @@ export class MediaCache {
       targetBytes: CACHE_BYTES, unusedTargetBytes: UNUSED_BYTES, textures, pinnedTextures,
       loading: this.active, queued, failed, fetchedBytes: this.fetchedBytes, decodedTotalBytes: this.decodedTotal,
       // Decoded and GPU byte estimates describe potentially overlapping storage; do not add them to process memory.
-      minimumTextureWidth: MIN_TEXTURE_WIDTH, preparedSourceWidth: THUMB_SOURCE_WIDTH,
+      minimumTextureWidth: textures ? minimumWidth : 0, minimumPinnedTextureWidth: pinnedTextures ? minimumPinnedWidth : 0,
+      configuredMinimumTextureWidth: MIN_TEXTURE_WIDTH, preparedSourceWidth: THUMB_SOURCE_WIDTH,
       // No URL, response body, digest, token or arbitrary exception message enters diagnostics.
       lastFailure: this.lastFailure,
     }

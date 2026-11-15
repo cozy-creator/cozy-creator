@@ -288,7 +288,7 @@ async function candidate(context, origin) {
       await timed(result, 'working', pan, 'working');
       await timed(result, 'fitall', fit); result.fitall_load = await ready(project.count); result.fit_camera = await camera();
       const all = result.fitall_load.resources;
-      check(`${project.count}/${repeat}/all-visible`, all.visibleCards === project.count && all.loadedCards === project.count && all.minimumTextureWidth >= 256, all);
+      check(`${project.count}/${repeat}/all-visible`, all.visibleCards === project.count && all.loadedCards === project.count && all.pinnedTextures === project.count && all.minimumPinnedTextureWidth >= 256, all);
       result.pixels = await pixels(project, `repeat-${repeat}-fit`);
       const body = (await inspect('card', NAME(Math.floor(project.count / 2)))).body, p = { x: body.x + body.width / 2, y: body.y + body.height / 2 };
       const hit = await inspect('hitTest', p); if (hit?.name !== NAME(Math.floor(project.count / 2))) throw new Error('far-zoom target hit test differs');
