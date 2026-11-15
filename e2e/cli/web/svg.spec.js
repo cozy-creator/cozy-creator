@@ -1,15 +1,14 @@
-// svg (Paul, 11-14: "we can use SVGs, but also block scripts"; cl-985): an SVG holding a <script> and an onload, imported as a file, is
-// drawn as its picture on the canvas and in Focus, and neither its script nor its onload asks for anything.
-const { test, expect, canvasCard, canvasVisible, focus, screenshotPixels } = require('./fixtures');
+// svg (Paul, 11-14: "we can use SVGs, but also block scripts"; cl-985): a tool's picture that is an SVG holding a <script> and an onload
+// (project/svg.py, as a package may make one), rendered, is drawn as its take on the canvas and in Focus, and neither its
+// script nor its onload asks for anything.
+const { test, expect, canvasCard, canvasVisible, focus, fixtureTool, screenshotPixels } = require('./fixtures');
 
+const SVG = fixtureTool('svg.py/svg');
 const NAME = 'drawing';
 const RED = [204, 51, 51];
-const SVG = Buffer.from(
-  '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" onload="fetch(\'/v1/status?svg=onload\')">' +
-  '<rect width="640" height="480" fill="#cc3333"/><script>fetch("/v1/status?svg=script")</script></svg>',
-);
+const RUN_MS = 120_000;
 
-/** How many of a 5×5 grid over the middle of `rect` are the SVG's red. */
+/** How many of a 5×5 grid over the middle of `rect` are the SVG's red (#c33). */
 function redShare(read, rect) {
   let red = 0;
   for (let i = 1; i <= 5; i++) for (let j = 1; j <= 5; j++) {
@@ -19,13 +18,21 @@ function redShare(read, rect) {
   return red / 25;
 }
 
-test('svg', async ({ page, project }) => {
+test('svg', async ({ page, project, api, cli }) => {
   const asked = [];
   page.context().on('request', (request) => { if (request.url().includes('svg=')) asked.push(request.url()); });
-  await project.import(SVG, { name: NAME, at: { x: 0, y: 0 } });
+  await project.add({ name: NAME, tool: SVG, kind: 'image', at: { x: 0, y: 0 } });
+  await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.some((tool) => tool.local && tool.id === SVG), { message: 'the project lists its local tool' }).toBe(true);
   await expect.poll(() => canvasVisible(page, NAME), { message: 'its box on the canvas' }).toBe(true);
 
-  await test.step('drawn on the canvas as its picture', async () => {
+  await test.step('rendered (cozy render)', async () => {
+    const rendered = await cli('--json', 'render', NAME, '--on', 'local');
+    expect(rendered.code, `cozy render: ${rendered.stderr.slice(-400)}`).toBe(0);
+    await expect.poll(async () => (await project.asset(NAME))?.versions ?? 0, { message: 'its take', timeout: RUN_MS }).toBe(1);
+  });
+
+  await test.step('drawn on the canvas as its take', async () => {
+    await page.mouse.move(4, 600);
     await expect.poll(async () => {
       const media = (await canvasCard(page, NAME))?.rendered?.media;
       return media ? { ready: media.ready, failed: media.failed } : null;

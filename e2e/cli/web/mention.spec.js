@@ -134,10 +134,10 @@ test('mention', async ({ page, project, api, cli }) => {
     let chips = [];
     await expect.poll(async () => {
       chips = (await canvasCard(page, 'still'))?.rendered?.chips ?? [];
-      return ['ann', 'walk'].filter((name) => chips.some((chip) => chip.text.toLowerCase().startsWith(name)));
+      return ['ann', 'walk'].filter((name) => chips.some((chip) => chip.text.toLowerCase().startsWith(`<${name}`)));
     }, { message: 'the tile draws <Ann> and <Walk>' }).toEqual(['ann', 'walk']);
     const read = screenshotPixels(await page.screenshot());
-    const [ann, walk] = ['ann', 'walk'].map((name) => chips.find((chip) => chip.text.toLowerCase().startsWith(name)));
+    const [ann, walk] = ['ann', 'walk'].map((name) => chips.find((chip) => chip.text.toLowerCase().startsWith(`<${name}`)));
     expect.soft(struck(read, ann), `<Ann>, a picture it uses, not struck: ${JSON.stringify(ann)}`).toBe(false);
     expect.soft(struck(read, walk), `<Walk>, a video it can't use, struck on the tile: ${JSON.stringify(walk)}`).toBe(true);
     await page.keyboard.press('Shift+Digit1');

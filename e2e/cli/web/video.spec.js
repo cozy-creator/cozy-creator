@@ -160,6 +160,9 @@ test('video', async ({ page, project, api, guards }) => {
     // cl-951 (Paul, 11-12: "it has to be obvious that we're continuing another video").
     const main = (await project.asset('shot')).prefixes[0].main;
     const last = Math.round((main.duration_ms / 1000) * (main.fps || FPS));
+    // Its end on the tool's pickup grid, as H3's takes end on theirs (ranges.ts pickupAt).
+    const snap = (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.find((tool) => tool.id === SEGMENTS)?.pickup;
+    const end = snap ? Math.max(snap.first, snap.offset + Math.floor((last - snap.offset) / snap.every) * snap.every) : last;
     await page.unrouteAll({ behavior: 'wait' });
     const asked = [];
     await page.route((url) => /\/v1\/projects\/[^/]+\/runs$/.test(url.pathname), (route) => {
@@ -173,6 +176,6 @@ test('video', async ({ page, project, api, guards }) => {
     expect.soft(asked, 'choosing renders nothing until Render').toEqual([]);
     await region.getByRole('button', { name: 'Render', exact: true }).click();
     await expect.poll(() => asked.length, { message: 'its render asked' }).toBe(1);
-    expect.soft(asked[0].pickup, `from <shot.1>'s end, frame ${last}`).toMatchObject({ take: '<shot.1>', out_frame: last, beats_from: 0 });
+    expect.soft(asked[0].pickup, `from <shot.1>'s end, frame ${end} of ${last}`).toMatchObject({ take: '<shot.1>', out_frame: end, beats_from: 0 });
   });
 });
