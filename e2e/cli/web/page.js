@@ -159,8 +159,8 @@ const selectedBoxes = (page) => page.evaluate(() => document.querySelector('.can
 // The camera still across three looks: a slow runner can draw one frame of a move in longer than a look. Missing geometry never settles.
 async function settled(page) {
   let last, still = 0;
-  await until('the canvas camera settled', () => canvasView(page), (view) => {
-    if (!view) { still = 0; return false; }
+  await until('the canvas camera settled', () => page.evaluate(() => ({ view: document.querySelector('.canvas-root')?.canvasInspection?.camera(), moving: Boolean(document.querySelector('.stage[data-moving]')) })), ({ view, moving }) => {
+    if (!view || moving) { still = 0; return false; }
     const now = JSON.stringify(view);
     still = now === last ? still + 1 : 0;
     last = now;
