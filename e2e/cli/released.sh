@@ -52,10 +52,10 @@ local V=$OUT/encrypted-by-release how
 echo "released vault: keybag format $(jq .format_version "$V/project.vault.keys.json")"
 for how in passphrase recovery; do
   case $how in passphrase) set -- --passphrase-file "$OUT/released-vault.pass" ;; recovery) set -- --recovery-file "$OUT/released-vault.recovery" ;; esac
-  (cd "$V" && cozy --json vault unlock "$@" --idle 0) > "$OUT/released-vault-$how.json" 2>&1 \
+  (cd "$V" && cozy --json vault unlock "$@" --idle 0) > "$OUT/released-vault-$how.json" 2> "$OUT/released-vault-$how.err" \
     && J '.vault.state == "unlocked"' "$OUT/released-vault-$how.json" \
-    && (cd "$V" && cozy --json --full status) > /dev/null 2>&1 \
-    || check "released vault: the candidate does not open the release's encrypted project by $how: $(tail -c 300 "$OUT/released-vault-$how.json")"
+    && (cd "$V" && cozy --json --full status) > "$OUT/released-vault-$how-status.json" 2>&1 \
+    || check "released vault: the candidate does not open the release's encrypted project by $how: $(tail -c 300 "$OUT/released-vault-$how.json") $(tail -c 200 "$OUT/released-vault-$how.err") $(tail -c 200 "$OUT/released-vault-$how-status.json" 2> /dev/null)"
   (cd "$V" && cozy --json vault lock) > /dev/null 2>&1 || true
   for _ in $(seq 60); do [ "$( (cd "$V" && cozy --json vault status) | jq -r .state)" = locked ] && break; sleep 0.5; done
 done
