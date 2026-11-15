@@ -12,6 +12,9 @@
     bench.py noise <gate dir>...     each cell's run-to-run spread over its warm runs
     bench.py chart <gate dir>... [--out FILE] [--title T]   the ComfyUI comparison as an SVG grid (model x GPU)
     bench.py scaling <gate dir>...   each multi-GPU cell against its one-GPU cell: transport, dense and sparse steps, speed-up
+    bench.py references <baselines/version.json> [--out FILE] [--cells FILE]
+        a release's stored numbers as crates/api/src/estimate/references.tsv rows (cl-1004): each one-GPU uncapped cell on its
+        card's own lane and kernels, its request's size and the pictures it reads, its warm total
 A gate dir is gate.sh's --out after suite `bench` (suites/bench/cells.sh): bench.tsv names each cell's runs
 (cell, cold|warm, record, the VRAM holder's MiB), bench-group its group (<sku>x<gpus>), calibrate-{before,after}.json the reference workload.
 Outputs are judged with numpy and ffmpeg: uv run -q --no-project --with numpy python -I bench.py ..."""
@@ -20,6 +23,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -939,6 +943,75 @@ def baseline(version: str, gates: list[Gate], refs: str) -> Baseline:
     return out
 
 
+REFERENCES_HEAD = """# Our measurements of each function on one GPU of a card (cl-1004, `estimate::reference`): what a machine that never ran it is quoted,
+# scaled to the request's size. Warm seconds from request to output, each row's gate run its proof. `release-gate/bench.py references
+# baselines/<version>.json` writes these rows from a release's stored numbers. Tab-separated, `-` where the request didn't say:
+# function (package/function), card (as its driver names it, the vendor's words aside), the pictures and videos it read, megapixels,
+# frames, steps, media seconds, warm seconds, proof.
+"""
+
+
+def request_of(args: str) -> tuple[dict[str, object], int] | None:
+    """A cell's arguments as its run's input and the pictures and videos it reads (`<still>`, `--file`); None when it pins a lane or
+    kernels, which no person's request does."""
+    words = shlex.split(args.replace('$FX/', '').replace('$HERE/', ''))
+    if any(word in ('--lane', '--attention-kernel', '--gemm-kernel') for word in words):
+        return None
+    fields: dict[str, object] = {}
+    files = 0
+    for i, word in enumerate(words):
+        if word == '--file':
+            files += 1
+        elif ':=' in word and (i == 0 or words[i - 1] != '--file'):
+            key, value = word.split(':=', 1)
+            fields[key] = json.loads(value)
+        elif '=' in word and (i == 0 or words[i - 1] != '--file'):
+            key, value = word.split('=', 1)
+            fields[key] = value
+    mentions = set(re.findall(r'<(still|lead|photo|teapot)>', json.dumps(fields)))
+    return fields, files + len(mentions)
+
+
+def durations(value: object) -> float:
+    """Every `duration` under `value`, summed: as `JobSize::of` reads a request's media seconds."""
+    if isinstance(value, dict):
+        return sum(float(v) if k == 'duration' and isinstance(v, (int, float)) else durations(v) for k, v in value.items())
+    if isinstance(value, list):
+        return sum(durations(v) for v in value)
+    return 0.0
+
+
+def references(base: Baseline, defs: list[CellDef]) -> list[str]:
+    """`base`'s one-GPU uncapped cells as reference rows, each on the card its pod reports."""
+    rows = []
+    by_name = {d['name']: d for d in defs}
+    for group, g in sorted(base['groups'].items()):
+        if not re.fullmatch(r'[^.]+x1', group):
+            continue
+        card = re.sub(r'^(NVIDIA )?(GeForce )?', '', g['reference'].get('gpu') or '').strip()
+        for name, c in sorted(g['cells'].items()):
+            d = by_name.get(name)
+            total = c['warm'].get('total_ms')
+            if not d or not card or not total or d['cap'] or d['before'] or c['failed']:
+                continue
+            read = request_of(d['args'])
+            if read is None:
+                continue
+            fields, refs = read
+
+            def number(key: str) -> float | None:
+                value = fields.get(key)
+                return float(value) if isinstance(value, (int, float)) and value > 0 else None
+
+            def shown(value: float | None) -> str:
+                return '-' if value is None else f'{value:g}'
+            width, height = number('width'), number('height')
+            megapixels = number('megapixels') or (width * height / 1e6 if width and height else None)
+            size = [shown(megapixels), shown(number('frames')), shown(number('steps')), shown(durations(fields) or None)]
+            rows.append('\t'.join([d['target'], card, str(refs), *size, f'{total / 1e3:.1f}', f"release-gate baseline {base['version']} ({group}, {g['pod'] or 'pod'})"]))
+    return rows
+
+
 def known_issues(path: str | None = None) -> list[Known]:
     path = path or os.path.join(BENCH, 'known-issues.json')
     return cast(list[Known], load_json(path)) if os.path.exists(path) else []  # rows of Known
@@ -1010,6 +1083,14 @@ def main(argv: list[str]) -> int:
         with open(path, 'w') as f:
             json.dump(written, f, indent=1, sort_keys=True)
         print(path)
+        return 0
+    if verb == 'references':
+        tsv = REFERENCES_HEAD + '\n'.join(references(cast(Baseline, load_json(rest[0])), defs)) + '\n'  # bench.py baseline's own file
+        if '--out' in opt:
+            with open(opt['--out'], 'w') as f:
+                f.write(tsv)
+        else:
+            print(tsv, end='')
         return 0
     if verb == 'admit':
         g = read_gate(rest[0], judged=False)

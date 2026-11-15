@@ -16,6 +16,7 @@ import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, mainText, newRow
 import { Ghosts, Spread, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
+import { RenderTime } from "./RenderTime"
 import { makes, watched } from "./shown"
 import { mentionsIn, type Row, rowsIn, textsIn } from "./text"
 import { WhenOff, whenOff } from "./When"
@@ -714,18 +715,21 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
   const store = useCanvasStore()
   // An Edit's film is only a moment's work here, and has no run to cancel.
   if (view.asset?.rendering !== undefined) return null
-  // Render while it's making queues one more: each take in the row has its own ×.
+  // Render while it's making queues one more: each take in the row has its own ×. How long it takes where it would go, beside it (cl-1004).
   return (
-    <button
-      type="button"
-      className="run canvas-control"
-      aria-label="Render"
-      title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
-      onClick={() => store.run(name)}
-    >
-      <Icon name="play" />
-      Render
-    </button>
+    <span className="render-at">
+      <RenderTime name={name} view={view} />
+      <button
+        type="button"
+        className="run canvas-control"
+        aria-label="Render"
+        title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
+        onClick={() => store.run(name)}
+      >
+        <Icon name="play" />
+        Render
+      </button>
+    </span>
   )
 }
 

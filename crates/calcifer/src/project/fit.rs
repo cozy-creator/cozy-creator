@@ -4,6 +4,9 @@
 //! tool's weights are what the Hub places a run of its release by; local code's, its models' releases; either with a checkpoint on its box
 //! in place of its model's. Its runs here and on rented cards say how long it takes each. Render here is kept by tool and what this
 //! computer has (`state.db`'s `rendered_here`), and asked again only on another computer, or for weights half as big again.
+//! Each box named also gets its typical inference time where a render of it would go now (cl-1004, Paul 11-15: "before the user pushes
+//! 'render' we should display to them some sort of estimated time"), by the estimator placement uses, and the tool's recommended GPU
+//! when renting it would be far faster.
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path as FsPath,
@@ -21,8 +24,9 @@ use api::{
     calcifer::On,
     error::{Error, Kind},
     interface::{Interface, Slot},
+    machine::{Basis, JobSize},
     model_ref::ModelRef,
-    calcifer::project::{Fit, FitAsk, RentFor, ToolFit},
+    calcifer::project::{BoxEstimate, Fit, FitAsk, Faster, RentFor, ToolFit},
     calcifer::tool,
 };
 use serde_json::{Map, Value};
@@ -30,7 +34,9 @@ use serde_json::{Map, Value};
 use super::{ALL, Doc, Stand, find, host::Host, name_key};
 use crate::{
     api::{Api, Refusal, parse},
+    placement,
     runs::target,
+    store::now_ms,
     toolbox::HUB_LATE,
 };
 
@@ -41,6 +47,8 @@ const GROWN: u64 = 2;
 /// Slow here: more than this many times a rented card's time, and more than `LONGER_S` longer.
 const SLOWER: f64 = 3.0;
 const LONGER_S: f64 = 60.0;
+/// A box's estimate waits this long for its package and its models' cards, from a Hub that may be late: else it has none.
+const ESTIMATED: Duration = Duration::from_secs(20);
 
 static PLACED: LazyLock<Mutex<HashMap<String, (Instant, Option<Placed>)>>> = LazyLock::new(Mutex::default);
 static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<(String, u64)>)>>> = LazyLock::new(Mutex::default);
@@ -84,22 +92,35 @@ pub(super) async fn here(State(api): State<Arc<Api>>, Path(id): Path<String>, bo
 }
 
 async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<Fit, Refusal> {
+    // Its runs, which its times here stand on, are its project's own (xs-160): read in its storage.
+    let folder = api.projects.get(api, id)?.folder.dir.clone();
+    let scope = crate::private_io::of_path(&folder).map_err(Refusal)?;
+    crate::private_io::context(scope, judged_in(api, id, asked, keep)).await
+}
+
+async fn judged_in(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<Fit, Refusal> {
     let project = api.projects.get(api, id)?;
-    // A machine that hasn't said what it has can't be judged: nothing is said of it.
-    let Some(gpus) = gpus(api) else { return Ok(Fit::default()) };
-    let (targets, dir) = {
+    let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
+    let (targets, boxes, dir) = {
         let doc = Doc::load(&project.folder).map_err(Refusal)?;
         let lock = project.folder.lock().map_err(Refusal)?;
         let stand = doc.stand(&lock);
         let mut targets: BTreeMap<String, Vec<(String, String, Map<String, Value>)>> = BTreeMap::new();
+        let mut boxes = vec![];
         for i in rendered(&doc, &stand, asked) {
             let asset = &doc.assets[i];
             let tool = asset.tool.clone().unwrap_or_else(|| asset.target.clone());
             targets.entry(asset.target.clone()).or_default().push((tool, asset.name.clone(), asset.made.clone()));
+            if !all {
+                boxes.push(Boxed { name: asset.name.clone(), with: doc.target(i), made: asset.made.clone(), media: doc.media_read(i) });
+            }
         }
-        (targets, project.folder.dir.clone())
+        (targets, boxes, project.folder.dir.clone())
     };
     let hub = api.machines.hubs.default_origin();
+    let estimating = estimates(api, &project.id, &dir, &hub, boxes);
+    // A machine that hasn't said what it has can't be judged: nothing is said of it.
+    let Some(gpus) = gpus(api) else { return Ok(Fit { estimates: estimating.await, ..Fit::default() }) };
     let largest = gpus.iter().map(|gpu| gpu.1).max();
     let display = gpus.iter().any(|gpu| gpu.2);
     let machine = machine_of(&gpus);
@@ -116,9 +137,9 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
             Some((need?, assets.into_iter().map(|(_, name, _)| name).collect::<Vec<_>>()))
         }
     });
-    let needs = futures_util::future::join_all(judging).await;
+    let (needs, estimates) = futures_util::future::join(futures_util::future::join_all(judging), estimating).await;
     let kept = api.calcifer.project_store(&project.id)?.rendered_here(&machine)?;
-    let mut fit = Fit::default();
+    let mut fit = Fit { estimates, ..Fit::default() };
     let mut picks = vec![];
     for (need, names) in needs.into_iter().flatten() {
         let Some(line) = said(&need, largest, display) else { continue };
@@ -141,6 +162,72 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
         fit.tools.iter_mut().for_each(|tool| tool.here = true);
     }
     Ok(fit)
+}
+
+/// A box asked about: its name, tool, fields and how many pictures and videos they read.
+struct Boxed {
+    name: String,
+    with: String,
+    made: Map<String, Value>,
+    media: u32,
+}
+
+/// Each of `boxes`, where a render of it would go now and how long it runs there (cl-1004): its machines as a render naming none has
+/// them (`runs::unnamed_set`), each quoted by what it last said, nothing started, updated or rented, and the soonest finish chosen as
+/// placement chooses it (`placement::soonest`).
+async fn estimates(api: &Arc<Api>, project: &str, dir: &FsPath, hub: &str, boxes: Vec<Boxed>) -> Vec<BoxEstimate> {
+    if boxes.is_empty() {
+        return vec![];
+    }
+    let Ok(on) = crate::runs::unnamed_set(api, Some(project)).await else { return vec![] };
+    let each = boxes.into_iter().map(|asked| estimate(api, dir, hub, asked, on.clone()));
+    futures_util::future::join_all(each).await.into_iter().flatten().collect()
+}
+
+async fn estimate(api: &Arc<Api>, dir: &FsPath, hub: &str, asked: Boxed, on: Vec<On>) -> Option<BoxEstimate> {
+    let Boxed { name, with, made, media } = asked;
+    let host = Host::new(api);
+    let read = super::job_of(&host, dir, name.clone(), on, hub, &with, made, super::PackageRead::Foreseen);
+    let mut job = tokio::time::timeout(ESTIMATED, read).await.ok()?.ok()??;
+    job.size.refs = Some(media);
+    let (offers, pictured) = placement::offers_now(api, std::slice::from_ref(&job)).await;
+    let chosen = placement::soonest(offers.first()?, now_ms())?.clone();
+    let gpu = (pictured.iter().flatten())
+        .find(|picture| picture.on == chosen.machine)
+        .and_then(|picture| picture.frame.gpus.first())
+        .map(|gpu| gpu.name.clone())
+        .unwrap_or_default();
+    let run_ms = match chosen.basis {
+        Basis::None => 0,
+        _ => (chosen.finish_at_ms - chosen.start_at_ms).max(0) as u64,
+    };
+    let faster = faster(api, hub, &job, &chosen.machine, &gpu, run_ms).await;
+    Some(BoxEstimate { name, machine: chosen.machine.to_string(), card: card(&gpu), run_ms, basis: chosen.basis, faster })
+}
+
+/// The tool's recommended GPU (the Hub's pick for its release) when it runs `job` far faster than `machine`, whose `gpu` (empty: none)
+/// takes `run_ms` (0: unknown), as `said` judges slow here (cl-897), or when `machine` has no GPU for a job that loads a model on one.
+/// Its time there is what's typical there (`Calcifer::typical_ms`). None: local code, which the Hub places on nothing, or no pick.
+async fn faster(api: &Arc<Api>, hub: &str, job: &placement::Job, machine: &On, gpu: &str, run_ms: u64) -> Option<Faster> {
+    let (path, release) = job.target.split_once('@')?;
+    let (package, function) = path.rsplit_once('/')?;
+    let pick = placed(api, hub, package, release, function).await?.pick?;
+    let (away, _) = api.calcifer.typical_ms(&job.target, &pick.card, &job.size)?;
+    let here = run_ms as f64;
+    let cpu = gpu.is_empty() && job.gpu;
+    let slow = run_ms > 0 && here > SLOWER * away && here - away > LONGER_S * 1e3;
+    if !cpu && !slow {
+        return None;
+    }
+    let there = format!("a rented {}, {}", pick.card, about(away / 1e3));
+    let line = match (cpu, machine.is_local()) {
+        (true, true) => format!("This computer has no GPU, so this would run on its CPU, slowly. On {there}."),
+        (true, false) => format!("{machine} has no GPU, so this would run on its CPU, slowly. On {there}."),
+        (false, true) => format!("On this computer's {} this takes {}; on {there}.", card(gpu), about(here / 1e3)),
+        (false, false) => format!("On {machine}'s {} this takes {}; on {there}.", card(gpu), about(here / 1e3)),
+    };
+    let rent = RentFor { line: format!("A rented {} runs it for ${:.2}/h.", pick.card, pick.usd_micros_per_hour as f64 / 1e6), ..pick };
+    Some(Faster { run_ms: away as u64, line, rent })
 }
 
 /// What a render of `asked` makes, as the render reads it: `all` is everything with an operation not approved, and with `outdated` what's
@@ -213,17 +300,28 @@ pub(crate) fn card(model: &str) -> String {
     model.trim_start_matches("NVIDIA ").trim_start_matches("GeForce ").to_owned()
 }
 
-/// What a rented card takes for `measured` like `made`, in seconds, and the card: the Hub's pick by this computer's runs of it there, else
-/// by its runs on another card scaled by the Hub's speeds; with no pick, the fastest card it ran on. None: it ran on no rented card.
-fn away(api: &Api, measured: &str, made: &Map<String, Value>, placed: Option<&Placed>) -> Option<(String, f64)> {
-    let ran: Vec<(String, f64)> = api.calcifer.away_ms(measured, made).into_iter().map(|(gpu, ms)| (card(&gpu), ms / 1e3)).collect();
-    let fastest = |times: Vec<(String, f64)>| times.into_iter().min_by(|a, b| a.1.total_cmp(&b.1));
-    let Some((pick, placed)) = placed.and_then(|placed| Some((placed.pick.as_ref()?, placed))) else { return fastest(ran) };
-    if let Some((_, seconds)) = ran.iter().find(|(card, _)| *card == pick.card) {
-        return Some((pick.card.clone(), *seconds));
-    }
-    let to = *placed.speeds.get(&pick.card).filter(|speed| **speed > 0.0)?;
-    fastest(ran.iter().filter_map(|(card, seconds)| Some((pick.card.clone(), seconds * placed.speeds.get(card)? / to))).collect())
+/// What a rented card takes for `target` (`org/pkg/fn@release`, local code `pkg/fn`) like `made`, in seconds, and the card: the Hub's
+/// pick by what's typical there (`Calcifer::typical_ms`: this computer's runs on it, our measurement of it, else another card's scaled
+/// by the Hub's speeds, cl-1004); with no pick, the fastest card it ran on. None: nothing says.
+fn away(api: &Api, target: &str, made: &Map<String, Value>, placed: Option<&Placed>) -> Option<(String, f64)> {
+    let Some(pick) = placed.and_then(|placed| placed.pick.as_ref()) else {
+        let base = target.split('@').next().unwrap_or(target);
+        let ran = api.calcifer.away_ms(base, made).into_iter().map(|(gpu, ms)| (card(&gpu), ms / 1e3));
+        return ran.min_by(|a, b| a.1.total_cmp(&b.1));
+    };
+    let (ms, _) = api.calcifer.typical_ms(target, &pick.card, &size_of(made))?;
+    Some((pick.card.clone(), ms / 1e3))
+}
+
+/// What this computer's GPU typically takes for `target` like `made`, in seconds, where it hasn't run it (cl-1004). None: no GPU, or
+/// nothing says.
+fn typical_here(api: &Api, target: &str, made: &Map<String, Value>) -> Option<f64> {
+    let gpu = gpus(api)?.into_iter().next()?.0;
+    api.calcifer.typical_ms(target, &gpu, &size_of(made)).map(|(ms, _)| ms / 1e3)
+}
+
+fn size_of(made: &Map<String, Value>) -> JobSize {
+    JobSize::of(&Value::Object(made.clone()))
 }
 
 /// As a card's memory is sold: a GB is 2^30 bytes.
@@ -266,9 +364,15 @@ async fn need_of(api: &Arc<Api>, hub: &str, dir: &FsPath, target: &str, tool: &s
         false => format!("{}/{function}@", found.package),
     };
     let base = measured.trim_end_matches('@');
-    let took_s = api.calcifer.here_ms(base, made).map(|ms| ms / 1e3).or_else(|| Host::new(api).last_took(&measured, "local"));
+    let full = match local_code {
+        true => base.to_owned(),
+        false => format!("{base}@{}", found.release),
+    };
+    let took_s = (api.calcifer.here_ms(base, made).map(|ms| ms / 1e3))
+        .or_else(|| Host::new(api).last_took(&measured, "local"))
+        .or_else(|| typical_here(api, &full, made));
     let placed = (!local_code).then(|| placed_now(hub, &found.package, &found.release, &function)).flatten();
-    let away = away(api, base, made, placed.as_ref());
+    let away = away(api, &full, made, placed.as_ref());
     Some(Need { tool: tool.to_owned(), label, bytes, pick, took_s, away })
 }
 
@@ -303,6 +407,10 @@ pub(crate) fn here_now(api: &Api, hub: &str, package: &str, release: Option<&str
     let release = release.unwrap_or_default();
     let (bytes, _) = weights.weighed(hub, package, release, function, local_code);
     let base = format!("{package}/{function}");
+    let full = match local_code {
+        true => base.clone(),
+        false => format!("{base}@{release}"),
+    };
     let placed = (!local_code).then(|| placed_now(hub, package, release, function)).flatten();
     let label = tool::tools_of(package, release, interface).into_iter().find(|tool| tool.function == function).map_or_else(|| base.clone(), |tool| tool.package_title);
     let need = Need {
@@ -310,8 +418,8 @@ pub(crate) fn here_now(api: &Api, hub: &str, package: &str, release: Option<&str
         label,
         bytes,
         pick: placed.as_ref().and_then(|placed| placed.pick.clone()),
-        took_s: api.calcifer.here_ms(&base, made).map(|ms| ms / 1e3),
-        away: away(api, &base, made, placed.as_ref()),
+        took_s: api.calcifer.here_ms(&base, made).map(|ms| ms / 1e3).or_else(|| typical_here(api, &full, made)),
+        away: away(api, &full, made, placed.as_ref()),
     };
     said(&need, gpus.iter().map(|gpu| gpu.1).max(), gpus.iter().any(|gpu| gpu.2))
 }
@@ -389,6 +497,14 @@ fn placed_now(hub: &str, package: &str, release: &str, function: &str) -> Option
 /// What a model card last said of a checkpoint's bytes, however long ago.
 fn sized_now(hub: &str, written: &str, lane: Option<&str>) -> Option<u64> {
     SIZED.lock().expect("sized lock").get(&format!("{hub}\n{written}\n{}", lane.unwrap_or_default())).and_then(|(_, held)| held.as_ref().map(|(_, bytes)| *bytes))
+}
+
+/// The Hub's last word on each card's speed for `target` (`org/pkg/fn@release`), however long ago: what `Calcifer::scaled_ms` scales
+/// another card's time by (cl-1004). None: it hasn't said, or `target` is local code.
+pub(crate) fn speeds_now(hub: &str, target: &str) -> Option<BTreeMap<String, f64>> {
+    let (path, release) = target.split_once('@')?;
+    let (package, function) = path.rsplit_once('/')?;
+    placed_now(hub, package, release, function).map(|placed| placed.speeds).filter(|speeds| !speeds.is_empty())
 }
 
 /// The Hub's per-SKU speed of each card that holds a run of `package@release`'s `function` on one GPU, by its card's name as `card`

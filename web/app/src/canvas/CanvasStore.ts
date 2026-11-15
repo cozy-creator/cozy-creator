@@ -11,6 +11,7 @@ import type {
   AssetPatch,
   AssetPatched,
   Asset,
+  BoxEstimate,
   HistoryStepped,
   MainFile,
   Pickup,
@@ -120,6 +121,8 @@ export interface ElementView {
   waiting?: Also
   /** This computer would render it poorly, so it asks before it does, with its pickup and its take's id. */
   asking?: { fit: Fit; also?: Also }
+  /** Its Slow here notice is open, under its fields (cl-1004). */
+  slowOpen?: boolean
   /** Seconds into a video, scrubbed to. */
   scrub?: number
   /** Its ratio while it's being reshaped. */
@@ -340,6 +343,12 @@ export class CanvasStore {
   rent: (pick?: RentFor | null) => void = () => {}
   /** What Render all asks first, on its own control, once for every tool this computer would do poorly. */
   readonly allAsking = signal<{ fit: Fit } | null>(null)
+  /** Each open box's typical render time where it would go now, by name, as Calcifer last said (cl-1004). */
+  readonly estimates = signal<ReadonlyMap<string, BoxEstimate>>(new Map())
+  /** The machines a render may go to, as text: an estimate is asked again when they change. */
+  readonly machineSet = signal("")
+  /** Each box's newest estimate asked, by name: an older answer is dropped. */
+  private estimating = new Map<string, number>()
   /** The box being worked on where it stands: the view fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
   inPlace: { name: string; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
   /** Done with the box where it stands: what's typed is saved, and the canvas goes back. */
@@ -1594,6 +1603,23 @@ export class CanvasStore {
         say(`Couldn't join ${name}`, error)
       },
     })
+  }
+
+  /** How long a render of `name` runs where it would go now, and a rented GPU far faster, by Calcifer (cl-1004): into `estimates`. */
+  async estimate(name: string) {
+    const key = this.resolveName(name)
+    const id = this.ids.get(key)
+    const project = this.projectId
+    if (!id || !project) return
+    const asked = (this.estimating.get(key) ?? 0) + 1
+    this.estimating.set(key, asked)
+    const fit = await this.client.fit(project, [this.served.get(id) ?? key]).catch(() => null)
+    if (this.estimating.get(key) !== asked || this.projectId !== project) return
+    const found = fit?.estimates?.[0]
+    const next = new Map(this.estimates.get())
+    if (found) next.set(key, found)
+    else next.delete(key)
+    this.estimates.set(next)
   }
 
   /** How this computer would do it, by Calcifer, once what's typed is in: poorly, and nothing said for that, the box asks; else it renders. */

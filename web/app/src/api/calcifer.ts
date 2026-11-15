@@ -355,7 +355,7 @@ replaced?: Replaced | null, };
 /**
  * What a quote's run time stands on.
  */
-export type Basis = "measured" | "prior" | "none";
+export type Basis = "measured" | "prior" | "reference" | "none";
 
 /**
  * A render as a view draws it: everything it covers, what has ended first, then what is going, then what waits. It is
@@ -394,6 +394,25 @@ errors?: Array<ErrorBody>,
  * How its walk ended, once it has.
  */
 ended?: RenderEnded | null, };
+
+/**
+ * A box's typical inference time where a render of it would go now (cl-1004): the machine placement would choose, quoted from what each
+ * machine last said, nothing started, updated or rented.
+ */
+export type BoxEstimate = { name: string, machine: string,
+/**
+ * Its GPU in a person's words: `RTX 4090`. Empty: none, so its CPU.
+ */
+card: string,
+/**
+ * The run itself there, at the GPUs it would take: no queue, install, download or load. 0: unknown.
+ */
+run_ms: number, basis: Basis,
+/**
+ * The tool's recommended GPU (the Hub's pick for its release), when a rented one runs it more than 3× faster and a minute sooner,
+ * or it would run here on a CPU.
+ */
+faster?: Faster | null, };
 
 /**
  * Why nothing can run on a machine (`StatusFrame::broken`, cl-977). `code` is the state: `stuck_in_driver`, the TensorD
@@ -761,6 +780,19 @@ export type Families = { families: Array<string>, };
 export type FamilyFrom = "owner" | "weights";
 
 /**
+ * A rented GPU that runs a box far faster than where it would go.
+ */
+export type Faster = {
+/**
+ * Its run there, as `BoxEstimate::run_ms`.
+ */
+run_ms: number,
+/**
+ * Both times, in a line: `On this computer's RTX 4070 this takes about 38 min; on a rented RTX 5090, about 6 min.`
+ */
+line: string, rent: RentFor, };
+
+/**
  * The control a box draws for a field.
  */
 export type FieldType = "words" | "prompt" | "toggle" | "number" | "choice" | "shape" | "slot" | "group" | "seed" | "timeline";
@@ -780,11 +812,15 @@ export type Fit = { tools: Array<ToolFit>,
 /**
  * What the Hub places them all on.
  */
-rent?: RentFor | null, };
+rent?: RentFor | null,
+/**
+ * Each box named (not `all`), where a render of it would go now and how long it runs there (cl-1004).
+ */
+estimates?: Array<BoxEstimate>, };
 
 /**
  * `POST /v1/projects/{id}/fit` and `…/fit/here`: what a render of `names` on this computer (`local`) asks of it, `all` and `outdated` as
- * a render reads them.
+ * a render reads them; and how long each box named takes where a render of it would go now.
  */
 export type FitAsk = { names: Array<string>, outdated?: boolean, };
 

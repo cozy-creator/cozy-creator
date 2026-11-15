@@ -2136,8 +2136,58 @@ video.preview.on {
 .edit-face .actions .more-toggle {
   margin-right: auto;
 }
-.edit-face .actions .run {
+.edit-face .actions .render-at {
   margin-left: auto;
+}
+/* Render, after how long it takes where it would go and Slow here when a rented GPU is far faster (cl-1004). */
+.render-at {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.render-time {
+  color: var(--mute);
+  font-size: var(--body);
+  white-space: nowrap;
+}
+.slow-here {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--ood) 45%, transparent);
+  border-radius: var(--round);
+  background: color-mix(in srgb, var(--ood) 10%, var(--card));
+  color: var(--ood);
+  font-size: var(--body);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.slow-here:hover,
+.slow-here.on {
+  border-color: var(--ood);
+}
+.slow-here .icon {
+  width: 15px;
+  height: 15px;
+}
+.status.slow-notice {
+  max-width: 460px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--ood) 45%, transparent);
+  border-radius: var(--round);
+  background: var(--card);
+  font-size: var(--body);
+}
+.status.slow-notice p:first-child {
+  color: var(--ood);
+  font-weight: 600;
+}
+.status.slow-notice .slow-close {
+  margin-left: auto;
+  padding: 0 8px;
 }
 .run {
   display: inline-flex;
