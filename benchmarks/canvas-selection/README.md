@@ -62,7 +62,7 @@ before invoking fresh snapshots that could otherwise mask stale cached output.
 
 Each case launches a fresh isolated browser and records source-file hashes, browser/GPU information,
 source admission, rendered-photo pixel gates, cold-browser readiness, frame intervals, CPU time,
-process PSS/RSS,500ms sampled process-memory peaks, native editor/video checks, and teardown.
+process PSS/RSS before and after timed work, native editor/video checks, and teardown. Optional `--sample-memory-ms=500` enables a separate intrusive peak-memory profile; it is disabled during primary timing runs.
 Source fixtures are pre-generated and served locally: server thumbnail generation, network latency,
 project auth/database/events, and the full production card UI are outside this renderer comparison.
 
@@ -83,3 +83,5 @@ Leafer's blank output and GPUCanvas's black color parsing invalidate that cohort
 runs reset measurement metadata and generated offscreen request floods; those do not establish production costs.
 
 GPU snapshots also record [Linux DRM fdinfo](https://www.kernel.org/doc/html/latest/gpu/drm-usage-stats.html) for owned browser processes, deduplicating device/client IDs. Resident/shared client aggregates and engine duty are separate from PSS; shared buffers can still appear in multiple clients. These are driver counters, not a portable VRAM-total query.
+
+Primary latency runs do not read process memory during the camera tour. This avoids periodic `/proc/*/smaps_rollup` observer effects; optional peak-memory profiling must be labeled separately.

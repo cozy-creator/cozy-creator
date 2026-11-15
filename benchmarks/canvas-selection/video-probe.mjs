@@ -2,6 +2,7 @@
 import { chromium } from 'playwright';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 const arg = (key, fallback) => process.argv.find(value => value.startsWith(`--${key}=`))?.slice(key.length + 3) ?? fallback;
@@ -10,6 +11,9 @@ const base = arg('base-url', 'http://127.0.0.1:5197');
 const count = Number(arg('n', '16'));
 const samples = Number(arg('samples', '8'));
 const intervalMs = Number(arg('interval-ms', '350'));
+if (!Number.isInteger(samples) || samples < 8 || !Number.isFinite(intervalMs) || intervalMs < 100) {
+  throw new Error('Video protocol requires at least eight samples, spaced at least 100ms apart');
+}
 mkdirSync(out, { recursive: true });
 const env = {
   ...process.env,
@@ -22,8 +26,67 @@ const result = {
   started: new Date().toISOString(), headless: true, status: 'running', count, samples, intervalMs,
   gpuConfiguration: 'intel-vulkan-gl', environment: { VK_DRIVER_FILES: env.VK_DRIVER_FILES }, removedOffloadEnvironment: true,
   source: '/motion.mp4', flags, phases: [], errors: [],
-  boundary: 'Changing video pixels inside gpucanvas, not its separate focused DOM editor. Screenshot sampling is not video-FPS qualification.',
+  boundary: 'Sampled video pixels inside gpucanvas, not its separate focused DOM editor. Detached Canvas2D source readbacks can synchronize/wake decode; screenshots can force compositor work. This is intrusive correctness sampling, not proof of passive playback, frame-rate parity, latency, power, or production performance. Fresh package snapshots promote pages and occur only after each screenshot series.',
+  protocol: { initialSettleMs: 500, discardedInitialSamples: 2, minimumDistinctSettledFrames: 5,
+    minimumSignificantTransitions: 4, significantPixelFraction: 0.005, significantChannelDelta: 12 },
 };
+
+// Pure verdict logic, kept separate so synthetic freeze/quality-upgrade cases can be checked
+// without launching a browser. Only the settled tail participates in motion classification.
+function classifyPhase(phase, rows, pixels, intervalMs) {
+  const settled = rows.slice(2);
+  const sourceDistinct = new Set(settled.map(row => row.source.hash)).size;
+  const screenshotDistinct = pixels.distinctFrames;
+  const first = settled[0].source;
+  const last = settled.at(-1).source;
+  let sourceTimeAdvanceSeconds = 0;
+  for (let i = 1; i < settled.length; i++) {
+    const prior = settled[i - 1].source;
+    const now = settled[i].source;
+    let delta = now.currentTime - prior.currentTime;
+    if (delta < 0 && Number.isFinite(now.duration) && now.duration > 0) delta += now.duration;
+    sourceTimeAdvanceSeconds += Math.max(0, delta);
+  }
+  const decodedFrameDelta = last.totalVideoFrames - first.totalVideoFrames;
+  const callbackDelta = last.callbacks - first.callbacks;
+  const sourceFramesVerified = sourceDistinct >= 5 &&
+    sourceTimeAdvanceSeconds >= Math.max(0.35, (settled.length - 1) * intervalMs / 2000) &&
+    (decodedFrameDelta >= 4 || callbackDelta >= 4) && settled.every(row => !row.source.paused && row.source.readyState >= 2);
+  const conditionObserved = settled.every(({ source }) => phase === 'unattended'
+    ? !source.focus && !source.hover
+    : phase === 'hovered' ? source.hover && !source.focus : source.focus && !source.hover);
+  const significantTransitions = pixels.transitions.filter(change => change.significant).length;
+  const significantLateTransitions = pixels.transitions.slice(-3).filter(change => change.significant).length;
+  const continuousDisplayObserved = screenshotDistinct >= 5 && significantTransitions >= 4 && significantLateTransitions >= 2;
+  let classification;
+  if (!conditionObserved) classification = 'inconclusive_interaction_condition_not_observed';
+  else if (!sourceFramesVerified) classification = 'inconclusive_source_frames_not_advancing';
+  else if (continuousDisplayObserved) classification = 'observed_continuous_sampled_video_updates';
+  else if (screenshotDistinct === 1) classification = 'stale_display_with_verified_moving_source';
+  else classification = 'inconclusive_display_changes_not_continuous';
+  return { classification, conditionObserved, sourceDistinct, screenshotDistinct,
+    sourceTimeAdvanceSeconds, decodedFrameDelta, callbackDelta, significantTransitions, significantLateTransitions,
+    sourceMoving: sourceFramesVerified,
+    displayedPixelsMoving: conditionObserved && sourceFramesVerified && continuousDisplayObserved,
+    staleDisplayWithMovingSource: conditionObserved && sourceFramesVerified && screenshotDistinct === 1,
+    sourceProgressBoundary: 'Frozen/throttled/parked source pixels or unverified decoded-frame progress are inconclusive, never classified as a stale GPU texture.',
+  };
+}
+// End pure verdict logic.
+
+function displayedPixelMetrics(rows) {
+  return JSON.parse(execFileSync('python3', ['-c', `
+import json,sys,hashlib
+from PIL import Image,ImageChops,ImageStat
+paths=json.loads(sys.argv[1]); images=[Image.open(p).convert('RGB') for p in paths]
+hashes=[hashlib.sha256(im.tobytes()).hexdigest() for im in images]; transitions=[]
+for i in range(1,len(images)):
+ diff=ImageChops.difference(images[i-1],images[i]); maximum=ImageChops.lighter(ImageChops.lighter(*diff.split()[:2]),diff.split()[2])
+ changed=sum(value>12 for value in maximum.getdata()); fraction=changed/(diff.width*diff.height)
+ transitions.append({'fromSample':i+1,'toSample':i+2,'changedPixels':changed,'changedFraction':fraction,'meanAbsoluteRgbDelta':sum(ImageStat.Stat(diff).mean)/3,'significant':fraction>=0.005})
+print(json.dumps({'decodedRgbHashes':hashes,'distinctFrames':len(set(hashes)),'transitions':transitions}))
+`, JSON.stringify(rows.slice(2).map(row => resolve(out, row.screenshot)))], { encoding: 'utf8' }));
+}
 let browser;
 let page;
 try {
@@ -122,11 +185,13 @@ try {
         for (const byte of pixels) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
         const quality = video.getVideoPlaybackQuality();
         return {
-          hash: hash.toString(16), currentTime: video.currentTime, paused: video.paused,
+          hash: hash.toString(16), currentTime: video.currentTime, duration: video.duration, paused: video.paused,
           readyState: video.readyState, width: video.videoWidth, height: video.videoHeight,
           callbacks: state.callbacks, frameMetadata: state.metadata,
           totalVideoFrames: quality.totalVideoFrames, droppedVideoFrames: quality.droppedVideoFrames,
           focus: document.activeElement === video,
+          hover: video.matches(':hover'),
+          documentVisibility: document.visibilityState,
           pageContentVisibility: getComputedStyle(video.closest('[data-gpucanvas-page]')).contentVisibility,
           gpucanvas: window.__gpucanvasVideoProbe.stats(),
           png: capture ? scratch.toDataURL('image/png') : null,
@@ -156,12 +221,8 @@ try {
       return { width: image.width, height: image.height, png: scratch.toDataURL('image/png') };
     });
     writeFileSync(resolve(out, `${phase}-fresh-package-snapshot.png`), Buffer.from(fresh.png.split(',')[1], 'base64'));
-    const sourceDistinct = new Set(rows.map(row => row.source.hash)).size;
-    const screenshotDistinct = new Set(rows.map(row => row.screenshotHash)).size;
-    result.phases.push({ phase, sourceDistinct, screenshotDistinct,
-      sourceMoving: sourceDistinct > 1,
-      displayedPixelsMoving: screenshotDistinct > 1,
-      staleDisplayWithMovingSource: sourceDistinct > 1 && screenshotDistinct === 1,
+    const pixelMetrics = displayedPixelMetrics(rows);
+    result.phases.push({ phase, ...classifyPhase(phase, rows, pixelMetrics, intervalMs), pixelMetrics,
       freshPackageSnapshot: { width: fresh.width, height: fresh.height, file: `${phase}-fresh-package-snapshot.png` },
       samples: rows,
     });
@@ -184,6 +245,6 @@ try {
   result.finished = new Date().toISOString();
   writeFileSync(resolve(out, 'result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ status: result.status, error: result.error,
-    phases: result.phases.map(({ phase, sourceDistinct, screenshotDistinct, staleDisplayWithMovingSource }) =>
-      ({ phase, sourceDistinct, screenshotDistinct, staleDisplayWithMovingSource })), out }));
+    phases: result.phases.map(({ phase, classification, sourceDistinct, screenshotDistinct, staleDisplayWithMovingSource }) =>
+      ({ phase, classification, sourceDistinct, screenshotDistinct, staleDisplayWithMovingSource })), out }));
 }
