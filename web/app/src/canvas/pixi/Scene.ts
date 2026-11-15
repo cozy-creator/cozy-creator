@@ -79,6 +79,7 @@ interface Drawn {
   latent?: Latent
   wave?: { graphics: Graphics; began: number; alpha: number; spread: number }
   loadingPulse?: { graphics: Graphics; began: number; alpha: number }
+  landing?: { began: number; scale: number; alpha: number }
   meter?: { run: number; fraction: number; since: number }
   stateDot?: Box
   meterBox?: Box
@@ -92,6 +93,7 @@ const intersects = (a: Box, b: Box) => a.x <= b.x + b.w && a.x + a.w >= b.x && a
 export class PixiScene {
   private layer = new Container({ eventMode: "none", sortableChildren: true })
   private records = new Map<string, Drawn>()
+  private landed = new Set<string>()
   private cache: MediaCache
   private input?: SceneUpdate
   private visible = true
@@ -169,6 +171,7 @@ export class PixiScene {
       this.latentFor(drawn)
       this.waveFor(drawn)
       this.loadingFor(drawn)
+      this.landingFor(drawn)
     }
     for (const [id, drawn] of this.records) if (!live.has(id)) { this.remove(drawn); this.records.delete(id) }
     this.scheduleClock()
@@ -659,6 +662,25 @@ export class PixiScene {
     }
   }
 
+  private landingFor(drawn: Drawn) {
+    const view = drawn.node.view
+    if (!this.visible || !this.onScreen(drawn)) { this.finishLanding(drawn); return }
+    if (!drawn.landing && view.landing && !view.placing && !view.preview && !this.landed.has(drawn.node.id)) {
+      this.landed.add(drawn.node.id)
+      drawn.landing = { began: performance.now(), scale: 0.82, alpha: 0 }
+    }
+  }
+
+  private finishLanding(drawn: Drawn) {
+    if (!drawn.landing) return
+    drawn.landing = undefined
+    drawn.container.scale.set(1)
+    drawn.container.alpha = 1
+    drawn.container.position.set(drawn.node.box.x, drawn.node.box.y)
+    const current = this.options.store.get(drawn.node.name)
+    if (this.options.store.active && current === drawn.node.view && current.landing) this.options.store.patch(drawn.node.name, { landing: undefined })
+  }
+
   /** Host-owned demand scheduling: a visible render breathes; idle, hidden and reduced-motion scenes request no animation frames. */
   advance(now: number): boolean {
     if (!this.visible || this.stopped || !this.input) return false
@@ -672,6 +694,20 @@ export class PixiScene {
       return curve((lo + hi) / 2, y1, y2)
     }
     for (const drawn of this.records.values()) {
+      const landing = drawn.landing
+      if (landing) {
+        const phase = Math.max(0, now - landing.began) / 260
+        if (phase >= 1 || this.reducedMotion.matches) this.finishLanding(drawn)
+        else {
+          const progress = phase < 0.6 ? ease(phase / 0.6, 0.2, 0.9, 0.3, 1) : ease((phase - 0.6) / 0.4, 0.2, 0.9, 0.3, 1)
+          landing.scale = phase < 0.6 ? 0.82 + 0.22 * progress : 1.04 - 0.04 * progress
+          landing.alpha = phase < 0.6 ? progress : 1
+          drawn.container.scale.set(landing.scale)
+          drawn.container.alpha = landing.alpha
+          drawn.container.position.set(drawn.node.box.x + drawn.node.box.w * (1 - landing.scale) / 2, drawn.node.box.y + drawn.node.box.h * (1 - landing.scale) / 2)
+          animated = true
+        }
+      }
       const loading = drawn.loadingPulse
       if (loading) {
         const body = pictureBox(drawn.node)
@@ -790,7 +826,7 @@ export class PixiScene {
     for (const selected of [true, false]) for (let i = records.length - 1; i >= 0; i--) {
       const drawn = records[i]
       if (drawn.node.selected !== selected) continue
-      const local = { x: point.x - drawn.node.box.x, y: point.y - drawn.node.box.y }
+      const local = { x: (point.x - drawn.container.x) / drawn.container.scale.x, y: (point.y - drawn.container.y) / drawn.container.scale.y }
       for (let n = drawn.hits.length - 1; n >= 0; n--) if (inside(local, drawn.hits[n].box)) return { name: drawn.node.name, part: drawn.hits[n].part }
     }
     return null
@@ -803,7 +839,7 @@ export class PixiScene {
     this.cache.setVisible(visible)
     if (!visible) {
       clearTimeout(this.clock); this.clock = undefined
-      for (const drawn of this.records.values()) this.dropLatent(drawn)
+      for (const drawn of this.records.values()) { this.dropLatent(drawn); this.finishLanding(drawn) }
     } else if (this.input) this.update(this.input)
     this.options.invalidate()
   }
@@ -832,21 +868,24 @@ export class PixiScene {
     const displayed = main?.displayed ?? ""
     const sha = displayed.startsWith("blob:") ? drawn.node.view.preview?.sha256 : /^(sha256:)?[0-9a-f]{64}$/i.test(displayed) ? displayed : undefined
     const latent = drawn.latent
-    const world = (box?: Box) => box ? { x: drawn.node.box.x + box.x, y: drawn.node.box.y + box.y, width: box.w, height: box.h } : null
+    const scale = drawn.container.scale.x
+    const world = (box?: Box) => box ? { x: drawn.container.x + box.x * scale, y: drawn.container.y + box.y * scale, width: box.w * scale, height: box.h * scale } : null
+    const paintedBody = world({ x: body.x - drawn.node.box.x, y: body.y - drawn.node.box.y, w: body.w, h: body.h })!
     return {
-      body: { x: body.x, y: body.y, width: body.w, height: body.h },
+      body: paintedBody,
       labels: Object.fromEntries([...drawn.texts].map(([key, label]) => [key, {
-        text: label.text, fullText: drawn.fullTexts.get(key) ?? label.text, x: drawn.node.box.x + label.x, y: drawn.node.box.y + label.y, width: label.width, height: label.height,
-        fontSize: Number(label.style.fontSize), fontFamily: label.style.fontFamily, weight: label.style.fontWeight,
+        text: label.text, fullText: drawn.fullTexts.get(key) ?? label.text, ...world({ x: label.x, y: label.y, w: label.width, h: label.height })!,
+        fontSize: Number(label.style.fontSize) * scale, fontFamily: label.style.fontFamily, weight: label.style.fontWeight,
         ...(key === "title" ? { title: drawn.presentation.title } : {}),
       }])),
       state: drawn.presentation.state, unseen: drawn.presentation.unseen,
       progress: drawn.presentation.progress ? { ...drawn.presentation.progress, fraction: drawn.meter?.fraction ?? drawn.presentation.progress.fraction } : null,
       stateDot: world(drawn.stateDot), meter: world(drawn.meterBox),
-      controls: drawn.hits.filter(hit => hit.part === "delete" || hit.part === "cancel").map(hit => ({ part: hit.part, x: drawn.node.box.x + hit.box.x, y: drawn.node.box.y + hit.box.y, width: hit.box.w, height: hit.box.h })),
-      wave: drawn.wave ? { active: true, x: body.x, y: body.y, width: body.w, height: body.h, animation: this.reducedMotion.matches ? "none" : "render-wave", alpha: drawn.wave.alpha, spread: drawn.wave.spread, cycleMs: 2400, reducedMotion: this.reducedMotion.matches } : null,
+      controls: drawn.hits.filter(hit => hit.part === "delete" || hit.part === "cancel").map(hit => ({ part: hit.part, ...world(hit.box)! })),
+      wave: drawn.wave ? { active: true, ...paintedBody, animation: this.reducedMotion.matches ? "none" : "render-wave", alpha: drawn.wave.alpha * drawn.container.alpha, spread: drawn.wave.spread * scale, cycleMs: 2400, reducedMotion: this.reducedMotion.matches } : null,
       loadingPulse: drawn.loadingPulse ? { active: true, alpha: drawn.loadingPulse.alpha, cycleMs: 2800, reducedMotion: this.reducedMotion.matches } : null,
-      references: [...drawn.pictures].filter(([key]) => key.startsWith("reference-")).map(([key, picture]) => ({ key, ready: picture.sprite.visible, x: drawn.node.box.x + picture.sprite.x, y: drawn.node.box.y + picture.sprite.y, width: picture.sprite.width, height: picture.sprite.height })),
+      landing: drawn.landing ? { active: true, scale: drawn.landing.scale, alpha: drawn.landing.alpha, durationMs: 260 } : null,
+      references: [...drawn.pictures].filter(([key]) => key.startsWith("reference-")).map(([key, picture]) => ({ key, ready: picture.sprite.visible, ...world({ x: picture.sprite.x, y: picture.sprite.y, w: picture.sprite.width, h: picture.sprite.height })!, ...(/^(sha256:)?[0-9a-f]{64}$/i.test(picture.displayed ?? "") ? { sha: picture.displayed!.replace(/^sha256:/, "") } : {}) })),
       words: drawn.presentation.words,
       chips: drawn.chips.map(chip => ({ text: chip.text, missing: chip.missing, ...world(chip.box)! })),
       media: {
@@ -860,6 +899,7 @@ export class PixiScene {
 
   private remove(drawn: Drawn) {
     drawn.alive = false
+    this.finishLanding(drawn)
     this.dropLatent(drawn)
     for (const picture of drawn.pictures.values()) this.dropPicture(picture)
     drawn.pictures.clear()
@@ -874,6 +914,7 @@ export class PixiScene {
     this.reducedMotion.removeEventListener("change", this.motionChanged)
     for (const drawn of this.records.values()) this.remove(drawn)
     this.records.clear()
+    this.landed.clear()
     this.cache.destroy()
     this.layer.destroy({ children: true })
     for (const texture of this.checkers.values()) texture.destroy(true)
