@@ -309,7 +309,7 @@ impl Store {
     /// expire uses past the TTL; then, while the disk is short of `incoming` bytes and a reserve,
     /// drop the least recently used. False when `incoming` still does not fit: skip the write.
     /// An origin's handle runs none. A handle collects once at a time: an admit that finds one
-    /// collecting waits for it and judges the disk by what it freed, never refused meanwhile.
+    /// collecting waits for it, judges the disk again and, still short, collects for its own bytes.
     /// Short, the machine's garbage goes first (`on_short`), then the store's own.
     pub fn maintain(&self, incoming: u64) -> Result<bool> {
         if !self.cache {
@@ -323,9 +323,9 @@ impl Store {
         if !due() && short()? == 0 {
             return Ok(true);
         }
-        let seen = *self.collections.lock().unwrap_or_else(PoisonError::into_inner);
         let mut collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
-        if *collections == seen {
+        // Judged again once another's collection ends: what it freed was for its own bytes.
+        if due() || short()? > 0 {
             // The machine's garbage goes before any model (`on_short`).
             if let (Some(reclaim), 1..) = (self.reclaim.get(), short()?) {
                 (reclaim.0)(incoming);
