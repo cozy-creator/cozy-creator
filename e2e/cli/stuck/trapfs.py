@@ -2,7 +2,7 @@
 
   trapfs.py <backing dir> <mount point> <trap file>
 
-The trap file says what goes unanswered until it is emptied: a pid, every FLUSH from that process's threads (its exit closes its
+The trap file says what goes unanswered until it is emptied: pids, every FLUSH from those processes' threads (an exit closes its
 files there, so its last thread sits in the kernel, as muromisan's TensorD sat in the NVIDIA driver); `<pid>:<seconds>`, the same for
 that long (a slow exit); `writes`, every WRITE (a process logging there hangs as on a network filesystem that stopped). Everything
 else is answered at once. No request is held past MAX_HOLD, so a cell that dies midway leaves nothing waiting for good.
@@ -38,21 +38,22 @@ class Trap(Operations):
         except OSError:
             return False
 
-    def _rule(self):
-        said = self._said()
-        if said == "writes":
-            return "writes", None, MAX_HOLD
-        pid, _, seconds = said.partition(":")
-        if pid.isdigit():
-            return "flush", pid, float(seconds) if seconds else MAX_HOLD
-        return None, None, 0
+    def _holds(self, what, tid):
+        """How long a `what` from thread `tid` is held now, 0 for not at all."""
+        said = self._said().split()
+        if what == "writes":
+            return MAX_HOLD if "writes" in said else 0
+        for token in said:
+            pid, _, seconds = token.partition(":")
+            if pid.isdigit() and self._of(tid, pid):
+                return float(seconds) if seconds else MAX_HOLD
+        return 0
 
     def _hold(self, what):
         _, _, tid = fuse_get_context()
         held, began = False, time.monotonic()
         while True:
-            kind, pid, most = self._rule()
-            if kind != what or (pid and not self._of(tid, pid)) or time.monotonic() - began >= min(most, MAX_HOLD):
+            if time.monotonic() - began >= min(self._holds(what, tid), MAX_HOLD):
                 break
             if not held:
                 print(f"holding a {what} from {tid}", flush=True)

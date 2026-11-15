@@ -170,7 +170,7 @@ echo "stuck: started in ${took} s beside pid $first, on port $port"
 
 step "stuck: a stop whose service can't exit"
 second=$(stuck_service) parent=$(machine_pid)
-echo "$second" > "$trap"
+echo "$first $second" > "$trap"
 t0=$SECONDS
 kill "$parent"
 stuck_gone "$parent" 150 || check "stuck: the machine (pid $parent) runs 150 s after its stop, its service stuck: $(ps -o pid,stat,args -p "$parent")"
