@@ -1,5 +1,6 @@
 // Production scale protocol; SOURCE ONLY until the coordinator authorizes execution.
 // Prepare: COZY=... PIXI_OUT=... PIXI_PHASE=prepare node pixi-scale.js
+// Resume an interrupted preparation into a NEW receipt: add PREPARED=.../prepared.json to the prepare command.
 // Measure: COZY=... CHROME=... PLAYWRIGHT=... PIXI_OUT=... PREPARED=.../prepared.json PIXI_PHASE=measure node pixi-scale.js
 // Optional SOURCE_DIR, CANDIDATE_DIST, CHROME_ARGS (JSON array), FFMPEG, DPR=1|2.
 // Uses the existing default-home Calcifer, public CLI imports and real /canvas writes. Never seeds a database, rents, or restarts services.
@@ -97,7 +98,7 @@ async function candidate(context, origin) {
     sameService();
     const response = await fetch(origin + path, { method: body ? 'PATCH' : 'GET', headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', ...(body ? { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(STEP) });
     if (!response.ok) throw new Error(`API ${body ? 'PATCH' : 'GET'} status ${response.status}`);
-    return response.json();
+    const value = await response.json(); sameService(); return value;
   };
   const cli = (args, cwd, budget = PREPARE) => {
     sameService(); let result;
@@ -108,24 +109,73 @@ async function candidate(context, origin) {
   seen.backend = { pid: holder.pid, version: (await api('/v1/status')).version };
   if (process.env.PIXI_PHASE === 'prepare') {
     during = 'verify 5000 distinct source files';
-    const files = sources(process.env.SOURCE_DIR ?? '/home/fidika/cozy_v2/outputs/canvas-library-selection/fixtures/cards');
+    const priorPath = process.env.PREPARED ? realpathSync(process.env.PREPARED) : null;
+    const priorBytes = priorPath ? readFileSync(priorPath) : null, prior = priorBytes ? JSON.parse(priorBytes) : null;
+    if (prior && (prior.version !== 1 || prior.files?.length !== 5000 || !Array.isArray(prior.projects))) throw new Error('resume requires a scale preparation manifest');
+    const files = prior && !process.env.SOURCE_DIR ? prior.files.map((file, index) => {
+      const path = realpathSync(file.file), bytes = readFileSync(path), [width, height] = webpSize(bytes);
+      if (file.index !== index || width !== 512 || height !== 288 || hash(bytes) !== file.sha256) throw new Error(`resume source ${index} differs from its receipt`);
+      return { ...file, file: path, bytes: bytes.length, width, height };
+    }) : sources(process.env.SOURCE_DIR ?? '/home/fidika/cozy_v2/outputs/canvas-library-selection/fixtures/cards');
     if (new Set(files.map(file => file.sha256)).size !== 5000) throw new Error('5000 distinct content hashes required before creating projects');
-    const manifest = { version: 1, files, source_set_sha256: hash(JSON.stringify(files.map(file => file.sha256))), projects: [], created: new Date().toISOString() };
+    const sourceHash = hash(JSON.stringify(files.map(file => file.sha256)));
+    if (prior && (sourceHash !== prior.source_set_sha256 || prior.files.some((file, index) => file.index !== index || file.sha256 !== files[index].sha256))) throw new Error('resume source set differs from its receipt');
+    const manifest = { ...(prior ?? {}), version: 1, files, source_set_sha256: sourceHash, projects: prior?.projects ?? [], created: prior?.created ?? new Date().toISOString(), backend: seen.backend };
+    if (prior) {
+      const parent = resolve(priorPath, '..');
+      seen.resume = manifest.resumed_from = { prepared: priorPath, prepared_sha256: hash(priorBytes), result: join(parent, 'result.json'), at: new Date().toISOString() };
+      if (new Set(manifest.projects.map(project => project.count)).size !== manifest.projects.length || new Set(manifest.projects.map(project => project.id)).size !== manifest.projects.length || manifest.projects.some(project => !COUNTS.includes(project.count) || !project.id || !project.folder || project.columns !== Math.ceil(Math.sqrt(project.count * 1.25)))) throw new Error('resume project ownership metadata is inconsistent');
+      // Copy references before publishing the new manifest, so a second interruption still leaves self-contained relative paths.
+      for (const project of manifest.projects) for (const [index, reference] of Object.entries(project.references ?? {})) {
+        if (reference !== `reference-${project.count}-${index}.rgb`) throw new Error('resume reference path differs from the generated receipt');
+        const bytes = readFileSync(join(parent, reference));
+        if (bytes.length !== 64 * 36 * 3) throw new Error('resume RGB reference is incomplete');
+        writeFileSync(join(out, reference), bytes);
+      }
+    }
     save('prepared.json', manifest);
+    const readOwned = async project => {
+      const state = await api(`/v1/projects/${encodeURIComponent(project.id)}`);
+      if (state.id !== project.id || realpathSync(state.path) !== realpathSync(project.folder)) throw new Error(`project ${project.count} identity/folder changed; nothing overwritten`);
+      const expected = new Map(files.slice(0, project.count).map(file => [NAME(file.index), file.sha256])), byName = new Map();
+      for (const asset of state.assets) {
+        if (byName.has(asset.name) || !expected.has(asset.name) || asset.kind !== 'image' || asset.sha256 !== `sha256:${expected.get(asset.name)}`) throw new Error(`project ${project.count} has an unexpected or changed asset ${asset.name}; nothing overwritten`);
+        byName.set(asset.name, asset);
+      }
+      if (state.entities?.length) throw new Error(`project ${project.count} has unrelated entities; nothing overwritten`);
+      return byName;
+    };
+    // A resume never discovers another person's edits only after modifying an earlier project in the cohort.
+    for (const project of manifest.projects) {
+      const existing = await readOwned(project);
+      const confirmed = (project.imports ?? []).flatMap(batch => batch.names ?? files.slice(batch.first, batch.first + batch.count).map(file => NAME(file.index)));
+      if (confirmed.some(name => !existing.has(name))) throw new Error(`project ${project.count} lost a previously confirmed asset; nothing recreated`);
+      if (project.cards) {
+        if (existing.size !== project.count) throw new Error(`project ${project.count} completed asset set changed; nothing recreated`);
+        const rows = (await api(`/v1/projects/${encodeURIComponent(project.id)}/canvas`)).cards;
+        if (Object.entries(project.cards).some(([name, box]) => ['x', 'y', 'w'].some(key => rows[name]?.[key] !== box[key]))) throw new Error(`project ${project.count} completed layout changed; nothing overwritten`);
+      }
+    }
     for (const count of COUNTS) {
       during = `prepare ${count}`;
-      const folder = join(out, `project-${count}`), made = cli(['new', '--unencrypted', '--json', folder], out);
-      if (!made.created || !made.id) throw new Error('cozy new did not create the owned project');
-      const project = { count, id: made.id, folder, columns: Math.ceil(Math.sqrt(count * 1.25)), imports: [], references: {} };
-      manifest.projects.push(project); save('prepared.json', manifest);
+      let project = manifest.projects.find(project => project.count === count);
+      if (!project) {
+        const folder = join(out, `project-${count}`), made = cli(['new', '--unencrypted', '--json', folder], out);
+        if (!made.created || !made.id) throw new Error('cozy new did not create the owned project');
+        project = { count, id: made.id, folder, columns: Math.ceil(Math.sqrt(count * 1.25)), imports: [], references: {} };
+        manifest.projects.push(project); manifest.projects.sort((a, b) => a.count - b.count); save('prepared.json', manifest);
+      }
+      project.imports ??= []; project.references ??= {};
       for (let first = 0; first < count; first += 100) {
-        const path = join(out, `apply-${count}-${first}.json`), input = Object.fromEntries(files.slice(first, Math.min(count, first + 100)).map(file => [NAME(file.index), { kind: 'image', takes: [{ file: file.file }] }]));
+        const existing = await readOwned(project), missing = files.slice(first, Math.min(count, first + 100)).filter(file => !existing.has(NAME(file.index)));
+        if (!missing.length) continue;
+        const path = join(out, `apply-${count}-${first}.json`), input = Object.fromEntries(missing.map(file => [NAME(file.index), { kind: 'image', takes: [{ file: file.file }] }]));
         writeFileSync(path, JSON.stringify(input));
-        const input_sha256 = hash(readFileSync(path)); cli(['apply', '-f', path, '--json'], folder);
-        project.imports.push({ first, count: Object.keys(input).length, input_sha256, after_sha256: hash(readFileSync(path)) });
+        const input_sha256 = hash(readFileSync(path)); cli(['apply', '-f', path, '--json'], project.folder);
+        project.imports.push({ first, count: missing.length, names: Object.keys(input), receipt: out, input_sha256, after_sha256: hash(readFileSync(path)) });
         save('prepared.json', manifest);
       }
-      const path = `/v1/projects/${encodeURIComponent(project.id)}`, state = await api(path), byName = new Map(state.assets.map(asset => [asset.name, asset]));
+      const path = `/v1/projects/${encodeURIComponent(project.id)}`, byName = await readOwned(project);
       if (byName.size !== count || files.slice(0, count).some(file => byName.get(NAME(file.index))?.sha256 !== `sha256:${file.sha256}`)) throw new Error('public CLI imported assets differ from verified source set');
       const before = await api(`${path}/canvas`), cards = Object.fromEntries(files.slice(0, count).map(file => [NAME(file.index), { x: (file.index % project.columns) * 288, y: Math.floor(file.index / project.columns) * 220, w: 240 }]));
       await api(`${path}/canvas`, { cards, placed: Object.fromEntries(Object.keys(cards).map(name => [name, before.seq])) });
