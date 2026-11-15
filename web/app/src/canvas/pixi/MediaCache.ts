@@ -157,7 +157,7 @@ export class MediaCache {
         const response = await this.client.transport.fetch(request.path, { signal: controller.signal })
         httpStatus = response.status
         if (response.status === 202 && request.sha256) {
-          void response.body?.cancel()
+          await response.body?.cancel()
           if (!live()) return
           // Accepted work is still pending, not a failed image. A large thumbnail queue can outlast the error retry budget.
           entry.tries = 0
@@ -170,7 +170,7 @@ export class MediaCache {
         }
         if (!response.ok || response.status === 202) {
           stage = "http"
-          void response.body?.cancel()
+          await response.body?.cancel()
           throw new Error("Thumbnail is not available")
         }
         const blob = await response.blob()
