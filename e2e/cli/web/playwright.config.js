@@ -12,7 +12,14 @@ const out = join(process.env.OUT || tmpdir(), 'web');
 // (CanvasSurface.tsx); Chrome's SwiftShader is named so it never rests on Chrome's deprecated automatic fallback, and Firefox is told to
 // give its software context without the caveat, as Chrome's does. The browser's setting, not the page's: each cell's bars stand.
 const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME, args: ['--enable-unsafe-swiftshader'] } };
-const firefox = { browserName: 'firefox', launchOptions: { firefoxUserPrefs: { 'webgl.force-enabled': true, 'webgl.disable-fail-if-major-performance-caveat': true } } };
+const firefox = {
+  browserName: 'firefox',
+  launchOptions: {
+    // Mesa's llvmpipe through EGL, with no display (install-browser-deps.sh installs it).
+    env: { ...process.env, LIBGL_ALWAYS_SOFTWARE: '1' },
+    firefoxUserPrefs: { 'webgl.force-enabled': true, 'webgl.forbid-software': false, 'gfx.x11-egl.force-enabled': true, 'webgl.disable-fail-if-major-performance-caveat': true },
+  },
+};
 
 module.exports = defineConfig({
   testDir: __dirname,
