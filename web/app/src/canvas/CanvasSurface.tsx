@@ -1,6 +1,6 @@
 // Pixi's CSP-safe uniform synchronization; this does not grant eval permission.
 import "pixi.js/unsafe-eval"
-import { Application, Container, EventsTicker, type WebGLRenderer } from "pixi.js"
+import { Application, Container, EventsTicker, FederatedPointerEvent, type WebGLRenderer } from "pixi.js"
 import { Viewport as PixiViewport } from "pixi-viewport"
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
@@ -38,6 +38,7 @@ interface Props {
   onDragStart(event: Pointer, node: ElementNode, nodes: ElementNode[]): void
   onDrag(event: Pointer, node: ElementNode, nodes: ElementNode[]): void
   onDragStop(event: Pointer, node: ElementNode, nodes: ElementNode[]): void
+  onDragCancel(nodes: ElementNode[]): void
 }
 
 /** Rendering is independent of document edits. Only a card being interacted with owns a native overlay. */
@@ -87,13 +88,13 @@ export function CanvasSurface(props: Props) {
     let unbind = () => {}, resize: ResizeObserver | null = null
     const stops: (() => void)[] = []
     let width = element.clientWidth, height = element.clientHeight, pointerDown = false, space = false
-    let marquee: { start: { x: number; y: number }; additive: Set<string> } | null = null
+    let marquee: { id: number; start: { x: number; y: number }; additive: Set<string> } | null = null
     let drag: { id: number; start: { x: number; y: number }; nodes: ElementNode[]; begun: boolean } | null = null
     let clicked: { id: number; node: ElementNode | null; part: string; x: number; y: number; touch: boolean } | null = null
     let lastTap: { name: string; at: number; x: number; y: number } | null = null
     const touches = new Set<number>()
     let multitouch = false
-    let nativePan: { point: { x: number; y: number }; camera: Viewport } | null = null
+    let nativePan: { id: number; point: { x: number; y: number }; camera: Viewport } | null = null
     let hoveredBefore = ""
     let drawnSelection = ""
     let renderFrames = 0
@@ -110,7 +111,7 @@ export function CanvasSurface(props: Props) {
 
     const visible = () => isActive.current && tabShown.get() && !graphicsLost
     const interactions = () => controller.setInteractionEnabled(visible() && !isDisabled.current && !drag && !marquee)
-    enabled.current = () => { scene?.setVisible(visible()); interactions(); if (!visible()) { stopHoverPreview(); cancelAnimationFrame(frame); frame = 0 } }
+    enabled.current = () => { scene?.setVisible(visible()); interactions(); if (!visible()) { cancel(); cancelAnimationFrame(frame); frame = 0 } }
     const inBounds = (x: number, y: number) => { const box = element.getBoundingClientRect(); return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom }
     const nodeAt = (x: number, y: number, excluded = new Set<string>()) => {
       if (!inBounds(x, y)) return null
@@ -207,15 +208,28 @@ export function CanvasSurface(props: Props) {
       setHovered(name)
       invalidate()
     }
+    // Pixi already receives captured moves/releases on document/window. A native overlay only needs the missing press path.
+    const nativeTouchDown = (event: PointerEvent) => {
+      if (!app || event.pointerType !== "touch" || event.target === app.canvas) return
+      const events = app.renderer.events, boundary = events.rootBoundary
+      const touch = new FederatedPointerEvent(boundary)
+      Object.assign(touch, { type: "pointerdown", nativeEvent: event, pointerId: event.pointerId, pointerType: event.pointerType, isPrimary: event.isPrimary, button: event.button, buttons: event.buttons, altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey })
+      touch.client.set(event.clientX, event.clientY)
+      events.mapPositionToPoint(touch.global, event.clientX, event.clientY)
+      touch.screen.copyFrom(touch.global); touch.offset.copyFrom(touch.global)
+      boundary.rootTarget = app.renderer.lastObjectRendered
+      boundary.mapEvent(touch)
+    }
     const down = (event: PointerEvent) => {
       if (!visible() || callbacks.current.locked || event.button > 1) return
       stopHoverPreview()
+      if (nativeInput(event.target)) return
       if (event.pointerType === "touch") {
         touches.add(event.pointerId)
         if (touches.size > 1) {
           multitouch = true; clicked = null
-          if (drag?.begun) store.dragDropped(drag.nodes)
-          drag = null; marquee = null; interactions(); invalidate(); return
+          callbacks.current.onDragCancel(drag?.begun ? drag.nodes : [])
+          drag = null; marquee = null; interactions(); nativeTouchDown(event); invalidate(); return
         }
       }
       pointerDown = true
@@ -224,15 +238,14 @@ export function CanvasSurface(props: Props) {
       const hit = scene?.hitTest(controller.screenToWorld({ x: event.clientX, y: event.clientY }))
       const nativeTitle = event.target instanceof Element && Boolean(event.target.closest(".nm"))
       clicked = { id: event.pointerId, node, part: nativeTitle ? "title" : hit?.part ?? "body", x: event.clientX, y: event.clientY, touch: event.pointerType === "touch" }
-      if (nativeInput(event.target)) return
       if (space || event.button === 1) clicked = null
       if (!isDisabled.current && (space || event.button === 1) && event.target !== app?.canvas) {
-        nativePan = { point: { x: event.clientX, y: event.clientY }, camera: controller.getViewport() }
+        nativePan = { id: event.pointerId, point: { x: event.clientX, y: event.clientY }, camera: controller.getViewport() }
         controller.setInteractionEnabled(false); element.setPointerCapture(event.pointerId); event.preventDefault(); return
       }
-      if (space || event.button === 1 || (!node && !event.shiftKey) || (event.pointerType === "touch" && !node?.selected)) { invalidate(); return }
+      if (space || event.button === 1 || (!node && !event.shiftKey) || (event.pointerType === "touch" && !node?.selected)) { nativeTouchDown(event); invalidate(); return }
       if (!node) {
-        marquee = { start: controller.screenToWorld({ x: event.clientX, y: event.clientY }), additive: new Set(event.ctrlKey || event.metaKey ? controller.getNodes().filter(n => n.selected).map(n => n.id) : []) }
+        marquee = { id: event.pointerId, start: controller.screenToWorld({ x: event.clientX, y: event.clientY }), additive: new Set(event.ctrlKey || event.metaKey ? controller.getNodes().filter(n => n.selected).map(n => n.id) : []) }
       } else {
         const modifiers = event.shiftKey || event.metaKey || event.ctrlKey
         const selected = new Set(controller.getNodes().filter(n => n.selected).map(n => n.id))
@@ -241,7 +254,8 @@ export function CanvasSurface(props: Props) {
         if (!modifiers && hit?.part !== "delete" && hit?.part !== "cancel") drag = { id: event.pointerId, start: controller.screenToWorld({ x: event.clientX, y: event.clientY }), nodes: controller.getNodes().filter(n => n.selected).map(n => ({ ...n, position: { ...n.position }, bounds: { ...n.bounds } })), begun: false }
       }
       interactions()
-      if (event.pointerType === "touch") viewport?.plugins.resume("pinch")
+      if (event.pointerType === "touch" && !isDisabled.current) viewport?.plugins.resume("pinch")
+      nativeTouchDown(event)
       element.setPointerCapture(event.pointerId)
       if (event.pointerType !== "touch") event.stopPropagation()
       event.preventDefault()
@@ -307,10 +321,20 @@ export function CanvasSurface(props: Props) {
       }
       interactions(); settle = 2; invalidate()
     }
-    const cancel = (event: Event) => { touches.clear(); multitouch = false; nativePan = null; space = false; element.style.cursor = ""; if (drag?.begun) store.dragDropped(drag.nodes); drag = null; marquee = null; clicked = null; pointerDown = false; if (selection.current) selection.current.hidden = true; interactions(); invalidate(); void event }
+    const cancel = () => {
+      stopHoverPreview()
+      for (const id of new Set([...touches, drag?.id, marquee?.id, clicked?.id, nativePan?.id])) if (id !== undefined && element.hasPointerCapture(id)) element.releasePointerCapture(id)
+      callbacks.current.onDragCancel(drag?.begun ? drag.nodes : [])
+      controller.cancelInteraction()
+      touches.clear(); multitouch = false; nativePan = null; space = false; element.style.cursor = ""
+      drag = null; marquee = null; clicked = null; pointerDown = false
+      if (selection.current) selection.current.hidden = true
+      interactions(); invalidate()
+    }
     const double = (event: MouseEvent) => { if (!visible() || callbacks.current.locked) return; const node = nodeAt(event.clientX, event.clientY); if (node && !nativeInput(event.target)) callbacks.current.onNodeDoubleClick(event, node) }
     const menu = (event: MouseEvent) => { if (!visible() || callbacks.current.locked) return; const node = nodeAt(event.clientX, event.clientY); if (node && !nativeInput(event.target)) callbacks.current.onNodeContextMenu(event, node) }
     const keyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !nativeInput(event.target) && (pointerDown || drag || marquee || nativePan)) cancel()
       if (!visible() || isDisabled.current || nativeInput(event.target)) return
       if (event.code === "Space") { space = true; element.style.cursor = "grab"; event.preventDefault() }
       if (event.target !== element || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Enter"].includes(event.key)) return
@@ -321,16 +345,11 @@ export function CanvasSurface(props: Props) {
     }
     const keyUp = (event: KeyboardEvent) => { if (event.code === "Space") { space = false; element.style.cursor = "" } }
     const wheel = (event: WheelEvent) => {
-      if (!visible() || isDisabled.current || nativeInput(event.target)) return
+      if (!visible() || isDisabled.current || callbacks.current.locked || drag || marquee || nativePan || nativeInput(event.target)) return
       stopHoverPreview()
       if (event.target !== app?.canvas) {
         event.preventDefault()
-        const at = controller.getViewport(), p = controller.screenToWorld({ x: event.clientX, y: event.clientY })
-        const delta = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? height : 1
-        if (event.ctrlKey || event.metaKey) {
-          const zoom = Math.max(ZOOMS[0], Math.min(ZOOMS[ZOOMS.length - 1], at.zoom * Math.exp(-event.deltaY * delta * .005)))
-          void controller.setViewport({ x: at.x + p.x * (at.zoom - zoom), y: at.y + p.y * (at.zoom - zoom), zoom })
-        } else void controller.setViewport({ ...at, x: at.x - event.deltaX * delta, y: at.y - event.deltaY * delta })
+        viewport?.plugins.wheel(event)
       }
       pointerDown = false; changeHover(null); settle = 3; invalidate()
     }
@@ -338,8 +357,6 @@ export function CanvasSurface(props: Props) {
     const handlers = { pointerdown: down, pointermove: move, pointerup: up, pointercancel: cancel, dblclick: double, contextmenu: menu, wheel, pointerleave: leave }
     for (const [name, handler] of Object.entries(handlers)) element.addEventListener(name, handler as EventListener, { capture: name === "pointerdown", passive: false })
     window.addEventListener("blur", cancel)
-    window.addEventListener("blur", stopHoverPreview)
-    window.addEventListener("pointercancel", stopHoverPreview)
     window.addEventListener("pointerup", up)
     window.addEventListener("pointercancel", cancel)
     window.addEventListener("keydown", keyDown)
@@ -376,7 +393,7 @@ export function CanvasSurface(props: Props) {
       // A fresh import owns a native name field until it is accepted.
       if (!name) { const draft = controller.getNodes().find(n => store.get(n.data.name)?.draft !== undefined); if (draft) changeHover(draft.data.name) }
       invalidate()
-    }), store.tools.subscribe(invalidate), theme.subscribe(invalidate), tabShown.subscribe(() => { scene?.setVisible(visible()); interactions(); if (!visible()) { stopHoverPreview(); cancel(new Event("visibilitychange")); cancelAnimationFrame(frame); frame = 0 } else invalidate() }), queries.getQueryCache().subscribe(event => {
+    }), store.tools.subscribe(invalidate), theme.subscribe(invalidate), tabShown.subscribe(() => { scene?.setVisible(visible()); interactions(); if (!visible()) { cancel(); cancelAnimationFrame(frame); frame = 0 } else invalidate() }), queries.getQueryCache().subscribe(event => {
       if (event.type !== "updated" || event.action.type !== "success") return
       const key = event.query.queryKey
       if ((key[0] === "project-run" && key[1] === store.projectId) || (key[0] === "machines" && sceneWork)) invalidate()
@@ -395,8 +412,7 @@ export function CanvasSurface(props: Props) {
       created.renderer.scheduler.destroy()
       created.canvas.className = "canvas-pixels canvas-pane"
       const lost = (event: Event) => {
-        event.preventDefault(); graphicsLost = true; cancelAnimationFrame(frame); frame = 0
-        stopHoverPreview()
+        event.preventDefault(); graphicsLost = true; cancel(); cancelAnimationFrame(frame); frame = 0
         scene?.setVisible(false); interactions(); setFailed("Graphics context lost; waiting for the browser to restore it.")
       }
       const restored = () => { graphicsLost = false; setFailed(null); scene?.setVisible(visible()); interactions(); invalidate() }
@@ -421,11 +437,9 @@ export function CanvasSurface(props: Props) {
     })().catch(error => { if (!stopped) setFailed(error instanceof Error ? error.message : String(error)) })
 
     return () => {
-      stopped = true; stopHoverPreview(); cancelAnimationFrame(frame); resize?.disconnect(); unbind(); for (const stop of stops) stop()
+      stopped = true; cancel(); cancelAnimationFrame(frame); resize?.disconnect(); unbind(); for (const stop of stops) stop()
       for (const [name, handler] of Object.entries(handlers)) element.removeEventListener(name, handler as EventListener, { capture: name === "pointerdown" })
       window.removeEventListener("blur", cancel)
-      window.removeEventListener("blur", stopHoverPreview)
-      window.removeEventListener("pointercancel", stopHoverPreview)
       window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", cancel)
       window.removeEventListener("keydown", keyDown); window.removeEventListener("keyup", keyUp)
       scene?.destroy(); app?.destroy(true, { children: true })
@@ -441,7 +455,7 @@ export function CanvasSurface(props: Props) {
   return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby={helpId}>
     {props.children}
     <div ref={overlay} className="canvas-world">
-      {native && view && <div key={native.id} className={`canvas-node ${native.selected ? "selected" : ""}`} data-id={native.id} style={{ left: native.bounds.x, top: native.bounds.y, width: native.bounds.w, height: native.bounds.h }}>
+      {native && view && <div key={native.id} className={`canvas-node ${native.selected ? "selected" : ""} ${store.isDragging(native.data.name) ? "dragging" : ""} ${native.gliding ? "glide" : ""}`} data-id={native.id} style={{ left: native.bounds.x, top: native.bounds.y, width: native.bounds.w, height: native.bounds.h }}>
         {native.type === "entity" ? <EntityCard data={native.data} /> : <Card data={native.data} selected={native.selected} previewHover={previewHover} />}
       </div>}
     </div>
