@@ -1,5 +1,6 @@
+// Pixi's CSP-safe uniform synchronization; this does not grant eval permission.
 import "pixi.js/unsafe-eval"
-import { Application, Container, EventsTicker } from "pixi.js"
+import { Application, Container, EventsTicker, type WebGLRenderer } from "pixi.js"
 import { Viewport as PixiViewport } from "pixi-viewport"
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
@@ -25,6 +26,7 @@ interface Props {
   disabled: boolean
   locked?: boolean
   children?: ReactNode
+  onReady?(): void
   onSelectionChange(value: { nodes: readonly ElementNode[] }): void
   onMoveEnd(event: unknown, view: Viewport): void
   onNodeClick(event: MouseEvent, node: ElementNode): void
@@ -76,7 +78,8 @@ export function CanvasSurface(props: Props) {
   useEffect(() => {
     const element = root.current
     if (!element) return
-    let stopped = false, frame = 0, settle = 0, app: Application | null = null, viewport: PixiViewport | null = null
+    let graphicsLost = false
+    let stopped = false, frame = 0, settle = 0, app: Application<WebGLRenderer> | null = null, viewport: PixiViewport | null = null
     let scene: ReturnType<typeof createPixiScene> | null = null
     let unbind = () => {}, resize: ResizeObserver | null = null
     const stops: (() => void)[] = []
@@ -90,23 +93,22 @@ export function CanvasSurface(props: Props) {
     let nativePan: { point: { x: number; y: number }; camera: Viewport } | null = null
     let hoveredBefore = ""
     let drawnSelection = ""
+    let renderFrames = 0
+    let graphics: { backend: string; renderer: string; version: string; software: boolean } | null = null
+    let sceneWork = false
     const requestedRuns = new Set<number>()
 
-    const visible = () => isActive.current && tabShown.get()
+    const visible = () => isActive.current && tabShown.get() && !graphicsLost
     const interactions = () => controller.setInteractionEnabled(visible() && !isDisabled.current && !drag && !marquee)
     enabled.current = () => { scene?.setVisible(visible()); interactions(); if (!visible()) { cancelAnimationFrame(frame); frame = 0 } }
     const inBounds = (x: number, y: number) => { const box = element.getBoundingClientRect(); return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom }
     const nodeAt = (x: number, y: number, excluded = new Set<string>()) => {
       if (!inBounds(x, y)) return null
-      const point = controller.screenToWorld({ x, y })
-      const nodes = controller.getNodes()
-      const hit = scene?.hitTest(point)
-      const drawn = hit && nodes.find(node => node.data.name === hit.name && !excluded.has(node.id))
-      if (drawn) return drawn
-      for (const selected of [true, false]) for (let i = nodes.length - 1; i >= 0; i--) {
-        const node = nodes[i], box = node.bounds
-        if (Boolean(node.selected) === selected && !excluded.has(node.id) && point.x >= box.x && point.x <= box.x + box.w && point.y >= box.y && point.y <= box.y + box.h) return node
-      }
+      const hit = scene?.hitTest(controller.screenToWorld({ x, y }), excluded)
+      if (hit) return controller.getNodes().find(node => node.data.name === hit.name) ?? null
+      const native = document.elementFromPoint(x, y)?.closest<HTMLElement>(".canvas-node[data-id]")
+      const id = native?.dataset.id
+      if (id && element.contains(native) && !excluded.has(id)) return controller.getNode(id) ?? null
       return null
     }
     const nativeInput = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest("button,input,select,textarea,[contenteditable],.canvas-control"))
@@ -131,6 +133,7 @@ export function CanvasSurface(props: Props) {
       const moved = was.x !== camera.x || was.y !== camera.y || was.zoom !== camera.zoom
       if (moved) settle = 2
       const names: SceneNode[] = []
+      sceneWork = false
       const machines = queries.getQueryData(machinesQuery(client).queryKey)?.machines ?? []
       for (const node of controller.getNodes()) {
         const view = store.get(node.data.name)
@@ -139,6 +142,7 @@ export function CanvasSurface(props: Props) {
         const box = node.bounds
         const onscreen = box.x * camera.zoom + camera.x < width && (box.x + box.w) * camera.zoom + camera.x > 0 && box.y * camera.zoom + camera.y < height && (box.y + box.h) * camera.zoom + camera.y > 0
         const rendering = view.asset?.standing === "making" || view.queued || view.asked !== undefined || Boolean(view.glimpse)
+        if (onscreen && rendering) sceneWork = true
         if (run && store.projectId && onscreen && rendering) {
           const query = runFullQuery(client, store.projectId, run.number, 0)
           const full = queries.getQueryData(query.queryKey)
@@ -155,18 +159,23 @@ export function CanvasSurface(props: Props) {
         const installing = !run && pkg ? machines.flatMap(m => ownActivity(m, store.projectId)).find(o => o.kind === "install" && o.subject === pkg) : undefined
         names.push({ id: node.id, name: node.data.name, box, view, selected: Boolean(node.selected), runContext: run || installing ? { run, machine, on, installing } : undefined })
       }
-      const hiddenName = hover.current ? store.resolveName(hover.current) : store.focusedName.get() && !store.focusEntering.get() ? store.focusedName.get()! : undefined
-      scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenName })
+      const hiddenNames = new Set<string>()
+      if (hover.current) hiddenNames.add(store.resolveName(hover.current))
+      if (store.focusedName.get() && !store.focusEntering.get()) hiddenNames.add(store.focusedName.get()!)
+      scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenNames })
       const animating = scene.advance(now)
       app.render()
-      if (store.empty || names.length) controller.markDrawn()
+      if (app.renderer.context.isLost) return
+      scene.didRender()
+      renderFrames++
+      if (!controller.hasDrawn && ((store.hasRead && store.empty) || scene.resourceStats().visibleCards > 0)) controller.markDrawn()
       positionOverlay()
       if (animating || moved || settle-- > 0) invalidate()
     }
     const invalidate = () => { if (!stopped && !frame && visible()) frame = requestAnimationFrame(draw) }
     update.current = invalidate
     store.canvasAt = (x, y) => {
-      if (!visible() || store.focusedName.get()) return null
+      if (!visible()) return null
       const top = document.elementFromPoint(x, y)
       if (!top || !element.contains(top)) return null
       const excluded = new Set(controller.getNodes().filter(n => store.isDragging(n.data.name)).map(n => n.id))
@@ -198,6 +207,7 @@ export function CanvasSurface(props: Props) {
       const nativeTitle = event.target instanceof Element && Boolean(event.target.closest(".nm"))
       clicked = { id: event.pointerId, node, part: nativeTitle ? "title" : hit?.part ?? "body", x: event.clientX, y: event.clientY, touch: event.pointerType === "touch" }
       if (nativeInput(event.target)) return
+      if (space || event.button === 1) clicked = null
       if (!isDisabled.current && (space || event.button === 1) && event.target !== app?.canvas) {
         nativePan = { point: { x: event.clientX, y: event.clientY }, camera: controller.getViewport() }
         controller.setInteractionEnabled(false); element.setPointerCapture(event.pointerId); event.preventDefault(); return
@@ -326,10 +336,10 @@ export function CanvasSurface(props: Props) {
         const bodyAt = controller.worldToScreen(body)
         const drawn = scene?.inspect(name)
         const project = <T extends { x: number; y: number; width: number; height: number }>(box: T | null) => box && { ...box, ...controller.worldToScreen(box), width: box.width * zoom, height: box.height * zoom }
-        const rendered = drawn ? { ...drawn, stateDot: project(drawn.stateDot), meter: project(drawn.meter), wave: project(drawn.wave), controls: drawn.controls.map(control => ({ ...control, ...controller.worldToScreen(control), width: control.width * zoom, height: control.height * zoom })), body: { ...drawn.body, ...controller.worldToScreen(drawn.body), width: drawn.body.width * zoom, height: drawn.body.height * zoom }, labels: Object.fromEntries(Object.entries(drawn.labels).map(([key, label]) => [key, { ...label, ...controller.worldToScreen(label), width: label.width * zoom, height: label.height * zoom }])) } : null
-        return { rendered, bounds: { x: a.x, y: a.y, width: box.w * zoom, height: box.h * zoom }, body: { x: bodyAt.x, y: bodyAt.y, width: body.w * zoom, height: body.h * zoom }, title: { x: a.x, y: a.y, width: box.w * zoom, height: HEAD * zoom } }
+        const rendered = drawn ? { ...drawn, references: drawn.references.map(reference => project(reference)!), chips: drawn.chips.map(chip => project(chip)!), stateDot: project(drawn.stateDot), meter: project(drawn.meter), wave: project(drawn.wave), controls: drawn.controls.map(control => ({ ...control, ...controller.worldToScreen(control), width: control.width * zoom, height: control.height * zoom })), body: { ...drawn.body, ...controller.worldToScreen(drawn.body), width: drawn.body.width * zoom, height: drawn.body.height * zoom }, labels: Object.fromEntries(Object.entries(drawn.labels).map(([key, label]) => [key, { ...label, ...controller.worldToScreen(label), width: label.width * zoom, height: label.height * zoom }])) } : null
+        return { rendered, position: { ...node.position }, bounds: { x: a.x, y: a.y, width: box.w * zoom, height: box.h * zoom }, body: { x: bodyAt.x, y: bodyAt.y, width: body.w * zoom, height: body.h * zoom }, title: { x: a.x, y: a.y, width: box.w * zoom, height: HEAD * zoom } }
       },
-      resources: () => scene?.resourceStats() ?? null,
+      resources: () => scene ? { ...scene.resourceStats(), graphics, frames: renderFrames, scheduledFrame: Boolean(frame), automaticTicker: false } : null,
     }
     Object.defineProperty(element, "canvasInspection", { value: inspection, configurable: true })
     stops.push(controller.subscribeCamera(() => { positionOverlay(); settle = 2; invalidate() }), controller.subscribeCameraEnd(view => callbacks.current.onMoveEnd(null, view)), controller.subscribeNodes(() => { announceSelection(); setOverlayVersion(v => v + 1); invalidate() }), store.sceneRevision.subscribe(() => {
@@ -338,17 +348,32 @@ export function CanvasSurface(props: Props) {
       // A fresh import owns a native name field until it is accepted.
       if (!name) { const draft = controller.getNodes().find(n => store.get(n.data.name)?.draft !== undefined); if (draft) changeHover(draft.data.name) }
       invalidate()
-    }), store.tools.subscribe(invalidate), theme.subscribe(invalidate), tabShown.subscribe(() => { scene?.setVisible(visible()); interactions(); if (!visible()) { cancel(new Event("visibilitychange")); cancelAnimationFrame(frame); frame = 0 } else invalidate() }), queries.getQueryCache().subscribe(invalidate))
+    }), store.tools.subscribe(invalidate), theme.subscribe(invalidate), tabShown.subscribe(() => { scene?.setVisible(visible()); interactions(); if (!visible()) { cancel(new Event("visibilitychange")); cancelAnimationFrame(frame); frame = 0 } else invalidate() }), queries.getQueryCache().subscribe(event => {
+      if (event.type !== "updated" || event.action.type !== "success") return
+      const key = event.query.queryKey
+      if ((key[0] === "project-run" && key[1] === store.projectId) || (key[0] === "machines" && sceneWork)) invalidate()
+    }))
 
     void (async () => {
-      const created = new Application()
-      await created.init({ preference: "webgl", width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, autoStart: false, sharedTicker: false, backgroundAlpha: 0, antialias: true, gcActive: false })
+      const created = new Application<WebGLRenderer>()
+      await created.init({ preference: ["webgl"], width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, autoStart: false, sharedTicker: false, backgroundAlpha: 0, antialias: true, gcActive: false })
       if (stopped) { created.destroy(true, { children: true }); return }
       app = created
+      const gl = created.renderer.gl, info = gl.getExtension("WEBGL_debug_renderer_info")
+      const backend = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER))
+      graphics = { backend: "webgl", renderer: backend, version: String(gl.getParameter(gl.VERSION)), software: /swiftshader|llvmpipe|lavapipe|softpipe|swrast|software/i.test(backend) }
       EventsTicker.removeTickerListener()
       // The scene owns resource eviction; no scheduled renderer GC needs a perpetual system ticker.
       created.renderer.scheduler.destroy()
       created.canvas.className = "canvas-pixels canvas-pane"
+      const lost = (event: Event) => {
+        event.preventDefault(); graphicsLost = true; cancelAnimationFrame(frame); frame = 0
+        scene?.setVisible(false); interactions(); setFailed("Graphics context lost; waiting for the browser to restore it.")
+      }
+      const restored = () => { graphicsLost = false; setFailed(null); scene?.setVisible(visible()); interactions(); invalidate() }
+      created.canvas.addEventListener("webglcontextlost", lost)
+      created.canvas.addEventListener("webglcontextrestored", restored)
+      stops.push(() => { created.canvas.removeEventListener("webglcontextlost", lost); created.canvas.removeEventListener("webglcontextrestored", restored) })
       element.prepend(created.canvas)
       viewport = new PixiViewport({ screenWidth: width, screenHeight: height, events: created.renderer.events, noTicker: true, passiveWheel: false, ignoreWheelFromOtherElements: true })
       viewport.drag({ wheel: true }).pinch().wheel({ wheelZoom: false, trackpadPinch: true, smooth: false }).clampZoom({ minScale: ZOOMS[0], maxScale: ZOOMS[ZOOMS.length - 1] })
@@ -358,6 +383,7 @@ export function CanvasSurface(props: Props) {
       scene = createPixiScene({ world, store, client, invalidate })
       scene.setVisible(visible())
       unbind = controller.bindCamera(element, viewport)
+      callbacks.current.onReady?.()
       interactions()
       resize = new ResizeObserver(() => { width = element.clientWidth; height = element.clientHeight; if (width > 0 && height > 0 && app && viewport) { app.renderer.resize(width, height, devicePixelRatio || 1); viewport.resize(width, height); invalidate() } })
       resize.observe(element)

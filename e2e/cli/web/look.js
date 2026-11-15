@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, BARS, DARK_OPEN, MP4, STEP_MS, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload } = require('./page');
+const { projectFolder, BARS, DARK_OPEN, MP4, STEP_MS, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload, canvasBox, canvasView } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const SIZES = [[1440, 900], [1920, 1080]];
@@ -116,7 +116,8 @@ async function died(why) {
         await page.setViewportSize({ width: SIZES[0][0], height: SIZES[0][1] });
         if (open) await open(page, theme);
         await settled(page);
-        const box = await locate(page).evaluate((el, pad) => {
+        const target = await locate(page);
+        const box = target?.bounds ? { x: Math.max(0,target.bounds.x-pad), y: Math.max(0,target.bounds.y-pad), right: Math.min(page.viewportSize().width,target.bounds.x+target.bounds.width+pad), bottom: Math.min(page.viewportSize().height,target.bounds.y+target.bounds.height+pad) } : await target.evaluate((el, pad) => {
           // A box's lines under it hang outside its node.
           const rects = [el, ...el.querySelectorAll('.tile-under')].map((one) => one.getBoundingClientRect());
           const r = { left: Math.min(...rects.map((one) => one.left)), top: Math.min(...rects.map((one) => one.top)), right: Math.max(...rects.map((one) => one.right)), bottom: Math.max(...rects.map((one) => one.bottom)) };
@@ -238,7 +239,7 @@ async function died(why) {
     if (new URL(page.url()).pathname !== projectPath) await goto(page, projectPath);
     await until(`every box drawn (${page === paper ? 'paper' : 'dark'})`, async () => {
       await fitCanvas(page);
-      return page.evaluate((names) => names.filter((name) => !document.querySelector(`.react-flow__node .card[data-asset="${name}"]`)), boxes);
+      return page.evaluate((names) => names.filter((name) => !document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered), boxes);
     }, (missing) => missing.length === 0, 30_000);
   });
 
@@ -290,7 +291,7 @@ async function died(why) {
     await page.getByRole('menuitem', { name: item }).click();
     await settled(page);
   };
-  const zoomOf = (page) => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
+  const zoomOf = (page) => canvasView(page).then(view => view.zoom);
   await shoot('canvas-fit', { open: (page) => leave(page), prepare: (page) => fitCanvas(page) });
   await shoot('canvas-100', { prepare: async (page) => { await fitCanvas(page); await zoomMenu(page, /^Zoom to 100%/); } });
   // Past the far band (below 20%): a box is its picture and its name.
@@ -314,13 +315,12 @@ async function died(why) {
   });
 
   // Each box close, at 100%: selected, then at rest.
-  const tileOf = (page, name) => boxOf(page, name);
+  const tileOf = (page, name) => canvasBox(page, name);
   for (const name of boxes) {
     const centre = async (page) => {
       await leave(page);
       await fitCanvas(page);
-      const media = page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first();
-      const { x, y, width, height } = await media.boundingBox();
+      const { x, y, width, height } = (await canvasBox(page, name)).body;
       await page.mouse.click(x + width / 2, y + height / 2);
       await page.keyboard.press('Shift+2');
       await settled(page);
@@ -349,8 +349,8 @@ async function died(why) {
     open: async (page) => {
       await leave(page);
       await fitCanvas(page);
-      const media = page.locator('.react-flow__node .card[data-asset="still"] .media, .react-flow__node .card[data-asset="slow"] .media').first();
-      const { x, y, width, height } = await media.boundingBox();
+      const held = await canvasBox(page, 'still') ?? await canvasBox(page, 'slow');
+      const { x, y, width, height } = held.body;
       await page.mouse.click(x + width / 2, y + height / 2, { button: 'right' });
       await page.locator('[role=menu]').first().waitFor();
     },

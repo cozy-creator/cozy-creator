@@ -680,7 +680,10 @@ function Canvas({
     placer.add(files, by ? { x: by.x + (by.w ?? CARD_WIDTH) + CARD_WIDTH, y: by.y } : visibleCentre(), then)
   }
 
-  const draggedEls = (nodes: ElementNode[]) => nodes.flatMap((node) => document.querySelector(`.canvas-node[data-id="${CSS.escape(node.id)}"]`) ?? [])
+  const draggedEls = (nodes: ElementNode[]) => {
+    const ids = new Set(nodes.map(node => node.id))
+    return [...document.querySelectorAll<HTMLElement>(".canvas-node[data-id]")].filter(element => ids.has(element.dataset.id!))
+  }
 
   // While something's carried, what could take it says so, with no render of anything it isn't.
   const carrying = (held: boolean) => stage.current?.toggleAttribute("data-carrying", held)
@@ -955,6 +958,7 @@ function Canvas({
         <Dots />
         <CanvasSurface
           store={store}
+          onReady={() => store.onPlaced?.()}
           active={active}
           disabled={Boolean(focusedName) || homing}
           locked={homing}

@@ -13,6 +13,7 @@ const { inflateSync } = require('node:zlib');
 const { png } = require('./page');
 
 const STEP = 30_000;
+const CLI_BUDGET = 120_000; // Fixture setup is separate from interaction timing on the shared machine.
 const failures = [], seen = {}, secrets = [];
 let browser, page, out, during = 'configuration';
 const clean = (value) => secrets.reduce((text, secret) => text.replaceAll(secret, '[redacted]'), String(value));
@@ -135,8 +136,8 @@ async function candidate(context, origin, directory) {
   const cli = (args, cwd = out) => {
     sameService();
     let text;
-    try { text = execFileSync(process.env.COZY, args, { cwd, encoding: 'utf8', timeout: STEP, stdio: ['ignore', 'pipe', 'pipe'] }); }
-    catch (error) { throw new Error(`cozy ${args[0]} failed: ${clean(error.stderr ?? error.message)}`); }
+    try { text = execFileSync(process.env.COZY, args, { cwd, encoding: 'utf8', timeout: CLI_BUDGET, stdio: ['ignore', 'pipe', 'pipe'] }); }
+    catch (error) { throw new Error(`cozy ${args[0]} failed (${error.code ?? error.status ?? error.signal ?? 'unknown'}): ${clean(error.stderr || error.message)}`); }
     sameService();
     return JSON.parse(text);
   };
@@ -272,6 +273,29 @@ async function candidate(context, origin, directory) {
   await picture('pixi_renamed', 'reload_real_pixels');
   const reloaded = await placed('pixi_renamed');
   check('reload_keeps_position', Math.abs(reloaded.x - moved.x) < 0.1 && Math.abs(reloaded.y - moved.y) < 0.1, reloaded);
+  // Exercise the actual WebGL loss/restore path without touching document state or another browser context.
+  const beforeLoss = await inspect('card', 'pixi_renamed');
+  const loss = await page.locator('canvas.canvas-pixels').evaluate(element => {
+    const gl = element.getContext('webgl2') || element.getContext('webgl');
+    const extension = gl?.getExtension('WEBGL_lose_context');
+    if (!extension) return false;
+    element.__restoreCanvas = () => extension.restoreContext();
+    extension.loseContext(); return true;
+  });
+  check('context_loss_extension_available', loss);
+  if (loss) {
+    await until('actual graphics context lost', () => page.locator('canvas.canvas-pixels').evaluate(el => (el.getContext('webgl2') || el.getContext('webgl')).isContextLost()), Boolean);
+    await page.locator('canvas.canvas-pixels').evaluate(el => { el.__restoreCanvas(); delete el.__restoreCanvas; });
+    await until('actual graphics context restored', () => page.locator('canvas.canvas-pixels').evaluate(el => !(el.getContext('webgl2') || el.getContext('webgl')).isContextLost()), Boolean);
+    await picture('pixi_renamed', 'context_restore_real_pixels');
+    check('context_restore_keeps_geometry', JSON.stringify((await inspect('card', 'pixi_renamed')).bounds) === JSON.stringify(beforeLoss.bounds));
+  }
+  await passive(); await settled();
+  await new Promise(done => setTimeout(done, 300));
+  const idleBefore = await inspect('resources');
+  await new Promise(done => setTimeout(done, 1500));
+  const idleAfter = await inspect('resources');
+  check('idle_canvas_stops_rendering', idleBefore.frames === idleAfter.frames && !idleAfter.scheduledFrame, { before: idleBefore.frames, after: idleAfter.frames, scheduled: idleAfter.scheduledFrame });
   check('all_api_requests_same_origin', apiOrigins.size === 1 && apiOrigins.has(origin), [...apiOrigins]);
   check('no_csp_violations', violations.length === 0, violations);
   check('no_page_errors', errors.length === 0, errors);

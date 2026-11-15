@@ -183,7 +183,7 @@ export class PixiScene {
   }
 
   private textResolution(): number {
-    return Math.max(1, Math.min(4, 2 ** Math.ceil(Math.log2(Math.max(0.001, this.input!.camera.zoom * this.input!.screen.dpr)))))
+    return Math.max(1, Math.min(8, 2 ** Math.ceil(Math.log2(Math.max(0.001, this.input!.camera.zoom * this.input!.screen.dpr)))))
   }
 
   private truncate(value: string, width: number, size: number, family: string, bold = false): string {
@@ -318,7 +318,7 @@ export class PixiScene {
     const { node, presentation: show, ink } = drawn
     const zoom = this.input!.camera.zoom
     const size = Math.max(TITLE, BODY * nameZoomOf(zoom))
-    const rise = node.selected && !far ? Math.min(0, 9 - 9 / zoom) : 0
+    const rise = node.selected && !far ? Math.min(0, 9 - 9 / (2 ** Math.ceil(Math.log2(zoom)))) : 0
     const y = HEAD - 12 - size * 1.25 + rise
     const dot = show.state ? size * 0.42 : 0
     if (show.state) {
@@ -397,7 +397,8 @@ export class PixiScene {
 
   private drawUnder(drawn: Drawn, labels: Set<string>, colors: Palette, zoom: number) {
     const { node, presentation: show } = drawn
-    let y = node.box.h + 2 + 9 / zoom
+    const body = pictureBox(node)
+    let y = body.y - node.box.y + body.h + 2 + 9 / (2 ** Math.ceil(Math.log2(zoom)))
     if (show.tool || show.shape || show.from) {
       const shapeWidth = show.shape ? Math.min(node.box.w * 0.55, this.textWidth(show.shape, BODY, SANS)) : 0
       this.label(drawn, labels, "tool", [show.tool, show.from].filter(Boolean).join(" · "), 0, y, node.box.w - shapeWidth - 10, BODY, colors.mute)
@@ -850,11 +851,11 @@ export class PixiScene {
     }
   }
 
-  hitTest(point: { x: number; y: number }): SceneHit | null {
+  hitTest(point: { x: number; y: number }, excluded?: ReadonlySet<string>): SceneHit | null {
     const records = [...this.records.values()]
     for (const selected of [true, false]) for (let i = records.length - 1; i >= 0; i--) {
       const drawn = records[i]
-      if (drawn.node.selected !== selected) continue
+      if (drawn.node.selected !== selected || excluded?.has(drawn.node.id)) continue
       const local = { x: (point.x - drawn.container.x) / drawn.container.scale.x, y: (point.y - drawn.container.y) / drawn.container.scale.y }
       for (let n = drawn.hits.length - 1; n >= 0; n--) if (inside(local, drawn.hits[n].box)) return { name: drawn.node.name, part: drawn.hits[n].part }
     }

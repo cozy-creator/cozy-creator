@@ -434,6 +434,7 @@ async function signIn(page, to, options) {
   const code = await response.json();
   const link = to ? `${to.replace(/#.*$/, '')}#code=${encodeURIComponent(code.code)}`
     : process.env.PAGE_ORIGIN ? code.url.replace(/^http:\/\/[^/]+/, process.env.PAGE_ORIGIN) : code.url;
+  await require('./candidate').candidateUI(page, new URL(link).origin);
   const redeemed = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/session', { timeout: STEP_MS });
   const went = await page.goto(link, options);
   const answer = await redeemed;
@@ -447,7 +448,7 @@ const BARS = { ignoreDefaultArgs: ['--hide-scrollbars'] };
  *  person's drew wrong: a drawn edge's tiled sides, shifted out at a fractional scale. Its compositor holds CSS animations at their start. */
 const GPU = { ...BARS, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--enable-gpu-rasterization', '--ignore-gpu-blocklist'] };
 /** This pass's browser: $ENGINE's own build (webkit, firefox), else the Chrome at $CHROME, launched with `options`. */
-const launch = (playwright, options = {}) => (process.env.ENGINE ? playwright[process.env.ENGINE].launch({ headless: true }) : playwright.chromium.launch({ executablePath: process.env.CHROME, headless: true, ...options }));
+const launch = (playwright, options = {}) => (process.env.ENGINE ? playwright[process.env.ENGINE].launch({ headless: true }) : playwright.chromium.launch({ executablePath: process.env.CHROME, ...options, headless: true, ...(process.env.CHROME_ARGS ? { args: JSON.parse(process.env.CHROME_ARGS) } : {}) }));
 
 async function lastLook() {
   if (!looking || !process.env.LAST_LOOK) return;

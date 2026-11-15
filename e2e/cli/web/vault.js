@@ -4,7 +4,7 @@ const { execFileSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { dirname, join } = require('path');
-const { projectFolder, calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt } = require('./page');
+const { projectFolder, calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt, hoverBox } = require('./page');
 const failures = [], seen = {};
 let browser, context, page, peer, scratch;
 const createdFolders = [];
@@ -288,7 +288,7 @@ const newPage = async () => {
   check('no_private_browser_persistence', !stored.includes(recovery) && !stored.includes('synthetic browser passphrase') && !stored.includes('private_vault_picture') && !stored.includes('private_after_encryption'));
   // Unlocked, a right click's Download is the person's own export: the file's bytes, named after its box (cl-891).
   stage = 'private download';
-  await page.locator('.react-flow__node:has(.card[data-asset="private_after_encryption"]) .nm').first().click({ button: 'right' });
+  await (await hoverBox(page, 'private_after_encryption')).locator('.nm').first().click({ button: 'right' });
   const [saved] = await Promise.all([page.waitForEvent('download'), page.locator('.asset-menu').getByRole('menuitem', { name: 'Download', exact: true }).click()]);
   const savedBytes = readFileSync(await saved.path());
   check('private_download_is_its_file', saved.suggestedFilename() === 'private_after_encryption.png' && savedBytes.equals(privateBytes), { name: saved.suggestedFilename(), bytes: savedBytes.length, wanted: privateBytes.length });
@@ -301,7 +301,7 @@ const newPage = async () => {
   await pendingWords.waitFor();
   await pendingWords.click();
   await page.evaluate(() => {
-    window.__pendingCanvas = document.querySelector('.react-flow');
+    window.__pendingCanvas = document.querySelector('.canvas-root');
     window.__coverPaints = [];
     window.__coverWatch = new MutationObserver(() => {
       if ((document.visibilityState === 'hidden' || document.querySelector('.gate')) && /private_vault_picture|private_after_encryption|private_pending_words/.test(document.body.innerText)) window.__coverPaints.push('private content');
@@ -319,7 +319,7 @@ const newPage = async () => {
   await peer.bringToFront();
   await until('pending private tab hidden', () => page.evaluate(() => document.visibilityState), (state) => state === 'hidden', 10000);
   await page.locator('.gate').waitFor();
-  check('offline_cover_keeps_private_canvas_owner', await page.evaluate(() => document.querySelector('.react-flow') === window.__pendingCanvas));
+  check('offline_cover_keeps_private_canvas_owner', await page.evaluate(() => document.querySelector('.canvas-root') === window.__pendingCanvas));
   check('offline_cover_conceals_private_content', !(await page.locator('body').innerText()).includes('private_pending_words'));
   check('temporary_cover_does_not_lock_project', JSON.parse(vault(folder, 'status')).state === 'unlocked');
   await page.bringToFront();
@@ -327,7 +327,7 @@ const newPage = async () => {
   check('hide_show_keeps_pending_edit', /1 change/.test(await page.locator('.top').innerText()));
   await context.setOffline(false);
   await until('pending encrypted edit commits after reconnect', () => projectJson(folder).assets.find((asset) => asset.name === 'private_pending_words')?.fields?.text?.includes('RETAINED-THROUGH-PRIVATE-COVER') ?? false, Boolean, 45000);
-  await until('same private canvas revealed', () => page.evaluate(() => document.querySelector('.react-flow') === window.__pendingCanvas && !document.querySelector('.react-flow')?.closest('[hidden]')), Boolean, 20000);
+  await until('same private canvas revealed', () => page.evaluate(() => document.querySelector('.canvas-root') === window.__pendingCanvas && !document.querySelector('.canvas-root')?.closest('[hidden]')), Boolean, 20000);
   check('pending_edit_commits_after_cover', true);
   check('no_private_paint_during_cover', await page.evaluate(() => window.__coverPaints.length === 0));
   await page.evaluate(() => window.__coverWatch.disconnect());
@@ -388,7 +388,7 @@ const newPage = async () => {
   check('offline_navigation_covers_private_content', !(await page.locator('body').innerText()).includes('private_navigation_import'));
   await context.setOffline(false);
   await until('private import commits after project navigation', () => projectJson(folder).assets.some((asset) => asset.name === 'private_navigation_import' && asset.sha256), Boolean, 45000);
-  await page.locator('.react-flow').waitFor();
+  await page.locator('.canvas-root').waitFor();
   check('private_import_survives_project_navigation', true);
   // Automatic hover previews are not user activity. The real video decoder keeps
   // looping, while an idle-only deadline still locks the project.
@@ -405,34 +405,34 @@ const newPage = async () => {
   await until('automatic private preview playing', () => page.evaluate(() => [...document.querySelectorAll('video')].some((el) => el.loop && !el.paused && el.currentTime > 0.05)), Boolean, 45000);
   execFileSync(process.env.COZY, ['--json', 'vault', 'unlock', '--recovery-file', '-', '--idle', '2', '--max-duration', '0'], { cwd: folder, input: `${recovery}\n`, encoding: 'utf8', timeout: 180000 });
   await page.locator('[data-vault-state="locked"]').waitFor();
-  check('autoplay_preview_does_not_extend_idle_unlock', await page.locator('.react-flow').count() === 0);
+  check('autoplay_preview_does_not_extend_idle_unlock', await page.locator('.canvas-root').count() === 0);
   await page.getByLabel('Unlock with').selectOption('recovery');
   await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
   await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
-  await page.locator('.react-flow').waitFor();
+  await page.locator('.canvas-root').waitFor();
 
   // A second actual tab shares the real SSE connection. Locking from the CLI must
   // conceal both pages without relying on the active tab's one-second status poll.
   peer = await newPage();
   peer.on('pageerror', (error) => errors.push(error.message));
   await signIn(peer, href);
-  await peer.locator('.react-flow').waitFor();
+  await peer.locator('.canvas-root').waitFor();
   requestLock(folder);
   for (const tab of [page, peer]) {
     await until('external lock concealed a tab', () => tab.locator('body').innerText(), (text) => !text.includes('private_vault_picture') && !text.includes('private_after_encryption'), 20000);
-    check(`external_lock_tab_${tab === page ? 'first' : 'second'}`, await tab.locator('.react-flow').count() === 0);
+    check(`external_lock_tab_${tab === page ? 'first' : 'second'}`, await tab.locator('.canvas-root').count() === 0);
   }
   await drainedLock(folder);
   // A fresh document has no remembered address. The compact link must still
   // open the unlock UI without exposing or opening the private project.
   await goto(peer, href);
   await peer.locator('[data-vault-state="locked"]').waitFor();
-  check('locked_compact_link_opens_unlock', await peer.locator('.react-flow').count() === 0 && !(await peer.locator('body').innerText()).includes('private_vault_picture'));
+  check('locked_compact_link_opens_unlock', await peer.locator('.canvas-root').count() === 0 && !(await peer.locator('body').innerText()).includes('private_vault_picture'));
   await peer.close(); peer = null;
   await page.getByLabel('Unlock with').selectOption('recovery');
   await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
   await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
-  await page.locator('.react-flow').waitFor();
+  await page.locator('.canvas-root').waitFor();
 
   // Chromium's actual page lifecycle suspends JavaScript while the CLI locks the
   // project. Resuming the hidden tab must verify protection before showing its canvas.
@@ -447,21 +447,21 @@ const newPage = async () => {
     finally { await lifecycle.send('Page.setWebLifecycleState', { state: 'active' }); }
     await page.bringToFront();
     await page.locator('[data-vault-state="locked"]').waitFor();
-    check('frozen_tab_resume_keeps_locked_data_hidden', await page.locator('.react-flow').count() === 0 && !(await page.locator('body').innerText()).includes('private_vault_picture'));
+    check('frozen_tab_resume_keeps_locked_data_hidden', await page.locator('.canvas-root').count() === 0 && !(await page.locator('body').innerText()).includes('private_vault_picture'));
     await drainedLock(folder);
     await lifecycle.detach();
     await peer.close(); peer = null;
     await page.getByLabel('Unlock with').selectOption('recovery');
     await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
     await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
-    await page.locator('.react-flow').waitFor();
+    await page.locator('.canvas-root').waitFor();
   } else seen.frozen_tab_resume = 'Chromium lifecycle proof only; this engine still checks tabs and browser history';
 
   // Leaving A stops its selected-project status observer. Keep the same document
   // and query cache, lock A while B is shown, then watch every DOM mutation on return.
   await page.evaluate(() => { window.__vaultDocument = 'same-document'; });
   await navigate(other);
-  await until('ordinary project canvas visible', () => page.evaluate(() => Boolean(document.querySelector('.react-flow')) && !document.body.innerText.includes('private_vault_picture')), Boolean, 45000);
+  await until('ordinary project canvas visible', () => page.evaluate(() => Boolean(document.querySelector('.canvas-root')) && !document.body.innerText.includes('private_vault_picture')), Boolean, 45000);
   // Real browser offline mode prevents both status replies and the lock SSE event;
   // the CLI remains online. Cached unlocked data must still stay hidden on selection.
   await context.setOffline(true);
@@ -474,7 +474,7 @@ const newPage = async () => {
     window.__privateWatch.observe(document.body, { childList: true, subtree: true, characterData: true });
   }, new URL(href).pathname);
   await navigate(href);
-  await until('private project covered', () => page.evaluate(() => Boolean(document.querySelector('.gate')) && !document.querySelector('.react-flow')), Boolean, 45000);
+  await until('private project covered', () => page.evaluate(() => Boolean(document.querySelector('.gate')) && !document.querySelector('.canvas-root')), Boolean, 45000);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   check('offline_reselection_hides_cached_private_data', await page.evaluate(() => window.__privatePaints.length === 0));
   await context.setOffline(false);
@@ -482,20 +482,20 @@ const newPage = async () => {
   check('project_reselection_verifies_before_paint', await page.evaluate(() => window.__vaultDocument === 'same-document' && window.__privatePaints.length === 0));
   await drainedLock(folder);
   await page.goBack();
-  await until('ordinary project canvas visible', () => page.evaluate(() => Boolean(document.querySelector('.react-flow')) && !document.body.innerText.includes('private_vault_picture')), Boolean, 45000);
+  await until('ordinary project canvas visible', () => page.evaluate(() => Boolean(document.querySelector('.canvas-root')) && !document.body.innerText.includes('private_vault_picture')), Boolean, 45000);
   await page.goForward();
   await page.locator('[data-vault-state="locked"]').waitFor();
-  check('history_return_keeps_locked_data_hidden', await page.evaluate(() => window.__privatePaints.length === 0 && !document.querySelector('.react-flow')));
+  check('history_return_keeps_locked_data_hidden', await page.evaluate(() => window.__privatePaints.length === 0 && !document.querySelector('.canvas-root')));
   await page.evaluate(() => window.__privateWatch.disconnect());
   await page.getByLabel('Unlock with').selectOption('recovery');
   await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
   await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
-  await page.locator('.react-flow').waitFor();
+  await page.locator('.canvas-root').waitFor();
 
   await goto(page, `${href}/vault`);
   await page.getByRole('button', { name: 'Lock project', exact: true }).click();
   await until('vault locked', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'locked', 20000);
-  check('locked_canvas_is_removed', await page.locator('.react-flow').count() === 0);
+  check('locked_canvas_is_removed', await page.locator('.canvas-root').count() === 0);
   check('locked_private_name_is_removed', !(await page.locator('body').innerText()).includes('private_vault_picture') && !(await page.locator('body').innerText()).includes('private_after_encryption'));
   await page.getByLabel('Unlock with').selectOption('recovery');
   await page.getByLabel('Recovery secret', { exact: true }).fill(recovery);
@@ -526,10 +526,10 @@ const newPage = async () => {
   await page.getByLabel('Maximum unlock duration (seconds; 0 disables)').fill('0');
   await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
   await until('unlocked before decryption', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'unlocked', 45000);
-  await page.locator('.react-flow').waitFor();
+  await page.locator('.canvas-root').waitFor();
   const beforeDecrypt = projectJson(folder);
   const assetDigests = (project) => project.assets.map((asset) => [asset.name, asset.sha256]).sort(([left], [right]) => left.localeCompare(right));
-  const oldCanvas = await page.locator('.react-flow').elementHandle();
+  const oldCanvas = await page.locator('.canvas-root').elementHandle();
   // Delay transport of real responses only. No status body or production handler is replaced.
   const statusPath = (url) => url.pathname === `/v1/projects/${id}/vault`;
   const heldStatuses = [];
@@ -557,7 +557,7 @@ const newPage = async () => {
     holdStatus = false;
     for (const route of heldStatuses.splice(0)) await deliver(route);
   };
-  const covered = () => page.evaluate(() => Boolean(document.querySelector('.gate')) && !document.querySelector('.react-flow') && !/private_vault_picture|private_after_encryption/.test(document.body.innerText));
+  const covered = () => page.evaluate(() => Boolean(document.querySelector('.gate')) && !document.querySelector('.canvas-root') && !/private_vault_picture|private_after_encryption/.test(document.body.innerText));
   await page.route(statusPath, statusRoute);
   // Nothing polls the status (xs-189): the drawer opened again reads it, as a person coming back to it does, and that read is the old one.
   await navigate(href);
@@ -584,7 +584,7 @@ const newPage = async () => {
   check('failed_plain_status_recheck_keeps_view_covered', await covered());
   await resumeStatus();
   await until('fresh plain status reveals project', () => page.locator('.drawer [data-vault-state]').getAttribute('data-vault-state'), (state) => state === 'plain', 45000);
-  await page.locator('.react-flow').waitFor();
+  await page.locator('.canvas-root').waitFor();
   const decrypted = projectJson(folder);
   check('decrypt_preserves_project_identity_and_assets', decrypted.id === id && JSON.stringify(assetDigests(decrypted)) === JSON.stringify(assetDigests(beforeDecrypt)));
   await oldCanvas.dispose();
@@ -809,7 +809,7 @@ const newPage = async () => {
   if (page) {
     seen.canvas_at_failure = await page.evaluate(() => ({
       covered: Boolean(document.querySelector('.gate')),
-      nodes: document.querySelectorAll('.react-flow__node').length,
+      nodes: document.querySelectorAll('.canvas-node').length,
       naming_fields: document.querySelectorAll('.nm-field').length,
     })).catch(() => null);
   }
