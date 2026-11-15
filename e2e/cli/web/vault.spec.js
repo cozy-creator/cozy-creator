@@ -1,10 +1,11 @@
-// vault (cl-973 core cell 22): a project encrypted from the page, its recovery secret saved, then a picture dropped and downloaded; outside
+// vault (cl-973 core cell 22): a project encrypted from the page (a folder with anything in it said beside the field, cl-980), its recovery
+// secret said once, saved, then a picture dropped and downloaded; outside
 // its mount the folder holds no plaintext copy of it. `cozy` locks it while a second tab is open: every tab is covered at once, and neither
 // the DOM, Web Storage, Cache Storage nor IndexedDB keeps a name or a picture. Unlocked with the passphrase and locked from the page, then
 // unlocked with the recovery secret, each time the canvas back with no reload; decrypted, its files and history are kept.
 // `@vault`: on the job with the filesystem driver, sharing its Calcifer, so it touches only its own projects.
 const { randomBytes, createHash } = require('crypto');
-const { existsSync, readFileSync, readdirSync, realpathSync } = require('fs');
+const { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('fs');
 const { dirname, join, relative } = require('path');
 const { test: base, expect, box, canvasIdle, middle, png } = require('./fixtures');
 
@@ -123,10 +124,29 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     await page.getByRole('navigation', { name: 'Projects' }).getByRole('link', { name: project.name, exact: true }).click();
     const field = page.getByLabel("New project's folder");
     await expect(field).toBeFocused();
-    await field.fill(join(dirname(project.path), name));
     await expect.soft(page.getByLabel('Create without encryption'), 'encrypted unless asked').not.toBeChecked();
-    await page.getByLabel('Passphrase', { exact: true }).fill(passphrase);
-    await page.getByLabel('Confirm passphrase', { exact: true }).fill(passphrase);
+    const asked = async (folder) => {
+      await field.fill(folder);
+      await page.getByLabel('Passphrase', { exact: true }).fill(passphrase);
+      await page.getByLabel('Confirm passphrase', { exact: true }).fill(passphrase);
+    };
+    // A folder with anything in it: said in one line beside the field, by its real path, and nothing else (cl-980).
+    const full = join(dirname(project.path), `web-vault-full-${randomBytes(3).toString('hex')}`);
+    mkdirSync(full);
+    writeFileSync(join(full, 'notes.txt'), 'already here\n');
+    removeAfter(full);
+    // Refused on purpose, as the browser says in its console.
+    guards.allow(/status of 409\b.*\/v1\/projects$/);
+    await asked(full);
+    await page.getByRole('button', { name: 'Create project', exact: true }).click();
+    const beside = page.locator('.said-beside .beside');
+    await expect(beside, 'a folder with anything in it is said beside the field').toBeVisible({ timeout: 60_000 });
+    const said = await beside.innerText();
+    expect.soft(/isn't empty/.test(said) && said.includes(realpathSync(full)), `said beside: ${said}`).toBe(true);
+    await expect.soft(page.locator('dialog[open], [role=alertdialog]'), 'and in no dialog').toHaveCount(0);
+    await expect.soft(field, 'the form stays').toBeVisible();
+    expect.soft(readFileSync(join(full, 'notes.txt'), 'utf8') === 'already here\n' && !existsSync(join(full, 'project.db')), 'nothing in it changed').toBe(true);
+    await asked(join(dirname(project.path), name));
     const answered = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects', { timeout: 60_000 });
     await page.getByRole('button', { name: 'Create project', exact: true }).click();
     const answer = await answered;
@@ -140,11 +160,12 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
 
     const saving = page.getByRole('region', { name: 'Save recovery secret' });
     await expect(saving.locator('pre')).toBeVisible({ timeout: 60_000 });
+    await expect.soft(saving, 'it says to save it').toContainText('Save this somewhere safe');
     expect.soft((await saving.locator('pre').innerText()).trim() === recovery, 'the page shows the recovery secret it was given').toBe(true);
     await saving.getByLabel('I saved this somewhere away from this computer').check();
     await saving.getByRole('button', { name: 'Done', exact: true }).click();
     await expect(page, 'it opens at its address').toHaveURL(`${api.origin}/p/${made.code}`);
-    await expect(saving).toHaveCount(0);
+    await expect(saving, 'shown once').toHaveCount(0);
     await expect(page.locator('.stage')).toBeVisible();
     expect.soft(await vault(), 'encrypted and unlocked, locking after 30 idle minutes').toMatchObject({ encrypted: true, state: 'unlocked', idle_timeout_s: 1800 });
     expect.soft(existsSync(join(made.path, 'project.db')), 'no plaintext project.db in its folder').toBe(false);

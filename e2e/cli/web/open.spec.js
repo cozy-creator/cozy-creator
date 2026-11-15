@@ -4,7 +4,8 @@
 // the bar's + makes one there (its folder suggested and edited in place, encrypted unless asked, its tab shown at once), which opens at its
 // address, unencrypted. Alone on its Calcifer (`@solo`: an index of its own projects only, so every tab fits the strip): the strip lists
 // them in the index's order, a tab opens its own, going from one to another never blanks the screen, and + and the Projects drawer both
-// suggest `<first project's parent>/untitled-N`.
+// suggest `<first project's parent>/untitled-N`; Calcifer killed and back leaves the tab where it is with its canvas, and with its session
+// ended first, the page says so once, in place.
 const { randomBytes } = require('crypto');
 const { existsSync, realpathSync } = require('fs');
 const { dirname, join } = require('path');
@@ -135,7 +136,8 @@ test('open', { tag: '@engines' }, async ({ context, newContext, project, api, si
   });
 });
 
-test('open, alone on its Calcifer', { tag: '@solo' }, async ({ page, project, api, removeAfter }) => {
+test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, project, api, guards, removeAfter, calciferControl }) => {
+  await context.addInitScript(recordAddress);
   // Two projects, each with a box: the cell's, and another.
   const b = await api.post('/v1/projects', { path: join(process.env.OUT, 'web', 'projects', `web-open-b-${randomBytes(3).toString('hex')}`), unencrypted: true });
   removeAfter(b.path);
@@ -192,5 +194,45 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ page, project, ap
     let offered;
     await expect.poll(async () => (offered = await drawer.inputValue()), { message: 'the drawer suggests a folder' }).not.toBe('');
     expect.soft(offered, 'the drawer, the same').toBe(suggested);
+  });
+
+  // Calcifer away: what the page asks of it fails as the browser says in its console, from each kill until the page is back with it.
+  const refused = new RegExp(`^console error: Failed to load resource: net::ERR_[A-Z_]+ ${api.origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/`);
+  let away = false;
+  guards.allow({ test: (line) => away && refused.test(line) });
+  /** What the top bar says from here, each pill once. */
+  const barSays = () => page.evaluate(() => {
+    const said = (window.barSaid = []);
+    new MutationObserver(() => {
+      for (const pill of document.querySelectorAll('header.top .pill')) if (!said.includes(pill.textContent)) said.push(pill.textContent);
+    }).observe(document.body, { subtree: true, childList: true, characterData: true });
+  });
+
+  await test.step('Calcifer killed and back with the session kept: the tab goes on where it is', async () => {
+    await page.goto(project.url());
+    await expect(page.locator('.react-flow__node').first()).toBeVisible();
+    await barSays();
+    away = true;
+    await calciferControl.kill();
+    await expect(page.locator('header.top .pill'), 'the top bar clears').toHaveCount(0, { timeout: 60_000 });
+    away = false;
+    expect.soft(await page.evaluate(() => window.barSaid), 'it said Calcifer was offline').toContainEqual(expect.stringMatching(/^Calcifer offline/));
+    expect.soft(await stays(page), 'it stays where it is').toEqual({ path: `/p/${project.code}`, moves: [] });
+    await expect.soft(page.locator('.unread, .gate'), 'and keeps the canvas').toHaveCount(0);
+    await expect.soft(page.locator('.react-flow__node').first()).toBeVisible();
+  });
+
+  await test.step('its session ended, then Calcifer killed and back: one plain state, in place', async () => {
+    const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+    const ended = await fetch(`${api.origin}/v1/session`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    expect(ended.status, 'DELETE /v1/session').toBe(204);
+    // Its session gone, on purpose: the page's next asks are refused, as the browser says in its console.
+    guards.allow(/status of 401\b/);
+    away = true;
+    await calciferControl.kill();
+    await expect(page.getByRole('heading', { name: NO_SESSION })).toBeVisible({ timeout: 60_000 });
+    away = false;
+    expect.soft(await stays(page), 'it stays where it is').toEqual({ path: `/p/${project.code}`, moves: [] });
+    expect.soft(await drawn(page, NO_SESSION), 'said once').toBe(1);
   });
 });
