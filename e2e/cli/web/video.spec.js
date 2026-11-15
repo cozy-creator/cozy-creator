@@ -29,7 +29,8 @@ test.use({ hasTouch: true });
 
 const playing = (video) => video.evaluate((el) => ({ at: el.currentTime, paused: el.paused, muted: el.muted, volume: el.volume, loop: el.loop, controls: el.controls, ready: el.readyState, duration: el.duration }));
 
-test('video', async ({ page, project, api, guards }) => {
+test('video', async ({ page, project, api, guards, cli }) => {
+  await cli.json('machine', 'use', 'local');
   // Held on purpose: the Redo's render is asked, and answered here.
   guards.allow(/status of 409\b.*\/runs$/);
   await project.import(clip(test.info().outputPath('walk.mp4')), { name: 'walk', at: { x: 0, y: 0 } });

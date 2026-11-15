@@ -33,6 +33,8 @@ test('references', async ({ page, project, api, cli }) => {
     const editor = await focus(page, 'preview');
     await editor.getByRole('button', { name: 'Render', exact: true }).click();
     await expect.poll(async () => { [run] = (await project.asset('preview'))?.making ?? []; return run; }, { message: 'the local request starts', timeout: 120000 }).toBeTruthy();
+    const started = await api.get(project.at(`/runs/${run}`));
+    await test.info().attach('local-reference-run', { body: Buffer.from(JSON.stringify({ project: project.id, run, machine: started.machine, status: started.status }, null, 2)), contentType: 'application/json' });
     await page.keyboard.press('Escape');
     await expect(page.getByRole('region', { name: 'Focused asset' })).toHaveCount(0);
     await page.mouse.move(20, 20);
