@@ -3,9 +3,9 @@
   trapfs.py <backing dir> <mount point> <trap file>
 
 The trap file says what goes unanswered until it is emptied: a pid, every FLUSH from that process's threads (its exit closes its
-files there, so its last thread sits in the kernel, D state, as muromisan's TensorD sat in the NVIDIA driver); `writes`, every
-WRITE (a process logging there hangs as on a network filesystem that stopped). Everything else is answered at once. No request is
-held past MAX_HOLD, so a cell that dies midway leaves nothing waiting for good.
+files there, so its last thread sits in the kernel, as muromisan's TensorD sat in the NVIDIA driver); `<pid>:<seconds>`, the same for
+that long (a slow exit); `writes`, every WRITE (a process logging there hangs as on a network filesystem that stopped). Everything
+else is answered at once. No request is held past MAX_HOLD, so a cell that dies midway leaves nothing waiting for good.
 """
 import errno
 import os
@@ -38,12 +38,21 @@ class Trap(Operations):
         except OSError:
             return False
 
+    def _rule(self):
+        said = self._said()
+        if said == "writes":
+            return "writes", None, MAX_HOLD
+        pid, _, seconds = said.partition(":")
+        if pid.isdigit():
+            return "flush", pid, float(seconds) if seconds else MAX_HOLD
+        return None, None, 0
+
     def _hold(self, what):
         _, _, tid = fuse_get_context()
         held, began = False, time.monotonic()
-        while time.monotonic() - began < MAX_HOLD:
-            said = self._said()
-            if not (said == what or (what == "flush" and said.isdigit() and self._of(tid, said))):
+        while True:
+            kind, pid, most = self._rule()
+            if kind != what or (pid and not self._of(tid, pid)) or time.monotonic() - began >= min(most, MAX_HOLD):
                 break
             if not held:
                 print(f"holding a {what} from {tid}", flush=True)

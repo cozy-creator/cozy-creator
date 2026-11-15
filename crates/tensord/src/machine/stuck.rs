@@ -76,10 +76,12 @@ impl Before {
         for one in stuck {
             let (watched, pid) = (before.clone(), one.birth.pid);
             let watching = std::thread::Builder::new().name(format!("stuck-{pid}")).spawn(move || {
-                match platform::process::Exact::open(&one.birth) {
-                    Ok(Some(exact)) => drop(exact.wait()),
-                    _ if one.alive() => return tracing::info!("pid {pid}, the TensorD before this one, has no handle to wait on; Status judges it"),
-                    _ => {}
+                if let Ok(Some(exact)) = platform::process::Exact::open(&one.birth) {
+                    drop(exact.wait());
+                }
+                // A zombie leader's handle can read exited while a thread of it is still in the kernel (seen on Linux 6.x).
+                if one.alive() {
+                    return tracing::info!("pid {pid}, the TensorD before this one, still has a thread in the kernel; Status judges it as read");
                 }
                 watched.exited(&one.birth);
             });

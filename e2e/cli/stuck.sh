@@ -1,5 +1,5 @@
 # e2e/cli/stuck.sh: TensorD's stop, restart, update and start finish within their bounds when a TensorD can't exit (cl-977), on this
-# computer's machine with no GPU (Linux). A service that won't exit (stopped) is killed 10 s after its stop. A service whose exit sits
+# computer's machine with no GPU (Linux). A service slow to exit is killed 10 s after its stop and ends as it exits. A service whose exit sits
 # in the kernel, as muromisan's sat in the NVIDIA driver: its stdout and stderr (start.log) are on a FUSE filesystem
 # (stuck/trapfs.py) that holds the FLUSH its exit sends, for that pid alone, so its last thread waits in D state. An update's
 # restart, a stop, and a start beside it each finish; machine show/ls list it; runs still go there (no GPU: nothing it holds is
@@ -76,24 +76,6 @@ stuck_ready() {
   return 1
 }
 
-stuck_stop() {
-[ -n "$LOCAL" ] || return 0
-step "stuck: a stop with a service that won't exit ends 10 s after it (cl-977)"
-local parent service t0 took
-stuck_ready 180 || { check "stuck: the local machine isn't ready: $(tail -c 300 "$OUT/stuck-machine.json")"; return; }
-parent=$(machine_pid) service=$(stuck_service)
-[ -n "$service" ] || { check "stuck: no service under the machine's pid $parent"; return; }
-kill -STOP "$service"
-t0=$SECONDS
-kill "$parent"
-stuck_gone "$parent" 60 || check "stuck: the machine (pid $parent) runs 60 s after its stop, its service stopped: $(ps -o pid,stat,args -p "$parent","$service")"
-took=$((SECONDS - t0))
-[ "$took" -le 20 ] || check "stuck: a stop with a service that won't exit took ${took} s (its bound: 10 s)"
-stuck_log | grep -q "the service (pid $service) did not exit within 10 s; killing it" || check "stuck: TensorD's log doesn't say it killed pid $service"
-echo "stuck: stopped in ${took} s with service $service stopped"
-stuck_ready 120 || check "stuck: the machine didn't start again after its stop: $(tail -c 300 "$OUT/stuck-machine.json")"
-}
-
 stuck_exit() {
 [ -n "$LOCAL" ] || return 0
 step "stuck: a TensorD whose exit sits in the kernel (cl-977)"
@@ -116,6 +98,20 @@ machine_stop || check "stuck: the local machine did not stop"
 ln -sf "$mnt/start.log" "$log"
 stuck_ready 180 || { check "stuck: the machine didn't start on the trap filesystem: $(tail -c 300 "$OUT/stuck-machine.json")"; return; }
 port=$(cat "$STUCK_ROOT/machine/api-port")
+
+step "stuck: a stop whose service takes 15 s to exit is killed at 10 s and ends as it exits"
+service=$(stuck_service) parent=$(machine_pid)
+echo "$service:15" > "$trap"
+t0=$SECONDS
+kill "$parent"
+stuck_gone "$parent" 60 || check "stuck: the machine (pid $parent) runs 60 s after its stop, its service slow to exit"
+took=$((SECONDS - t0))
+[ "$took" -ge 12 ] && [ "$took" -le 30 ] || check "stuck: a stop with a service 15 s slow to exit took ${took} s"
+stuck_log | grep -q "the service (pid $service) did not exit within 10 s; killing it" || check "stuck: TensorD's log doesn't say it killed pid $service"
+stuck_log | grep -qE "the service \(pid $service\) exited [0-9]+ s after its kill" || check "stuck: TensorD's log doesn't say pid $service exited after its kill"
+echo "stuck: stopped in ${took} s, service $service 15 s slow to exit"
+: > "$trap"
+stuck_ready 120 || { check "stuck: the machine didn't start again after a slow stop: $(tail -c 300 "$OUT/stuck-machine.json")"; return; }
 
 step "stuck: an update's restart past a service that can't exit"
 first=$(stuck_service)

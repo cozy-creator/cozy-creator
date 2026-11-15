@@ -493,7 +493,6 @@ case $SHARD in
     completions
     calcifer_faults
     calcifer_restarts
-    stuck_stop
     stuck_exit
     update
     remove
@@ -720,7 +719,7 @@ case $SHARD in
     logs
   " ;;
   # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs (cl-977): about 10 min.
-  stuck) parts="stuck_stop stuck_exit logs" ;;
+  stuck) parts="stuck_exit logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # cozy updates itself for a package that needs a newer cozy (cl-978): its own runner, as it replaces this computer's cozy.
