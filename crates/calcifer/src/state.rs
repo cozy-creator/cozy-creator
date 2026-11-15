@@ -308,6 +308,11 @@ impl Store {
         })
     }
 
+    /// A locked project's keys leave this index (cl-987): its project.db keeps them, and its next open registers them again.
+    pub(crate) fn project_keys_forgotten(&self, id: &str) -> Result<()> {
+        self.write(|tx| { tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?; Ok(()) })
+    }
+
     /// The project `key` names here, now or before (cl-987).
     pub(crate) fn key_owner(&self, key: &str) -> Result<Option<String>> {
         self.read(|conn| Ok(conn.query_row("SELECT project_keys.id FROM project_keys JOIN projects ON projects.id = project_keys.id WHERE key = ?1",

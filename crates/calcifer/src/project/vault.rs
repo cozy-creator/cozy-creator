@@ -83,6 +83,9 @@ pub(crate) fn ordinary_storage(view: &FsPath) -> bool {
 
 pub(crate) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() || SESSIONS.lock().expect("vault sessions").contains_key(root) }
 
+/// An encrypted project with no open view: Calcifer keeps only its folder.
+pub(crate) fn locked_now(root: &FsPath) -> bool { encrypted(root) && held(root).is_none() }
+
 /// The canonical id is available without opening the project's content database.
 pub(super) fn project_id(root: &FsPath) -> Option<String> {
     if let Some(session) = held(root) {
@@ -600,7 +603,11 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
     forget(api, root, transition)?;
     tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
     crate::runs::files::release_private(root)?;
-    if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) { api.calcifer.retire_project(&id); }
+    if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) {
+        api.calcifer.retire_project(&id);
+        // Locked, its key and its runs' names stay only in its project.db, registered again as it opens (cl-987).
+        api.calcifer.maintenance_store().project_keys_forgotten(&id).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+    }
     let pending = api.calcifer.maintenance_store().migration_required()
         .map_err(|_| error("project_migration_pending", "legacy storage could not be checked before closing"))?;
     if !pending {

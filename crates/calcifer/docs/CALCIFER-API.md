@@ -61,7 +61,8 @@ An action on a resource is a POST to a sub-resource named for it (`/v1/runs/{id}
 `/v1/projects/{id}/approve`). JSON fields are snake_case. Ids are strings with a kind prefix (`run-…`,
 `project-…`); a run's `number` is its project's and is accepted wherever its id is, in that project. A run's `name` is
 `KEY-N` (cl-987), its project's key and its number there, `COZY-N` for Calcifer's own runs; it is accepted wherever its id is,
-in any scope, as is a key the project had. Times are Unix milliseconds in
+in any scope, as is a key the project had. A locked project's keys are in no index of Calcifer's, only its `project.db`, and are
+registered again as it opens: while one is locked, a name no open project has is `409 project_locked`. Times are Unix milliseconds in
 fields ending `_ms`, in records and queries alike (`since_ms`); durations end `_s` or `_ms`. Request bodies
 ignore unknown fields and name them in `Cozy-Ignored-Fields`.
 

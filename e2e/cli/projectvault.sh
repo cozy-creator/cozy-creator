@@ -130,8 +130,16 @@ PY_BACKING_SCAN
   [ ! -e "$view/unsafe-recovery.txt" ] || fail "refused recovery output created an unlocked-view file"
 
   step "locking blocks project reads; wrong credentials do not open it"
+  local key keyed
+  key=$(in_project "$P" --json key | jq -r '.key // empty') || key=
+  [ -n "$key" ] || check "keys: the encrypted project has no key"
   in_project "$P" --json vault lock > "$work/locked.json"
   jq -e '.vault.state == "locked"' "$work/locked.json" > /dev/null || fail "lock did not complete"
+  # Locked, its key is in no index of Calcifer's, only its project.db (cl-987, Paul 11-15): its runs' names say unlock it first.
+  keyed=$(python3 -c 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT count(*) FROM project_keys WHERE key = ?", (sys.argv[2],)).fetchone()[0])' "$HOME/.cozy/calcifer/state.db" "$key" 2>&1)
+  [ "$keyed" = 0 ] || check "keys: locked, its key $key stays in state.db's index ($keyed)"
+  (cd "$work" && cozy --json run watch "$key-1" --once) > "$work/locked-key.json" 2>&1 || true
+  jq -e '.error.code == "project_locked"' "$work/locked-key.json" > /dev/null || check "keys: $key-1 of the locked project wasn't refused project_locked: $(tail -c 300 "$work/locked-key.json")"
   if in_project "$P" --json --full status > "$work/locked-read.json" 2> "$work/locked-read.err"; then fail "locked project state was readable"; fi
   if in_project "$P" --json vault unlock --passphrase-file "$secrets/wrong" > "$work/wrong.json" 2> "$work/wrong.err"; then fail "wrong passphrase unlocked the project"; fi
   if [ -r "$view/files/private-sentinel.txt" ]; then fail "old mount path stayed readable after lock"; fi
@@ -139,6 +147,8 @@ PY_BACKING_SCAN
   step "saved recovery and passphrase replacement preserve the files"
   # The refused in-view replacement must leave the original recovery credential valid.
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery1" --idle 0 > "$work/recovered.json"
+  # Unlocked, it opens with the key its project.db keeps.
+  in_project "$P" --json key | jq -e --arg key "$key" '.key == $key' > /dev/null || check "keys: unlocked, the project's key isn't $key again"
   in_project "$P" --json vault passphrase --passphrase-file "$secrets/changed" > "$work/passphrase.json"
   in_project "$P" --json vault recovery --recovery-out "$secrets/recovery2" > "$work/replacement-recovery.json"
   in_project "$P" --json vault lock > "$work/replaced-lock.json" || fail "the project doesn't lock after its credentials change: $(jq -c '.error | {code, message}' "$work/replaced-lock.json" 2> /dev/null)"

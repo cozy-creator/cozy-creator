@@ -623,7 +623,8 @@ async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRow>, Refusal
     let Some((key, number)) = ::api::calcifer::project::run_name(text) else { return Ok(None) };
     let journal = match key.as_str() {
         ::api::calcifer::project::MACHINE_KEY => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
-        _ => match api.calcifer.store().key_owner(&key).map_err(store_refusal)? {
+        reserved if ::api::calcifer::project::RESERVED_KEYS.contains(&reserved) => return Ok(None),
+        _ => match keyed_project(api, &key).await? {
             Some(id) => crate::store::RunStore::Project(api.projects.store(api, &id).await.map_err(Refusal)?),
             None => return Ok(None),
         },
@@ -631,6 +632,23 @@ async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRow>, Refusal
     let row = journal.run_by_number(number)?.ok_or_else(|| Refusal(Error::new(Kind::NotFound, "run_not_found", format!("there is no run {key}-{number}")).next("cozy run ls --all")))?;
     if matches!(journal, crate::store::RunStore::Maintenance(_)) { api.calcifer.remember_maintenance_run(row.id.as_str()); }
     Ok(Some(row))
+}
+
+/// The project that has or had `key` here. A project's keys are registered as it opens: one not opened since it was unlocked (or
+/// since this cozy) opens first. A locked project's are in no index, only in its project.db (Paul 11-15): unlock it first.
+async fn keyed_project(api: &Arc<Api>, key: &str) -> Result<Option<String>, Refusal> {
+    let store = api.calcifer.store();
+    if let Some(id) = store.key_owner(key).map_err(store_refusal)? { return Ok(Some(id)); }
+    let known = store.known_projects().map_err(store_refusal)?;
+    for entry in known.iter().filter(|entry| entry.key.is_empty() && !crate::project::vault::locked_now(&entry.path)) {
+        let _ = api.projects.store(api, &entry.id).await;
+    }
+    if let Some(id) = store.key_owner(key).map_err(store_refusal)? { return Ok(Some(id)); }
+    if known.iter().any(|entry| crate::project::vault::locked_now(&entry.path)) {
+        return Err(Refusal(Error::new(Kind::Conflict, "project_locked", format!("no open project has the key {key}; a locked project's runs are named once it's unlocked: unlock it first"))
+            .next("cozy vault unlock")));
+    }
+    Ok(None)
 }
 
 pub(crate) async fn find_scoped(api: &Arc<Api>, project: Option<&str>, key: &str) -> Result<RunRow, Refusal> {
