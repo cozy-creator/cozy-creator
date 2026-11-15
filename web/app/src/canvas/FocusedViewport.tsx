@@ -4,6 +4,7 @@ import { FocusedCard } from "./Card"
 import { Icon } from "../ui/Icon"
 import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
+import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
 import { failureOf, makingRun, shownOf, watched } from "./shown"
 import { RunDone, RunFace, useArriving } from "./RunFace"
@@ -55,9 +56,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
     if (entering || !store.get(name)?.hereWords) return
     const words = element.current?.querySelector<HTMLElement>(".focus-body [contenteditable]:not([contenteditable='false']), .focus-body textarea")
     words?.focus({ preventScroll: true })
-    if (!words?.isContentEditable) return
-    window.getSelection()?.selectAllChildren(words)
-    window.getSelection()?.collapseToEnd()
+    if (words?.isContentEditable) caretToEnd(words)
   }, [entering, name, store])
   useEffect(() => {
     const held = element.current
