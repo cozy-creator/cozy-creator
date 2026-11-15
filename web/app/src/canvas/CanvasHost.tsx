@@ -740,35 +740,39 @@ function Canvas({
     },
     [store],
   )
+  const clearDrag = useCallback(() => {
+    carrying(false)
+    stage.current?.removeAttribute("data-offering")
+    stage.current?.removeAttribute("data-copying")
+    store.refusing.set(null)
+    store.setHot(null)
+  }, [store])
+  const dragCancel = useCallback((nodes: ElementNode[]) => {
+    store.dragDropped(nodes)
+    clearDrag()
+  }, [store, clearDrag])
   const dragStop = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
       if (!nodes.some((node) => store.isDragging(node.data.name))) return
-      carrying(false)
-      stage.current?.removeAttribute("data-offering")
-      stage.current?.removeAttribute("data-copying")
       // Let go with Alt or Option held, copies land there and what was carried goes back where it was, as in Figma.
       if (altHeld(event)) {
         const copies = nodes.flatMap((node) => (node.type === "element" ? (copyOf(store, node.data.name, true) ?? []) : []))
-        store.refusing.set(null)
-        store.setHot(null)
-        store.dragDropped(nodes)
+        dragCancel(nodes)
         if (copies.length) selectOnly(placer.paste(copies, middleOf(copies), "Copied"))
         return
       }
       const { clientX, clientY } = pointOf(event)
       const { target, why } = store.offered(clientX, clientY, nodes.map((node) => node.data.name), draggedEls(nodes))
-      store.refusing.set(null)
+      clearDrag()
       if (!target) {
-        store.setHot(null)
         return store.dragStopped(nodes)
       }
       // Let go on what takes boxes, what was carried goes back where it was: a drop is never a move, a refused one included.
       store.dragDropped(nodes)
       if (why) say(why)
       else target.drop(nodes.map((node) => node.data.name), clientX, clientY)
-      store.setHot(null)
     },
-    [store, placer, selectOnly],
+    [store, placer, selectOnly, clearDrag, dragCancel],
   )
 
   /** On a box's picture, the arrows walk its row one take at a time, and Enter approves the one showing, or unapproves it. */
@@ -1001,6 +1005,7 @@ function Canvas({
           onDragStart={nodeDragStart}
           onDrag={nodeDrag}
           onDragStop={nodeDragStop}
+          onDragCancel={dragCancel}
         >
           {unread ? <Unread {...unread} /> : active && <Empty choose={choose} />}
         </CanvasSurface>

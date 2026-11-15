@@ -239,6 +239,33 @@ export class CanvasController {
     }
   }
 
+  /** A pointer canceled outside the page has no up event. Retire its library gesture as well as the host's gesture. */
+  cancelInteraction() {
+    const viewport = this.binding?.viewport
+    if (!viewport) return
+    viewport.input.clear()
+    // Drag.resume clears its anchor but retains its moved flag; Pinch has no public reset for its center.
+    // Recreate only these input plugins through their public factories, keeping configuration and pause state.
+    const drag = viewport.plugins.get("drag")
+    if (drag) {
+      viewport.drag(drag.options)
+      if (drag.paused) viewport.plugins.pause("drag")
+    }
+    const pinch = viewport.plugins.get("pinch")
+    if (pinch) {
+      viewport.pinch(pinch.options)
+      if (pinch.paused) viewport.plugins.pause("pinch")
+    }
+    const wheel = viewport.plugins.get("wheel")
+    if (wheel) {
+      viewport.wheel(wheel.options)
+      if (wheel.paused) viewport.plugins.pause("wheel")
+    }
+    viewport.plugins.get("decelerate")?.reset()
+    // This ends the hand gesture without stopping an independent Focus/Home camera animation.
+    this.end()
+  }
+
   /** The surface owns Pixi, resizing, its demand scheduler and destruction. This binding owns only camera synchronization. */
   bindCamera(element: HTMLElement, viewport: PixiViewport): () => void {
     this.binding?.stop()
