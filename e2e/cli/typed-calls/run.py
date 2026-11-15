@@ -133,24 +133,29 @@ def main() -> None:
     # Exercise cl-701 through the public CLI before any actual package run.
     cli("describe", "run", args.fixture / "caller/run", "--describe", "--on", "local")
 
-    media = run("media")
-    result = media["result"]
-    assert result["error"] == ""
-    assert result["prime"] is True  # generated request default number=17
-    assert re.fullmatch(r"[0-9a-f]{16}", as_text(result["fingerprint"]))
-    assert result["child_python"] and result["python"] != result["child_python"]
-    assert result["descendant_python"] == result["child_python"]
-    assert ".cozy-calls" in Path(as_text(result["child_python"])).parts
-    assert as_object(result["image"])["media_type"] == "image/png"
-    pngs = list((args.out / "exports/media").glob("*.png"))
-    assert len(pngs) == 1, pngs
-    from PIL import Image
+    def check_media(checked: CheckedRun, label: str) -> None:
+        result = checked["result"]
+        assert result["error"] == ""
+        assert result["prime"] is True  # generated request default number=17
+        assert re.fullmatch(r"[0-9a-f]{16}", as_text(result["fingerprint"]))
+        assert result["child_python"] and result["python"] != result["child_python"]
+        assert result["descendant_python"] == result["child_python"]
+        assert ".cozy-calls" in Path(as_text(result["child_python"])).parts
+        assert as_object(result["image"])["media_type"] == "image/png"
+        pngs = list((args.out / "exports" / label).glob("*.png"))
+        assert len(pngs) == 1, pngs
+        from PIL import Image
 
-    with Image.open(pngs[0]) as image:
-        assert image.format == "PNG" and image.size == (4, 3)
-        pixels = image.convert("RGBA")
-        assert pixels.getpixel((0, 0)) == (7, 11, 19, 95)
-        assert pixels.getpixel((1, 0)) == (15, 63, 127, 255)
+        with Image.open(pngs[0]) as image:
+            assert image.format == "PNG" and image.size == (4, 3)
+            pixels = image.convert("RGBA")
+            assert pixels.getpixel((0, 0)) == (7, 11, 19, 95)
+            assert pixels.getpixel((1, 0)) == (15, 63, 127, 255)
+
+    media = run("media")
+    check_media(media, "media")
+    assets = run("assets", "use_assets=true")
+    check_media(assets, "assets")
 
     failure = run("failure", "fail=true")
     result = failure["result"]
@@ -211,6 +216,7 @@ def main() -> None:
 
     summary: dict[str, object] = {
         "media": media,
+        "assets": assets,
         "failure": failure,
         "models": model_results,
         "private": private,
@@ -222,7 +228,7 @@ def main() -> None:
                 "qualified": str(args.out / "qualified.json"),
                 "runs": [
                     item["run"].get("name", item["run"]["id"])
-                    for item in [media, failure, *model_results]
+                    for item in [media, assets, failure, *model_results]
                 ],
             }
         ),

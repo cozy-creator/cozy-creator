@@ -21,6 +21,7 @@ class PrimeResult(msgspec.Struct, kw_only=True, frozen=True):
 judge: Operation[PrimeRequest, PrimeResult] = Operation(
     distribution='xs198-typed-leaf', module='typed_leaf', export='judge',
     declaration='sha256:00ff8319611447c1be01d0c60df2e93aa0c545b01e3844f90032ad9f3d282563', request=PrimeRequest, result=PrimeResult,
-    models=(),
+    models=(), assets_parameter='',
+    wire_request=None,
 )
 

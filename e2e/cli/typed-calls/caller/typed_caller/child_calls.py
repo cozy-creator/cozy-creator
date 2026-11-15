@@ -21,6 +21,18 @@ class Result(msgspec.Struct, kw_only=True, frozen=True):
     descendant_python: str
     fingerprint: str
 
+class shade_assetsRequest(msgspec.Struct, kw_only=True, frozen=True):
+    number: int = 17
+    fail: bool = False
+
+class AssetInputValue(msgspec.Struct, kw_only=True, frozen=True):
+    asset: File
+    label: str = ''
+    fidelity: Literal['auto', 'high', 'low', 'medium'] = 'auto'
+
+class _shade_assetsWireRequest(shade_assetsRequest, kw_only=True, frozen=True):
+    pictures: list[AssetInputValue]
+
 class WeightRequest(msgspec.Struct, kw_only=True, frozen=True):
     pass
 
@@ -31,13 +43,22 @@ class WeightResult(msgspec.Struct, kw_only=True, frozen=True):
 
 shade: Operation[Request, Result] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='shade',
-    declaration='sha256:3b7e5578265f6bdb33ac6f672afb7811d6ec6cfea535039684c948124e62d05a', request=Request, result=Result,
-    models=(),
+    declaration='sha256:34c532584c51e1fb8ec65e90d16ac350e77c62ff289db11260128e5d6b176d93', request=Request, result=Result,
+    models=(), assets_parameter='',
+    wire_request=None,
+)
+
+shade_assets: Operation[shade_assetsRequest, Result] = Operation(
+    distribution='xs198-typed-child', module='typed_child', export='shade_assets',
+    declaration='sha256:a12c25e722ce0a583b1592a4643cdafd531d7dbfea4f2e017be67d61aefeacc2', request=shade_assetsRequest, result=Result,
+    models=(), assets_parameter='pictures',
+    wire_request=_shade_assetsWireRequest,
 )
 
 weighted: Operation[WeightRequest, WeightResult] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='weighted',
     declaration='sha256:d570cd5d0f11f8a17a8b743ee13dfea6aa2f8421b993b54f51809c74985b339d', request=WeightRequest, result=WeightResult,
-    models=('weights',),
+    models=('weights',), assets_parameter='',
+    wire_request=None,
 )
 

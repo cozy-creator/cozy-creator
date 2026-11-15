@@ -1,4 +1,4 @@
-"""Legacy child with no cozy-calls extra: ordinary compute dependencies and a private self call."""
+"""Leaf without a cozy-calls extra: ordinary compute dependencies and a typed private self call."""
 
 import sys
 import msgspec
@@ -21,18 +21,18 @@ class PrimeResult(msgspec.Struct, kw_only=True):
 
 
 @app.entrypoint(accelerator=False, private=True)
-def private(number: int = 17, fail: bool = False) -> PrimeResult:
-    if fail:
+def private(payload: PrimeRequest) -> PrimeResult:
+    if payload.fail:
         raise InvalidRequest(
             "the requested transitive child failure", code="typed_fixture_failure"
         )
     return PrimeResult(
-        prime=bool(isprime(number)),
+        prime=bool(isprime(payload.number)),
         python=sys.executable,
-        fingerprint=xxh64_hexdigest(str(number).encode()),
+        fingerprint=xxh64_hexdigest(str(payload.number).encode()),
     )
 
 
 @app.entrypoint(accelerator=False)
 async def judge(payload: PrimeRequest) -> PrimeResult:
-    return await call(private, number=payload.number, fail=payload.fail)
+    return await call(private, payload)
