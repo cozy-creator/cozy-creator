@@ -377,7 +377,7 @@ export class CanvasStore {
   /** A position of ours that the stream hasn't echoed: it wins until then. */
   private masks = new Map<string, Card>()
   private gliding = new Map<string, ReturnType<typeof setTimeout>>()
-  /** Boxes to clear of what they lie on, as soon as this turn's changes are in: true for one whose size is its own, which doesn't shrink. */
+  /** Boxes to clear of what they lie on, as soon as this turn's changes are in, and why: placed by another writer, or grown. */
   private unsettled = new Map<string, "placed" | "grown">()
   /** When each of this page's moves was answered, by name. */
   private movedAt = new Map<string, number>()
