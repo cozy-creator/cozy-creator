@@ -115,4 +115,9 @@ J '[.runs[] | select(.target | test("/echo"))] | .[0].machine == "stand-c"' "$OU
   || check "coming: run --on new didn't run on stand-c: $(jq -c '[.runs[] | {number, target, machine, status}]' "$OUT/coming-new-runs.json")"
 cozy --json machine ls | J '[.machines[] | select(.kind == "rental" and .state != "ended")] | length == 0' \
   || check "coming: run --on new rented: $(cozy --json machine ls | jq -c '[.machines[] | {name, kind, state}]')"
+# Where its walk placed each box and why, kept in the project with calcifer.diagnostics on (run.sh), never in Calcifer's log.
+cp "$P/.vault-calcifer/diagnostics/walk.log" "$OUT/coming-walk.log" 2> /dev/null || true
+[ -s "$OUT/coming-walk.log" ] && grep -q ' goes to ' "$OUT/coming-walk.log" \
+  || check "coming: the project's walk log says no placement, with diagnostics on: $(tail -c 300 "$OUT/coming-walk.log" 2> /dev/null)"
+tail -n 60 "$OUT/coming-walk.log" 2> /dev/null || true
 }
