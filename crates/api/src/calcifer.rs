@@ -1035,10 +1035,13 @@ pub struct RunList {
 }
 
 /// `PUT /v1/events/{stream}`: the projects a page on that stream shows, which Calcifer holds open
-/// while it lasts or until it shows others.
+/// while it lasts or until it shows others, and whether it shows a machine's view: its runs that
+/// are no project's (installs, updates). A page stream hears a run only of what it shows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Shown {
     pub projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub machines: bool,
 }
 
 /// The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
