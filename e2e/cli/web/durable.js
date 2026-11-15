@@ -13,6 +13,8 @@ const { exec } = require('child_process');
 const { readFileSync } = require('fs');
 const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, launch, lookAt, noStall, openBox, rowsOf, until } = require('./page');
 
+const { canvasBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -76,7 +78,7 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
     await page.route(path, route);
     return { asked, land, answer, done: () => page.unroute(path, route) };
   };
-  await boxOf(page, 'words').waitFor();
+  await until('card on the canvas', () => canvasBox(page, 'words'), Boolean);
   await page.evaluate(() => { window.unreloaded = true; });
 
   // A save lands, typing goes on, and the page reads its words back before the save's answer comes: what's typed stays, and goes next.
@@ -138,7 +140,7 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   const quick = 'Typed, and the page reloaded at once.';
   await typeOver(quick);
   await page.reload();
-  await boxOf(page, 'words').waitFor();
+  await until('card on the canvas', () => canvasBox(page, 'words'), Boolean);
   await saving(quick);
   check('reload_at_once_saved', inDb() === quick, inDb());
 

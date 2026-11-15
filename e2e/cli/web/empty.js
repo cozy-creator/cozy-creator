@@ -15,6 +15,8 @@ const { projectFolder, projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, c
 /** A slow still, local code this computer runs (`project/tool.py`). */
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
 
+const { canvasBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -75,7 +77,7 @@ async function died(why) {
   for (const box of boxes) {
     const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: box.tool, kind: box.kind, name: box.name, exact: true, fields: box.fields, at: box.at }) });
     if (made.status >= 300) throw new Error(`${box.name}: ${JSON.stringify(made)}`);
-    await boxOf(page, box.name).waitFor();
+    await until('card on the canvas', () => canvasBox(page, box.name), Boolean);
   }
   await fitCanvas(page);
 
@@ -115,7 +117,7 @@ async function died(why) {
   if ((await api('/v1/status')).body?.local_usable) {
     const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: `${TOOL}/slow`, kind: 'image', name: 'pending', exact: true, fields: { instructions: 'the first', seconds: 90 }, at: { x: 1100, y: 100 } }) });
     if (made.status >= 300) throw new Error(`pending: ${JSON.stringify(made)}`);
-    await boxOf(page, 'pending').waitFor();
+    await until('card on the canvas', () => canvasBox(page, 'pending'), Boolean);
     await openBox(page, 'pending');
     await (await renderOf(page, 'pending')).click();
     const runs = async () => ((await api(`${at}/runs?limit=100`)).body?.runs ?? []).filter((run) => run.project_id === id && run.kind === 'call');
@@ -143,10 +145,12 @@ async function died(why) {
   // A blank Edit with a description written by hand shows nothing of it on its face (cl-900): only what it's for.
   const blank = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: 'cozy/edit', kind: 'video', name: 'cut', exact: true, fields: { description: 'HIDDEN-DESCRIPTION' }, at: { x: 100, y: 700 } }) });
   if (blank.status >= 300) throw new Error(`the Edit: ${JSON.stringify(blank)}`);
-  await boxOf(page, 'cut').waitFor();
+  await until('card on the canvas', () => canvasBox(page, 'cut'), Boolean);
   await until('its description in the file', () => asset('cut'), (row) => row?.fields?.description === 'HIDDEN-DESCRIPTION');
   await page.waitForTimeout(500);
-  const face = await boxOf(page, 'cut').innerText();
+  await page.mouse.move(20,20);
+  const rendered = await until('blank card rendered', async () => (await canvasBox(page,'cut'))?.rendered, Boolean);
+  const face = Object.values(rendered.labels).map(label => label.fullText ?? label.text).join(' ');
   seen.blank_face = face;
   check('a_blank_box_never_shows_its_description', !face.includes('HIDDEN-DESCRIPTION'), face);
   await shot('blank-face');

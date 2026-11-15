@@ -13,6 +13,8 @@ const { join } = require('path');
 const { tmpdir } = require('os');
 const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
 
+const { canvasBox, hoverBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -67,7 +69,7 @@ async function died(why) {
   if (!shape) throw new Error(`no Qwen Image tool with a shape: ${JSON.stringify(tools.map((tool) => tool.id))}`);
   const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: qwen.id, kind: 'image', name: 'still', exact: true, fields: { instructions: 'a lighthouse at dusk' }, at: { x: 200, y: 200 } }) });
   if (made.status >= 300) throw new Error(`the box: ${JSON.stringify(made)}`);
-  await boxOf(page, 'still').waitFor();
+  await until('card on the canvas', () => canvasBox(page, 'still'), Boolean);
   await fitCanvas(page);
   await settled(page);
 
@@ -91,7 +93,7 @@ async function died(why) {
   const snapped = (fields) => fields[shape.field] === '16:9';
 
   // On the canvas.
-  const onCanvas = await pull(boxOf(page, 'still'), 140);
+  const onCanvas = await pull(await hoverBox(page, 'still'), 140);
   const canvasFields = await until('its shape saved', () => fieldsOf('still'), (fields) => typeof fields[shape.field] === 'string').catch(() => fieldsOf('still'));
   seen.canvas = { ...onCanvas, saved: canvasFields[shape.field] };
   check('on_the_canvas_1237_689_lands_on_16_9', snapped(canvasFields), seen.canvas);
@@ -124,8 +126,9 @@ async function died(why) {
   check('h3_listed_with_its_shape', Boolean(h3Shape) && (bounded || only169), seen.h3);
   if (h3Shape && only169) {
     await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: h3.id, kind: 'video', name: 'shot', exact: true, fields: { beats: [{ duration: 5, description: 'A dancer on a rooftop.' }] }, at: { x: 200, y: 700 } }) });
-    await boxOf(page, 'shot').waitFor();
-    const said = await until('it says 16:9', () => boxOf(page, 'shot').locator('.ratio-rest').first().innerText().then((text) => text.trim(), () => null), (text) => text === '16:9').catch(() => null);
+    await until('card on the canvas', () => canvasBox(page, 'shot'), Boolean);
+    await fitCanvas(page);
+    const said = await until('it says 16:9', async () => { await page.mouse.move(20,20); const shape=(await canvasBox(page,'shot'))?.rendered?.labels.shape; return shape?.fullText ?? shape?.text ?? null; }, (text) => text === '16:9').catch(() => null);
     check('h3_before_0_12_says_16_9', said === '16:9', said);
   }
   if (h3Shape && bounded) {
@@ -138,10 +141,10 @@ async function died(why) {
     const beats = [{ duration: 5, description: '<face> dances on a rooftop.' }];
     const h3Box = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: h3.id, kind: 'video', name: 'shot', exact: true, fields: { beats }, at: { x: 200, y: 700 } }) });
     if (h3Box.status >= 300) throw new Error(`the H3 box: ${JSON.stringify(h3Box)}`);
-    await boxOf(page, 'shot').waitFor();
+    await until('card on the canvas', () => canvasBox(page, 'shot'), Boolean);
     await fitCanvas(page);
     await settled(page);
-    const said = () => boxOf(page, 'shot').locator('.ratio-rest').first().innerText().then((text) => text.trim(), () => null);
+    const said = async () => { await page.mouse.move(20,20); const shape=(await canvasBox(page,'shot'))?.rendered?.labels.shape; return shape?.fullText ?? shape?.text ?? null; };
     const saying = (want) => until(`it says ${want}`, said, (text) => text === want).catch(said);
     seen.h3_auto = await saying('Auto · 16:9');
     check('h3_auto_is_16_9_and_a_mentioned_portrait_leaves_it', seen.h3_auto === 'Auto · 16:9', seen.h3_auto);

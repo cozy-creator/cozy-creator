@@ -19,6 +19,8 @@ const { projectFolder, projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, c
 /** Shots this computer renders itself, weightless. */
 const SHOTS = join(__dirname, '..', 'project', 'shots.py');
 
+const { canvasBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -89,7 +91,7 @@ async function died(why) {
   // A shot this computer renders itself (`project/shots.py`), with a take: what Render and Cmd/Ctrl+Enter start.
   await post(`${at}/assets`, { tool: `${SHOTS}/shoot`, kind: 'video', name: 'local', exact: true, fields: { summary: 'A walk by the sea.', beats: [{ description: 'Waves.', duration: 2 }] }, at: { x: 100, y: 1000 } });
   await post(`${at}/assets/local/versions`, { source: await upload(held?.token, join(folder, 'take.mp4'), id) });
-  for (const name of ['amy', 'boat', 'scene', 'again', 'still', 'local']) await boxOf(page, name).waitFor();
+  for (const name of ['amy', 'boat', 'scene', 'again', 'still', 'local']) await until('card on the canvas', () => canvasBox(page, name), Boolean);
   await fitCanvas(page);
 
   /** The frame of the open box, and what it holds. */

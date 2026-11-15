@@ -12,6 +12,8 @@ const { mkdirSync, writeFileSync } = require('fs');
 const { dirname, join } = require('path');
 const { projectFolder, projectFromPage, projectAction, addBoxes, calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, settled, until } = require('./page');
 
+const { canvasBox, screenshotPixels } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -119,26 +121,43 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
 
   // Its render waits on its package's install, a second or two from uv's cache: the box says so, and the chip's list has the install once,
   // with the run that waits on it. Everything they say is kept as it shows, so a short install is seen whole.
-  await page.locator('.card[data-asset="waits"]').waitFor();
+  await until('waits on the canvas', () => canvasBox(page,'waits'), Boolean);
   await page.evaluate(() => {
-    const said = (window.said = { box: [], rows: [], marks: [], faces: {} });
-    const keep = (list, text) => text && !list.includes(text) && list.push(text);
-    // Each box's face as it changes: what it says, its time left, where, the detail, its phase and how far its bar is.
-    const faces = (name) => {
-      const face = document.querySelector(`.card[data-asset="${name}"] .run-face`);
-      if (!face) return;
-      const text = (selector) => face.querySelector(selector)?.textContent ?? '';
-      const now = { phase: face.dataset.phase, says: text('.face-state b'), machine: text('.face-machine') };
-      const list = (said.faces[name] ??= []);
-      if (JSON.stringify(list.at(-1)) !== JSON.stringify(now)) list.push(now);
+    const said=(window.said={box:[],rows:[],marks:[],faces:{}});
+    const keep=(list,text)=>text && !list.includes(text) && list.push(text);
+    const bounds=el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};};
+    const union=rects=>({x:Math.min(...rects.map(r=>r.x)),y:Math.min(...rects.map(r=>r.y)),width:Math.max(...rects.map(r=>r.x+r.width))-Math.min(...rects.map(r=>r.x)),height:Math.max(...rects.map(r=>r.y+r.height))-Math.min(...rects.map(r=>r.y))});
+    const words=label=>label?.fullText ?? label?.text ?? '';
+    window.activityFace=name=>{
+      const native=document.querySelector(`[data-focused-asset="${name}"] .run-face, .canvas-node .card[data-asset="${name}"] .run-face`);
+      if(native) {
+        const state=native.querySelector('.face-state b'),machine=native.querySelector('.face-machine');
+        if(!state || !machine) return null;
+        return {phase:native.dataset.phase,says:state.textContent,machine:machine.textContent,lines:[bounds(machine),bounds(state)],bounds:bounds(native)};
+      }
+      const card=document.querySelector('.canvas-root')?.canvasInspection?.card(name),drawn=card?.rendered;
+      if(!drawn?.progress || !drawn.labels.progress || !drawn.labels.machine) return null;
+      const machine=[drawn.labels.machine,drawn.labels.time].filter(Boolean),state=[drawn.labels.progress,drawn.labels.count].filter(Boolean);
+      return {phase:drawn.progress.phase,says:state.map(words).join(' '),machine:machine.map(words).join(''),lines:[union(machine),union(state)],bounds:union([card.bounds,...machine,...state,...drawn.controls])};
     };
-    new MutationObserver(() => {
-      for (const name of ['waits', 'slow', 'after']) faces(name);
-      keep(said.box, document.querySelector('.card[data-asset="waits"] .run-face .face-state b')?.textContent);
-      for (const row of document.querySelectorAll('.activity [data-doing]')) keep(said.rows, `${row.dataset.doing}: ${row.innerText.replace(/\s+/g, ' ')}`);
-      for (const mark of document.querySelectorAll('.mtab[data-machine="local"] .mark, .mtab[data-machine="local"] .dot')) keep(said.marks, mark.className);
-    }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+    const faces=name=>{const value=window.activityFace(name);if(!value)return;const now={phase:value.phase,says:value.says,machine:value.machine};const list=(said.faces[name]??=[]);if(JSON.stringify(list.at(-1))!==JSON.stringify(now))list.push(now);};
+    // Canvas pixels have no DOM mutations: observe displayed progress each frame. This cell measures behavior, never idle/performance.
+    let frame;
+    const sample=()=>{for(const name of ['waits','slow','after'])faces(name);keep(said.box,window.activityFace('waits')?.says);frame=requestAnimationFrame(sample);};
+    frame=requestAnimationFrame(sample);
+    const observer=new MutationObserver(()=>{
+      for(const row of document.querySelectorAll('.activity [data-doing]'))keep(said.rows,`${row.dataset.doing}: ${row.innerText.replace(/\s+/g,' ')}`);
+      for(const mark of document.querySelectorAll('.mtab[data-machine="local"] .mark, .mtab[data-machine="local"] .dot'))keep(said.marks,mark.className);
+    });
+    observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true});
+    window.stopActivityObservation=()=>{cancelAnimationFrame(frame);observer.disconnect();};
   });
+  const labelColors=await page.evaluate(()=>{
+    const probe=document.createElement('span');document.body.append(probe);
+    const read=token=>{probe.style.color=`var(${token})`;const color=getComputedStyle(probe).color,values=color.match(/[\d.]+/g).map(Number).slice(0,3);return color.startsWith('color(')?values.map(v=>v*255):values;};
+    const colors=[read('--mute'),read('--ink')];probe.remove();return colors;
+  });
+  const dpr=await page.evaluate(()=>devicePixelRatio);
   // Its box kept as a picture each time its face's phase or first line changes, from Render to its take (Paul, 11-12, cl-921: the box at
   // each phase): `phases/<n>-<phase>.png` beside $SHOT, in the run's artifact.
   const phases = process.env.SHOT ? join(dirname(process.env.SHOT), 'phases') : null;
@@ -147,33 +166,31 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const picturing = (async () => {
     while (!pictured.done) {
       // The box and what hangs under it (cl-932: its render's two lines and Cancel are under the picture), as one picture.
-      const now = await page.evaluate(() => {
-        const card = document.querySelector('.card[data-asset="waits"]');
-        const face = card?.querySelector('.run-face');
-        if (!face) return null;
-        const node = card.closest('.react-flow__node') ?? card;
-        const rects = [node, card, face, card.querySelector('.tile-under')].filter(Boolean).map((one) => one.getBoundingClientRect());
-        const [x, y] = [Math.min(...rects.map((r) => r.left)), Math.min(...rects.map((r) => r.top))];
-        const [right, bottom] = [Math.max(...rects.map((r) => r.right)), Math.max(...rects.map((r) => r.bottom))];
-        const said = `${face.dataset.phase}|${face.querySelector('.face-machine')?.textContent ?? ''}|${face.querySelector('.face-state b')?.textContent ?? ''}`;
-        // Its two lines are there to read: words, on screen, drawn, not clipped by what holds them.
-        const shown = (line) => {
-          if (!line?.textContent.trim()) return false;
-          const r = line.getBoundingClientRect();
-          const style = getComputedStyle(line);
-          const within = r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth;
-          const cut = [...(function* up(at) { for (let one = at.parentElement; one && one !== card.parentElement; one = one.parentElement) yield one; })(line)]
-            .some((one) => getComputedStyle(one).overflow !== 'visible' && (() => { const o = one.getBoundingClientRect(); return r.bottom > o.bottom + 1 || r.top < o.top - 1; })());
-          return within && !cut && style.visibility !== 'hidden' && Number(style.opacity) > 0;
-        };
-        const visible = shown(face.querySelector('.face-machine')) && shown(face.querySelector('.face-state b'));
-        return { said, visible, clip: { x: Math.max(0, x - 8), y: Math.max(0, y - 8), width: right - x + 16, height: bottom - y + 16 } };
-      }).catch(() => null);
-      if (now && now.said.split('|')[2] !== pictured.last.split('|')[2] || now && now.said.split('|')[0] !== pictured.last.split('|')[0]) {
-        pictured.n += 1;
-        if (phases) await page.screenshot({ path: join(phases, `${String(pictured.n).padStart(2, '0')}-${now.said.split('|')[0]}.png`), clip: now.clip }).catch(() => {});
+      const now=await page.evaluate(()=>{
+        const face=window.activityFace('waits');if(!face)return null;
+        const b=face.bounds,x=Math.max(0,b.x-8),y=Math.max(0,b.y-8),right=Math.min(innerWidth,b.x+b.width+8),bottom=Math.min(innerHeight,b.y+b.height+8);
+        const visible=face.says.trim() && face.machine.trim() && face.lines.every(r=>r.width>0 && r.height>0 && r.x>=0 && r.y>=0 && r.x+r.width<=innerWidth && r.y+r.height<=innerHeight);
+        return {said:`${face.phase}|${face.machine}|${face.says}`,visible,lines:face.lines,clip:{x,y,width:right-x,height:bottom-y}};
+      });
+      const changed=now && (now.said.split('|')[2]!==pictured.last.split('|')[2] || now.said.split('|')[0]!==pictured.last.split('|')[0]);
+      if(changed) {
+        pictured.n++;
+        if(now.clip.width>0 && now.clip.height>0) {
+          const bytes=await page.screenshot({...(phases?{path:join(phases,`${String(pictured.n).padStart(2,'0')}-${now.said.split('|')[0]}.png`)}:{}),clip:now.clip});
+          const read=screenshotPixels(bytes);
+          const ink=now.lines.map((line,index)=>{
+            let count=0;
+            for(let y=line.y;y<line.y+line.height;y++)for(let x=line.x;x<line.x+line.width;x++){
+              const px=(x-now.clip.x)*dpr,py=(y-now.clip.y)*dpr;
+              if(px<0 || py<0 || px>=read.width || py>=read.height)continue;
+              if(read(px,py).every((value,c)=>Math.abs(value-labelColors[index][c])<=35))count++;
+            }
+            return count;
+          });
+          if(ink.some(count=>count<3))pictured.hidden.push(`${now.said}: missing text pixels ${ink}`);
+        } else pictured.hidden.push(`${now.said}: outside viewport`);
       }
-      if (now && !now.visible) pictured.hidden.push(now.said);
+      if(now && !now.visible)pictured.hidden.push(now.said);
       pictured.last = now?.said ?? '';
       await page.waitForTimeout(100);
     }
@@ -223,7 +240,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const result = faces.filter((face) => face.phase === 'result');
   seen.result_phase = result;
   check('face_result_download_says_its_bytes', result.every((face) => face.says === 'Saving' || /^Downloading result - \d.*B \/ \d/.test(face.says)), result);
-  const gone = await until('its face gone with its take', () => page.locator('.card[data-asset="waits"] .run-face').count(), (n) => n === 0, 15_000).catch(() => 1);
+  const gone = await until('its face gone with its take', () => page.evaluate(() => window.activityFace('waits') ? 1 : 0), (n) => n === 0, 15_000).catch(() => 1);
   check('face_gone_with_its_take', gone === 0);
   check('install_listed_with_its_waiter', said.rows.some((row) => /^install: activity_\d+ Install .* for run \d+$/.test(row)), said.rows);
   check('a_run_waited_on_it', said.rows.some((row) => /^run: .*Waits on the install of activity_\d+$/.test(row)), said.rows);
@@ -294,8 +311,8 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   // ends, it's left as it was, and Undo renders it again. `after` waits for `slow`, whose steps are slow enough to be stopped.
   const held = async (asset) => (await api(`/v1/projects/${id}`)).assets.find((one) => one.name === asset);
   // Pressed as a person presses it: by its name, where it's drawn (a script's click() reaches a hidden or covered button too).
-  const cancel = (asset) => page.locator(`.card[data-asset="${asset}"]`).getByRole('button', { name: `Cancel ${asset}'s render`, exact: true }).first().click();
-  const sayOf = (asset) => page.locator(`.card[data-asset="${asset}"] .run-face .face-state b`).first().textContent().catch(() => '');
+  const cancel = async asset => { const control=(await canvasBox(page,asset))?.rendered?.controls.find(control=>control.part==='cancel'); if(!control)throw new Error(`${asset} has no displayed Cancel`); await page.mouse.click(control.x+control.width/2,control.y+control.height/2); };
+  const sayOf = asset => page.evaluate(name=>window.activityFace(name)?.says ?? '',asset);
   await projectAction(folder, 'render', 'slow', 'after', '--on', 'local', '--queue');
   // Its first line says what it waits for as Paul wrote it (cl-898, 3898a5d72): "Waiting for <slow>".
   const waited = await until('after waits its turn', () => sayOf('after'), (text) => /^Waiting for <slow>/.test(text ?? ''), 60_000).catch((why) => String(why));
@@ -329,14 +346,14 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   check('focus_says_its_stage', /^Segment [12] of 2: (Denoising|Decoding video)/.test(focus.stage), focus);
   await page.keyboard.press('Escape');
   await cancel('after');
-  const left = await until('after left its line', async () => ({ faces: await page.locator('.card[data-asset="after"] .run-face').count(), asset: await held('after') }), (now) => now.faces === 0 && !now.asset?.making?.length, 30_000).catch((why) => ({ why: String(why) }));
+  const left = await until('after left its line', async () => ({ faces: await page.evaluate(() => window.activityFace('after') ? 1 : 0), asset: await held('after') }), (now) => now.faces === 0 && !now.asset?.making?.length, 30_000).catch((why) => ({ why: String(why) }));
   const still = (await sayOf('slow')) ?? '';
   check('cancel_while_queued', left.faces === 0 && !left.asset?.version && Boolean(still) && still !== 'Cancelling…', { left, slow: still });
   const offered = await until('its Undo', () => page.locator('.notes .note').filter({ hasText: "Canceled after's render" }).locator('button').allInnerTexts(), (labels) => labels.includes('Undo'), 5000).catch((why) => String(why));
   check('cancel_offers_undo', Array.isArray(offered), offered);
   const making = (await held('slow'))?.making ?? [];
   await cancel('slow');
-  const stopped = await until('slow stopped', async () => ({ faces: await page.locator('.card[data-asset="slow"] .run-face').count(), asset: await held('slow') }), (now) => now.faces === 0 && !now.asset?.making?.length, 60_000).catch((why) => ({ why: String(why) }));
+  const stopped = await until('slow stopped', async () => ({ faces: await page.evaluate(() => window.activityFace('slow') ? 1 : 0), asset: await held('slow') }), (now) => now.faces === 0 && !now.asset?.making?.length, 60_000).catch((why) => ({ why: String(why) }));
   const runs = await Promise.all(making.map((number) => api(`/v1/projects/${id}/runs/${number}`)));
   const cancelling = (said.faces = (await page.evaluate(() => window.said.faces))).slow ?? [];
   check('cancel_says_cancelling', cancelling.some((face) => face.says === 'Cancelling…'), cancelling.slice(-6));
@@ -344,6 +361,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   return finish();
 
   async function finish() {
+    await page.evaluate(() => window.stopActivityObservation?.());
     check('no_page_errors', errors.length === 0, errors);
     console.log(JSON.stringify({ failures, seen }, null, 2));
     await browser.close();

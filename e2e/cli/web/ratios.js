@@ -18,6 +18,8 @@ const draw = `${join(__dirname, '..', 'project', 'draw.py')}/draw`;
 // web/app/src/canvas/ratios.ts's.
 const STANDARD = ['16:9', '9:16', '1:1', '4:3', '3:4', '4:5', '5:4', '3:2', '2:3', '21:9', '9:21', '2:1', '1:2', '2.39:1', '1.85:1', '1.90:1', '1.43:1', '1.37:1', '1.66:1'];
 const ratioOf = (shape) => shape.split(':').map(Number).reduce((w, h) => w / h);
+const { canvasBox, hoverBox, screenshotPixels } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -64,7 +66,7 @@ async function died(why) {
   const asset = async (name) => (await api(at)).body?.assets?.find((row) => row.name === name);
   seen.project = { id, folder: (await api(at)).body.path };
   /** What a box at rest says under it of its shape. */
-  const said = (name) => boxOf(page, name).locator('.tile-line .ratio-rest').first().innerText().then((text) => text.trim(), () => null);
+  const said = async (name) => { await page.mouse.move(20,20); const shape=(await canvasBox(page,name))?.rendered?.labels.shape; return shape?.fullText ?? shape?.text ?? null; };
   const saying = (name, want) => until(`${name} says ${want}`, () => said(name), (text) => text === want).catch(() => said(name));
 
   // Files with no shape asked: their pixels', snapped.
@@ -86,7 +88,7 @@ async function died(why) {
     const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ ...box, exact: true }) });
     if (made.status >= 300) throw new Error(`${box.name}: ${JSON.stringify(made)}`);
   }
-  await boxOf(page, 'pulled').waitFor();
+  await until('card on the canvas', () => canvasBox(page, 'pulled'), Boolean);
   await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['widescreen', 'academy'], on: ['local'] }), headers: { 'Idempotency-Key': `ratios-${Date.now()}` } });
   const take = (row) => row?.prefixes?.at(-1);
   for (const name of ['widescreen', 'academy']) {
@@ -95,6 +97,17 @@ async function died(why) {
   }
   await fitCanvas(page);
   await settled(page);
+
+  await page.mouse.move(20,20);
+  const dpr=await page.evaluate(()=>devicePixelRatio);
+  for (const [index,[name,width,height]] of imports.entries()) {
+    const shown=await until(`${name} real pixels`,async()=> {
+      const body=(await canvasBox(page,name)).body,read=screenshotPixels(await page.screenshot());
+      const actual=[[0.25,0.25],[0.75,0.25],[0.25,0.75],[0.75,0.75]].map(([x,y])=>read((body.x+body.width*x)*dpr,(body.y+body.height*y)*dpr));
+      return {body,actual};
+    },({actual})=>actual.every((rgb,i)=>Math.abs(rgb[0]-(60+40*index))<20 && Math.abs(rgb[1]-(i%2?0.75:0.25)*255)<20 && Math.abs(rgb[2]-(i>=2?0.75:0.25)*255)<20));
+    check(`${name}_picture_keeps_its_pixels_and_shape`,Math.abs(shown.body.width/shown.body.height/(width/height)-1)<0.02,shown);
+  }
 
   const sizes = { widescreen: [1344, 768, '16:9'], academy: [1024, 768, '1.37:1'] };
   for (const [name, [width, height, asked]] of Object.entries(sizes)) {
@@ -117,7 +130,7 @@ async function died(why) {
 
   /** `pulled`'s corner pulled until its picture is `ratio` wide to 1 tall; what it said held, and what it saved. */
   const pull = async (ratio) => {
-    const box = boxOf(page, 'pulled');
+    const box = await hoverBox(page, 'pulled');
     const corner = await box.locator('.corner').first().boundingBox();
     const media = await box.locator('.media').first().boundingBox();
     const before = (await asset('pulled'))?.fields?.aspect_ratio;
@@ -144,7 +157,7 @@ async function died(why) {
   await shot('paper');
   await page.evaluate(() => localStorage.setItem('cozy.theme', 'dark'));
   await page.reload();
-  await boxOf(page, 'pulled').waitFor();
+  await until('card on the canvas', () => canvasBox(page, 'pulled'), Boolean);
   await fitCanvas(page);
   const wanted = { wide: '16:9', tall: '9:16', square: '1:1', odd: '3:1', widescreen: '16:9', academy: '1.37:1', pulled: free };
   seen.dark = {};

@@ -15,6 +15,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, addBoxes, importFile, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
 
+const { canvasBox, hoverBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -100,7 +102,7 @@ const SEAM = 6;
     { name: 'shot', tool: `${SHOTS}/shoot`, kind: 'video', fields: { summary: 'On <look>.' }, at: { x: 100, y: 100 } },
     { name: 'next', tool: `${SHOTS}/shoot`, kind: 'video', fields: { summary: 'Then <look> again.' }, at: { x: 100, y: 600 } },
   ]);
-  for (const name of ['shot', 'next', 'look', 'blank_pic', 'blank_clip']) await boxOf(page, name).waitFor();
+  for (const name of ['shot', 'next', 'look', 'blank_pic', 'blank_clip']) await until('card on the canvas', () => canvasBox(page, name), Boolean);
   await fitCanvas(page);
   const focus = page.locator('.focus-viewport');
   const resultOf = async (name, number) => {
@@ -262,7 +264,7 @@ const SEAM = 6;
   check('focus_shows_its_source', seen.source_said === `Continues <shot.1> from ${clock(last / fps)}`, seen.source_said);
   await looks('continued-focus');
   await closeBox(page);
-  const tile = boxOf(page, 'next').locator('.continues-rest');
+  const tile = (await hoverBox(page, 'next')).locator('.continues-rest');
   seen.tile_said = await tile.innerText().catch(() => '');
   check('its_tile_shows_its_source', seen.tile_said === 'from shot', seen.tile_said);
   await looks('continued-tile');

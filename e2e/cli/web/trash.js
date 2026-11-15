@@ -11,6 +11,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, projectFromPage, calcifer, signIn, DARK_OPEN, MP4, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until, upload } = require('./page');
 
+const { canvasBox, hoverBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -72,12 +74,12 @@ async function died(why) {
   writeFileSync(join(folder, 'take2.mp4'), DARK_OPEN);
   await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 5 }] }, at: { x: 100, y: 100 } });
   for (const file of ['take1.mp4', 'take2.mp4']) await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, file), id) });
-  await boxOf(page, 'shot').waitFor();
+  await until('card on the canvas', () => canvasBox(page, 'shot'), Boolean);
   await until('two takes', takes, (numbers) => numbers.length === 2);
   await fitCanvas(page);
 
   // On the canvas, a box's delete is a trash can.
-  const canvasDelete = await boxOf(page, 'shot').locator('button[aria-label="Delete"] svg').first().getAttribute('data-icon').catch(() => null);
+  const canvasDelete = await (await hoverBox(page, 'shot')).locator('button[aria-label="Delete"] svg').first().getAttribute('data-icon').catch(() => null);
   seen.canvas_delete = canvasDelete;
   check('a_boxs_delete_is_a_trash_can', canvasDelete === 'trash', canvasDelete);
 
@@ -126,7 +128,7 @@ async function died(why) {
 
   // On the canvas, the box's trash can deletes it, saying so, and Undo brings it back.
   const exists = async () => Boolean((await api(at)).body?.assets?.some((row) => row.name === 'shot'));
-  const tileDelete = boxOf(page, 'shot').locator('button[aria-label="Delete"]').first();
+  const tileDelete = (await hoverBox(page, 'shot')).locator('button[aria-label="Delete"]').first();
   const tileTitle = await tileDelete.getAttribute('title');
   seen.tile_delete = { icon: await tileDelete.locator('svg').getAttribute('data-icon'), title: tileTitle };
   check('the_tiles_delete_is_a_trash_can_saying_delete', seen.tile_delete.icon === 'trash' && /^Delete/.test(tileTitle ?? ''), seen.tile_delete);

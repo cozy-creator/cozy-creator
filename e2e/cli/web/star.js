@@ -10,6 +10,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, launch, lookAt, noStall, png, rowsOf, settled, until, upload } = require('./page');
 
+const { canvasBox, hoverBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -83,10 +85,10 @@ async function died(why) {
   /** A right click on `name`'s box on the canvas, and `item` from its menu. */
   const fromMenu = async (name, item) => {
     if (page.url() !== canvas) await page.goto(canvas);
-    await boxOf(page, name).waitFor();
+    await until('card on the canvas', () => canvasBox(page, name), Boolean);
     await page.keyboard.press('f');
     await settled(page);
-    await boxOf(page, name).locator('.nm').click({ button: 'right' });
+    await (await hoverBox(page, name)).locator('.nm').click({ button: 'right' });
     const menu = page.locator('.asset-menu');
     await menu.waitFor();
     const items = await menu.locator('[role=menuitem]').allTextContents();

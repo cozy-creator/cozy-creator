@@ -9,6 +9,8 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { join } = require('path');
 const { projectFolder, boxOf, calcifer, cozyIn, lastLook, launch, lookAt, noStall, projectAction, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
 
+const { canvasBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -63,15 +65,16 @@ const PICS_WORK = /drawing|\d+ \/ \d+|step/i;
   await projectAction(folder, 'add', `${TOOL}/slow`, 'pic', 'at=200,400,260', 'instructions=a picture to wait for', `seconds=${PIC_S}`);
   await projectAction(folder, 'add', `${CLIP}/clip`, 'clip', 'at=600,400,260', 'instructions=<pic> held still');
   await page.goto(at);
-  await boxOf(page, 'pic').waitFor();
-  await boxOf(page, 'clip').waitFor();
+  await until('card on the canvas', () => canvasBox(page, 'pic'), Boolean);
+  await until('card on the canvas', () => canvasBox(page, 'clip'), Boolean);
 
   // Each box's face as drawn, its two lines: what it's doing, and the machine.
-  const face = (name) => boxOf(page, name).locator('.run-face').first().evaluate((el) => ({
-    phase: el.dataset.phase,
-    says: el.querySelector('.face-state b')?.textContent ?? '',
-    machine: el.querySelector('.face-machine')?.textContent ?? '',
-  }), null, { timeout: 500 }).catch(() => null);
+  const face = async (name) => {
+    const drawn=(await canvasBox(page,name))?.rendered, progress=drawn?.progress;
+    if (!progress || !drawn.labels.progress || !drawn.labels.machine) return null;
+    const words=label=>label?.fullText ?? label?.text ?? '';
+    return {phase:progress.phase,says:[words(drawn.labels.progress),words(drawn.labels.count)].filter(Boolean).join(' '),machine:words(drawn.labels.machine)+words(drawn.labels.time)};
+  };
   const making = (now, name) => now.assets?.find((held) => held.name === name)?.making ?? [];
 
   const began = Date.now();

@@ -11,6 +11,8 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFolder, projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, png, settled, until, upload } = require('./page');
 
+const { canvasBox, screenshotPixels } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -79,18 +81,24 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'take.mp4'), id) });
   await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png'), id), name: 'plain', exact: true, at: { x: 1020, y: 100 } });
   await post(`${at}/assets`, { tool: '', name: 'words', exact: true, fields: { text: 'a quiet harbour' }, at: { x: 100, y: 560 } });
-  for (const name of ['still', 'shot', 'plain', 'words']) await boxOf(page, name).waitFor();
+  for (const name of ['still', 'shot', 'plain', 'words']) await until('card on the canvas', () => canvasBox(page, name), Boolean);
   await fitCanvas(page);
   await settled(page);
 
   /** What a box says of its tool under its picture, and how large it's drawn against the box. */
-  const said = (name) => boxOf(page, name).evaluate((node) => {
-    const word = node.querySelector('.card .node-tool');
-    const card = node.querySelector('.card').getBoundingClientRect();
-    if (!word) return { text: null, card: card.width };
-    const rect = word.getBoundingClientRect();
-    return { text: word.textContent, size: Number.parseFloat(getComputedStyle(word).fontSize), drawn: rect.height, card: card.width, visible: rect.width > 20 && rect.height > 4 };
-  });
+  const labelColor=await page.evaluate(()=>{const probe=document.createElement('span');probe.style.color='var(--mute)';document.body.append(probe);const color=getComputedStyle(probe).color;probe.remove();const rgb=color.match(/[\d.]+/g).map(Number).slice(0,3);return color.startsWith('color(')?rgb.map(v=>v*255):rgb;});
+  const said = async (name) => {
+    await page.mouse.move(20,20);
+    const card=await canvasBox(page,name), word=card?.rendered?.labels.tool;
+    if (!word) return {text:null,card:card?.body.width};
+    const read=screenshotPixels(await page.screenshot()),dpr=await page.evaluate(()=>devicePixelRatio);
+    let ink=0;
+    for(let y=word.y;y<word.y+word.height;y++) for(let x=word.x;x<word.x+word.width;x++) {
+      if(x<0 || y<0 || x*dpr>=read.width || y*dpr>=read.height) continue;
+      if(read(x*dpr,y*dpr).every((value,i)=>Math.abs(value-labelColor[i])<=35)) ink++;
+    }
+    return {text:word.fullText ?? word.text,size:word.fontSize,drawn:word.height,card:card.body.width,visible:word.width>20 && word.height>4 && ink>=3,ink};
+  };
   const wanted = { still: named(image), shot: named(video) };
   seen.wanted = wanted;
   const near = {};

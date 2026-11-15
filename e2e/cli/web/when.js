@@ -18,6 +18,8 @@ const FIXTURE = join(__dirname, '..', 'project', 'when.py');
 // The first run installs the fixture on this machine.
 const FIRST_RUN_MS = 300_000;
 
+const { canvasBox } = require('./page');
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -96,7 +98,7 @@ async function died(why) {
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body?.tools?.find((one) => one.local && one.id === `${fixture}/image`), Boolean, FIRST_RUN_MS);
   const creativityField = tool.fields.find((field) => field.field === 'creativity');
   check('the_tool_says_when', JSON.stringify(creativityField?.when) === JSON.stringify({ field: 'prompt_upsampling' }), creativityField);
-  await boxOf(page, 'still').waitFor();
+  await until('card on the canvas', () => canvasBox(page, 'still'), Boolean);
   await openBox(page, 'still');
   const fieldsOf = async () => (await api(at)).body?.assets?.find((row) => row.name === 'still')?.fields ?? {};
   /** The control labelled `label` in Focus: why it's dulled (its hint), whether it's disabled, and what it holds. */
