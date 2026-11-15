@@ -898,21 +898,21 @@ impl Machines {
         let mut project=None;
         let mut number=|id:&str| {
             let id=crate::store::calcifer_id(id);
-            if let Some(row)=self.calcifer.maintenance_store().run(id).ok().flatten() { return Some(row.number); }
+            if let Some(row)=self.calcifer.maintenance_store().run(id).ok().flatten() { return Some((row.number,self.calcifer.run_name(&row))); }
             match self.calcifer.run_store(id).ok()? {
                 crate::store::RunStore::Project(store) if projects.iter().any(|project| project==store.project_id()) => {
                     let row=store.run(id).ok().flatten()?;
                     project=Some(store.project_id().to_owned());
-                    Some(row.number)
+                    Some((row.number,self.calcifer.run_name(&row)))
                 }
                 _ => None,
             }
         };
-        let runs=operation.runs.iter().map(|id|number(id)).collect::<Option<Vec<_>>>()?;
+        let (runs,names):(Vec<u64>,Vec<String>)=operation.runs.iter().map(|id|number(id)).collect::<Option<Vec<_>>>()?.into_iter().unzip();
         if runs.is_empty() {return None;}
         let rate=Some(operation.bytes_per_s).filter(|rate|*rate>=1.0);
         let left=operation.bytes_total.saturating_sub(operation.bytes_done);
-        Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs,project})
+        Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs,names,project})
     }
 
     /// What this computer's machine does for `project`'s own runs, followed in the project's scope while it has runs there: its runs

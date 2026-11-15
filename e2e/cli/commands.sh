@@ -1412,3 +1412,135 @@ after=$(run_history) || { check "update: the candidate lists no run history agai
 [ "$after" = "$before" ] || check "update: the project's runs are not as they were: $(diff <(jq . <<< "$before") <(jq . <<< "$after") | head -20)"
 echo "update: back on ${candidate#cozy }, the project's $(jq length <<< "$after") runs and their outputs as they were"
 }
+
+# The agent API (cl-956, tracker design/agent-api.md): agent.js drives `cozy get`, `apply`, `diff`, `delete` and `explain` as an agent
+# does, with the page's edits (e2e/page.py) between, and renders shots.py's Shot on local.
+agent_api() {
+[ -n "$LOCAL" ] || return 0
+step "the agent API: nodes listed and read whole, files applied, a conflict with the page's edit settled, undone from the page; explain (cl-956)"
+local json=$OUT/agent.json code=0 folder
+HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") ARGV_LOG=$(web_path "$OUT/argv.log") \
+  node "$(web_path "$here/agent.js")" > "$json" 2> "$OUT/agent.err" || code=$?
+[ "$code" = 0 ] || check "agent: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '(.failures // []) as $f | .seen | with_entries(select(.key as $k | $f | index($k)))' "$json" 2> /dev/null | head -c 2000) $(tail -c 500 "$OUT/agent.err")"
+for folder in $(jq -r '.seen.project.folder // empty, .seen.pier // empty' "$json" 2> /dev/null || true); do drop_folder "$folder"; done
+}
+
+# cl-944 (Paul, 11-12: "the runtime will just ignore that input modality that the model cannot use"), past Calcifer's binder: an API
+# caller's raw prompt, sent as `cozy run … field:=<json>`. A picture, a video and a sound in a prompt of pictures: the picture kept, the
+# video and the sound left out, each its name in the text and one `ignored` row; a picture where only words go: its name, one row. Nothing
+# is refused, and `cozy run watch` says each once.
+ignored_inputs() {
+[ -n "$LOCAL" ] || return 0
+step "a raw prompt's inputs its function can't take: left out as names, one ignored row each, said once (cl-944)"
+local raw=$here/project/raw.py dir=$OUT/ignored file pic clip hum prompt n lines
+mkdir -p "$dir"
+ffmpeg -v error -y -f lavfi -i color=c=red:size=64x48 -frames:v 1 "$dir/pic.png" \
+  && ffmpeg -v error -y -f lavfi -i testsrc2=size=64x48:rate=24:duration=1 -c:v libx264 -pix_fmt yuv420p "$dir/clip.mp4" \
+  && ffmpeg -v error -y -f lavfi -i sine=frequency=440:duration=1 "$dir/hum.wav" || { check "ignored: ffmpeg made no files"; return; }
+for file in pic.png clip.mp4 hum.wav; do
+  [ -n "$(row "$RUN_PROJECT" "ignored_${file%.*}" .name)" ] || project_import "$RUN_PROJECT" "$dir/$file" "ignored_${file%.*}" > /dev/null || check "ignored: import $file"
+done
+for _ in $(seq 100); do [ "$(row "$RUN_PROJECT" ignored_hum '.sha256 // empty')" ] && [ "$(row "$RUN_PROJECT" ignored_clip '.sha256 // empty')" ] && break; sleep 0.2; done
+pic=$(row "$RUN_PROJECT" ignored_pic '.sha256 // empty' | jq -r .) clip=$(row "$RUN_PROJECT" ignored_clip '.sha256 // empty' | jq -r .) hum=$(row "$RUN_PROJECT" ignored_hum '.sha256 // empty' | jq -r .)
+[ -n "$pic" ] && [ -n "$clip" ] && [ -n "$hum" ] || { check "ignored: the imports hold no files: $pic $clip $hum"; return; }
+pic=sha256:${pic#sha256:} clip=sha256:${clip#sha256:} hum=sha256:${hum#sha256:}
+prompt=$(jq -cn --arg a "$pic" --arg v "$clip" --arg h "$hum" '{text: "<A> by <V> with <H>", references: [{key: "A", type: "image", file: $a}, {key: "V", type: "video", file: $v}, {key: "H", type: "audio", file: $h}]}')
+if cell ignored-pictures "$raw/pictures" "instructions:=$prompt"; then
+  J '.result.kept == ["A"] and .result.text == "<A> by V with H"' "$OUT/ignored-pictures.json" \
+    || check "ignored: a prompt of pictures didn't keep the picture and name the video and sound: $(jq -c .result "$OUT/ignored-pictures.json")"
+  J '[.adjustments[]? | select(.kind == "ignored")] as $i | ($i | length) == 2
+     and any($i[]; .requested == "V" and .field == "instructions.references.1" and (.reason | test("takes no videos")))
+     and any($i[]; .requested == "H" and (.reason | test("takes no audio")))' "$OUT/ignored-pictures.json" \
+    || check "ignored: not one ignored row each for the video and the sound: $(jq -c '[.adjustments[]? | select(.kind == "ignored")]' "$OUT/ignored-pictures.json")"
+  n=$(cat "$OUT/ignored-pictures.number")
+  lines=$( (cd "$RUN_PROJECT" && cozy run watch "$n") 2>&1 | grep -cE '^\s*ignored instructions\.references\.[12]: [VH] \(' || true)
+  [ "$lines" = 2 ] || check "ignored: cozy run watch $n says the left-out inputs $lines times, not once each"
+fi
+prompt=$(jq -cn --arg a "$pic" '{text: "make <A> red", references: [{key: "A", type: "image", file: $a}]}')
+if cell ignored-words "$raw/words" "prompt:=$prompt"; then
+  J '.result.text == "make A red"' "$OUT/ignored-words.json" || check "ignored: words didn't take the picture's name: $(jq -c .result "$OUT/ignored-words.json")"
+  J '[.adjustments[]? | select(.kind == "ignored")] | length == 1 and .[0].requested == "A" and (.[0].reason | test("takes no images"))' "$OUT/ignored-words.json" \
+    || check "ignored: a picture where only words go isn't one ignored row: $(jq -c '[.adjustments[]? | select(.kind == "ignored")]' "$OUT/ignored-words.json")"
+fi
+}
+
+# xs-180: what a function says of its file rides its run's result, and an orbit's every frame is a keyframe (ffprobe, Calcifer's own).
+orbit_metadata() {
+[ -n "$LOCAL" ] || return 0
+step "an orbit's take: its metadata in cozy run's result, every frame a keyframe (xs-180)"
+local probe file keys
+cell orbit "$here/project/orbit.py/turn" frames:=24 || return 0
+J '.result.video.metadata.orbit == {"degrees": 360, "direction": "cw", "loops": true}' "$OUT/orbit.json" || check "orbit: cozy run's result says no orbit: $(jq -c .result "$OUT/orbit.json" | head -c 300)"
+probe=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1 || true)
+probe=${probe:-$(command -v ffprobe || true)} file=$(output orbit mp4 || true)
+keys=$("$probe" -v error -select_streams v:0 -show_entries frame=key_frame -of csv=p=0 "$file" | cut -d, -f1 | sort | uniq -c | tr -s ' ' || true)
+[ "$keys" = " 24 1" ] || check "orbit: not every frame of $file is a keyframe (count key_frame): ${keys:-no frames}"
+}
+
+# cl-840's one retry rule, on an install a person waits on, against a Hub this part stands up (Calcifer on it, then back): a Hub that
+# takes the request and never answers is asked again by the backoff, each attempt a line, and given up within a minute, saying hub_slow;
+# a 503 is asked again by the backoff, then named in the Hub's own words; a 404 is the Hub's refusal, failed at once, asked once.
+install_retries() {
+step "a package install against a Hub that's silent, down or says it has none: asked again, said, or failed at once (cl-840)"
+local config=$HOME/.cozy/config.toml dir=$OUT/install-retries hub pid
+mkdir -p "$dir"
+python3 -I - "$dir" > "$dir/hub.log" 2>&1 <<'PY' &
+import http.server, json, pathlib, sys, threading
+dir = pathlib.Path(sys.argv[1])
+class Hub(http.server.BaseHTTPRequestHandler):
+    def answer(self, status, body):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    def do_GET(self):
+        mode = (dir / "mode").read_text().strip() if (dir / "mode").exists() else ""
+        with open(dir / "asked", "a") as asked:
+            asked.write(f"{mode} {self.command} {self.path}\n")
+        if mode == "silent" and self.path.split("?")[0] == "/v1/packages/e2e/e2e-boxed":
+            threading.Event().wait(600)
+            return
+        if mode == "down":
+            return self.answer(503, {"error": {"kind": "unavailable", "code": "down", "message": "this Hub is down"}})
+        self.answer(404, {"error": {"kind": "not_found", "code": "absent", "message": f"no {self.path} here"}})
+    do_POST = do_GET
+    def log_message(self, *args):
+        pass
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Hub)
+(dir / "addr").write_text(f"127.0.0.1:{server.server_address[1]}")
+server.serve_forever()
+PY
+pid=$!
+for _ in $(seq 50); do [ -s "$dir/addr" ] && break; sleep 0.1; done
+[ -s "$dir/addr" ] || { check "install retries: the stand-in Hub didn't start: $(tail -c 300 "$dir/hub.log")"; kill "$pid"; return; }
+hub=http://$(cat "$dir/addr")
+cp "$config" "$dir/config.toml"
+# Top-level: after a [table] it would be that table's.
+{ echo "hub_url = \"$hub\""; grep -v '^hub_url' "$dir/config.toml" || true; } > "$config"
+cozy --json restart > "$dir/restart.json" 2>&1 || check "install retries: cozy restart onto the stand-in Hub: $(tail -c 300 "$dir/restart.json")"
+install_retry silent e2e/e2e-boxed
+grep -q hub_slow "$dir/silent.said" || check "install retries: a silent Hub isn't said hub_slow: $(tail -c 400 "$dir/silent.said")"
+[ "$(grep -oE 'attempt [0-9]/5 in [0-9]' "$dir/silent.said" | cut -c9 | paste -sd' ')" = '2 3 4 5' ] && [ "$(grep -c '^silent ' "$dir/asked")" = 5 ] \
+  && [ "$(cat "$dir/silent.took")" -lt 60 ] \
+  || check "install retries: a silent Hub isn't asked again by the backoff, each attempt once, then given up within a minute ($(cat "$dir/silent.took") s, asked $(grep -c '^silent ' "$dir/asked") times): $(tail -c 400 "$dir/silent.said")"
+install_retry down e2e/e2e-boxed
+grep -qE 'attempt 5/5 in [0-9]' "$dir/down.said" && grep -q 'this Hub is down' "$dir/down.said" && [ "$(cat "$dir/down.took")" -lt 100 ] \
+  || check "install retries: a 503 isn't asked again by the backoff, then named ($(cat "$dir/down.took") s): $(tail -c 400 "$dir/down.said")"
+install_retry absent e2e/never-published
+! grep -q attempt "$dir/absent.said" && [ "$(cat "$dir/absent.took")" -lt 20 ] \
+  && [ "$(grep '^absent ' "$dir/asked" | grep never-published | sort | uniq -d | wc -l)" = 0 ] \
+  || check "install retries: a 404 isn't failed at once, asked once ($(cat "$dir/absent.took") s): $(tail -c 300 "$dir/absent.said") $(grep '^absent ' "$dir/asked" | head -5 | tr '\n' ' ')"
+cp "$dir/config.toml" "$config"
+cozy --json restart > "$dir/restart-back.json" 2>&1 || check "install retries: cozy restart back onto the suite's Hub: $(tail -c 300 "$dir/restart-back.json")"
+kill "$pid" 2> /dev/null || true
+}
+# install_retry <mode> <package>: `cozy package install` with the stand-in Hub in that mode: what it said, and its seconds.
+install_retry() {
+  local dir=$OUT/install-retries began=$SECONDS
+  echo "$1" > "$dir/mode"
+  if COZY_HUB_URL=http://$(cat "$dir/addr") cozy --json package install "$2" --on local > "$dir/$1.said" 2>&1; then echo "it installed" >> "$dir/$1.said"; fi
+  echo $((SECONDS - began)) > "$dir/$1.took"
+}
+

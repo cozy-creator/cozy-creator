@@ -1975,6 +1975,10 @@ eta_s?: number | null, started_at_ms: number,
  */
 runs: Array<number>,
 /**
+ * The same runs by name, `KEY-N` (cl-987).
+ */
+names: Array<string>,
+/**
  * The project whose runs wait on it, shown to its own views only; none for this computer's own work.
  */
 project?: string | null, };
