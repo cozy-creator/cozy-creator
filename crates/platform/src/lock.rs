@@ -34,7 +34,7 @@ pub struct LockFile {
 pub struct Held {
     holder: PathBuf,
     published: AtomicBool,
-    _file: File,
+    file: Option<File>,
 }
 
 impl LockFile {
@@ -108,7 +108,7 @@ impl LockFile {
         Ok(Held {
             holder,
             published: AtomicBool::new(false),
-            _file: file,
+            file: Some(file),
         })
     }
 }
@@ -122,6 +122,12 @@ impl Held {
         durable::swap(&self.holder, record, 0o600)?;
         self.published.store(true, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// The claim as its open file, its published record kept: held while that file (and any copy a fork made) stays open.
+    pub fn keep(mut self) -> File {
+        self.published.store(false, Ordering::Relaxed);
+        self.file.take().expect("a held lock has its file")
     }
 }
 

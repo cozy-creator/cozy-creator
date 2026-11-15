@@ -454,6 +454,10 @@ pub(super) fn in_kernel(_pid: u32) -> Option<String> {
     None
 }
 
+pub(super) fn threads(_pid: u32) -> Vec<super::Thread> {
+    vec![]
+}
+
 /// The kernel's boot time in seconds (100 ns ticks since 1601), which a clock step can move:
 /// then this boot reads as an earlier one, the safe side.
 pub(super) fn boot_id() -> io::Result<String> {

@@ -214,6 +214,24 @@ pub(super) fn in_kernel(pid: u32) -> Option<String> {
     Some(if wchan == "0" { String::new() } else { wchan })
 }
 
+pub(super) fn threads(pid: u32) -> Vec<super::Thread> {
+    let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else { return vec![] };
+    let mut threads: Vec<super::Thread> = (tasks.flatten())
+        .filter_map(|task| {
+            let tid = task.file_name().to_str()?.parse().ok()?;
+            let stat = fs::read_to_string(task.path().join("stat")).ok()?;
+            let (head, rest) = stat.rsplit_once(") ")?;
+            let state = rest.chars().next()?;
+            let name = head.split_once(" (")?.1.to_owned();
+            let wchan = fs::read_to_string(task.path().join("wchan")).unwrap_or_default();
+            let wchan = if wchan == "0" { String::new() } else { wchan.trim().to_owned() };
+            (!matches!(state, 'Z' | 'X')).then_some(super::Thread { tid, name, state, wchan })
+        })
+        .collect();
+    threads.sort_by_key(|thread| thread.tid);
+    threads
+}
+
 pub(super) fn boot_id() -> io::Result<String> {
     Ok(fs::read_to_string("/proc/sys/kernel/random/boot_id")?
         .trim()
