@@ -1,16 +1,16 @@
-import { type ClipboardEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type ClipboardEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
+import type { Unused } from "../api/calcifer"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
-import type { Media } from "../types"
 import type { CanvasStore } from "./CanvasStore"
 import { LET_GO, type LetGo } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { WANTED } from "./controls"
 import { Thumb } from "./Media"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, retext, timecode } from "./ranges"
 import { chipWords, mentionsIn, withMentions } from "./text"
+import { paintTriggers, takesWords, typedIn, unpaint, useTriggers } from "./triggers"
 import { isSelf, mentionFrom, NO_BARE_SELF } from "./versions"
 
 /** What a chip says: its name in its brackets, a range of a video as timecode, and an orbit's angle in degrees. */
@@ -24,39 +24,34 @@ function chipSaid(store: CanvasStore, name: string, asset: string): string {
   return `${chipWords(range.base)} ${timecode(range.from, fps)}–${timecode(range.to ?? framesIn(file?.duration_ms, fps), fps)}`
 }
 
-/** Why a mention in this text isn't sent, or null: words take only words, and a prompt only what it takes. A text box is always put in as its words. */
-function unsent(store: CanvasStore, name: string, asset: string, takes: Media[] | undefined): string | null {
-  const kind = store.kindOf(name, asset)
-  if (!takes || !kind || kind === "text" || takes.includes(kind as Media)) return null
-  if (!takes.length) return `${baseOf(name)} goes as its name: this takes words only`
-  return `${baseOf(name)} isn't sent: this takes ${takes.map((held) => WANTED[held]).join(" or ")} only`
-}
+/** Why its tool can't use `name` in this text, as Calcifer found it (cl-944), or null. */
+const leftOut = (unused: Unused[], name: string): string | null => unused.find((one) => one.mention === name)?.why ?? null
 
-/** A name as a chip: one gone is struck through, saying whether it was deleted, and one this text doesn't send, `refused`, is dimmed and says why. */
-function chip(name: string, words: string, missing: boolean, refused: string | null, deleted = false): HTMLElement {
+/** A name as a chip: one gone is struck through, saying whether it was deleted, and so is one its tool can't use here, `unused`, saying why. */
+function chip(name: string, words: string, missing: boolean, unused: string | null, deleted = false): HTMLElement {
   const el = document.createElement("span")
-  el.className = missing ? "chip missing" : refused ? "chip refused" : "chip"
+  el.className = missing ? "chip missing" : unused ? "chip unused" : "chip"
   el.contentEditable = "false"
   el.dataset.mention = name
   el.textContent = words
   const gone = isSelf(name) ? NO_BARE_SELF : deleted ? `${baseOf(name)} was deleted` : `${baseOf(name)} is no longer here`
-  el.title = missing ? gone : (refused ?? name)
+  el.title = missing ? gone : (unused ?? name)
   return el
 }
 
-/** A mention's chip, as loading, typing and pasting all make it: one gone struck through, one this text doesn't send dimmed; none for a name this
+/** A mention's chip, as loading, typing and pasting all make it: one gone, or one its tool can't use here, struck through; none for a name this
  *  project doesn't know, which stays words. */
-function chipFor(store: CanvasStore, name: string, asset: string, missing: string[], takes: Media[] | undefined): HTMLElement | null {
+function chipFor(store: CanvasStore, name: string, asset: string, missing: string[], unused: Unused[]): HTMLElement | null {
   const said = store.mentionOf(name, asset)
   // A deleted box's name is struck at once, as Calcifer will say it (cl-919).
   const deleted = !said && store.deletedName(name)
   if (missing.includes(name) || said?.gone || deleted || (isSelf(name) && !said)) return chip(name, chipSaid(store, name, asset), true, null, deleted)
-  return said ? chip(name, chipSaid(store, name, asset), false, unsent(store, name, asset, takes)) : null
+  return said ? chip(name, chipSaid(store, name, asset), false, leftOut(unused, name)) : null
 }
 
 /** Text as the box shows it: each `<name>` its chip, the rest words. */
-function nodesOf(store: CanvasStore, text: string, asset: string, missing: string[], takes: Media[] | undefined): (HTMLElement | Text)[] {
-  return withMentions(text).map((part) => (part.mention && chipFor(store, part.text.slice(1, -1), asset, missing, takes)) || document.createTextNode(part.text))
+function nodesOf(store: CanvasStore, text: string, asset: string, missing: string[], unused: Unused[]): (HTMLElement | Text)[] {
+  return withMentions(text).map((part) => (part.mention && chipFor(store, part.text.slice(1, -1), asset, missing, unused)) || document.createTextNode(part.text))
 }
 
 /** Where the caret is in what `box` says, counted as the file holds it, or null when it isn't in it. */
@@ -71,6 +66,18 @@ function caretIn(box: HTMLElement): number | null {
   return read(held).length
 }
 
+/** The caret at the end of `el`'s words. Where a browser puts no selection (WebKit, in what isn't shown yet: Focus while it enters), there's
+ *  none and nothing throws; Focus puts the caret there once it's shown (cl-973). */
+export function caretToEnd(el: HTMLElement) {
+  const selection = document.getSelection()
+  if (!selection) return
+  const end = document.createRange()
+  end.selectNodeContents(el)
+  end.collapse(false)
+  selection.removeAllRanges()
+  selection.addRange(end)
+}
+
 /** The caret `offset` into what `box` says: in words where it falls in them, else just after the chip it falls in. */
 function caretAt(box: HTMLElement, offset: number) {
   const selection = document.getSelection()
@@ -81,6 +88,48 @@ function caretAt(box: HTMLElement, offset: number) {
     left -= length
   }
   selection?.collapse(box, box.childNodes.length)
+}
+
+/** A place in the words: a node, and an offset in it. */
+interface Place {
+  node: globalThis.Node
+  offset: number
+}
+
+/** The caret's place under the point, as the browser finds it. */
+function caretFromPoint(x: number, y: number): Place | null {
+  const found = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: globalThis.Node; offset: number } | null
+    caretRangeFromPoint?: (x: number, y: number) => Range | null
+  }
+  const position = found.caretPositionFromPoint?.(x, y)
+  if (position) return { node: position.offsetNode, offset: position.offset }
+  const range = found.caretRangeFromPoint?.(x, y)
+  return range ? { node: range.startContainer, offset: range.startOffset } : null
+}
+
+/** Where in `box`'s words the point is: there, else, off them, their nearer end; on a name, just after it. */
+function placeIn(box: HTMLElement, x: number, y: number): Place {
+  const rect = box.getBoundingClientRect()
+  const [start, end] = [{ node: box, offset: 0 }, { node: box, offset: box.childNodes.length }]
+  if (y > rect.bottom || (y >= rect.top && x > rect.right)) return end
+  if (y < rect.top || x < rect.left) return start
+  const at = caretFromPoint(x, y)
+  if (!at || !box.contains(at.node)) return end
+  const name = (at.node instanceof Element ? at.node : at.node.parentElement)?.closest("[data-mention]")
+  if (name?.parentNode && box.contains(name)) return { node: name.parentNode, offset: [...name.parentNode.childNodes].indexOf(name) + 1 }
+  return at
+}
+
+/** Where `at`, in `from`, falls in `to`: moved by what changed before it, and to the end of what changed if it was in it. */
+function carried(from: string, to: string, at: number): number {
+  let prefix = 0
+  while (prefix < from.length && prefix < to.length && from[prefix] === to[prefix]) prefix++
+  let suffix = 0
+  while (suffix < from.length - prefix && suffix < to.length - prefix && from[from.length - 1 - suffix] === to[to.length - 1 - suffix]) suffix++
+  if (at <= prefix) return at
+  if (at >= from.length - suffix) return at + to.length - from.length
+  return to.length - suffix
 }
 
 /** What the box says, as the file will hold it: plain text, `<name>` for each chip. */
@@ -118,7 +167,6 @@ export function MentionText({
   label,
   placeholder,
   missing,
-  takes,
   focus,
   thumbs = true,
   onDraft,
@@ -132,8 +180,6 @@ export function MentionText({
   /** What it reads when it's empty, its label if nothing else. */
   placeholder?: string
   missing: string[]
-  /** What its mentions may send: none for words, any when it doesn't say. What else it mentions stays its name, marked. */
-  takes?: Media[]
   focus?: boolean
   /** The pictures it mentions, small, under it: none where they're behind it. A video's range is under it either way. */
   thumbs?: boolean
@@ -146,6 +192,13 @@ export function MentionText({
   const caret = useRef<Range | null>(null)
   const [menu, setMenu] = useState<Menu | null>(null)
   const names = useSignal(store.names)
+  // What its tool can't use here, as Calcifer said it: struck through, never sent.
+  const told = useElement(asset)?.asset?.unused
+  const unused = useMemo(() => (told ?? []).filter((one) => one.at === place), [told, place])
+  // Its box's LoRAs' trigger words, drawn where it says them, typed or appended (cl-968).
+  const triggers = useTriggers(store, asset)
+  const triggerKey = triggers.join("\u0000")
+  const paint = useCallback(() => { if (box.current) paintTriggers(box.current, triggerKey ? triggerKey.split("\u0000") : []) }, [triggerKey])
 
   // While it's being typed in, what it holds is what's typed. Left alone it shows names as they now stand, painted only if that differs,
   // so its caret survives a blur and a drop can still land there.
@@ -156,23 +209,54 @@ export function MentionText({
     // What ends a text is its file's to say: what's typed, and the caret in it, stand. Only its marks follow what's now known (a box made, a
     // name Calcifer says is nothing), as they would loaded.
     const typing = document.activeElement === el && read(el).trimEnd() === value.trimEnd()
-    const nodes = nodesOf(store, typing ? read(el) : value, asset, missing, takes)
+    const nodes = nodesOf(store, typing ? read(el) : value, asset, missing, unused)
     const mark = (node: Node) => (node instanceof HTMLElement ? `\u0000${node.className}:${node.dataset.mention}:${node.textContent}:${node.title}\u0000` : node.textContent)
     const trimmed = (said: string) => said.replace(/\s+$/, "")
     // Typed, only its chips count: the line breaks a browser keeps as it types are its own.
     const shown = typing ? [...el.querySelectorAll("[data-mention]")] : [...el.childNodes]
     const wanted = typing ? nodes.filter((node) => node instanceof HTMLElement) : nodes
     if (trimmed(shown.map(mark).join("")) === trimmed(wanted.map(mark).join(""))) return
-    const at = typing ? caretIn(el) : null
+    // Typed in, and what it says moved under the caret (another's words merged in): the caret stays where it was in the words.
+    const said = document.activeElement === el ? read(el) : null
+    const at = said === null ? null : caretIn(el)
     el.replaceChildren(...nodes)
-    if (at !== null) return caretAt(el, at)
+    if (at !== null && said !== null) return caretAt(el, typing ? at : carried(said, value, at))
     // What it pointed into is gone: a name dropped now goes at the end.
     caret.current = null
-  }, [value, missing, store, names, asset, takes])
+  }, [value, missing, store, names, asset, unused])
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: what it says, painted again whenever it's shown anew
+  useLayoutEffect(() => paint(), [paint, value, names, missing])
+  useEffect(() => {
+    const el = box.current
+    return () => { if (el) unpaint(el) }
+  }, [])
 
   const emit = useCallback(() => {
     if (box.current) onDraft(read(box.current))
   }, [onDraft])
+
+  /** Words where `at` says, else at the end, spaced from what's beside them: a trigger clicked on its LoRA's row. */
+  const insertWords = useCallback(
+    (words: string, at: Range | null) => {
+      const el = box.current
+      if (!el) return
+      const inside = at && el.contains(at.startContainer)
+      const before = inside ? (at.startContainer.textContent ?? "").slice(0, at.startOffset) : read(el)
+      const after = inside ? (at.endContainer.textContent ?? "").slice(at.endOffset) : ""
+      const node = document.createTextNode(`${before && !/\s$/.test(before) ? " " : ""}${words}${after && !/^\s/.test(after) ? " " : ""}`)
+      if (inside) {
+        at.deleteContents()
+        at.insertNode(node)
+      } else el.append(node)
+      if (document.activeElement === el) document.getSelection()?.collapse(node, node.length)
+      emit()
+      paint()
+      onSave()
+    },
+    [emit, paint, onSave],
+  )
+  useEffect(() => takesWords(asset, place, (words) => insertWords(words, caret.current)), [asset, place, insertWords])
 
   const remember = useCallback(() => {
     const selection = document.getSelection()
@@ -189,7 +273,7 @@ export function MentionText({
     (name: string, at: Range | null) => {
       const el = box.current
       if (!el) return
-      const made = chipFor(store, name, asset, missing, takes) ?? chip(name, chipSaid(store, name, asset), true, null)
+      const made = chipFor(store, name, asset, missing, unused) ?? chip(name, chipSaid(store, name, asset), true, null)
       const after = document.createTextNode(" ")
       if (at && el.contains(at.startContainer)) {
         at.deleteContents()
@@ -205,7 +289,7 @@ export function MentionText({
       }
       emit()
     },
-    [emit, store, asset, missing, takes],
+    [emit, store, asset, missing, unused],
   )
 
   // A drop, or anything else asking this text to take a name, goes where its caret last was.
@@ -243,8 +327,7 @@ export function MentionText({
     if (!focus || !box.current) return
     box.current.focus({ preventScroll: true })
     // Typing goes on from what it says.
-    window.getSelection()?.selectAllChildren(box.current)
-    window.getSelection()?.collapseToEnd()
+    caretToEnd(box.current)
   }, [focus])
 
   useEffect(() => {
@@ -262,6 +345,39 @@ export function MentionText({
     if (selection?.rangeCount) caret.current = selection.getRangeAt(0).cloneRange()
   }
 
+  /**
+   * A press in the words, dragged, selects from where it was pressed to where the pointer is, out past the words too, as in any text. The
+   * page does this, not the browser: with a name in its words, Chrome put the caret at the pointer on every move of a drag and selected
+   * nothing, with no script or change of the words between (cl-973). A double or triple click, Shift, a press on a name or on words already
+   * selected (to drag them) stay the browser's.
+   */
+  const pressWords = (event: MouseEvent) => {
+    const el = box.current
+    if (!el || event.button !== 0 || event.detail > 1 || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) return
+    if ((event.target as Element).closest("[data-mention]")) return
+    const selection = document.getSelection()
+    const from = placeIn(el, event.clientX, event.clientY)
+    if (selection && !selection.isCollapsed && selection.rangeCount && selection.getRangeAt(0).isPointInRange(from.node, from.offset)) return
+    event.preventDefault()
+    el.focus({ preventScroll: true })
+    selection?.collapse(from.node, from.offset)
+    const move = (moved: globalThis.MouseEvent) => {
+      if (!(moved.buttons & 1)) return end()
+      // Past the top or the bottom of words that scroll, they scroll on, as a selection dragged there does.
+      const rect = el.getBoundingClientRect()
+      if (moved.clientY > rect.bottom) el.scrollTop += moved.clientY - rect.bottom
+      else if (moved.clientY < rect.top) el.scrollTop -= rect.top - moved.clientY
+      const to = placeIn(el, moved.clientX, moved.clientY)
+      document.getSelection()?.setBaseAndExtent(from.node, from.offset, to.node, to.offset)
+    }
+    const end = () => {
+      window.removeEventListener("mousemove", move, true)
+      window.removeEventListener("mouseup", end, true)
+    }
+    window.addEventListener("mousemove", move, true)
+    window.addEventListener("mouseup", end, true)
+  }
+
   /** After each keystroke: `<name>` finished by hand is a chip, and a `<` being typed offers names. */
   const look = () => {
     const selection = document.getSelection()
@@ -270,7 +386,7 @@ export function MentionText({
     const before = at.data.slice(0, selection.anchorOffset)
     const closed = before.match(/<([^<>\s]+)>$/)
     if (closed && isSelf(closed[1]) && !store.nameOf(closed[1])) say(NO_BARE_SELF)
-    if (closed && chipFor(store, closed[1], asset, missing, takes)) {
+    if (closed && chipFor(store, closed[1], asset, missing, unused)) {
       const range = document.createRange()
       range.setStart(at, selection.anchorOffset - closed[0].length)
       range.setEnd(at, selection.anchorOffset)
@@ -278,7 +394,7 @@ export function MentionText({
       return put(closed[1], range)
     }
     const open = before.match(/<([^<>\s]*)$/)
-    const options = open ? store.namesLike(open[1], asset).filter((name) => !unsent(store, name, asset, takes)).slice(0, 8) : []
+    const options = open ? store.namesLike(open[1], asset).slice(0, 8) : []
     if (!open || !options.length) return setMenu(null)
     const range = document.createRange()
     range.setStart(at, selection.anchorOffset - open[0].length)
@@ -319,7 +435,8 @@ export function MentionText({
     if (onSubmit && event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault()
       event.stopPropagation()
-      if (menu) choose(menu.options[menu.chosen])
+      // With names offered, Enter takes the one chosen and nothing else, as in Slack's or an editor's list; with none, it renders.
+      if (menu) return choose(menu.options[menu.chosen])
       onSubmit()
       return
     }
@@ -379,7 +496,7 @@ export function MentionText({
     range.deleteContents()
     const end = document.createTextNode("")
     const pasted = document.createDocumentFragment()
-    pasted.append(...nodesOf(store, event.clipboardData.getData("text/plain"), asset, missing, takes), end)
+    pasted.append(...nodesOf(store, event.clipboardData.getData("text/plain"), asset, missing, unused), end)
     range.insertNode(pasted)
     selection.collapse(end, 0)
     emit()
@@ -402,8 +519,11 @@ export function MentionText({
         onInput={() => {
           emit()
           look()
+          paint()
         }}
+        onFocus={() => typedIn(asset, place)}
         onKeyDown={keys}
+        onMouseDown={pressWords}
         onClick={clickName}
         onCopy={copy}
         onCut={cut}
@@ -427,7 +547,7 @@ export function MentionText({
       <MentionThumbs
         text={value}
         besides={asset}
-        takes={takes}
+        unused={unused}
         pictures={thumbs}
         onRange={(old, now) => {
           onDraft(retext(box.current ? read(box.current) : value, old, now))
@@ -438,12 +558,12 @@ export function MentionText({
   )
 }
 
-function MentionThumb({ name, asset, takes, pictures, onRange }: { name: string; asset: string; takes?: Media[]; pictures: boolean; onRange(old: string, now: string): void }) {
+function MentionThumb({ name, asset, unused, pictures, onRange }: { name: string; asset: string; unused: Unused[]; pictures: boolean; onRange(old: string, now: string): void }) {
   const store = useCanvasStore()
   const said = store.mentionOf(name, asset)
   useElement(said?.name ?? baseOf(name))
   const shown = store.fileOf(name, asset)
-  if (!shown || shown.absent || shown.field === "audio" || unsent(store, name, asset, takes)) return null
+  if (!shown || shown.absent || shown.field === "audio" || leftOut(unused, name)) return null
   // An orbit's angle has no in and out to drag: its chip says it.
   if (angleOf(name)) return null
   if (shown.field === "video") {
@@ -465,14 +585,14 @@ function MentionThumb({ name, asset, takes, pictures, onRange }: { name: string;
 }
 
 /** The pictures a text mentions, small, under it, and each video's frames with its in and out. */
-function MentionThumbs({ text, besides, takes, pictures, onRange }: { text: string; besides: string; takes?: Media[]; pictures: boolean; onRange(old: string, now: string): void }) {
+function MentionThumbs({ text, besides, unused, pictures, onRange }: { text: string; besides: string; unused: Unused[]; pictures: boolean; onRange(old: string, now: string): void }) {
   const mentioned = mentionsIn(text).filter((name) => name !== besides)
   if (!mentioned.length) return null
   return (
     <div className="mention-thumbs">
       {/* By place and what it names: a new range is the same strip, and keeps its handle's focus. */}
       {mentioned.map((name, i) => (
-        <MentionThumb key={`${i}:${baseOf(name)}`} name={name} asset={besides} takes={takes} pictures={pictures} onRange={onRange} />
+        <MentionThumb key={`${i}:${baseOf(name)}`} name={name} asset={besides} unused={unused} pictures={pictures} onRange={onRange} />
       ))}
     </div>
   )

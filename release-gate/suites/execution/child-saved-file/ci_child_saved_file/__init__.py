@@ -86,14 +86,14 @@ async def code_of(call: Callable[[], Awaitable[Seen]]) -> str:
 
 async def main(ctx: Context, payload: Nothing, out: Outputs) -> Result:
     picture = Image.new("RGB", (64, 48), (200, 40, 40))
-    image = out.save_image(picture)
-    seen_picture = await call(see_picture, payload=Picture(picture=image))
+    image = ImageFile.from_image(picture, format="png")
+    seen_picture = await call(see_picture, Picture(picture=image))
     # A frame not encoded yet, labeled before it is: the copy never hears of its bytes.
-    labeled = out.save_image(Image.new("RGB", (32, 24), (40, 200, 40)))
-    seen_labeled = await call(see_picture, payload=Picture(picture=labeled.with_label("Picture 1")))
+    labeled = ImageFile.from_image(Image.new("RGB", (32, 24), (40, 200, 40)), format="png")
+    seen_labeled = await call(see_picture, Picture(picture=labeled.with_label("Picture 1")))
     data = os.urandom(4096)
     blob = out.save_bytes(data, media_type="application/octet-stream")
-    seen_blob = await call(see_blob, payload=Blob(file=blob))
+    seen_blob = await call(see_blob, Blob(file=blob))
     # Another attempt's file, as a package could name it: its ref and digest, none of its bytes.
     foreign = File("attempt:elsewhere/file/0001", media_type=blob.media_type, size_bytes=len(data), digest=blob.digest)
     earlier = EARLIER[-1] if EARLIER else None
@@ -106,9 +106,9 @@ async def main(ctx: Context, payload: Nothing, out: Outputs) -> Result:
         seen_labeled=seen_labeled,
         saved_blob=sha(data),
         seen_blob=seen_blob,
-        other_attempt=await code_of(lambda: call(see_blob, payload=Blob(file=foreign))),
-        earlier_attempt="none here" if earlier is None else await code_of(lambda: call(see_blob, payload=Blob(file=earlier))),
-        ungranted=await code_of(lambda: call(see_blob, payload=Blob(file=File(sha(b"the owner's other file"))))),
+        other_attempt=await code_of(lambda: call(see_blob, Blob(file=foreign))),
+        earlier_attempt="none here" if earlier is None else await code_of(lambda: call(see_blob, Blob(file=earlier))),
+        ungranted=await code_of(lambda: call(see_blob, Blob(file=File(sha(b"the owner's other file"))))),
     )
 
 

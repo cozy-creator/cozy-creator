@@ -243,9 +243,6 @@ pub struct ToolDecl {
     /// The model's own tags in a text: never mentions.
     #[serde(default, deserialize_with = "or_default")]
     pub reserved: Vec<String>,
-    /// The path in its package of a component that draws its box.
-    #[serde(default, deserialize_with = "or_default")]
-    pub ui: Option<String>,
 }
 
 /// One function a tool calls, each its own unit of placement.

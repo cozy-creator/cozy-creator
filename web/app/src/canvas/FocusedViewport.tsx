@@ -4,9 +4,10 @@ import { FocusedCard } from "./Card"
 import { Icon } from "../ui/Icon"
 import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
+import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
-import { makingRun, shownOf, watched } from "./shown"
-import { RunFace, useArriving } from "./RunFace"
+import { failureOf, makingRun, shownOf, watched } from "./shown"
+import { RunDone, RunFace, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
 import { noHash } from "./text"
 import { useSignal } from "../ui/signal"
@@ -14,7 +15,8 @@ import { pressBeganOutside } from "../ui/press"
 import "./FocusedViewport.css"
 
 /** What's on a focused item rather than its background. */
-const OWN = ".media, .tl, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
+const OWN = ".media, .tl, .tl-player, .tl-transport, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
+const own = (element: Element) => Boolean(element.closest(OWN))
 
 /** A workspace for one item. The Wander camera stays behind it, unchanged. */
 export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string; onClose(): void; onCopyVersion(file: CarriedFile, x: number, y: number): void }) {
@@ -34,15 +36,27 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
     })
     return () => cancelAnimationFrame(frame)
   }, [entering, shown, name, store])
+  // While it's open the canvas stops below its title row (app.css): no box or name of it beside Back to canvas, Render or ×.
+  useLayoutEffect(() => {
+    const heading = element.current?.querySelector<HTMLElement>(".focus-heading")
+    if (!heading) return
+    const root = document.documentElement
+    const place = () => root.style.setProperty("--canvas-top", `${Math.ceil(heading.getBoundingClientRect().bottom)}px`)
+    place()
+    const watch = new ResizeObserver(place)
+    watch.observe(heading)
+    return () => {
+      watch.disconnect()
+      root.style.removeProperty("--canvas-top")
+    }
+  }, [shown])
   // Hidden while it enters, nothing in it can take the caret: once shown, its words do, typing going on from what they say (a prompt is
   // MentionText's `plaintext-only`).
   useEffect(() => {
     if (entering || !store.get(name)?.hereWords) return
-    const words = element.current?.querySelector<HTMLElement>(".focus-body [contenteditable=true], .focus-body [contenteditable=plaintext-only], .focus-body textarea")
+    const words = element.current?.querySelector<HTMLElement>(".focus-body [contenteditable]:not([contenteditable='false']), .focus-body textarea")
     words?.focus({ preventScroll: true })
-    if (!words?.isContentEditable) return
-    window.getSelection()?.selectAllChildren(words)
-    window.getSelection()?.collapseToEnd()
+    if (words?.isContentEditable) caretToEnd(words)
   }, [entering, name, store])
   useEffect(() => {
     const held = element.current
@@ -53,6 +67,9 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
       const target = store.get(name)?.asset
       if (onAsset && target?.kind === "image" && target.tool && load.name) { event.stopPropagation(); store.takeInto(name, [load.name]) }
       else if (onAsset && target?.kind === "image" && target.tool && load.take) { event.stopPropagation(); store.takePicture(name, load.take) }
+      // Let go on what's Focus's own, as on the column it came from, it's put back: a drag begun in Focus and ended in it never leaves it
+      // (Paul, 11-12). Over its background, Wander behind, it's copied there.
+      else if (load.take && own(event.target as Element)) event.stopPropagation()
       else if (load.take) { event.stopPropagation(); onCopyVersion(load.take, x, y) }
       else if (load.tool) { event.stopPropagation(); store.putTool(name, load.tool, load.operation) }
     }
@@ -61,26 +78,24 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   }, [name, store, onCopyVersion])
   // Made, its file still on its way here: it says so as a render on its way does.
   const arriving = useArriving(view)
-  // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
-  const onItsWay = view?.asset?.standing === "making" || Boolean(view?.queued) || view?.asked !== undefined
-  const above = (onItsWay || arriving !== undefined) && view?.asset?.rendering == null
-  // Its lines gone, their room stays till Focus leaves the box, as high as they were with Cancel (their last phase has none): what was
-  // made lands where it was being made (Paul, 11-12, cl-907).
-  const [room, setRoom] = useState<{ name: string; height: number } | null>(null)
-  useLayoutEffect(() => {
-    const height = above ? element.current?.querySelector<HTMLElement>(":scope > .run-face.above")?.offsetHeight : undefined
-    if (height && (room?.name !== name || height > room.height)) setRoom({ name, height })
-  })
+  // The run its render's row last spoke of: once its take lands the row stays, saying so (Paul, 11-12).
+  const going = view?.asset && (view.asset.standing === "making" || Boolean(view.queued) || view.asked !== undefined) ? makingRun(view) : arriving
+  const [spoke, setSpoke] = useState<{ name: string; run: number } | null>(null)
+  useEffect(() => {
+    if (going !== undefined) setSpoke({ name, run: going })
+  }, [going, name])
   if (!view?.asset && !view?.entity) return null
   const version = shownOf(view)?.number
-  const writing = Boolean(view.hereWords) && !watched(view)
+  // An Edit is never written as a take: what it shows is its cut, its versions joined from it (cl-957).
+  const writing = Boolean(view.hereWords) && !watched(view) && !view.asset?.timeline
+  // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
+  const onItsWay = view.asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
   // What its runs said (a slow run, a hot GPU: cl-913), as an open box's head says it: a ! that shows the lines.
   const warnings = view.warnings ?? []
   return (
     <section ref={element} className="focus-viewport" aria-label="Focused asset" data-focused-asset={name} data-entering={entering || undefined}
       onClick={(event) => {
         // Its background closes it: pressed and let go there, never a selection or a drag from what's on it.
-        const own = (element: Element) => Boolean(element.closest(OWN))
         if (!own(event.target as Element) && pressBeganOutside(own)) onClose()
       }}
       onContextMenu={(event) => {
@@ -103,7 +118,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
-      {above ? <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above /> : room?.name === name && <div className="run-face-room" style={{ height: room.height, flex: "none" }} aria-hidden="true" />}
+      {view.asset?.rendering == null && !view.asset?.timeline && !failureOf(view) && (onItsWay || arriving !== undefined ? <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above /> : spoke?.name === name && <RunDone view={view} number={spoke.run} />)}
       {view.warned && warnings.length > 0 && (
         <div className="warned-lines focus-warnings">
           {warnings.map((warning) => (

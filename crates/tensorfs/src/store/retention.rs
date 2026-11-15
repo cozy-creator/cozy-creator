@@ -10,13 +10,15 @@
 //! keeps them and `snapshots/<name>/` for [`TTL`]; a use a live hold names is in use now. On a low
 //! disk the least recently used go first. Nothing is pinned, by hand or forever.
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::thread::{self, ThreadId};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +30,11 @@ use crate::format::{Header, ObjectRef, Model};
 pub(crate) const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How often maintenance expires uses.
 const SWEEP: Duration = Duration::from_secs(10 * 60);
+/// The most a collection that bytes wait on waits for the fence's readers, who hold it only between reading metadata and
+/// holding what it names.
+const FENCE_WAIT: Duration = Duration::from_secs(30);
+/// The most an admit waits for the holds of processes `on_short` ended to go as they exit.
+const HOLDS_WAIT: Duration = Duration::from_secs(10);
 
 /// Digests kept while a process holds them: never unlocked by hand, so a forked child that
 /// inherited the descriptor keeps holding them until it exits or execs.
@@ -81,9 +88,32 @@ impl Hold {
 }
 
 /// Held shared by whoever reads metadata and then holds or uses what it names; exclusive by a
-/// collection, which skips while any is held and never waits.
+/// collection: upkeep skips while any is held; one that bytes wait on waits for them (`collect_fence`).
 #[derive(Debug)]
-pub(crate) struct Fence(#[allow(dead_code)] File);
+pub(crate) struct Fence {
+    _file: File,
+    thread: ThreadId,
+}
+
+thread_local! {
+    /// The fences this thread holds: a collection it runs never waits on its own.
+    static HELD: Cell<u32> = const { Cell::new(0) };
+}
+
+impl Fence {
+    fn new(file: File) -> Fence {
+        HELD.with(|n| n.set(n.get() + 1));
+        Fence { _file: file, thread: thread::current().id() }
+    }
+}
+
+impl Drop for Fence {
+    fn drop(&mut self) {
+        if self.thread == thread::current().id() {
+            HELD.with(|n| n.set(n.get().saturating_sub(1)));
+        }
+    }
+}
 
 pub(super) fn fence_file(store: &Store) -> Result<File> {
     let path = store.root.join("holds").join("gc.lock");
@@ -94,15 +124,55 @@ pub(super) fn fence_file(store: &Store) -> Result<File> {
 pub(crate) fn acquire(store: &Store) -> Result<Fence> {
     let file = fence_file(store)?;
     file.lock_shared().map_err(fail("lock", &store.root))?;
-    Ok(Fence(file))
+    Ok(Fence::new(file))
 }
 
 pub(crate) fn try_collect(store: &Store) -> Result<Option<Fence>> {
     let file = fence_file(store)?;
     match file.try_lock() {
-        Ok(()) => Ok(Some(Fence(file))),
+        Ok(()) => Ok(Some(Fence::new(file))),
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(e)) => Err(fail("lock", &store.root)(e)),
+    }
+}
+
+/// The fence for a collection that bytes wait on: its readers let go within moments, so it waits for them, up to
+/// `FENCE_WAIT`, and says how long it waited; never on a fence this thread holds itself. None: still held then.
+pub(crate) fn collect_fence(store: &Store) -> Result<Option<Fence>> {
+    let file = fence_file(store)?;
+    let (began, mut pause) = (Instant::now(), Duration::from_millis(1));
+    loop {
+        match file.try_lock() {
+            Ok(()) => {
+                if began.elapsed() >= Duration::from_millis(100) {
+                    tracing::info!("tensorfs: making room in {} waited {} ms for its readers", store.root.display(), began.elapsed().as_millis());
+                }
+                return Ok(Some(Fence::new(file)));
+            }
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Error(error)) => return Err(fail("lock", store.root())(error)),
+        }
+        if HELD.with(Cell::get) > 0 {
+            return Ok(None);
+        }
+        if began.elapsed() >= FENCE_WAIT {
+            tracing::warn!("tensorfs: {}'s readers held it {} s: its room isn't made", store.root.display(), FENCE_WAIT.as_secs());
+            return Ok(None);
+        }
+        thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(100));
+    }
+}
+
+/// Destructive cache operations do not wait for a project reader's entire lifetime.
+pub(super) fn exclusive(store: &Store) -> Result<Fence> {
+    let file = fence_file(store)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Fence::new(file)),
+        Err(TryLockError::WouldBlock) => Err(fail("modify", store.root())(io::Error::new(
+            io::ErrorKind::WouldBlock, "model data is in use; retry after current work finishes",
+        ))),
+        Err(TryLockError::Error(error)) => Err(fail("lock", store.root())(error)),
     }
 }
 
@@ -268,7 +338,7 @@ impl Store {
     /// expire uses past the TTL; then, while the disk is short of `incoming` bytes and a reserve,
     /// drop the least recently used. False when `incoming` still does not fit: skip the write.
     /// An origin's handle runs none. A handle collects once at a time: an admit that finds one
-    /// collecting waits for it and judges the disk by what it freed, never refused meanwhile.
+    /// collecting waits for it, judges the disk again and, still short, collects for its own bytes.
     /// Short, the machine's garbage goes first (`on_short`), then the store's own.
     pub fn maintain(&self, incoming: u64) -> Result<bool> {
         if !self.cache {
@@ -282,18 +352,46 @@ impl Store {
         if !due() && short()? == 0 {
             return Ok(true);
         }
-        let seen = *self.collections.lock().unwrap_or_else(PoisonError::into_inner);
         let mut collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
-        if *collections == seen {
+        // Judged again once another's collection ends: what it freed was for its own bytes.
+        if due() || short()? > 0 {
             // The machine's garbage goes before any model (`on_short`).
-            if let (Some(reclaim), 1..) = (self.reclaim.get(), short()?) {
-                (reclaim.0)(incoming);
-            }
-            if let Some(_gc) = try_collect(self)? {
+            let reclaim = || -> Result<bool> {
+                Ok(match (self.reclaim.get(), short()?) {
+                    (Some(reclaim), 1..) => (reclaim.0)(incoming),
+                    _ => false,
+                })
+            };
+            let mut ended = reclaim()?;
+            // Bytes coming in wait for the fence; a checkpoint's open (none coming) never does.
+            let fence = if incoming > 0 && short()? > 0 { collect_fence(self)? } else { try_collect(self)? };
+            let mut held_off = fence.is_none();
+            if let Some(_gc) = fence {
                 // A store GC cannot walk (a ref or header of another format) keeps all it holds.
                 if let Err(e) = self.upkeep(due(), &stamp, &short) {
                     tracing::warn!("tensorfs: cache upkeep skipped: {e}");
                 }
+            }
+            // Still short, the last lever: idle executors holding what's left end (`on_short`), and what they held goes as
+            // each exits, collected again meanwhile, for as long as `HOLDS_WAIT`.
+            if incoming > 0 && !ended {
+                ended = reclaim()?;
+            }
+            let began = Instant::now();
+            while ended && short()? > 0 && began.elapsed() < HOLDS_WAIT {
+                thread::sleep(Duration::from_millis(200));
+                let fence = collect_fence(self)?;
+                held_off = fence.is_none();
+                if fence.is_some() {
+                    if let Err(e) = self.upkeep(false, &stamp, &short) {
+                        tracing::warn!("tensorfs: cache upkeep skipped: {e}");
+                        break;
+                    }
+                }
+            }
+            if incoming > 0 && short()? > 0 {
+                let why = if held_off { "its readers held off the collection" } else { "what's left is in use" };
+                tracing::warn!("tensorfs: {} doesn't fit in {} ({} short): {why}", super::gc::size(incoming), self.root.display(), super::gc::size(short()?));
             }
             *collections += 1;
         }
@@ -310,9 +408,13 @@ impl Store {
         }
         let short = || shortfall(&self.root, incoming);
         let mut collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
-        // Waits out readers that are taking holds, so what they hold is judged.
-        let fence = fence_file(self)?;
-        fence.lock().map_err(fail("lock", &self.root))?;
+        // Waits out readers that are taking holds, so what they hold is judged, as long as `FENCE_WAIT`.
+        let Some(_fence) = collect_fence(self)? else {
+            return Err(fail("make room in", self.root())(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("its readers held it {} s; retry after current work finishes", FENCE_WAIT.as_secs()),
+            )));
+        };
         let mut all = Collected::default();
         if short()? > 0 {
             self.drop_partials()?;
@@ -433,9 +535,14 @@ fn local(model: &Model) -> bool {
 
 /// Bytes missing for `incoming` and a reserve of 2% of the disk, within 1 to 10 GiB.
 fn shortfall(root: &Path, incoming: u64) -> Result<u64> {
+    let (free, reserve) = room_on(root)?;
+    Ok(reserve.saturating_add(incoming.max(1)).saturating_sub(free))
+}
+
+/// The disk's free bytes under `root`, and the reserve no write takes: 2% of the disk, within 1 to 10 GiB.
+pub(super) fn room_on(root: &Path) -> Result<(u64, u64)> {
     let space = platform::durable::space(root).map_err(platform("measure space", root))?;
-    let reserve = (space.total / 50).clamp(1 << 30, 10 << 30);
-    Ok(reserve.saturating_add(incoming.max(1)).saturating_sub(space.free))
+    Ok((space.free, (space.total / 50).clamp(1 << 30, 10 << 30)))
 }
 
 fn touch(path: &Path) -> Result<()> {

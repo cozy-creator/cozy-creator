@@ -1,18 +1,30 @@
 import { useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
-import { machinesQuery, runsQuery } from "../../api/queries"
+import { machinesQuery, maintenanceRunsQuery, projectQuery, runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useProjectId, useTo } from "../../app/Shell"
 import type { Run } from "../../api/calcifer"
+import type { Project } from "../../types"
 import { Bar, Failure, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
-import { progressWords, runTime, settled, stalledWords, statusClass, statusWord, target } from "./words"
+import { progressWords, runName, runTime, settled, stalledWords, statusClass, statusWord, target } from "./words"
 
 const STATUSES = ["queued", "in_progress", "completed", "failed", "canceled"]
 const PAGE = 50
 
-function RunRow({ run, now }: { run: Run; now: number }) {
+/** Each run by the box it makes, as the open project lists it: what's making now, its takes asked for, and the run behind each version. */
+function boxesOf(project: Project | undefined): Map<number, string> {
+  const boxes = new Map<number, string>()
+  for (const asset of project?.assets ?? []) {
+    for (const version of asset.prefixes ?? []) if (version.run != null) boxes.set(version.run, asset.name)
+    for (const take of asset.takes ?? []) if (take.run != null) boxes.set(take.run, asset.name)
+    for (const number of asset.making ?? []) boxes.set(number, asset.name)
+  }
+  return boxes
+}
+
+function RunRow({ run, now, box }: { run: Run; now: number; box?: string }) {
   const to = useTo()
   const live = !settled(run)
   const line = run.status === "failed" || run.status === "canceled" ? run.reason?.message : live ? progressWords(run) : ""
@@ -21,13 +33,15 @@ function RunRow({ run, now }: { run: Run; now: number }) {
       <Link to={to(`runs/${run.number}`)}>
         <span className="line">
           <span className={`dot ${statusClass(run)}`} />
-          <b>#{run.number}</b>
-          <span className="nm">{target(run)}</span>
+          <b>{runName(run)}</b>
+          {/* Its box, the function under it (cl-958); a run of no box here, its function. */}
+          {box ? <span className="nm">{box}</span> : <span className="nm">{target(run)}</span>}
           <span className="sp" />
           <small>{statusWord(run)}</small>
           {run.machine && <small>{run.machine}</small>}
           <small>{runTime(run, now)}</small>
         </span>
+        {box && <small className="under fn">{target(run)}</small>}
         {line && <small className="under">{line}</small>}
         {run.stalled && <small className="under warn">{stalledWords(run.stalled, now)}</small>}
         {live && run.progress?.done_fraction != null && <Bar fraction={run.progress.done_fraction} />}
@@ -36,17 +50,18 @@ function RunRow({ run, now }: { run: Run; now: number }) {
   )
 }
 
-/** The runs, live: this project's, or every project's with `?all`; by machine and status. */
+/** This project's runs, or project-independent maintenance; by machine and status. */
 export function Runs() {
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
   const to = useTo()
   const id = useProjectId()
+  const { data: project } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) })
+  const boxes = boxesOf(project)
   const [params, setParams] = useSearchParams()
   const [limit, setLimit] = useState(PAGE)
-  const all = !id || params.has("all")
   const status = params.get("status") ?? ""
   const machine = params.get("machine") ?? ""
-  const { data, error } = useQuery(runsQuery(client, { project: all ? undefined : id, status, machine }, limit))
+  const { data, error } = useQuery(id ? runsQuery(client, id, { status, machine }, limit) : maintenanceRunsQuery(client, { status, machine }, limit))
   const { data: machines } = useQuery(machinesQuery(client))
   const runs = data?.runs ?? []
   const now = useNow(runs.some((run) => !settled(run)))
@@ -64,12 +79,6 @@ export function Runs() {
   return (
     <DrawerFrame title="Runs">
       <div className="row filters">
-        {id && (
-          <label className="check">
-            <input type="checkbox" checked={all} onChange={(event) => set("all", event.target.checked ? "" : null)} />
-            Every project
-          </label>
-        )}
         <span className="sp" />
         <select className="field" aria-label="Status" value={status} onChange={(event) => set("status", event.target.value || null)}>
           <option value="">Any status</option>
@@ -91,12 +100,12 @@ export function Runs() {
       <Failure error={error} lead="Couldn't list the runs" />
       <ul className="rows">
         {runs.map((run) => (
-          <RunRow key={run.number} run={run} now={now} />
+          <RunRow key={run.id} run={run} now={now} box={run.project_id === id ? boxes.get(run.number) : undefined} />
         ))}
       </ul>
       {data && !runs.length && (
         <p className="muted">
-          {status || machine ? "No runs match." : all ? "No runs yet." : "No runs in this project yet."}
+          {status || machine ? "No runs match." : !id ? "No runs yet." : "No runs in this project yet."}
           {id && !status && !machine && (
             <>
               {" "}

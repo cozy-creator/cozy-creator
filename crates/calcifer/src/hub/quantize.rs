@@ -49,7 +49,7 @@ pub(super) async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, on: On, agreed
         None if api::target::written_as_path(&ask.package) => return Err(Refusal(crate::runs::target::by_path(&ask.package))),
         None => published(&ask.package)?,
     };
-    let (package, interface, release) = match resolve(api, hub, &target, code.as_ref(), &on, false, true, key, agreed).await.map_err(Refusal)? {
+    let (package, interface, release) = match Box::pin(resolve(api, hub, &target, code.as_ref(), &on, false, true, key, agreed)).await.map_err(Refusal)? {
         Resolved::Release { package, card, .. } => (package, card.interface, card.release),
         Resolved::Local { local, interface: None, .. } => {
             return Ok(Planned::Preparing(Box::new(local.install.expect("an uninstalled local target is being installed"))));

@@ -1,5 +1,7 @@
 //! Project real video segment publications onto their planned frame ranges. H3's
-//! plan log is authoritative; neither beat indexes nor elapsed fractions are used.
+//! plan log is authoritative; neither beat indexes nor elapsed fractions are used. How far
+//! the published video reaches is its measured length (H3 publishes each segment joined
+//! after those before it, cl-907); its label is read only where that says less.
 use std::collections::BTreeMap;
 
 use api::calcifer::{Event, Run, Status, VideoProgress, VideoSegmentProgress, VideoSegmentStatus};
@@ -8,9 +10,16 @@ const FPS: u32 = 24;
 
 pub(crate) fn of(run: &Run, events: &[Event]) -> Option<VideoProgress> {
     let plan = plan_of(events)?;
-    let label = run.output.iter().filter(|item| item.name == "video" && item.index == 0)
-        .max_by_key(|item| item.rev).map(|item| item.label.as_str());
-    Some(plan.project(label, run.progress.as_ref().map(|progress| progress.stage.as_str()), run.status == Status::InProgress))
+    let video = run.output.iter().filter(|item| item.name == "video" && item.index == 0).max_by_key(|item| item.rev);
+    let shown = video.map(|item| Shown { label: item.label.as_str(), lasts_ms: item.duration_ms });
+    Some(plan.project(shown, run.progress.as_ref().map(|progress| progress.stage.as_str()), run.status == Status::InProgress))
+}
+
+/// The video a run last published: what it says it is, and how long it is (measured as it landed, else its machine's word).
+#[derive(Clone, Copy)]
+struct Shown<'a> {
+    label: &'a str,
+    lasts_ms: Option<u64>,
 }
 
 fn plan_of(events: &[Event]) -> Option<Plan> {
@@ -48,14 +57,17 @@ impl Plan {
         Some(Self { boundaries })
     }
 
-    fn project(&self, label: Option<&str>, stage: Option<&str>, live: bool) -> VideoProgress {
+    fn project(&self, shown: Option<Shown<'_>>, stage: Option<&str>, live: bool) -> VideoProgress {
         let count = self.boundaries.len() - 1;
-        let completed = match label {
+        let said = match shown.map(|shown| shown.label) {
             Some("Video") => count,
             Some(label) if label.starts_with("Video at ") => count,
             Some(label) => segment(label, count).unwrap_or(0),
             None => 0,
         };
+        // Segments 1 to k joined (`Segments 1-2 of 3`) reach the k-th boundary; a package from before they were joined published each
+        // alone (`Segment 2 of 3`), which only its label counts: the more of the two.
+        let completed = said.max(shown.and_then(|shown| shown.lasts_ms).map_or(0, |ms| self.reached(ms)));
         let active = live.then(|| stage.and_then(|stage| segment(stage.split(" / ").next()?, count))).flatten();
         let segments = self.boundaries.windows(2).enumerate().map(|(index, span)| VideoSegmentProgress {
             from_frame: span[0],
@@ -68,8 +80,22 @@ impl Plan {
     }
 }
 
+impl Plan {
+    /// How many segments a video of this run, `ms` long and starting where the run did, holds whole: none if it's longer than the shot.
+    fn reached(&self, ms: u64) -> usize {
+        // Half a second: well under any segment, and over a container's rounding of its length.
+        const SLACK: u64 = FPS as u64 / 2;
+        let frames = (ms.saturating_mul(u64::from(FPS)) + 500) / 1000;
+        let end = self.boundaries[0].saturating_add(frames);
+        let last = *self.boundaries.last().expect("a plan has a boundary");
+        if end > last + SLACK { return 0 }
+        self.boundaries[1..].iter().take_while(|boundary| **boundary <= end + SLACK).count()
+    }
+}
+
+/// `Segment 2 of 3`, or segments 1 to 2 joined, `Segments 1-2 of 3`: how many it shows.
 fn segment(label: &str, count: usize) -> Option<usize> {
-    let (number, total) = label.strip_prefix("Segment ")?.split_once(" of ")?;
+    let (number, total) = label.strip_prefix("Segments 1-").or_else(|| label.strip_prefix("Segment "))?.split_once(" of ")?;
     let number: usize = number.parse().ok()?;
     let total: usize = total.parse().ok()?;
     (total == count && number > 0 && number <= count).then_some(number)
@@ -106,7 +132,7 @@ mod tests {
     #[test]
     fn completed_segments_are_real_frame_ranges_not_beat_indexes() {
         let plan = Plan::read(PLAN).unwrap();
-        let progress = plan.project(Some("Segment 1 of 3"), Some("Segment 2 of 3 / denoise"), true);
+        let progress = plan.project(Some(Shown { label: "Segment 1 of 3", lasts_ms: None }), Some("Segment 2 of 3 / denoise"), true);
         assert_eq!(progress.completed_frames, 294);
         assert_eq!(progress.segments[0].status, VideoSegmentStatus::Completed);
         assert_eq!(progress.segments[1], VideoSegmentProgress { from_frame: 294, to_frame: 634, status: VideoSegmentStatus::InProgress });
@@ -120,7 +146,7 @@ mod tests {
         let plan = Plan::read("h3 shot segments segments=1 resumed_at=362 boundaries_s=\"\" delivered_frames=702").unwrap();
         let initial = plan.project(None, Some("Segment 1 of 1 / condition"), true);
         assert_eq!((initial.resumed_at, initial.completed_frames), (362, 362));
-        let base = plan.project(Some("Video"), Some("upscale / refine"), true);
+        let base = plan.project(Some(Shown { label: "Video", lasts_ms: None }), Some("upscale / refine"), true);
         assert_eq!(base.completed_frames, 702);
         assert!(base.segments.iter().all(|segment| segment.status == VideoSegmentStatus::Completed));
     }
@@ -130,7 +156,7 @@ mod tests {
         assert!(Plan::read("h3 shot segments segments=2 resumed_at=0 boundaries_s=\"\" delivered_frames=702").is_none());
         assert!(Plan::read("h3 shot segments segments=2 resumed_at=0 boundaries_s=NaN delivered_frames=702").is_none());
         let plan = Plan::read(PLAN).unwrap();
-        assert_eq!(plan.project(Some("Segment 2 of 9"), None, true).completed_frames, 0);
+        assert_eq!(plan.project(Some(Shown { label: "Segment 2 of 9", lasts_ms: None }), None, true).completed_frames, 0);
         assert!(plan.project(None, Some("Segment 1 of 3 / denoise"), false).segments.iter().all(|segment| segment.status == VideoSegmentStatus::Pending));
         let events: Vec<_> = [PLAN, "h3 shot segments segments=2"].into_iter().enumerate().map(|(index, text)| Event::Log {
             sequence_number: index as u64 + 1, at_ms: 0, level: "info".into(), text: text.into(),

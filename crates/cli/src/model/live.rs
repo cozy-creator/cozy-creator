@@ -277,7 +277,7 @@ impl Preview {
         if !model.tags.is_empty() { lines.push(format!("Tags: {}", model.tags.join(", "))); }
         if let Some(author) = &model.author { lines.push(format!("Publisher: {}", author.name)); }
         if model.role.as_deref() == Some("lora") || model.content_kind == Some(api::calcifer::hub::ModelContentKind::Lora) {
-            if let Some(trigger) = &model.trigger { lines.push(format!("Trigger: {trigger}")); }
+            lines.extend(model.triggers.iter().map(|trigger| format!("Trigger: {trigger}")));
             if let Some(strength) = model.strength { lines.push(format!("Suggested strength: {strength}")); }
         }
         if let Some(release) = model.releases.first() {
@@ -360,7 +360,7 @@ mod tests {
     use api::calcifer::hub::{FoundModel, ModelAuthor, ModelContentKind};
 
     fn catalog() -> Catalog {
-        Catalog::new(Searching { hub: "https://example.test".into(), q: String::new(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), role: "model".into(), limit: 2, offset: 2, fits: None },
+        Catalog::new(Searching { hub: "https://example.test".into(), q: String::new(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), role: "model".into(), limit: 2, offset: 2 },
             ModelSearch { models: vec![FoundModel { model: "author/one".into(), ..Default::default() }, FoundModel { model: "author/two".into(), ..Default::default() }], total: 5, older: 1 },
             Some(vec![HeldModel { model: "author/two".into(), role: "model".into(), complete: Some(true), bytes: 1024, ..Default::default() }] ))
     }

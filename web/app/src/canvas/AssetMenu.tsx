@@ -5,12 +5,12 @@ import { Menu } from "../ui/Menu"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { downloadable } from "./Media"
+import { STANDARD_RATIOS } from "./ratios"
 import { shownOf } from "./shown"
 import { versionIn } from "./versions"
 import { retimed } from "./timeline/model"
 
 const FRAME_RATES = [24, 25, 30, 48, 50, 60]
-const ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:2", "2.39:1"]
 const RESOLUTIONS = ["720p", "1080p", "1440p", "2160p"]
 
 /** One of an Edit's settings. `From its first clip` is the field cleared. */
@@ -48,7 +48,7 @@ function EditSettings({ name }: { name: string }) {
           void store.setFields(name, { fps: to, ...(timeline ? { timeline: retimed(timeline, fps, to) } : {}) })
         }}
       />
-      <Setting label="Aspect ratio" value={store.valueOf(name, "aspect_ratio")} options={ASPECTS} unset="Its first clip's" onPick={(picked) => void store.setField(name, "aspect_ratio", picked)} />
+      <Setting label="Aspect ratio" value={store.valueOf(name, "aspect_ratio")} options={STANDARD_RATIOS} unset="Its first clip's" onPick={(picked) => void store.setField(name, "aspect_ratio", picked)} />
       <Setting label="Resolution" value={store.valueOf(name, "resolution")} options={RESOLUTIONS} unset="Its first clip's" onPick={(picked) => void store.setField(name, "resolution", picked)} />
     </>
   )

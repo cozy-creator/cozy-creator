@@ -28,7 +28,7 @@ async fn changed(events: &mut Events, buffered: &mut String, id: &str) -> serde_
 async fn board_handoff(api: &Arc<Api>, client: &reqwest::Client, base: &str, stream: &str, events: &mut Events, buffered: &mut String, arrived: &Notify) {
     let within = std::time::Duration::from_secs(10);
     let opened: Opened = client.post(format!("{base}/v1/projects")).bearer_auth("presence-fixture")
-        .json(&serde_json::json!({"name": "board handoff", "unencrypted": true})).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+        .json(&serde_json::json!({"path": api.machines.user_home.join("board handoff"), "unencrypted": true})).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
     let id = opened.id;
     let shown: api::calcifer::ProjectShowReply = client.put(format!("{base}/v1/events/{stream}")).bearer_auth("presence-fixture")
         .json(&serde_json::json!({"projects": [&id]})).send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
@@ -139,7 +139,7 @@ async fn native_presence_fixture() {
             }
             next.run(request).await
         }
-    })).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    })).into_make_service_with_connect_info::<crate::loopback::Peer>();
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = tensorfs::fetch::http(&[]).unwrap().no_proxy().build().unwrap();
     let base = format!("http://{address}");

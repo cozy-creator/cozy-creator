@@ -16,13 +16,6 @@ lock=$HOME/.cozy/calcifer/calcifer.lock.holder
 
 # What this runner's Calcifer ordered is this session's: it started with none, and another client's rentals, which it lists too, read
 # `ordered: false`. So a lost answer's order is ended too, by name until it has a rental id.
-own() { machines_json | jq -r '.machines[] | select(.kind == "rental" and .ordered and .state != "ended") | .rental_id // .name'; }
-claim() {
-  local r
-  for r in $(own); do
-    [[ " ${RIDS[*]:-} " == *" $r "* ]] || { RIDS+=("$r"); echo "$r" >> "$OUT/rental"; say "this runner's Calcifer also holds $r"; }
-  done
-}
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
 
 PW=$(mktemp -d)

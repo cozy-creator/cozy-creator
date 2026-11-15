@@ -34,7 +34,8 @@ const CALL: Duration = Duration::from_secs(60);
 const STATED: Duration = Duration::from_secs(60);
 
 /// The pauses between one ask's attempts, the same rule wherever cozy asks again: a pause that doubles to a
-/// ceiling, lengthened by up to itself again at random, or the wait the answer states (at most [`STATED`]); an attempt
+/// ceiling, lengthened by up to itself again at random but never past the ceiling, or the wait the answer states (at
+/// most [`STATED`]); an attempt
 /// that moved bytes starts the count over, and a fixed number in a row that moved nothing end it, or the time it was
 /// given in all. Each pause is said.
 pub struct Backoff {
@@ -90,7 +91,8 @@ impl Backoff {
         let pause = self.next;
         // A uniform fraction from the 53 high bits of a fresh random hash.
         let jitter = (RandomState::new().hash_one(()) >> 11) as f64 / (1u64 << 53) as f64;
-        let pause = stated.map_or(pause + pause.mul_f64(jitter), |stated| stated.min(STATED));
+        // Jitter never takes a pause past the ceiling: at 15 s it reached 30 (tfs-149).
+        let pause = stated.map_or((pause + pause.mul_f64(jitter)).min(self.most), |stated| stated.min(STATED));
         // Another attempt would start past the time given in all.
         if self.within.is_some_and(|within| self.began.elapsed() + pause >= within) {
             return None;

@@ -35,9 +35,14 @@ function Viewing({ name, close }: { name: string; close: () => void }) {
   useEffect(() => {
     let live = true
     setSrc(undefined)
-    if (picture && store.projectId) void client.transport.src(client.file(store.projectId, picture)).then((url) => live && setSrc(url))
+    let held: string | undefined
+    if (picture && store.projectId) void client.transport.src(client.file(store.projectId, picture)).then((url) => {
+      if (live) { held = url; setSrc(url) }
+      else if (url.startsWith("blob:")) URL.revokeObjectURL(url)
+    }).catch(() => {})
     return () => {
       live = false
+      if (held?.startsWith("blob:")) URL.revokeObjectURL(held)
     }
   }, [client, store, picture])
   useEffect(() => {
@@ -60,7 +65,7 @@ function Viewing({ name, close }: { name: string; close: () => void }) {
       <div className="media viewer-file" style={{ "--aspect": aspect } as CSSProperties}>
         {src && <img src={src} alt={name} onLoad={(event) => setNatural(event.currentTarget.naturalWidth / event.currentTarget.naturalHeight)} />}
         {source && shown.field === "video" && store.projectId && (
-          <Player key={JSON.stringify(source)} auto field="video" path={"path" in source ? client.file(store.projectId, source.path) : undefined} machine={"run" in source ? source : undefined} />
+          <Player key={JSON.stringify(source)} auto field="video" path={"path" in source ? client.file(store.projectId, source.path) : undefined} machine={"run" in source ? { ...source, project: store.projectId } : undefined} />
         )}
       </div>
       <button type="button" className="iconb viewer-close" aria-label="Close" title="Close" onClick={close}>

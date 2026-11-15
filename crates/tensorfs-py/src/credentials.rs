@@ -167,7 +167,7 @@ impl PyEndpoint {
         repo_id: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let model_id = crate::store::model_argument(model_id, repo_id)?.ok_or_else(|| pyo3::exceptions::PyTypeError::new_err("model_id is required"))?;
-        let hardware = tensorfs::fetch::Hardware { gpus: gpus.unwrap_or_default(), free_vram: None, plain };
+        let hardware = tensorfs::fetch::Hardware { gpus: gpus.unwrap_or_default(), plain, ..Default::default() };
         let resolved = py
             .detach(|| block_on(self.endpoint.resolve(model_id, release.as_deref(), lane.as_deref(), &hardware)))
             .or_raise(py)?;

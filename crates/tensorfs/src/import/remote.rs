@@ -25,14 +25,13 @@ use crate::fetch::{Client, GetError};
 const DOCUMENT_BYTES: usize = 32 << 20;
 
 /// Provider origins and credentials (`bearer <token>` or empty), each presented only to
-/// its own host. Tests point the origins at a loopback server and set `allow_local`.
+/// its own host. A loopback test origin is reached only as a declared local origin.
 #[derive(Clone)]
 pub struct Access {
     pub huggingface: String,
     pub civitai: String,
     pub huggingface_token: String,
     pub civitai_token: String,
-    pub allow_local: bool,
     pub token: Option<Arc<dyn crate::fetch::TokenProvider>>,
     /// The async caller's runtime, driven from its blocking import worker. None keeps the
     /// existing synchronous CLI/Python path.
@@ -62,7 +61,6 @@ impl Default for Access {
             civitai: "https://civitai.com".into(),
             huggingface_token: String::new(),
             civitai_token: String::new(),
-            allow_local: false,
             token: None,
             runtime: None,
             cancelled: None,
@@ -188,7 +186,8 @@ pub fn parse(raw: &str) -> Result<Spec> {
                 parse(&format!("hf://{org}/{repo}@{revision}/{}", path.join("/")))
             }
             _ => not(format!(
-                "{raw}: a Hugging Face URL names a repository, a tree or a file"
+                "{}: a Hugging Face URL names a repository, a tree or a file",
+                crate::fetch::shown(raw)
             )),
         },
         // civitai.red serves the same versions (mature ones too) through civitai.com's API.
@@ -199,7 +198,7 @@ pub fn parse(raw: &str) -> Result<Spec> {
             match (parts.as_slice(), version) {
                 (["api", "download", "models", v], _) => parse(&format!("civitai://{v}")),
                 (["models", ..], Some(v)) => parse(&format!("civitai://{v}")),
-                _ => not(format!("{raw}: a Civitai URL names one model version")),
+                _ => not(format!("{}: a Civitai URL names one model version", crate::fetch::shown(raw))),
             }
         }
         _ => Ok(Spec::Url(raw.to_string())),
@@ -231,7 +230,6 @@ impl Access {
         SourcePolicy {
             any_host: p == Provider::Web,
             allowed_hosts: hosts,
-            allow_local: self.allow_local,
             max_redirects: 5,
             ..Default::default()
         }
@@ -287,6 +285,8 @@ impl<'a> Scope<'a> {
         let mut work = std::pin::pin!(work);
         let idle = tokio::sync::Notify::new();
         let notify = self.cancel_notify.as_deref().unwrap_or(&idle);
+        // A caller's `stop` has no wake of its own: it's asked this often. `cancelled` with `cancel_notify` wakes the wait.
+        let asked = self.stop.is_some();
         loop {
             let wake = notify.notified();
             let mut wake = std::pin::pin!(wake);
@@ -298,7 +298,7 @@ impl<'a> Scope<'a> {
                 biased;
                 _ = &mut wake => {},
                 answer = &mut work => { self.check()?; return answer; },
-                _ = tokio::time::sleep(Duration::from_millis(25)) => {},
+                _ = tokio::time::sleep(Duration::from_millis(25)), if asked => {},
             }
         }
     }
@@ -342,7 +342,7 @@ impl<'a> Scope<'a> {
                 sink(at, frame)
             };
             let got = ask::get(&client, url, &headers, self.token.as_deref(), range, &mut sink).await;
-            let what = |status| format!("{url}: HTTP {status}");
+            let what = |status| format!("{}: HTTP {status}", crate::fetch::shown(url));
             match got.map_err(GetError::refusal)? {
                 Ok(headers) => Ok(headers.get("link").and_then(|v| v.to_str().ok()).and_then(next_link)),
                 Err(status @ (404 | 410)) => refuse(Code::REF_NOT_FOUND, what(status)),
@@ -364,7 +364,7 @@ impl<'a> Scope<'a> {
         let body = self.document(p, url)?;
         let doc = serde_json::from_slice(&body.0).map_err(|e| Refusal {
             code: Code::MALFORMED_JSON,
-            detail: format!("{url}: {e}"),
+            detail: format!("{}: {e}", crate::fetch::shown(url)),
         })?;
         Ok((doc, body.1))
     }
@@ -377,7 +377,7 @@ impl<'a> Scope<'a> {
             if body.len() + frame.len() > DOCUMENT_BYTES {
                 return refuse(
                     Code::SIZE_CAP,
-                    format!("{url}: more than {DOCUMENT_BYTES} bytes"),
+                    format!("{}: more than {DOCUMENT_BYTES} bytes", crate::fetch::shown(url)),
                 );
             }
             body.extend_from_slice(frame);
@@ -494,7 +494,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                         at: At::Remote {
                             url: format!(
                                 "{base}/{org}/{repo}/resolve/{commit}/{}",
-                                row.path.replace(' ', "%20")
+                                url_path(&row.path)
                             ),
                             provider: Provider::Hf,
                         },
@@ -588,7 +588,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                 .next()
                 .unwrap_or("");
             if name.is_empty() || name.starts_with('.') {
-                return not(format!("{url}: names no file"));
+                return not(format!("{}: names no file", crate::fetch::shown(url)));
             }
             let member = Member {
                 path: name.to_string(),
@@ -1036,6 +1036,17 @@ pub(crate) fn read_range(m: &Member, from: u64, to: u64, access: &Access) -> Res
         },
     )?;
     Ok(out)
+}
+
+/// A repository path as a URL path: each byte outside RFC 3986's unreserved set and `/` percent-encoded, so a file named
+/// in any script (`Minimax h3多参考双采打斗工作流.json`) is fetched, never refused as not ASCII.
+fn url_path(path: &str) -> String {
+    path.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 #[cfg(test)]

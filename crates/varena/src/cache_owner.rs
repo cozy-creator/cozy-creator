@@ -220,6 +220,8 @@ struct State {
     owners: BTreeMap<u64, Arc<OwnerMeta>>,
     jobs: BTreeMap<RequestKey, Arc<Job>>,
     worker: Option<ThreadId>,
+    /// One more at each `Control::stir`: a waiter that read it before looking misses none.
+    stirs: u64,
 }
 struct Control {
     pid: u32,
@@ -243,6 +245,24 @@ impl Control {
         if owner.host {
             step(&self.hosted);
         }
+    }
+    /// Something changed for the worker or a waiter: under the dispatcher lock, so no wait misses it.
+    /// Never called holding that lock, an owner's or a job's.
+    fn stir(&self) {
+        if let Ok(mut state) = self.lock() {
+            state.stirs = state.stirs.wrapping_add(1);
+        }
+        self.changed.notify_all();
+    }
+    fn stirs(&self) -> Result<u64> {
+        Ok(self.lock()?.stirs)
+    }
+    fn capturing(&self) -> bool {
+        self.gpu.captures.load(Ordering::Acquire) != 0
+    }
+    /// When work `error` deferred is tried again: a capture's end stirs; nothing tells of an owner's own lock.
+    fn retry(&self, error: &Error) -> Next {
+        if matches!(error, Error::CaptureActive) && self.capturing() { Next::Capture } else { Next::Later }
     }
     fn lock(&self) -> Result<MutexGuard<'_, State>> {
         crate::check_process()?;
@@ -318,6 +338,7 @@ impl CacheOwner {
                         owners: BTreeMap::new(),
                         jobs: BTreeMap::new(),
                         worker: None,
+                        stirs: 0,
                     }),
                     changed: Condvar::new(),
                     clock: AtomicU64::new(0),
@@ -384,7 +405,7 @@ impl CacheOwner {
             held.facts.requestable = true;
             control.count(&held, true);
         }
-        control.changed.notify_all();
+        control.stir();
         Ok(Self { control, owner, id })
     }
 
@@ -444,7 +465,8 @@ impl CacheOwner {
                 self.control.count(&owner, false);
             }
         }
-        self.control.changed.notify_all();
+        drop(owner);
+        self.control.stir();
         Ok(())
     }
     /// Close admission without waiting. Runtime may use this while holding its own
@@ -463,6 +485,8 @@ impl CacheOwner {
             if crate::is_capturing(self.control.device)? {
                 return Err(Error::CaptureActive);
             }
+            // Read before the facts: the worker stirs once it retired this owner.
+            let seen = self.control.stirs()?;
             let facts = self.facts()?;
             if facts.retired {
                 return Ok(());
@@ -474,7 +498,7 @@ impl CacheOwner {
             drop(
                 self.control
                     .changed
-                    .wait_timeout(state, Duration::from_millis(20))
+                    .wait_while(state, |state| state.stirs == seen)
                     .map_err(|_| Error::Poisoned("cache close wait mutex".into()))?,
             );
         }
@@ -485,6 +509,13 @@ impl Drop for CacheOwner {
         if self.control.pid == std::process::id() {
             let _ = self.stop();
         }
+    }
+}
+
+/// A capture on `device` ended: what it deferred is tried again.
+pub(crate) fn stir(device: i32) {
+    if let Ok(Some(control)) = control(device) {
+        control.stir();
     }
 }
 
@@ -549,7 +580,8 @@ impl ShrinkRequest {
         job.cancelled = true;
         job.facts.cancelled = true;
         self.job.wake();
-        self.control.changed.notify_all();
+        drop(job);
+        self.control.stir();
         Ok(())
     }
 }
@@ -577,7 +609,7 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
             let job = Arc::clone(pending);
             drop(held);
             drop(state);
-            control.changed.notify_all();
+            control.stir();
             return Ok(Some(ShrinkRequest { control, job }));
         }
     }
@@ -620,7 +652,7 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
         job
     };
     drop(state);
-    control.changed.notify_all();
+    control.stir();
     Ok(Some(ShrinkRequest { control, job }))
 }
 
@@ -646,33 +678,63 @@ fn worker(control: Arc<Control>, registrations: mpsc::Receiver<Registration>) {
         state.worker = Some(std::thread::current().id());
     }
     loop {
-        let result = worker_tick(&control, &registrations, &mut callbacks);
-        if let Err(error) = result {
-            // Keep callback/data ownership intact on a worker fault. No allocator handle
-            // can run these destructors. Explicit close reports failure instead of hanging.
-            for registration in callbacks.values() {
-                if let Ok(mut owner) = registration.owner.lock() {
-                    failed(&control, &mut owner, error.to_string(), true);
+        // Read before the tick: what changes during it wakes the wait after.
+        let seen = control.stirs().unwrap_or_default();
+        let next = match worker_tick(&control, &registrations, &mut callbacks) {
+            Ok(next) => next,
+            Err(error) => {
+                // Keep callback/data ownership intact on a worker fault. No allocator handle
+                // can run these destructors. Explicit close reports failure instead of hanging.
+                for registration in callbacks.values() {
+                    if let Ok(mut owner) = registration.owner.lock() {
+                        failed(&control, &mut owner, error.to_string(), true);
+                    }
                 }
+                control.stir();
+                Next::Later
             }
-            control.changed.notify_all();
-        }
+        };
         let Ok(state) = control.lock() else {
             std::mem::forget(callbacks);
             std::mem::forget(registrations); // queued callback data remains owned too
             return;
         };
-        let _ = control
-            .changed
-            .wait_timeout(state, Duration::from_millis(20));
+        match next {
+            Next::Now => {}
+            Next::Later => drop(control.changed.wait_timeout(state, DEFERRED)),
+            // Its end stirs under this lock, so a capture still on now is waited out.
+            Next::Capture if control.capturing() => {
+                let seen = state.stirs;
+                drop(control.changed.wait_while(state, |state| state.stirs == seen));
+            }
+            Next::Capture => {}
+            // A registration, a request, a close or a cancel stirs it.
+            Next::Idle => drop(control.changed.wait_while(state, |state| state.stirs == seen)),
+        }
     }
 }
+
+/// What the worker owes after a tick, the most pressing last.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Next {
+    Idle,
+    /// Work a capture deferred.
+    Capture,
+    /// Work an owner's own lock deferred, tried again after `DEFERRED`.
+    Later,
+    /// A request has owners to ask or a collection to make.
+    Now,
+}
+
+/// How soon deferred work is tried again.
+const DEFERRED: Duration = Duration::from_millis(20);
 
 fn worker_tick(
     control: &Arc<Control>,
     registrations: &mpsc::Receiver<Registration>,
     callbacks: &mut BTreeMap<u64, Registration>,
-) -> Result<()> {
+) -> Result<Next> {
+    let mut next = Next::Idle;
     for registration in registrations.try_iter() {
         callbacks.insert(registration.id, registration);
     }
@@ -707,13 +769,13 @@ fn worker_tick(
                 callbacks.remove(&id);
                 control.lock()?.owners.remove(&id);
             }
-            Err(error) if deferred(&error) => {}
+            Err(error) if deferred(&error) => next = next.max(control.retry(&error)),
             Err(error) => {
                 let mut owner = registration.owner.lock()?;
                 failed(control, &mut owner, error.to_string(), true);
             }
         }
-        control.changed.notify_all();
+        control.stir();
     }
     let jobs = control.lock()?.jobs.values().cloned().collect::<Vec<_>>();
     for job in jobs {
@@ -733,7 +795,7 @@ fn worker_tick(
                 // The owner still has its own exclusion/claims: a Python logical
                 // retirement may proceed while native full retirement must defer.
                 // Keep collection pending; no action return counts as freed bytes.
-                Err(error) if deferred(&error) => {}
+                Err(error) if deferred(&error) => next = next.max(control.retry(&error)),
                 Err(error) => return Err(error),
             }
         }
@@ -775,6 +837,7 @@ fn worker_tick(
                 held.owners.push_front(id);
                 held.facts.queued = held.owners.len();
             }
+            next = next.max(if pending_registration { Next::Later } else { Next::Now });
             job.wake();
             continue;
         };
@@ -783,6 +846,7 @@ fn worker_tick(
             if owner.closing || !owner.facts.requestable || owner.facts.failed.is_some() {
                 job.lock()?.facts.running = false;
                 job.wake();
+                next = Next::Now;
                 continue;
             }
             owner.facts.running = true;
@@ -843,10 +907,12 @@ fn worker_tick(
                     .ok_or(Error::Invalid("cache action epoch overflow"))?;
             }
         }
+        // Its collection, and the next owner, come on the next tick.
+        next = next.max(if capture_active { Next::Capture } else { Next::Now });
         drop(held);
         drop(owner);
         job.wake();
-        control.changed.notify_all();
+        control.stir();
     }
-    Ok(())
+    Ok(next)
 }

@@ -26,12 +26,9 @@ pub(super) struct Searching {
     pub(super) limit: u32,
     pub(super) offset: u32,
     pub(super) role: String,
-    /// `<tool>:<slot>`: only models that slot loads.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) fits: Option<String>,
 }
 
-pub(crate) async fn search(ctx: &Context, args: Ls, role: &str, fits: Option<String>) -> Result<ExitCode, Error> {
+pub(crate) async fn search(ctx: &Context, args: Ls, role: &str) -> Result<ExitCode, Error> {
     let query = args.query.join(" ");
     let ask = Searching {
         hub: ctx.hub().to_string(),
@@ -42,7 +39,6 @@ pub(crate) async fn search(ctx: &Context, args: Ls, role: &str, fits: Option<Str
         limit: output::at_most("--limit", args.limit, 100),
         offset: args.offset,
         role: role.to_owned(),
-        fits,
     };
     let view = read(ctx, &ask).await?;
 
@@ -60,14 +56,14 @@ pub(crate) async fn search(ctx: &Context, args: Ls, role: &str, fits: Option<Str
         table.note(title).print();
     }
     output::say(ctx, &browser.title());
-    if ask.family.is_some() || ask.fits.is_some() || !ask.tag.is_empty() || !ask.no_tag.is_empty() {
-        output::say(ctx, "Family, fits and tag filters apply to the Hub page; local copies use the name query.");
+    if ask.family.is_some() || !ask.tag.is_empty() || !ask.no_tag.is_empty() {
+        output::say(ctx, "Family and tag filters apply to the Hub page; local copies use the name query.");
     }
     Ok(ExitCode::SUCCESS)
 }
 
 pub(super) async fn local(ctx: &Context, args: Ls, role: &str) -> Result<ExitCode, Error> {
-    let query = Searching { hub: ctx.hub().to_string(), q: args.query.join(" "), family: None, tag: String::new(), no_tag: String::new(), limit: output::at_most("--limit", args.limit, 100), offset: args.offset, role: role.into(), fits: None };
+    let query = Searching { hub: ctx.hub().to_string(), q: args.query.join(" "), family: None, tag: String::new(), no_tag: String::new(), limit: output::at_most("--limit", args.limit, 100), offset: args.offset, role: role.into() };
     let inventory: api::calcifer::MachineModels = ctx.calcifer().await?.get("/v1/machines/local/models").await?;
     if inventory.silent {
         return Err(Error::new(Kind::Unavailable, "local_inventory_unavailable", "The local machine has not reported its model inventory yet").next("cozy machine ls"));
@@ -89,12 +85,12 @@ pub(crate) async fn edit(ctx: &Context, args: Edit) -> Result<ExitCode, Error> {
     let ask = ModelEdit {
         hub: Some(ctx.hub().to_string()),
         family: args.family,
-        trigger: args.trigger,
+        triggers: args.triggers,
         strength: args.strength.map(|s| s.0),
         add_tags: args.tag,
         remove_tags: args.untag,
     };
-    if ask.family.is_none() && ask.trigger.is_none() && ask.strength.is_none() && !ask.tags_change() {
+    if ask.family.is_none() && ask.triggers.is_none() && ask.strength.is_none() && !ask.tags_change() {
         return Err(Error::new(Kind::Usage, "model_edit_empty", "No model changes specified")
             .next("cozy model edit --help"));
     }

@@ -302,6 +302,17 @@ class Route:
 
     clone = detach = contiguous
 
+    def reshape(self, *shape: int | tuple[int, ...]) -> Route:
+        """A contiguous route under another shape, one `-1` resolved."""
+        dims = list(shape[0] if len(shape) == 1 and isinstance(shape[0], tuple) else cast(tuple[int, ...], shape))
+        assert self.strides == contiguous(self.shape), (self.key, "reshaped while not contiguous")
+        if -1 in dims:
+            dims[dims.index(-1)] = self.numel() // -math.prod(dims)
+        assert math.prod(dims) == self.numel(), (self.key, dims)
+        return replace(self, shape=tuple(dims), strides=contiguous(tuple(dims)))
+
+    view = reshape
+
     def __getitem__(self, key: Index | tuple[Index, ...]) -> Route:
         index = key if isinstance(key, tuple) else (key,)
         index = (*index, *([slice(None)] * (self.ndim - len(index))))
@@ -418,6 +429,12 @@ SINGLE_FILE: dict[str, SingleFile] = {
              "arguments": ["checkpoint"], "upstream": "anima-hf-headers/vae/diffusion_pytorch_model.safetensors.header"},
         ],
     },
+}
+# Anima's diffusion model file alone (ComfyUI's `diffusion_models/`, a fine-tune's one Civitai file): its LLM adapter and DiT,
+# read as the full release's; its text encoder and VAE come from the base it is uploaded on (`--base`).
+SINGLE_FILE["anima.diffusion_model"] = {
+    "reference": SINGLE_FILE["anima.single_file"]["reference"], "cast": "BF16",
+    "components": [c for c in SINGLE_FILE["anima.single_file"]["components"] if c["name"] in ("text_conditioner", "transformer")],
 }
 
 
@@ -815,6 +832,84 @@ def krea2_lora() -> Table[LoraRow]:
     lora: Lora = {"a": [".lora_A.weight", ".lora_down.weight", ".A"], "b": [".lora_B.weight", ".lora_up.weight", ".B"],
                   "alpha": [".alpha"], "magnitude": MAGNITUDE}
     return {"name": "krea2.lora", "lora": lora, "components": components}
+
+
+# ------------------------------------------------------------------ Krea 2 single files
+
+KREA2_FILES = VECTORS / "krea2-comfy-headers"
+#: The reference checkpoint's names bare (Krea's `raw.safetensors`, Comfy-Org's `diffusion_models/krea2_*`), or under
+#: the prefix ComfyUI's model save writes.
+KREA2_SINGLE_FILE = {"krea2.native": "", "krea2.comfy": "model.diffusion_model."}
+#: A quantized carrier's parts beside its `weight`: ComfyUI's marker and scales (fp8, int8_convrot, nvfp4).
+QUANTIZED_PARTS = (".comfy_quant", ".weight_scale", ".weight_scale_2", ".input_scale")
+
+
+def krea2_single_file(name: str) -> Table[TableRow]:
+    """Krea 2's DiT from one file in the reference checkpoint's names, onto Diffusers' (the family's): Diffusers'
+    `convert_krea2_transformer_checkpoint_to_diffusers` renames every tensor and reshapes each block's flat modulation
+    table to `[6, dim]`. A quantized weight (ComfyUI's fp8, int8_convrot and nvfp4: published fine-tunes, `vectors/`)
+    is folded into one tensor before a row reads it and is only renamed. No reference: Krea's repository is gated, so
+    a DiT-only file takes its configs and other components from the Hub base it is uploaded on (`--base`)."""
+    prefix = KREA2_SINGLE_FILE[name]
+    family: FamilyDoc = json.loads((FAMILIES / "krea-2.json").read_text())
+    keys = {k: tuple(shape) for k, shape in family["components"]["transformer"]["keys"]}
+    from diffusers import Krea2Transformer2DModel
+
+    with torch.device("meta"):
+        # the class defaults are Krea 2's config (the reference repository is gated); the family's keys check it
+        model = cast(torch.nn.Module, Krea2Transformer2DModel())  # type: ignore[no-untyped-call]  # type checkers see diffusers' dummy class
+    source = header(KREA2 / "krea2_raw_bf16.safetensors.header")
+    checkpoint: dict[str, Route] = {k: Route(k, shape, 0, contiguous(shape)) for k, (_, shape) in source.items()}
+    converted: dict[str, Route | Materialized] = single_file_utils.convert_krea2_transformer_checkpoint_to_diffusers(  # type: ignore[no-untyped-call]  # untyped
+        checkpoint)
+    rows: list[TableRow] = []
+    for target, value in model.state_dict().items():
+        route = converted.pop(target)
+        assert isinstance(route, Route) and route.shape == tuple(value.shape) == keys[target], (name, target)
+        stored = source[route.key][1]
+        whole = route.shape == stored and route.offset == 0 and route.strides == contiguous(stored)
+        rows.append(row(target, route.key, None if whole else route_ops(route, stored)))
+    assert not converted and len(rows) == len(keys) == len(source), (name, sorted(converted)[:4])
+    held = 0
+    for vector in sorted(KREA2_FILES.glob("*.header")):
+        published = header(vector)
+        if not all(k.startswith(prefix) for k in published) or (not prefix and any(k.startswith("model.") for k in published)):
+            continue
+        weights = {k.removeprefix(prefix) for k in published if not k.endswith(QUANTIZED_PARTS)}
+        assert weights == set(source), (name, vector.name, sorted(weights ^ set(source))[:4])
+        held += 1
+    assert held, (name, "no published file in this layout")
+    component: Component[TableRow] = {"name": "transformer", "prefix": prefix, "rows": rows}
+    return {"name": name, "components": [component]}
+
+
+# ------------------------------------------------------------------ Qwen3-VL text encoders as ComfyUI saves them
+
+QWEN3VL_FILES = VECTORS / "qwen3vl-comfy-headers"
+#: Krea 2's text encoder is Qwen3-VL-4B-Instruct (Krea's repository is gated; Qwen's config builds the family's census).
+QWEN3VL_4B = "hf://Qwen/Qwen3-VL-4B-Instruct@ebb281ec70b05090aa6165b016eac8ec08e71b17"
+
+
+def qwen3vl_comfy() -> Table[TableRow]:
+    """A Qwen3-VL text encoder in ComfyUI's one file (`text_encoders/`): Transformers' `Qwen3VLModel` names under
+    `model.`, its language model's without `language_model.`, so every tensor is renamed and none moves. The component is
+    BF16: a float8 weight with no scale beside it (a published abliterated encoder's, `vectors/`) is the value ComfyUI
+    upcasts, `fp8.rowwise` with a scale of 1 per row, its bytes kept. No reference: the file takes its config and tokenizer from the
+    Hub base it is uploaded on (`--base`)."""
+    family: FamilyDoc = json.loads((FAMILIES / "krea-2.json").read_text())
+    keys = {k: tuple(shape) for k, shape in family["components"]["text_encoder"]["keys"]}
+    model = construct("transformers:Qwen3VLModel", reference_config(QWEN3VL_4B, "config.json"))
+    census = {k: tuple(v.shape) for k, v in model.state_dict().items()}
+    assert census == keys, "Qwen3-VL-4B's census is not krea-2's text_encoder"
+    sources = {k.removeprefix("language_model."): shape for k, shape in census.items()}
+    vectors = sorted(QWEN3VL_FILES.glob("*.header"))
+    assert vectors, "no published file in this layout"
+    for vector in vectors:
+        published = header(vector)
+        assert {k.removeprefix("model."): s for k, (_, s) in published.items()} == sources, vector.name
+    rows = [row(k, k.removeprefix("language_model.")) for k in census]
+    component: Component[TableRow] = {"name": "text_encoder", "prefix": "model.", "cast": "BF16", "rows": rows}
+    return {"name": "qwen3vl.comfy", "components": [component]}
 
 
 # ------------------------------------------------------------------ Qwen-Image 2.1 LoRA
@@ -1455,17 +1550,21 @@ def qwen_moe(name: str, pinned: str) -> Table[TableRow | RepeatedRow]:
 def generate() -> dict[str, Generated]:
     sdxl, layers = single_file("sdxl.single_file")
     anima, _ = single_file("anima.single_file")
+    anima_dit, _ = single_file("anima.diffusion_model")
     unet = types.SimpleNamespace(**reference_config(SINGLE_FILE["sdxl.single_file"]["reference"], "unet/config.json"))
     h3 = h3_converter()
     native, source = h3_native(h3)
     return {
         "sdxl.single_file": sdxl,
         "anima.single_file": anima,
+        "anima.diffusion_model": anima_dit,
         "h3.native": native,
         "h3.comfy": h3_native(h3, comfy=True)[0],
         "h3.lora": h3_lora(h3, source),
         "sdxl.lora": sdxl_lora(sdxl, layers, unet),
         "krea2.lora": krea2_lora(),
+        **{name: krea2_single_file(name) for name in KREA2_SINGLE_FILE},
+        "qwen3vl.comfy": qwen3vl_comfy(),
         "qwenimage21.lora": qwenimage21_lora(),
         **{name: comfy_single_file(name) for name in COMFY},
         "flux2.lora": flux2_lora(),

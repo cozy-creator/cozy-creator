@@ -20,12 +20,108 @@ pub struct LocalPrivateStorage {
     pub project_id: String,
     pub generation: u64,
     pub view_root: std::path::PathBuf,
+    /// An unencrypted project's storage: its executors take the ordinary transport, as any
+    /// Runtime speaks it. Absent, an encrypted view's executors need the protected one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ordinary: bool,
 }
 
 pub const LOCAL_PRIVATE_PREFIX: &str = "/v1/local-private";
 pub const LOCAL_PRIVATE_DESCRIPTOR: &str = "cozy-local-private-storage";
 pub const LOCAL_PRIVATE_TOKEN: &str = "cozy-local-private-token";
 pub const LOCAL_PRIVATE_MARKER: &str = ".vault-local-execution.json";
+
+/// A project's machine area in its own storage (`DIR`): TensorD's state for the project's runs.
+/// Its journal, results and objects are the project's. What `rebuildable` names TensorD makes
+/// again on next use, so a storage conversion leaves it out.
+pub mod project_area {
+    pub const DIR: &str = ".vault-machine";
+    /// Package environments, by identity.
+    pub const GENERATIONS: &str = "generations";
+    /// Local sources' editable environments, beside `GENERATIONS`.
+    pub const EDITABLE: &str = "editable";
+    /// Each executor's working root.
+    pub const EXECUTORS: &str = "executors";
+    /// A launch's home, compiled kernels and JIT scope.
+    pub const HOME: &str = "home";
+    pub const KERNELS: &str = "kernels";
+    pub const JIT: &str = "jit";
+    /// Where child tools are pointed: temporary files, uv's cache, tools and Pythons, XDG folders, bytecode.
+    pub const TMP: &str = "tmp";
+    pub const UV_CACHE: &str = "uv-cache";
+    pub const UV_TOOLS: &str = "uv-tools";
+    pub const PYTHON: &str = "python";
+    pub const CONFIG: &str = "config";
+    pub const DATA: &str = "data";
+    pub const STATE: &str = "state";
+    pub const CACHE: &str = "cache";
+    pub const BYTECODE: &str = "bytecode";
+    pub const MATPLOTLIB: &str = "matplotlib";
+    /// The project's own PyTorch base, `torch-<version>`, staged in `TORCH_STAGING`.
+    pub const TORCH_BASE: &str = "torch-";
+    pub const TORCH_STAGING: &str = ".torch.partial";
+
+    const REBUILT: [&str; 16] = [GENERATIONS, EDITABLE, EXECUTORS, HOME, KERNELS, JIT, TMP, UV_CACHE, UV_TOOLS, PYTHON, CONFIG, DATA, STATE, CACHE, BYTECODE, MATPLOTLIB];
+
+    /// Whether `name`, an entry of the area, is one TensorD recreates when it is gone.
+    pub fn rebuildable(name: &str) -> bool {
+        REBUILT.contains(&name) || name == TORCH_STAGING || name.strip_prefix(TORCH_BASE).is_some_and(|version| !version.is_empty())
+    }
+
+    /// The `torch-<version>` base folder name.
+    pub fn torch_base(version: &str) -> String {
+        format!("{TORCH_BASE}{version}")
+    }
+}
+
+/// The strict project-owned execution contract. Older partial-private endpoints are not substitutes.
+pub const PROJECT_EXECUTION_PREFIX: &str = "/v1/project-execution";
+pub type ProjectExecutionScope = LocalPrivateStorage;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectExecutionCapabilities {
+    pub protected_journal: bool,
+    pub protected_objects_and_scratch: bool,
+    /// Reserved broader sandbox capability; managed-storage readiness does not require it.
+    #[serde(default)]
+    pub filesystem_write_confinement: bool,
+    pub quiescent_seal: bool,
+}
+
+impl ProjectExecutionCapabilities {
+    pub fn ready(&self) -> bool {
+        self.protected_journal && self.protected_objects_and_scratch && self.quiescent_seal
+    }
+}
+
+/// Actual legacy acceptances covered by complete inside-project migration receipts.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionMigrationReceipt { pub bindings: Vec<ProjectExecutionMigrationBinding> }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionMigrationBinding {
+    pub request_id: String,
+    pub source_workspace_id: String,
+    pub invocation_spec_digest: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionMigrationRequest { pub legacy_requests: Vec<ProjectExecutionMigrationBinding> }
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionLegacyLookup { pub request_ids: Vec<String> }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionLegacyLookupAnswer { pub bindings: Vec<ProjectExecutionLegacyBinding> }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionLegacyBinding {
+    pub binding: ProjectExecutionMigrationBinding,
+    pub source_number: u64,
+}
 
 /// A proof file written only INSIDE the live encrypted mount. Its random token is sent
 /// as a private authentication header, never as RunSpec, URL, log or global journal data.
@@ -51,8 +147,13 @@ impl std::fmt::Debug for LocalPrivateMarker {
 pub mod path {
     /// Verified local encrypted-project namespace; forwards GET/POST/PUT to existing data routes.
     pub const LOCAL_PRIVATE: &str = "/v1/local-private/{project_id}/{*rest}";
+    pub const PROJECT_EXECUTION: &str = "/v1/project-execution/{project_id}/{*rest}";
     /// Close only this project's idle local execution namespace before unmount.
-    pub const PRIVATE_CLOSE: &str = "/v1/local-private/{project_id}/close";
+    pub const PRIVATE_CLOSE: &str = "/v1/project-execution/{project_id}/close";
+    /// Native proof-owned local legacy migration. Empty body; no unscoped attribution is inferred.
+    pub const PROJECT_MIGRATE: &str = "/v1/project-execution/{project_id}/migrate";
+    /// Lookup actual actor-owned acceptances; this never adopts or retires them.
+    pub const PROJECT_LEGACY_BINDINGS: &str = "/v1/project-execution/{project_id}/migration-bindings";
     /// `GET` with no credential: 204 while the machine serves.
     pub const HEALTH: &str = "/v1/health";
     /// `GET`: one JSON [`super::StatusFrame`]; SSE `status` frames with `Accept: text/event-stream`.
@@ -79,8 +180,10 @@ pub mod path {
     pub const OBJECT: &str = "/v1/objects/{digest}";
     /// `POST` a [`super::HeldRequest`]: what the machine holds of many objects, in one request.
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
-    /// `POST` an [`super::EstimateRequest`]: when each job would finish here; a quote, not a reservation.
-    pub const ESTIMATE: &str = "/v1/estimate";
+    /// `PUT` an [`super::Upcoming`]: the jobs the caller expects to send here, nearest first (cl-967).
+    pub const UPCOMING: &str = "/v1/upcoming";
+    /// `PUT` a [`super::Prepare`]: what the caller expects demand for here, with no job yet (cl-967).
+    pub const PREPARE: &str = "/v1/prepare";
     /// Remove one repository's locally cached model copies; never changes its origin.
     pub const MODELS_REMOVE: &str = "/v1/models/remove";
 }
@@ -175,8 +278,9 @@ pub struct OutputTarget {
 }
 
 /// `POST /v1/objects/held`: which of these objects (`sha256:<hex>`) the machine holds for this
-/// signer.
+/// signer. Calcifer's `POST /v1/files/held` and `/v1/project-files/held` take it too.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct HeldRequest {
     pub digests: Vec<String>,
@@ -185,6 +289,7 @@ pub struct HeldRequest {
 /// What the machine holds of each object asked, in the order asked; a stored object is held
 /// whole, and asking renews it, as a `HEAD` does.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct HeldAnswer {
     pub held: Vec<HeldObject>,
@@ -192,6 +297,7 @@ pub struct HeldAnswer {
 
 /// One object asked: the byte ranges of `digest` the machine holds.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct HeldObject {
     pub digest: String,
@@ -412,11 +518,18 @@ pub struct RunSpec {
 }
 
 /// The caller's provider tokens, for models a run makes from a provider source.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderAccess {
     pub huggingface: String,
     pub civitai: String,
+}
+
+/// The tokens are never printed.
+impl std::fmt::Debug for ProviderAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderAccess").finish_non_exhaustive()
+    }
 }
 
 /// A published release by name (th-245): a machine that holds no installation of it reads its
@@ -428,6 +541,10 @@ pub struct Release {
     pub package: String,
     /// Empty: the newest its signer holds here, else the Hub's newest.
     pub release: String,
+    /// The release digest its files must have (`hub::types::release_digest`): a project's lock, or the card this computer
+    /// keeps (xs-196). Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub digest: String,
 }
 
 /// Local code: `manifest` names a JSON object written with `PUT /v1/objects`:
@@ -494,7 +611,8 @@ pub struct ModelChoice {
     /// machine makes the slot's model from, under these reviewed `profiles` (none: the one its
     /// headers select); never with repository or manifest. A model-only warm upload also accepts
     /// `input://<field>` naming its retained tree input: a plain CozyTensors folder, without
-    /// selectors or conversion profiles. Missing folder payload must already be at the endpoint.
+    /// selectors or conversion profiles. Missing folder payload must already be at the endpoint. A
+    /// file reaches a machine only as `object://`: a path on it is refused, `local_model_path_refused`.
     pub source: String,
     pub profiles: Vec<String>,
     /// The base component a LoRA source was trained on, as its uploader says (`--trained-on`);
@@ -512,7 +630,8 @@ pub struct Adapter {
     pub lane: String,
     /// `sha256:<hex>`, a commit of `model` by hash; else `model` at `release`, `lane`.
     pub manifest: String,
-    /// Canonical decimal; empty means 1.
+    /// Canonical decimal; empty means 1. Calcifer gives a LoRA it was given without a strength its
+    /// recommended one first.
     pub scale: String,
     /// A provider source (`civitai://<version>`, `hf://…`) made here and normalized at ingest,
     /// under these reviewed `profiles` (none: the one its headers select); never with `model`.
@@ -763,7 +882,7 @@ pub struct Outcome {
 pub struct Adjustment {
     /// Its path in the request: `steps`, `assets.2.asset`.
     pub field: String,
-    /// `adjusted`, `clamp` or `warn`.
+    /// `adjusted`, `clamp`, `warn` or `ignored` (an input the function has no use for).
     pub kind: String,
     pub requested: String,
     pub applied: String,
@@ -822,18 +941,52 @@ pub struct Call {
     pub memo_basis: String,
 }
 
-// ---- Estimate -------------------------------------------------------------------------------
+// ---- Ahead ----------------------------------------------------------------------------------
 
-/// `POST /v1/estimate` (cl-816): jobs a caller may send here, packed with this machine's queue as
-/// if all of them were sent now, by the model its scheduler gives each run its width by. A quote:
-/// nothing is reserved, and the queue settles two callers that pick the same machine.
+/// `PUT /v1/upcoming` (cl-967, Paul 11-12): the jobs the caller expects to send here, nearest first, its whole list, replacing its
+/// last. Each prepares behind every run, in its order, as a function's warm run does: its code installed, what its call reads up
+/// front, then its guesses, while they fit; one the list drops stops. A run later sent for it finds what it fetched.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct EstimateRequest {
-    /// In the order they would be sent.
-    pub jobs: Vec<EstimateJob>,
+pub struct Upcoming {
+    pub jobs: Vec<Ahead>,
 }
 
+/// `PUT /v1/prepare` (cl-967): what the caller expects demand for here with no job yet (many shots of one function queued
+/// elsewhere, and this machine new), its whole set, replacing its last; each behind every upcoming job.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prepare {
+    pub items: Vec<Ahead>,
+}
+
+/// One function to have ready: its code, its models in their lanes. Its downloads show in `StatusFrame::activity` with its id among
+/// their `runs`: `cozy:upcoming:<key>`, or `cozy:prepare:<key>`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ahead {
+    /// The caller's name for it: an upcoming job's key, the one its run is sent under.
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+    /// Empty: its code installed only.
+    pub entrypoint: String,
+    pub models: Vec<ModelChoice>,
+    pub lane: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hub: Option<HubAccess>,
+}
+
+/// What a list came to: each item as a run would be admitted, in its order.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AheadAnswer {
+    pub items: Vec<Admitted>,
+}
+
+// ---- Estimate -------------------------------------------------------------------------------
+
+/// A job the estimator quotes a machine for (`api::estimate::quote`, cl-967): Calcifer's, from what the machine pushes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EstimateJob {
@@ -852,6 +1005,13 @@ pub struct EstimateJob {
     /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
     /// this machine has measured none of the function.
     pub prior_ms: u64,
+    /// The soonest it can start, ms from now: when what it reads is made.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_ms: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A checkpoint a job reads, as the catalog resolved it.
@@ -863,6 +1023,13 @@ pub struct ModelRef {
     pub checkpoint: String,
     /// Its weights' bytes as the catalog lists them: what a machine that holds none of it fetches.
     pub bytes: u64,
+    /// Its repository (`org/name`): a queued run fetching it (`Queued::models`) brings it for this job too.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// What a run of the job's function read of it on another machine (`Read::bytes`): what one that holds none of it fetches. Zero:
+    /// unknown.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub reads: u64,
 }
 
 /// What a job makes, in the units a function's time scales with; each unknown one is absent.
@@ -905,13 +1072,6 @@ impl JobSize {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EstimateAnswer {
-    /// One per job asked, in its order.
-    pub jobs: Vec<Quote>,
-}
-
 /// When one job would run here. Times are milliseconds from the answer, so machines' clocks never
 /// enter a comparison of them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -932,10 +1092,17 @@ pub struct Quote {
     /// How many runs and jobs start here before it.
     pub queue_position: u32,
     pub basis: Basis,
+    /// Its time is the function's warm one there: the model held, its plan compiled.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub warm: bool,
+    /// Its weights' bytes it downloads there first (cl-967).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub fetch_bytes: u64,
 }
 
 /// What a quote's run time stands on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Basis {
     /// Runs of the function on this machine.
@@ -1029,6 +1196,9 @@ pub struct StatusFrame {
     /// held until it exits.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stuck: Vec<StuckProcess>,
+    /// Why nothing can run here: it takes no work, and a rental releases itself once nothing works there (cl-977).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub broken: Option<Broken>,
     /// What it does for the caller's runs besides their own work, each once however many wait on it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub activity: Vec<Operation>,
@@ -1039,6 +1209,104 @@ pub struct StatusFrame {
     /// (the pure wheel)`), as its latest executor said; empty: it does, or none has started.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub runtime_kernels: String,
+    /// Every root here not ended, every caller's, in acceptance order: what a job sent now waits behind (cl-967). On a stream,
+    /// absent: as its last frame said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue: Option<Vec<Queued>>,
+    /// Each function's newest runs here, newest first: what its time here stands on (cl-967). On a stream, absent: as its
+    /// last frame said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub times: Option<Vec<Timed>>,
+    /// Idle executors' loaded models: a job of them loads nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resident: Vec<Resident>,
+    /// Weights' arrival, bytes a second, once 1 GiB came; 0 before.
+    pub link_bytes_per_s: f64,
+    /// The most GPUs side by side in service: the widest a root runs at.
+    pub serving_gpus: u32,
+    /// Its GPUs talk over NVLink.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub nvlink: bool,
+    /// The caller's lists' items (`PUT /v1/upcoming`, `/v1/prepare`), each as its run stands: ready once it succeeded.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ahead: Vec<RunState>,
+}
+
+/// A root not ended (`StatusFrame::queue`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Queued {
+    /// The caller's id for it; empty: another caller's.
+    pub run: String,
+    /// `<package>/<function>`, as `Timed::function` names it; empty: a private run's.
+    pub function: String,
+    pub size: JobSize,
+    /// The widths it may run at, smallest first; none: no GPU.
+    pub widths: Vec<u32>,
+    /// It gives the machine its width: no count asked, and more than one width.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub chooses: bool,
+    /// It left its queue: its executor starts or it runs.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
+    /// The GPUs it holds, running.
+    pub width: u32,
+    /// When it began executing, this machine's clock; 0 before.
+    pub started_at_unix_ms: i64,
+    /// The repositories it waits to download.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    /// Its weights' bytes still to come.
+    pub bytes_left: u64,
+}
+
+/// A function's newest runs here (`StatusFrame::times`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Timed {
+    /// `<package>/<function>`, any release.
+    pub function: String,
+    pub runs: Vec<TimedRun>,
+    /// What its newest run here read of each model (cl-967): what a job of it fetches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<Read>,
+}
+
+/// Of one model, the components a function's run read: their bytes, and of them those this machine lacks now.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Read {
+    /// Its repository (`org/name`).
+    pub model: String,
+    /// `sha256:<hex>` of the header read.
+    pub checkpoint: String,
+    pub bytes: u64,
+    pub missing: u64,
+}
+
+/// What one completed root took: its width, its size as its input said, its compute, and what it spent putting weights on its
+/// GPUs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimedRun {
+    pub width: u32,
+    pub size: JobSize,
+    pub ms: f64,
+    pub load_ms: f64,
+    /// The function's first call on the machine: its plan compiled as it ran (its cold time).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cold: bool,
+}
+
+/// An idle executor's loaded models (`StatusFrame::resident`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Resident {
+    /// Their headers, `sha256:<hex>`.
+    pub checkpoints: Vec<String>,
+    pub gpus: Vec<u32>,
+    /// `host` or `gpu`.
+    pub level: String,
 }
 
 /// A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
@@ -1088,6 +1356,21 @@ pub struct Operation {
     /// The runs waiting on it, by the caller's ids.
     pub runs: Vec<String>,
 }
+
+/// Why nothing can run on a machine (`StatusFrame::broken`, cl-977). `code` is the state: `stuck_in_driver`, the TensorD
+/// before this one can't exit (it is in `stuck`) and a fresh process can't open its GPUs; Calcifer's own, for a rental that
+/// hasn't answered since an update restarted it, `silent_after_update`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct Broken {
+    pub code: String,
+    pub message: String,
+}
+
+/// `StuckProcess::command` of the TensorD before a machine's own that can't exit (cl-977): a word of TensorD's, not a process's, so
+/// it is shown where commands aren't.
+pub const STUCK_TENSORD: &str = "the TensorD before this one";
 
 /// A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network
 /// filesystem): it exits once that wait ends.
@@ -1198,6 +1481,12 @@ pub struct Checkpoint {
     /// Whether every object in the header's closure is cached. None from older machines.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complete: Option<bool>,
+    /// `sha256:<hex>` of its tree, as a Hub card names the checkpoint.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tree: String,
+    /// Its closure's bytes, and of them those held.
+    pub bytes: u64,
+    pub held_bytes: u64,
 }
 
 /// One GPU, as measured at boot: identity, memory, driver and family.
@@ -1280,6 +1569,23 @@ pub struct Environment {
     pub warning: String,
     /// The Hub origin a published installation came from; empty for local code.
     pub hub: String,
+    /// Local code's manifest (`sha256:<hex>`) it was installed from; empty for a release.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub manifest: String,
+    /// Each of its functions as the machine times and packs it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<HeldFunction>,
+}
+
+/// One function of an installation (`Environment::functions`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeldFunction {
+    pub entrypoint: String,
+    /// Its runs' key in `StatusFrame::times`.
+    pub timed_as: String,
+    /// Its widths with no GPU count asked, smallest first; none: it holds no GPU.
+    pub widths: Vec<u32>,
 }
 
 /// The filesystem holding the store: its size, free bytes and what fills it.

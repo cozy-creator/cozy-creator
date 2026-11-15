@@ -20,7 +20,7 @@ use api::{
 };
 
 use super::{
-    Doc, Host, Project, Tool, Walk, binder, canvas, cancelled, deleted_why, find, folder, format, graph::{mention, name_key}, history::{self, Took}, keep_file, listed,
+    Doc, Host, Project, Tool, Walk, binder, canvas, cancelled, deleted_why, stop_at_machines, find, folder, format, graph::{mention, name_key}, history::{self, Took}, keep_file, listed,
     measure_soon, model, noun, stale_names,
     written::{Boxed, Start, Written},
 };
@@ -36,8 +36,9 @@ fn tool_name(tool: &str) -> Option<String> {
     format::plain_name(&tool::first_of(tool::package_word(package.split('@').next()?)))
 }
 
+/// No box by that name: another writer may have renamed or deleted it, which a client hears of on its stream.
 fn own_lines(name: &str) -> Error {
-    Error::new(Kind::Usage, "project_edit", format!("the project has no box {name}")).next("cozy status")
+    Error::new(Kind::NotFound, "asset_unknown", format!("the project has no box {name}")).next("cozy status")
 }
 
 /// What `tool` makes, as the project last read it, else as reading it now says: none when it can't be read, which refuses nothing.
@@ -61,30 +62,49 @@ pub(super) async fn create(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<AssetMade>), Refusal> {
     let mut asked: NewAsset = parse(&body?)?;
-    let hint = format::node_kind(asked.fields.get(format::NODE_KIND)).map_err(Refusal)?.map(str::to_owned);
+    let project = api.projects.get(&api, &id)?;
+    let ready = ready_new(&api, &project.folder, &mut asked).await.map_err(Refusal)?;
+    // Its answer is kept with it, in its transaction (cl-885).
+    let folder = &project.folder;
+    let made = folder.act(|| {
+        let made = made(folder, &project.id, &asked, &ready)?;
+        super::keyed::answering(StatusCode::CREATED, &made);
+        Ok(made)
+    }).map_err(Refusal)?;
+    Ok((StatusCode::CREATED, Json(made)))
+}
+
+/// What a new box needs read before its transaction: what its tool makes and calls a box of it, its models checked.
+pub(super) struct NewReady {
+    text_asset: bool,
+    plain: Option<String>,
+    said: Option<String>,
+    wanted: String,
+}
+
+/// `asked` read as `create` reads it, its kind put in its fields.
+pub(super) async fn ready_new(api: &Arc<Api>, folder: &folder::Folder, asked: &mut NewAsset) -> Result<NewReady, Error> {
+    let hint = format::node_kind(asked.fields.get(format::NODE_KIND))?.map(str::to_owned);
     if asked.kind.as_deref().is_some_and(|kind| !format::KINDS.contains(&kind) && kind != format::TEXT) {
-        return Err(Refusal(Error::new(Kind::Validation, "asset_kind", "kind must be text, image, video or audio")));
+        return Err(Error::new(Kind::Validation, "asset_kind", "kind must be text, image, video or audio"));
     }
     if let Some(name) = asked.name.as_deref().filter(|_| asked.exact) {
-        format::new_name(name).map_err(Refusal)?;
+        format::new_name(name)?;
     }
-    let project = api.projects.get(&api, &id)?;
-    let id = project.id.clone();
-    let folder = &project.folder;
     let no_tool = asked.tool.is_empty();
     let declared = asked.kind.clone().or_else(|| hint.as_deref().map(format::node_media).map(str::to_owned));
     let text_asset = no_tool && declared.as_deref().is_none_or(|kind| kind == format::TEXT);
     if text_asset && !asked.fields.contains_key(format::TEXT) {
-        return Err(Refusal(Error::new(Kind::Validation, "asset_says_nothing", "an asset needs a tool, text, or a media kind").remedy("name a tool, set `fields.text`, or choose kind image, video or audio")));
+        return Err(Error::new(Kind::Validation, "asset_says_nothing", "an asset needs a tool, text, or a media kind").remedy("name a tool, set `fields.text`, or choose kind image, video or audio"));
     }
     let plain = (!no_tool).then(|| format::plain_tool(&asked.tool, folder));
     let intrinsic_edit = plain.as_deref() == Some(tool::EDIT);
     let said = if intrinsic_edit { Some(tool::edit().makes) } else { declared };
     let unsaid = said.is_none() && !plain.as_ref().is_some_and(|plain| folder.reading_lock(|lock| lock.makes.contains_key(plain)).unwrap_or(false));
     let read = if plain.is_some() && (unsaid || asked.name.is_none()) {
-        match crate::toolbox::read(&api, &asked.tool, &folder.dir).await {
+        match crate::toolbox::read(api, &asked.tool, &folder.dir).await {
             Ok(read) => Some(read),
-            Err(why) if unsaid && matches!(why.kind, Kind::NotFound | Kind::Usage | Kind::Validation) => return Err(Refusal(why)),
+            Err(why) if unsaid && matches!(why.kind, Kind::NotFound | Kind::Usage | Kind::Validation) => return Err(why),
             Err(_) => None,
         }
     } else {
@@ -95,20 +115,26 @@ pub(super) async fn create(
     let kind = if intrinsic_edit { Some("video") } else if text_asset { Some(format::TEXT) } else { said.as_deref() };
     if let Some(kind) = kind { asked.fields.insert(format::NODE_KIND.to_owned(), Value::String(kind.to_owned())); }
     if !no_tool && ["models", "lora"].iter().any(|field| asked.fields.get(*field).is_some_and(|value| !value.is_null())) {
-        crate::toolbox::validate_models(&api, &asked.tool, &folder.dir, &asked.fields).await.map_err(Refusal)?;
+        crate::toolbox::validate_models(api, &asked.tool, &folder.dir, &asked.fields).await?;
     }
     let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| read_name.as_deref().and_then(format::plain_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { said.as_deref().unwrap_or("asset") }.to_owned());
-    let made = folder.act(|| {
+    Ok(NewReady { text_asset, plain, said, wanted })
+}
+
+/// The box `asked` makes, its row and what its drop pushed aside, in one transaction (or the act it's in).
+pub(super) fn made(folder: &folder::Folder, id: &str, asked: &NewAsset, ready: &NewReady) -> Result<AssetMade, Error> {
+    let NewReady { text_asset, plain, said, wanted } = ready;
+    folder.act(|| {
         // Chosen in the transaction that writes it: no other write comes between.
         let names = folder.reading_boxes(Written::names)?;
         let free = folder.reading_lock(|lock| {
-            if text_asset {
-                format::refuse_tag(lock, &wanted)?;
+            if *text_asset {
+                format::refuse_tag(lock, wanted)?;
             }
-            Ok(format::free_of(|name| names.contains(&name_key(name)), lock, &wanted))
+            Ok(format::free_of(|name| names.contains(&name_key(name)), lock, wanted))
         })??;
-        if asked.exact && free != wanted {
-            return Err(format::name_taken(&Doc::load(folder)?, &wanted));
+        if asked.exact && free != *wanted {
+            return Err(format::name_taken(&Doc::load(folder)?, wanted));
         }
         let name = free;
         // What it outputs: what `defaults` fill of it before it has a version.
@@ -117,14 +143,13 @@ pub(super) async fn create(
         }
         // Its row with it: a page that reads the name has somewhere to put it, and places nothing of its own.
         if let Some(card) = asked.at {
-            canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))]))?;
+            canvas::set(folder, id, BTreeMap::from([(name.clone(), Some(card))]))?;
         }
-        let kept = canvas::pushed(folder, &id, asked.moves.clone(), &asked.placed)?;
+        let kept = canvas::pushed(folder, id, asked.moves.clone(), &asked.placed)?;
         folder.edit(|written| written.added(&name, &asked.tool, &asked.fields).map(drop))?;
         let etag = folder.reading_boxes(|written| written.get(&name).map(Boxed::etag))?.ok_or_else(|| own_lines(&name))?;
         Ok(AssetMade { name, etag, kept })
-    });
-    Ok((StatusCode::CREATED, Json(made.map_err(Refusal)?)))
+    })
 }
 
 /// `POST /v1/projects/{id}/copies`: boxes copied, as a person copies them on the canvas, in one transaction: one entry of the history, which
@@ -175,7 +200,10 @@ pub(super) async fn copy(
             let etag = folder.reading_boxes(|written| written.get(name).map(Boxed::etag))?.ok_or_else(|| own_lines(name))?;
             Ok(AssetMade { name: name.clone(), etag, kept: BTreeMap::new() })
         });
-        Ok(Copied { made: made.collect::<Result<_, _>>()?, kept })
+        let copied = Copied { made: made.collect::<Result<_, _>>()?, kept };
+        // Its answer is kept with it, in its transaction (cl-885).
+        super::keyed::answering(StatusCode::CREATED, &copied);
+        Ok(copied)
     });
     let copied = copied.map_err(Refusal)?;
     for reading in project.walker.lock().expect("walker lock").readings.values_mut() {
@@ -218,7 +246,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             let bound = async {
                 let hub = api.machines.hubs.default_origin();
                 let on = [crate::runs::default_on(&api)];
-                let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on).await?;
+                let package = Host::new(&api).package(&hub, &doc.target(i), &project.folder.dir, &on, super::host::Wait::Plain).await?;
                 let function = package.maker()?.map(|maker| maker.function).unwrap_or_default();
                 let callable = package.callable(&function).ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function {function}", package.name)))?;
                 let (fields, reserved, stand) = (doc.inputs_of(i), package.reserved(), &model.stand);
@@ -226,7 +254,8 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
                 let missing = doc.missing_inputs(i, &reserved, lock);
                 let call = binder::Call { name: &asset.name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &Default::default(), pickup: None, inline: &[] };
                 let bound = binder::bind(&call)?;
-                Ok::<_, Error>((bound.payload, missing.into_iter().chain(bound.warnings).collect::<Vec<String>>()))
+                let unused = bound.unused.iter().map(|unused| unused.line(&asset.name));
+                Ok::<_, Error>((bound.payload, missing.into_iter().chain(bound.warnings).chain(unused).collect::<Vec<String>>()))
             };
             match bound.await {
                 Ok((payload, said)) => (Some(serde_json::Value::Object(payload)), said),
@@ -235,7 +264,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
         }
         false => (None, vec![]),
     };
-    Ok(Json(AssetVersions { asset, versions, discarded, call, call_warnings }))
+    Ok(Json(AssetVersions { asset, versions, heads: model.heads(), discarded, call, call_warnings }))
 }
 
 #[derive(Deserialize)]
@@ -254,12 +283,48 @@ pub(super) async fn patch(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<AssetPatched>, Refusal> {
     let asked: AssetPatch = parse(&body?)?;
-    format::node_kind(asked.fields.get(format::NODE_KIND)).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
+    let ready = ready_patch(&api, folder, &name, &asked).await.map_err(Refusal)?;
+    // What each field written came to, whole, and the heads it's at: what the page types on next.
+    let typed = asked.typed.iter().flat_map(|typed| typed.fields.keys().map(|path| path.split('.').next().unwrap_or(path)));
+    let fields: BTreeSet<&str> = asked.fields.keys().map(String::as_str).chain(typed).collect();
+    let came = |written: &Written| -> BTreeMap<String, Value> {
+        let held = written.get(&name);
+        fields.iter().map(|field| ((*field).to_owned(), held.and_then(|held| held.get(field)).cloned().unwrap_or(Value::Null))).collect()
+    };
+    // Its answer is kept with it, in its transaction, at the heads it commits (cl-885).
+    let mut patched = folder.act(|| {
+        let mut patched = patched(folder, &name, &asked, &ready)?;
+        match fields.is_empty() {
+            true => super::keyed::answering(StatusCode::OK, &patched),
+            false => {
+                patched.fields = folder.reading_boxes(came)?;
+                let said = patched.clone();
+                super::keyed::answering_at(StatusCode::OK, move |_, heads| AssetPatched { heads: heads.to_vec(), ..said.clone() });
+            }
+        }
+        Ok(patched)
+    }).map_err(Refusal)?;
+    if !fields.is_empty() {
+        (patched.fields, patched.heads) = folder.reading_document(|written, heads| (came(written), heads)).map_err(Refusal)?;
+    }
+    Ok(Json(patched))
+}
+
+/// What a write of `asked` to box `name` needs read before its transaction: its models checked, what a new tool makes, and where it starts.
+pub(super) struct PatchReady {
+    validated_tool: Option<String>,
+    incoming: Option<String>,
+    start: Option<Start>,
+}
+
+/// `asked` of box `name` read as `patch` reads it.
+pub(super) async fn ready_patch(api: &Arc<Api>, folder: &folder::Folder, name: &str, asked: &AssetPatch) -> Result<PatchReady, Error> {
+    format::node_kind(asked.fields.get(format::NODE_KIND))?;
     let validated_tool = if ["models", "lora"].iter().any(|field| asked.fields.get(*field).is_some_and(|value| !value.is_null())) {
-        let written = folder.written().map_err(Refusal)?;
-        let held = written.get(&name).ok_or_else(|| Refusal(own_lines(&name)))?;
+        let written = folder.written()?;
+        let held = written.get(name).ok_or_else(|| own_lines(name))?;
         let current = held.get("tool").and_then(Value::as_str).unwrap_or_default();
         let target = asked.tool.as_deref().unwrap_or(current);
         if target.is_empty() {
@@ -270,29 +335,36 @@ pub(super) async fn patch(
                 if value.is_null() { fields.remove(field); }
                 else { fields.insert(field.clone(), value.clone()); }
             }
-            crate::toolbox::validate_models(&api, target, &folder.dir, &fields).await.map_err(Refusal)?;
+            crate::toolbox::validate_models(api, target, &folder.dir, &fields).await?;
             Some(target.to_owned())
         }
     } else { None };
     let holds = match &asked.tool {
-        Some(tool) => Some(pictures(folder, &name, tool, false).map_err(Refusal)?),
+        Some(tool) => Some(pictures(folder, name, tool, false)?),
         None => None,
     };
     // A tool goes on a box of the kind it makes (owner 11-11), whether or not this project has read it yet.
     let incoming = match asked.tool.as_deref().filter(|tool| !tool.is_empty()) {
-        Some(tool) => made_by(&api, folder, tool).await,
+        Some(tool) => made_by(api, folder, tool).await,
         None => None,
     };
     // A tool going on a picture or a video starts from it: in its first required slot of that kind, else at the start of its first prompt.
     let start = match (&asked.tool, &holds) {
-        (Some(tool), Some(Some((_, kind)))) if !tool.is_empty() => crate::toolbox::fields_of(&api, tool, &folder.dir).await.and_then(|fields| {
+        (Some(tool), Some(Some((_, kind)))) if !tool.is_empty() => crate::toolbox::fields_of(api, tool, &folder.dir).await.and_then(|fields| {
             let slot = fields.iter().find(|field| field.required && field.ty == FieldType::Slot && field.accept.as_deref() == Some(kind.as_str()));
             let prompt = || fields.iter().find(|field| field.ty == FieldType::Prompt);
             slot.map(|field| Start::Slot(field.field.clone())).or_else(|| prompt().map(|field| Start::Prompt(field.field.clone())))
         }),
         _ => None,
     };
-    let patched = folder.act(|| {
+    Ok(PatchReady { validated_tool, incoming, start })
+}
+
+/// `asked` written to box `name` in one transaction (or the act it's in).
+pub(super) fn patched(folder: &folder::Folder, name: &str, asked: &AssetPatch, ready: &PatchReady) -> Result<AssetPatched, Error> {
+    let PatchReady { validated_tool, incoming, start } = ready;
+    let name = name.to_owned();
+    folder.act(|| {
         let holds = match &asked.tool {
             Some(tool) => Some(pictures(folder, &name, tool, true)?.map(|(number, _)| number)),
             None => None,
@@ -303,6 +375,38 @@ pub(super) async fn patch(
         }
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();
+        // Words typed on an older project merge with what's been written since, by character (cl-904): each in its field as it is now.
+        if let Some(typed) = &asked.typed {
+            let document = folder.document()?.ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?;
+            let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
+            for (path, splices) in &typed.fields {
+                let (field, within) = path.split_once('.').map_or((path.as_str(), None), |(field, within)| (field, Some(within)));
+                let now = within.map_or(held.get(field), |within| within.split('.').try_fold(held.get(field)?, |at, step| match at {
+                    Value::Array(items) => items.get(step.parse::<usize>().ok()?),
+                    _ => at.get(step),
+                }));
+                if typed.to.get(path).is_some_and(|to| now.and_then(Value::as_str) == Some(to.as_str())) {
+                    continue;
+                }
+                let words = Value::String(document.typed(&held.id, path, &typed.heads, splices)?);
+                match within {
+                    None => drop(fields.insert(field.to_owned(), words)),
+                    Some(within) => {
+                        let mut value = fields.get(field).cloned().or_else(|| held.get(field).cloned()).unwrap_or(Value::Null);
+                        let leaf = within.split('.').try_fold(&mut value, |at, step| match at {
+                            Value::Array(items) => items.get_mut(step.parse::<usize>().ok()?),
+                            Value::Object(map) => map.get_mut(step),
+                            _ => None,
+                        });
+                        let Some(leaf) = leaf else {
+                            return Err(Error::new(Kind::Conflict, "words_moved", format!("{name} no longer has {path}")).remedy("read it again"));
+                        };
+                        *leaf = words;
+                        fields.insert(field.to_owned(), value);
+                    }
+                }
+            }
+        }
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
             let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
             let intrinsic = held.get("tool").and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT);
@@ -339,9 +443,8 @@ pub(super) async fn patch(
             Ok(())
         })?;
         let etag = folder.reading_boxes(|written| written.get(&name).map(Boxed::etag))?.ok_or_else(|| own_lines(&name))?;
-        Ok(AssetPatched { name: name.clone(), etag, was, warnings })
-    });
-    patched.map(Json).map_err(Refusal)
+        Ok(AssetPatched { name: name.clone(), etag, was, warnings, fields: Default::default(), heads: vec![] })
+    })
 }
 
 /// Old rows are recoverable only from authored documents with the same complete
@@ -429,6 +532,7 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
 pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &str) -> Result<AssetDeleted, Refusal> {
     let folder = &project.folder;
     let unknown = || Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy status");
+    stop_at_machines(api, project, name);
     let gone = folder.act(|| {
         // Its name and what it holds approved, from its box alone: a Doc of the whole project took a delete of one of 5,000 boxes 287 ms.
         let held = folder.reading_boxes(|written| written.get(name).map(|held| (held.name.clone(), held.id.clone(), held.get("approved").cloned())))?;
@@ -437,18 +541,21 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
         let at = canvas::row(folder, &name)?;
         folder.edit(|written| written.removed(&name).map(drop))?;
         // Gone from the project, what lands of it lands nothing.
-        cancelled(api, project, std::slice::from_ref(&name), &deleted_why).map_err(|Refusal(why)| why)?;
+        cancelled(api, project, std::slice::from_ref(&name), &[], &deleted_why).map_err(|Refusal(why)| why)?;
         // What it holds, set aside for Undo: a box that never made anything holds nothing.
         if pin.is_some() || folder.reading_lock(|lock| lock.asset(&name).is_some())? {
             folder.update_lock(|lock| lock.set_aside(&name, &box_id, pin.clone()))?;
         }
         canvas::set(folder, id, BTreeMap::from([(name.clone(), None)]))?;
-        Ok(AssetDeleted { name, at })
+        let gone = AssetDeleted { name, at };
+        // Its answer is kept with it, in its transaction (cl-885): an undo that puts a box back this way says its own after.
+        super::keyed::answering(StatusCode::OK, &gone);
+        Ok(gone)
     });
     let gone = gone.map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&gone.name));
     project.asked.notify_one();
-    super::purge::due(api, &project.id, super::now_ms() + super::purge::window_ms());
+    super::purge::due(&project.id, super::now_ms() + super::purge::window_ms());
     Ok(gone)
 }
 
@@ -469,6 +576,7 @@ pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)
         |selected| selected == number,
     );
     let before = stale_names(&doc, &doc.stand(&lock));
+    let read_by = doc.read_by(i, number);
     folder
         .act(|| {
             if approved {
@@ -476,10 +584,12 @@ pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)
             }
             folder.update_lock(|lock| lock.asset_mut(&name, "").discard(number))?;
             history::take(folder, &name, number, noun, Took::Listed, Took::Discarded);
+            // Its answer is kept with it, in its transaction (cl-885), as `moving` says it.
+            super::keyed::answering(StatusCode::OK, &VersionMoved { read_by: read_by.clone(), ..moving(folder, &name, number, noun, approved)? });
             Ok(())
         })
         .map_err(Refusal)?;
-    moved(&api, &project, name, number, noun, approved, &before).await.map(|Json(answer)| Json(VersionMoved { read_by: doc.read_by(i, number), ..answer }))
+    moved(&api, &project, name, number, noun, approved, &before).await.map(|Json(answer)| Json(VersionMoved { read_by, ..answer }))
 }
 
 /// `POST /v1/projects/{id}/assets/{name}/versions`: a picture joins it as its next version, so versions of one thing live on one box. The file it held before that
@@ -494,27 +604,39 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     let name = asset.name.clone();
     let kept = keep_file(folder, &asked.source).await?;
     let before = stale_names(&doc, &doc.stand(&folder.lock().map_err(Refusal)?));
-    let (number, already) = folder
-        .act(|| {
-            let initialize = format::can_initialize_approval(folder, &name)?;
-            if let Some(pin) = &asset.pin {
-                constant_numbered(folder, asset, pin)?;
-            }
-            let joined = std::cell::Cell::new((0, false));
-            folder.update_lock(|lock| joined.set(lock.joined(&name, kept.field, folder::Files::from([(kept.field.to_owned(), kept.file.sha256.clone())]))))?;
-            let (number, already) = joined.get();
-            if !already {
-                history::take(folder, &name, number, noun(&doc, &folder.lock()?, i), Took::Absent, Took::Listed);
-            }
-            if initialize {
-                folder.edit(|written| written.selected(&name, number, &kept.file.sha256))?;
-            }
-            Ok((number, already))
-        })
-        .map_err(Refusal)?;
+    // Its answer is kept with it, in its transaction (cl-885), as `moving` says it.
+    let (number, already) = folder.act(|| {
+        let (number, already) = joined(folder, &doc, i, &kept)?;
+        folder.keep_shapes([&kept])?;
+        let noun = noun(&doc, &folder.lock()?, i);
+        super::keyed::answering(StatusCode::OK, &VersionMoved { already, ..moving(folder, &name, number, noun, false)? });
+        Ok((number, already))
+    }).map_err(Refusal)?;
     measure_soon(&api, &project);
     let noun = noun(&doc, &folder.lock().map_err(Refusal)?, i);
     moved(&api, &project, name, number, noun, false, &before).await.map(|Json(answer)| Json(VersionMoved { already, ..answer }))
+}
+
+/// `kept` the next version of asset `i` of `doc`, in one transaction (or the act it's in): its number, and whether a version held it already.
+pub(super) fn joined(folder: &folder::Folder, doc: &Doc, i: usize, kept: &folder::Kept) -> Result<(u32, bool), Error> {
+    let asset = &doc.assets[i];
+    let name = asset.name.clone();
+    folder.act(|| {
+        let initialize = format::can_initialize_approval(folder, &name)?;
+        if let Some(pin) = &asset.pin {
+            constant_numbered(folder, asset, pin)?;
+        }
+        let joined = std::cell::Cell::new((0, false));
+        folder.update_lock(|lock| joined.set(lock.joined(&name, kept.field, folder::Files::from([(kept.field.to_owned(), kept.file.sha256.clone())]))))?;
+        let (number, already) = joined.get();
+        if !already {
+            history::take(folder, &name, number, noun(doc, &folder.lock()?, i), Took::Absent, Took::Listed);
+        }
+        if initialize {
+            folder.edit(|written| written.selected(&name, number, &kept.file.sha256))?;
+        }
+        Ok((number, already))
+    })
 }
 
 /// `PATCH /v1/projects/{id}/assets/{name}/versions/{number}`: what its main file says of itself, whole, as a person sets it on its box (orbit
@@ -550,6 +672,8 @@ pub(super) async fn patch_version(State(api): State<Arc<Api>>, Path((id, name, n
                 folder.update_lock(|lock| set_metadata(lock, &name, number, &output, after.clone()))?;
                 history::metadata(folder, &name, number, noun, &output, before, after.clone());
             }
+            // Its answer is kept with it, in its transaction (cl-885).
+            super::keyed::answering(StatusCode::OK, &VersionPatched { name: name.clone(), number, metadata: after.clone() });
             Ok(number)
         })
         .map_err(Refusal)?;
@@ -584,6 +708,18 @@ fn no_version(lock: &folder::Lock, name: &str, noun: &str, number: u32) -> Error
         numbers => format!("{name} has no {noun} {number}: it has {}", numbers.join(", ")),
     };
     Error::new(Kind::NotFound, "version_unknown", said).next("cozy status --full")
+}
+
+/// A version's move as its transaction knows it, for its answer kept with it: what it stands on is what's approved, else its newest. What
+/// that put out of date the answer after says (`moved`).
+fn moving(folder: &folder::Folder, name: &str, number: u32, noun: &str, approved: bool) -> Result<VersionMoved, Error> {
+    let lock = folder.lock()?;
+    let held = lock.asset(name);
+    let pinned = folder.reading_boxes(|written| written.get(name).and_then(|held| held.get("approved").cloned()))?;
+    let pin = format::approved_file(pinned.as_ref(), &lock);
+    let on = held.and_then(|held| held.versions.iter().rev().find(|version| pin.is_some() && version.main() == pin.as_ref()));
+    let stands = on.or_else(|| held.and_then(|held| held.versions.last())).map(|version| version.number);
+    Ok(VersionMoved { name: name.to_owned(), number, noun: noun.to_owned(), approved, stands, stale: vec![], read_by: vec![], already: false })
 }
 
 /// What a version going or coming back left: what's reading `name` looks again, a cut's film follows, and the answer.

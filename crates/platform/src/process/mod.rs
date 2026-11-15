@@ -126,6 +126,20 @@ pub fn in_kernel(pid: u32) -> Option<String> {
     sys::in_kernel(pid)
 }
 
+/// One live thread of a process: its id, name, state (`R`, `S`, `D`, …) and wait channel (empty when the kernel hides it).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thread {
+    pub tid: u32,
+    pub name: String,
+    pub state: char,
+    pub wchan: String,
+}
+
+/// A process's threads that haven't exited, a zombie leader's left out (Linux); none once it exited, or elsewhere.
+pub fn threads(pid: u32) -> Vec<Thread> {
+    sys::threads(pid)
+}
+
 /// This kernel's boot. Page cache and process starts belong to a boot.
 pub fn boot_id() -> Result<String> {
     sys::boot_id().map_err(Error::os("read the boot id"))
@@ -424,7 +438,7 @@ pub(crate) use sys::command_line;
 #[cfg(windows)]
 pub(crate) use sys::job;
 #[cfg(unix)]
-pub use unix::{SupervisorSignals, Woken, cloexec_from, unblock_signals};
+pub use unix::{SupervisorSignals, Woken, cloexec_from, leaving, unblock_signals};
 
 /// A child inherits no descriptor its spawner does not hand on explicitly. Unix closes every
 /// one past stdio at exec (run it before any other `pre_exec`, which then clear close-on-exec on
@@ -528,4 +542,11 @@ impl Drop for Tree {
     fn drop(&mut self) {
         let _ = self.kill();
     }
+}
+
+/// Chromium's closed debugging pipe: parent send/receive; child reads fd 3 and writes fd 4.
+/// Call before any final descriptor-confinement callback, classifying those pipes as KernelIpc.
+#[cfg(target_os = "linux")]
+pub fn private_browser_pipe(command: &mut Command) -> Result<(std::fs::File, std::fs::File)> {
+    unix::private_browser_pipe(command).map_err(Error::os("open a private browser pipe"))
 }

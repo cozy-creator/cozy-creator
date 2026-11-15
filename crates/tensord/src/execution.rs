@@ -317,7 +317,7 @@ impl Engine {
     pub(crate) fn close_private_storage(&self, project_id: &str) -> io::Result<()> {
         self.assert_private_idle(project_id)?;
         self.private_roots.lock().unwrap().remove(project_id);
-        Ok(())
+        self.journal.lock().unwrap().retire_project(project_id)
     }
     /// Keeps `objects` from the store's eviction while this machine runs, until the next sweep
     /// judges them again (`Objects::sweep`). Called once the journal names them.
@@ -364,6 +364,101 @@ impl Engine {
         self.journal.lock().unwrap().installations(actor)
     }
     /// Short journal reads and writes that need no execution state transition.
+    /// Calcifer's legacy-history lookup (`Journal::legacy_bindings`), under `scope`'s actor key too.
+    pub(crate) fn legacy_bindings(&self, actor: &str, scope: &api::machine::LocalPrivateStorage, requests: &[String])
+        -> io::Result<api::machine::ProjectExecutionLegacyLookupAnswer> {
+        let scoped = crate::private_io::within(Some(scope.clone()), || crate::private_io::resource_key(actor));
+        self.journal.lock().unwrap().legacy_bindings(actor, &scoped, scope, requests)
+    }
+    /// A project's legacy runs leave the machine once Calcifer holds their history in the project (cl-984): their journal
+    /// rows, result copies, spools, triage bundles and the objects only they named. The machine's diagnostics from before
+    /// (`logs` the daily logs, `store_logs`, start.log, each ended executor's output) may quote them and are emptied, as a
+    /// legacy migration always did.
+    pub(crate) fn retire_legacy(&self, ids: &[u64], logs: &Path, store_logs: &Path) -> io::Result<()> {
+        let retired = self.retire_rows(ids)?;
+        if !retired {
+            return Ok(());
+        }
+        let empty = |path: &Path| {
+            if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file()) {
+                let _ = fs::OpenOptions::new().write(true).open(path).and_then(|file| file.set_len(0));
+            }
+        };
+        for entry in fs::read_dir(logs).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "tensord.log" || (name.starts_with("tensord.") && name.ends_with(".log")) { empty(&entry.path()); }
+        }
+        if let Some(state) = logs.parent() { empty(&state.join("start.log")); }
+        for name in ["memory.log", "memory.log.1", "transport.log", "transport.log.1"] { empty(&store_logs.join(name)); }
+        let engine = self.root.parent().unwrap_or(&self.root);
+        for entry in fs::read_dir(engine.join("gpu")).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+                for log in ["stdout.log", "stderr.log", "codec.stderr.log"] { empty(&entry.path().join(log)); }
+            }
+        }
+        for entry in fs::read_dir(engine.join("gpu").join("peaks")).into_iter().flatten().flatten() {
+            if entry.file_name().to_string_lossy().ends_with(".json") { let _ = fs::remove_file(entry.path()); }
+        }
+        Ok(())
+    }
+
+    /// `retire_legacy`'s rows, copies and objects; whether any execution was still journaled.
+    fn retire_rows(&self, ids: &[u64]) -> io::Result<bool> {
+        if self.owned.lock().unwrap().iter().any(|id| ids.iter().any(|retired| retired.to_string() == *id)) {
+            return Err(io::Error::new(io::ErrorKind::ResourceBusy, "a legacy run is still executing"));
+        }
+        let held: Vec<u64> = ids.iter().copied().filter(|id| self.journal.lock().unwrap().holds_execution(*id).unwrap_or(false)).collect();
+        if held.is_empty() {
+            return Ok(false);
+        }
+        let ids = held.as_slice();
+        let (objects, subjects) = self.journal.lock().unwrap().retire_executions(ids)?;
+        for id in ids {
+            for dir in ["results", "staging"] {
+                let _ = fs::remove_dir_all(self.root.join(dir).join(id.to_string()));
+            }
+        }
+        // Their own logs (`<id>.<kind>`), as reclaim names them.
+        for entry in fs::read_dir(self.root.join("logs")).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if ids.iter().any(|id| name.split('.').next() == Some(id.to_string().as_str())) { let _ = fs::remove_file(entry.path()); }
+        }
+        for subject in subjects.iter().filter(|subject| subject.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
+            let _ = fs::remove_file(self.root.join("triage").join(format!("{subject}.json")));
+        }
+        // Their outputs' trees: one whose every file is theirs is theirs, and its use and retained output go with it.
+        let theirs: std::collections::HashSet<String> = objects.iter().map(|object| object.sha256.clone()).collect();
+        let mut objects = objects;
+        let mut uses: Vec<String> = theirs.iter().cloned().collect();
+        let mut outputs = vec![];
+        let native_outputs = self.journal.lock().unwrap().machine_native_outputs()?;
+        for (actor, owner, source) in native_outputs {
+            let Ok(native) = crate::stored::decode::<crate::stored::NativeByteRetentionRequest>(&source) else { continue };
+            let Some(manifest) = native.source.as_ref().and_then(|source| source.manifest.as_ref()) else { continue };
+            let manifest = tensorfs::format::ObjectRef { sha256: tensorfs::sha256::hex(&manifest.digest), length: manifest.length };
+            let Some(roots) = crate::trees::roots(&self.store, &manifest) else { continue };
+            if roots.len() > 1 && roots[1..].iter().all(|file| theirs.contains(&file.sha256)) {
+                uses.push(crate::trees::name(&native.retention_id));
+                objects.push(manifest);
+                outputs.push((actor, owner));
+            }
+        }
+        self.journal.lock().unwrap().retire_native_outputs(&outputs)?;
+        // Only objects the store holds, at the length it holds them (a record's digest names no length).
+        let objects: Vec<_> = objects.into_iter().filter_map(|mut object| {
+            let held = self.store.path(&object).ok().and_then(|path| fs::metadata(path).ok())?;
+            if object.length == 0 { object.length = held.len(); }
+            Some(object)
+        }).collect();
+        if !objects.is_empty() {
+            // The machine's soft roots go too (they judge again at the next sweep): they would hold the retired objects.
+            *self.roots.lock().unwrap() = crate::storage::Roots::default();
+            // Their own uses go with them: a use naming only their objects is theirs.
+            self.store.retire_objects(&objects, &uses, &[]).map_err(crate::storage::io_error)?;
+        }
+        Ok(true)
+    }
     pub(crate) fn with_journal<T>(&self, f: impl FnOnce(&mut Journal) -> io::Result<T>) -> io::Result<T> {
         f(&mut self.journal.lock().unwrap())
     }
@@ -690,6 +785,15 @@ impl Engine {
     pub(crate) fn run_times(&self, function: &str, limit: usize) -> io::Result<Vec<crate::journal::RunTime>> {
         self.journal.lock().unwrap().run_times(function, limit)
     }
+    pub(crate) fn all_run_times(&self, limit: usize) -> io::Result<Vec<api::machine::Timed>> {
+        self.journal.lock().unwrap().all_run_times(limit)
+    }
+    pub(crate) fn record_reads(&self, function: &str, reads: &[crate::journal::FunctionRead]) -> io::Result<()> {
+        self.journal.lock().unwrap().record_reads(function, reads)
+    }
+    pub(crate) fn function_reads(&self) -> io::Result<Vec<(String, crate::journal::FunctionRead)>> {
+        self.journal.lock().unwrap().function_reads()
+    }
     pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
         self.select(|journal| journal.nonterminal(limit))
     }
@@ -739,6 +843,8 @@ impl Engine {
         let mut epoch = self.activity.lock().unwrap();
         *epoch = epoch.saturating_add(1); // never wrap or reuse a wake cursor
         self.activity_changed.notify_all();
+        drop(epoch);
+        crate::activity::status_changed();
     }
 
     /// Whether a managed attempt of root `root` (the root or a call of it) still runs its thread.
@@ -1349,6 +1455,22 @@ impl Engine {
         let root = self.custody_root(id)?.join("staging").join(id);
         fs::create_dir_all(&root)?;
         Ok(root)
+    }
+    /// Run `id`'s own folder inside its project (the machine's for a run of none): its call's temporary files, working
+    /// directory, home and output (`Invoke.scratch`, cl-984), there until its call is done (`drop_scratch`).
+    pub(crate) fn scratch(&self, id: &str) -> io::Result<PathBuf> {
+        let root = self.custody_root(id)?.join("scratch");
+        fs::create_dir_all(&root)?;
+        platform::durable::set_mode(&root, 0o700)?;
+        Ok(root.join(id))
+    }
+    /// Run `id`'s call is done: its folder goes. One its project took away with it (locked, deleted) is already gone.
+    pub(crate) fn drop_scratch(&self, id: &str) {
+        let Ok(root) = self.custody_root(id) else { return };
+        match fs::remove_dir_all(root.join("scratch").join(id)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => tracing::warn!(run = %id, "its scratch was not removed: {error}"),
+            _ => {}
+        }
     }
     /// Take the result's verified files into custody without publishing a terminal. A pooled
     /// executor returns to its idle pool before its caller can observe completion and call again.

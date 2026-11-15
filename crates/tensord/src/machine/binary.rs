@@ -4,47 +4,19 @@
 //! path with the same arguments. A binary that never proves readiness is renamed back. Windows
 //! has no exec: its stable parent starts each service from the launch path, so the next service
 //! is the activated (or restored) binary.
-use platform::durable::FileId;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::{
     io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::OnceLock,
 };
 
 /// The service's exit status asking its parent to exec the binary at the launch path.
 pub(crate) const EXEC_EXIT: i32 = 76;
 
-/// Where this process was started from, and that file's identity then: a swap renames a new
-/// file into place, after which `/proc/self/exe` names a deleted inode.
-pub(crate) struct Launch {
-    pub path: PathBuf,
-    id: FileId,
-}
-
-static LAUNCH: OnceLock<Launch> = OnceLock::new();
-
-/// Records the launch path, first thing at start.
-pub(crate) fn record() -> io::Result<()> {
-    let path = std::env::current_exe()?;
-    let id = FileId::at(&path)?;
-    let _ = LAUNCH.set(Launch { path, id });
-    Ok(())
-}
-
-/// The launch, once recorded; `None` in a process that never started as a machine (tests).
-pub(crate) fn launch() -> Option<&'static Launch> {
-    LAUNCH.get()
-}
-
-impl Launch {
-    /// Whether the file at the launch path is no longer the one this process runs.
-    pub(crate) fn swapped(&self) -> bool {
-        FileId::at(&self.path).is_ok_and(|id| id != self.id)
-    }
-}
+/// Where this process was started from, and that file's identity then (`platform::exe`).
+pub(crate) use platform::exe::{Launch, launch};
 
 /// The binary a rollback restores, beside the launch path: the one `cozy update` replaced, or the
 /// image this machine ran when something else replaced it (`keep_running`).
@@ -56,7 +28,7 @@ pub(crate) fn previous(launch: &Path) -> PathBuf {
 /// `/proc/self/exe` even once its file left the launch path.
 pub(crate) fn keep_running(previous: &Path) -> io::Result<()> {
     let temp = previous.with_file_name(".cozy-keep");
-    std::fs::copy("/proc/self/exe", &temp)?;
+    std::fs::copy(platform::exe::running()?, &temp)?;
     std::fs::rename(&temp, previous).inspect_err(|_| drop(std::fs::remove_file(&temp)))
 }
 

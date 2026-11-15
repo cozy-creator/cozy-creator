@@ -8,7 +8,8 @@ export type Health =
   | { state: "reconnecting"; attempt: number }
   | { state: "signed_out" }
 
-type Presence = { tab: string; project: string | null; revision: number }
+/** What a tab shows: a project, and whether a machine's view, where runs of no project show (installs, updates). */
+type Presence = { tab: string; project: string | null; revision: number; machines: boolean }
 type Acknowledged = Presence & { stream: string; refusal?: ProjectShowRefusal }
 type Waiter = { project: string; done(): void; fail(error: unknown): void }
 type Confirmed = { stream: string; key: string; readers: number; reply: ProjectShowReply | null }
@@ -67,6 +68,8 @@ export class EventStream {
   private alive: Promise<void>
   /** The project this tab shows. */
   private showing: string | null = null
+  /** This tab shows a machine's view. */
+  private machines = false
   private revision = 0
   private acknowledged: Acknowledged | null = null
   private waiters = new Set<Waiter>()
@@ -114,6 +117,14 @@ export class EventStream {
     else this.announce()
   }
 
+  /** This tab shows a machine's view, or not: only then does Calcifer send it runs of no project. */
+  showMachines(on: boolean) {
+    if (on === this.machines) return
+    this.machines = on
+    if (this.holding) this.heard(this.presence())
+    else this.announce()
+  }
+
   /** Await this tab's held acknowledgement (legacy services confirm completion only). Owns no Reader. */
   whenShown(project: string, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
@@ -135,7 +146,7 @@ export class EventStream {
   }
 
   private presence(): Presence {
-    return { tab: this.tab, project: this.showing, revision: this.revision }
+    return { tab: this.tab, project: this.showing, revision: this.revision, machines: this.machines }
   }
 
   private announce() {
@@ -194,7 +205,8 @@ export class EventStream {
     if (this.telling || !this.stream || !this.following || this.following.signal.aborted) return
     const snapshot = [...this.shown.values()]
     const projects = [...new Set(snapshot.flatMap(({ project }) => project === null ? [] : [project]))].sort()
-    const key = projects.join()
+    const machines = snapshot.some((one) => one.machines)
+    const key = `${projects.join()}${machines ? " machines" : ""}`
     const stream = this.stream
     const readers = this.readers
     if (this.told?.stream === stream && this.told.key === key && this.told.readers === readers) {
@@ -203,7 +215,7 @@ export class EventStream {
     }
     this.telling = true
     try {
-      const reply = await this.client.show(stream, projects, this.following.signal)
+      const reply = await this.client.show(stream, projects, machines, this.following.signal)
       if (this.stream === stream && this.readers === readers) {
         this.told = { stream, key, readers, reply }
         this.confirm(snapshot, this.told)
@@ -257,7 +269,7 @@ export class EventStream {
     this.epoch = health.state === "live" ? stream : null
     this.health.set(health)
     if (health.state === "signed_out") {
-      for (const waiter of this.waiters) waiter.fail(new ApiError(401, { kind: "credential", code: "unauthenticated", message: "Sign in again", next: ["cozy open"] }))
+      for (const waiter of this.waiters) waiter.fail(new ApiError(403, { kind: "forbidden", code: "not_own_page", message: "Calcifer won't answer this page", next: ["cozy open"] }))
     }
   }
 
@@ -292,14 +304,16 @@ export class EventStream {
   private async follow(): Promise<boolean> {
     const connection = new AbortController()
     this.following = connection
-    let last = Date.now()
-    const watch = setInterval(() => {
-      if (Date.now() - last > SILENT_MS) connection.abort()
-    }, SILENT_MS / 3)
+    let silent: ReturnType<typeof setTimeout> | undefined
+    const heard = () => {
+      clearTimeout(silent)
+      silent = setTimeout(() => connection.abort(), SILENT_MS)
+    }
+    heard()
     let live = false
     try {
       const response = await this.client.events(connection.signal).catch(() => null)
-      if (response?.status === 401) throw new Error("signed out")
+      if (response?.status === 403 && /"(not_own_page|other_user)"/.test(await response.clone().text().catch(() => ""))) throw new Error("not answered")
       if (!response?.ok || !response.body) return false
       await readEvents(
         response.body,
@@ -316,9 +330,7 @@ export class EventStream {
           }
           this.publish(event)
         },
-        () => {
-          last = Date.now()
-        },
+        heard,
       ).catch(() => {})
       return live
     } finally {
@@ -326,7 +338,7 @@ export class EventStream {
       this.following = null
       this.epoch = null
       this.acknowledged = null
-      clearInterval(watch)
+      clearTimeout(silent)
     }
   }
 }

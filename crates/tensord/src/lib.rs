@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 mod access;
 mod activity;
+mod ahead;
 mod adapter;
 mod api;
 mod boundary_json;
@@ -26,6 +27,7 @@ mod import_pages;
 mod calls;
 mod journal;
 mod private_journal;
+mod project_objects;
 mod launch_identity;
 mod line;
 mod local_source;

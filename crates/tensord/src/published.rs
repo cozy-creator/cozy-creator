@@ -27,7 +27,7 @@ use std::{
 };
 use crate::{
     held_models::Pulled,
-    origin::{self, priority, Machine},
+    origin::{self, Machine},
     stop::Stop,
     storage::{self, Store},
 };
@@ -106,6 +106,8 @@ pub(crate) struct Request {
     /// Empty: the newest this signer holds, else the Hub's newest. Whether a held one was yanked
     /// is its controller's to know: Calcifer names a release.
     pub release: String,
+    /// The release digest its files must have (a project's lock, Calcifer's kept card; xs-196); empty: none.
+    pub digest: String,
     /// Unpublished code this machine already holds, in place of the release.
     pub installed: Option<Installation>,
     /// The account an unpublished package's org-relative model names belong to.
@@ -177,11 +179,21 @@ fn unresolved(named: &Named) -> Failure {
 }
 
 /// The caller's provider tokens; empty reads public sources anonymously.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Providers {
     pub huggingface: String,
     pub civitai: String,
 }
+
+/// The tokens are never printed.
+impl std::fmt::Debug for Providers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Providers").finish_non_exhaustive()
+    }
+}
+
+/// Checkpoints by header, each with the components read (`access::Selected`).
+type Selected = Vec<(String, Vec<String>)>;
 
 /// Where a preparation's stage and bytes are reported as they change.
 pub(crate) type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
@@ -247,6 +259,26 @@ impl Drop for Within<'_> {
 
 pub(crate) type Failure = (&'static str, String);
 
+/// What a model is made from: a source a run names, or a file written to this machine
+/// (`object://`), the only way a local file reaches it.
+#[derive(Clone, Copy)]
+pub(crate) enum ModelSource<'a> {
+    Named(&'a str),
+    Written(&'a Path),
+}
+
+/// A source a run names: `hf://`, `civitai://`, an https URL, or a file written to this machine
+/// (`object://`, `input://`). A path on the machine is refused: no request reads a machine's files.
+pub(crate) fn named_source(source: &str) -> Result<(), Failure> {
+    let local = !source.trim().is_empty() && matches!(tensorfs::import::remote::parse(source), Ok(tensorfs::import::remote::Spec::Local(_)));
+    if local && !source.starts_with("object://") && !source.starts_with("input://") {
+        return Err(("local_model_path_refused", format!(
+            "{source:?} is a path on the machine, and a run never names a machine's file as a model: \
+             upload the file (`cozy model upload <file> <name>`), which sends its bytes as an object:// input")));
+    }
+    Ok(())
+}
+
 /// A preparation its run's cancel stopped.
 pub(crate) const CANCELED: &str = "preparation_canceled";
 fn canceled() -> Failure {
@@ -256,8 +288,6 @@ fn canceled() -> Failure {
 /// A lookup the network could not answer for now: no name resolution, a link refused, reset or
 /// silent, the Hub's 5xx. A definite answer (absent, private, refused, malformed) is never this.
 pub(crate) const UNREACHABLE: &str = "hub_unreachable";
-/// How often a wait looks at its run's cancel.
-const TICK: Duration = Duration::from_millis(100);
 
 /// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), by the one retry rule
 /// (`tensorfs::fetch::Backoff`): its cancel ends the wait, and the run watchs each attempt and why. Nothing has executed, so
@@ -277,13 +307,9 @@ pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Fai
         tracing::warn!(run = %job.caller, "{said}");
         job.stage(said.clone());
         job.waiting(Some(said));
-        let until = Instant::now() + wait;
-        while Instant::now() < until {
-            if stop.is_cancelled() {
-                job.waiting(None);
-                return Err(canceled());
-            }
-            std::thread::sleep(TICK);
+        if !stop.sleep(wait) {
+            job.waiting(None);
+            return Err(canceled());
         }
         // Asked again: what it does now is what it shows.
         job.waiting(None);
@@ -508,7 +534,7 @@ impl Publisher {
             ));
         }
         let import = crate::activity::Import::new(&choice.source, &job.caller);
-        let made = self.make(&choice.source, &choice.profiles, &choice.trained_on, providers, job.stop.as_ref(), &|stage, moved, total| {
+        let made = self.make(ModelSource::Named(&choice.source), &choice.profiles, &choice.trained_on, providers, job.stop.as_ref(), &|stage, moved, total| {
             import.moved(stage, moved, total);
             job.set(format!("{stage} for {path}"), moved, total)
         })?;
@@ -552,13 +578,13 @@ impl Publisher {
     /// A checkpoint held here, named by its header: a Hub checkpoint pulled by hash is the request's
     /// only as `checkpoint` serves it. A nonempty version can be private too. Local headers
     /// made here have no Hub provenance and keep their local-custody path.
-    pub(crate) fn held_for(&self, service: &Service, source: Option<&hub::Source>, header: &ObjectRef) -> Result<(), Failure> {
+    pub(crate) fn held_for(&self, service: &Service, source: Option<&hub::Source>, header: &ObjectRef, order: u64) -> Result<(), Failure> {
         let Some(pulled) = Pulled::of(&self.store, header).map_err(io_failure)? else {
             return Ok(());
         };
         let named = Named { model: pulled.model, lane: pulled.lane, tree: Some(pulled.tree), ..Named::default() };
         match source {
-            Some(source) => self.checkpoint(service, source, named).map(drop),
+            Some(source) => self.checkpoint(service, source, named, order).map(drop),
             None => Err(("model_resolution_failed", format!("Checkpoint {} is unavailable without Hub access. Sign in with cozy login <email> on the computer that sent this run", named.shown()))),
         }
     }
@@ -573,10 +599,10 @@ impl Publisher {
         &self.machine
     }
 
-    /// A provider source made into a local model (`make_source`), as a run's refusal.
+    /// A provider source or a written file made into a local model (`make_source`), as a run's refusal.
     pub(crate) fn make_source(
         &self,
-        source: &str,
+        source: ModelSource<'_>,
         profiles: &[String],
         trained_on: &str,
         providers: &Providers,
@@ -587,11 +613,19 @@ impl Publisher {
             .map_err(|(code, message)| Refused { code, message })
     }
 
-    /// A provider source made into a local model (`make_source`), one maker per source.
-    fn make(&self, source: &str, profiles: &[String], trained_on: &str, providers: &Providers,
+    /// A provider source or a written file made into a local model (`make_source`), one maker per source.
+    fn make(&self, source: ModelSource<'_>, profiles: &[String], trained_on: &str, providers: &Providers,
         stop: Option<&Stop>, progress: &(dyn Fn(&str, u64, u64) + Sync),
     ) -> Result<Made, Failure> {
         let _inventory = crate::held_models::ModelChange;
+        let source = match source {
+            ModelSource::Named(named) if named.starts_with("object://") || named.starts_with("input://") => {
+                return Err(("invalid_request", format!("{named} is a written file, which only a model upload makes into a model")));
+            }
+            ModelSource::Named(named) => named_source(named).map(|()| named.to_owned())?,
+            ModelSource::Written(file) => file.display().to_string(),
+        };
+        let source = source.as_str();
         crate::private_io::check_model_source(source).map_err(|error| ("private_model_import_unsupported", error.to_string()))?;
         let mut sorted = profiles.to_vec();
         sorted.sort();
@@ -629,11 +663,11 @@ impl Publisher {
             storage::transport(&self.store, "pull-failed", &subject, &format!("origin={}: {e}", source.origin));
             failed(e)
         };
-        let mut structure = self.machine.pull(&remote, header, Some(&[]), priority::NOW, None, &stop).map_err(failed)?;
+        let mut structure = self.machine.pull(&remote, header, Some(&[]), order, None, &stop).map_err(failed)?;
         // A header by hash is recorded under a tree naming it alone.
         let tree = match &named.tree {
             Some(tree) => {
-                let landed = self.machine.objects(&remote, std::slice::from_ref(tree), priority::NOW, &stop).map_err(failed)?;
+                let landed = self.machine.objects(&remote, std::slice::from_ref(tree), order, &stop).map_err(failed)?;
                 (structure.landed.origin, structure.landed.volume) = (structure.landed.origin + landed.origin, structure.landed.volume + landed.volume);
                 structure.landed.local += landed.local;
                 tree.clone()
@@ -685,27 +719,20 @@ impl Publisher {
         }))
     }
 
-    /// Each Hub checkpoint's header, landed at once: which of its chunks come, and when, its
-    /// calls direct (`access`). A held header asks the Hub nothing.
-    fn structure(&self, source: &hub::Source, checkpoints: &[Named], job: &Job) -> Result<(), Failure> {
-        if checkpoints.is_empty() {
-            return Ok(());
-        }
-        let names: Vec<String> = checkpoints.iter().map(Named::shown).collect();
-        job.stage(format!("resolving {}", names.join(" and ")));
-        for named in checkpoints {
-            self.pull(source, named, Some(&[]), priority::NOW, job.stop.as_ref(), &|_, _| ())?;
-        }
-        Ok(())
+    /// A Hub checkpoint's header, landed at once: which of its chunks come, and when, its calls
+    /// direct (`access`). A held header asks the Hub nothing.
+    fn structure(&self, source: &hub::Source, named: &Named, job: &Job) -> Result<(), Failure> {
+        job.stage(format!("resolving {}", named.shown()));
+        self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), &|_, _| ()).map(drop)
     }
 
     /// The checkpoint `named` is: one by hash as given, a name as the Hub resolves its release and
     /// lane (or, with no lane, `hardware`); then that checkpoint's header. Anonymous answers are
     /// journaled per GPUs; an answer older than `FRESH` is read again behind it (`refresh`).
     /// A capability's frozen roots are checked at the origin before local bytes are reused.
-    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware) -> Result<Named, Failure> {
+    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, order: u64) -> Result<Named, Failure> {
         if named.tree.is_some() {
-            return self.checkpoint(service, source, named);
+            return self.checkpoint(service, source, named, order);
         }
         let (named, forward) = forward(source, named);
         let answer = if source.capability.is_some() {
@@ -714,7 +741,12 @@ impl Publisher {
         } else {
             let origin = hub::origin_key(&source.origin).unwrap_or_default();
             // v4 could hold a private version under a public key. Only anonymous reads fill v5.
-            let name = json!(["resolve-v5", origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
+            // A slot that reads only some components has an answer of its own (xs-191); one that reads all keeps its key.
+            let mut key = json!(["resolve-v5", origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain]);
+            if !hardware.components.is_empty() {
+                key.as_array_mut().expect("an array").push(json!(hardware.components));
+            }
+            let name = key.to_string();
             let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
             match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
                 Some((answer, read)) => {
@@ -777,7 +809,7 @@ impl Publisher {
     /// length and format; a checkpoint resolves to its header and lane. A hash may name a private
     /// checkpoint, so only a prior anonymous read serves an anonymous request from the journal.
     /// A capability checks its current frozen root authority at the origin before held bytes are reused.
-    pub(crate) fn checkpoint(&self, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
+    pub(crate) fn checkpoint(&self, service: &Service, source: &hub::Source, named: Named, order: u64) -> Result<Named, Failure> {
         #[derive(serde::Deserialize, serde::Serialize)]
         struct Held {
             tree: Option<ObjectRef>,
@@ -806,7 +838,7 @@ impl Publisher {
             Some(held) => held,
             None => {
                 let remote = origin::remote(&self.machine, source).map_err(failed)?;
-                self.machine.objects(&remote, std::slice::from_ref(&object), priority::NOW, &Stop::default()).map_err(failed)?;
+                self.machine.objects(&remote, std::slice::from_ref(&object), order, &Stop::default()).map_err(failed)?;
                 match storage::tree_or_header(&self.store, &object).map_err(|e| ("model_resolution_failed", e.to_string()))? {
                     Some(checkpoint) => {
                         let header = checkpoint.header().map_err(|e| ("model_resolution_failed", format!("{}: {e}", object.id())))?.1.clone();
@@ -842,7 +874,7 @@ impl Publisher {
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
-        let named = self.resolve(service, source, named, hardware).map_err(failed)?;
+        let named = self.resolve(service, source, named, hardware, order).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
         let moved = self.pull(source, &named, components, order, stop, bytes).map_err(failed)?;
@@ -851,6 +883,16 @@ impl Publisher {
 
     /// The installation a request names. An unnamed release is the newest this signer holds, so
     /// a machine holding one asks the Hub nothing.
+    /// The installation the request's alias names for this signer, unless the run pinned a release digest other than the one its
+    /// files were checked against (xs-196): then none, and the release is read again at its Hub, which must have the pinned files.
+    fn held_by_alias(&self, service: &Service, actor: &str, request: &Request) -> io::Result<Option<Installation>> {
+        let held = service.engine.installation(actor, &self.alias(service, actor, request)?)?;
+        let pinned = |held: &Installation| {
+            request.installed.is_some() || request.digest.is_empty() || kept_card(&service.catalog.root().join(&held.generation)).is_some_and(|card| card.digest == request.digest)
+        };
+        Ok(held.filter(pinned))
+    }
+
     fn alias(&self, service: &Service, actor: &str, request: &Request) -> io::Result<String> {
         if let Some(installed) = &request.installed {
             return Ok(installed.alias.clone());
@@ -956,7 +998,7 @@ impl Publisher {
     ) -> io::Result<Option<Prepared>> {
         let held = match &request.installed {
             Some(installed) => Some(installed.clone()),
-            None => service.engine.installation(actor, &self.alias(service, actor, request)?)?,
+            None => self.held_by_alias(service, actor, request)?,
         };
         let Some(installation) = held else {
             return Ok(None);
@@ -1021,10 +1063,7 @@ impl Publisher {
     ) -> Result<Prepared, Failure> {
         let held = match &request.installed {
             Some(installed) => Some(installed.clone()),
-            None => service
-                .engine
-                .installation(actor, &self.alias(service, actor, request).map_err(io_failure)?)
-                .map_err(io_failure)?,
+            None => self.held_by_alias(service, actor, request).map_err(io_failure)?,
         };
         let installation = match held {
             Some(held) if service.catalog.resolve(&held.generation).is_ok() => held,
@@ -1086,19 +1125,15 @@ impl Publisher {
         let torch = self.layer(job, Some(source))?.map(|layer| layer.pins()).unwrap_or_default();
         let alias = self.release_alias(request, &release);
         if let Some(held) = service.engine.installation(actor, &alias).map_err(io_failure)? {
-            if service.catalog.resolve(&held.generation).is_ok() {
+            // One built from other files than the run pinned is read again at its Hub, which must have the pinned ones.
+            let pinned = || request.digest.is_empty() || kept_card(&service.catalog.root().join(&held.generation)).is_some_and(|card| card.digest == request.digest);
+            if service.catalog.resolve(&held.generation).is_ok() && pinned() {
                 return Ok(held);
             }
         }
-        // An earlier environment of this release (another SDK's): its card, kept beside it, and
-        // the Runtime pair it holds. A kept card whose wheels the store no longer holds is read
-        // again: its URLs expire.
+        let card = self.card(service, actor, request, &release, &catalog)?;
+        // An earlier environment of this release (another SDK's): the Runtime pair it holds.
         let earlier = self.earlier(service, actor, request, &release);
-        let kept = earlier.as_ref().and_then(|dir| serde_json::from_slice::<Card>(&fs::read(dir.join(CARD)).ok()?).ok());
-        let card = match kept.filter(|card| card.wheels.iter().all(|wheel| self.held_file(wheel))) {
-            Some(card) => card,
-            None => hub_card(&catalog()?, &request.package, &release, &self.sdk.python)?,
-        };
         let locked = read_lock(&card.pyproject, &card.lock, Some(source))?;
         let before = earlier.and_then(|dir| fs::read(dir.join("generation.json")).ok())
             .and_then(|raw| serde_json::from_slice::<crate::catalog::Generation>(&raw).ok())
@@ -1139,6 +1174,7 @@ impl Publisher {
                 interface: serde_json::to_vec(&held.record.interface)
                     .map_err(|e| io_failure(io::Error::other(e)))?,
                 hub: request.origin(),
+                manifest: String::new(),
             })
             .map_err(io_failure)?;
         // It replaces this release's installations by another Runtime pair or PyTorch: they go,
@@ -1157,6 +1193,40 @@ impl Publisher {
             Err(error) => tracing::warn!("package {} {}: its earlier installations stay: {error}", installed.package, installed.release),
         }
         Ok(installed)
+    }
+
+    /// `release`'s card: as an earlier environment of it (another SDK's) kept it beside itself, else read at its Hub. A kept
+    /// card whose wheels the store no longer holds is read again: its URLs expire.
+    fn card(&self, service: &Service, actor: &str, request: &Request, release: &str, catalog: &dyn Fn() -> Result<Catalog, Failure>) -> Result<Card, Failure> {
+        let earlier = self.earlier(service, actor, request, release);
+        let kept = earlier.as_deref().and_then(kept_card);
+        // One checked against other files than the run pinned is read again at its Hub, which must have the pinned ones (xs-196).
+        let pinned = |card: &Card| request.digest.is_empty() || card.digest == request.digest;
+        match kept.filter(|card| card.wheels.iter().all(|wheel| self.held_file(wheel)) && pinned(card)) {
+            Some(card) => Ok(card),
+            None => hub_card(&catalog()?, &request.package, release, &self.sdk.python, &request.digest),
+        }
+    }
+
+    /// The installation of the request's release this signer holds, its environment here; none: one installs.
+    pub(crate) fn held_installation(&self, service: &Service, actor: &str, request: &Request) -> io::Result<Option<Installation>> {
+        let held = self.held_by_alias(service, actor, request)?;
+        Ok(held.filter(|held| service.catalog.resolve(&held.generation).is_ok()))
+    }
+
+    /// The installation the request's release will be, before its environment is built (cl-966): its card is its static
+    /// reading, the interface its installation holds.
+    pub(crate) fn reading(&self, service: &Service, actor: &str, request: &Request) -> Result<Installation, Failure> {
+        let (org, name) = request.package.split_once('/').ok_or(("release_root_invalid", "package must be org/name".to_string()))?;
+        let source = request.hub("a release")?;
+        let catalog = || Catalog::new(source).map_err(|e| ("catalog_read_failed", e.0));
+        let release = match request.release.is_empty() {
+            true => newest_release(&catalog()?, org, name)?,
+            false => request.release.clone(),
+        };
+        let card = self.card(service, actor, request, &release, &catalog)?;
+        let interface = serde_json::to_vec(&card.interface).map_err(|e| io_failure(io::Error::other(e)))?;
+        Ok(Installation { actor: actor.into(), package: request.package.clone(), release, interface, hub: request.origin(), ..Default::default() })
     }
 
     /// Builds one immutable environment at its final path (its interpreter embeds the path);
@@ -1207,6 +1277,7 @@ impl Publisher {
         let fetch = || self.fetch_hub(&files, source, &dir, job).map(drop);
         let (env, wheels, label) = (dir.join("env"), dir.join("wheels"), format!("{package} {release}"));
         let built = self.build(&env, &environment::Project {
+                managed_calls: false,
             dir: &project,
             python: &card.python,
             locked: Some(locked),
@@ -1248,7 +1319,7 @@ impl Publisher {
         later.sort_by(|(a, _), (b, _)| b.is_stable().cmp(&a.is_stable()).then_with(|| b.cmp(a)));
         let mut unread = false;
         for (_, candidate) in later.iter().take(5) {
-            let Ok(locked) = hub_card(catalog, package, candidate, &self.sdk.python)
+            let Ok(locked) = hub_card(catalog, package, candidate, &self.sdk.python, "")
                 .and_then(|card| read_lock(&card.pyproject, &card.lock, Some(source))) else {
                 unread = true;
                 continue;
@@ -1279,7 +1350,7 @@ impl Publisher {
                 .iter()
                 .map(|file| {
                     scope.spawn(|| -> Result<PathBuf, Failure> {
-                        let path = self.hub_wheel(file, source, &wheels, job.stop.as_ref())?;
+                        let path = self.hub_wheel(file, source, &wheels, job.order, job.stop.as_ref())?;
                         let landed = moved.fetch_add(file.length, std::sync::atomic::Ordering::Relaxed);
                         job.bytes(landed + file.length, total);
                         Ok(path)
@@ -1298,11 +1369,11 @@ impl Publisher {
         file.length > 0 && self.store.holds(&ObjectRef { sha256: file.sha256.clone(), length: file.length })
     }
 
-    fn hub_wheel(&self, file: &HubFile, source: &hub::Source, wheels: &Path, stop: Option<&Stop>) -> Result<PathBuf, Failure> {
+    fn hub_wheel(&self, file: &HubFile, source: &hub::Source, wheels: &Path, order: u64, stop: Option<&Stop>) -> Result<PathBuf, Failure> {
         let stop = stop.cloned().unwrap_or_default();
         let trust = source.ca_der.as_deref().map(|der| hub::pem(der).into_bytes());
         let length = (file.length > 0).then_some(file.length);
-        let blob = crate::machine::pypi::object_at(&self.machine, &file.url, &file.sha256, length, trust, &stop)
+        let blob = crate::machine::pypi::object_at(&self.machine, &file.url, &file.sha256, length, trust, order, &stop)
             .map_err(|e| match stop.is_cancelled() {
                 true => canceled(),
                 // Named by its file: a plan's URL is presigned, its query a credential.
@@ -1323,7 +1394,8 @@ impl Publisher {
     /// Held shared through one environment build, so `reclaim` removes nothing from the cache
     /// between uv's own per-command holds either.
     pub(super) fn uv_cache_hold(&self) -> io::Result<File> {
-        let cache = crate::private_io::cache_root(self.uv_cache(), "uv-cache")?;
+        // The machine's one uv cache: every project's environments are built from it (cl-984).
+        let cache = self.uv_cache();
         fs::create_dir_all(&cache)?;
         let lock = File::options()
             .create(true)
@@ -1334,12 +1406,8 @@ impl Publisher {
         Ok(lock)
     }
 
-    /// The run's model grants and its precision warnings. Each slot takes the run's choice, else
-    /// its declared default (also under a choice of adapters alone); a Hub one is exact as its
-    /// choice names it (th-241), else in the first lane of the rule's order its release
-    /// publishes (`precision`). The request's GPU
-    /// count chooses the group independently of the weight lane; 0 uses the widest group every
-    /// slot supports on the machine. A slot with neither is refused.
+    /// The run's plan and its precision warnings, its slots resolved (`grants`) and the plan journaled
+    /// for its installation.
     fn model(
         &self,
         service: &Service,
@@ -1349,6 +1417,71 @@ impl Publisher {
         request: &Request,
         job: &Job,
     ) -> Result<(Plan, Vec<String>), Failure> {
+        // Read before its names: one read anew meanwhile moves it, and this plan stays under the old.
+        let catalog = service.engine.with_journal(|j| j.catalog()).map_err(io_failure)?;
+        let Granted { grants, warnings: said, unbound } = self.grants(service, gpu, installation, request, job)?;
+        let warnings: Vec<String> = gpu.problems().into_iter().chain(said).collect();
+        job.stage(match request.package.is_empty() {
+            true => "preparing the plan".to_owned(),
+            false => format!("preparing the plan for {}", request.package),
+        });
+        let plan = gpu
+            .prepare_root(
+                installation,
+                &request.entrypoint,
+                &request.choices,
+                &grants,
+                unbound,
+                request.gpus,
+            )
+            .map_err(|e| ("model_preparation_failed", e.to_string()))?;
+        service
+            .engine
+            .bind_preparation(Preparation {
+                actor: actor.into(),
+                id: plan.id.clone(),
+                installation: installation.alias.clone(),
+                document: serde_json::to_vec(&plan).map_err(|e| io_failure(io::Error::other(e)))?,
+            })
+            .map_err(io_failure)?;
+        // One that left a slot unbound is made again by the next run: a model published since binds then.
+        if plan.unbound.is_empty() {
+            let key = Self::resolution_key(installation, request, &machine_row(gpu), catalog).map_err(io_failure)?;
+            let said = Value::from(warnings.clone()).to_string();
+            service
+                .engine
+                .with_journal(|j| {
+                    j.bind_resolution(actor, &key, &installation.package, &plan.id)?;
+                    j.bind_named(&warnings_key(&key), &said)
+                })
+                .map_err(io_failure)?;
+        }
+        Ok((plan, warnings))
+    }
+
+    /// What `request`'s function reads up front and may read on demand (`Plan::upfront`, `Plan::possible`), from its
+    /// installation's interface alone: each slot resolved and its structure landed, nothing journaled, so its environment
+    /// need not be built yet (cl-966).
+    pub(crate) fn predicted(&self, service: &Service, request: &Request, observe: Option<Observer>, stop: Option<&Stop>) -> Result<(Selected, Selected), Failure> {
+        let installation = request.installed.as_ref().ok_or(("release_root_installation_absent", "no installation to read".to_string()))?;
+        if !declares_models(installation, &request.entrypoint) {
+            return Ok(Default::default());
+        }
+        let gpu = service.pool().ok_or(("capability_unavailable", "this machine runs no functions".to_string()))?;
+        let job = Job { observer: observe, stop: stop.cloned(), order: request.order, caller: service.engine.caller_id(&request.run), ..Default::default() };
+        let Granted { grants, unbound, .. } = self.grants(service, &gpu, installation, request, &job)?;
+        let plan = gpu.prepare_root(installation, &request.entrypoint, &request.choices, &grants, unbound, request.gpus)
+            .map_err(|e| ("model_preparation_failed", e.to_string()))?;
+        Ok((plan.upfront(), plan.possible()))
+    }
+
+    /// Each model slot of the request's function resolved, all at once (cl-966): its choice, else its declared default (also
+    /// under a choice of adapters alone); a Hub one exact as its choice names it (th-241), else in the first lane of the rule's
+    /// order its release publishes (`precision`), its checkpoint's structure landed. The request's GPU count chooses the group
+    /// independently of the weight lane; 0 uses the widest group every slot supports on the machine. A slot with neither is
+    /// refused; an on-demand slot that does not bind is `unbound` instead (xs-186). An installation not built yet (no
+    /// generation: its static reading) has its adapter views checked once it is.
+    fn grants(&self, service: &Service, gpu: &Pool, installation: &Installation, request: &Request, job: &Job) -> Result<Granted, Failure> {
         let interface: Value = serde_json::from_slice(&installation.interface).map_err(|_| {
             (
                 "package_prepare_interface_invalid",
@@ -1365,18 +1498,12 @@ impl Publisher {
         let entry = api::interface::entrypoint(&interface, &request.entrypoint).cloned().unwrap_or_default();
         let degree = gpu.degree(&entry, request.gpus);
         let hardware = gpu.hardware(degree);
-        // Read before its names: one read anew meanwhile moves it, and this plan stays under the old.
-        let catalog = service.engine.with_journal(|j| j.catalog()).map_err(io_failure)?;
         let main = main_model(&slots);
         // One slot's grant, its Hub checkpoint and its warnings.
         let pick = |slot: &Value| -> Result<(ModelGrant, Option<Named>, Vec<String>), Failure> {
             let path = slot.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
-            let parameter = path.rsplit('.').next().unwrap_or_default().to_string();
             job.stage(format!("choosing the model for {path}"));
-            let asked = request.choices.iter().find(|c| c.parameter == path || c.parameter == parameter)
-                .filter(|c| !c.model.is_empty() || c.manifest.is_some() || !c.source.is_empty());
-            let declared = default_choice(slot, &path);
-            let choice = asked.or(declared.as_ref()).ok_or_else(|| choice_absent(&path, &installation.package))?;
+            let choice = &slot_choice(slot, &request.choices).ok_or_else(|| choice_absent(&path, &installation.package))?;
             if !choice.source.is_empty() {
                 return Ok((self.source_grant(installation, &path, choice, &request.providers, job)?, None, vec![]));
             }
@@ -1387,7 +1514,7 @@ impl Publisher {
                 // A model passed by value (a ModelArtifact a run here produced): held here.
                 let grant = self.held_grant(installation, &path, reference)?;
                 let header = storage::held(&self.store, &sha256::hex(&reference.digest)).map_err(io_failure)?;
-                self.held_for(service, request.source.as_ref(), &header)?;
+                self.held_for(service, request.source.as_ref(), &header, job.order)?;
                 return Ok((grant, None, vec![]));
             }
             if choice.model.starts_with("local/") && choice.manifest.is_none() {
@@ -1404,10 +1531,11 @@ impl Publisher {
             if Some(slot) == main && !request.lane.is_empty() {
                 named.lane = request.lane.clone();
             }
-            // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only.
+            // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only; a lane fits on the
+            // components the slot reads (xs-191: a `vae` slot sized as its whole checkpoint).
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
-            let hardware = tensorfs::fetch::Hardware { plain, ..hardware.clone() };
-            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware)?;
+            let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), ..hardware.clone() };
+            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, job.order)?;
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
@@ -1421,82 +1549,66 @@ impl Publisher {
             };
             Ok((grant, (!named.model.starts_with("local/")).then_some(named), warnings))
         };
-        // Each checkpoint lands as its structure: what of it comes, and when, its calls direct.
-        // Only a Hub names a checkpoint here (`pick` refused it without the run's access).
-        let land = |picked: &[(ModelGrant, Option<Named>, Vec<String>)]| {
-            let named = distinct(picked.iter().filter_map(|(_, named, _)| named.as_ref()));
-            match named.is_empty() {
-                true => Ok(()),
-                false => self.structure(request.hub("a Hub model")?, &named, job),
+        // One slot bound: its grant, its checkpoint's structure landed (what of it comes, and when,
+        // its calls direct), its components and its adapters; and its warnings.
+        let bind = |slot: &Value| -> Result<(ModelGrant, Vec<String>), Failure> {
+            let (mut grant, named, mut warnings) = pick(slot)?;
+            // Only a Hub names a checkpoint here (`pick` refused it without the run's access).
+            if let Some(named) = named {
+                self.structure(request.hub("a Hub model")?, &named, job)?;
             }
-        };
-        let picked: Vec<_> = slots.iter().map(pick).collect::<Result<_, _>>()?;
-        land(&picked)?;
-        let (mut grants, mut warnings) = (vec![], gpu.problems());
-        for (grant, _, said) in picked {
-            grants.push(grant);
-            warnings.extend(said);
-        }
-        for grant in grants.iter_mut().filter(|g| g.components.is_empty() && !g.model.is_empty()) {
-            grant.components = self.components(&grant.manifest)?;
-        }
-        for grant in &mut grants {
-            let parameter = grant
-                .slot
-                .rsplit('.')
-                .next()
-                .unwrap_or_default()
-                .to_string();
-            if let Some(choice) = request
-                .choices
-                .iter()
-                .find(|c| c.parameter == grant.slot || c.parameter == parameter)
-            {
+            if grant.components.is_empty() && !grant.model.is_empty() {
+                grant.components = self.components(&grant.manifest)?;
+            }
+            let parameter = grant.slot.rsplit('.').next().unwrap_or_default().to_string();
+            if let Some(choice) = request.choices.iter().find(|c| c.parameter == grant.slot || c.parameter == parameter) {
                 // An adapter resolves for the run's hardware: `--lane` is the main model's.
-                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware);
+                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order);
                 // It adapts a component this call runs (`components=`; none declared: any).
-                let runs: Vec<String> = (slots.iter())
-                    .find(|slot| slot["path"] == grant.slot.as_str())
-                    .and_then(|slot| slot["components"].as_array())
-                    .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
-                    .unwrap_or_default();
-                opens_views(service, installation, choice)?;
-                warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &runs, &request.providers, job)?);
+                let runs = slot_components(slot);
+                if !installation.generation.is_empty() {
+                    opens_views(service, installation, choice)?;
+                }
+                warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, &mut grant, &runs, &request.providers, job)?);
+            }
+            Ok((grant, warnings))
+        };
+        // Each slot on a thread of its own: a cold call's names and headers come in one round, not one after another.
+        // Each thread works in the run's project, as this one does.
+        let private = crate::private_io::current();
+        let bound: Vec<_> = std::thread::scope(|scope| {
+            let each: Vec<_> = slots.iter().map(|slot| scope.spawn(|| crate::private_io::within(private.clone(), || bind(slot)))).collect();
+            each.into_iter().map(|slot| slot.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
+        });
+        let mut granted = Granted::default();
+        for (slot, bound) in slots.iter().zip(bound) {
+            match bound {
+                Ok((grant, said)) => {
+                    granted.grants.push(grant);
+                    granted.warnings.extend(said);
+                }
+                // A slot the call may never read: a definite answer why it did not bind fails the
+                // call only when its function reads it. A Hub that doesn't answer is waited for
+                // (`patiently`), and a cancel ends the plan.
+                Err(failure) if slot["on_demand"] == true && !matches!(failure.0, CANCELED | UNREACHABLE) => {
+                    let (parameter, refusal) = unbound_slot(slot, &request.choices, failure);
+                    tracing::info!(slot = %parameter, code = %refusal.0, "an on-demand slot is unbound: {}", refusal.1);
+                    granted.unbound.insert(parameter, refusal);
+                }
+                Err(failure) => return Err(failure),
             }
         }
-        job.stage(match request.package.is_empty() {
-            true => "preparing the plan".to_owned(),
-            false => format!("preparing the plan for {}", request.package),
-        });
-        let plan = gpu
-            .prepare_root(
-                installation,
-                &request.entrypoint,
-                &request.choices,
-                &grants,
-                request.gpus,
-            )
-            .map_err(|e| ("model_preparation_failed", e.to_string()))?;
-        service
-            .engine
-            .bind_preparation(Preparation {
-                actor: actor.into(),
-                id: plan.id.clone(),
-                installation: installation.alias.clone(),
-                document: serde_json::to_vec(&plan).map_err(|e| io_failure(io::Error::other(e)))?,
-            })
-            .map_err(io_failure)?;
-        let key = Self::resolution_key(installation, request, &machine_row(gpu), catalog).map_err(io_failure)?;
-        let said = Value::from(warnings.clone()).to_string();
-        service
-            .engine
-            .with_journal(|j| {
-                j.bind_resolution(actor, &key, &installation.package, &plan.id)?;
-                j.bind_named(&warnings_key(&key), &said)
-            })
-            .map_err(io_failure)?;
-        Ok((plan, warnings))
+        Ok(granted)
     }
+}
+
+/// A function's model slots resolved (`Publisher::grants`): each bound one's grant, the on-demand ones that did not bind by
+/// parameter with why, and their warnings.
+#[derive(Default)]
+struct Granted {
+    grants: Vec<ModelGrant>,
+    warnings: Vec<String>,
+    unbound: BTreeMap<String, (String, String)>,
 }
 
 /// A named release as the newest of its series (xs-183): a model republished complete as a patch
@@ -1520,26 +1632,13 @@ fn forward(source: &hub::Source, named: Named) -> (Named, Option<String>) {
             releases
         }
     };
-    match newest_fix(&named.release, &releases) {
+    match api::release::newest_fix(&named.release, releases.iter().map(String::as_str), false).map(str::to_owned) {
         Some(newer) => {
             let said = format!("{} resolves to {newer}, its newest fix", named.release);
             (Named { release: newer, ..named }, Some(said))
         }
         None => (named, None),
     }
-}
-
-/// The newest of `releases` in `release`'s series and after it, when one is.
-fn newest_fix(release: &str, releases: &[String]) -> Option<String> {
-    let version = |text: &str| pep440_rs::Version::from_str(text).ok();
-    let named = version(release)?;
-    let series = &named.release()[..named.release().len().saturating_sub(1).max(1)];
-    releases
-        .iter()
-        .filter_map(|text| Some((version(text)?, text)))
-        .filter(|(v, _)| v.release().starts_with(series) && *v > named && (named.is_pre() || !v.any_prerelease()))
-        .max_by(|(a, _), (b, _)| a.cmp(b))
-        .map(|(_, text)| text.clone())
 }
 
 /// A function's main model, the one a run's `--lane` names (owner, 10-22): its first slot
@@ -1549,15 +1648,11 @@ fn main_model(slots: &[Value]) -> Option<&Value> {
     slots.iter().find(|slot| crate::gpu_service::constructed(slot) && slot["on_demand"] != true)
 }
 
-/// Each checkpoint once.
-fn distinct<'a>(named: impl Iterator<Item = &'a Named>) -> Vec<Named> {
-    let mut checkpoints = Vec::<Named>::new();
-    for named in named {
-        if !checkpoints.iter().any(|c| c.header == named.header) {
-            checkpoints.push(named.clone());
-        }
-    }
-    checkpoints
+/// The components a slot reads (`components=`); none declared: all of them.
+fn slot_components(slot: &Value) -> Vec<String> {
+    (slot["components"].as_array())
+        .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
 }
 
 /// Whether a held answer read at `read_ms` is older than `FRESH`.
@@ -1614,9 +1709,12 @@ fn make_source(
     progress: &(dyn Fn(&str, u64, u64) + Sync),
 ) -> Result<Made, Failure> {
     let bearer = |token: &str| if token.is_empty() { String::new() } else { format!("bearer {token}") };
+    let (cancelled, cancel_notify) = cancellation.as_ref().map(Stop::flag).unzip();
     let access = tensorfs::import::Access {
         huggingface_token: bearer(&providers.huggingface),
         civitai_token: bearer(&providers.civitai),
+        cancelled,
+        cancel_notify,
         ..Default::default()
     };
     let [converter] = match profiles {
@@ -1647,7 +1745,7 @@ fn make_source(
     };
     let held = crate::storage::local(store, &format!("local/{name}")).map_err(io_failure)?;
     if let Some(local) = held.filter(|local| store.holds(&local.header)) {
-        crate::storage::transport(store, "import", source, &format!("header={} reused", local.header.id()));
+        crate::storage::transport(store, "import", tensorfs::fetch::shown(source), &format!("header={} reused", local.header.id()));
         return Ok(made(local.header));
     }
     let stop = || cancellation.as_ref().is_some_and(Stop::is_cancelled);
@@ -1667,11 +1765,12 @@ fn make_source(
         access: &access,
         tmp: &store.root().join("tmp"),
         progress: &counted,
-        stop: Some(&stop),
+        // The stop wakes the import itself (`access`).
+        stop: None,
     };
     let started = Instant::now();
     let (header, files) = tensorfs::import::into_store(store, &request, Some(&name)).map_err(|e| {
-        crate::storage::transport(store, "import-failed", source, &e.to_string());
+        crate::storage::transport(store, "import-failed", tensorfs::fetch::shown(source), &e.to_string());
         match stop() {
             true => canceled(),
             false => refused("model_source_failed", e),
@@ -1686,7 +1785,7 @@ fn make_source(
         downloaded.load(std::sync::atomic::Ordering::Relaxed),
         started.elapsed().as_secs_f64()
     );
-    crate::storage::transport(store, "import", source, &detail);
+    crate::storage::transport(store, "import", tensorfs::fetch::shown(source), &detail);
     crate::storage::set_local(store, &name, &header, &files, "").map_err(io_failure)?;
     Ok(made(header))
 }
@@ -1812,7 +1911,7 @@ fn apply_adapters(
         } else {
             // A provider-source LoRA (civitai://, hf://) is made here, normalized at ingest.
             let import = crate::activity::Import::new(&adapter.source, &job.caller);
-            let made = publisher.make(&adapter.source, &adapter.profiles, "", providers, job.stop.as_ref(), &|stage, moved, total| {
+            let made = publisher.make(ModelSource::Named(&adapter.source), &adapter.profiles, "", providers, job.stop.as_ref(), &|stage, moved, total| {
                 import.moved(stage, moved, total);
                 job.set(format!("{stage} for an adapter of {}", grant.slot), moved, total)
             })?;
@@ -1914,11 +2013,22 @@ struct Card {
     pyproject: String,
     lock: String,
     wheels: Vec<HubFile>,
+    /// The release digest of the files these were checked against (`::api::hub::types::release_digest`); empty from a Hub before
+    /// xs-196.
+    #[serde(default)]
+    digest: String,
 }
 const CARD: &str = "release.json";
 
-/// `release`'s install plan, read at its Hub.
-fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str) -> Result<Card, Failure> {
+/// The card kept beside the environment at `generation`.
+fn kept_card(generation: &Path) -> Option<Card> {
+    serde_json::from_slice(&fs::read(generation.join(CARD)).ok()?).ok()
+}
+
+/// `release`'s install plan, read at its Hub, its files held to `pinned`, a release digest (empty: none; xs-196): the digest of
+/// the files its Hub lists must be that one, and each document and wheel the plan hands over one of those files, or a wheel its
+/// uv.lock pins by hash.
+fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str, pinned: &str) -> Result<Card, Failure> {
     let (org, name) = package.split_once('/').unwrap_or_default();
     let read = format!("the install plan of {package}@{release} at {}", catalog.origin());
     let plan = catalog.install_plan(org, name, release, None).map_err(|e| absent(e, "release_absent", &read, || {
@@ -1939,13 +2049,44 @@ fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str) -> Re
         HubFile::new(&file.url, &file.digest, &file.path, file.length.try_into().unwrap_or(0))
             .ok_or(("package_prepare_plan_invalid", format!("the release's plan names an unusable file {}", file.path)))
     });
-    Ok(Card {
+    let card = Card {
         interface,
         python: plan.python_version.clone().filter(|v| !v.is_empty()).unwrap_or_else(|| python.to_string()),
         pyproject: text("pyproject.toml", &plan.pyproject)?,
         lock: text("uv.lock", &plan.uv_lock)?,
         wheels: wheels.collect::<Result<_, _>>()?,
-    })
+        digest: String::new(),
+    };
+    Ok(Card { digest: release_files(&card, &plan.release_files, &format!("{package}@{release} at {}", catalog.origin()), pinned)?, ..card })
+}
+
+/// The release digest of `files`, the release's as its Hub lists them, checked (xs-196): `pinned` when the run pinned one, and
+/// `card`'s pyproject.toml, uv.lock and every wheel among them (a wheel may instead be one the uv.lock pins by hash).
+fn release_files(card: &Card, files: &[::api::hub::types::PackageReleaseFile], named: &str, pinned: &str) -> Result<String, Failure> {
+    let changed = |why: String| ("release_changed", format!("{named} isn't the release this run was pinned to: {why}. A published release never changes, so these are other files"));
+    if files.is_empty() {
+        return match pinned.is_empty() {
+            true => Ok(String::new()),
+            false => Err(changed(format!("its Hub lists none of its files to hold to {pinned}"))),
+        };
+    }
+    let digest = ::api::hub::types::release_digest(files);
+    if !pinned.is_empty() && digest != pinned {
+        return Err(changed(format!("its files' digest is {digest}, not {pinned}")));
+    }
+    let of = |bytes: &str| format!("sha256:{}", sha256::hex_digest(bytes.as_bytes()));
+    for (path, document) in [("pyproject.toml", &card.pyproject), ("uv.lock", &card.lock)] {
+        if !files.iter().any(|file| file.path == path && file.digest == of(document)) {
+            return Err(changed(format!("the {path} it handed over isn't the release's")));
+        }
+    }
+    for wheel in &card.wheels {
+        let listed = files.iter().any(|file| file.digest == format!("sha256:{}", wheel.sha256)) || card.lock.contains(&format!("sha256:{}", wheel.sha256));
+        if !listed {
+            return Err(changed(format!("{} isn't one of its files, nor a wheel its uv.lock pins", wheel.name)));
+        }
+    }
+    Ok(digest)
 }
 
 /// `card` kept beside the environment at `generation` for the release's later environments.
@@ -2028,15 +2169,41 @@ pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<stored::ModelCh
     Some(stored::ModelChoice { parameter: path.into(), model, release: release.into(), lane, ..Default::default() })
 }
 
+/// The model a run's `slot` takes: the run's choice for it, else its declared default.
+fn slot_choice(slot: &Value, choices: &[stored::ModelChoice]) -> Option<stored::ModelChoice> {
+    let path = slot["path"].as_str().unwrap_or_default();
+    let parameter = path.rsplit('.').next().unwrap_or_default();
+    let asked = choices.iter().find(|c| c.parameter == path || c.parameter == parameter)
+        .filter(|c| !c.model.is_empty() || c.manifest.is_some() || !c.source.is_empty());
+    asked.cloned().or_else(|| default_choice(slot, path))
+}
+
+/// An on-demand slot that did not bind, by its parameter, and what a call reading it fails with
+/// (xs-186): `failure`'s code, and one line naming the slot, the model it takes and why.
+fn unbound_slot(slot: &Value, choices: &[stored::ModelChoice], (code, why): Failure) -> (String, (String, String)) {
+    let parameter = slot["path"].as_str().unwrap_or_default().rsplit('.').next().unwrap_or_default().to_owned();
+    let model = slot_choice(slot, choices).map(|choice| {
+        if !choice.source.is_empty() {
+            choice.source
+        } else if choice.model.is_empty() {
+            choice.manifest.map(|by| format!("sha256:{}", sha256::hex(&by.digest))).unwrap_or_default()
+        } else if choice.release.is_empty() {
+            choice.model
+        } else {
+            format!("{}@{}", choice.model, choice.release)
+        }
+    });
+    let said = match model.filter(|model| !model.is_empty()) {
+        Some(model) => format!("{parameter}: {model}: {why}"),
+        None => format!("{parameter}: {why}"),
+    };
+    (parameter, (code.to_owned(), said))
+}
+
 fn local_aliases(installation: &Installation, request: &Request) -> io::Result<bool> {
     let interface: Value = serde_json::from_slice(&installation.interface).map_err(io::Error::other)?;
     Ok(model_slots(&interface, &request.entrypoint).unwrap_or_default().iter().any(|slot| {
-        let path = slot["path"].as_str().unwrap_or_default();
-        let parameter = path.rsplit('.').next().unwrap_or_default();
-        let asked = request.choices.iter().find(|c| c.parameter == path || c.parameter == parameter)
-            .filter(|c| !c.model.is_empty() || c.manifest.is_some() || !c.source.is_empty());
-        let declared = default_choice(slot, path);
-        asked.or(declared.as_ref()).is_some_and(|choice| choice.source.is_empty()
+        slot_choice(slot, &request.choices).is_some_and(|choice| choice.source.is_empty()
             && choice.manifest.is_none() && choice.model.starts_with("local/"))
     }))
 }
@@ -2052,7 +2219,7 @@ fn model_slots(interface: &Value, entrypoint: &str) -> Option<Vec<Value>> {
     entry["models"].is_array().then(|| api::interface::models(entry).to_vec())
 }
 
-fn declares_models(installation: &Installation, entrypoint: &str) -> bool {
+pub(crate) fn declares_models(installation: &Installation, entrypoint: &str) -> bool {
     serde_json::from_slice(&installation.interface)
         .ok()
         .and_then(|i: Value| model_slots(&i, entrypoint))
@@ -2064,6 +2231,8 @@ fn declares_models(installation: &Installation, entrypoint: &str) -> bool {
 /// run's Hub hosts (each one wheel, moved by TensorFS), and every package it names.
 #[derive(Debug, Default)]
 pub(crate) struct Locked {
+    /// Default project dependency closure, including requested extras but excluding cozy-calls.
+    caller_packages: BTreeSet<String>,
     distribution: String,
     git: Vec<String>,
     local: Vec<String>,
@@ -2153,6 +2322,25 @@ pub(crate) fn read_lock(pyproject: &str, lock: &str, source: Option<&hub::Source
         }
         seen
     };
+    // Follow exactly the extras ordinary requirements activate. A managed-only edge is
+    // wheel metadata too, but its cozy-calls extra is not active in the caller environment.
+    let mut todo = vec![(normalized(&locked.distribution), None::<String>)];
+    let mut visited = BTreeSet::new();
+    while let Some((name, extra)) = todo.pop() {
+        if !visited.insert((name.clone(), extra.clone())) { continue; }
+        for row in rows.iter().filter(|row| normalized(&row.name) == name) {
+            let dependencies = match &extra {
+                None => row.dependencies.as_slice(),
+                Some(extra) => row.optional.get(extra).map(Vec::as_slice).unwrap_or_default(),
+            };
+            for dependency in dependencies {
+                let name = normalized(&dependency.name);
+                todo.push((name.clone(), None));
+                todo.extend(dependency.extra.iter().map(|extra| (name.clone(), Some(extra.clone()))));
+            }
+        }
+    }
+    locked.caller_packages = visited.into_iter().map(|(name, _)| name).collect();
     let other = reach(roots, &layer::ROOTS);
     locked.torch = reach(layer::ROOTS.map(String::from).to_vec(), &[]).into_iter()
         .filter(|name| layer::provides(name) && !other.contains(name)).collect();

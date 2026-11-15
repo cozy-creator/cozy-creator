@@ -123,9 +123,20 @@ impl Link {
         Self { machine: self.machine.with_private(scope), lanes: Arc::new(Mutex::new(vec![None; LANES])) }
     }
 
+    pub(crate) fn worker(&self) -> String { self.machine.identity() }
+
     pub(crate) async fn probe_private(&self) -> Result<(), LinkError> {
         self.machine.probe_private().await.map_err(LinkError::from)
     }
+
+    pub(crate) async fn migrate_private(&self) -> Result<(), LinkError> { self.machine.migrate_private().await.map_err(LinkError::from) }
+
+    pub(crate) async fn legacy_project_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, LinkError> { self.machine.legacy_project_bindings(request_ids).await.map_err(LinkError::from) }
+
+    pub(crate) async fn legacy_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, LinkError> { self.machine.legacy_bindings(request_ids).await.map_err(LinkError::from) }
+    pub(crate) async fn migrate_private_bindings(&self, verified: &api::machine::ProjectExecutionMigrationReceipt) -> Result<(), LinkError> { self.machine.migrate_private_bindings(verified).await.map_err(LinkError::from) }
+
+    pub(crate) async fn migration_receipt(&self) -> Result<api::machine::ProjectExecutionMigrationReceipt, LinkError> { self.machine.migration_receipt().await.map_err(LinkError::from) }
 
     pub(crate) async fn close_private(&self) -> Result<(), LinkError> {
         self.machine.close_private().await.map_err(LinkError::from)
@@ -158,9 +169,14 @@ impl Link {
         Ok(Box::pin(self.machine.events(id, after).await?.map_err(LinkError::from)))
     }
 
-    /// When each of `jobs` would finish there, packed with its queue (`estimate/1`).
-    pub(crate) async fn estimate(&self, jobs: &v1::EstimateRequest) -> Result<v1::EstimateAnswer, LinkError> {
-        Ok(self.machine.estimate(jobs).await?)
+    /// This key's upcoming jobs there, nearest first (cl-967).
+    pub(crate) async fn upcoming(&self, list: &v1::Upcoming) -> Result<v1::AheadAnswer, LinkError> {
+        Ok(self.machine.upcoming(list).await?)
+    }
+
+    /// What this key expects demand for there with no job yet (cl-967).
+    pub(crate) async fn prepare(&self, list: &v1::Prepare) -> Result<v1::AheadAnswer, LinkError> {
+        Ok(self.machine.prepare(list).await?)
     }
 
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).

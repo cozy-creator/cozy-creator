@@ -5,12 +5,13 @@ import { EventStream } from "../api/events"
 import { Outbox } from "../api/outbox"
 import { nextProjectOrder } from "../api/projectOrder"
 import { runsAfter, withAssets } from "../api/queries"
+import { heardThumb } from "../api/thumbs"
 import { sameOrigin } from "../api/transport"
 import type { Machine, MachineList, Run, RunList, StreamEvent, CalciferStatus, ProjectEventCursor } from "../api/calcifer"
 import type { Project } from "../types"
+import { revokeProjectMedia } from "../canvas/Media"
 import type { CanvasStore } from "../canvas/CanvasStore"
 import { signal } from "../ui/signal"
-import { readSession } from "./session"
 import { forgetProjectView, protectProjectView } from "./view"
 import { notes } from "../ui/notes"
 
@@ -28,6 +29,8 @@ interface Owed {
   head: boolean
   whole: boolean
   wholeCursor: ProjectEventCursor | null
+  /** Each box being read now, by name: the page taking it off ends its read. */
+  reading: Map<string, AbortController>
 }
 
 /** Stream events into the query cache. The stream invalidates, so nothing goes stale by itself. */
@@ -39,21 +42,30 @@ class Bridge {
   private version: string | null = null
   private revs = new Map<string, string>()
   private owed = new Map<string, Owed>()
-  private runs = new Map<number, Run>()
+  private runs = new Map<string, Run>()
   private runListeners = new Set<(run: Run) => void>()
   private flushing = false
   private privateBlocked = new Set<string>()
   private privacyEpoch = new Map<string, number>()
+  /** The boxes the stream has said are gone from each project, until it says they're back: no read asks for one, which could only 404. */
+  private gone = new Map<string, Set<string>>()
+  /** The boxes this page has taken off itself (a delete, an Undo of a paste, a Redo of a delete), until the stream says they're gone, the
+   *  page says they're back, or the stream says one changed after Calcifer answered its taking off: another writer's add, which always shows.
+   *  Before that answer, a change it says may be of before the page took it off, and a read of it 404s. By name: whether it's answered. */
+  private taken = new Map<string, Map<string, boolean>>()
 
-  allowProject(id: string) { this.privateBlocked.delete(id) }
+  allowProject(id: string) { this.privateBlocked.delete(id); this.client.allowProject(id) }
 
   forgetProject(id: string) {
+    this.client.retireProject(id)
     this.privateBlocked.add(id)
     this.privacyEpoch.set(id, (this.privacyEpoch.get(id) ?? 0) + 1)
     const held = this.owed.get(id)
     if (held?.timer) clearTimeout(held.timer)
     this.owed.delete(id)
     this.revs.delete(id)
+    this.gone.delete(id)
+    this.taken.delete(id)
     for (const [number, run] of this.runs) if (run.project_id === id) this.runs.delete(number)
   }
 
@@ -75,9 +87,23 @@ class Bridge {
   changed(id: string, change: { assets?: string[] | null; gone?: string[]; head?: boolean; cursor?: ProjectEventCursor | null }) {
     if (this.privateBlocked.has(id)) return
     let slot = this.owed.get(id)
-    if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false, wholeCursor: null }))
-    for (const name of change.assets ?? []) slot.names.add(name)
-    for (const name of change.gone ?? []) slot.gone.add(name)
+    if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false, wholeCursor: null, reading: new Map() }))
+    // What's said last of a box is what's read: changed, then gone, it's gone, and no read asks for it; gone, then back, it's read.
+    let gone = this.gone.get(id)
+    if (!gone) this.gone.set(id, (gone = new Set()))
+    const taken = this.taken.get(id)
+    for (const name of change.assets ?? []) {
+      slot.names.add(name)
+      slot.gone.delete(name)
+      gone.delete(name)
+      if (taken?.get(name)) taken.delete(name)
+    }
+    for (const name of change.gone ?? []) {
+      slot.gone.add(name)
+      slot.names.delete(name)
+      gone.add(name)
+      taken?.delete(name)
+    }
     slot.head ||= Boolean(change.head)
     if (!change.assets) {
       const cursor = change.cursor ?? null
@@ -87,6 +113,33 @@ class Bridge {
       slot.whole = true
     }
     this.go(id, slot)
+  }
+
+  /** What this page wants read again of a project, as the stream would say it changed: never a box the stream has said is gone. One this
+   *  page took off and now asks for is back. */
+  readAgain(id: string, names: string[]) {
+    const [gone, taken] = [this.gone.get(id), this.taken.get(id)]
+    for (const name of names) taken?.delete(name)
+    this.changed(id, { assets: names.filter((name) => !gone?.has(name)), head: true })
+  }
+
+  /** Boxes this page has taken off: a read of one still owed or going ends, and none asks for one again until it's gone or back, as one
+   *  could only 404. */
+  forget(id: string, names: string[]) {
+    let taken = this.taken.get(id)
+    if (!taken) this.taken.set(id, (taken = new Map()))
+    const slot = this.owed.get(id)
+    for (const name of names) {
+      taken.set(name, false)
+      slot?.names.delete(name)
+      slot?.reading.get(name)?.abort()
+    }
+  }
+
+  /** Calcifer answered the taking off of these: from now a change the stream says of one is another writer's, and it's read. */
+  forgotten(id: string, names: string[]) {
+    const taken = this.taken.get(id)
+    for (const name of names) if (taken?.has(name)) taken.set(name, true)
   }
 
   private go(id: string, held: Owed) {
@@ -109,11 +162,11 @@ class Bridge {
     const tooMany = held.names.size > MOST_ASSETS
     const whole = held.whole || tooMany
     const cursor = held.wholeCursor
-    const [names, gone, head] = [[...held.names], [...held.gone], held.head]
+    const taken = this.taken.get(id)
+    const [names, gone, head] = [[...held.names].filter((name) => !taken?.has(name)), [...held.gone], held.head]
     held.names.clear()
     held.gone.clear()
     Object.assign(held, { head: false, whole: false, wholeCursor: null })
-    void this.queries.invalidateQueries({ queryKey: ["yaml", id] })
     const query = this.queries.getQueryCache().find({ queryKey: key })
     // No one's looking: what's held is read when someone is.
     if (!query?.getObserversCount()) return void query?.invalidate()
@@ -127,17 +180,27 @@ class Bridge {
     }
     const began = nextProjectOrder()
     try {
-      const [rows, said] = await Promise.all([
-        Promise.all(names.map((name) => this.client.asset(id, name).then(({ asset }) => asset, (error) => {
-          if (error instanceof ApiError && error.status === 404) return null
-          throw error
-        }))),
+      const [read, said] = await Promise.all([
+        Promise.all(names.map((name) => {
+          const reading = new AbortController()
+          held.reading.set(name, reading)
+          return this.client.asset(id, name, reading.signal).then(({ asset, heads }) => ({ asset, heads }), (error) => {
+            if ((error instanceof ApiError && error.status === 404) || reading.signal.aborted) return null
+            throw error
+          }).finally(() => {
+            if (held.reading.get(name) === reading) held.reading.delete(name)
+          })
+        })),
         head ? this.client.projectHead(id) : undefined,
       ])
+      const rows = read.map((row) => row?.asset ?? null)
+      const heads = Object.fromEntries(read.flatMap((row) => (row?.heads?.length ? [[row.asset.name, row.heads]] : [])))
       if (this.privateBlocked.has(id) || (this.privacyEpoch.get(id) ?? 0) !== epoch) return
       const asked = rows.flatMap((row) => row ?? [])
-      const left = [...gone, ...names.filter((_, at) => !rows[at])]
-      if (asked.length || left.length || said) this.queries.setQueryData<Project>(key, (state) => state && { ...withAssets(state, asked, left, said), began })
+      // One not found went after the stream said it changed: renamed or deleted, as the stream says next. Taken off now, a rename would
+      // come as another box, and its Focus and what's typed in it would go.
+      const left = gone
+      if (asked.length || left.length || said) this.queries.setQueryData<Project>(key, (state) => state && { ...withAssets(state, asked, left, said, heads), began })
     } catch {
       // Whatever kept it from reading those, the next says why, of all of it.
       held.whole = true
@@ -166,7 +229,7 @@ class Bridge {
     const batch = [...this.runs.values()].filter((run) => !run.project_id || !this.privateBlocked.has(run.project_id))
     this.runs.clear()
     for (const run of batch) {
-      this.queries.setQueryData(["run", run.number], run)
+      this.queries.setQueryData(run.project_id ? ["project-run", run.project_id, run.number] : ["maintenance-run", run.number], run)
       for (const listener of this.runListeners) listener(run)
     }
     const ended = batch.some((run) => run.status !== "queued" && run.status !== "in_progress")
@@ -174,9 +237,11 @@ class Bridge {
     // of an install is kept as its call is asked, after the install's own end. The list is read again.
     if (batch.some((run) => run.status === "completed" && (run.kind !== "call" || run.target.startsWith("local/")))) void this.queries.invalidateQueries({ queryKey: ["tools"] })
     // A list shows a run it holds as it changes; one it doesn't hold may be new to it, so it's read again.
-    for (const [key, list] of this.queries.getQueriesData<RunList>({ queryKey: ["runs"] })) {
+    for (const [key, list] of this.queries.getQueriesData<RunList>({ predicate: ({ queryKey }) => queryKey[0] === "project-runs" || queryKey[0] === "maintenance-runs" })) {
       if (!list) continue
-      const after = runsAfter(list, key[1] as RunFilter, batch)
+      const scoped = key[0] === "project-runs" ? batch.filter((run) => run.project_id === key[1]) : batch.filter((run) => !run.project_id)
+      if (!scoped.length) continue
+      const after = runsAfter(list, key[key[0] === "project-runs" ? 2 : 1] as RunFilter, scoped)
       this.queries.setQueryData<RunList>(key, after.list)
       // A read begun before a run ended answers with it still going, and nothing after it says otherwise.
       const stale = ended && this.queries.isFetching({ queryKey: key, exact: true }) > 0
@@ -205,7 +270,7 @@ class Bridge {
         break
       case "run.updated":
         if (event.run.project_id && this.privateBlocked.has(event.run.project_id)) break
-        this.runs.set(event.run.number, event.run)
+        this.runs.set(`${event.run.project_id ?? "maintenance"}\0${event.run.id}`, event.run)
         if (!this.flushing) {
           this.flushing = true
           setTimeout(this.flushRuns, 16)
@@ -239,6 +304,13 @@ class Bridge {
         void this.queries.invalidateQueries({ queryKey: ["project-vault", event.id] })
         break
       }
+      // Its folder gone, nothing of it is read again: whatever shows it says where it was (cl-980).
+      case "project.gone":
+        this.queries.setQueryData(["project-gone", event.id], event.path)
+        void this.queries.cancelQueries({ queryKey: ["project", event.id] })
+        void this.queries.cancelQueries({ queryKey: ["canvas", event.id] })
+        void this.queries.invalidateQueries({ queryKey: ["projects"] })
+        break
       case "project.changed":
         const revision = event.cursor ? JSON.stringify([event.cursor.generation, event.cursor.sequence]) : event.rev
         if (this.revs.get(event.id) !== revision) {
@@ -260,6 +332,8 @@ export interface Connection {
   /** Each project's canvas as it was last shown, by its id. */
   canvases: Map<string, CanvasStore>
   /** Remount mixed-project drawers after a lock, dropping their local logs and snapshots. */
+  closeBlockers: Set<() => boolean>
+  retireProject(id: string): void
   privateViewEpoch: ReturnType<typeof signal<number>>
   /** Which try a call is on, when it isn't the first; 0 otherwise. */
   attempt: ReturnType<typeof signal<number>>
@@ -272,7 +346,7 @@ export type Boot = { connection: Connection } | { failed: "signed_out" | "unreac
 export async function connect(): Promise<Boot> {
   const attempt = signal(0)
   const signedOut = signal(false)
-  const client = new Client(sameOrigin(readSession), { signedOut: () => signedOut.set(true), attempt: (n: number) => attempt.set(n) })
+  const client = new Client(sameOrigin(), { signedOut: () => signedOut.set(true), attempt: (n: number) => attempt.set(n) })
   let status: CalciferStatus
   try {
     status = await client.status()
@@ -289,32 +363,69 @@ export async function connect(): Promise<Boot> {
   const outbox = new Outbox()
   const canvases = new Map<string, CanvasStore>()
   const privateViewEpoch = signal(0)
+  const retireProject = (id: string) => {
+    bridge.forgetProject(id)
+    outbox.discardProject(id)
+    canvases.get(id)?.retire()
+    canvases.delete(id)
+    forgetProjectView(id)
+    revokeProjectMedia(id)
+    // Its protection status stays: it is what the locked page shows. Dropped, it is asked again, and the lock it
+    // answers retires the project again, and again.
+    const privateData = ({ queryKey: [kind, project] }: { queryKey: readonly unknown[] }) =>
+      (project === id && kind !== "project-vault" && (["canvas", "history"].includes(String(kind)) || String(kind).startsWith("project")))
+      || kind === "tools"
+    void queries.cancelQueries({ predicate: privateData })
+    void queries.resetQueries({ predicate: privateData })
+    queries.removeQueries({ predicate: privateData })
+    notes.set([])
+    privateViewEpoch.set(privateViewEpoch.get() + 1)
+  }
   const bridge = new Bridge(queries, client, (id, state) => {
     if (id) protectProjectView(id, true)
     if (state === "unlocked") { outbox.allowProject(id); return }
-    if (id) {
-      outbox.discardProject(id)
-      canvases.get(id)?.revokePrivateView()
-      canvases.delete(id)
-      forgetProjectView(id)
-    }
-    const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-      (Boolean(id) && ["project", "canvas", "yaml", "history"].includes(String(queryKey[0])) && queryKey[1] === id)
-      || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
-    void queries.cancelQueries({ predicate: privateData })
-    // Reset active observers too: merely removing the cache can leave a mounted drawer's old data.
-    void queries.resetQueries({ predicate: privateData })
-    queries.removeQueries({ predicate: privateData, type: "inactive" })
-    notes.set([])
-    privateViewEpoch.set(privateViewEpoch.get() + 1)
+    if (id) retireProject(id)
+    else privateViewEpoch.set(privateViewEpoch.get() + 1)
   })
+  const closeBlockers = new Set<() => boolean>()
+  const stopEdit = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation() }
+  const editEvents = ["pointerdown", "keydown", "beforeinput", "input", "drop", "paste", "submit"]
+  const hooks = globalThis as typeof globalThis & { __cozyFreeze?: () => boolean; __cozyPrepareClose?: () => Promise<void>; __cozyResume?: () => void; __cozyUnsent?: () => number }
+  // A lock past its deadline says how many edits it could not wait for: counts only.
+  hooks.__cozyUnsent = () => outbox.unsent() + client.unsentWrites()
+  hooks.__cozyFreeze = () => {
+    if ([...closeBlockers].some((blocked) => blocked())) return false
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    document.documentElement.inert = true
+    for (const name of editEvents) document.addEventListener(name, stopEdit, true)
+    return true
+  }
+  hooks.__cozyPrepareClose = async () => {
+    await Promise.all([...canvases.values()].map((canvas) => canvas.prepareClose()))
+    await outbox.saved()
+    await client.savedWrites()
+    await outbox.saved()
+    outbox.freeze(); client.freezeWrites()
+  }
+  hooks.__cozyResume = () => {
+    for (const name of editEvents) document.removeEventListener(name, stopEdit, true)
+    document.documentElement.inert = false
+    outbox.resume(); client.resumeWrites()
+  }
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
+  stream.subscribe(heardThumb)
+  // Runs of no project (installs, updates) come only while something here shows them: a machine's view, or the runs of no project.
+  const machineView = ({ queryKey }: { queryKey: readonly unknown[] }) => queryKey[0] === "maintenance-runs" || queryKey[0] === "maintenance-run"
+  queries.getQueryCache().subscribe(({ type, query }) => {
+    if (!["observerAdded", "observerRemoved", "removed"].includes(type) || !machineView(query)) return
+    stream.showMachines(queries.getQueryCache().findAll({ predicate: machineView }).some((held) => held.getObserversCount() > 0))
+  })
   stream.subscribe((event) => {
     if (event.type === "hello") outbox.back()
   })
   stream.start()
-  return { connection: { client, queries, stream, bridge, outbox, canvases, privateViewEpoch, attempt, signedOut, status } }
+  return { connection: { client, queries, stream, bridge, outbox, canvases, closeBlockers, retireProject, privateViewEpoch, attempt, signedOut, status } }
 }
 
 const Context = createContext<Connection | null>(null)

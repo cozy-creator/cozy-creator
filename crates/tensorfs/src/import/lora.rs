@@ -66,9 +66,9 @@ pub(crate) fn peft_key(key: &str) -> Option<String> {
 /// LyCORIS's adapters other than LoRA, by their factors' leaf names, and what they are called.
 const LYCORIS: [(&str, &str); 4] = [("lokr_", "LoKr"), ("hada_", "LoHa"), ("oft_", "OFT"), ("diff", "full-difference")];
 
-/// Why `group`, which no table claimed, is an adapter nothing can apply, or `None`: another LyCORIS kind than LoRA
-/// (LoKr's Kronecker factors, LoHa's Hadamard ones: TensorD and the Runtime apply a LoRA's and a DoRA's update only),
-/// or LoRA factors in kohya's flattened names, which only a converter table maps onto a model's modules.
+/// Why `group`, which no table claimed, is an adapter nothing can apply, or `None`: a LyCORIS kind TensorD and the
+/// Runtime don't apply (LoHa's Hadamard factors, OFT, full differences; they apply LoRA, DoRA and LoKr), a LoKr in
+/// names no table maps, or LoRA factors in kohya's flattened names, which only a converter table maps onto a model.
 pub(crate) fn unusable(group: &Group) -> Option<String> {
     let keys = || group.tensors.keys().map(String::as_str);
     let kind = |k: &str| {
@@ -78,8 +78,11 @@ pub(crate) fn unusable(group: &Group) -> Option<String> {
     let kinds: BTreeSet<&str> = keys().filter_map(kind).collect();
     let adapter = keys().all(|k| kind(k).is_some() || peft_key(k).is_some());
     if !kinds.is_empty() && adapter {
-        let kinds: Vec<&str> = kinds.into_iter().collect();
-        return Some(format!("a LyCORIS {} adapter; Cozy applies LoRA and DoRA adapters only", kinds.join(" and ")));
+        if kinds.len() == 1 && kinds.contains("LoKr") {
+            return Some("a LyCORIS LoKr adapter in names no table maps onto a model's modules".into());
+        }
+        let kinds: Vec<&str> = kinds.into_iter().filter(|k| *k != "LoKr").collect();
+        return Some(format!("a LyCORIS {} adapter; Cozy applies LoRA, DoRA and LoKr adapters only", kinds.join(" and ")));
     }
     let kohya = keys().any(|k| KOHYA.iter().any(|p| k.starts_with(p)));
     (kohya && adapter).then(|| {

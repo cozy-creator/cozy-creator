@@ -59,6 +59,9 @@ pub(super) struct Machine {
 pub(super) fn router(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> Router {
     routes()
         .route(path::PRIVATE_CLOSE, post(private_close_request))
+        .route(path::PROJECT_MIGRATE, get(project_migrate_request).post(project_migrate_request))
+        .route(path::PROJECT_LEGACY_BINDINGS, post(project_bindings_request))
+        .route(path::PROJECT_EXECUTION, get(private_request).post(private_request).put(private_request))
         .route(path::LOCAL_PRIVATE, get(private_request).post(private_request).put(private_request))
         .with_state(Machine { identity, runs })
 }
@@ -76,7 +79,8 @@ fn routes() -> Router<Machine> {
         .route(path::LOG, get(log))
         .route(path::OBJECT, put(put_object).get(follow_object))
         .route(path::OBJECTS_HELD, post(held_objects).layer(DefaultBodyLimit::max(16 << 20)))
-        .route(path::ESTIMATE, post(estimate))
+        .route(path::UPCOMING, put(upcoming))
+        .route(path::PREPARE, put(prepare))
         .route(path::MODELS_REMOVE, post(remove_model))
         .route(path::HEALTH, get(health))
         .fallback(|| async { Refusal::from(Error::not_found("route_not_found", "this machine serves no such path")) })
@@ -127,7 +131,12 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     }.await;
     let descriptor = match selected { Ok(value) => value, Err(error) => return Refusal::from(error).into_response() };
     if rest == "health" && request.method() == axum::http::Method::GET {
-        return StatusCode::NO_CONTENT.into_response();
+        return Json(v1::ProjectExecutionCapabilities { protected_journal: true, protected_objects_and_scratch: true,
+            filesystem_write_confinement: false, quiescent_seal: true }).into_response();
+    }
+    // Legacy runs stay in the machine's one journal (cl-984): a binding lookup reads it, and coverage is what was looked up.
+    if rest == "migration-bindings" || rest == "migrate" {
+        return legacy_custody(m, descriptor, rest == "migrate", request).await;
     }
     if rest == "close" && request.method() == axum::http::Method::POST {
         let headers = request.headers().clone();
@@ -153,6 +162,91 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
         match ready { Ok(()) => {}, Err(never) => match never {} }
         match routing.call(request).await { Ok(response) => response, Err(never) => match never {} }
     }).await
+}
+
+async fn project_migrate_request(m: State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
+    private_request(m, Path((project, "migrate".into())), request).await
+}
+
+async fn project_bindings_request(m: State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
+    private_request(m, Path((project, "migration-bindings".into())), request).await
+}
+
+/// Calcifer's import of a project's legacy history asks which of its requests this worker accepted (`migration-bindings`),
+/// then has them covered (`migrate`). One machine journal holds every run: a covered acceptance is verified there, kept in
+/// the project's own receipt (`legacy-custody.json` in its machine area), then retired from the machine, its rows,
+/// copies and objects gone (cl-984); it is covered once retired. A lookup answers from the journal, else from that receipt.
+async fn legacy_custody(m: Machine, descriptor: v1::LocalPrivateStorage, migrate: bool, request: Request<Body>) -> Response {
+    let actor = match m.caller(request.headers()) { Ok(caller) => actor_id(caller.actor), Err(error) => return Refusal::from(error).into_response() };
+    let reading = request.method() == axum::http::Method::GET;
+    if !(request.method() == axum::http::Method::POST || (migrate && reading)) {
+        return Refusal::from(Error::validation("method_not_allowed", "Legacy custody uses POST; coverage uses GET.")).into_response();
+    }
+    let bytes = match axum::body::to_bytes(request.into_body(), 65536).await { Ok(bytes) => bytes, Err(_) => return Refusal::from(Error::validation("invalid_request", "Legacy custody exceeds its protocol bound.")).into_response() };
+    let conflict = |code: &'static str| move |error: std::io::Error| Error::conflict(code, error.to_string());
+    let receipt_path = move |scope: &v1::LocalPrivateStorage| crate::private_io::root(scope).map(|root| root.join("legacy-custody.json"));
+    let kept = |path: &std::path::Path| -> Vec<v1::ProjectExecutionLegacyBinding> {
+        std::fs::read(path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default()
+    };
+    let same = |a: &v1::ProjectExecutionMigrationBinding, b: &v1::ProjectExecutionMigrationBinding|
+        a.request_id == b.request_id && a.source_workspace_id == b.source_workspace_id && a.invocation_spec_digest == b.invocation_spec_digest;
+    if migrate && reading {
+        // Covered once retired: a receipted acceptance still journaled here (its retirement failed or never ran) is not.
+        let answered = m.call(move |runs| {
+            let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
+            let mut bindings = vec![];
+            for kept in kept(&path) {
+                let held = runs.service.engine.with_journal(|journal| journal.holds_execution(kept.source_number))
+                    .map_err(conflict("project_storage_migration_pending"))?;
+                if !held { bindings.push(kept.binding); }
+            }
+            Ok(v1::ProjectExecutionMigrationReceipt { bindings })
+        }).await;
+        return match answered { Ok(receipt) => Json(receipt).into_response(), Err(error) => Refusal::from(error).into_response() };
+    }
+    if migrate {
+        let adoption: v1::ProjectExecutionMigrationRequest = if bytes.is_empty() { Default::default() } else { match serde_json::from_slice(&bytes) { Ok(adoption) => adoption, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid verified legacy binding adoption.")).into_response() } };
+        let (logs, store_logs) = (m.identity.logs.clone(), m.identity.store_logs.clone());
+        let retired = m.call(move |runs| {
+            let engine = &runs.service.engine;
+            let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
+            // Every private probe asks this: adoptions take turns, so none renames a receipt another just moved.
+            static ADOPTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _turn = ADOPTING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut receipt = kept(&path);
+            let fresh: Vec<_> = adoption.legacy_requests.iter().filter(|wanted| !receipt.iter().any(|kept| same(&kept.binding, wanted))).cloned().collect();
+            let ids: Vec<String> = fresh.iter().map(|binding| binding.request_id.clone()).collect();
+            let found = if ids.is_empty() { Default::default() } else {
+                engine.legacy_bindings(&actor, &descriptor, &ids).map_err(conflict("project_storage_migration_conflict"))?
+            };
+            if !fresh.iter().all(|binding| found.bindings.iter().any(|actual| same(&actual.binding, binding))) {
+                return Err(Error::conflict("project_storage_migration_conflict", "a legacy binding differs from this worker's acceptance"));
+            }
+            // The receipt first: a crash after it retires again at the next adoption, never loses coverage. Nothing to adopt
+            // (a fresh home's every probe) writes nothing.
+            if !found.bindings.is_empty() {
+                receipt.extend(found.bindings);
+                let staged = path.with_extension("json.next");
+                std::fs::write(&staged, serde_json::to_vec(&receipt).map_err(std::io::Error::other).map_err(conflict("project_storage_migration_pending"))?)
+                    .and_then(|()| std::fs::rename(&staged, &path)).map_err(conflict("project_storage_migration_pending"))?;
+            }
+            let numbers: Vec<u64> = receipt.iter().map(|kept| kept.source_number).collect();
+            engine.retire_legacy(&numbers, &logs, &store_logs).map_err(conflict("project_storage_migration_busy"))
+        }).await;
+        return match retired { Ok(()) => StatusCode::NO_CONTENT.into_response(), Err(error) => Refusal::from(error).into_response() };
+    }
+    let query: v1::ProjectExecutionLegacyLookup = match serde_json::from_slice(&bytes) { Ok(query) => query, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid legacy lookup request.")).into_response() };
+    let looked = m.call(move |runs| {
+        let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
+        let receipt = kept(&path);
+        let unretired: Vec<String> = query.request_ids.iter().filter(|id| !receipt.iter().any(|kept| kept.binding.request_id == **id)).cloned().collect();
+        let mut answer = if unretired.is_empty() { Default::default() } else {
+            runs.service.engine.legacy_bindings(&actor, &descriptor, &unretired).map_err(conflict("project_storage_migration_pending"))?
+        };
+        answer.bindings.extend(receipt.into_iter().filter(|kept| query.request_ids.contains(&kept.binding.request_id)));
+        Ok(answer)
+    }).await;
+    match looked { Ok(answer) => Json(answer).into_response(), Err(error) => Refusal::from(error).into_response() }
 }
 
 async fn close_private(State(m): State<Machine>, headers: HeaderMap) -> Answer {
@@ -395,17 +489,33 @@ async fn submit(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> An
     Ok(json(StatusCode::OK, &v1::RunBatchAnswer { runs }))
 }
 
-/// `POST /v1/estimate`: when each job would run here, packed with the machine's queue by the
-/// model its scheduler gives each run its width by (`estimate`). It reserves nothing.
-async fn estimate(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+/// `PUT /v1/upcoming` (cl-967): the caller's upcoming jobs here, nearest first, each prepared behind every run (`ahead`).
+async fn upcoming(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+    let list: v1::Upcoming = serde_json::from_slice(&body)
+        .map_err(|e| Error::validation("invalid_request", format!("the upcoming list is not JSON: {e}")))?;
+    listed(m, headers, crate::ahead::UPCOMING, list.jobs).await
+}
+
+/// `PUT /v1/prepare` (cl-967): what the caller expects demand for here, with no job yet, behind every upcoming job (`ahead`).
+async fn prepare(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+    let list: v1::Prepare = serde_json::from_slice(&body)
+        .map_err(|e| Error::validation("invalid_request", format!("the prepare list is not JSON: {e}")))?;
+    listed(m, headers, crate::ahead::PREPARE, list.items).await
+}
+
+async fn listed(m: Machine, headers: HeaderMap, prefix: &'static str, items: Vec<v1::Ahead>) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
-    let request: v1::EstimateRequest = serde_json::from_slice(&body)
-        .map_err(|e| Error::validation("invalid_request", format!("the estimate request is not JSON: {e}")))?;
-    let actor = actor_id(caller.actor);
-    let answer = m.call(move |runs| crate::estimate::quote(runs, &actor, request)).await?;
+    for item in &items {
+        run_id(&format!("{prefix}{}", item.key))?;
+    }
+    let admitted = m.admit()?;
+    let actor = caller.actor;
+    let answer = m.call(move |runs| crate::ahead::put(runs, actor, prefix, items)).await?;
+    drop(admitted);
     Ok(json(StatusCode::OK, &answer))
 }
+
 
 #[derive(Deserialize)]
 struct Page {
@@ -698,18 +808,23 @@ async fn log(
         })
         .await?;
     let (sender, lines) = tokio::sync::mpsc::channel(16);
+    let leave = follow.on_leave();
     tokio::task::spawn_blocking(move || {
         let read = follow.run(|lines| sender.blocking_send(Ok(lines)).is_ok(), || !sender.is_closed());
         if let Err(e) = read {
             let _ = sender.blocking_send(Err(e));
         }
     });
-    let lines = received(lines).map(move |lines| match lines {
-        Ok(lines) => {
-            let after = lines.after.to_string();
-            Ok(event("lines", &v1::LogLines { after: after.clone(), text: lines.text })?.id(after))
+    // Held by the stream, after its receiver: dropped as its reader leaves, it wakes a caught-up follower.
+    let lines = received(lines).map(move |lines| {
+        let _reading = &leave;
+        match lines {
+            Ok(lines) => {
+                let after = lines.after.to_string();
+                Ok(event("lines", &v1::LogLines { after: after.clone(), text: lines.text })?.id(after))
+            }
+            Err(e) => Err(unreadable(e)),
         }
-        Err(e) => Err(unreadable(e)),
     });
     Ok(sse(m.authority(&caller), followed(&m.identity, lines)))
 }

@@ -78,7 +78,11 @@ pub(crate) async fn login(ctx: &Context, args: Login) -> Result<ExitCode, Error>
     signed_in(ctx, &calcifer, hub, account, "signed in").await
 }
 
-/// Has the Hub email a code for `purpose`, and answers it with what the user types.
+/// The longest of the Hub's waits for a code that `cozy login` sits out rather than says.
+const CODE_WAIT_MOST: u64 = 60;
+
+/// Has the Hub email a code for `purpose`, and answers it with what the user types. Asked too soon with no code out,
+/// it waits as long as the Hub says, once.
 async fn prove(
     ctx: &Context,
     calcifer: &Client,
@@ -87,13 +91,23 @@ async fn prove(
     email: Option<&str>,
 ) -> Result<Proven, Error> {
     let ask = CodeRequest { hub: Some(hub.to_string()), purpose, email: email.map(str::to_owned) };
-    let sent: Code = calcifer.post("/v1/account/codes", &ask, None).await?;
+    let mut sent: Code = calcifer.post("/v1/account/codes", &ask, None).await?;
+    if let Some(wait) = sent.retry_after_s.filter(|wait| sent.id.is_none() && *wait <= CODE_WAIT_MOST) {
+        output::warn(&format!("The Hub sends {} its next code in {wait} s: asking then", sent.email));
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+        sent = calcifer.post("/v1/account/codes", &ask, None).await?;
+    }
+    let Some(id) = sent.id.clone() else {
+        let wait = sent.retry_after_s.unwrap_or_default();
+        let said = format!("the Hub sends {} no code for another {wait} s", sent.email);
+        return Err(Error { retry_after_s: sent.retry_after_s, ..Error::unavailable("rate_limited", said).remedy("ask again then") });
+    };
     let said = match sent.retry_after_s {
         Some(wait) => format!("A code already went to {}: use it, or ask again in {wait} s. Code: ", sent.email),
         None => format!("A code was sent to {}. Code: ", sent.email),
     };
     let code = ask_line(ctx, &said, "code")?;
-    calcifer.post(&path(&["v1", "account", "codes", &sent.id]), &CodeAnswer { code }, None).await
+    calcifer.post(&path(&["v1", "account", "codes", &id]), &CodeAnswer { code }, None).await
 }
 
 fn unexpected() -> Error {

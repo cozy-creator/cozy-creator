@@ -76,6 +76,11 @@ impl Home {
         self.root.join("calcifer")
     }
 
+    /// The closed service-health record; legacy mixed logs are never served as health.
+    pub fn calcifer_health(&self) -> PathBuf {
+        self.calcifer().join("health.log")
+    }
+
     pub fn calcifer_log(&self) -> PathBuf {
         self.calcifer().join("calcifer.log")
     }
@@ -97,11 +102,6 @@ impl Home {
     /// Service definitions this home installed, and on Windows the birth of each one it started.
     pub(crate) fn services(&self) -> PathBuf {
         self.root.join("services")
-    }
-
-    /// Thumbnails of projects' files, kept while they are used.
-    pub fn thumbs(&self) -> PathBuf {
-        self.root.join("cache").join("thumbs")
     }
 
     /// Tools cozy fetched for this computer's own use on first need, never bundled.

@@ -19,11 +19,14 @@ const STROKES = {
   redo: "M12.5 4.5L16 8l-3.5 3.5M16 8H8.5a4.5 4.5 0 000 9H12",
   history: "M10 3.5a6.5 6.5 0 110 13 6.5 6.5 0 010-13zM10 6.5V10l2.5 1.6",
   orbit: "M16.2 8.6A6.5 6.5 0 104 12.6M16.5 3.8v4.8h-4.8",
+  /** Scissors: a clip cut in two at the playhead. */
+  split: "M7.5 6a2 2 0 11-4 0 2 2 0 014 0zM7.5 14a2 2 0 11-4 0 2 2 0 014 0zM7.2 7.1L16 13.5M7.2 12.9L16 6.5",
 } as const
 
 const FILLS = {
   play: "M6.5 4.3v11.4c0 .5.6.8 1 .5l8.8-5.7c.4-.3.4-.8 0-1L7.5 3.8c-.4-.3-1 0-1 .5z",
   stop: "M6 5h8c.6 0 1 .4 1 1v8c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1V6c0-.6.4-1 1-1z",
+  pause: "M5.5 4h3v12h-3zM11.5 4h3v12h-3z",
 } as const
 
 export type IconName = keyof typeof STROKES | keyof typeof FILLS

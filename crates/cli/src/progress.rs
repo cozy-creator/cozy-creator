@@ -254,6 +254,8 @@ struct TransferShared {
     tty: bool,
     line: Line,
     state: Mutex<TransferState>,
+    /// Off a terminal, nothing: the caller says what it moved once, at its end.
+    muted: bool,
 }
 
 impl Drop for TransferShared {
@@ -269,9 +271,18 @@ pub(crate) struct Transfer(Arc<TransferShared>);
 
 impl Transfer {
     pub(crate) fn stderr(tty: bool, label: impl Into<String>) -> Self {
+        Self::shown(tty, label, false)
+    }
+
+    /// A meter drawn on a terminal and silent off one, where the caller says what it moved once, at its end.
+    pub(crate) fn on_terminal(tty: bool, label: impl Into<String>) -> Self {
+        Self::shown(tty, label, !tty)
+    }
+
+    fn shown(tty: bool, label: impl Into<String>, muted: bool) -> Self {
         let label: String = label.into();
         let line = Line::stderr(tty, None, |shown| format!("{} {}", shown.spinner(), shown.msg()));
-        let meter = Self(Arc::new(TransferShared { label: single_line(&label), tty, line, state: Mutex::new(TransferState {
+        let meter = Self(Arc::new(TransferShared { label: single_line(&label), tty, line, muted, state: Mutex::new(TransferState {
             phase: "starting".into(), finalizing: false, counts: TransferCounts::default(),
             measured: None, last_moved: None, rate: None, logged: None, finished: false,
         }) }));
@@ -353,7 +364,7 @@ impl TransferShared {
                 line.steady = true;
                 if tick { line.tick += 1; }
             }, force);
-        } else if force || state.logged.is_none_or(|at| at.elapsed() >= Duration::from_secs(5)) {
+        } else if !self.muted && (force || state.logged.is_none_or(|at| at.elapsed() >= Duration::from_secs(5))) {
             let _ = writeln!(std::io::stderr().lock(), "{}", transfer_message(&self.label, state, None));
             state.logged = Some(Instant::now());
         }

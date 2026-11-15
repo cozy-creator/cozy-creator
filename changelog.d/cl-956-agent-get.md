@@ -1,0 +1,1 @@
+`cozy get` lists a project's nodes, one a line; `cozy get NAME…` (`NAME.N`, `--all`, `--takes`) prints them whole as a file: each its kind, words, its tool's block with every default, `approved`, its takes and the `rev` it was read at. `cozy explain [KIND|TOOL[.FIELD]] [--schema]` says what such a file holds, in words or as JSON Schema 2020-12 (cl-956).

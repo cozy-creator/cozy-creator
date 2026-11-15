@@ -3,7 +3,7 @@
 //! objects: byte ranges in any order, several side by side, resuming from the ranges held. Calcifer reads no client's disk. A file is
 //! an object of this computer's TensorFS store, where its own machine holds its runs' objects too: its upload is the store's partial
 //! (`Store::partial`), named only once every byte is held and they hash to the name, and kept as the store keeps what is used
-//! (`Store::used`). A `HEAD` that finds one held counts as a use.
+//! (`Store::used`). A `HEAD` that finds one held counts as a use, as asking `POST /v1/files/held` does.
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -25,7 +25,7 @@ use api::{
     calcifer::File,
     error::{Error, Kind},
     ids::Digest,
-    machine::{HELD, spell_held},
+    machine::{HELD, HeldAnswer, HeldObject, HeldRequest, spell_held},
 };
 use tensorfs::{
     err::Code,
@@ -54,7 +54,7 @@ pub(crate) fn release_private(root: &Path) -> Result<(), Error> {
 
 fn scoped(api: &Arc<Api>, scope: &UploadScope) -> Result<Arc<Store>, Refusal> {
     let Some(project) = &scope.project else { return Ok(store().map_err(Refusal)?.clone()) };
-    let Some(root) = crate::project::private_upload_root(api, project).map_err(Refusal)? else { return Ok(store().map_err(Refusal)?.clone()) };
+    let root = crate::project::private_upload_root(api, project).map_err(Refusal)?.ok_or_else(|| Refusal(Error::new(Kind::Conflict,"project_storage_required","the project storage is unavailable")))?;
     private_store(&root).map_err(Refusal)
 }
 
@@ -67,9 +67,17 @@ fn private_store(root: &Path) -> Result<Arc<Store>, Error> {
     Ok(store)
 }
 
+/// Where `digest` is held for the project whose files are under `root`: its own store, else what's held for anyone (`PUT /v1/files`).
+/// The one place a file is held, for an import, an apply, a run's binder and the held probe alike.
 pub(crate) fn held_for(root: &Path, digest: &Digest) -> Option<PathBuf> {
-    if !crate::project::vault::encrypted(&crate::project::vault::logical(root)) { return held(digest); }
-    held_in(private_store(root).ok()?.as_ref(), digest)
+    private_store(root).ok().and_then(|store| held_in(&store, digest)).or_else(|| held(digest))
+}
+
+/// Read-only source for the one-way legacy migration. The digest and length
+/// must come from the unchanged canonical old run; this does not mark global
+/// use, admit a new project upload, or provide an ordinary execution fallback.
+pub(crate) fn legacy_input_source(digest:&Digest,length:u64)->Option<PathBuf> {
+    store().ok()?.path(&object(digest,length)).ok()
 }
 
 fn held_in(store: &Store, digest: &Digest) -> Option<PathBuf> {
@@ -324,7 +332,8 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
     }
 }
 
-/// Whether Calcifer holds `name`: `200` with its length and media type, else `404`. `Cozy-Held` says which bytes either way.
+/// Whether Calcifer holds `name`: `200` with its length and media type, else `404`; `Cozy-Held` says which bytes either way. A page asks
+/// `POST /v1/project-files/held`, which answers either way, as a browser logs each 404 as an error.
 pub(crate) async fn project_head(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>) -> Result<Response, Refusal> {
     if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
     let _admission = crate::project::vault::admit_project(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
@@ -337,11 +346,59 @@ pub(crate) async fn head(UrlPath(name): UrlPath<String>) -> Result<Response, Ref
 
 async fn head_in(storage: Arc<Store>, name: String) -> Result<Response, Refusal> {
     let digest = named(&name)?;
+    let (path, ranges) = held_of(&storage, digest).await?;
+    // A project's store holds a file sent to it, or one held for anyone, as `held_for` finds them.
+    let path = path.or_else(|| held(&digest));
+    let Some(path) = path else {
+        return Ok((StatusCode::NOT_FOUND, [held_header(&ranges)]).into_response());
+    };
+    let held = file(digest, &path)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(held.length));
+    if let Ok(media_type) = HeaderValue::from_str(&held.media_type) {
+        headers.insert(header::CONTENT_TYPE, media_type);
+    }
+    let (name, value) = held_header(&whole(held.length));
+    headers.insert(name, value);
+    Ok(headers.into_response())
+}
+
+/// What Calcifer holds of each file a [`HeldRequest`] names, in the order asked: its byte ranges, `[0, length)` once it's held whole.
+/// An answer whatever is held, so a page asks before each file it sends with nothing in its console. Asking is a use, as a `HEAD` is.
+pub(crate) async fn held_files(Json(ask): Json<HeldRequest>) -> Result<Json<HeldAnswer>, Refusal> {
+    held_all(store().map_err(Refusal)?.clone(), ask).await
+}
+
+/// As [`held_files`], of a project's own content store.
+pub(crate) async fn project_held_files(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, Json(ask): Json<HeldRequest>) -> Result<Json<HeldAnswer>, Refusal> {
+    if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
+    let _admission = crate::project::vault::admit_project(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
+    held_all(scoped(&api, &scope)?, ask).await
+}
+
+async fn held_all(storage: Arc<Store>, ask: HeldRequest) -> Result<Json<HeldAnswer>, Refusal> {
+    let mut answer = Vec::with_capacity(ask.digests.len());
+    for name in ask.digests {
+        let digest = named(&name)?;
+        let (path, ranges) = held_of(&storage, digest).await?;
+        // As `held_for` finds a file for a project: its own store, else what's held for anyone.
+        let path = path.or_else(|| held(&digest));
+        let ranges = match path {
+            Some(path) => whole(file(named(&name)?, &path)?.length),
+            None => ranges,
+        };
+        answer.push(HeldObject { digest: name, ranges });
+    }
+    Ok(Json(HeldAnswer { held: answer }))
+}
+
+/// Where `digest` is held whole, else none and the ranges of it held: an upload that has every byte is first verified, and says how that went.
+async fn held_of(storage: &Arc<Store>, digest: Digest) -> Result<(Option<PathBuf>, Ranges), Refusal> {
     // One that was cut: what the store kept of it.
     let begun = UPLOADS.lock().expect("uploads lock").get(&(storage.root().to_owned(), digest)).map(|(length, upload)| (*length, upload.upgrade()));
     let upload = match begun {
         Some((_, Some(upload))) => Some(upload),
-        Some((length, None)) if held_in(&storage, &digest).is_none() => Some(opened(storage.clone(), digest, length).await?),
+        Some((length, None)) if held_in(storage, &digest).is_none() => Some(opened(storage.clone(), digest, length).await?),
         _ => None,
     };
     let ranges = match upload {
@@ -356,19 +413,7 @@ async fn head_in(storage: Arc<Store>, name: String) -> Result<Response, Refusal>
         Some(upload) => upload.held(),
         None => vec![],
     };
-    let Some(path) = held_in(&storage, &digest) else {
-        let refusal = Refusal(Error::new(Kind::NotFound, "file_not_found", format!("Calcifer holds no file {digest}")));
-        return Ok((StatusCode::NOT_FOUND, [held_header(&ranges)], refusal).into_response());
-    };
-    let held = file(digest, &path)?;
-    let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(held.length));
-    if let Ok(media_type) = HeaderValue::from_str(&held.media_type) {
-        headers.insert(header::CONTENT_TYPE, media_type);
-    }
-    let (name, value) = held_header(&whole(held.length));
-    headers.insert(name, value);
-    Ok(headers.into_response())
+    Ok((held_in(storage, &digest), ranges))
 }
 
 fn named(name: &str) -> Result<Digest, Refusal> {

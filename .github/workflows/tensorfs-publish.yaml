@@ -38,10 +38,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
       - run: uv run --no-project --python 3.12 --with triton==3.8.0 python crates/tensorfs-py/kernels/build.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tensorfs-kernels-${{ github.sha }}
           path: crates/tensorfs/kernels/aot/
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("crates/tensorfs-py/pyproject.toml", "rb"))["project"]["version"])')
           [ "$GITHUB_REF" = "refs/tags/tensorfs-v$version" ] || { echo "::error::publish runs on tensorfs-v$version, not $GITHUB_REF"; exit 1; }
@@ -91,19 +91,19 @@ jobs:
         shell: bash
         working-directory: crates/tensorfs-py
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - if: matrix.cuda
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: tensorfs-kernels-${{ github.sha }}
           path: crates/tensorfs/kernels/aot/
       - if: runner.os != 'Linux' && !matrix.no310
         id: py310
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.10"
       - id: py311
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
       - if: inputs.dev
@@ -112,7 +112,7 @@ jobs:
       # manylinux container, so its glibc floor matches the extension's (tfs-051). The container is
       # manylinux_2_28, Torch's own: each Torch allocator shim links that Torch (backend/stage_shim.py).
       - if: runner.os == 'Linux'
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           maturin-version: v1.16.0
           working-directory: crates/tensorfs-py
@@ -136,13 +136,13 @@ jobs:
           interpreters+=("$PY311")
           python backend/stage_cli.py --release --target "${{ matrix.target }}" -i "${interpreters[@]}"
       - if: runner.os != 'Linux'
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           maturin-version: v1.16.0
           working-directory: crates/tensorfs-py
           target: ${{ matrix.target }}
           args: --release --locked --out dist -i ${{ steps.py310.outputs.python-path }} ${{ steps.py311.outputs.python-path }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
       # The container leaves dist root-owned, and the verify step writes beside its wheels.
       - if: runner.os == 'Linux'
         run: sudo chown -R "$(id -u):$(id -g)" dist
@@ -157,14 +157,14 @@ jobs:
           uv run --no-project --python 3.12 --with "$wheel" --with mypy==2.4.1 \
             --with 'torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl' \
             python -m mypy.stubtest --allowlist stubtest-allowlist.txt tensorfs._ext tensorfs.api tensorfs.executor tensorfs.raw
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wheel-${{ matrix.name }}
           path: crates/tensorfs-py/dist/*-abi3-*.whl
           if-no-files-found: error
           retention-days: 7
       - if: '!matrix.no310'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wheel-${{ matrix.name }}-cp310
           path: crates/tensorfs-py/dist/*-cp310-cp310-*.whl
@@ -185,26 +185,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
       - if: inputs.dev
         run: crates/tensorfs-py/scripts/dev-version.sh
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           maturin-version: v1.16.0
           working-directory: crates/tensorfs-py
           command: sdist
           args: --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wheel-sdist
           path: crates/tensorfs-py/dist/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
-  # The candidate: every platform and the sdist on the tag's prerelease, SHA256SUMS last, which marks it whole.
+  # The candidate: every platform and the sdist on the tag's prerelease, SHA256SUMS last, which marks it whole. Its
+  # SHA256SUMS.sigstore.jsonl, the GitHub attestation of SHA256SUMS by this workflow at the tag, goes up before it: a dev
+  # machine that opts into prereleases (`dev = true`) holds SHA256SUMS to it as `cozy update` holds a release (xs-196).
   candidate:
     if: inputs.candidate && !inputs.dev
     needs: [tag, wheel, sdist]
@@ -212,16 +214,26 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: wheel-*
           merge-multiple: true
           path: dist
-      - run: |
-          cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/SHA256SUMS
+      - env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          jq -c . "$BUNDLE" > SHA256SUMS.sigstore.jsonl
+          cd dist
           have=$(gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null) \
             || gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
               --title "TensorFS ${GITHUB_REF_NAME#tensorfs-v} (candidate)" --notes "Gate, then publish: release-gate/README.md"
@@ -234,6 +246,7 @@ jobs:
               gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -- "$name"
             fi
           done < SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --clobber -- ../SHA256SUMS.sigstore.jsonl
           gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -- SHA256SUMS
           w=$(grep -E 'cp311-abi3-manylinux[^ ]*x86_64\.whl$' SHA256SUMS | head -1)
           echo "gate with: tensorfs_wheel=https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/${w##* }#sha256=${w%% *}" \
@@ -255,7 +268,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GATE: ${{ inputs.gate_run }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           path: creator
       - run: |
@@ -268,4 +281,4 @@ jobs:
           set_=$(../creator/release-gate/verify.sh "$GATE")
           sha=$(jq -r .tensorfs_sha256 <<< "$set_")
           [ -n "$sha" ] && sha256sum -- * | grep -q "^$sha " || { echo "::error::gate $GATE ran no wheel of $GITHUB_REF_NAME"; exit 1; }
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1

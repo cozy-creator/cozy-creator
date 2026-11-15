@@ -17,7 +17,7 @@ use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey as _};
 use serde::Deserialize;
 
 use crate::{
-    api::{Api, Refusal, find},
+    api::{Api, Refusal, RunPath, find_scoped},
     store::{State as RunState, now_ms},
 };
 
@@ -70,7 +70,7 @@ fn link(address: &str, fingerprint: &str, token: &str, run: &RunId, output: &str
 
 pub(crate) async fn play(
     State(api): State<Arc<Api>>,
-    Path(key): Path<String>,
+    Path(path): Path<RunPath>,
     query: Result<Query<Ask>, QueryRejection>,
 ) -> Result<Json<Play>, Refusal> {
     let Query(ask) = query?;
@@ -78,33 +78,30 @@ pub(crate) async fn play(
         return Err(Refusal(Error::new(Kind::Usage, "play_output_invalid", "name one output, or name/index")));
     }
     let expires_s = lifetime(&ask.expires)?;
-    let row = find(&api, &key)?;
+    let row = find_scoped(&api, path.project(), path.key()).await?;
+    if row.project_root.is_some() { return Err(Refusal(Error::new(Kind::Conflict,"project_play_unavailable","project playback requires an owned private media transport; read this output through its project route"))); }
     let refuse = |kind, code: &str, message: String| Refusal(Error::new(kind, code, message));
     // A run still going may yet make the output; an ended one never will.
     let (name, index) = match ask.output.rsplit_once('/') {
         Some((name, i)) if i.parse::<u32>().is_ok() => (name, i.parse::<u32>().ok()),
         _ => (ask.output.as_str(), None),
     };
-    let made = api
-        .calcifer
-        .record(&row)?
-        .output
-        .iter()
-        .any(|item| item.name == name && index.is_none_or(|i| item.index == i));
+    let run = api.calcifer.record(&row)?;
+    let made = run.output.iter().any(|item| item.name == name && index.is_none_or(|i| item.index == i));
     if row.state == RunState::Settled && !made {
         return Err(refuse(
             Kind::NotFound,
             "output_not_found",
-            format!("run {} has no output {:?}", row.number, ask.output),
+            format!("run {} has no output {:?}", run.name, ask.output),
         ));
     }
-    let number = row.number;
+    let number = &run.name;
     let unavailable = |message| Refusal(Error::new(Kind::Unavailable, "machine_unavailable", message).next(format!("cozy run watch {number}")));
     let name = row
         .machine
         .clone()
-        .ok_or_else(|| unavailable(format!("run {} has no machine yet", row.number)))?;
-    let machine = api.calcifer.store().machine(&name)?;
+        .ok_or_else(|| unavailable(format!("run {number} has no machine yet")))?;
+    let machine = api.calcifer.maintenance_store().machine(&name)?;
     let (Some(machine), Some(frame)) = (machine, api.machines.frame(&name)) else {
         return Err(unavailable(format!("{name} has not reported its status")));
     };

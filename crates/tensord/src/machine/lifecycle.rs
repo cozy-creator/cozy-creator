@@ -71,7 +71,12 @@ pub(crate) struct Lifecycle {
     /// Called when an activation starts or ends without its restart (the runs it holds change),
     /// and when an admission or a follower lets go: the idle clock may start.
     changed: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
+    /// Why nothing can run here (cl-977): new work is refused, and a rental releases itself once nothing works there.
+    broken: std::sync::OnceLock<String>,
 }
+
+/// How long this computer's machine stays up idle while broken (cl-977): long enough for whoever started it to hear why.
+const BROKEN_IDLE_MS: i64 = 2 * 60_000;
 
 /// Holds the release while a call that may queue a job is in flight.
 pub(crate) struct Admission(Arc<Lifecycle>);
@@ -161,6 +166,7 @@ impl Lifecycle {
             kept: AtomicBool::new(false),
             transferred: AtomicI64::new(0),
             changed: Default::default(),
+            broken: Default::default(),
         });
         lifecycle.save(&lifecycle.state.lock().unwrap().ledger)?;
         Ok(lifecycle)
@@ -174,7 +180,23 @@ impl Lifecycle {
     /// and the last bytes an output read or an upload moved.
     fn idle_end(&self, state: &State) -> i64 {
         let used = state.jobs.ended_ms.max(self.transferred.load(Ordering::Acquire));
-        state.ledger.idle_since_ms.max(used) + self.grace
+        state.ledger.idle_since_ms.max(used) + self.window()
+    }
+
+    /// The idle window now. Broken (cl-977), none for a rental, which bills for nothing; this computer's machine stops after
+    /// `BROKEN_IDLE_MS`, so its next use starts it and checks its GPUs again: a broken verdict lasts one start, never longer.
+    fn window(&self) -> i64 {
+        match (self.broken.get().is_some(), self.rental) {
+            (true, true) => 0,
+            (true, false) => BROKEN_IDLE_MS.min(self.grace),
+            (false, _) => self.grace,
+        }
+    }
+
+    /// Nothing can run here (cl-977): it takes no new work, and a rental releases itself once nothing works there.
+    pub(crate) fn broken(&self, why: &str) {
+        let _ = self.broken.set(why.to_owned());
+        self.changed();
     }
 
     /// An output read or an object upload moved bytes: the rental is in use, and its idle clock
@@ -211,7 +233,7 @@ impl Lifecycle {
     fn idle_since(&self) -> Option<i64> {
         let state = self.state.lock().unwrap();
         let idle = !self.working(&state) && !state.activating && !state.ledger.released;
-        idle.then(|| self.idle_end(&state) - self.grace)
+        idle.then(|| self.idle_end(&state) - self.window())
     }
 
     /// A client follows a run's events or a log: the machine is in use until it lets go.
@@ -227,6 +249,13 @@ impl Lifecycle {
                 "machine_updating",
                 "the machine is activating an update; submit again once it is back",
             ));
+        }
+        if let Some(why) = self.broken.get() {
+            let then = match self.rental {
+                true => "it releases itself",
+                false => "it stops after 2 idle minutes, and its next use starts it and checks again",
+            };
+            return Err(Error::unavailable("machine_broken", format!("this machine is broken: {why}; {then}")));
         }
         // This computer's machine past its deadline but not yet exiting takes the call.
         if state.ledger.released || (self.rental && self.due(&state, now_ms())) {
@@ -353,6 +382,7 @@ impl Lifecycle {
     /// Work came between this computer's machine's claim and its stop: it serves on.
     fn reopen(&self) {
         self.state.lock().unwrap().ledger.released = false;
+        crate::activity::status_changed();
     }
 
     /// Takes the release once the idle clock ran out on a current reading. Irreversible but for
@@ -374,6 +404,8 @@ impl Lifecycle {
         ledger.released = true;
         self.save(&ledger)?;
         state.ledger = ledger;
+        drop(state);
+        crate::activity::status_changed();
         Ok(true)
     }
 }
@@ -447,21 +479,21 @@ pub(crate) async fn keep_authority(hub: Arc<Hub>, keys: Keys, state: PathBuf) {
     }
 }
 
-/// Reads the journal's jobs each second and releases the rental once 15 minutes passed with
-/// none. Returns when the Hub accepted the release, or when the rental ended itself at its
-/// provider (`provider`, else by stopping) so billing stops: released, it takes no more work, and
-/// the Hub has not ended it (`on_its_own`).
+/// Reads the journal's jobs at each activity and deadline, and releases the rental once 15
+/// minutes passed with none. Returns when the Hub accepted the release, or when the rental ended
+/// itself at its provider (`provider`, else by stopping) so billing stops: released, it takes no
+/// more work, and the Hub has not ended it (`on_its_own`).
 pub(crate) async fn release_when_idle(
     lifecycle: Arc<Lifecycle>,
     hub: Arc<Hub>,
     provider: Option<super::provider::ProviderSelf>,
-    jobs: impl Fn(i64) -> io::Result<Jobs>,
+    engine: Arc<crate::execution::Engine>,
 ) {
     let (mut next_ask, mut unanswered) = (0, 2_500);
     loop {
-        let epoch = lifecycle.epoch();
-        match jobs(lifecycle.ended_ms()) {
-            Ok(read) => lifecycle.observe(read, epoch),
+        let (seen, epoch) = (engine.activity_epoch(), lifecycle.epoch());
+        match engine.jobs(lifecycle.ended_ms()) {
+            Ok((working, ended_ms)) => lifecycle.observe(Jobs { working, ended_ms }, epoch),
             Err(error) => {
                 tracing::warn!("cannot read this rental's jobs: {error}");
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -473,7 +505,10 @@ pub(crate) async fn release_when_idle(
             match lifecycle.claim() {
                 Ok(true) => match hub.release().await {
                     Ok(()) => {
-                        tracing::info!("15 minutes without a job; Tensorhub accepted the release");
+                        match lifecycle.broken.get() {
+                            Some(why) => tracing::info!("broken ({why}); Tensorhub accepted the release"),
+                            None => tracing::info!("15 minutes without a job; Tensorhub accepted the release"),
+                        }
                         return;
                     }
                     // Its rental is over at the Hub, yet the pod is here: only it can end itself.
@@ -497,13 +532,23 @@ pub(crate) async fn release_when_idle(
                 }
             }
         }
-        // Read each second, not at each ask: an ask can wait as long as the Hub last said to.
+        // Read at each wake, not at each ask: an ask can wait as long as the Hub last said to.
         if lifecycle.released() && on_its_own(hub.contact_ms(), lifecycle.deadline_ms(), lifecycle.grace, now_ms()) {
             tracing::warn!("released, and Tensorhub has not ended this rental: silent for a whole idle window, or a whole window past the deadline; ending it itself");
             end_itself(provider.as_ref()).await;
             return;
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // Until work comes or goes, or the next deadline: the idle clock's end, or released, the next ask and ending on its own.
+        let next = match lifecycle.released() {
+            true => next_ask.min(hub.contact_ms().min(lifecycle.deadline_ms()) + lifecycle.grace),
+            false => match lifecycle.deadline_ms() {
+                0 => i64::MAX,
+                end => end,
+            },
+        };
+        let wait = (next != i64::MAX).then(|| Duration::from_millis((next - now_ms()).max(1000) as u64));
+        let engine = engine.clone();
+        let _ = tokio::task::spawn_blocking(move || engine.wait_activity(seen, wait)).await;
     }
 }
 
@@ -533,14 +578,14 @@ pub(crate) fn exit_when_idle(
             engine.wait_activity(seen, None);
             continue;
         };
-        let (now, grace) = (now_ms(), lifecycle.grace);
+        let (now, grace) = (now_ms(), lifecycle.window());
         // Authorized now, on loopback (or the reverse): it exits idle, and starts listening as its
         // controllers need (Calcifer starts it again while one is authorized).
         if rebind() {
             match lifecycle.release(false).and_then(|claimed| Ok(claimed && stop()?)) {
                 Ok(true) => {
                     tracing::info!("its controllers changed: it starts again, listening as they need");
-                    std::process::exit(0);
+                    super::supervise::leave(0);
                 }
                 Ok(false) => lifecycle.reopen(),
                 Err(error) => tracing::warn!("this machine's restart for its controllers: {error}"),
@@ -551,8 +596,11 @@ pub(crate) fn exit_when_idle(
             release();
             released = Some(since);
         }
-        let held = kept();
-        lifecycle.kept.store(held, Ordering::Release);
+        // A broken machine serves no controller: it stops, and its next start checks again.
+        let held = kept() && lifecycle.broken.get().is_none();
+        if lifecycle.kept.swap(held, Ordering::AcqRel) != held {
+            crate::activity::status_changed();
+        }
         if now >= since + grace && held && parents_released != Some(since) {
             tracing::info!("idle {} s, kept up for its controllers: its import-only parents end", (now - since) / 1000);
             release_parents();
@@ -562,7 +610,7 @@ pub(crate) fn exit_when_idle(
             match lifecycle.claim().and_then(|claimed| Ok(claimed && stop()?)) {
                 Ok(true) => {
                     tracing::info!("idle {} s: this machine exits until it is used", (now - since) / 1000);
-                    std::process::exit(0);
+                    super::supervise::leave(0);
                 }
                 Ok(false) => lifecycle.reopen(),
                 Err(error) => tracing::warn!("this machine's idle exit: {error}"),

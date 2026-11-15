@@ -16,7 +16,6 @@ use std::{
 
 /// Under this a transfer measures its latency more than its link (the Hub judges none smaller).
 const MEASURED_BYTES: u64 = 1 << 30;
-const LOOK: Duration = Duration::from_secs(5);
 
 struct Reporter {
     hub: Arc<Hub>,
@@ -40,9 +39,10 @@ pub(crate) fn serve(hub: Arc<Hub>, state: PathBuf, origin: Arc<crate::origin::Ma
     {
         return;
     }
+    let returned = origin.returned();
     runtime.spawn(async move {
         loop {
-            tokio::time::sleep(LOOK).await;
+            returned.notified().await;
             let (bytes, time) = origin.received();
             if bytes >= MEASURED_BYTES && !time.is_zero() {
                 let download = WorkerDownload {

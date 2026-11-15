@@ -117,7 +117,19 @@ cozy open                                  # edit assets in the browser
 cozy status                                # project health and warnings
 ```
 
-The format and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).
+An agent edits the same project as a file of nodes: `cozy get` lists them, `cozy get NAME` prints each whole as YAML, `cozy apply -f
+FILE` merges each back against the rev it was read at, `cozy diff -f FILE` shows that merge and writes nothing, and `cozy delete NAME`
+removes one. What a person changed on the page meanwhile stands, a value both changed is a conflict, and the page's Undo takes an
+apply back. `cozy explain [TOOL]` says what a file holds, `--schema` as JSON Schema. `cozy render NAME` is the page's Render: it
+brings the node up to date, what it reads first, and joins a render already going, so running it again never pays twice.
+
+```sh
+cozy get shot_2 > shot_2.yaml              # edit it with any editor
+cozy apply -f shot_2.yaml                  # the file is rewritten as it now stands
+cozy render film --on local                # film, and shot_2 first, as it's out of date
+```
+
+The project model and every command: [PROJECT.md](crates/calcifer/docs/PROJECT.md).
 
 ## Remove cozy
 
@@ -178,5 +190,7 @@ On Linux, `scripts/dev-local.sh` watches the checkout with Watchexec, builds inc
 successful builds into `~/.cozy/bin/cozy`, and restarts `cozy-calcifer.service`. It needs Watchexec,
 pnpm, Python 3, binutils, and the pinned Rust toolchain. `scripts/dev-local.sh --once` runs one update.
 
-For browser hot reload, run `pnpm --dir web/app dev --host 127.0.0.1`. Vite uses the local Calcifer
-through the existing development proxy. The watcher also rebuilds the page embedded in the binary.
+For browser hot reload, put `dev = true` at the top of `~/.cozy/config.toml` and
+`development_web = "127.0.0.1:5173"` under `[calcifer]`, restart Calcifer, run `pnpm --dir web/app dev`,
+and open Calcifer's own address (`cozy open`). Calcifer fetches the page's code and HMR from Vite; the
+browser talks to Calcifer alone, and Vite answers no `/v1`. Remove the setting to use the embedded page.

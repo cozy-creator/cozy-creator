@@ -269,14 +269,25 @@ fn threads() -> io::Result<usize> {
     Ok(task.pti_threadnum as usize)
 }
 
-/// What wakes a supervising parent: TERM, INT and CHLD, blocked on its thread and taken one at a
-/// time.
+/// What wakes a supervising parent: TERM, INT, CHLD, its service's word that it is leaving (USR1) and its own alarm (ALRM),
+/// blocked on its thread and taken one at a time.
 pub struct SupervisorSignals(libc::sigset_t);
 
 /// What [`SupervisorSignals::wait`] took.
 pub enum Woken {
     Stop(Signal),
     Child,
+    /// Its service says it is exiting ([`leaving`]).
+    Leaving,
+    /// The alarm [`SupervisorSignals::alarm`] set went off.
+    Alarm,
+}
+
+/// Tells this process's parent, a supervisor, that it is exiting: the parent then waits for it only so long.
+pub fn leaving() {
+    if let Some(parent) = rustix::process::getppid() {
+        let _ = rustix::process::kill_process(parent, Signal::USR1);
+    }
 }
 
 /// A `pthread_sigmask` or `sigwait` answer: the error itself, not -1 and errno.
@@ -294,7 +305,7 @@ impl SupervisorSignals {
         unsafe {
             let mut set = std::mem::zeroed();
             libc::sigemptyset(&mut set);
-            for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGCHLD] {
+            for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGCHLD, libc::SIGUSR1, libc::SIGALRM] {
                 libc::sigaddset(&mut set, signal);
             }
             Self(set)
@@ -314,8 +325,16 @@ impl SupervisorSignals {
         Ok(match signal {
             libc::SIGTERM => Woken::Stop(Signal::TERM),
             libc::SIGINT => Woken::Stop(Signal::INT),
+            libc::SIGUSR1 => Woken::Leaving,
+            libc::SIGALRM => Woken::Alarm,
             _ => Woken::Child,
         })
+    }
+
+    /// [`Woken::Alarm`] in `seconds`, replacing an alarm set before; 0 cancels it.
+    pub fn alarm(&self, seconds: u32) {
+        // SAFETY: alarm takes a count and answers the one it replaced.
+        unsafe { libc::alarm(seconds) };
     }
 }
 
@@ -384,4 +403,49 @@ mod tests {
         assert!(super::take_handed(-1).is_none());
         assert!(super::hand_on_exec(&read, 7).is_err());
     }
+}
+
+/// Two private inherited descriptors for Chromium's debugging protocol. Both child endpoints
+/// are first moved above fd 4, so installing 3/4 cannot clobber either source.
+#[cfg(target_os = "linux")]
+pub(super) fn private_browser_pipe(command: &mut Command) -> io::Result<(File, File)> {
+    fn pipe() -> io::Result<(File, File)> {
+        let mut fds = [-1; 2];
+        // SAFETY: pipe fills the two slots; each successful descriptor gets exactly one File owner.
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 { return Err(io::Error::last_os_error()); }
+        // SAFETY: pipe2 succeeded, so both slots are fresh descriptors owned by nothing else.
+        let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+        for file in [&read, &write] {
+            // SAFETY: fcntl only sets a flag on a descriptor this File owns and keeps open.
+            if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 { return Err(io::Error::last_os_error()); }
+        }
+        Ok((read, write))
+    }
+    fn above(file: File) -> io::Result<File> {
+        // SAFETY: fcntl duplicates this owned descriptor; the returned descriptor gets one owner.
+        let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 5) };
+        if fd == -1 { return Err(io::Error::last_os_error()); }
+        // SAFETY: F_DUPFD_CLOEXEC succeeded, so `fd` is a new descriptor with no other owner.
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+    let (child_read, parent_write) = pipe()?;
+    let (parent_read, child_write) = pipe()?;
+    let (child_read, child_write) = (above(child_read)?, above(child_write)?);
+    inherit_nothing(command);
+    let parent = std::process::id();
+    // SAFETY: only async-signal-safe descriptor/process syscalls runs in the child. Captured File owners keep the exact
+    // endpoints alive until spawn; dup2 clears CLOEXEC on 3/4, other descriptors retain it.
+    unsafe {
+        command.pre_exec(move || {
+            // A controller crash cannot leave its Chrome leader running with live authority.
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 || libc::getppid() as u32 != parent {
+                return Err(io::Error::from_raw_os_error(libc::EINTR));
+            }
+            if libc::dup2(child_read.as_raw_fd(), 3) == -1 || libc::dup2(child_write.as_raw_fd(), 4) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok((parent_write, parent_read))
 }

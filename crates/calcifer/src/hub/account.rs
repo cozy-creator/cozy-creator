@@ -184,16 +184,18 @@ pub(super) async fn send_code(
     let enrollment = match Enrollment::begin(&anonymous, &email, label, session.as_ref().map(UserSession::key)).await {
         Ok(enrollment) => enrollment,
         Err(e) => {
-            // Asked again too soon: the code already out still works, so that's the answer.
-            let out = matches!(e, ::api::hub::Error::Hub { status: 429, .. }).then(|| api.codes.sent_to(&hub, ask.purpose, &email));
-            let Some((id, _)) = out.and_then(|mut codes| (!codes.is_empty()).then(|| codes.remove(0))) else {
+            // Asked again too soon is an answer, not a refusal: the code already out still works, and the Hub's wait says
+            // when it sends another, which a client counts down.
+            let wait = e.stated_wait().map(|wait| wait.as_secs());
+            let id = (api.codes.sent_to(&hub, ask.purpose, &email).into_iter().next()).map(|(id, _)| id);
+            if !matches!(e, ::api::hub::Error::Hub { status: 429, .. }) || (id.is_none() && wait.is_none()) {
                 return Err(refusal(&hub, e));
-            };
-            return Ok(Json(Code { id, email, retry_after_s: e.stated_wait().map(|wait| wait.as_secs()) }));
+            }
+            return Ok(Json(Code { id, email, retry_after_s: wait }));
         }
     };
     let id = api.codes.keep(Pending { hub, purpose: ask.purpose, enrollment, sent: Instant::now(), stepped: Mutex::default() });
-    Ok(Json(Code { id, email, retry_after_s: None }))
+    Ok(Json(Code { id: Some(id), email, retry_after_s: None }))
 }
 
 /// The Hub's word that this isn't the code: 401, which isn't this computer's sign-in failing.

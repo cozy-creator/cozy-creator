@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -28,7 +29,7 @@ def main() -> int:
     require_ci_test_hub(hub)
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     base = "http://" + holder["address"]
-    headers = {"Authorization": "Bearer " + holder["token"]}
+    headers = {"Authorization": "Bearer " + holder["token"], "cozy-project-storage": "3"}
     staged = json.loads(subprocess.check_output([args.stage_code, str(args.target)], text=True))
     for left in staged["left"]:
         print("left out of code: " + left, file=sys.stderr)
@@ -38,6 +39,9 @@ def main() -> int:
 
     payload = json.loads(args.input.read_text())
     paths: dict[str, dict[str, str]] = {}
+    project = str(args.project.resolve(strict=True))
+    # An input is project data: into the project's own content store, as the CLI sends it (`PUT /v1/project-files/<digest>`).
+    held = base + "/v1/project-files/{}?project=" + urllib.parse.quote(project, safe="")
 
     def attach(written: str, directory: Path, required: bool = False) -> None:
         path = Path(written).expanduser()
@@ -53,7 +57,9 @@ def main() -> int:
             return
         with path.open("rb") as source:
             digest = "sha256:" + hashlib.file_digest(source, "sha256").hexdigest()
-        upload(base, headers, digest, path.read_bytes())
+        data = path.read_bytes()
+        urllib.request.urlopen(urllib.request.Request(held.format(digest), data=data, method="PUT", headers={
+            **headers, "Content-Type": "application/octet-stream", "Content-Length": str(len(data))})).close()
         paths[written] = {"file": digest}
 
     def input_paths(value: object) -> None:
@@ -76,9 +82,9 @@ def main() -> int:
         files.append({"name": name, "file": file})
     request = {"target": staged["target"], "code": staged["code"], "input": payload,
                "files": files, "paths": paths, "on": ["local"], "hub": hub,
-               "project": str(args.project.resolve(strict=True))}
+               "project": project}
     key = str(uuid.uuid4())
-    followed: set[int] = set()
+    followed: set[str] = set()
     while True:
         call = urllib.request.Request(base + "/v1/run-estimates", data=json.dumps(request).encode(), headers={
             **headers, "Content-Type": "application/json", "Idempotency-Key": key,
@@ -94,12 +100,13 @@ def main() -> int:
                 raise ValueError("Calcifer returned no estimate")
             print(json.dumps(answer))
             return 0
-        number = preparing["number"]
+        # Its KEY-N names it from this script's folder, which is no project's (cl-987).
+        name = str(preparing["name"])
         # Local preparation installs code with a WARM run; the requested model function never runs.
-        if preparing["kind"] != "warm" or number in followed:
+        if preparing["kind"] != "warm" or name in followed:
             raise ValueError("Calcifer did not finish the local-code preparation")
-        followed.add(number)
-        subprocess.run([args.cozy, "--json", "run", "watch", str(number)], stdout=sys.stderr, check=True)
+        followed.add(name)
+        subprocess.run([args.cozy, "--json", "run", "watch", name], stdout=sys.stderr, check=True)
 
 
 if __name__ == "__main__":

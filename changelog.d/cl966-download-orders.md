@@ -1,0 +1,1 @@
+A job's model headers and its install's Hub wheels come at its own place in the machine's download line, not ahead of every job's weights: a later job's install no longer jumps an earlier job's download. Order 0 is left for a started call's read of what isn't here yet; the machine's own update reads stay ahead of every job.

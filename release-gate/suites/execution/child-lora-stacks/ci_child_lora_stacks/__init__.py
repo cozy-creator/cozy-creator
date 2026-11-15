@@ -7,11 +7,11 @@ import time
 from typing import cast
 
 import msgspec
-import sdxl
-from sdxl import GenerateInput
 
 from cozy_runtime.author import App, Context, Lora, ModelChoice, Outputs, Seed, call
 from cozy_runtime.media import File
+
+from .sdxl_calls import GenerateInput, generate
 
 app = App()
 BALLOON, IKEA = "proomptengineer/balloon-lora-sdxl", "ostris/ikea-lora-sdxl"
@@ -51,7 +51,7 @@ async def compare(ctx: Context, payload: Compare, out: Outputs) -> Compared:
     for stack, model, seed in plan:
         started = time.monotonic()
         request = GenerateInput(prompt=payload.prompt, seed=cast(Seed, seed), steps=payload.steps)  # cast: Seed is a NewType of int
-        result = await call(sdxl.generate, payload=request, model=model)
+        result = await call(generate, request, models={"model": model})
         seconds, digest = round(time.monotonic() - started, 2), result.image.digest
         seen = any(call.digest == digest for call in calls)
         if not seen:

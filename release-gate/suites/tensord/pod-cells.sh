@@ -6,7 +6,7 @@
 # A gate runs the release-style TensorFS wheel: e2e's candidate wheel has no Torch allocator shim, so cli-release cannot
 # run GPU work on a candidate TensorFS.
 #   gh workflow run release-gate.yml -f suites=packages -f cells=release-gate/suites/tensord/pod-cells.sh \
-#     -f only=pc-lora,pc-image,pc-held-source,pc-resume -f pins=sdxl@<candidate> ...
+#     -f only=pc-lora,pc-image,pc-held-source,pc-resume -f packages_ref=<packages commit> ...
 want() { [ -z "$ONLY" ] || [[ $ONLY == *",$1,"* ]]; }
 cell pc-lora "$(pkg sdxl generate)" prompt="$OBJECT as flat-pack furniture, catalog photo" seed:=$((R + 70)) --lora ostris/ikea-lora-sdxl
 if [ -f pc-lora.json ]; then

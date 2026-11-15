@@ -34,16 +34,13 @@ const BOARD: &str = "board";
 /// The machines the project's runs go to (cl-873), as a JSON list of names.
 const MACHINES: &str = "machines";
 
-/// Authoring interchange filenames, also recognized to refuse retired file-only folders.
-pub(crate) const PROJECT: &str = "project.yaml";
-pub(crate) const LOCK: &str = "project.lock";
 /// Where every file the project uses is kept, by content: `files/<sha256>.<ext>`.
 pub(crate) const FILES: &str = "files";
 /// Where a run's outputs land before they are kept in `files/`.
 pub(crate) const RUNS: &str = ".runs";
-/// What marks a row whose name the file has lost: no name can hold it.
+/// What marks a row whose name the project has lost: no name can hold it.
 pub(super) const TOMBSTONE: char = '#';
-/// The lock's format, as `project.lock` wrote it.
+/// The lock's format.
 pub(super) const FORMAT: u32 = 3;
 
 /// The most a URL may give: far past any picture, and a shared project can't fill a disk with it.
@@ -59,7 +56,7 @@ pub(crate) struct Kept {
     pub already: bool,
 }
 
-/// How many hex characters of its hash cozy prints for a file, for project.yaml.
+/// How many hex characters of its hash a box's `approved` names a file by.
 const PREFIX: usize = 12;
 
 /// Each kind of file a project keeps by what it is: its extension, its media type, and the field that names one.
@@ -136,6 +133,9 @@ pub(crate) struct File {
     pub frames: u64,
     #[serde(skip)]
     pub alpha: f64,
+    /// Only its size is known, read from its header as it came: the rest is measured once ffprobe gets to it.
+    #[serde(skip)]
+    pub shape_only: bool,
     /// A file too big for one object at the Hub: the objects it goes as, in order. Its first push lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<tensorfs::format::ObjectRef>,
@@ -168,19 +168,21 @@ pub(crate) struct Measured {
     alpha: f64,
     #[serde(default, skip_serializing_if = "is_zero")]
     duration_ms: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    shape_only: bool,
 }
 
 impl Measured {
     fn of(file: &File) -> Self {
-        Self { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms }
+        Self { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms, shape_only: file.shape_only }
     }
 }
 
 impl File {
     /// What `measured` says is measured of these bytes, on this row.
     fn measured_as(&mut self, measured: &File) {
-        (self.width, self.height, self.fps, self.frames, self.alpha, self.duration_ms) =
-            (measured.width, measured.height, measured.fps, measured.frames, measured.alpha, measured.duration_ms);
+        (self.width, self.height, self.fps, self.frames, self.alpha, self.duration_ms, self.shape_only) =
+            (measured.width, measured.height, measured.fps, measured.frames, measured.alpha, measured.duration_ms, measured.shape_only);
     }
 
     fn extension(&self) -> String {
@@ -219,7 +221,7 @@ impl File {
     pub(crate) fn unmeasured(&self) -> bool {
         match media_of(&self.extension()) {
             Some((_, "audio")) => self.duration_ms == 0,
-            Some(_) => self.width == 0,
+            Some(_) => self.width == 0 || self.shape_only,
             None => false,
         }
     }
@@ -343,7 +345,7 @@ pub(crate) struct Pending {
     /// Its run's number, once sent.
     #[serde(default)]
     pub run: u64,
-    /// Pinned in project.yaml when it lands (`--approve`).
+    /// Approved when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
     /// Its pin, by the field holding it, goes when it lands (`--outdated`): if it never does, the pin stands.
@@ -376,6 +378,9 @@ pub(crate) struct Asset {
     pub tried: Option<Tried>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<Failed>,
+    /// Its takes that failed, by id, the newest last: each kept until it's dismissed (cl-954), at most `ENDED_KEPT`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ended: Vec<Ended>,
     /// When a delete set it aside: Undo brings it back until the window ends, then its files leave the project (cl-919, `purge`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_ms: Option<i64>,
@@ -391,6 +396,18 @@ pub(crate) struct Failed {
     pub inputs: Option<String>,
     pub error: Error,
 }
+
+/// A take that failed: its id, its run if it had one, and why (cl-954).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Ended {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u64>,
+    pub error: Error,
+}
+
+/// The most failed takes an asset keeps.
+pub(crate) const ENDED_KEPT: usize = 20;
 
 /// The seed last sent for `inputs`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -493,11 +510,11 @@ pub(crate) struct Lock {
     /// Every file, by sha256.
     #[serde(default)]
     pub files: BTreeMap<String, File>,
-    /// By name key. An asset project.yaml no longer names is kept, its versions with it, until it is
+    /// By name key. An asset the project no longer names is kept, its versions with it, until it is
     /// renamed or reclaimed.
     #[serde(default)]
     pub assets: BTreeMap<String, Asset>,
-    /// By idempotency key. Never in project.lock, which a project copy carries: `Folder::lock` reads it from `WALK`.
+    /// By idempotency key. Never in the lock's own rows, which a project copy carries: `Folder::lock` reads it from `WALK`.
     #[serde(skip)]
     pub pending: BTreeMap<String, Pending>,
     /// What `cozy run`s left here: they belong to no asset, and no memo holds them.
@@ -509,6 +526,10 @@ pub(crate) struct Lock {
     /// What each tool outputs, `image`, `video` or `audio`, as its interface last said, for what `defaults` fill before it has a version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub makes: BTreeMap<String, String>,
+    /// Each published release the project ran, `org/pkg@release <hub>`, and its digest at its first run (xs-196): every later run of it
+    /// installs exactly those files, on any computer the project goes to.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub releases: BTreeMap<String, String>,
     /// As `pending`.
     #[serde(skip)]
     pub walk: Owed,
@@ -529,7 +550,7 @@ pub(crate) struct RunFile {
 
 impl Default for Lock {
     fn default() -> Self {
-        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), makes: BTreeMap::new(), walk: Owed::default() }
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), makes: BTreeMap::new(), releases: BTreeMap::new(), walk: Owed::default() }
     }
 }
 
@@ -545,7 +566,7 @@ pub(crate) struct Owed {
     /// What renders going may still call an asset, (from, to): a run on its way, a job being sent. Its row is under the new name; these find it until the walk ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renames: Vec<(String, String)>,
-    /// The last number each asset's jobs took, by name key: taking one rewrites nothing of the project. One that failed stays taken in project.lock.
+    /// The last number each asset's jobs took, by name key: taking one rewrites nothing of the project. One that failed stays taken.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub numbered: BTreeMap<String, u32>,
     /// This walk's runs not over: what they land is their version's. With the version listed whose file is on its way, which a restart follows.
@@ -624,15 +645,12 @@ impl Pending {
     }
 }
 
-/// One render: project.yaml as it was when asked, and what it owes. It plans on that text alone, so an edit after it touches nothing
-/// of it, and a restart resumes it.
+/// One render: the project's boxes as they were when asked (its snapshot, `Folder::asked`), and what it owes. It plans on that
+/// snapshot alone, so an edit after it touches nothing of it, and a restart resumes it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Ask {
     pub id: String,
-    /// Only in a walk from before its text was kept apart (`Folder::text_of`).
-    #[serde(default, skip_serializing)]
-    pub text: String,
-    /// `text`'s sha256: asks of the same text make the same inputs.
+    /// Its snapshot's sha256: asks of the same snapshot make the same inputs.
     pub digest: String,
     /// Where what it brings up goes.
     pub target: Target,
@@ -645,6 +663,9 @@ pub(crate) struct Ask {
     /// Asked of `all`, with or without `--missing`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub whole: bool,
+    /// Not of `all`, with `outdated`: the pins it judges, by name key, those its names read and themselves.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub judges: BTreeSet<String>,
     /// What it sent or tried, made or failed, by name key: each is tried once.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub sent: BTreeSet<String>,
@@ -698,6 +719,9 @@ pub(crate) struct Take {
     /// Pick up from here: the take its new part goes on from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickup: Option<api::calcifer::project::Pickup>,
+    /// What it reads with no state renders first, a cut's too (`cozy render`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub covers: bool,
 }
 
 impl Lock {
@@ -776,16 +800,6 @@ impl Lock {
     pub(crate) fn rows_of<'a>(&'a self, key: &str) -> impl Iterator<Item = (&'a String, &'a Asset)> {
         let (key, buried) = (key.to_owned(), format!("{key}{TOMBSTONE}"));
         self.assets.iter().filter(move |(at, _)| **at == key || at.starts_with(&buried))
-    }
-
-    /// The lock as it's written, each file's row only where it `keeps_row`.
-    pub(crate) fn written(&self) -> String {
-        let recorded = self.recorded();
-        let mut value = serde_json::to_value(self).expect("a lock serializes");
-        if let Some(files) = value["files"].as_object_mut() {
-            files.retain(|sha256, _| self.files.get(sha256).is_some_and(|file| Self::keeps_row(sha256, file, &recorded)));
-        }
-        api::yaml::from_json(&value)
     }
 
     /// Whether a file has a row: for what can't be read again from a file here (where it stays, its parts), or the whole hash of one no
@@ -941,9 +955,10 @@ struct Shared {
 type Frames = ((u64, std::time::SystemTime), Option<u64>);
 
 impl Drop for Shared {
-    /// Nothing names the folder now: project.db's connections close, beside whatever dropped it, as closing them may checkpoint its
-    /// WAL. What the project held is freed there too, and its memory given back to the OS (cl-870): without that, Calcifer stays as
-    /// large as the project made it.
+    /// Nothing names the folder now: project.db's connections close, beside whatever dropped it, its WAL checkpointed first. The last
+    /// connection's close checkpoints what's left under an exclusive lock every other open waits on, and a slow disk's checkpoint there
+    /// outlasted the next open's wait (cl-885); a passive one beside reads and writes leaves it nothing. What the project held is freed
+    /// there too, and its memory given back to the OS (cl-870): without that, Calcifer stays as large as the project made it.
     fn drop(&mut self) {
         let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
         if shared.get(&self.key).is_some_and(|held| held.strong_count() == 0) {
@@ -962,6 +977,9 @@ impl Drop for Shared {
         std::thread::spawn(move || {
             let resident = || platform::contain::host_memory::process(std::process::id()).map_or(0, |memory| memory.rss) >> 20;
             let before = (resident(), platform::heap::committed() >> 20);
+            if let Some(conn) = writing.as_ref().or(reading.as_ref()) {
+                let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+            }
             drop((writing, reading, held, book, films));
             platform::heap::give_back();
             tracing::info!(
@@ -1031,6 +1049,8 @@ fn ms(since: Instant) -> f64 {
 struct Acting {
     id: usize,
     base: Stored,
+    /// Its base's document, decoded in it (`act_document`) when what's held hadn't been.
+    document: RefCell<Option<Arc<super::crdt::Document>>>,
     written: RefCell<Option<Written>>,
     canvas: RefCell<Option<BTreeMap<String, CardRow>>>,
     lock: RefCell<Option<Lock>>,
@@ -1039,6 +1059,8 @@ struct Acting {
     extra: RefCell<Extra>,
     made: RefCell<Vec<Made>>,
     after: RefCell<Vec<Box<dyn FnOnce(u64)>>>,
+    /// Writes to its run journal, committed with it (`join_act`).
+    joined: RefCell<Vec<db::Joined>>,
 }
 
 thread_local! {
@@ -1173,16 +1195,33 @@ impl Folder {
         Ok((folder, inspected))
     }
 
-    /// Identity from the same native document used by this open, never a query projection
-    /// or another independent decode of its Automerge snapshot.
+    /// Its identity: the document's, as its rows keep it beside it (`db::identity`).
     pub(crate) fn canonical_identity(&self) -> Result<Option<(String, String)>, Error> {
-        let held = self.held()?;
-        Ok(held.as_ref().and_then(|held| held.stored.crdt.as_ref()).and_then(|doc| doc.identity()))
+        if let Some(found) = self.held()?.as_ref().and_then(|held| held.stored.crdt.as_ref()).and_then(|doc| doc.identity()) {
+            return Ok(Some(found));
+        }
+        self.reading_db(db::identity)
     }
 
     /// The public route code is local metadata, separate from the native project id.
     pub(crate) fn public_code(&self) -> Result<Option<String>, Error> {
         self.reading_db(|conn| db::meta(conn, "code"))
+    }
+
+    /// The keys its runs were named by (cl-987), its key now last.
+    pub(crate) fn keys(&self) -> Result<Vec<String>, Error> {
+        self.reading_db(db::keys)
+    }
+
+    /// Keeps `key` as its key now (`db::set_key`): no part of the project moves.
+    pub(crate) fn set_key(&self, key: &str, fresh: bool) -> Result<(), Error> {
+        self.write_past(|conn| db::set_key(conn, &self.db(), key, fresh))
+    }
+
+    /// `db::set_key_now`: as it opens, kept only when no other program holds its write lock (false), never waited on.
+    pub(crate) fn set_key_now(&self, key: &str, fresh: bool) -> Result<bool, Error> {
+        if self.reading_db(db::locked_elsewhere)? { return Ok(false); }
+        self.write_past(|conn| db::set_key_now(conn, &self.db(), key, fresh))
     }
 
     /// Rare identity changes (first name or a copied project) invalidate the held native view.
@@ -1214,9 +1253,13 @@ impl Folder {
         kept.and_then(|kept| serde_json::from_str(&kept).ok()).unwrap_or_default()
     }
 
+    /// The machines its runs go to, in one transaction (or the act it's in).
     pub(crate) fn set_machines(&self, machines: &[String]) -> Result<(), Error> {
         let kept = (!machines.is_empty()).then(|| serde_json::to_string(machines).expect("names serialize"));
-        self.write_past(|conn| db::set_meta(conn, &self.db(), MACHINES, kept.as_deref()))
+        self.act(|| {
+            acting(self.id()).expect("in its act").extra.borrow_mut().meta.push((MACHINES, kept));
+            Ok(())
+        })
     }
 
     /// Whether another program holds project.db's write lock, asked this moment with no wait. None while a write of Calcifer's has the
@@ -1226,24 +1269,13 @@ impl Folder {
         self.writer(&mut turn).ok().map(|conn| db::locked_elsewhere(conn))
     }
 
-    /// Recognize native storage or retired markers so a legacy folder receives a precise
-    /// unsupported-format refusal rather than looking like an ordinary non-project directory.
+    /// Whether `dir` is a project: it holds a `project.db`.
     pub(crate) fn is_project(dir: &Path) -> bool {
-        dir.join(db::DB).is_file() || Self::legacy_files(dir)
+        dir.join(db::DB).is_file()
     }
 
-    pub(crate) fn legacy_files(dir: &Path) -> bool {
-        [PROJECT, LOCK, "project.canvas.yaml", "project.db.new"].iter().any(|name| dir.join(name).exists())
-            || dir.join(".cozy-legacy-v1").exists()
-    }
-
-    pub(crate) fn missing_native(dir: &Path) -> Error {
-        if Self::legacy_files(dir) {
-            Error::new(Kind::Validation, "project_format_unsupported", format!("{} holds retired or incomplete project files; a current native CRDT project.db is required", dir.display()))
-                .remedy("Create a new project directory; import current-format authoring YAML explicitly into that native project")
-        } else {
-            Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)).next("cozy new")
-        }
+    pub(crate) fn not_a_project(dir: &Path) -> Error {
+        Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)).next("cozy new")
     }
 
     fn id(&self) -> usize {
@@ -1262,7 +1294,7 @@ impl Folder {
     /// What's held of `project.db`, read now if it wasn't or another connection wrote it, `files/` filled in again if it moved. It
     /// waits on no writer: a commit holds this only to swap in what it wrote (cl-837).
     fn held(&self) -> Result<MutexGuard<'_, Option<Held>>, Error> {
-        if !self.db().is_file() { return Err(Self::missing_native(&self.dir)); }
+        if !self.db().is_file() { return Err(Self::not_a_project(&self.dir)); }
         let mut held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
         let mut reading = self.shared.reading.lock().unwrap_or_else(|e| e.into_inner());
         let conn = match &mut *reading {
@@ -1286,10 +1318,9 @@ impl Folder {
         Ok(held)
     }
 
-    /// Native CRDT conflicts are kept visible even though an ordinary value read chooses one.
+    /// Native CRDT conflicts are kept visible even though an ordinary value read chooses one: as the last commit found them.
     pub(crate) fn crdt_conflicts(&self) -> Result<Vec<String>, Error> {
-        let held = self.held()?;
-        Ok(held.as_ref().and_then(|held| held.stored.crdt.as_ref()).map_or_else(Vec::new, |doc| doc.conflicts()))
+        Ok(self.held()?.as_ref().map(|held| (*held.stored.conflicts).clone()).unwrap_or_default())
     }
 
     /// The revision: one more with each commit.
@@ -1321,6 +1352,7 @@ impl Folder {
         let act = Rc::new(Acting {
             id,
             base,
+            document: RefCell::default(),
             written: RefCell::default(),
             canvas: RefCell::default(),
             lock: RefCell::default(),
@@ -1329,13 +1361,16 @@ impl Folder {
             extra: RefCell::default(),
             made: RefCell::default(),
             after: RefCell::default(),
+            joined: RefCell::default(),
         });
         let done = {
             let _in = In::enter(act.clone());
             change()
         };
+        // What it said it answers, taken whether it commits or not: a failed act's words go with it.
+        let said = super::keyed::answer_now();
         let answer = done?;
-        let act = Rc::try_unwrap(act).unwrap_or_else(|_| panic!("an act outlives its turn"));
+        let mut act = Rc::try_unwrap(act).unwrap_or_else(|_| panic!("an act outlives its turn"));
         let mut after = act.base.clone();
         let changed = [act.written.borrow().is_some(), act.canvas.borrow().is_some(), act.lock.borrow().is_some(), act.walk.borrow().is_some(), act.measured.borrow().is_some()];
         if let Some(written) = act.written.into_inner() {
@@ -1356,12 +1391,18 @@ impl Folder {
             after.measured = Arc::new(measured);
         }
         let mut extra = act.extra.into_inner();
+        let joined = act.joined.into_inner();
         let entry = super::history::composed(self, act.made.into_inner(), &mut extra);
         if let Some(key) = super::keyed::claimed() {
             extra.key = Some(key);
         }
-        if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.key.is_none() {
+        extra.answer = said;
+        if !changed.contains(&true) && joined.is_empty() && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.meta.is_empty() && extra.key.is_none() && extra.answer.is_none() {
             return Ok(answer);
+        }
+        // A document decoded in it, or by its history since, at the heads it began from: the commit needn't decode it again.
+        if act.base.crdt.is_none() {
+            act.base.crdt = act.document.take().or_else(|| self.decoded(&act.base.heads));
         }
         // SQLite's wait on another program's write lock holds the turn alone: every read goes on meanwhile (cl-837).
         let conn = self.writer(&mut turn)?;
@@ -1370,7 +1411,7 @@ impl Folder {
         // BEGIN wait. Only COMMIT and publication share the held guard: a reader can
         // never see our committed data_version with the cache still on the old view.
         let mut publication = None;
-        let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, || current = self.version() == seen,
+        let seq = db::commit(conn, &self.db(), &act.base, &mut after, &extra, joined, || current = self.version() == seen,
             || publication = Some(self.shared.held.lock().unwrap_or_else(|e| e.into_inner())))?;
         let (seq, shown) = {
             // A no-op rollback does not call before_commit; local-only file facts
@@ -1424,6 +1465,15 @@ impl Folder {
         if let Some(act) = acting(self.id()) {
             act.made.borrow_mut().push(made());
         }
+    }
+
+    /// `write` to the project's run journal in the act this thread is in, which holds its writer: it commits with the act, or not at
+    /// all, and `then` runs once it committed. False: no act of this project is going here.
+    pub(crate) fn join_act(&self, write: db::Joined, then: impl FnOnce(u64) + 'static) -> bool {
+        let Some(act) = acting(self.id()) else { return false };
+        act.joined.borrow_mut().push(write);
+        act.after.borrow_mut().push(Box::new(then));
+        true
     }
 
     /// Done once the act this is in commits, given the revision it made: what a stream is told.
@@ -1482,9 +1532,59 @@ impl Folder {
 
     /// Every history row, oldest first.
     pub(super) fn ops(&self) -> Result<Vec<db::OpRow>, Error> {
-        let held = self.held()?;
-        held.as_ref().and_then(|held| held.stored.crdt.as_ref())
-            .ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?.ops()
+        self.loaded()?.ops()
+    }
+
+    /// Its document as what's held stands, decoded now if nothing has since it was read: its rows serve every read, so only a write, a
+    /// merge or history waits on this, and no reader waits on it.
+    fn loaded(&self) -> Result<Arc<super::crdt::Document>, Error> {
+        for _ in 0..3 {
+            let heads = {
+                let held = self.held()?;
+                let held = held.as_ref().expect("held");
+                if let Some(doc) = &held.stored.crdt {
+                    return Ok(doc.clone());
+                }
+                held.stored.heads.clone()
+            };
+            let doc = Arc::new(db::document(&db::connect(&self.db(), true)?, &self.db())?);
+            if !same_heads(&doc.heads(), &heads) {
+                continue;
+            }
+            let mut held = self.held()?;
+            let held = held.as_mut().expect("held");
+            if same_heads(&held.stored.heads, &heads) {
+                if held.stored.crdt.is_none() {
+                    held.stored.crdt = Some(doc.clone());
+                }
+                return Ok(doc);
+            }
+        }
+        Err(Error::new(Kind::Conflict, "project_changed", "the project kept changing while its document was read; read it again and retry"))
+    }
+
+    /// The document an act began from, decoded once in it if what's held hadn't been: at its heads.
+    fn act_document(&self, act: &Acting) -> Result<Arc<super::crdt::Document>, Error> {
+        if let Some(doc) = act.base.crdt.clone().or_else(|| act.document.borrow().clone()).or_else(|| self.decoded(&act.base.heads)) {
+            return Ok(doc);
+        }
+        let doc = Arc::new(db::document(&db::connect(&self.db(), true)?, &self.db())?);
+        if !same_heads(&doc.heads(), &act.base.heads) {
+            return Err(Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being made; read it again and retry"));
+        }
+        *act.document.borrow_mut() = Some(doc.clone());
+        Ok(doc)
+    }
+
+    /// Where the rows a read takes differ from the document they were written with (`db::integrity`): read past what's held.
+    pub(crate) fn integrity(&self) -> Result<Vec<String>, Error> {
+        db::integrity(&db::connect(&self.db(), true)?, &self.db())
+    }
+
+    /// What's held of the document at `heads`, if something here decoded it.
+    fn decoded(&self, heads: &[String]) -> Option<Arc<super::crdt::Document>> {
+        let held = self.shared.held.lock().unwrap_or_else(|e| e.into_inner());
+        held.as_ref()?.stored.crdt.clone().filter(|doc| same_heads(&doc.heads(), heads))
     }
 
     /// What the request under `key` asked and answered here, if it was kept.
@@ -1495,6 +1595,28 @@ impl Folder {
     /// The answer the request under `key` gave, kept on its row.
     pub(super) fn keep_answer(&self, key: &str, digest: &str, status: u16, content_type: &str, body: &[u8]) -> Result<(), Error> {
         self.write_past(|conn| db::keep_answer(conn, key, digest, status, content_type, body).map_err(|e| Error::new(Kind::Unavailable, "project_db", e.to_string())))
+    }
+
+    pub(crate) fn journal_read<T>(&self, read: impl FnOnce(&rusqlite::Connection) -> crate::store::Result<T>) -> crate::store::Result<T> {
+        self.reading_db(read).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?
+    }
+
+    /// Whether this thread is inside one of this project's acts: its writer is this thread's until the act commits.
+    pub(crate) fn acting_here(&self) -> bool {
+        acting(self.id()).is_some()
+    }
+
+    pub(crate) fn journal_write<T>(&self, write: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::Result<T>) -> crate::store::Result<T> {
+        // The act holds the writer on this thread: taking it again would never return.
+        if self.acting_here() { return Err(crate::store::StoreError::Locked("project_acting".into())); }
+        let mut turn = self.shared.writing.lock().unwrap_or_else(|error| error.into_inner());
+        let conn = self.writer(&mut turn).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let value = write(&tx)?;
+        tx.commit()?;
+        let mut held = self.shared.held.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(held) = held.as_mut() { held.seen = self.version(); }
+        Ok(value)
     }
 
     /// What the project says: its boxes, as rows.
@@ -1516,9 +1638,26 @@ impl Folder {
         Ok(seen(&written))
     }
 
-    /// The project as YAML, format 4: its export, and what a render keeps of what it was asked.
-    pub(crate) fn text(&self) -> Result<String, Error> {
-        self.reading_written(Written::to_yaml)
+    /// `seen` of its boxes and the project document's heads they're at, one snapshot.
+    pub(crate) fn reading_document<R>(&self, seen: impl FnOnce(&Written, Vec<String>) -> R) -> Result<R, Error> {
+        if let Some(act) = acting(self.id()) {
+            let written = act.written.borrow();
+            return Ok(seen(written.as_ref().unwrap_or(&*act.base.written), (*act.base.heads).clone()));
+        }
+        let (written, heads) = {
+            let held = self.held()?;
+            let held = held.as_ref().expect("held");
+            (held.stored.written.clone(), held.stored.heads.clone())
+        };
+        Ok(seen(&written, (*heads).clone()))
+    }
+
+    /// The project document an act began from: what words typed on an older one merge into (`crdt::Document::typed`).
+    pub(super) fn document(&self) -> Result<Option<Arc<super::crdt::Document>>, Error> {
+        match acting(self.id()) {
+            Some(act) => self.act_document(&act).map(Some),
+            None => self.loaded().map(Some),
+        }
     }
 
     /// One change to its boxes. The history hears what it was and is.
@@ -1625,34 +1764,34 @@ impl Folder {
                 *walk = WalkFile::default();
                 Ok(())
             })?;
-            self.drop_texts();
+            self.drop_snapshots();
             Ok(())
         })
     }
 
-    /// The text render `ask` was asked with: kept apart, so what the walk owes stays small.
-    pub(crate) fn text_of(&self, ask: &Ask) -> Result<String, Error> {
-        if !ask.text.is_empty() {
-            return Ok(ask.text.clone());
-        }
+    /// The snapshot render `ask` was asked with: kept apart, so what the walk owes stays small.
+    pub(crate) fn asked(&self, ask: &Ask) -> Result<Written, Error> {
         if let Some(act) = acting(self.id())
-            && let Some((_, Some(text))) = act.extra.borrow().asked.iter().rev().find(|(digest, _)| *digest == ask.digest)
+            && let Some((_, Some(json))) = act.extra.borrow().asked.iter().rev().find(|(digest, _)| *digest == ask.digest)
         {
-            return Ok(text.clone());
+            return Written::of_snapshot(json);
         }
-        self.reading_db(|conn| db::asked(conn, &ask.digest))?.ok_or_else(|| Error::new(Kind::NotFound, "ask_text_missing", format!("the text render {} was asked with is gone", ask.id)))
+        let json = self.reading_db(|conn| db::asked(conn, &ask.digest))?
+            .ok_or_else(|| Error::new(Kind::NotFound, "ask_snapshot_missing", format!("the project render {} was asked with is gone", ask.id)))?;
+        Written::of_snapshot(&json)
     }
 
-    pub(crate) fn keep_text(&self, digest: &str, text: &str) -> Result<(), Error> {
-        self.extra(|extra| extra.asked.push((digest.to_owned(), Some(text.to_owned()))))
+    /// A render's snapshot (`Written::snapshot`) kept by its digest until the render ends.
+    pub(crate) fn keep_snapshot(&self, digest: &str, json: &str) -> Result<(), Error> {
+        self.extra(|extra| extra.asked.push((digest.to_owned(), Some(json.to_owned()))))
     }
 
-    pub(crate) fn drop_text(&self, digest: &str) {
+    pub(crate) fn drop_snapshot(&self, digest: &str) {
         let _ = self.extra(|extra| extra.asked.push((digest.to_owned(), None)));
     }
 
     /// No render holds any.
-    pub(crate) fn drop_texts(&self) {
+    pub(crate) fn drop_snapshots(&self) {
         let _ = self.extra(|extra| {
             extra.asked.clear();
             extra.asked_cleared = true;
@@ -1781,8 +1920,9 @@ impl Folder {
                     }
                     Err(_) => drop(self.store(&path, |part| std::fs::copy(dest, part).map(drop))?),
                 }
-                if let Some(measured) = measured.filter(|measured| measured.fps > 0.0 && measured.width > 0) {
-                    super::thumbs::landed(at.clone(), digest, measured.lasts_ms() as f64 / 1000.0);
+                // What the canvas draws of it, made now (cl-982): an open never waits on it.
+                if let Some(measured) = measured.filter(|measured| measured.width > 0) {
+                    super::thumbs::landed(at.clone(), digest, measured.field(), measured.lasts_ms() as f64 / 1000.0);
                 }
             }
             let old = std::cell::RefCell::new(vec![]);
@@ -1842,7 +1982,14 @@ impl Folder {
         (file.stays() || self.path(&file.path).is_file()).then(|| Kept { field: file.field(), file, already: true })
     }
 
-    /// The held file at `at`, of `sha256`, in `files/` and recorded in project.lock: a hard link to the store's object, which stays
+    /// What the file at `at` is, by its bytes: the field that names one of its kind.
+    pub(crate) fn field_of(at: &Path) -> Result<&'static str, String> {
+        let mut head = Vec::new();
+        std::fs::File::open(at).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| e.to_string())?;
+        media(infer::get(&head)).map(|(_, field)| field)
+    }
+
+    /// The held file at `at`, of `sha256`, in `files/` and recorded in the lock: a hard link to the store's object, which stays
     /// the store's, else a copy. Err: why not.
     pub(crate) fn take_held(&self, at: &Path, sha256: &str) -> Result<Kept, String> {
         let mut head = Vec::new();
@@ -1856,7 +2003,7 @@ impl Folder {
         })
     }
 
-    /// The `http(s)` URL `source`, fetched into `files/<sha256>.<ext>`, its type read from its bytes, and recorded in project.lock.
+    /// The `http(s)` URL `source`, fetched into `files/<sha256>.<ext>`, its type read from its bytes, and recorded in the lock.
     /// Err: why not. A client's own file comes held (`PUT /v1/files`), never by its path.
     pub(crate) async fn import(&self, source: &str) -> Result<Kept, String> {
         if !is_url(source) {
@@ -1869,7 +2016,7 @@ impl Folder {
         self.recorded(path, sha256, field, |part| std::fs::write(part, &bytes))
     }
 
-    /// An import's bytes at `path`, written by `write` unless the project has them under any name, named in project.lock.
+    /// An import's bytes at `path`, written by `write` unless the project has them under any name, named in the lock.
     fn recorded(
         &self,
         path: String,
@@ -1932,8 +2079,7 @@ impl Folder {
         frames
     }
 
-    /// Every file `lock` names and nothing has measured, measured once and recorded, in `lock` and in
-    /// project.lock. With no ffprobe here yet they wait for the next read, or a cut, which fetches one first.
+    /// Every file `lock` names and nothing has measured, measured once and recorded in `lock`. With no ffprobe here yet they wait for the next read, or a cut, which fetches one first.
     pub(crate) fn measure(&self, lock: &mut Lock) -> Result<(), Error> {
         if !lock.files.values().any(File::unmeasured) {
             return Ok(());
@@ -1949,13 +2095,30 @@ impl Folder {
         for (sha256, probed) in &measured {
             if let Some(file) = lock.files.get_mut(sha256) {
                 file.measured_as(probed);
-                // A video that landed: the page plays its preview on a hover.
+                // A video that landed: the page plays its preview on a hover. A picture's is made as it lands (`adopt`, an import), not as an
+                // older project's files are measured: thousands at once would hold up its pages (web-scale 43380245255).
                 if file.field() == "video" && file.width > 0 {
-                    super::thumbs::landed(self.dir.join(&file.path), sha256, file.lasts_ms() as f64 / 1000.0);
+                    super::thumbs::landed(self.dir.join(&file.path), sha256, "video", file.lasts_ms() as f64 / 1000.0);
                 }
             }
         }
         self.record_measured(&measured)
+    }
+
+    /// The sizes `kept` read from their headers as they came, on their rows not measured yet: in the act that lists them, so the first read of
+    /// a picture has its shape and its box is drawn at it, not at a guess it grows from once ffprobe measures it.
+    pub(crate) fn keep_shapes<'a>(&self, kept: impl IntoIterator<Item = &'a Kept>) -> Result<(), Error> {
+        let shapes: BTreeMap<String, File> = self.reading_bare_lock(|lock| {
+            (kept.into_iter())
+                .filter(|kept| kept.file.shape_only && kept.file.width > 0)
+                .filter(|kept| lock.files.get(&kept.file.sha256).is_some_and(|row| row.width == 0))
+                .map(|kept| (kept.file.sha256.clone(), File { width: kept.file.width, height: kept.file.height, shape_only: true, ..Default::default() }))
+                .collect()
+        })?;
+        match shapes.is_empty() {
+            true => Ok(()),
+            false => self.record_measured(&shapes),
+        }
     }
 
     /// What's `measured` of these files by hash, in project.db and on their rows, in one write: what ffprobe says of their bytes, here or not.
@@ -1990,7 +2153,12 @@ impl Folder {
     /// record may be all that's left of a take, so it's said and it stays. What a run left in `.runs/` goes only if what stays in `files/`
     /// holds every byte of it, by sha256: else it may be an output's only copy (one `files/` couldn't take, or a folder), and stays, unheld.
     pub(crate) fn sweep(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64, Vec<Unheld>), Error> {
-        let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = self.collecting();
+        self.swept(named, recorded, delete)
+    }
+
+    /// `sweep`, `collecting` held by the caller: in an act it is part of, its answer with it.
+    pub(crate) fn swept(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64, Vec<Unheld>), Error> {
         let lock = self.lock()?;
         let (mut files, mut bytes, mut unrecorded) = (0, 0, 0);
         // What stays in `files/`, by the sha256 its name says, which its bytes must say too before anything goes for it.
@@ -2106,7 +2274,7 @@ async fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
         // A refusal's first sentence says it; the rest is for whoever reads the policy.
         Ok(Err(refused)) => {
             let why = refused.detail.split(". ").next().unwrap_or_default();
-            Err(why.strip_prefix(&format!("{url}: ")).unwrap_or(why).to_owned())
+            Err(why.strip_prefix(&format!("{}: ", tensorfs::fetch::shown(url))).unwrap_or(why).to_owned())
         }
         Ok(Ok(())) => Ok(bytes),
     }
@@ -2122,7 +2290,7 @@ pub(crate) fn hex_of(sha256: &str) -> &str {
     sha256.trim_start_matches("sha256:")
 }
 
-/// What cozy prints of `sha256` for project.yaml.
+/// The hex prefix of `sha256` a box's `approved` names it by.
 pub(crate) fn prefix_of(sha256: &str) -> &str {
     let hex = hex_of(sha256);
     &hex[..PREFIX.min(hex.len())]
@@ -2197,4 +2365,9 @@ fn io(error: platform::Error) -> Error {
 
 fn io_at(path: &Path, error: std::io::Error) -> Error {
     Error::new(Kind::Unavailable, "project_io", format!("{}: {error}", path.display()))
+}
+
+/// Whether two lists of a document's heads name the same ones.
+fn same_heads(a: &[String], b: &[String]) -> bool {
+    a.iter().collect::<std::collections::BTreeSet<_>>() == b.iter().collect::<std::collections::BTreeSet<_>>()
 }

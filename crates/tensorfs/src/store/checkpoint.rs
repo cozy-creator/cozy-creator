@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 use platform::durable;
 
 use super::retention::{self, Hold};
-use super::{fail, invalid, Error, Result, Store};
+use super::{fail, invalid, BorrowedObjects, Error, Result, Store};
 use crate::format::{
     self, decode, is_header, Body, Component, Header, Location, ObjectRef,
     PartBytes, Pipeline, Tensor, Tree, CHUNKS_DIR,
@@ -41,6 +41,8 @@ enum Objects {
     /// A header that lives only in memory ([`Store::view`]): its own small objects, by digest,
     /// here; everything else from the store.
     Memory { store: Store, own: Arc<BTreeMap<String, Arc<[u8]>>> },
+    /// Private metadata/own bytes live in `store`; authorized public bytes are borrowed read-only.
+    Borrowed { store: Store, source: BorrowedObjects },
 }
 
 impl Store {
@@ -57,13 +59,27 @@ impl Store {
 
     /// A header kept only in memory: `header` (cozytensors CBOR) and the objects it cites that
     /// no store holds (`own`, a view's graph), over the chunks and assets of this store, held
-    /// while open. Nothing is written and no use is recorded, so it ends with its process.
+    /// while open. A live retention hold is written in this store; header/own bytes stay in memory.
     pub fn view(&self, header: &[u8], own: &[Vec<u8>]) -> Result<Checkpoint> {
         let parsed = Header::from_cbor(header)?;
         let own: BTreeMap<String, Arc<[u8]>> = own.iter().map(|b| (ObjectRef::of(b).sha256, Arc::from(b.as_slice()))).collect();
         let objects = Objects::Memory { store: self.clone(), own: Arc::new(own) };
         let _fence = retention::acquire(self)?;
         Checkpoint::opened(objects, ObjectRef::of(header), parsed, None)
+    }
+
+    /// A derived view owned by this store, with only explicitly borrowed public source bytes.
+    /// Header, own objects and retention metadata are written here, never in the source store.
+    pub fn view_from(&self, header: &[u8], own: &[Vec<u8>], borrowed: BorrowedObjects) -> Result<Checkpoint> {
+        let parsed = Header::from_cbor(header)?;
+        for bytes in own { self.put(bytes.as_slice(), None)?; }
+        for object in parsed.objects() {
+            if !self.holds(object) && !borrowed.holds(object) {
+                return Err(Error::Absent(object.sha256.clone()));
+            }
+        }
+        let id = self.put(header, None)?;
+        Checkpoint::opened(Objects::Borrowed { store: self.clone(), source: borrowed }, id, parsed, None)
     }
 
     /// The tree document `tree`.
@@ -92,7 +108,8 @@ impl Checkpoint {
     /// Holds the header and what it cites in the store it reads, and the snapshot folder it is in.
     fn opened(objects: Objects, id: ObjectRef, header: Header, header_file: Option<PathBuf>) -> Result<Self> {
         let hold = match &objects {
-            Objects::Store(store) | Objects::Folder { cache: Some(store), .. } | Objects::Memory { store, .. } => {
+            Objects::Store(store) | Objects::Folder { cache: Some(store), .. } | Objects::Memory { store, .. }
+                | Objects::Borrowed { store, .. } => {
                 let mut held: Vec<String> = std::iter::once(&id).chain(header.objects()).map(|o| o.sha256.clone()).collect();
                 if let Objects::Folder { dir, .. } = &objects {
                     let real = platform::durable::canonical(dir).ok();
@@ -161,9 +178,10 @@ impl Checkpoint {
                 cache.as_ref()
             }
             Objects::Memory { store, own } => match own.get(&object.sha256) {
-                Some(bytes) => return frozen(bytes),
+                Some(bytes) => return frozen(store, bytes),
                 None => Some(store),
             },
+            Objects::Borrowed { .. } => return self.object(object),
         };
         if let Some(store) = store {
             let path = store.path(object)?;
@@ -255,6 +273,11 @@ impl Checkpoint {
         let sha256 = &self.header.chunks[i].sha256;
         match &self.objects {
             Objects::Store(store) | Objects::Memory { store, .. } => store.object_path(sha256),
+            Objects::Borrowed { store, source } => {
+                let object = &self.header.chunks[i];
+                if store.holds(object) { store.object_path(sha256) }
+                else { source.path(object).unwrap_or_else(|| store.object_path(sha256)) }
+            },
             Objects::Folder { dir, cache } => {
                 let own = dir.join(CHUNKS_DIR).join(sha256);
                 match (own.exists(), cache) {
@@ -269,8 +292,11 @@ impl Checkpoint {
     pub fn object(&self, object: &ObjectRef) -> Result<File> {
         match &self.objects {
             Objects::Store(store) => store.file(object),
+            Objects::Borrowed { store, source } => {
+                if store.holds(object) { store.file(object) } else { source.file(object) }
+            },
             Objects::Memory { store, own } => match own.get(&object.sha256) {
-                Some(bytes) => frozen(bytes),
+                Some(bytes) => frozen(store, bytes),
                 None => store.file(object),
             },
             Objects::Folder { dir, cache } => match folder_file(dir, object)? {
@@ -287,6 +313,7 @@ impl Checkpoint {
     pub fn holds(&self, object: &ObjectRef) -> Result<bool> {
         match &self.objects {
             Objects::Store(store) => store.reuse(object),
+            Objects::Borrowed { store, source } => Ok(store.holds(object) || source.holds(object)),
             Objects::Memory { store, own } => Ok(own.contains_key(&object.sha256) || store.reuse(object)?),
             Objects::Folder { dir, cache } => Ok(folder_file(dir, object)?.is_some()
                 || cache.as_ref().map(|c| c.reuse(object)).transpose()?.unwrap_or(false)),
@@ -371,15 +398,15 @@ impl Checkpoint {
     }
 }
 
-/// One of a memory view's own objects as a file: written in the OS temp dir and unlinked at
+/// One of a memory view's own objects as a file: written inside its owning store and unlinked at
 /// once, so this descriptor is the only way to it and it is gone when that closes.
-fn frozen(bytes: &[u8]) -> Result<File> {
+fn frozen(store: &Store, bytes: &[u8]) -> Result<File> {
     use std::io::{Seek, SeekFrom, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(".tensorfs-view-{}-{n}", std::process::id()));
+        let path = store.root().join("tmp").join(format!(".tensorfs-view-{}-{n}", std::process::id()));
         let mut file = match fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
             Ok(file) => file,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,

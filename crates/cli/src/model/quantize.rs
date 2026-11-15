@@ -12,21 +12,24 @@ use api::calcifer::hub::{ModelQuantize, job};
 use super::Quantize;
 use crate::Context;
 use crate::output::{self, Record};
-use crate::run::{exit_code, follow, settled};
+use crate::run::{carry_out, exit_code, settled};
 
 pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, Error> {
     let on = args.placement.on()?;
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    // Local code goes by content.
-    let (package, code) = match crate::run::local(ctx, &args.package, &cwd)? {
-        Some((path, _)) => (String::new(), Some(crate::send::Sender::new(ctx).await?.code(&path).await?)),
-        None => (args.package, None),
+    // Local code goes by content: its recipe runs in the current project, or outside any as the machine's.
+    let (package, code, project) = match crate::run::local(ctx, &args.package, &cwd)? {
+        Some((path, _)) => {
+            let (code, project) = crate::send::Sender::local_code(ctx, &path).await?;
+            (String::new(), Some(code), project)
+        }
+        None => (args.package, None, None),
     };
     let ask = ModelQuantize { model: args.model, lane: args.lane.clone(), package };
-    let run = crate::run::job(ctx, job::MODEL_QUANTIZE, &ask, on, code).await?;
+    let run = crate::run::job(ctx, job::MODEL_QUANTIZE, &ask, on, code, project).await?;
     // Its install, no longer followed: nothing was called.
-    let run = if settled(&run) { run } else { follow(ctx, run).await? };
+    let run = if settled(&run) { run } else { carry_out(ctx, run).await? };
     if !ctx.json && run.status == Status::Completed
         && let Some(written) = written(&run, &args.lane)
     {

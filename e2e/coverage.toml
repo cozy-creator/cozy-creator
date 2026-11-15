@@ -20,6 +20,9 @@ test = "pr: completion, each shell's script loads and completes cozy's verbs"
 test = "pr: doctor, healthy, then a stuck Calcifer it restarts"
 "--on" = "pr: doctor --on local"
 
+[restart]
+test = "pr: explicit_restart, Calcifer on the installed cozy under a new pid, the page's stream cut and the next command served"
+
 [login]
 test = "pr: rental_end, with the code the isolated Hub logs (by hand: the emailed code, release-gate/enroll-ci-key.sh)"
 "--export" = "pr: rental_end, a pod's own key (release-gate/enroll-ci-key.sh mints the CI key with it)"
@@ -38,6 +41,9 @@ test = "pr: entrypoints, explicit creation in the current directory or a named d
 
 [status]
 test = "pr: entrypoints, current-project health counts and warnings with an expanded full record"
+
+[key]
+test = "pr: project_keys, two projects' keys shown, one changed, its old KEY-N still resolving from outside both"
 
 [update]
 test = "pr: update, the candidate to the newest release"
@@ -95,7 +101,6 @@ test = "pr: packages"
 ["package publish"]
 test = "release: throwaway package, published"
 "--root" = "manual: first-party releases only (packages' task publish), never a throwaway at the root"
-"--yanked" = "release: throwaway package, published yanked"
 ["package yank"]
 test = "release: throwaway package, yanked"
 "--undo" = "release: throwaway package, un-yanked"
@@ -110,7 +115,12 @@ test = "pr: models"
 "--limit" = "pr: models"
 "--offset" = "pr: catalog pagination parser and model list pages"
 "--on" = "pr: models"
-"--fits" = "pr: slot_choices, Qwen Image's rewriter, Klein's upsampler and H3's base model"
+["model show"]
+test = "pr: models, zhengpeng7/birefnet's lanes and components from its headers"
+"--lane" = "pr: models, one lane"
+["lora show"]
+test = "pr: models, a LoRA's modules and α from its header"
+"--lane" = "pr: models, one lane"
 ["model install"]
 test = "pr: models"
 "--lane" = "pr: models"
@@ -154,6 +164,7 @@ test = "release: adapter weights uploaded without inference"
 "--trigger" = "manual: shared LoRA metadata handler"
 "--strength" = "manual: shared LoRA metadata handler"
 "--base" = "manual: shared model upload handler"
+"--add" = "release: a LoRA uploaded with a file added, the upload naming it"
 ["lora publish"]
 test = "pending: shared model publish handler"
 ["lora delete"]
@@ -170,6 +181,7 @@ test = "release: throwaway model, uploaded from a file, from a held file, from a
 "--source-format" = "release: throwaway model, its files kept as-is"
 "--mirror" = "manual: an admin mirrors a real author's model into its parked org (xs-131, proved on the dev Hub); a CI run would park a real author's org on tensorhub.com"
 "--base" = "none: a community DiT (66 GB) on a Hub model's header, on a rental; proven by hand"
+"--add" = "release: throwaway model, a Hub commit with a file added: only headers move, the file a new component's asset"
 ["model publish"]
 test = "release: throwaway model, published with two lanes"
 ["model delete"]
@@ -208,6 +220,29 @@ test = "pr: run ls filters"
 "--limit" = "pr: run ls filters"
 ["run cancel"]
 test = "pr: a run followed, a snapshot, a cancel"
+["render"]
+test = "pr: agent_render, a chain from what it reads, nothing to render, -n forcing nothing, a joined render, a killed CLI rejoined, a failure stopping its readers"
+"--on" = "pr: agent_render, on local; without it, where Calcifer places it once the local-fit question says nothing"
+"--new" = "pr: agent_render, -n 2 new takes of a current shot, as --json"
+"--outdated" = "pr: agent_render, an approved shot out of date rendered again, its approval kept"
+"--pickup" = "pr: agent_render, a take kept to its seam and the rest rendered; refused for two nodes"
+
+[get]
+test = "pr: agent (commands), 0 nodes, one line per node, and named nodes whole with every default, their takes and rev; a typo refused"
+"--all" = "pr: agent, every node whole, in the project's order"
+"--takes" = "pr: agent, every take of a node; alone, refused"
+[apply]
+test = "pr: agent, the design's session: a typo refused with its fix, nodes made from a file, rewritten, applied again unchanged; a conflict with the page's edit, settled; words apart merged; a take from a file; approved; no rev refused; undone from the page"
+"--filename" = "pr: agent, a file, and - for stdin with the merged nodes on stdout"
+"--force-conflicts" = "pr: agent, overlapping words, the file's kept"
+[diff]
+test = "pr: agent, exit 2 for a refusal, 1 with what it would make, 0 and no changes after an apply, a conflict with the page's edit and its next step"
+"--filename" = "pr: agent, the session's file"
+[delete]
+test = "pr: agent, two nodes deleted as one edit and brought back by the page's Undo; a name it doesn't have refuses all"
+[explain]
+test = "pr: agent, the file, a kind, a tool's block and one field of it in words; a field's typo refused with its fix"
+"--schema" = "pr: agent, JSON Schema 2020-12 of the file and of a tool's block"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
@@ -222,7 +257,7 @@ test = "pr: a run followed, a snapshot, a cancel"
 
 [open]
 "--port" = "pr: entrypoint parser, loopback listener and preserved config tests"
-test = "pr: entrypoints, local authenticated URL and expiry; web-serves redeems the link in Chrome"
+test = "pr: entrypoints, local authenticated URL and expiry; web-open redeems the link in a browser; page_http (commands) refuses what must be"
 
 ["vault"]
 "--directory" = "pr: projectvault: convert and rekey from outside the backing folder"

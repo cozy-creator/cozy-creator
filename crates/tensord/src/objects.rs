@@ -289,8 +289,6 @@ impl Objects {
     /// run needs), and only then held outputs nothing used for `IDLE`, least recently used first,
     /// until it isn't. How many objects the outputs let go freed, and their bytes.
     pub(crate) fn make_room(&self) -> io::Result<(usize, u64)> {
-        // What the caches just freed shows a moment later.
-        std::thread::sleep(Duration::from_secs(1));
         let Some(short) = Disk::measure(self.store()?.root())?.short() else {
             return Ok((0, 0));
         };

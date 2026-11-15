@@ -20,13 +20,15 @@
 //!   next fetch of the object takes them up, and the object's digest judges them with the rest.
 
 mod checkpoint;
+mod borrowed;
+pub use borrowed::BorrowedObjects;
 mod derived;
 pub use derived::Derived;
 pub(crate) mod file;
 mod folder;
 pub use folder::{copy_checked, files as folder_files};
 mod gc;
-pub use gc::RemovedModel;
+pub use gc::{RemovedModel, RetiredObjects};
 mod records;
 pub mod retention;
 
@@ -93,6 +95,9 @@ pub enum Error {
     },
     #[error("{op} {}: the disk is full", path.display())]
     Full { op: &'static str, path: PathBuf },
+    /// What is left to evict is in use: `incoming` bytes don't fit beside the reserve.
+    #[error("admit {}: the disk is full: {} more need room, and it has {} free past its {} reserve; what's left of its models is in use until the work holding it ends", path.display(), gc::size(*incoming), gc::size(free.saturating_sub(*reserve)), gc::size(*reserve))]
+    Short { path: PathBuf, incoming: u64, free: u64, reserve: u64 },
     #[error("object {0} is absent")]
     Absent(String),
     #[error("expected {} ({} bytes), got {got}", expected.sha256, expected.length)]
@@ -111,8 +116,9 @@ impl Error {
     /// The refusal the fetch and import layers speak.
     pub fn refusal(self) -> Refusal {
         let code = match &self {
+            Error::Io { source, .. } if source.kind() == io::ErrorKind::WouldBlock => Code::STORE_BUSY,
             Error::Io { .. } => Code::IO_FAILED,
-            Error::Full { .. } => Code::CAPACITY_EXHAUSTED,
+            Error::Full { .. } | Error::Short { .. } => Code::CAPACITY_EXHAUSTED,
             Error::Absent(_) => Code::OBJECT_ABSENT,
             Error::Mismatch { .. } => Code::OBJECT_ID_MISMATCH,
             Error::Invalid { .. } => Code::UNKNOWN_FORMAT,
@@ -192,7 +198,7 @@ pub struct Store {
 }
 
 /// What frees disk outside a store for bytes coming in, before it evicts a model.
-struct Reclaim(Box<dyn Fn(u64) + Send + Sync>);
+struct Reclaim(Box<dyn Fn(u64) -> bool + Send + Sync>);
 
 impl std::fmt::Debug for Reclaim {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -257,8 +263,9 @@ impl Store {
     }
 
     /// Frees the machine's own garbage before this handle (and its clones) evicts a model:
-    /// `reclaim(incoming)` runs when an admit of `incoming` bytes finds the disk short. Set once.
-    pub fn on_short(&self, reclaim: impl Fn(u64) + Send + Sync + 'static) {
+    /// `reclaim(incoming)` runs when an admit of `incoming` bytes finds the disk short; true when it ended processes
+    /// whose holds go as they exit. Set once.
+    pub fn on_short(&self, reclaim: impl Fn(u64) -> bool + Send + Sync + 'static) {
         let _ = self.reclaim.set(Reclaim(Box::new(reclaim)));
     }
 
@@ -299,10 +306,17 @@ impl Store {
         if let Some(expect) = expect {
             self.path(expect)?;
         }
-        if !self.maintain(expect.map_or(0, |object| object.length))? {
-            return Err(Error::Full { op: "admit", path: self.root.clone() });
+        let incoming = expect.map_or(0, |object| object.length);
+        if incoming == 0 && !self.maintain(0)? {
+            return Err(self.short(0));
         }
         let (temp, file) = self.temp("put")?;
+        if incoming > 0 {
+            if let Err(error) = self.take_room(&file, &temp, incoming, incoming) {
+                let _ = fs::remove_file(&temp);
+                return Err(error);
+            }
+        }
         platform::lock::share(&file).map_err(platform("lock", &temp))?;
         Ok(Admission {
             store: self.clone(),
@@ -335,11 +349,41 @@ impl Store {
             }
         };
         let held = journal.as_ref().map(|journal| read_held(journal, object.length)).unwrap_or_default();
-        if !self.maintain(object.length - held.iter().map(|(a, b)| b - a).sum::<u64>())? {
-            return Err(Error::Full { op: "admit", path: self.root.clone() });
+        let incoming = object.length - held.iter().map(|(a, b)| b - a).sum::<u64>();
+        // A cut fetch's own bytes stay for the next (`keep`); this one's leave nothing.
+        if let Err(error) = self.take_room(&file, &temp, object.length, incoming) {
+            if !keep {
+                let _ = fs::remove_file(&temp);
+            }
+            return Err(error);
         }
         file.set_len(object.length).map_err(fail("size", &temp))?;
         Ok(Partial { store: self.clone(), object: object.clone(), temp, file: Some(file), journal: journal.map(|j| Arc::new(Mutex::new(j))), held: Arc::new(Mutex::new(held)), keep })
+    }
+
+    /// `length` bytes of `file` (at `temp`), `incoming` of them new, taken on the disk now, so admissions at once never
+    /// count the same free bytes. While the disk can't take them, the cache makes room (`maintain`: idle models least
+    /// recently used first, never one in use) and they're asked again; refused only when nothing more can go.
+    fn take_room(&self, file: &File, temp: &Path, length: u64, incoming: u64) -> Result<()> {
+        for _ in 0..8 {
+            if !self.maintain(incoming)? {
+                return Err(self.short(incoming));
+            }
+            match allocate(file, length) {
+                Ok(()) => return Ok(()),
+                Err(error) if matches!(error.kind(), io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded) => continue,
+                Err(error) => return Err(fail("allocate", temp)(error)),
+            }
+        }
+        Err(self.short(incoming))
+    }
+
+    /// The refusal of `incoming` bytes the cache couldn't make room for, with the disk's numbers.
+    fn short(&self, incoming: u64) -> Error {
+        match retention::room_on(&self.root) {
+            Ok((free, reserve)) => Error::Short { path: self.root.clone(), incoming, free, reserve },
+            Err(_) => Error::Full { op: "admit", path: self.root.clone() },
+        }
     }
 
     /// Admits everything `src` yields. With `expect`, an object already here is reused without
@@ -388,7 +432,7 @@ impl Store {
         if length == object.length {
             return Ok(true);
         }
-        tracing::warn!("tensorfs: {} is {length} bytes, not {}: removed, to be replaced", path.display(), object.length);
+        let _fence = retention::exclusive(self)?;
         match fs::remove_file(&path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(fail("remove", &path)(error)),
             _ => self.stamp_eviction().map(|()| false),
@@ -891,6 +935,23 @@ fn touch(path: &Path) -> Result<Option<File>> {
     file.set_modified(SystemTime::now())
         .map_err(fail("touch", path))?;
     Ok(Some(file))
+}
+
+/// `length` bytes of `file` taken on its disk, its size unchanged. A filesystem that can't is trusted to have room.
+#[cfg(target_os = "linux")]
+fn allocate(file: &File, length: u64) -> io::Result<()> {
+    if length == 0 {
+        return Ok(());
+    }
+    match rustix::fs::fallocate(file, rustix::fs::FallocateFlags::KEEP_SIZE, 0, length) {
+        Err(rustix::io::Errno::OPNOTSUPP | rustix::io::Errno::NOSYS) => Ok(()),
+        done => done.map_err(io::Error::from),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn allocate(_: &File, _: u64) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

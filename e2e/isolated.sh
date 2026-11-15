@@ -2,7 +2,7 @@
 # e2e/skew/run.sh --admin --command: OUT INSTALLED_COZY RUNTIME TENSORFS cli|imports|cpu <that suite's run.sh arguments>.
 # A suite against its own isolated Hub. Signed in as that Hub's admin, it first publishes there what the suite reads
 # from a Hub, as production holds it. The cli suite's shards read, at the root, from run.sh's --packages checkout,
-# qwen-image-2, minimax-h3, sdxl and birefnet (web-palette: every first-party package), and a stand-in minimax-h3-tools (hub_away locks it from the
+# qwen-image-2, minimax-h3, sdxl and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the
 # root index, hub_dependency calls its echo); then the models their cells download: BiRefNet's weights from the Hugging Face
 # revision production mirrors, and random weights for queued_download's two. macOS and Windows run no models and need no
 # weights: their shards take the packages alone. Imports stages Hub-dependent locks against its own published dependencies.
@@ -22,10 +22,10 @@ shard='' packages='' published='' only=''
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
   case ${args[i]} in
-    --shard) shard=${args[i + 1]} ;;
+    --shard) shard=${args[i + 1]%@*} ;;  # `<shard>@<n>` repeats a shard (lib.sh)
     --packages) packages=$(cd "${args[i + 1]}" && pwd) ;;
     --only) only=${args[i + 1]} ;;
-    --published | --pins) published=${args[i]} ;;
+    --published) published=${args[i]} ;;
   esac
 done
 mkdir -p "$seed"
@@ -59,6 +59,62 @@ relay() {
   fi
 }
 
+# held: e2e-relay's code published again as `e2e-held` 0.1.0 and 0.2.0rc1, as a package built for the open RC's Runtime is
+# published (cl-922): newer by PEP 440, for machines on the RC only; and as `e2e-newer` 0.1.0 and 0.1.1 (held_prerelease,
+# cl-952, se-128). Then floors (runtime_floor, cl-952): `e2e-floor` 0.1.0 (cozy-runtime>=0.45) and 0.2.0
+# (cozy-runtime>=0.45.1,<0.46); `e2e-capped` 0.1.0 and 0.2.0 (cozy-runtime>=0.45,<0.45.1, which no Runtime from 0.45.1
+# meets); and `e2e-lies` 0.1.0, whose cozy-runtime>=0.44 lacks the `call` it imports, which publishing refuses (what it said
+# is exported).
+held() {
+  local copy=$seed/packages/e2e-held account name version runtime
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  for name in e2e-held:0.1.0 e2e-held:0.2.0rc1 e2e-newer:0.1.0 e2e-newer:0.1.1 e2e-floor:0.1.0 'e2e-floor:0.2.0:>=0.45.1,<0.46' \
+    e2e-capped:0.1.0 'e2e-capped:0.2.0:>=0.45,<0.45.1'; do
+    IFS=: read -r name version runtime <<< "$name"
+    rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
+    sed -i -e "s/^name = \"e2e-relay\"$/name = \"$name\"/" -e "s/^version = \"0.1.0\"$/version = \"$version\"/" "$copy/pyproject.toml"
+    [ -z "$runtime" ] || sed -i "s/\"cozy-runtime>=0.45\"/\"cozy-runtime$runtime\"/" "$copy/pyproject.toml"
+    if ! (cd "$copy" && cozy --json package publish -y) > "$seed/publish-$name-$version.json" 2>&1; then
+      E2E_HELD_REFUSED="$name $version: $(tail -c 400 "$seed/publish-$name-$version.json" | tr '\n' ' ')"
+      export E2E_HELD_REFUSED
+      return 0
+    fi
+    log "published $account/$name $version"
+  done
+  export E2E_HELD=$account/e2e-held E2E_NEWER=$account/e2e-newer E2E_FLOOR=$account/e2e-floor E2E_CAPPED=$account/e2e-capped
+  rm -rf "$copy" && cp -r "$here/cli/relay" "$copy"
+  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-lies"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.44"/' "$copy/pyproject.toml"
+  export E2E_LIES=$seed/publish-e2e-lies.json
+  if (cd "$copy" && cozy --json package publish -y) > "$E2E_LIES" 2>&1; then log "published $account/e2e-lies 0.1.0, which it should have refused"
+  else log "publishing e2e-lies was refused: $(tail -c 300 "$E2E_LIES" | tr '\n' ' ')"; fi
+}
+
+# rc_floor (rc_floor, xs-194): e2e-relay's code as `e2e-rcfloor` 0.1.0, whose floor only the open RC meets
+# (cozy-runtime>=0.47.0.dev0,<0.48) and which names no Runtime wheel: publishing it locks the RC's newest build. What it said
+# is exported, a refusal too, for the cell to judge.
+rc_floor() {
+  local copy=$seed/packages/e2e-rcfloor account
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
+  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.47.0.dev0,<0.48"/' "$copy/pyproject.toml"
+  export E2E_RCFLOOR_PUBLISHED=$seed/publish-e2e-rcfloor.json E2E_RCFLOOR=$account/e2e-rcfloor
+  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.47.0.dev0)"
+  else log "publishing e2e-rcfloor was refused: $(tail -c 300 "$E2E_RCFLOOR_PUBLISHED" | tr '\n' ' ')"; fi
+}
+
+# next (self_update, cl-978): the hub suite's weightless echo as the admin's account's `e2e-next` 0.1.0, needing cozy-runtime>=0.46.0,
+# which only a cozy of the Latest's line runs.
+next() {
+  local copy=$seed/packages/e2e-next account
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/../release-gate/suites/hub/pkg" "$copy"
+  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-next"/' -e 's/"cozy-runtime>=0.30"/"cozy-runtime>=0.46.0"/' "$copy/pyproject.toml"
+  (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-next.json" 2>&1 \
+    || { echo "publishing e2e-next failed: $(tail -c 600 "$seed/publish-e2e-next.json")" >&2; return 1; }
+  export E2E_NEXT=$account/e2e-next
+  log "published $E2E_NEXT 0.1.0 (cozy-runtime>=0.46.0)"
+}
+
 # mirror <source> <org/name> <lane> <release> <page> [upload flags...]: a model uploaded by this computer's machine and
 # published, as an admin mirrors an author's model.
 mirror() {
@@ -72,11 +128,28 @@ mirror() {
   log "published $2@$4 ($3, $commit)"
 }
 
-# random_weights <file> <MiB>: one F16 tensor per 64 MiB of random finite values, written as it is made: no chunk repeats.
+# standin_lora <file> <org/name> <page> <family> [--trigger <words>]...: a LoRA uploaded, published at 0.1.0, its family and
+# triggers named, as an admin mirrors an author's LoRA. $FORMAT: its --source-format, else detected.
+standin_lora() {
+  local file=$1 lora=$2 page=$3 family=$4 commit
+  shift 4
+  cozy --json lora upload "$file" "$lora" --lane f16 --mirror "$page" --on local -y ${FORMAT:+--source-format "$FORMAT"} \
+    > "$seed/upload-${lora##*/}.json" 2>&1 \
+    || { echo "uploading $lora failed: $(tail -c 600 "$seed/upload-${lora##*/}.json")" >&2; return 1; }
+  commit=$(python3 "$here/model-details.py" "$lora" | jq -r '.checkpoints[0].checkpoint // empty')
+  [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; return 1; }
+  cozy --json lora publish "$lora" 0.1.0 "$commit" -y > "$seed/publish-${lora##*/}.json" 2>&1 \
+    || { echo "publishing $lora failed: $(tail -c 600 "$seed/publish-${lora##*/}.json")" >&2; return 1; }
+  cozy --json lora edit "$lora" --family "$family" "$@" > "$seed/edit-${lora##*/}.json" 2>&1 \
+    || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; return 1; }
+}
+
+# random_weights <file> <MiB> [part]: one F16 tensor per 64 MiB of random finite values, written as it is made: no chunk repeats.
+# With `part`, its metadata names it: a config the Runtime constructs from.
 random_weights() {
-  python3 -I - "$1" "$2" <<'PY'
+  python3 -I - "$1" "$2" "${3:-}" <<'PY'
 import json, os, struct, sys
-path, mib = sys.argv[1], int(sys.argv[2])
+path, mib, part = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 FINITE = bytes(b & 0xBF for b in range(256))  # a high byte without its exponent's top bit: no Inf or NaN
 size, tensors = 64 << 20, -(-int(sys.argv[2]) // 64)
 header, offset = {}, 0
@@ -84,6 +157,8 @@ for i in range(tensors):
     n = min(size, (mib << 20) - offset)
     header[f"w.{i}"] = {"dtype": "F16", "shape": [n // 2], "data_offsets": [offset, offset + n]}
     offset += n
+if part:
+    header["__metadata__"] = {"part": part}
 raw = json.dumps(header).encode()
 raw += b" " * (-len(raw) % 8)
 with open(path, "wb") as out:
@@ -97,20 +172,48 @@ with open(path, "wb") as out:
 PY
 }
 
-case $suite:$shard in
-  cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake) needs='' ;;
+# part_weights <file> <part> <seed> <n>: one F32 tensor `w` of n seeded values, its metadata `part` and `size`: a component's
+# config as the Runtime reads a file kept as it is.
+part_weights() {
+  python3 -I - "$@" <<'PY'
+import json, random, struct, sys
+path, part, seed, n = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+values = random.Random(seed).random
+raw = json.dumps({"__metadata__": {"part": part, "size": str(n)}, "w": {"dtype": "F32", "shape": [n], "data_offsets": [0, 4 * n]}}).encode()
+raw += b" " * (-len(raw) % 8)
+with open(path, "wb") as out:
+    out.write(struct.pack("<Q", len(raw)) + raw + struct.pack(f"<{n}f", *(values() for _ in range(n))))
+PY
+}
+
+# The web suite's jobs (cl-973) and one of its cells by hand (web-<cell>, web/<cell>.spec.js) take one seed.
+key=$suite:$shard
+case $shard in
+  web-1 | web-2 | web-3 | web-engines | web-solo | web-native | web-opens-busy) key=cli:web-suite ;;
+  web-*) [ ! -f "$here/cli/web/${shard#web-}.spec.js" ] || key=cli:web-suite ;;
+esac
+case $key in
+  cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web) needs='' ;;
+  cli:selfupdate) needs='next' ;;
   cli:runs | cli:local-code) needs='packages birefnet' ;;
-  cli:commands) needs='packages birefnet slots' ;;
-  # web-localfit's heavy tool paints its edit base with BiRefNet (a take is one since cl-909); only Linux's web-core runs it.
-  cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
+  # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a
+  # model of one component with another's (xs-190).
+  cli:commands) needs='packages birefnet loras fits parts' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
-  cli:web-palette) needs='packages catalog' ;;
-  cli:web-models) needs='packages loras' ;;
-  cli:) needs='packages birefnet downloads slots' ;;
+  cli:idle) needs='packages downloads' ;;
+  cli:ondemand) needs='packages birefnet downloads spare' ;;
+  cli:disk) needs='packages disk' ;;
+  # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
+  cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
+  cli:env-cost) needs='packages birefnet' ;;
+  cli:plan) needs='packages birefnet downloads' ;;
+  cli:) needs='packages birefnet downloads spare loras vaes fits parts' ;;
+  # shared_scratch's probe and its warm BiRefNet (cl-984).
+  cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
   imports:*)
-    # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).
+    # Production's published releases are what --published asks about, and CI reads no production (xs-169).
     [ -z "$published" ] || { echo "imports $published asks about production's releases: CI runs only on an isolated Hub; the checkout's packages run without it" >&2; exit 2; }
     needs='' ;;
   cpu:*) needs='' ;;
@@ -155,6 +258,13 @@ if [ "$suite" = cpu ]; then
     systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
   fi
+  # The binder installs on the candidates' Runtime and TensorFS, as every RC machine runs them with the RC's cozy (cl-952):
+  # with no pair of its own, a machine runs a lock's pair only in its own TensorFS series.
+  update=()
+  [ -z "$runtime" ] || update+=(--runtime "$runtime")
+  [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
+  [ ${#update[@]} -eq 0 ] || cozy --json machine update local "${update[@]}" -y > "$seed/machine-update.json" 2>&1 \
+    || { echo "the cpu suite's machine refused the candidates: $(tail -c 600 "$seed/machine-update.json")" >&2; exit 1; }
   (cd "$project" && cozy --json new --unencrypted > /dev/null)
   log "the cpu suite starts against its owned Hub with the installed candidate"
   exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project"
@@ -189,6 +299,10 @@ if [ "$suite" = imports ]; then
   log "imports locks verified against the owned Hub; authoritative checkout unchanged"
 fi
 
+if [ "$needs" = next ]; then
+  next
+  needs=''
+fi
 if [ -n "$needs" ]; then
   [ -n "$packages" ] || { echo "the isolated Hub's first-party packages come from run.sh's --packages checkout" >&2; exit 2; }
   mkdir -p "$seed/project"
@@ -204,6 +318,9 @@ if [ -n "$needs" ]; then
   done
   publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
+  [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
+  # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944).
+  case $key in cli: | cli:web-suite) publish "$packages/moss-image" ;; esac
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
   # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
   if [[ " $needs " == *" catalog "* ]]; then
@@ -220,6 +337,12 @@ if [ -n "$needs" ]; then
     rm -rf "$old" && cp -r "$here/cli/project/boxed" "$old"
     sed -e 's/^name = "e2e-boxed"/name = "e2e-runtime-044"/' -e 's/"cozy-runtime\[media\]>=[^"]*"/"cozy-runtime[media]>=0.44.0,<0.45"/' "$old/pyproject.toml" > "$old/pyproject.next" && mv "$old/pyproject.next" "$old/pyproject.toml"
     publish "$old" || log "e2e-runtime-044 not published: $(tail -c 300 "$seed/publish-e2e-runtime-044.json" | tr '\n' ' ')"
+    # And one needing the Runtime after this shard's Hub pin (0.45.0, e2e.yaml), as every 0.25 release did on a laptop still on 0.45.0
+    # (cl-975): a machine on the pin moves up for it, so the palette offers it.
+    next=$seed/e2e-runtime-046
+    rm -rf "$next" && cp -r "$here/cli/project/boxed" "$next"
+    sed -e 's/^name = "e2e-boxed"/name = "e2e-runtime-046"/' -e 's/"cozy-runtime\[media\]>=[^"]*"/"cozy-runtime[media]>=0.46.0,<0.47"/' "$next/pyproject.toml" > "$next/pyproject.next" && mv "$next/pyproject.next" "$next/pyproject.toml"
+    publish "$next" || log "e2e-runtime-046 not published: $(tail -c 300 "$seed/publish-e2e-runtime-046.json" | tr '\n' ' ')"
   fi
   case $shard in
     local-code | '')
@@ -227,9 +350,11 @@ if [ -n "$needs" ]; then
       sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
       systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
       systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
-      relay ;;
+      relay
+      held
+      rc_floor ;;
   esac
-  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* ]]; then
+  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* || " $needs " == *" disk "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -246,14 +371,37 @@ if [ -n "$needs" ]; then
     mirror "$seed/fontbox.safetensors" lilylilith/fontbox bf16 0.1.0 https://huggingface.co/lilylilith/fontbox --source-format as-is
     rm -f "$seed"/*.safetensors
   fi
+  if [[ " $needs " == *" disk "* ]]; then
+    # What disk_full (cli/disk.sh, tfs-150) cycles through a 2.5 GiB disk: six models of 384 MiB of random weights, none sharing a chunk.
+    for i in 1 2 3 4 5 6; do
+      random_weights "$seed/disk.safetensors" 384 "disk-$i"
+      mirror "$seed/disk.safetensors" "e2e/disk-$i" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+      rm -f "$seed/disk.safetensors"
+    done
+    # And one bigger than the disk can make free, refused with the sizes.
+    random_weights "$seed/disk.safetensors" 2048 disk-big
+    mirror "$seed/disk.safetensors" e2e/disk-big bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+    rm -f "$seed/disk.safetensors"
+  fi
+  if [[ " $needs " == *" spare "* ]]; then
+    random_weights "$seed/pagebox.safetensors" 900
+    mirror "$seed/pagebox.safetensors" lilylilith/pagebox bf16 0.1.0 https://huggingface.co/lilylilith/pagebox --source-format as-is
+    rm -f "$seed"/*.safetensors
+  fi
   if [[ " $needs " == *" loras "* ]]; then
-    # What H3's Models & LoRAs lists (web-models, cl-934): its default model, a stand-in its family names, and LoRAs of that family.
+    # What H3's Models & LoRAs lists (cl-934): its default model, a stand-in its family names, and LoRAs of that family.
     h3=$(sed -n 's/^_MODEL = "\(.*\)"$/\1/p' "$packages/minimax-h3/h3.py")
     [ -n "$h3" ] || { echo "minimax-h3/h3.py names no _MODEL" >&2; exit 1; }
     random_weights "$seed/minimax-h3.safetensors" 1
     mirror "$seed/minimax-h3.safetensors" "${h3%@*}" bf16 "${h3#*@}" https://huggingface.co/MiniMaxAI/MiniMax-H3 --source-format as-is
     cozy --json model edit "${h3%@*}" --family minimax-h3 > "$seed/edit-minimax-h3.json" 2>&1 \
       || { echo "naming ${h3%@*}'s family failed: $(tail -c 600 "$seed/edit-minimax-h3.json")" >&2; exit 1; }
+    # Two fine-tunes of its family for its one Base Model to choose between (cl-960).
+    for tune in sexgod1979/pinkcherry tenstrip/eros-max; do
+      mirror "$seed/minimax-h3.safetensors" "$tune" bf16 0.1.0 "https://huggingface.co/$tune" --source-format as-is
+      cozy --json model edit "$tune" --family minimax-h3 > "$seed/edit-${tune##*/}.json" 2>&1 \
+        || { echo "naming $tune's family failed: $(tail -c 600 "$seed/edit-${tune##*/}.json")" >&2; exit 1; }
+    done
     # An H3 LoRA as musubi-tuner writes it (e2e/release/synthetic.sh's), one rank of one block.
     python3 -I - "$seed/vfx-edit.safetensors" <<'PYH3'
 import json, struct, sys
@@ -271,37 +419,60 @@ raw = json.dumps(header).encode()
 raw += b" " * (-len(raw) % 8)
 open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + data)
 PYH3
-    # Two of its family: an edit LoRA, and one whose card note is long (loraNotes.ts), which the picker wraps.
-    for lora in alissonerdx/minimax-h3-vfx-edit nrdx/bfs-body-swap-selective-lora; do
-      cozy --json lora upload "$seed/vfx-edit.safetensors" "$lora" --lane f16 --mirror https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI --on local -y \
-        > "$seed/upload-${lora##*/}.json" 2>&1 || { echo "uploading $lora failed: $(tail -c 600 "$seed/upload-${lora##*/}.json")" >&2; exit 1; }
-      commit=$(python3 "$here/model-details.py" "$lora" | jq -r '.checkpoints[0].checkpoint // empty')
-      [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; exit 1; }
-      cozy --json lora publish "$lora" 0.1.0 "$commit" -y > "$seed/publish-${lora##*/}.json" 2>&1 \
-        || { echo "publishing $lora failed: $(tail -c 600 "$seed/publish-${lora##*/}.json")" >&2; exit 1; }
-      cozy --json lora edit "$lora" --family minimax-h3 > "$seed/edit-${lora##*/}.json" 2>&1 \
-        || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; exit 1; }
+    # Three of its family: an edit LoRA, one whose card note is long (loraNotes.ts), which the picker wraps, and 360-orbit, whose
+    # trigger is a whole prompt, commas and all: each --trigger is one entry, kept whole (cl-971).
+    orbit='One frozen instant. Only the camera moves. In a continuous 360 orbit. Preserve every person and object in exactly the same world position, orientation, shape and pose throughout the shot. Airborne objects remain suspended at the captured height and angle: no wobbling, shaking, spinning, drifting, falling or continued action. Keep faces, hands, clothing, liquids and the background motionless while retaining their natural appearance. Camera parallax is the only source of apparent movement. No cuts, zoom, morphing or added objects.'
+    for lora in alissonerdx/minimax-h3-vfx-edit nrdx/bfs-body-swap-selective-lora pablodawson/360-orbit; do
+      case $lora in
+        nrdx/*) page=https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI triggers=(--trigger bfs_swap --trigger 'head swap') ;;
+        pablodawson/*) page=https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA triggers=(--trigger "$orbit") ;;
+        *) page=https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI triggers=(--trigger vfx_edit) ;;
+      esac
+      standin_lora "$seed/vfx-edit.safetensors" "$lora" "$page" minimax-h3 "${triggers[@]}" || exit 1
     done
-    log "published ${h3%@*}@${h3#*@} (a stand-in) and two LoRAs of family minimax-h3"
+    log "published ${h3%@*}@${h3#*@} (a stand-in) and three LoRAs of family minimax-h3"
     rm -f "$seed"/*.safetensors
   fi
-  if [[ " $needs " == *" slots "* ]]; then
-    # What slot_choices (cl-943) asks about: Klein's package, and stand-ins of the models its slots and Qwen Image's and H3's judge.
-    publish "$packages/flux.3-klein"
-    # Written by TensorFS's own writer: the candidate's when there is one.
-    case $tensorfs in '') with=tensorfs ;; [0-9]*) with=tensorfs==$tensorfs ;; *) with=$tensorfs ;; esac
-    uv run -q --no-project --python 3.12 --with "$with" python "$here/cli/slot_models.py" "$seed/slots" > "$seed/slots.txt"
-    while read -r -u 3 file model release page; do
-      name=${model//\//-}-$release
-      cozy --json model upload "$file" "$model" --lane bf16 --mirror "$page" --on local -y > "$seed/upload-$name.json" 2>&1 \
-        || { echo "uploading $model $release failed: $(tail -c 600 "$seed/upload-$name.json")" >&2; exit 1; }
-      commit=$(python3 "$here/model-details.py" "$model" | jq -r '[.checkpoints[] | select((.releases // []) | length == 0)][0].checkpoint // empty')
-      [ -n "$commit" ] || { echo "$model has no unreleased checkpoint after its upload" >&2; exit 1; }
-      cozy --json model publish "$model" "$release" "$commit" -y > "$seed/publish-$name.json" 2>&1 \
-        || { echo "publishing $model $release failed: $(tail -c 600 "$seed/publish-$name.json")" >&2; exit 1; }
-    done 3< "$seed/slots.txt"
-    log "published $(wc -l < "$seed/slots.txt") stand-ins for slot_choices"
-    rm -rf "$seed/slots"
+  if [[ " $needs " == *" vaes "* ]]; then
+    # What Qwen Image's VAE slot lists (se-131): its default and a VAE of its family, tagged `vae` as the Hub's is,
+    # a model of its `vae` alone (xs-190).
+    random_weights "$seed/qwen-image-2.1.safetensors" 1
+    mirror "$seed/qwen-image-2.1.safetensors" qwen/qwen-image-2.1 bf16 0.1.0 https://huggingface.co/Qwen/Qwen-Image-2.1 --source-format as-is
+    mirror "$seed/qwen-image-2.1.safetensors:vae" madebyollin/texture-fix-vae bf16 0.3.0 \
+      https://huggingface.co/madebyollin/texture-fix-vae-for-qwen-image-2.1 --source-format as-is
+    for model in qwen/qwen-image-2.1 madebyollin/texture-fix-vae; do
+      tags=(); [ "$model" = qwen/qwen-image-2.1 ] || tags=(--tag vae)
+      cozy --json model edit "$model" --family qwen-image-2 "${tags[@]}" > "$seed/edit-${model##*/}.json" 2>&1 \
+        || { echo "naming $model's family failed: $(tail -c 600 "$seed/edit-${model##*/}.json")" >&2; exit 1; }
+    done
+    log "published qwen/qwen-image-2.1@0.1.0 and madebyollin/texture-fix-vae@0.3.0 (stand-ins) of family qwen-image-2"
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" parts "* ]]; then
+    # What component_models (cli/commands.sh, xs-190) composes: e2e/parts, a transformer and a VAE (a transformer alone, the VAE
+    # put on it), and e2e/parts-vae, a model of a `vae` alone.
+    part_weights "$seed/dit.safetensors" dit 1 1048576
+    part_weights "$seed/vae-a.safetensors" vae-a 2 65536
+    part_weights "$seed/vae-b.safetensors" vae-b 3 65536
+    page=https://github.com/cozy-creator/cozy-creator/tree/master/e2e
+    mirror "$seed/dit.safetensors:transformer" e2e/parts-dit f32 0.1.0 "$page" --source-format as-is
+    mirror "$seed/vae-a.safetensors" e2e/parts f32 0.1.0 "$page" --source-format as-is --base e2e/parts-dit@0.1.0:vae
+    mirror "$seed/vae-b.safetensors:vae" e2e/parts-vae f32 0.1.0 "$page" --source-format as-is
+    # e2e/parts@0.2.0: 0.1.0 cut by reference to its vae, a part an unversioned pick takes only for a slot that reads it (xs-192).
+    mirror "e2e/parts@0.1.0:vae" e2e/parts f32 0.2.0 "$page"
+    log "published e2e/parts@0.1.0 (transformer, vae), its part 0.2.0 (vae) and e2e/parts-vae@0.1.0 (vae)"
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" fits "* ]]; then
+    # lane_fit (xs-191): fitting/vae is fitting/whole (an 8 MiB `model`) with a 1 MiB `vae` added, as
+    # madebyollin/texture-fix-vae is Qwen-Image-2.1 with its VAE replaced.
+    random_weights "$seed/fit-whole.safetensors" 8
+    random_weights "$seed/fit-vae.safetensors" 1
+    mirror "$seed/fit-whole.safetensors" fitting/whole bf16 0.1.0 https://huggingface.co/fitting/whole --source-format as-is
+    mirror "$seed/fit-vae.safetensors" fitting/vae bf16 0.1.0 https://huggingface.co/fitting/vae --source-format as-is \
+      --base fitting/whole@0.1.0:vae
+    export E2E_FIT=fitting/vae
+    rm -f "$seed"/*.safetensors
   fi
   cd "$start"
 fi

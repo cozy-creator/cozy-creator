@@ -13,7 +13,9 @@
 #                    commit holds one while the next run claims it (straggler-held; gate 41991226171: the fetch fell back
 #                    to a temp it could not read back): it must land. Then with one small ask's socket held silent
 #                    after half its body (straggler-silent; run 32321 sat 16 min on its last two chunks): it must land
-#                    within 60 s, asked again. Then new random weights from origin.py through a 40 MB/s link, every
+#                    within 60 s, asked again. Then with one small ask dripping 16 KiB every 25 s after half its body, under
+#                    the 30 s stall (straggler-drip; run 47820's last ~1 MB crawled 15 min, tfs-149): a hedge on another
+#                    connection must land it within 20 s of the clean download. Then new random weights from origin.py through a 40 MB/s link, every
 #                    storage ask answered 503 for 8 s once the ramp has settled (straggler-burst; R2 sent 13 near run
 #                    32321's end, which left one request held by nothing to start): it must land
 #   lora-alpha       on this host: `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no `.alpha`
@@ -35,6 +37,12 @@
 #   upload-cut/-resume    new weights cancelled part-way, then uploaded again: only the rest is sent
 #   mc-source/-upload/-quantize/-inspect  multi-conversion/: a recipe that encodes each component in its own call into
 #                    one output (H3's) writes every component; its lane's commit read back through `cozy run`
+#   fp8-copy/-install/-quantize  quantize-fp8/: `cozy model quantize` of a Hub fp8 checkpoint (Ideogram 4's, copied into
+#                    a throwaway model: the Hub records the copy, nothing moves) with a local package's int8 recipe (cl-974:
+#                    Calcifer planned that call inside the job that asked for it, and at opt-level 0, as a dev home builds
+#                    it, overflowed a worker's 2 MiB stack and restarted on every ask). Passes once the run is accepted and
+#                    running on $M with Calcifer still up; the run is then canceled (writing a lane is mc-quantize's).
+#                    Release builds had the headroom: the crash shows with `cozy` a dev-build.yaml `profile=dev` run
 #   family-refusal   an SDXL inpainting single file (sdxl.single_file's keys, conv_in at 9 channels) is refused from
 #                    its header: FAMILY_MISMATCH, with only the header and the reference's configs downloaded
 #   layout-probe     Comfy-Org's ComfyUI H3 Ref2VA DiT (contiguous Q/K/V) read as h3.native: the layout probe refuses it
@@ -194,7 +202,7 @@ tfs_cleanup() {
 }
 trap 'tfs_cleanup; declare -F hub_cleanup >/dev/null && hub_cleanup; end_it' EXIT
 
-# tfs_case <case>: whether --only selects it (none selects every case: probe, download, upload, family, multi-conversion,
+# tfs_case <case>: whether --only selects it (none selects every case: probe, download, upload, family, multi-conversion, quantize-fp8,
 # straggler, lora-alpha); a selected case is listed in cases, the ones check.py judges.
 tfs_case() { [ -z "$ONLY" ] || [[ $ONLY == *",$1,"* ]] || return 1; echo "$1" >> "$T/cases"; }
 
@@ -264,6 +272,24 @@ if tfs_case multi-conversion && [ -n "$WHO" ]; then
   [ -z "$c" ] || tfs_step mc-inspect run ./ci-multi-conversion/inspect "model.model=$d@$c" seed:=$R --on "$M"
   tfs_cleanup
 fi
+# A Hub fp8 checkpoint with a local package (cl-974): the package installed first, so the quantize's ask goes straight to
+# planning, as each retry of the laptop's crash did.
+if tfs_case quantize-fp8 && [ -n "$WHO" ]; then
+  d=$WHO/ci-tfs-fp8-$R c=sha256:6ea44a839e38bcaa5e1521a50f6782c6d7597b20b28eee0f47424a623ec5674d q=$HERE/suites/tensorfs/quantize-fp8
+  TFS_DESTS+=("$d")
+  overflows() { "$CLI" machine logs local calcifer -n 0 2>/dev/null | grep -c 'has overflowed its stack'; }
+  was=$(overflows)
+  tfs_step fp8-copy model upload "ideogram-ai/ideogram-4@$c" "$d" --lane fp8 -y
+  tfs_step fp8-install package install "$q" --on "$M"
+  n=$(run_submit "$T" fp8-quantize model quantize "$d@$c" --lane int8 --package "$q" --on "$M" -y)
+  [ -n "$n" ] && run_wait "$T" fp8-quantize in_progress && s=running || s=$(run_get "$T" fp8-quantize .status)
+  [ -z "$n" ] || "$CLI" run cancel "$n" -y > /dev/null 2>&1
+  crashed=$(( $(overflows) - was ))
+  why="model quantize $d@$c --lane int8 --package quantize-fp8: run ${n:-none} ${s:-not made}, Calcifer overflowed its stack $crashed times"
+  [ "$s" = running ] && [ "$crashed" = 0 ] && expect tensorfs-quantize-fp8 PASS "$why" ||
+    expect tensorfs-quantize-fp8 FAIL "$why: $(tail -n 2 "$T/fp8-quantize.err" 2>/dev/null | tr '\n' ' ' | cut -c1-200)"
+  tfs_cleanup
+fi
 # On this host, after the machine's cases: the machine is not left idle while it runs.
 if tfs_case straggler; then
   tfs_straggler straggler-clean 0
@@ -287,6 +313,7 @@ PY
   tfs_straggler straggler-held 0
   kill "$held"
   tfs_straggler straggler-silent 0 --silent
+  tfs_straggler straggler-drip 0 --drip
   tfs_burst straggler-burst
 fi
 if tfs_case lora-alpha; then tfs_lora_alpha; fi

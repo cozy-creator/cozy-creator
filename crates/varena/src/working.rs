@@ -1161,11 +1161,7 @@ impl Device {
     fn back(&self, state: &mut State, base: u64) -> crate::AllocationResult<()> {
         let segment = state.segments.get_mut(&base).expect("owned segment");
         let (pool, class) = (segment.pool, segment.size_class);
-        self.sample()?;
-        let missing = segment.unbacked();
-        if self.over(missing) != 0 {
-            return Err(Error::OutOfMemory { requested_bytes: missing }.into());
-        }
+        self.admit(segment.unbacked())?;
         // All or nothing here: an eager segment never maps again, and a pool has one handle.
         let mut mapped = Vec::new();
         let result = (|| {

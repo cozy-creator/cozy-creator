@@ -8,7 +8,7 @@ import { say } from "../../ui/notes"
 import { NSFW, Tags, isNsfw, useShowNsfw } from "../../ui/Tags"
 import { Confirm, Failure, Section, useAsk, useSignedIn } from "../common"
 import { DropZone, FileRow, useFiles } from "../FileDrop"
-import { bytes, shown } from "../format"
+import { bytes, shown, stamp } from "../format"
 import { OnMachine } from "../machines/OnMachine"
 import { LibraryFrame } from "./Library"
 
@@ -130,7 +130,7 @@ function Publish({ name, checkpoints, onDone }: { name: string; checkpoints: Mod
               </td>
               <td className="nm">{checkpoint.lane}</td>
               <td>{bytes(checkpoint.bytes)}</td>
-              <td>{checkpoint.created_at}</td>
+              <td>{stamp(checkpoint.created_at)}</td>
               <td>{checkpoint.releases.length ? checkpoint.releases.join(", ") : "private"}</td>
               <td className="end">
                 <DeleteCheckpoint name={name} checkpoint={checkpoint} onDone={onDone} />
@@ -268,7 +268,7 @@ function Releases({ detail, signedIn, onDone }: { detail: ModelDetail; signedIn:
                 <td className="nm">{lane.lane}</td>
                 <td>{bytes(lane.bytes)}</td>
                 <td>{lane.kinds?.join(", ")}</td>
-                <td>{at === 0 ? release.created_at : ""}</td>
+                <td>{at === 0 && release.created_at ? stamp(release.created_at) : ""}</td>
                 <td className="end">
                   {at === 0 && signedIn && detail.checkpoints.length > 0 && release.visibility === "public" && (
                     <Confirm
@@ -332,7 +332,7 @@ export function ModelDrawer() {
       <Failure error={error} lead={`Couldn't read ${shown(name)}`} />
       {data && (
         <p className="muted">
-          {[familyLine(data), data.author && `by ${data.author.name}${data.author.parked ? " (not claimed)" : ""}`, data.trigger && `trigger: ${data.trigger}`, data.strength !== undefined && data.strength !== null && `strength ${data.strength}`, data.source && `from ${data.source}`]
+          {[familyLine(data), data.author && `by ${data.author.name}${data.author.parked ? " (not claimed)" : ""}`, data.triggers?.length && `${data.triggers.length > 1 ? "triggers" : "trigger"}: ${data.triggers.map((trigger) => `“${trigger}”`).join(", ")}`, data.strength !== undefined && data.strength !== null && `strength ${data.strength}`, data.source && `from ${data.source}`]
             .filter(Boolean)
             .join(" · ")}{" "}
           {!member && <Tags tags={data.tags} />}

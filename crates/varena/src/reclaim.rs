@@ -338,6 +338,16 @@ impl<'a> Sequence<'a> {
     }
 }
 
+/// Of `came` bytes outside this process since its quietest sample, what other programs took
+/// (`cooperative::others_came`), never this process's own; where no ledger or NVML can say (not
+/// Linux), all of it, as before.
+fn theirs(device: i32, came: usize) -> usize {
+    #[cfg(target_os = "linux")]
+    return came.min(crate::cooperative::others_came(device));
+    #[cfg(not(target_os = "linux"))]
+    { let _ = device; came }
+}
+
 fn idle_peers_gave(device: i32, bytes: usize) -> bool {
     #[cfg(target_os = "linux")]
     return crate::cooperative::peers_idle(device) && crate::cooperative::ask_idle_peers(device, bytes);
@@ -360,6 +370,14 @@ pub(crate) fn acquire<T>(
     loop {
         let failure = match try_map() {
             Ok(value) => return Ok(value),
+            Err(AllocationFailure::ReserveShort(_)) => {
+                // The pages fit, not beside the driver's reserve: what is idle and done goes for it,
+                // with no wait on our own work and no owner; short of that, the demand takes the reserve.
+                if !reserve(device, protect, wait != Wait::No)? {
+                    return crate::waived(&mut try_map).map_err(Into::into);
+                }
+                continue;
+            }
             Err(failure) if failure.is_oom() => failure,
             Err(failure) => return Err(failure.into()),
         };
@@ -375,9 +393,17 @@ pub(crate) fn acquire<T>(
             // kesshouban H3's 207 MB GEMM output waited 300 s beside 19.6 GB free (run 43277).
             if protect.outside && wait == Wait::Yes && physical && sequence.gpu.in_request() {
                 let start = free_now(sequence.gpu)?;
-                let came = sequence.gpu.outside.load(Ordering::Acquire)
-                    .saturating_sub(sequence.gpu.outside_floor.load(Ordering::Acquire));
+                // Of it, only what other programs took may come back: never wait on this process's own.
+                let came = theirs(device, sequence.gpu.outside.load(Ordering::Acquire)
+                    .saturating_sub(sequence.gpu.outside_floor.load(Ordering::Acquire)));
                 if came >= want {
+                    if waiting.is_none() {
+                        eprintln!(
+                            "varena: GPU {device}: {need} bytes wait up to {} s for the {came} bytes other programs \
+                             took since this process began: {start} bytes free",
+                            OUTSIDE_WAIT.as_secs(),
+                        );
+                    }
                     let began = *waiting.get_or_insert_with(Instant::now);
                     if outside_gave(sequence.gpu, want, start, began + OUTSIDE_WAIT)? {
                         sequence = Sequence::new(device, usize::MAX, wait, protect, ReclaimReason::Allocator)?;
@@ -385,7 +411,7 @@ pub(crate) fn acquire<T>(
                     }
                     eprintln!(
                         "varena: GPU {device}: {need} bytes found no room after every lever and {} s waiting \
-                         for the {came} bytes that came outside this process: {start} bytes free",
+                         for the {came} bytes other programs took: {start} bytes free",
                         began.elapsed().as_secs(),
                     );
                 }
@@ -442,6 +468,31 @@ pub(crate) fn release(
     result.map(|()| sequence.evicted)
 }
 
+/// The driver's reserve for pages that fit but not beside it, in the one order with no wait on this
+/// process's GPU work and no owner. A demand (`ask`) asks idle peers before our weights go: they hold
+/// what nothing is about to use, and ours are read again. Without the ask an idle H3 executor kept
+/// 27 GB on a 5090 while SDXL beside it evicted and refilled 66 GB of its own weights a call (var-020).
+/// Whether anything came free.
+fn reserve(device: i32, protect: Protect<'_>, ask: bool) -> Result<bool> {
+    if working::existing(device)?.is_none() {
+        return Ok(false);
+    }
+    let want = crate::DRIVER_RESERVE;
+    let mut sequence = Sequence::new(device, usize::MAX, Wait::No, protect, ReclaimReason::Allocator)?;
+    while sequence.released < want && sequence.step < ORDER.len() {
+        let (step, left) = (ORDER[sequence.step], want - sequence.released);
+        if step == Step::IdlePeers {
+            if ask && idle_peers_gave(device, left) {
+                return Ok(true);
+            }
+            sequence.step += 1;
+        } else if !sequence.run(step, left, false)? {
+            sequence.step += 1;
+        }
+    }
+    Ok(sequence.released > 0)
+}
+
 /// A peer's ask, once this process's owner caches have answered: completed high regions may go.
 pub(crate) fn release_high(device: i32, want: usize) -> Result<()> {
     let mut sequence = Sequence::new(device, usize::MAX, Wait::No, Protect::default(), ReclaimReason::Allocator)?;
@@ -472,7 +523,7 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
             return Ok(false);
         }
         let _context = gpu.driver().enter()?;
-        let room = gpu.driver().memory_info()?.0.min(gpu.headroom());
+        let room = gpu.spare(gpu.driver().memory_info()?.0).min(gpu.headroom());
         let state = gpu.lock()?;
         let prefix = state.prefix(&order);
         let idle = state.entries.iter()

@@ -1,0 +1,1 @@
+Models & LoRAs lists straight from the Hub's family listing, reading no model headers, and a component slot (an enhancer, an upsampler, a text encoder) offers the published models of its family as a base slot does. `cozy model ls --fits` and `cozy run`'s header check are gone; a box's model choice is judged by its family label again (a LoRA slot's step-distilled check stays).

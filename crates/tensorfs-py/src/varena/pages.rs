@@ -368,7 +368,7 @@ impl Tier {
             persist_skipped: AtomicU64::new(0), persist_failed: AtomicU64::new(0),
         });
         tier.look(&mut tier.state(), &budget());
-        super::host::join(Arc::downgrade(&tier));
+        super::host::join(Arc::downgrade(&tier), shared);
         tier
     }
 

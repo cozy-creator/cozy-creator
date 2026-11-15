@@ -1,6 +1,6 @@
 # e2e/cli/previews.sh: the `previews` part (cr-282): a denoise loop on the CPU (project/latents.py) shows its latents to a
 # client watching its run. `cozy run --previews` and `cozy run watch --previews` save each new one as it runs; a run no
-# one asks about makes none. The box's side is web/previews.js (web.sh).
+# one asks about makes none. The box's side is the web suite's render cell.
 
 previews() {
 [ -n "$LOCAL" ] || { echo "previews: this computer runs no models itself"; return 0; }
@@ -23,7 +23,8 @@ step "previews: a running run followed again, its previews saved (cozy run watch
 (cd "$here" && run_submit "$OUT" watched run "$tool/latents" steps:=16 seconds:=0.5 --on local > /dev/null) || true
 n=$(cat "$OUT/watched.number" 2> /dev/null) || n=
 if [ -n "$n" ] && [ "$n" != none ]; then
-  (cd "$here" && cozy run watch "$n" --previews "$OUT/watched-previews" > "$OUT/watched-watch.txt" 2>&1) \
+  # Its number names a run of the project it was made in (run_start's).
+  (cd "${RUN_PROJECT:-$here}" && cozy run watch "$n" --previews "$OUT/watched-previews" > "$OUT/watched-watch.txt" 2>&1) \
     || check "previews: cozy run watch $n --previews failed: $(tail -c 300 "$OUT/watched-watch.txt")"
   count=$(find "$OUT/watched-previews" -name "$n-preview-*.webp" 2> /dev/null | wc -l)
   [ "$count" -ge 1 ] || check "previews: cozy run watch $n --previews saved none"
