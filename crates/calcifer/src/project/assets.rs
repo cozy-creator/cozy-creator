@@ -36,8 +36,9 @@ fn tool_name(tool: &str) -> Option<String> {
     format::plain_name(&tool::first_of(tool::package_word(package.split('@').next()?)))
 }
 
+/// No box by that name: another writer may have renamed or deleted it, which a client hears of on its stream.
 fn own_lines(name: &str) -> Error {
-    Error::new(Kind::Usage, "project_edit", format!("the project has no box {name}")).next("cozy status")
+    Error::new(Kind::NotFound, "asset_unknown", format!("the project has no box {name}")).next("cozy status")
 }
 
 /// What `tool` makes, as the project last read it, else as reading it now says: none when it can't be read, which refuses nothing.
