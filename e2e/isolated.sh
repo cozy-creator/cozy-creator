@@ -144,11 +144,12 @@ standin_lora() {
     || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; return 1; }
 }
 
-# random_weights <file> <MiB>: one F16 tensor per 64 MiB of random finite values, written as it is made: no chunk repeats.
+# random_weights <file> <MiB> [part]: one F16 tensor per 64 MiB of random finite values, written as it is made: no chunk repeats.
+# With `part`, its metadata names it: a config the Runtime constructs from.
 random_weights() {
-  python3 -I - "$1" "$2" <<'PY'
+  python3 -I - "$1" "$2" "${3:-}" <<'PY'
 import json, os, struct, sys
-path, mib = sys.argv[1], int(sys.argv[2])
+path, mib, part = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 FINITE = bytes(b & 0xBF for b in range(256))  # a high byte without its exponent's top bit: no Inf or NaN
 size, tensors = 64 << 20, -(-int(sys.argv[2]) // 64)
 header, offset = {}, 0
@@ -156,6 +157,8 @@ for i in range(tensors):
     n = min(size, (mib << 20) - offset)
     header[f"w.{i}"] = {"dtype": "F16", "shape": [n // 2], "data_offsets": [offset, offset + n]}
     offset += n
+if part:
+    header["__metadata__"] = {"part": part}
 raw = json.dumps(header).encode()
 raw += b" " * (-len(raw) % 8)
 with open(path, "wb") as out:
@@ -369,7 +372,7 @@ if [ -n "$needs" ]; then
   if [[ " $needs " == *" disk "* ]]; then
     # What disk_full (cli/disk.sh, tfs-150) cycles through a 2.5 GiB disk: six models of 384 MiB of random weights, none sharing a chunk.
     for i in 1 2 3 4 5 6; do
-      random_weights "$seed/disk.safetensors" 384
+      random_weights "$seed/disk.safetensors" 384 "disk-$i"
       mirror "$seed/disk.safetensors" "e2e/disk-$i" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
       rm -f "$seed/disk.safetensors"
     done
