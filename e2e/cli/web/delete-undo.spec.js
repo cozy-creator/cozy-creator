@@ -3,7 +3,7 @@
 // and approval, Redo takes it again. Backspace in a prompt edits only its words. A deleted box that another reads is named as gone there and
 // resolves nowhere, until Undo (cl-919); an API client's delete undoes from the page; and an undo a later edit would clobber is refused, saying
 // which.
-const { test, expect, box, canvasIdle, focus, middle, png, fixtureTool } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, png, fixtureTool, canvasNames, canvasPoint, canvasVisible, selectedNames, hoverBox } = require('./fixtures');
 const { rowsOf } = require('./geometry');
 
 // Four pictures to delete four ways, each with two takes and the first approved; then F, G reading it, H for an API client, K to clobber.
@@ -23,7 +23,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
   }
   await project.add({ name: G.name, tool: fixtureTool('draw.py/draw'), kind: 'image', fields: { instructions: G.words }, at: G.at });
   const all = [...Object.keys(FOUR), ...Object.keys(REST), G.name];
-  for (const name of all) await expect(box(page, name)).toBeVisible();
+  for (const name of all) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   const laid = await rowsOf(project, all);
   const kept = Object.fromEntries(await Promise.all(Object.keys(FOUR).map(async (name) => [name, await project.asset(name)])));
   for (const name of Object.keys(FOUR)) expect(kept[name], `${name}: two takes, the first approved`).toMatchObject({ versions: 2, approved: 1, pinned: true });
@@ -35,24 +35,24 @@ test('delete-undo', async ({ page, project, api, guards }) => {
   const undoButton = page.locator('.top .history').getByRole('button', { name: 'Undo', exact: true });
   /** `name` gone: from the canvas at once, from the API, and the history says so. */
   const gone = async (name, how) => {
-    await expect.soft(box(page, name), `${how}: ${name} off the canvas at once`).toHaveCount(0, { timeout: 1000 });
+    await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes(name), { message: `${how}: ${name} off the canvas at once`, timeout: 1000 }).toBe(false);
     await expect.poll(() => project.asset(name), { message: `${how}: ${name} out of the API` }).toBeUndefined();
     await expect.poll(async () => (await history()).some((entry) => entry.words === `Deleted ${name}` && !entry.undone), { message: `${how}: the history says "Deleted ${name}"` }).toBe(true);
   };
   /** `name` back where it was, with its takes and approval. */
   const back = async (name, how) => {
     await expect.poll(() => project.asset(name), { message: `${how}: ${name} back in the API` }).toBeTruthy();
-    await expect.soft(box(page, name), `${how}: ${name} back on the canvas`).toBeVisible();
+    await expect.configure({ soft: true }).poll(() => canvasVisible(page, name), { message: `${how}: ${name} back on the canvas` }).toBe(true);
     const [now, row] = [await project.asset(name), (await rowsOf(project, [name]))[name]];
     expect.soft({ versions: now.versions, approved: now.approved, pinned: now.pinned, sha256: now.sha256 }, `${how}: ${name}'s takes and approval`).toEqual({ versions: kept[name].versions, approved: kept[name].approved, pinned: kept[name].pinned, sha256: kept[name].sha256 });
     expect.soft({ x: row.x, y: row.y }, `${how}: ${name} where it was`).toEqual({ x: laid[name].x, y: laid[name].y });
   };
-  const on = (name) => middle(box(page, name).locator('.media').first());
+  const on = (name) => canvasPoint(page, name);
 
   await test.step('delete boxes in four ways: Delete on a selection, Backspace in Focus, menu › Delete, and the trash icon', async () => {
     let at = await on('d1');
     await page.mouse.click(at.x, at.y);
-    await expect(box(page, 'd1')).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(() => selectedNames(page)).toContain('d1');
     await page.keyboard.press('Delete');
     await gone('d1', 'Delete on a selection');
 
@@ -69,7 +69,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
     await page.getByRole('menu', { name: "d3's menu" }).getByRole('menuitem', { name: 'Delete', exact: true }).click();
     await gone('d3', 'menu › Delete');
 
-    const trash = box(page, 'd4').locator('.head button[aria-label="Delete"]');
+    const trash = (await hoverBox(page, 'd4')).locator('.head button[aria-label="Delete"]');
     await page.mouse.move(...Object.values(await on('d4')));
     await expect(trash).toBeVisible();
     expect.soft(await trash.locator('svg').getAttribute('data-icon'), "a box's Delete is a trash can").toBe('trash');
@@ -88,7 +88,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
     await undoButton.click();
     await back('d2', "the top bar's Undo");
     await page.keyboard.press('ControlOrMeta+Shift+z');
-    await expect.soft(box(page, 'd2'), 'Redo takes d2 off the canvas').toHaveCount(0, { timeout: 1000 });
+    await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes('d2'), { message: 'Redo takes d2 off the canvas', timeout: 1000 }).toBe(false);
     await expect.poll(() => project.asset('d2'), { message: 'Redo deletes d2 again' }).toBeUndefined();
   });
 
@@ -103,7 +103,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
     await expect(region).toHaveCount(0);
     await canvasIdle(page);
     await expect.poll(async () => (await project.asset(G.name))?.fields?.instructions, { message: 'Backspace takes the last letter of the words, and no box' }).toBe(G.words.slice(0, -1));
-    await expect.soft(box(page, G.name)).toBeVisible();
+    await expect.configure({ soft: true }).poll(() => canvasVisible(page, G.name)).toBe(true);
   });
 
   await test.step('delete F, which G mentions', async () => {
@@ -128,7 +128,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
 
     await page.keyboard.press('ControlOrMeta+z');
     await expect.poll(() => project.asset('F'), { message: 'Undo brings F back' }).toBeTruthy();
-    await expect.soft(box(page, 'F')).toBeVisible();
+    await expect.configure({ soft: true }).poll(() => canvasVisible(page, 'F')).toBe(true);
     region = await focus(page, G.name);
     await expect.soft(chip, "and G's mention reads it again").not.toHaveClass(/\bmissing\b/);
     await page.keyboard.press('Escape');
@@ -138,29 +138,29 @@ test('delete-undo', async ({ page, project, api, guards }) => {
 
   await test.step('let an API client delete H, then undo it from the page', async () => {
     await api.delete(project.at('/assets/H'));
-    await expect(box(page, 'H'), "the API client's delete shows").toHaveCount(0);
+    await expect.poll(async () => (await canvasNames(page)).includes('H'), { message: "the API client's delete shows" }).toBe(false);
     await expect(undoButton).toHaveAttribute('title', /^Undo: Deleted H, by the API/);
     await undoButton.click();
     await expect.poll(() => project.asset('H'), { message: 'the page undoes it' }).toBeTruthy();
-    await expect.soft(box(page, 'H')).toBeVisible();
+    await expect.configure({ soft: true }).poll(() => canvasVisible(page, 'H')).toBe(true);
   });
 
   await test.step('undo an entry that a later edit would clobber, then reload', async () => {
-    const trash = box(page, 'K').locator('.head button[aria-label="Delete"]');
+    const trash = (await hoverBox(page, 'K')).locator('.head button[aria-label="Delete"]');
     await page.mouse.move(...Object.values(await on('K')));
     const at = await middle(trash);
     await page.mouse.click(at.x, at.y);
     await gone('K', 'K');
     // Another writer's K, in its place.
     const theirs = await project.import(png(250), { name: 'K' });
-    await expect(box(page, 'K')).toBeVisible();
+    await expect.poll(() => canvasVisible(page, 'K')).toBe(true);
     await page.locator('.notes .note').filter({ hasText: 'Deleted K.' }).getByRole('button', { name: 'Undo', exact: true }).click();
     const refused = page.locator('.notes .note .line').filter({ hasText: "Couldn't undo" });
     await expect.soft(refused, 'the undo is refused').toHaveCount(1);
     await expect.soft(refused, 'naming what it would clobber').toContainText('K is in the project again');
     await expect.soft(refused, 'and the edit since').toContainText('Added K');
     await page.reload();
-    await expect(box(page, 'K')).toBeVisible();
+    await expect.poll(() => canvasVisible(page, 'K')).toBe(true);
     expect.soft((await project.asset('K'))?.sha256, "K is the other writer's").toBe(theirs.sha256);
   });
 });

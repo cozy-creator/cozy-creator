@@ -6,8 +6,8 @@
 // player and a block seeks; Redo says what it keeps and asks for segment 2 alone.
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, focus, fixtureTool, DARK_OPEN } = require('./fixtures');
-const { ffmpeg, fit, leave, rest, spread } = require('./hands');
+const { test, expect, box, focus, fixtureTool, DARK_OPEN, canvasCard, canvasVisible, hoverBox } = require('./fixtures');
+const { ffmpeg, fit, leave, rest, posterSpread } = require('./hands');
 
 const SEGMENTS = fixtureTool('segments.py/segments');
 const FPS = 24;
@@ -33,15 +33,16 @@ test('video', async ({ page, project, api, guards }) => {
   await project.import(DARK_OPEN, { name: 'dark', at: { x: 360, y: 0 } });
   await project.add({ name: 'shot', tool: SEGMENTS, kind: 'video', fields: { summary: 'Along the coast, segment after segment.', beats: [{ description: 'The cliffs.', duration: SECONDS }, { description: 'The harbour.', duration: SECONDS }], wait: WAIT }, at: { x: 0, y: 320 } });
   await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.some((tool) => tool.local && tool.id === SEGMENTS), { message: 'the project lists its local tool' }).toBe(true);
-  for (const name of ['walk', 'dark', 'shot']) await expect(box(page, name)).toBeVisible();
+  for (const name of ['walk', 'dark', 'shot']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
 
   await test.step('at rest, a poster, not black for one that opens dark, then a muted looping preview', async () => {
     for (const name of ['walk', 'dark']) {
-      const poster = box(page, name).locator('.media .scrub img').first();
-      await expect.poll(() => poster.evaluate((img) => img.complete && img.naturalWidth > 0), { message: `${name}'s poster`, timeout: 60_000 }).toBe(true);
-      expect.soft(await spread(poster), `${name}'s poster shows something, not a black frame`).toBeGreaterThanOrEqual(12);
+      await page.mouse.move(4, 600);
+      await expect.poll(async () => (await canvasCard(page, name))?.rendered?.media.ready ?? false, { message: `${name}'s poster`, timeout: 60_000 }).toBe(true);
+      expect.soft(await posterSpread(page, name), `${name}'s poster shows something, not a black frame`).toBeGreaterThanOrEqual(12);
+      await hoverBox(page, name);
       await rest(page, box(page, name).locator('.media'));
       const preview = box(page, name).locator('video.preview.on');
       await expect.poll(async () => (await preview.count()) && (await playing(preview)).at > 0.3, { message: `${name}'s preview plays`, timeout: 45_000 }).toBe(true);

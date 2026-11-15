@@ -12,7 +12,7 @@ const { appendFileSync, readFileSync, readdirSync } = require('fs');
 const http = require('http');
 const { dirname, join } = require('path');
 const { promisify } = require('util');
-const { test, expect, box, canvasIdle, focus } = require('./fixtures');
+const { test, expect, canvasIdle, focus, canvasVisible } = require('./fixtures');
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite runs where e2e/isolated.sh sets it`); })();
 const run = promisify(execFile);
@@ -160,8 +160,8 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
   // Two boxes this computer would render poorly, on the open canvas.
   await project.add({ name: 'heavy', tool: HEAVY, kind: 'image', fields: { instructions: 'a lantern in fog', seconds: 8 }, at: { x: 0, y: 0 } });
   await project.add({ name: 'kite', tool: kite, kind: 'image', fields: { instructions: 'a red kite over dunes' }, at: { x: 420, y: 0 } });
-  await expect(box(page, 'heavy')).toBeVisible();
-  await expect(box(page, 'kite')).toBeVisible();
+  await expect.poll(() => canvasVisible(page, 'heavy')).toBe(true);
+  await expect.poll(() => canvasVisible(page, 'kite')).toBe(true);
 
   try {
     await test.step('Account › Sign out, an inline confirm; signed in again, a wrong code first, then the code the Hub logs', async () => {
@@ -239,8 +239,8 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
 
     await test.step('A heavy box asks first; Run here anyway renders here, then Cancel; Render again, and again after a reload', async () => {
       await page.goto(project.url());
-      await expect(box(page, 'heavy')).toBeVisible();
-      await expect(box(page, 'kite')).toBeVisible();
+      await expect.poll(() => canvasVisible(page, 'heavy')).toBe(true);
+      await expect.poll(() => canvasVisible(page, 'kite')).toBe(true);
       await zoomToFit(page);
       let region = await focus(page, 'heavy');
       const asking = region.getByRole('group', { name: 'Render here?' });

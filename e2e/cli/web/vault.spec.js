@@ -9,7 +9,7 @@
 const { randomBytes, createHash } = require('crypto');
 const { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('fs');
 const { dirname, join, relative } = require('path');
-const { test: base, expect, box, canvasIdle, middle, openPoint, png } = require('./fixtures');
+const { test: base, expect, canvasIdle, openPoint, png, canvasCard, canvasPoint, canvasVisible, screenshotPixels } = require('./fixtures');
 
 const test = base.extend({
   /** Encrypted projects the cell made ({id, path}): each locked again before its folder goes, as a person locks one before deleting it. */
@@ -93,7 +93,8 @@ const keptIn = (tab, words) => tab.evaluate(async (words) => {
     db.close();
   }
   return {
-    boxes: document.querySelectorAll('.react-flow, .react-flow__node, [data-asset]').length,
+    boxes: document.querySelectorAll('.canvas-root, .canvas-pixels, .canvas-node, [data-asset]').length,
+    gpu: [...document.querySelectorAll('.canvas-root')].map(root => ({ names: root.canvasInspection?.names() ?? [], resources: root.canvasInspection?.resources() ?? null })),
     dom: has(document.documentElement.outerHTML).filter((label) => label !== 'the project id'),
     pictures: [...document.querySelectorAll('[src], [srcset], [poster]')]
       .map((el) => el.getAttribute('src') ?? el.getAttribute('srcset') ?? el.getAttribute('poster'))
@@ -103,7 +104,43 @@ const keptIn = (tab, words) => tab.evaluate(async (words) => {
     indexedDB: databases,
   };
 }, words);
-const NOTHING = { boxes: 0, dom: [], pictures: [], webStorage: [], cacheStorage: [], indexedDB: [] };
+const NOTHING = { boxes: 0, gpu: [], dom: [], pictures: [], webStorage: [], cacheStorage: [], indexedDB: [] };
+
+/** Remember this exact project's live GPU resources and independently verified picture samples before it locks. */
+async function rememberPrivate(tab, project, name) {
+  expect(new URL(tab.url()).pathname, 'private pixel probe is on the affected project').toBe(`/p/${project.code}`);
+  await tab.bringToFront();
+  await tab.mouse.move(4, 4);
+  await canvasIdle(tab);
+  await expect.poll(async () => (await canvasCard(tab, name))?.rendered?.media.ready ?? false, { message: 'private picture decoded', timeout: 60_000 }).toBe(true);
+  const body = (await canvasCard(tab, name)).body, read = screenshotPixels(await tab.screenshot({ scale: 'css' }));
+  const points = [0.2, 0.4, 0.6, 0.8].flatMap(v => [0.2, 0.4, 0.6, 0.8].map(u => ({ x: body.x + body.width * u, y: body.y + body.height * v, expected: [23, Math.floor(255 * u), Math.floor(255 * v)] })));
+  for (const point of points) expect(read(point.x, point.y).every((value, c) => Math.abs(value - point.expected[c]) <= 20), 'private picture pixels match its source').toBe(true);
+  const resources = await tab.evaluate(points => {
+    const owner = document.querySelector('.canvas-root'), inspection = owner.canvasInspection;
+    const canvas = owner.querySelector('.canvas-pixels'), context = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+    if (!context || context.isContextLost()) throw new Error('private baseline has no live WebGL context');
+    window.__lockedCanvas = { owner, inspection, canvas, context, points };
+    return inspection.resources();
+  }, points);
+  expect(resources.textures, 'the affected project owns decoded textures').toBeGreaterThan(0);
+  expect(resources.textureBytes, 'the affected project owns texture bytes').toBeGreaterThan(0);
+}
+
+/** The old renderer is retired and none of its private picture samples survives the lock screen. */
+async function privateRetired(tab) {
+  let state;
+  await expect.poll(async () => {
+    state = await tab.evaluate(() => {
+      const held = window.__lockedCanvas;
+      if (!held) throw new Error('missing private renderer baseline');
+      return { connected: held.canvas.isConnected, contextLost: held.context.isContextLost(), same: held.owner.canvasInspection === held.inspection, resources: held.inspection.resources(), points: held.points };
+    });
+    return !state.connected && state.contextLost && !state.same && state.resources && ['textures', 'textureBytes', 'decodedBytes', 'sourceBlobBytes', 'pinnedBytes', 'unusedBytes', 'loading', 'queued', 'labels', 'estimatedLabelBytes', 'totalCards', 'visibleCards', 'loadedCards', 'latentBytes', 'activeLatents', 'activeDecoders'].every(key => state.resources[key] === 0);
+  }, { message: 'the locked project retires its own renderer and media resources', timeout: 60_000 }).toBe(true);
+  const read = screenshotPixels(await tab.screenshot({ scale: 'css' }));
+  expect.soft(state.points.filter(point => read(point.x, point.y).every((value, c) => Math.abs(value - point.expected[c]) <= 20)), 'none of the private picture pixels remain').toEqual([]);
+}
 
 test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guards, removeAfter, vaults }) => {
   const name = `web-vault-${randomBytes(3).toString('hex')}`;
@@ -204,7 +241,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     const landed = await imported;
     expect(landed.ok(), `POST ${at('/imports')}: ${landed.status()}`).toBe(true);
     page.off('request', written);
-    await expect(box(page, picture)).toBeVisible();
+    await expect.poll(() => canvasVisible(page, picture), { timeout: 60_000 }).toBe(true);
     await expect.poll(async () => {
       const row = await assetOf(picture);
       return { sha256: row?.sha256, measured: row?.width > 0 };
@@ -212,7 +249,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     expect.soft(writes.length > 0 && writes.every((write) => write.route === '/v1/project-files' && write.project === made.id), `its bytes go to the project's own store: ${JSON.stringify(writes)}`).toBe(true);
 
     await canvasIdle(page);
-    const { x, y } = await middle(box(page, picture).locator('.media').first());
+    const { x, y } = await canvasPoint(page, picture);
     await page.mouse.click(x, y, { button: 'right' });
     const saved = page.waitForEvent('download');
     await page.getByRole('menu', { name: `${picture}'s menu` }).getByRole('menuitem', { name: 'Download', exact: true }).click();
@@ -236,7 +273,9 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
   await test.step('cozy locks the project while a second tab is open', async () => {
     const second = await page.context().newPage();
     await signIn(second, `${api.origin}/p/${made.code}`);
-    await expect(box(second, picture)).toBeVisible();
+    await expect.poll(() => canvasVisible(second, picture), { timeout: 60_000 }).toBe(true);
+    await rememberPrivate(page, made, picture);
+    await rememberPrivate(second, made, picture);
     const said = await cli('--json', 'vault', '--directory', made.path, 'lock');
     // Run 43401337115: refused `project_busy` while the second tab's reads held the project, though its view was revoked and it locked.
     expect.soft(said.code, `cozy vault lock: ${said.stdout.slice(-300)} ${said.stderr.slice(-300)}`).toBe(0);
@@ -246,6 +285,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
       const which = i ? 'the second tab' : 'the first tab';
       await expect(tab.getByText('This project is locked.', { exact: true }), `${which} covered`).toBeVisible();
       expect.soft(await keptIn(tab, words), `${which} keeps nothing of it`).toEqual(NOTHING);
+      await privateRetired(tab);
     }));
     expect.soft((await vault()).state).toBe('locked');
     await second.close();
@@ -254,10 +294,11 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
   await test.step('unlocked with the passphrase, then locked from the page', async () => {
     await page.getByLabel('Passphrase', { exact: true }).fill(passphrase);
     await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
-    await expect(box(page, picture), 'the canvas is back').toBeVisible({ timeout: 60_000 });
+    await expect.poll(() => canvasVisible(page, picture), { message: 'the canvas is back', timeout: 60_000 }).toBe(true);
     expect.soft(await kept(), 'with no reload').toBe('kept');
     expect.soft((await vault()).state).toBe('unlocked');
 
+    await rememberPrivate(page, made, picture);
     await page.getByLabel('Menu', { exact: true }).click();
     await page.getByRole('link', { name: 'Project encryption', exact: true }).click();
     const drawer = page.locator('.drawer');
@@ -268,6 +309,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     await expect(drawer.locator('[data-vault-state="locked"]')).toBeVisible({ timeout: 60_000 });
     await expect.poll(async () => (await vault()).state, { message: 'Calcifer has it locked' }).toBe('locked');
     expect.soft(await keptIn(page, words), 'the tab keeps nothing of it').toEqual(NOTHING);
+    await privateRetired(page);
   });
 
   await test.step('unlocked with the recovery secret, then decrypted', async () => {
@@ -276,7 +318,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     await drawer.getByLabel('Recovery secret', { exact: true }).fill(recovery);
     await drawer.getByRole('button', { name: 'Unlock project', exact: true }).click();
     await expect(drawer.locator('[data-vault-state="unlocked"]')).toBeVisible({ timeout: 60_000 });
-    await expect(box(page, picture), 'the canvas is back').toBeVisible();
+    await expect.poll(() => canvasVisible(page, picture), { message: 'the canvas is back', timeout: 60_000 }).toBe(true);
     expect.soft(await kept(), 'with no reload').toBe('kept');
 
     const held = async () => ({
@@ -294,7 +336,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
       const { encrypted, state } = await vault();
       return { encrypted, state };
     }, { message: 'ordinary storage' }).toEqual({ encrypted: false, state: 'plain' });
-    await expect(box(page, picture), 'the canvas is back').toBeVisible();
+    await expect.poll(() => canvasVisible(page, picture), { message: 'the canvas is back', timeout: 60_000 }).toBe(true);
     const after = await held();
     expect.soft(after.assets, 'every file kept').toEqual(before.assets);
     expect.soft(after.history, 'its history kept').toEqual(expect.arrayContaining(before.history));

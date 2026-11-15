@@ -2,7 +2,7 @@
 // browser's Back) puts the canvas back exactly where it was, and Forward and a reload come back to Focus on the same box. A press that began
 // inside Focus, the Files drawer or a box's menu and was let go outside keeps it open; one that began outside closes it (Paul, 11-12). In
 // Focus the wheel zooms the picture, never the canvas, and a sharper one loads with no blank frame.
-const { test, expect, box, canvasIdle, focus, middle, observeStill, openPoint, png } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, observeStill, openPoint, png, canvasPoint, canvasVisible } = require('./fixtures');
 const { camera, drag, sameCamera } = require('./geometry');
 
 // A tall picture, so its fitted size in Focus asks for a small thumbnail, and a zoom for a larger one; and Qwen's Image with a take beside it.
@@ -68,7 +68,7 @@ test('focus', async ({ page, project, api }) => {
   await project.add({ name: TOOLED, tool: qwen.id, kind: 'image', fields: { instructions: 'a lighthouse at dusk, waves on black rocks' }, at: { x: 420, y: 0 } });
   await api.post(project.at(`/assets/${TOOLED}/versions`), { source: await project.upload(png(150)) });
   await expect.poll(async () => (await project.asset(TOOLED)).versions, { message: `${TOOLED} has its take` }).toBe(1);
-  for (const name of [PICTURE, TOOLED]) await expect(box(page, name)).toBeVisible();
+  for (const name of [PICTURE, TOOLED]) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   // The canvas somewhere of its own: all in view, then a step out.
   await page.getByRole('button', { name: /more zoom options$/ }).click();
   await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
@@ -144,7 +144,7 @@ test('focus', async ({ page, project, api }) => {
     await expect.soft(drawer, 'a press and release on the canvas closes it').toHaveCount(0);
     await expect.soft(page).toHaveURL(project.url());
 
-    const { x, y } = await middle(box(page, PICTURE).locator('.media').first());
+    const { x, y } = await canvasPoint(page, PICTURE);
     await page.mouse.click(x, y, { button: 'right' });
     const menu = page.getByRole('menu', { name: `${PICTURE}'s menu` });
     await expect(menu).toBeVisible();
