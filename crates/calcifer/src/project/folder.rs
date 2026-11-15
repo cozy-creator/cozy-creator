@@ -1214,6 +1214,12 @@ impl Folder {
         self.write_past(|conn| db::set_key(conn, &self.db(), key, fresh))
     }
 
+    /// `db::set_key_now`: as it opens, kept only when no other program holds its write lock (false), never waited on.
+    pub(crate) fn set_key_now(&self, key: &str, fresh: bool) -> Result<bool, Error> {
+        if self.reading_db(db::locked_elsewhere)? { return Ok(false); }
+        self.write_past(|conn| db::set_key_now(conn, &self.db(), key, fresh))
+    }
+
     /// Rare identity changes (first name or a copied project) invalidate the held native view.
     pub(crate) fn set_identity(&self, id: &str, name: &str, code: &str) -> Result<(), Error> {
         let mut turn = self.shared.writing.lock().unwrap_or_else(|e| e.into_inner());

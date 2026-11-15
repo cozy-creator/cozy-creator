@@ -796,14 +796,14 @@ fn identify(api: &Api, dir: &FsPath) -> Result<Identified, Error> {
     let keys = db::keys(&conn);
     identify_with(api, dir, kept, code, keys, |keep| match keep {
         Keep::Identity { id, name, code } => db::set_identity(&mut conn, &path, id, name, Some(code)),
-        Keep::Key { key, fresh } => db::set_key(&conn, &path, key, fresh),
+        Keep::Key { key, fresh } => db::set_key_now(&conn, &path, key, fresh).map(drop),
     })
 }
 
 fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<Identified, Error> {
     identify_with(api, dir, folder.canonical_identity()?, folder.public_code()?, folder.keys()?, |keep| match keep {
         Keep::Identity { id, name, code } => folder.set_identity(id, name, code),
-        Keep::Key { key, fresh } => folder.set_key(key, fresh),
+        Keep::Key { key, fresh } => folder.set_key_now(key, fresh).map(drop),
     })
 }
 

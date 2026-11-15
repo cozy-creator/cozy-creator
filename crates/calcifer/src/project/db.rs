@@ -467,6 +467,19 @@ pub(crate) fn set_key(conn: &Connection, at: &Path, key: &str, fresh: bool) -> R
     tx.commit().map_err(e)
 }
 
+/// `set_key` as a project opens: never waiting on another program's write lock, which may be holding it for minutes. False when one
+/// holds it: the index keeps the key, and the next open writes it here (cl-987).
+pub(crate) fn set_key_now(conn: &Connection, at: &Path, key: &str, fresh: bool) -> Result<bool, Error> {
+    if locked_elsewhere(conn) { return Ok(false); }
+    conn.busy_timeout(std::time::Duration::ZERO).map_err(|e| sql(at, e))?;
+    let done = set_key(conn, at, key, fresh);
+    conn.busy_timeout(WAIT).map_err(|e| sql(at, e))?;
+    match done {
+        Err(error) if error.code == "file_held" => Ok(false),
+        done => done.map(|()| true),
+    }
+}
+
 /// How many of its transactions changed it, read alone: for a project nothing holds open.
 pub(crate) fn seq_at(path: &Path) -> Option<u64> {
     let conn = connect(path, true).ok()?;
