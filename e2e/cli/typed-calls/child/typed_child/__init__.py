@@ -5,9 +5,9 @@ import sys
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import App, Outputs, Weights, call
+from cozy_runtime.author import App, Weights, call
 from cozy_runtime.fields import FileBound
-from cozy_runtime.media import ImageFile
+from cozy_runtime.media import Files, ImageFile
 
 from .leaf_calls import PrimeRequest, judge
 
@@ -29,12 +29,12 @@ class Result(msgspec.Struct, kw_only=True):
 
 
 @app.entrypoint(accelerator=False)
-async def shade(payload: Request, out: Outputs) -> Result:
+async def shade(payload: Request) -> Result:
     decision = await call(judge, PrimeRequest(number=payload.number, fail=payload.fail))
     image = payload.image.read().convert("RGBA")
     image.putpixel((0, 0), (7, 11, 19, 95))
     return Result(
-        image=out.save_image(image, format="png"),
+        image=ImageFile.from_image(image, format="png"),
         prime=decision.prime,
         python=sys.executable,
         descendant_python=decision.python,
@@ -66,3 +66,16 @@ def weighted(payload: WeightRequest, weights: Weights) -> WeightResult:
 @app.entrypoint(accelerator=False, private=True)
 def private(payload: WeightRequest) -> WeightResult:
     return WeightResult(checkpoint="private", value=0, python=sys.executable)
+
+
+class AssetRequest(msgspec.Struct, kw_only=True):
+    number: int = 17
+    fail: bool = False
+
+
+@app.entrypoint(accelerator=False)
+async def shade_assets(payload: AssetRequest, pictures: Files[ImageFile]) -> Result:
+    # This ordinary local call stays in this attempt; shade itself makes the managed leaf call.
+    return await shade(
+        Request(image=pictures[0], number=payload.number, fail=payload.fail)
+    )

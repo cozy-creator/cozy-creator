@@ -1,6 +1,6 @@
 # Typed calls through separate installed environments
 
-This is a real CPU package chain (caller → child → legacy leaf → private self call), executed with `cozy run` in the default home. The leaf computes primality with SymPy and an xxhash fingerprint through a private self call and can raise an `InvalidRequest`.
+This is a real CPU package chain (caller → child → leaf without managed dependency extras → private self call), executed with `cozy run` in the default home. The leaf computes primality with SymPy and an xxhash fingerprint through a private self call and can raise an `InvalidRequest`.
 The middle child receives and returns an image and
 reads one value from an explicitly selected local checkpoint. The caller must import and
 install neither `typed_child` nor the callee-only dependency `xxhash`; its result reports those facts and both Python
@@ -73,3 +73,11 @@ model files, checks both explicit child model choices, checks caught failure pro
 and requires `callable_internal` for a direct request to the private leaf. Use a fresh output
 directory and local model prefix each time. `qualified.json` is written only after all
 assertions pass; failed receipts and any still-running job remain available for inspection.
+
+The hard-cut SDK cell also calls `shade_assets` using one typed request and `assets=Files(...)`.
+Its handler declares the input as `pictures`, so this checks that the generated binding
+preserves the actual Files parameter name. It calls its own async helper directly in the
+same attempt, while the leaf's private operation remains an explicit managed self call.
+Every model override is passed in `models={...}`; removed request keyword/dict forms are
+not used by the fixtures. The cell's image values use `ImageFile.from_image`, not removed
+Outputs image methods.

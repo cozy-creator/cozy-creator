@@ -7,12 +7,18 @@ from cozy_runtime.author import (
     App,
     ChildCallError,
     ModelChoice,
-    Outputs,
     ImageFrame,
     call,
 )
-from cozy_runtime.media import ImageFile
-from .child_calls import Request, WeightRequest, shade, weighted
+from cozy_runtime.media import Files, ImageFile
+from .child_calls import (
+    Request,
+    WeightRequest,
+    shade,
+    weighted,
+    shade_assets,
+    shade_assetsRequest,
+)
 
 app = App()
 
@@ -20,6 +26,7 @@ app = App()
 class Ask(msgspec.Struct, kw_only=True):
     fail: bool = False
     choice: str = ""
+    use_assets: bool = False
 
 
 class Answer(msgspec.Struct, kw_only=True):
@@ -41,14 +48,16 @@ class Answer(msgspec.Struct, kw_only=True):
 
 
 @app.entrypoint(accelerator=False)
-async def run(payload: Ask, out: Outputs) -> Answer:
+async def run(payload: Ask) -> Answer:
     child_installed = importlib.util.find_spec("typed_child") is not None
     callee_dependency_installed = importlib.util.find_spec("xxhash") is not None
     shared_torch_available = importlib.util.find_spec("torch") is not None
     shared_sympy_available = importlib.util.find_spec("sympy") is not None
     if payload.choice:
         result = await call(
-            weighted, WeightRequest(), weights=ModelChoice(ref=payload.choice)
+            weighted,
+            WeightRequest(),
+            models={"weights": ModelChoice(ref=payload.choice)},
         )
         return Answer(
             python=sys.executable,
@@ -61,9 +70,18 @@ async def run(payload: Ask, out: Outputs) -> Answer:
             shared_sympy_available=shared_sympy_available,
             torch_imported="torch" in sys.modules,
         )
-    image = out.save_image(ImageFrame(4, 3, bytes([15, 63, 127]) * 12), format="png")
+    image = ImageFile.from_image(
+        ImageFrame(4, 3, bytes([15, 63, 127]) * 12), format="png"
+    )
     try:
-        result = await call(shade, Request(image=image, fail=payload.fail))
+        if payload.use_assets:
+            result = await call(
+                shade_assets,
+                shade_assetsRequest(fail=payload.fail),
+                assets=Files([image]),
+            )
+        else:
+            result = await call(shade, Request(image=image, fail=payload.fail))
     except ChildCallError as error:
         return Answer(
             error=error.code,
