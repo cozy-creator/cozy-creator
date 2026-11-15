@@ -42,7 +42,8 @@ def compare(dirs: list[Path]) -> None:
         "picture install": ("seconds_from_ask", "picture", "install"), "picture on the GPU": ("seconds_from_ask", "picture", "gpu"),
         "rewriter load (upsampling prompt / loading model)": ("picture_stages", "upsampling prompt / loading model"),
         "expander load (loading expander)": ("picture_stages", "loading expander"), "upsampling prompt": ("picture_stages", "upsampling prompt"),
-        "video fetch ahead": ("seconds_from_ask", "video_ahead", "download"), "guesses": ("seconds_from_ask", "video_ahead", "guesses"),
+        "video fetch ahead": ("seconds_from_ask", "video_ahead", "download"), "video prepared": ("seconds_from_ask", "video_ahead", "prepared"),
+        "guesses": ("seconds_from_ask", "video_ahead", "guesses"), "video's own download": ("seconds_from_ask", "video", "own_download"),
         "emergencies": ("emergencies",), "floors": ("floors",),
     }
     arms = {d.name.removeprefix("arm-"): cast(Json, json.loads((d / "timeline.json").read_text())) if (d / "timeline.json").exists() else None
@@ -56,7 +57,7 @@ if sys.argv[1] == "--compare":
 out, ask, picture_tool, video_tool = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4]
 LOGGED = re.compile(r"^(\S+)\s+INFO\s+\S+: (fetching|landed) (.*)$")
 TURNS = re.compile(r"^(\S+)\s+INFO\s+\S+: install line: (.*?)\s+run=\"?([^\s\"]+)\"?(.*)$")
-CLASSES = ("run", "ahead", "guess")
+CLASSES = ("run", "ahead", "guess", "prepare")
 EMERGENCY = re.compile(r"^(\S+)\s+INFO\s+\S+: emergency: (.+?) is (read now|here)\b(.*)$")
 FLOOR = re.compile(r"^(\S+)\s+INFO\s+\S+: floor moved (.*)$")
 INSTALLING = re.compile(r"installing (\S+) \S+ on this machine")
@@ -150,9 +151,10 @@ for line in log.read_text(errors="replace").splitlines() if log.exists() else []
         order = int(fields.get("priority", "0"))
         if order == 0 and at >= ask:
             urgent.append((at, found[2], int(fields.get("bytes", "0"))))
-        if at < ask - EARLY or order == 0 or order == (1 << 64) - 1 or fields.get("object") in index:
+        # 0 an emergency (above), 1 the machine's own (its update): no job's.
+        if at < ask - EARLY or order < 2 or order == (1 << 64) - 1 or fields.get("object") in index:
             continue
-        kind, job = CLASSES[min((order - 1) >> 62, 2)], ((order - 1) >> 32) & ((1 << 30) - 1)
+        kind, job = CLASSES[min((order - 2) >> 62, 3)], ((order - 2) >> 32) & ((1 << 30) - 1)
         seen = objects.setdefault(("call", 0) if (kind, job) == ("run", 0) else (kind, job), Objects())
         if found[2] == "fetching":
             seen.fetching.append(at)
@@ -264,6 +266,8 @@ p_download, p_gpu = download([("run", own[0])] if own else []), gpu(picture)
 a_install, a_said = install(video_tool)
 a_download = download([k for k in objects if k[0] == "ahead"])
 a_guesses = download([k for k in objects if k[0] == "guess"])
+# What a caller expects demand for with no job yet (`PUT /v1/prepare`, cl-967): the video's weights before its run is sent.
+a_prepared = download([k for k in objects if k[0] == "prepare"])
 v_sent, v_started, v_settled = num(video.get("created_at_ms")), num(video.get("started_at_ms")), num(video.get("settled_at_ms"))
 p_settled = num(picture.get("settled_at_ms"))
 picture_chain = p_install.took() + p_download.took() + p_gpu.took()
@@ -281,7 +285,8 @@ timeline: dict[str, Json] = {
                     "settled": since(p_settled)},
         "video_ahead": {"run": num(ahead.get("number")), "sent": since(num(ahead.get("created_at_ms"))), "accepted": since(num(ahead.get("accepted_at_ms"))),
                         "seen_on_board": since(ahead_seen), "install": a_install.seconds(), "said": cast(Json, a_said), "download": a_download.seconds(),
-                        "guesses": a_guesses.seconds(), "settled": since(num(ahead.get("settled_at_ms"))), "status": text(ahead.get("status"))},
+                        "guesses": a_guesses.seconds(), "prepared": a_prepared.seconds(), "settled": since(num(ahead.get("settled_at_ms"))),
+                        "status": text(ahead.get("status"))},
         "video": {"run": num(video.get("number")), "target": text(video.get("target")), "sent": since(v_sent), "accepted": since(num(video.get("accepted_at_ms"))),
                   "started": since(v_started), "first_call": since(first_call), "own_download": download([("run", j) for j in own[1:]]).seconds(),
                   "calls_download": download([("call", 0)]).seconds(),
@@ -319,7 +324,7 @@ def check(ok: bool, why: str) -> None:
         failed.append(why)
 
 
-check(a_download.bytes > 0, "the video's fetch ahead downloaded nothing")
+check(a_download.bytes + a_prepared.bytes > 0, "the video's weights weren't fetched ahead (a warm run's or prepared)")
 if a_download.start and p_gpu.end:
     check(a_download.start < p_gpu.end, "the video's weights didn't start coming while the picture rendered")
 starts = objects[("run", own[0])].fetching if own else []

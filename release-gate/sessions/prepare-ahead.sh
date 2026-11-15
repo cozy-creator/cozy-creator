@@ -16,6 +16,11 @@
 #             project of its own, so each starts cold (a project's weights and environments are its own, #2858): its TensorD from
 #             that dev build's cozy (absent: the session's), then its `update`; its files under arm-<name>/ and compare.json
 #             side by side ([]: one arm, the session's cozy and `update`)
+#   reset     true: before each arm, the pod's TensorFS store is emptied and its executors ended, over `cozy machine ssh` (no
+#             verb empties a rented machine's store: `cozy model uninstall` is this computer's only), so each arm starts cold;
+#             projects share the machine's store of public weights
+#   link_mbit the pod's download link shaped to this many Mbit/s for the whole session (tc police on its ingress, over SSH);
+#             a pod that refuses it is said and runs unshaped ("": as rented)
 . "$(dirname "$0")/lib.sh"
 PICTURE=$(param picture qwen-image-2/image) MP=$(param megapixels 1) VIDEO=$(param video minimax-h3/generate) SECONDS_LONG=$(param seconds 15)
 ARMS=$(param arms '[]')
@@ -61,12 +66,69 @@ for ARM in "${names[@]}"; do
   run_page boxes "$OUT/boxes.json" > "$D/boxes.txt" 2>&1 || fail "${ARM:+arm $ARM: }the project's boxes: $(tail -3 "$D/boxes.txt")"
 done
 say "the session's cozy: $(cozy --version)"
+RESET=$(param reset false) LINK=$(param link_mbit '')
+[[ -z $LINK || $LINK =~ ^[0-9]+$ ]] || fail "link_mbit $LINK"
+if [ "$RESET" = true ] || [ -n "$LINK" ]; then
+  [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+  RENT_ARGS=--ssh
+fi
 quote "$(param need_s $((2700 * ${#names[@]})))"
 rent
+pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
+if [ "$RESET" = true ] || [ -n "$LINK" ]; then
+  for i in $(seq 1 20); do pod true < /dev/null > /dev/null 2>&1 && break; [ "$i" = 20 ] && fail "no SSH into $NAME"; sleep 15; done
+fi
+if [ -n "$LINK" ]; then
+  # Policed ingress: what comes faster is dropped, and TCP settles under it, as on a slower link.
+  dev=$(pod "ip route show default | awk '{print \$5; exit}'" < /dev/null 2> /dev/null | tr -d '\r')
+  if pod "tc qdisc add dev $dev handle ffff: ingress && tc filter add dev $dev parent ffff: protocol ip u32 match u32 0 0 police rate ${LINK}mbit burst 4m drop flowid :1" \
+      < /dev/null > "$OUT/link.txt" 2>&1; then
+    say "the pod's link ($dev) is shaped to $LINK Mbit/s"
+  else
+    say "the pod refused the shaped link: $(tail -c 200 "$OUT/link.txt"); it runs as rented"; LINK=''
+  fi
+fi
+# The pod's TensorFS store emptied (each root its processes name, every file but its format) and its executors ended.
+RESET_PY=$(cat <<'PY'
+import glob, json, os, shutil, signal
+def roots(name):
+    found = set()
+    for env in glob.glob("/proc/[0-9]*/environ"):
+        try:
+            for kv in open(env, "rb").read().split(b"\0"):
+                if kv.startswith(name.encode() + b"="):
+                    found.add(kv.split(b"=", 1)[1].decode())
+        except OSError:
+            pass
+    return sorted(r for r in found if os.path.isdir(r))
+stores = sorted(set(roots("COZY_TENSORFS_ROOT")) | set(roots("TENSORFS_HOME")))  # before the executors that name one end
+ended = []
+for d in glob.glob("/proc/[0-9]*"):
+    try:
+        if b"cozy_runtime.internal.executor" in open(d + "/cmdline", "rb").read():
+            os.kill(int(d[6:]), signal.SIGKILL); ended.append(int(d[6:]))
+    except OSError:
+        pass
+out = {"executors_ended": len(ended), "roots": {}}
+for root in stores:
+    size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(root) for f in fs if os.path.isfile(os.path.join(dp, f)))
+    for entry in os.listdir(root):
+        path = os.path.join(root, entry)
+        if entry == "format":
+            continue
+        shutil.rmtree(path, ignore_errors=True) if os.path.isdir(path) and not os.path.islink(path) else os.remove(path)
+    out["roots"][root] = {"gb_before": round(size / 1e9, 2), "left": sorted(os.listdir(root))}
+print(json.dumps(out))
+PY
+)
 
 for ARM in "${names[@]}"; do
   D=$OUT${ARM:+/arm-$ARM} TAG=${ARM:+-$ARM} BEGAN=$(date +%s)
   [ -z "$ARM" ] || RUN_PROJECT=$OUT/project-$ARM
+  if [ "$RESET" = true ]; then
+    printf '%s' "$RESET_PY" | T=600 pod "cat > /tmp/reset.py && python3 /tmp/reset.py" > "$D/reset.json" 2>&1 || fail "${ARM:+arm $ARM: }the pod's store wasn't emptied: $(tail -c 300 "$D/reset.json")"
+    say "${ARM:+arm $ARM: }the pod's store emptied: $(tail -c 400 "$D/reset.json")"
+  fi
   step "tensord$TAG" machine update "$NAME" --tensord "${TENSORD[$ARM]}" -y || fail "the pod refused ${ARM:-the session}'s TensorD"
   v=$(cozy machine show "$NAME" --json | jq -r .status.version)
   [ "$v" = "$("${TENSORD[$ARM]}" --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not ${ARM:-the session}'s"
