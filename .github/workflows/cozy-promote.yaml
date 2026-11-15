@@ -32,7 +32,7 @@ jobs:
       TAG: ${{ inputs.tag }}
       GATE: ${{ inputs.gate }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           path: creator
@@ -52,7 +52,7 @@ jobs:
       - name: Latest, for `cozy update` and the installer
         run: gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --prerelease=false --latest
       # dist's homebrew job, moved here: the formula the release carries, pushed over SSH with the tap's deploy key.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: cozy-creator/homebrew-tap
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}

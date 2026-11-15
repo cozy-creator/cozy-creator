@@ -52,7 +52,7 @@ pub(crate) fn choices(sent: Vec<v1::ModelChoice>) -> Result<Vec<stored::ModelCho
 
 /// A published release by name (th-245): empty is the Hub's newest.
 fn release_source(release: v1::Release) -> crate::runs::Source {
-    crate::runs::Source::Release { package: release.package, release: release.release }
+    crate::runs::Source::Release { package: release.package, release: release.release, digest: release.digest }
 }
 
 /// One warm set member, kept as it was sent for Status; None for one at `off`, which leaves

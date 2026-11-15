@@ -528,7 +528,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
                 package,
                 interface: &card.interface,
                 release: Some(&card.release),
-                source: spec::Source::Release(Some(&card.release)),
+                source: spec::Source::Release(Some(&card.release), card.digest().unwrap_or_default()),
                 files: &[],
                 on: on.clone(),
             };

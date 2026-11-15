@@ -210,13 +210,25 @@ async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, listed: &[Tool
 /// The tools of each local package `named`, by its path as it's written, and saying they're local: what a project's nodes name, and what's on
 /// your list. One that can't be read is left out, and a render says why.
 async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on: &On) -> Vec<Tool> {
-    let private = private_io::current().is_some();
+    let scope = private_io::current();
+    let private = scope.is_some();
+    // Each function is read at once, the static describer's reading kept in its project until the machine's own takes over, and a
+    // read goes on past a list that stops waiting for it (its caller gone, or late): the next list has it.
+    let reads: Vec<_> = named.into_iter().map(|(written, path)| {
+        let (api, hub, on, scope) = (api.clone(), hub.to_owned(), on.clone(), scope.clone());
+        tokio::spawn(private_io::context(scope.clone(), async move {
+            let _turn = LOCAL_READS.acquire().await;
+            let described = match staged(&api, scope.as_ref(), &path) {
+                Ok(code) => local_code::describe(&api, &code, &on, &hub).await,
+                Err(why) => Err(why),
+            };
+            (written, described)
+        }))
+    }).collect();
+    let late = tokio::time::Instant::now() + LOCAL_LATE;
     let mut tools = vec![];
-    for (written, path) in named {
-        let described = match local_code::own(&api, &path) {
-            Ok(code) => local_code::describe(api, &code, on, hub).await,
-            Err(why) => Err(why),
-        };
+    for read in reads {
+        let Ok(Ok((written, described))) = tokio::time::timeout_at(late, read).await else { continue };
         let (package, document) = match described {
             Ok(described) => described,
             Err(why) => {
@@ -236,6 +248,17 @@ async fn read_local(api: &Arc<Api>, hub: &str, named: Vec<(String, PathBuf)>, on
     tools
 }
 
+/// `path`'s code copied into its project, which holds still meanwhile: a lock under way refuses the read, and one asked waits.
+fn staged(api: &Api, scope: Option<&private_io::Scope>, path: &Path) -> Result<api::code::LocalCode, Error> {
+    let _admitted = scope.map(|scope| vault::try_admit_root(&vault::logical(&scope.storage.view_root))).transpose()?;
+    local_code::own(api, path)
+}
+
+/// How long a list waits for the local functions its project's boxes name to be read: the page reads the list again once when a box
+/// names one, so it waits for the reading. One read later still is listed by a later list.
+const LOCAL_LATE: Duration = Duration::from_secs(60);
+/// How many of them are read at once.
+static LOCAL_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 /// How long a list waits for the checkout's packages to be read from source; one read later is listed by a later list.
 const SOURCE_LATE: Duration = Duration::from_secs(20);
 /// How long a list waits for a package's new reading when it has a good one to show meanwhile.

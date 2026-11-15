@@ -35,8 +35,9 @@ pub(crate) use read::{actor_id, Log, OutputSnapshot};
 pub(crate) use sent::{choices, resume, resume_private};
 
 pub(crate) enum Source {
-    /// A published release by name (th-245); empty: the Hub's newest.
-    Release { package: String, release: String },
+    /// A published release by name (th-245); empty: the Hub's newest. `digest`: the release digest its caller pinned (a project's
+    /// lock, this computer's kept card), which its files must have; empty: none.
+    Release { package: String, release: String, digest: String },
     /// An installation this machine already holds for the signer.
     Installation(String),
     /// Unpublished code written with Write: its manifest's digest.
@@ -45,8 +46,8 @@ pub(crate) enum Source {
     Models,
 }
 
-/// A published release a run installs: its package and release.
-type Published = (String, String);
+/// A published release a run installs: its package, release and pinned digest.
+type Published = (String, String, String);
 
 /// One member of the warm set a warm run carries (`RunSpec.set`).
 pub(crate) struct SetItem {
@@ -1047,7 +1048,7 @@ impl Runs {
             None => None,
         };
         let release = match &spec.source {
-            Source::Release { package, release } => Some((package.clone(), release.clone())),
+            Source::Release { package, release, digest } => Some((package.clone(), release.clone(), digest.clone())),
             _ => None,
         };
         // Its own slots' choices resolve here; the rest address its callables, whose calls
@@ -1362,12 +1363,12 @@ impl Runs {
     /// function reads (`reads`) at its place in the download line. None when nothing installs (its release is held) or
     /// reads ahead (a child, a warm run of no function, a warm set), or its card doesn't answer: its plan wants them then.
     fn early(&self, actor: &str, id: &str, spec: &Spec, hub: Option<hub::Source>, stop: &Stop) -> Option<Arc<crate::access::Fetch>> {
-        let Source::Release { package, release } = &spec.source else { return None };
+        let Source::Release { package, release, digest } = &spec.source else { return None };
         if spec.entrypoint.is_empty() || !spec.parent.is_empty() || spec.set.is_some() || spec.remove {
             return None;
         }
         let asker = self.asker(id, spec);
-        let request = self.request(id, None, Some((package.clone(), release.clone())), hub.clone(), &asker, "", &[], "");
+        let request = self.request(id, None, Some((package.clone(), release.clone(), digest.clone())), hub.clone(), &asker, "", &[], "");
         if self.publisher.held_installation(&self.service, actor, &request).ok()?.is_some() {
             return None;
         }
@@ -1505,7 +1506,7 @@ impl Runs {
                     let absent = || refused("installation_absent", "this machine holds no such installation for this signer");
                     (Some(held.ok_or_else(absent)?), None)
                 }
-                Source::Release { package, release } => (None, Some((package.clone(), release.clone()))),
+                Source::Release { package, release, digest } => (None, Some((package.clone(), release.clone(), digest.clone()))),
                 _ => return Err(refused("invalid_request", "a warm set member names a release or an installation")),
             };
             // `installed` stops at the code: nothing of the function is resolved or downloaded.
@@ -1637,7 +1638,7 @@ impl Runs {
         let origin = hub.and_then(|hub| hub::origin_key(&hub.origin)).unwrap_or_default();
         let named = |installed: &Installation| match &spec.source {
             Source::Installation(alias) => &installed.alias == alias,
-            Source::Release { package, release } => {
+            Source::Release { package, release, .. } => {
                 &installed.package == package
                     && (release.is_empty() || &installed.release == release)
                     && (package.starts_with("local/") || installed.hub.is_empty() || installed.hub == origin)
@@ -1713,12 +1714,13 @@ impl Runs {
     #[allow(clippy::too_many_arguments)]
     fn request(&self, id: &str, held: Option<Installation>, release: Option<Published>, hub: Option<hub::Source>, asker: &Asker,
         entrypoint: &str, choices: &[stored::ModelChoice], lane: &str) -> Request {
-        let (package, release) = release.unwrap_or_default();
+        let (package, release, digest) = release.unwrap_or_default();
         Request {
             run: id.into(),
             source: hub,
             package,
             release,
+            digest,
             installed: held,
             owner: asker.owner.clone(),
             providers: asker.providers.clone(),

@@ -796,14 +796,14 @@ fn identify(api: &Api, dir: &FsPath) -> Result<Identified, Error> {
     let keys = db::keys(&conn);
     identify_with(api, dir, kept, code, keys, |keep| match keep {
         Keep::Identity { id, name, code } => db::set_identity(&mut conn, &path, id, name, Some(code)),
-        Keep::Key { key, fresh } => db::set_key(&conn, &path, key, fresh),
+        Keep::Key { key, fresh } => db::set_key_now(&conn, &path, key, fresh).map(drop),
     })
 }
 
 fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<Identified, Error> {
     identify_with(api, dir, folder.canonical_identity()?, folder.public_code()?, folder.keys()?, |keep| match keep {
         Keep::Identity { id, name, code } => folder.set_identity(id, name, code),
-        Keep::Key { key, fresh } => folder.set_key(key, fresh),
+        Keep::Key { key, fresh } => folder.set_key_now(key, fresh).map(drop),
     })
 }
 
@@ -3533,6 +3533,29 @@ impl Walk {
         &self.project.folder
     }
 
+    /// The digest `renderer`'s release must install (xs-196): the one this project's lock recorded at its first run, else its card's,
+    /// recorded now. A card that disagrees with the lock is refused: a published release never changes.
+    fn pinned(&self, hub: &str, renderer: &Renderer) -> Result<String, Error> {
+        let hub = crate::runs::hub(&self.host.api(), hub);
+        let key = format!("{}@{} {hub}", renderer.package, renderer.release);
+        let recorded = self.folder().reading_lock(|lock| lock.releases.get(&key).cloned())?;
+        match (recorded, renderer.digest.as_str()) {
+            (Some(recorded), card) if !card.is_empty() && card != recorded => {
+                let said = format!(
+                    "{}@{} at {hub} isn't the release this project ran: its files' digest is now {card}, and the project recorded {recorded}. A published release never changes, so these are other files",
+                    renderer.package, renderer.release
+                );
+                Err(Error::new(Kind::Conflict, "release_changed", said).remedy("run another release of it, and tell its publisher"))
+            }
+            (Some(recorded), _) => Ok(recorded),
+            (None, "") => Ok(String::new()),
+            (None, card) => {
+                self.folder().update_lock(|lock| drop(lock.releases.insert(key, card.to_owned())))?;
+                Ok(card.to_owned())
+            }
+        }
+    }
+
     /// What has landed, measured: a cut and a function read those sizes, and a film is judged by its frames.
     fn measure(&self) -> Result<(), Error> {
         self.folder().measure(&mut self.folder().lock()?)
@@ -3850,7 +3873,7 @@ impl Walk {
         choices.take(&mut payload)?;
         let models = choices::wire(&choices.into_choices())?;
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(hub, &renderer)? }),
             Some(path) => {
                 // Staged in its project's storage scope, as its call's are; an encrypted project's code goes with the run that calls it.
                 let scope = crate::private_io::of_path(&self.folder().dir)?;
@@ -5032,7 +5055,7 @@ impl Walk {
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(&hub, &renderer).map_err(named)? }),
             Some(path) => {
                 let prepared = self.again(|| async {
                     let scope = crate::private_io::of_path(&self.folder().dir)?;

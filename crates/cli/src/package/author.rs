@@ -15,15 +15,11 @@ use crate::{Context, calcifer_client::path, output, run};
 /// explicit export: it goes from that project, and its published copy is outside the project's protection.
 async fn sent(ctx: &Context) -> Result<(std::path::PathBuf, api::code::LocalCode, Option<String>), Error> {
     let dir = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    match crate::project::identity(ctx).await {
-        Ok(project) => {
-            output::warn("publishing exports this package's source: the published copy leaves its project's protection");
-            let code = crate::send::Sender::for_project(ctx, &project.id).await?.code(&dir).await?;
-            Ok((dir, code, Some(project.id)))
-        }
-        Err(error) if error.code == "not_in_a_project" => Ok((dir.clone(), crate::send::Sender::independent_code(ctx, &dir).await?, None)),
-        Err(error) => Err(error),
+    let (code, project) = crate::send::Sender::local_code(ctx, &dir).await?;
+    if project.is_some() {
+        output::warn("publishing exports this package's source: the published copy leaves its project's protection");
     }
+    Ok((dir, code, project))
 }
 
 /// The `uv.lock` Calcifer made, written into the package's folder `dir` whole: its path.

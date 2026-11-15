@@ -18,6 +18,8 @@ Calcifer may retain a project reference consisting of its opaque identity, locat
 
 Project ownership is explicit before any submission or storage write. A locked, unknown or unavailable project must refuse; it cannot fall through to global maintenance state. Project run numbers are scoped to the project, while existing opaque run identities remain stable.
 
+Code in no project is not project data (cl-990): a checkout installed, described or quantized from outside any project is a machine-wide package, as a Hub package is, through Calcifer's own runs and the machine's stores. From a project, local code is that project's. Calcifer's tools for a project's code (Python install, describe, lock) run the same on Linux, macOS and Windows: their stdio, caches and scratch in the project's view, their processes ended before each returns.
+
 Choosing a remote machine or renting one retains the existing remote processing flow and creates a working copy on that machine. Local canonical history, staged inputs, downloaded outputs and local caches remain project-owned. The local mounted path and proof token are never sent to the remote worker. Provider storage and erasure are outside this local containment guarantee; no protected remote workspace is implied.
 
 Local worker health verifies project identity, migrated journal/object storage and process ownership. Each actual private executor verifies its selected Runtime's inherited transport, exact process identity, seal and nonce before Start/Invoke. Storage health does not create a separate public SDK environment or launch an unrelated dry-run executor.

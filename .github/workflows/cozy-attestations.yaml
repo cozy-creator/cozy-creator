@@ -17,7 +17,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: artifacts-build-local-*
           path: target/distrib/
@@ -32,7 +32,7 @@ jobs:
             [ -s "attestations/${f#target/distrib/}.sigstore.jsonl" ] || { echo "::error::$f has no attestation"; exit 1; }
           done
       # host releases every artifacts-* upload.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: artifacts-attestations
           path: attestations/

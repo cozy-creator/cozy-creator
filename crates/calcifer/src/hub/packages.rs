@@ -261,7 +261,7 @@ fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Opti
         target: format!("{package}@{release}"),
         spec: v1::RunSpec {
             kind: v1::RunKind::Warm,
-            source: Some(Source::Release(v1::Release { package: package.to_owned(), release: release.to_owned() })),
+            source: Some(Source::Release(v1::Release { package: package.to_owned(), release: release.to_owned(), ..Default::default() })),
             ..Default::default()
         },
         inputs: vec![],
@@ -330,7 +330,7 @@ impl Removal {
                 target: package.clone(),
                 spec: v1::RunSpec {
                     kind: v1::RunKind::Remove,
-                    source: Some(Source::Release(v1::Release { package: package.clone(), release: String::new() })),
+                    source: Some(Source::Release(v1::Release { package: package.clone(), ..Default::default() })),
                     ..Default::default()
                 },
                 inputs: vec![],

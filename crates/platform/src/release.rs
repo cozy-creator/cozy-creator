@@ -1,8 +1,10 @@
 //! A `cozy` release, as `cozy update` and a machine's update fetch one: its dist-manifest.json names
 //! this target's archive and its sha256, and one of the release's GitHub attestations of that digest
 //! (`<archive>.sigstore.jsonl`, one Sigstore bundle per line) must verify as this repo's release
-//! workflow, pinned by GitHub repository id so a rename keeps verifying and a repo that takes an old
-//! name never does. The caller downloads, holding the archive to the sha256.
+//! workflow run from master or from that release's own tag, pinned by GitHub repository id so a rename
+//! keeps verifying and a repo that takes an old name never does. The caller downloads, holding the
+//! archive to the sha256. A Runtime or TensorFS prerelease's `SHA256SUMS` is held to its publish
+//! workflow the same way (`Workflow::prerelease`).
 use std::{collections::BTreeMap, io};
 
 use sigstore_verify::{
@@ -13,11 +15,39 @@ use sigstore_verify::{
 
 pub(crate) const RELEASES: &str = "https://github.com/cozy-creator/cozy-creator/releases";
 const ISSUER: &str = "https://token.actions.githubusercontent.com";
-/// This repo's GitHub id, which a rename keeps.
+/// cozy-creator's GitHub id, which a rename keeps.
 const REPOSITORY_ID: &str = "1345607976";
-/// Its release workflow, on any ref. A hard cut (Paul 10-24): releases signed by release.yml, before
-/// it, are refused.
-const WORKFLOW: &str = "/.github/workflows/cozy-publish.yaml@";
+/// cozy-runtime's.
+const RUNTIME_REPOSITORY_ID: &str = "1345607927";
+const MASTER: &str = "refs/heads/master";
+
+/// Who may sign: a repository's workflow (`.github/workflows/<file>`), run from one of `refs`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Workflow {
+    repository_id: &'static str,
+    file: &'static str,
+    refs: Vec<String>,
+}
+
+impl Workflow {
+    /// cozy's release workflow, from master or the tag of release `version`. A hard cut (Paul 10-24): releases signed by
+    /// release.yml, before it, are refused.
+    pub fn cozy(version: &str) -> Self {
+        Self { repository_id: REPOSITORY_ID, file: "cozy-publish.yaml", refs: vec![MASTER.into(), format!("refs/tags/v{version}")] }
+    }
+
+    /// The workflow that publishes `distribution`'s (`cozy_runtime`, `tensorfs`) GitHub prerelease `version`.
+    pub fn prerelease(distribution: &str, version: &str) -> Self {
+        match distribution.replace('-', "_").as_str() {
+            "cozy_runtime" => Self { repository_id: RUNTIME_REPOSITORY_ID, file: "runtime-publish.yaml", refs: vec![MASTER.into(), format!("refs/tags/v{version}")] },
+            _ => Self { repository_id: REPOSITORY_ID, file: "tensorfs-publish.yaml", refs: vec![MASTER.into(), format!("refs/tags/tensorfs-v{version}")] },
+        }
+    }
+
+    fn said(&self) -> String {
+        format!("{} of GitHub repository {} from {}", self.file, self.repository_id, self.refs.join(" or "))
+    }
+}
 
 /// The dist target this build is.
 pub const TARGET: &str = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
@@ -119,33 +149,9 @@ impl Release {
         format!("{RELEASES}/download/{}/{}", self.tag, self.archive)
     }
 
-    /// The release workflow run that signed the archive's sha256: the first of `lines`, the bundles
-    /// read from `bundles`, that attests it as this repository's (Sigstore public good).
+    /// The release workflow run that signed the archive's sha256 (`attested`).
     pub fn signer(&self, bundles: &str, lines: &str) -> Result<String, Refused> {
-        let unattested = |why: String| {
-            let message = format!(
-                "no bundle in {bundles} verifies as the release workflow of GitHub repository {REPOSITORY_ID}: {why}"
-            );
-            refused("unattested", message)
-        };
-        let digest = Sha256Hash::from_hex(&self.sha256).map_err(|e| unattested(e.to_string()))?;
-        let root = TrustedRoot::from_embedded(SigstoreInstance::PublicGood)
-            .map_err(|e| unattested(e.to_string()))?;
-        let policy = VerificationPolicy::any_identity().require_issuer(ISSUER);
-        let mut seen = Vec::new();
-        for line in lines.lines().filter(|line| !line.trim().is_empty()) {
-            let verified = (Bundle::from_json(line).map_err(|e| e.to_string()))
-                .and_then(|bundle| {
-                    sigstore_verify::verify(Artifact::from_digest(digest), &bundle, &policy, &root)
-                        .map_err(|e| e.to_string())
-                })
-                .and_then(|result| ours(&result));
-            match verified {
-                Ok(signer) => return Ok(signer),
-                Err(e) => seen.push(e),
-            }
-        }
-        Err(unattested(format!("[{}]", seen.join("; "))))
+        attested(&self.sha256, bundles, lines, &Workflow::cozy(&self.version))
     }
 
     /// The release's `cozy` out of its archive into `out`: dist's `.tar.gz` holds `<its stem>/cozy`,
@@ -163,21 +169,42 @@ impl Release {
     }
 }
 
-/// The signer, when the certificate is this repository's (by id) and the signer is its own release workflow.
-fn ours(result: &VerificationResult) -> Result<String, String> {
+/// The workflow run that signed `sha256`: the first of `lines`, the bundles read from `bundles`, that attests it as
+/// `workflow`'s (Sigstore public good).
+pub fn attested(sha256: &str, bundles: &str, lines: &str, workflow: &Workflow) -> Result<String, Refused> {
+    let unattested = |why: String| refused("unattested", format!("no bundle in {bundles} verifies as {}: {why}", workflow.said()));
+    let digest = Sha256Hash::from_hex(sha256).map_err(|e| unattested(e.to_string()))?;
+    let root = TrustedRoot::from_embedded(SigstoreInstance::PublicGood).map_err(|e| unattested(e.to_string()))?;
+    let policy = VerificationPolicy::any_identity().require_issuer(ISSUER);
+    let mut seen = Vec::new();
+    for line in lines.lines().filter(|line| !line.trim().is_empty()) {
+        let verified = (Bundle::from_json(line).map_err(|e| e.to_string()))
+            .and_then(|bundle| sigstore_verify::verify(Artifact::from_digest(digest), &bundle, &policy, &root).map_err(|e| e.to_string()))
+            .and_then(|result| signed_by(&result, workflow));
+        match verified {
+            Ok(signer) => return Ok(signer),
+            Err(e) => seen.push(e),
+        }
+    }
+    Err(unattested(format!("[{}]", seen.join("; "))))
+}
+
+/// The run of `distribution`'s publish workflow that signed `sums`, the `SHA256SUMS` of its GitHub prerelease `version`, by the
+/// bundles `lines` read from `bundles` (`SHA256SUMS.sigstore.jsonl` beside it).
+pub fn prerelease_sums(distribution: &str, version: &str, sums: &str, bundles: &str, lines: &str) -> Result<String, Refused> {
+    use sha2::Digest as _;
+    let sha256 = hex::encode(sha2::Sha256::digest(sums.as_bytes()));
+    attested(&sha256, bundles, lines, &Workflow::prerelease(distribution, version))
+}
+
+/// The signer, when the certificate is `workflow`'s repository (by id) and the signer is that workflow at one of its refs.
+fn signed_by(result: &VerificationResult, workflow: &Workflow) -> Result<String, String> {
     let signer = result.identity().map_or("", |id| id.as_str());
     let claims = result.certificate().map(|cert| &cert.ci_claims);
-    let repository = claims
-        .and_then(|c| c.source_repository_uri.as_deref())
-        .unwrap_or_default();
-    let id = claims
-        .and_then(|c| c.source_repository_identifier.as_deref())
-        .unwrap_or_default();
-    let release_workflow = !repository.is_empty()
-        && signer
-            .strip_prefix(repository)
-            .is_some_and(|path| path.starts_with(WORKFLOW));
-    if result.certificate_verified() && id == REPOSITORY_ID && release_workflow {
+    let repository = claims.and_then(|c| c.source_repository_uri.as_deref()).unwrap_or_default();
+    let id = claims.and_then(|c| c.source_repository_identifier.as_deref()).unwrap_or_default();
+    let ours = !repository.is_empty() && workflow.refs.iter().any(|at| signer == format!("{repository}/.github/workflows/{}@{at}", workflow.file));
+    if result.certificate_verified() && id == workflow.repository_id && ours {
         Ok(signer.to_owned())
     } else {
         Err(format!("signed by {signer} (GitHub repository {id})"))

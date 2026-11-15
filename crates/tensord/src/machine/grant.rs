@@ -170,7 +170,9 @@ impl Grant {
     /// the controllers it authorizes use it as a laptop's do.
     pub(crate) fn keys(&self, leased: Vec<VerifyingKey>) -> io::Result<crate::api::auth::Keys> {
         let (home, stamped) = (self.home.clone(), self.home.clone());
-        crate::api::auth::Keys::read(leased, move || home_keys(&home), move || home_stamp(&stamped))
+        let owner = self.home.clone();
+        let keys = crate::api::auth::Keys::read(leased, move || home_keys(&home), move || home_stamp(&stamped))?;
+        Ok(keys.with_home_owner(move || home_owner(&owner).ok().flatten()))
     }
 }
 
@@ -185,17 +187,20 @@ fn home_stamp(home: &Home) -> [Option<std::time::SystemTime>; 2] {
 /// key per line of `keys/authorized` (`cozy machine authorize`; `#` starts a comment). Either
 /// may be absent.
 pub(crate) fn home_keys(home: &Home) -> io::Result<Vec<VerifyingKey>> {
-    use ed25519_dalek::{pkcs8::DecodePrivateKey, SigningKey};
-    let owner = home.keys().join("owner.pem");
-    let mut keys = match fs::read_to_string(&owner) {
-        Ok(pem) => vec![SigningKey::from_pkcs8_pem(&pem)
-            .map_err(|e| invalid(&format!("{}: {e}", owner.display())))?
-            .verifying_key()],
-        Err(e) if e.kind() == io::ErrorKind::NotFound => vec![],
-        Err(e) => return Err(e),
-    };
+    let mut keys: Vec<VerifyingKey> = home_owner(home)?.into_iter().collect();
     keys.extend(authorized_keys(home)?);
     Ok(keys)
+}
+
+/// The public half of the home's owner key (`keys/owner.pem`), when it has one.
+fn home_owner(home: &Home) -> io::Result<Option<VerifyingKey>> {
+    use ed25519_dalek::{pkcs8::DecodePrivateKey, SigningKey};
+    let owner = home.keys().join("owner.pem");
+    match fs::read_to_string(&owner) {
+        Ok(pem) => Ok(Some(SigningKey::from_pkcs8_pem(&pem).map_err(|e| invalid(&format!("{}: {e}", owner.display())))?.verifying_key())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// The keys of `keys/authorized`: other computers' controllers.

@@ -4,6 +4,7 @@
 # build.sh cozy-before), which runs no Runtime from 0.46. Its Hub (e2e.yaml) first pins 0.24's software (Runtime 0.45.2, TensorFS
 # 0.24.2), so `cozy machine update local` naming nothing puts local there, held by nothing; then (rehub.sh) the Latest's: Runtime
 # 0.46.0, TensorFS 0.25.1, its cozy. isolated.sh's E2E_NEXT needs cozy-runtime>=0.46.0, which only a cozy of 0.25's line or later runs.
+#  - first, the candidate itself (above the Latest): `cozy update` naming nothing is refused cozy_downgrade, and stays.
 #  - held by hand: its install is refused runtime_held naming `cozy machine update local`, and cozy moves nothing.
 #  - its install folder read-only: refused once, naming `sudo cozy update`, and cozy moves nothing.
 #  - then its install says "updating cozy 0.24.99 → <Latest> for …" once, cozy and Calcifer become the Latest, and the install goes
@@ -21,6 +22,15 @@ latest=$(curl -fsSL --retry 3 https://github.com/cozy-creator/cozy-creator/relea
 [ -n "$latest" ] || { check "self update: GitHub names no Latest cozy"; return; }
 # The Hub's software the Latest's: its cozy, and a Runtime and TensorFS of its line.
 new=(--set software.runtime=0.46.0 --set software.tensorfs=0.25.1 --set "software.cozy=$latest")
+# Never back unnamed (xs-196): a candidate that sorts above the Latest (the RC's 0.x.0-dev) is refused cozy_downgrade, naming the
+# version, and stays.
+local candidate; candidate=$(cozy --version | awk '{print $2}')
+if [ "${candidate%%[-+]*}" != "$latest" ] && [ "$(printf '%s\n%s\n' "${candidate%%[-+]*}" "$latest" | sort -V | tail -1)" != "$latest" ]; then
+  code=0; cozy --json update > "$OUT/su-downgrade.out" 2>&1 || code=$?
+  [ "$code" != 0 ] && grep -q '"cozy_downgrade"' "$OUT/su-downgrade.out" && grep -q "cozy update $latest" "$OUT/su-downgrade.out" \
+    || check "self update: cozy update from $candidate to the older Latest $latest wasn't refused cozy_downgrade: exit $code $(tail -c 400 "$OUT/su-downgrade.out")"
+  [ "$(cozy --version)" = "cozy $candidate" ] || check "self update: an unnamed downgrade moved cozy to $(cozy --version)"
+fi
 install -m 755 "$E2E_COZY_BEFORE" "$COZY.new" && mv -f "$COZY.new" "$COZY" || { check "self update: cozy-before not installed"; return; }
 before=$(cozy --version | awk '{print $2}')
 [ "$before" = 0.24.99 ] || { check "self update: cozy-before says $before"; return; }

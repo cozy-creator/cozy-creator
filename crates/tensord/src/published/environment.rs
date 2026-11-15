@@ -400,8 +400,9 @@ impl Publisher {
     }
 
     /// Finds a published version for each of `floors` and for what a prerelease's wheel requires of
-    /// the pair beyond what `env` holds: uv's index, else a GitHub prerelease, landed in `env`'s
-    /// `PAIR_WHEELS` for uv to find. Each as uv installs it.
+    /// the pair beyond what `env` holds: uv's index, else, only on a computer whose config says `dev = true`
+    /// (xs-196), a signed GitHub prerelease, landed in `env`'s `PAIR_WHEELS` for uv to find. Each as uv
+    /// installs it.
     fn published_pair(&self, env: &Path, floors: &[String], label: &str, job: &Job) -> Result<Vec<String>, Failure> {
         let stop = job.stop.clone().unwrap_or_default();
         let wheels = env.join(PAIR_WHEELS);
@@ -423,6 +424,13 @@ impl Publisher {
             let on_index = resolved.ok().and_then(|plan| plan.lines().find_map(|line| line.trim().strip_prefix(&prefix).map(str::to_owned)));
             let version = match on_index {
                 Some(version) => version,
+                // A prerelease no user machine takes by itself (xs-196): only a dev computer's, which opted in.
+                None if !api::config::load().is_ok_and(|loaded| loaded.config.dev) => {
+                    return Err(match &unread {
+                        Some(said) => (super::UNREACHABLE, format!("{label} needs {requirement}, and uv's index can't be read now ({said})")),
+                        None => ("runtime_floor_unmet", format!("{label} needs {requirement}, which isn't on PyPI: {}", floor_remedy(label))),
+                    });
+                }
                 None => {
                     let meets = |version: &str| floor.meets(version);
                     let index = if unread.is_some() { "uv's index can't be read now" } else { "uv's index doesn't have it" };

@@ -98,25 +98,25 @@ jobs:
         env:
           RUNNER: ${{ inputs.billed_runner }}
         run: echo "::warning::billed runner $RUNNER, never free; the budget is about \$10/day per org, and October passed it on 10-17 and 10-22 with these runs"
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.ref }}
       - id: sha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       # Saved by a build with cozy, so it holds every dependency. The container keeps its toolchain under
       # target/manylinux/rustup, which never goes to the cache.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
           workspaces: . -> target/manylinux
           save-if: ${{ contains(inputs.build, 'cozy') && inputs.profile != 'dev' }}
       # The page the dev cozy's Calcifer embeds, built here: the container below mounts the checkout read-only. A ref
       # from before web/app has none.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: contains(inputs.build, 'cozy') && hashFiles('web/app/package.json') != ''
         with:
           node-version: 24
-      - uses: pnpm/setup@v1
+      - uses: pnpm/setup@5d160c5bc68a09337ad0d5654e237e03253b5879 # v1
         if: contains(inputs.build, 'cozy') && hashFiles('web/app/package.json') != ''
         with:
           package-json-file: web/app/package.json
@@ -161,14 +161,14 @@ jobs:
             "dist/tensord/tensord-linux-$arch" version --json
           fi
       - if: contains(inputs.build, 'cozy')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cozy-${{ steps.sha.outputs.sha }}
           path: dist/cozy/
           if-no-files-found: error
           retention-days: 7
       - if: contains(inputs.build, 'tensord')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tensord-${{ steps.sha.outputs.sha }}
           path: dist/tensord/tensord-linux-*
@@ -191,28 +191,28 @@ jobs:
         env:
           RUNNER: ${{ inputs.billed_runner }}
         run: echo "::warning::billed runner $RUNNER, never free; the budget is about \$10/day per org, and October passed it on 10-17 and 10-22 with these runs"
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.ref }}
       - id: sha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
       # The kernels are a function of their sources and Triton; TensorFS's build.rs refuses a catalog whose sources differ.
       - id: kernels
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: crates/tensorfs/kernels/aot
           key: tensorfs-kernels-${{ env.TRITON }}-${{ hashFiles('crates/tensorfs-py/kernels/*.py') }}
       - name: Compile prebuilt TensorFS CUDA decode kernels
         if: steps.kernels.outputs.cache-hit != 'true'
         run: uv run --no-project --python 3.12 --with "$TRITON" python crates/tensorfs-py/kernels/build.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tensorfs-kernels-${{ steps.sha.outputs.sha }}
           path: crates/tensorfs/kernels/aot/
           if-no-files-found: error
           retention-days: 7
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         if: contains(inputs.build, 'tensorfs')
         with:
           cache-on-failure: true
@@ -237,7 +237,7 @@ jobs:
           PY
       - name: Build the TensorFS wheel
         if: contains(inputs.build, 'tensorfs')
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           maturin-version: v1.16.0
           target: x86_64
@@ -300,7 +300,7 @@ jobs:
           print("TensorFS full-package import and native capabilities:", tensorfs.__version__)
           PY
       - if: contains(inputs.build, 'tensorfs')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tensorfs-wheel-${{ steps.sha.outputs.sha }}
           path: crates/tensorfs-py/dist/*.whl
@@ -319,13 +319,13 @@ jobs:
         env:
           RUNNER: ${{ inputs.billed_runner }}
         run: echo "::warning::billed runner $RUNNER, never free; the budget is about \$10/day per org, and October passed it on 10-17 and 10-22 with these runs"
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.ref }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
       - name: Check native memory and TensorFS compilation
@@ -344,13 +344,13 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.ref }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: vault-provider-${{ runner.os }}-${{ runner.arch }}
       - name: Install pinned Rust
@@ -416,7 +416,7 @@ jobs:
           PY_EVIDENCE
       - name: Keep platform proof
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vault-provider-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
           path: provider-evidence
@@ -433,17 +433,17 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.ref }}
-      - uses: astral-sh/setup-uv@v7
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-      - uses: pnpm/setup@v1
+      - uses: pnpm/setup@5d160c5bc68a09337ad0d5654e237e03253b5879 # v1
         if: runner.os != 'macOS' || runner.arch != 'X64'
         with:
           package-json-file: web/app/package.json
@@ -457,7 +457,7 @@ jobs:
           manager=$(node -p "require('./web/app/package.json').packageManager.split('+')[0]")
           npm install --global --ignore-scripts --prefix "$RUNNER_TEMP/pnpm-js" "$manager"
           echo "$RUNNER_TEMP/pnpm-js/bin" >> "$GITHUB_PATH"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         if: inputs.publish_run == ''
         with:
           key: project-vault-cli-${{ runner.os }}-${{ runner.arch }}
@@ -600,7 +600,7 @@ jobs:
           PY_INSTALL_VAULT
       - name: Read separately versioned vault test scripts
         if: inputs.fixture_ref != ''
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.fixture_ref }}
           path: .vault-fixture
@@ -638,7 +638,7 @@ jobs:
           PY_VAULT_EVIDENCE
       - name: Publish synthetic product proof records
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: project-vault-cli-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
           path: product-vault-evidence
@@ -650,10 +650,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.ref }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Model content negotiation and catalog protocol regressions
         run: |
           cargo test --locked -p api --features hub --lib hub::client::catalog_tests -- --nocapture | tee api-protocol.log
