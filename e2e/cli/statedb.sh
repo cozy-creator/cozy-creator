@@ -191,6 +191,19 @@ python3 "$here/restart_store.py" measure --holder "$holder" --old-pid "$pid" --p
 cat "$S/latency.ndjson"
 [ -s "$S/busy-disk.log" ] || check "restart: no read of state.db was slowed: the cell proves nothing"
 echo "restart: reads slowed $(tail -1 "$S/busy-disk.log" 2> /dev/null)"
+# Kept 90 days (Paul 11-15): a new run of no project, here the candidates again, takes out 16 runs and 16 ended machines past them.
+local cut old_runs old_machines runs_after machines_after
+cut="(CAST(strftime('%s', 'now') AS INTEGER) - 90 * 86400) * 1000"
+old_runs=$(state1 "SELECT count(*) FROM runs WHERE state = 'settled' AND settled_at < $cut")
+old_machines=$(state1 "SELECT count(*) FROM machines WHERE state = 'ended' AND coalesce(ended_at, created_at) < $cut")
+if [ -n "${CAND_RT:-}${CAND_TFS:-}" ]; then
+  cozy --json machine update local ${CAND_TFS:+--tensorfs "$CAND_TFS"} ${CAND_RT:+--runtime "$CAND_RT"} -y > "$S/update.json" 2>&1 || check "restart: the candidates again: $(tail -c 300 "$S/update.json")"
+  runs_after=$(state1 "SELECT count(*) FROM runs WHERE state = 'settled' AND settled_at < $cut")
+  machines_after=$(state1 "SELECT count(*) FROM machines WHERE state = 'ended' AND coalesce(ended_at, created_at) < $cut")
+  echo "restart: past 90 days, runs $old_runs → $runs_after, ended machines $old_machines → $machines_after"
+  [ "$((old_runs - runs_after))" -ge 16 ] || check "restart: a new run took out $((old_runs - runs_after)) runs past 90 days, not 16"
+  [ "$((old_machines - machines_after))" -ge 16 ] || check "restart: a new run took out $((old_machines - machines_after)) ended machines past 90 days, not 16"
+fi
 # The store as it was for what follows: its rows out, and Calcifer on its own disk again.
 rm -f "$dropin" && systemctl --user daemon-reload
 calcifer_halt || return
