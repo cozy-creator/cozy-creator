@@ -188,9 +188,15 @@ async function candidate(context, origin) {
       }
       const path = `/v1/projects/${encodeURIComponent(project.id)}`, byName = await readOwned(project);
       if (byName.size !== count || files.slice(0, count).some(file => byName.get(NAME(file.index))?.sha256 !== `sha256:${file.sha256}`)) throw new Error('public CLI imported assets differ from verified source set');
-      const before = await api(`${path}/canvas`), cards = Object.fromEntries(files.slice(0, count).map(file => [NAME(file.index), { x: (file.index % project.columns) * 288, y: Math.floor(file.index / project.columns) * 220, w: 240 }]));
-      await api(`${path}/canvas`, { cards, placed: Object.fromEntries(Object.keys(cards).map(name => [name, before.seq])) });
-      const after = await api(`${path}/canvas`);
+      const cards = Object.fromEntries(files.slice(0, count).map(file => [NAME(file.index), { x: (file.index % project.columns) * 288, y: Math.floor(file.index / project.columns) * 220, w: 240 }]));
+      let after = await api(`${path}/canvas`);
+      const pending = Object.entries(cards).filter(([name, box]) => ['x', 'y', 'w'].some(key => after.cards[name]?.[key] !== box[key]));
+      for (let first = 0; first < pending.length; first += 100) {
+        during = `prepare ${count}: place ${Math.min(pending.length, first + 100)}/${pending.length} changed rows`;
+        const batch = Object.fromEntries(pending.slice(first, first + 100));
+        await api(`${path}/canvas`, { cards: batch, placed: Object.fromEntries(Object.keys(batch).map(name => [name, after.seq])) });
+        after = await api(`${path}/canvas`);
+      }
       if (Object.entries(cards).some(([name, box]) => ['x', 'y', 'w'].some(key => after.cards[name]?.[key] !== box[key]))) throw new Error('real canvas layout readback differs');
       project.cards = cards; project.canvas_seq = after.seq;
       await api(`${path}/view`, { viewport: { x: 320, y: 145, zoom: 1 }, selection: [], more: [] });
