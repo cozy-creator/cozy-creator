@@ -1,9 +1,9 @@
 // mention (cl-973 core cell 9): names in a prompt, on a local picture tool (project/tool.py's still, which takes pictures only). `<am` offers
 // what it matches and a pick is a chip; a box let go on the box is its `<name>`; names pasted, plain or rich, are chips at once; the caret
-// never lands in a chip; a video it can't use is struck through, saying why on hover (Paul, 11-12); a rename is the chip's and the stored
-// field's; a selection of three let go on it appends three. Rendered, its prompt holds Amy's file and only Walk's name, and `cozy run watch`
-// says so once.
-const { test, expect, focus, fixtureTool, MP4, png, canvasCard, canvasPoint, canvasVisible, selectedNames, hoverBox } = require('./fixtures');
+// never lands in a chip; a video it can't use is struck through, saying why on hover, and so on its box at rest (Paul, 11-12: universally);
+// a rename is the chip's and the stored field's; a selection of three let go on it appends three. Rendered, its prompt holds Amy's file and
+// only Walk's name, and `cozy run watch` says so once.
+const { test, expect, canvasIdle, focus, fixtureTool, MP4, png, canvasCard, canvasPoint, canvasVisible, screenshotPixels, selectedNames, hoverBox } = require('./fixtures');
 const { carry } = require('./geometry');
 const { backAfter, carryBox, fit, leave } = require('./hands');
 
@@ -31,6 +31,20 @@ const caret = (page) => page.evaluate(() => {
   const before = node instanceof Element ? node.childNodes[at.anchorOffset - 1] : node?.nodeType === Node.TEXT_NODE && at.anchorOffset === 0 ? node.previousSibling : null;
   return before?.dataset?.mention ? `after ${before.dataset.mention}` : 'in words';
 });
+
+/** Whether a line runs through the middle of `chip`, drawn on the canvas: a row across ≥85% of it unlike the chip's own fill. Letters
+ *  cross the middle row only here and there. */
+function struck(read, chip) {
+  const fill = read(chip.x + chip.width / 2, chip.y + 1.5);
+  const left = Math.ceil(chip.x + 4), right = Math.floor(chip.x + chip.width - 4);
+  let best = 0;
+  for (let dy = -2; dy <= 2; dy++) {
+    let unlike = 0;
+    for (let x = left; x <= right; x++) if (read(x, chip.y + chip.height / 2 + dy).reduce((sum, value, k) => sum + Math.abs(value - fill[k]), 0) > 60) unlike++;
+    best = Math.max(best, unlike / Math.max(1, right - left + 1));
+  }
+  return best >= 0.85;
+}
 
 test('mention', async ({ page, project, api, cli }) => {
   await project.import(png(160), { name: 'amy', at: { x: 0, y: 0 } });
@@ -105,6 +119,30 @@ test('mention', async ({ page, project, api, cli }) => {
     await focus(page, 'still');
     await expect.soft(words.locator('.chip[data-mention="ann"]')).toHaveText(['<Ann>', '<Ann>', '<Ann>']);
     await expect.soft(words.locator('.chip[data-mention="amy"]')).toHaveCount(0);
+  });
+
+  await test.step("at rest on the canvas too, its <Walk> is struck through", async () => {
+    // Paul, 11-12: a mention its tool can't use is struck through in the web UI, universally: the box at rest as well as in Focus.
+    await leave(page);
+    const { x, y } = await canvasPoint(page, 'still');
+    await page.mouse.click(x, y);
+    await expect.poll(() => selectedNames(page)).toEqual(['still']);
+    await page.keyboard.press('Shift+Digit2');
+    await canvasIdle(page);
+    // Nothing under the pointer: the tile as drawn at rest, not the native card a hover mounts.
+    await page.mouse.move(4, 600);
+    let chips = [];
+    await expect.poll(async () => {
+      chips = (await canvasCard(page, 'still'))?.rendered?.chips ?? [];
+      return ['ann', 'walk'].filter((name) => chips.some((chip) => chip.text.toLowerCase().startsWith(name)));
+    }, { message: 'the tile draws <Ann> and <Walk>' }).toEqual(['ann', 'walk']);
+    const read = screenshotPixels(await page.screenshot());
+    const [ann, walk] = ['ann', 'walk'].map((name) => chips.find((chip) => chip.text.toLowerCase().startsWith(name)));
+    expect.soft(struck(read, ann), `<Ann>, a picture it uses, not struck: ${JSON.stringify(ann)}`).toBe(false);
+    expect.soft(struck(read, walk), `<Walk>, a video it can't use, struck on the tile: ${JSON.stringify(walk)}`).toBe(true);
+    await page.keyboard.press('Shift+Digit1');
+    await canvasIdle(page);
+    await focus(page, 'still');
   });
 
   await test.step('a selection of three let go on it appends three', async () => {
