@@ -5,7 +5,8 @@
 // Optional SOURCE_DIR, CANDIDATE_DIST, CHROME_ARGS (JSON array), FFMPEG, DPR=1|2.
 // Uses the existing default-home Calcifer, public CLI imports and real /canvas writes. Never seeds a database, rents, or restarts services.
 // All projects and receipts survive failure. The only browser is headless. Three repetitions use the SAME prepared files and layout.
-// Explicit protocol budgets: API/input 30s, visible-image loading 15min, each preparation command 30min; env *_MS may override.
+// Explicit protocol budgets: measurement API/input 30s, setup API 120s, visible-image loading 15min, each preparation command 30min.
+// Env *_MS may override setup/liveness deadlines; frame and response acceptance targets stay separate.
 // Interaction thresholds are reported separately from those liveness deadlines. CPU/PSS and screenshots are sampled OUTSIDE frame timing.
 const { execFileSync } = require('node:child_process');
 const { createHash, randomUUID } = require('node:crypto');
