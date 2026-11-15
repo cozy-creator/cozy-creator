@@ -814,10 +814,14 @@ fn file_record(file: &File) -> String {
     json(file)
 }
 
-/// `after` written over `before`, row by row, with `extra`, as one transaction: the new revision, or none when nothing differed.
-/// `locked` runs once it holds the write lock. `before_commit` runs only at the final
+/// A write to the project's run journal made in an act (`Folder::join_act`): it commits with the act, or not at all.
+pub(crate) type Joined = Box<dyn FnOnce(&Transaction<'_>) -> Result<(), Error>>;
+
+/// `after` written over `before`, row by row, with `extra` and the journal writes `joined`, as one transaction: the new revision, or
+/// none when nothing differed. `locked` runs once it holds the write lock. `before_commit` runs only at the final
 /// SQLite commit, allowing the caller to publish its held view without a reload gap.
-pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &mut Stored, extra: &Extra, locked: impl FnOnce(), before_commit: impl FnOnce()) -> Result<Option<u64>, Error> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &mut Stored, extra: &Extra, joined: Vec<Joined>, locked: impl FnOnce(), before_commit: impl FnOnce()) -> Result<Option<u64>, Error> {
     let e = |error: rusqlite::Error| sql(at, error);
     crdt::identify(before, after);
     if !Arc::ptr_eq(&before.lock, &after.lock) {
@@ -829,6 +833,9 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     // What the rows a read takes moved by.
     let mut moved = Digest::default();
     write(&tx, before, after, extra, &mut moved).map_err(e)?;
+    for write in joined {
+        write(&tx)?;
+    }
     if tx.total_changes() == was && extra.answer.is_none() {
         tx.rollback().map_err(e)?;
         return Ok(None);
@@ -1130,7 +1137,7 @@ pub(super) fn create_with_key(path:&Path,stored:&Stored,ops:&[OpRow],asked:&[(St
     crdt::identify_history(&fresh, &mut ops);
     let extra = Extra { asked: asked.iter().map(|(digest, text)| (digest.clone(), Some(text.clone()))).collect(), ops, ..Default::default() };
     fresh.seq = 0;
-    commit(&mut conn, path, &Stored::default(), &mut fresh, &extra, || (), || ())?;
+    commit(&mut conn, path, &Stored::default(), &mut fresh, &extra, vec![], || (), || ())?;
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| err(path, e))?;
     drop(conn);
     Ok(())

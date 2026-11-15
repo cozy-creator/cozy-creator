@@ -1762,31 +1762,9 @@ macro_rules! journal_methods {
         })
     }
 
-    /// Records the intent to cancel. Unsent work ends canceled here, in the transaction that the
-    /// send boundary races; sent work keeps the intent until its machine's outcome arrives.
+    /// Records the intent to cancel (`cancel_in`).
     pub(crate) fn request_cancel(&self, id: &str) -> Result<Vec<Event>> {
-        self.write(|tx| {
-            let Some(row) = run_in(tx, id)? else {
-                return Ok(vec![]);
-            };
-            match row.state {
-                State::Settled => Ok(vec![]),
-                _ if row.cancel_requested => Ok(vec![]),
-                State::Queued => {
-                    tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [id])?;
-                    let reason = Reason {
-                        code: "canceled".into(),
-                        message: "canceled before it was sent".into(),
-                        ..Default::default()
-                    };
-                    end(tx, id, Status::Canceled, Some(reason))
-                }
-                State::Sent | State::Accepted => {
-                    tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [id])?;
-                    Ok(vec![lifecycle(tx, id)?])
-                }
-            }
-        })
+        self.write(|tx| cancel_in(tx, id))
     }
 
     /// Records `machine` as gone for good and settles what it owed: a run it accepted fails (or
@@ -3088,6 +3066,27 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
             attempt: r.get::<_, i64>(29)?.max(1) as u32,
         })
     })())
+}
+
+/// Records the intent to cancel run `id` in `tx`. Unsent work ends canceled here, in the transaction that the send boundary races;
+/// sent work keeps the intent until its machine's outcome arrives.
+pub(crate) fn cancel_in(tx: &Transaction, id: &str) -> Result<Vec<Event>> {
+    let Some(row) = run_in(tx, id)? else {
+        return Ok(vec![]);
+    };
+    match row.state {
+        State::Settled => Ok(vec![]),
+        _ if row.cancel_requested => Ok(vec![]),
+        State::Queued => {
+            tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [id])?;
+            let reason = Reason { code: "canceled".into(), message: "canceled before it was sent".into(), ..Default::default() };
+            end(tx, id, Status::Canceled, Some(reason))
+        }
+        State::Sent | State::Accepted => {
+            tx.execute("UPDATE runs SET cancel_requested = 1 WHERE id = ?1", [id])?;
+            Ok(vec![lifecycle(tx, id)?])
+        }
+    }
 }
 
 fn run_in(conn: &Connection, id: &str) -> Result<Option<RunRow>> {
