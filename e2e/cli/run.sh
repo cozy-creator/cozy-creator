@@ -459,6 +459,7 @@ WEB_2=(
 WEB_3=(
   focus
   create
+  project-name
   takes
   no-overlap
   instant
