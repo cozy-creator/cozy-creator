@@ -66,6 +66,7 @@ interface Drawn {
   labels: Container
   pictures: Map<string, Picture>
   texts: Map<string, Text>
+  fullTexts: Map<string, string>
   checker?: TilingSprite
   hits: { box: Box; part: HitPart }[]
   presentation: Presentation
@@ -143,7 +144,7 @@ export class PixiScene {
         const ground = new Graphics(), pixels = new Container(), ink = new Graphics(), labels = new Container()
         container.addChild(ground, pixels, ink, labels)
         this.layer.addChild(container)
-        drawn = { node, container, ground, pixels, ink, labels, pictures: new Map(), texts: new Map(), hits: [], presentation: present(this.options.store, node), signature: "", tools, context: node.runContext, fontEpoch: this.fontEpoch, alive: true }
+        drawn = { node, container, ground, pixels, ink, labels, pictures: new Map(), texts: new Map(), fullTexts: new Map(), hits: [], presentation: present(this.options.store, node), signature: "", tools, context: node.runContext, fontEpoch: this.fontEpoch, alive: true }
         this.records.set(node.id, drawn)
       }
       const previous = drawn.node
@@ -216,6 +217,7 @@ export class PixiScene {
   private label(drawn: Drawn, used: Set<string>, key: string, value: string, x: number, y: number, width: number, size: number, color: number, mono = false, bold = false, lines = 1) {
     if (!value || width <= 0) return
     used.add(key)
+    drawn.fullTexts.set(key, value)
     const family = mono ? MONO : SANS
     // A changed fallback key also retires Pixi's text texture/metrics cache after a native font finishes loading.
     const rasterFamily = `${family}, "cozy-font-epoch-${this.fontEpoch}"`
@@ -299,7 +301,7 @@ export class PixiScene {
       ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thickness + 2 / zoom, color: colors.gap, alignment: 0.5 })
       ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thickness, color: colors.select, alignment: 0.5 })
     }
-    for (const [key, label] of drawn.texts) if (!labels.has(key)) { label.destroy(); drawn.texts.delete(key) }
+    for (const [key, label] of drawn.texts) if (!labels.has(key)) { label.destroy(); drawn.texts.delete(key); drawn.fullTexts.delete(key) }
     for (const [key, picture] of drawn.pictures) if (!pictures.has(key)) { this.dropPicture(picture); drawn.pictures.delete(key) }
     drawn.fontEpoch = this.fontEpoch
   }
@@ -779,7 +781,7 @@ export class PixiScene {
     return {
       body: { x: body.x, y: body.y, width: body.w, height: body.h },
       labels: Object.fromEntries([...drawn.texts].map(([key, label]) => [key, {
-        text: label.text, x: drawn.node.box.x + label.x, y: drawn.node.box.y + label.y, width: label.width, height: label.height,
+        text: label.text, fullText: drawn.fullTexts.get(key) ?? label.text, x: drawn.node.box.x + label.x, y: drawn.node.box.y + label.y, width: label.width, height: label.height,
         fontSize: Number(label.style.fontSize), fontFamily: label.style.fontFamily, weight: label.style.fontWeight,
         ...(key === "title" ? { title: drawn.presentation.title } : {}),
       }])),
@@ -789,6 +791,7 @@ export class PixiScene {
       controls: drawn.hits.filter(hit => hit.part === "delete" || hit.part === "cancel").map(hit => ({ part: hit.part, x: drawn.node.box.x + hit.box.x, y: drawn.node.box.y + hit.box.y, width: hit.box.w, height: hit.box.h })),
       wave: drawn.wave ? { active: true, x: body.x, y: body.y, width: body.w, height: body.h, animation: this.reducedMotion.matches ? "none" : "render-wave", alpha: drawn.wave.alpha, spread: drawn.wave.spread, cycleMs: 2400, reducedMotion: this.reducedMotion.matches } : null,
       loadingPulse: drawn.loadingPulse ? { active: true, alpha: drawn.loadingPulse.alpha, cycleMs: 2800, reducedMotion: this.reducedMotion.matches } : null,
+      references: [...drawn.pictures].filter(([key]) => key.startsWith("reference-")).map(([key, picture]) => ({ key, ready: picture.sprite.visible, x: drawn.node.box.x + picture.sprite.x, y: drawn.node.box.y + picture.sprite.y, width: picture.sprite.width, height: picture.sprite.height })),
       media: {
         ready: Boolean(texture), failed: Boolean(main?.failed), local, width: texture?.width ?? 0, height: texture?.height ?? 0,
         requestedWidth: this.resolution(body.w), resolution: local ? "local" : path.includes("/thumbs/") ? String(width) : "original",
