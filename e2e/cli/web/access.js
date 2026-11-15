@@ -85,7 +85,13 @@ async function from(context, origin, base, id, file, code) {
     frame.src = `${base}/p/${code}`;
     document.body.append(frame);
     await new Promise((done) => { frame.onload = done; setTimeout(done, 10000); });
-    return { fetched, read, written, image, socket };
+    // A sandboxed frame with no same-origin (an opaque origin, as package UIs will run): its fetches say `Origin: null`.
+    const sandboxed = document.createElement('iframe');
+    sandboxed.setAttribute('sandbox', 'allow-scripts');
+    sandboxed.srcdoc = `<script>fetch(${JSON.stringify(base + '/v1/activity')}).then(() => parent.postMessage('answered', '*'), () => parent.postMessage('refused', '*'))<\/script>`;
+    const opaque = new Promise((done) => { addEventListener('message', (event) => done(event.data), { once: true }); setTimeout(() => done('silent'), 10000); });
+    document.body.append(sandboxed);
+    return { fetched, read, written, image, socket, opaque: await opaque };
   }, { base, id, file, code });
   await sleep(1000);
   const frames = page.frames().map((frame) => frame.url());
@@ -154,6 +160,7 @@ function devConfig(text) {
     check(`${name}_img_refused`, got.image === 'error' && got.statuses[`/v1/projects/${project.id}/files/${file}`] === 403, got.statuses);
     check(`${name}_websocket_refused`, got.socket !== 'open', got.socket);
     check(`${name}_frame_refused`, got.rendered === 0 && got.refused_frame, { rendered: got.rendered, said: got.refused_frame });
+    check(`${name}_opaque_origin_refused`, got.opaque !== 'answered' && got.statuses['/v1/activity'] === 403, { said: got.opaque, status: got.statuses['/v1/activity'] });
   }
   elsewhere.close();
 
