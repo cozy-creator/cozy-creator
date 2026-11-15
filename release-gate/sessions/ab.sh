@@ -197,6 +197,7 @@ for k in "${names[@]}"; do
     step "download-$k-$i" model install "${dl[@]}" --on "$NAME" < /dev/null || fail "$k: the download of ${dl[0]}"
   done
   echo "$k" > "$OUT/current"
+  say "$k: GPU before: $(gpu | paste -sd';')"
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
@@ -227,13 +228,23 @@ digests() { jq -r '[.result | .. | .digest? // empty] | join(",")' "$OUT/$1.json
 file() { ls "$OUT/$1.out"/* 2> /dev/null | grep -E '\.(mp4|webm|png|webp|jpg|wav|flac)$' | head -1; }
 frames() { local f; f=$(file "$1"); [ -s "$f" ] || { echo none; return; }; ffmpeg -nostdin -v error -i "$f" -map 0 -f framemd5 - | grep -v '^#' | md5sum | cut -c1-16; }
 psnr() { ffmpeg -nostdin -i "$(file "$1")" -i "$(file "$2")" -lavfi '[0:v][1:v]psnr' -f null - 2>&1 | grep -oE 'average:[0-9.inf]+' | tail -1; }
-differ=0
+# judge <a> <b>: the bench's same-seed rule (suites/bench/media.py) on the two cells' outputs: `like`, or why not.
+judge() {
+  local fa fb; fa=$(file "$1") fb=$(file "$2"); [ -s "$fa" ] && [ -s "$fb" ] || { echo "no output to judge"; return; }
+  uv run -q --no-project --with numpy python3 - "$(dirname "$0")/../suites/bench" "$fa" "$fb" "$1" 2>&1 <<'PY' | tail -1
+import sys; sys.path.insert(0, sys.argv[1]); import media
+why = media.differs(media.pair(sys.argv[2], sys.argv[3]), sys.argv[4] + "'s output (same request and seed)")
+print('like' if not why else 'DIFFERS: ' + '; '.join(why))
+PY
+}
+differ=0 judged=0
 while read -r a b; do
   da=$(digests "$a") db=$(digests "$b")
   if [ -n "$da" ] && [ "$da" = "$db" ]; then say "$a vs $b: IDENTICAL bytes ($da)"; continue; fi
   fa=$(frames "$a") fb=$(frames "$b")
   if [ "$fa" != none ] && [ "$fa" = "$fb" ]; then say "$a vs $b: IDENTICAL decoded frames ($fa); files differ ($da / $db)"; continue; fi
   differ=$((differ + 1)); say "$a vs $b: DIFFERENT: digests $da / $db, frames $fa / $fb, video PSNR $(psnr "$a" "$b")"
+  j=$(judge "$a" "$b"); say "$a vs $b: bench same-seed judge: $j"; [ "$j" = like ] || judged=$((judged + 1))
 done < <(jq -r '.[] | "\(.[0]) \(.[1])"' <<<"$COMPARE")
 for k in "${names[@]}"; do
   wide=$(awk -v k="$k" '$1 == k && $2 !~ /^\[?(127\.|::1\]?:|::ffff:127\.)/ {print $2, $3}' "$OUT/listeners.log" 2>/dev/null | sort -u | paste -sd';')
@@ -241,6 +252,7 @@ for k in "${names[@]}"; do
 done
 u=0; for k in "${names[@]}"; do x=$(grep -ci unreachable "$OUT/$k.txt" 2>/dev/null); u=$((u + ${x:-0})); done
 say "unreachable lines in the cells' follow output: $u"
+say "bench same-seed judge: $judged of $(jq length <<<"$COMPARE") pairs differ"
 awk -F'\t' 'NR>1{n++; if($2>m)m=$2; if($3!=0)e++; if($6!=""){r++; if($6>q)q=$6; if($7!=0)f++}; u+=$9}
   END{printf "probe: %d machine show (max %d ms, %d failed), %d run watch (max %d ms, %d non-zero), %d unreachable\n", n, m, e, r, q, f, u}' "$OUT/probe.tsv" | tee -a "$R"
 [ "$fails" = 0 ] && [ "$differ" = 0 ] || fail "$fails cells did not complete, $differ pairs differ"
