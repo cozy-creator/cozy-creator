@@ -25,7 +25,7 @@ hub_5xx() { grep -qE '"status": ?5[0-9][0-9]|HTTP 5[0-9][0-9]|: 5[0-9][0-9]; |un
 hub_do() {
   local check=$1 want=$2 code; shift 2
   case "$1 ${2:-}" in
-    'package publish'|'package yank'|'package delete'|'model upload'|'model publish'|'model edit'|'model delete'|'lora upload'|'lora publish'|'lora edit'|'lora delete'|'org claim')
+    'package publish'|'package yank'|'package delete'|'model upload'|'model publish'|'model edit'|'model delete'|'lora upload'|'lora publish'|'lora edit'|'lora delete')
       hub_test_target || { expect "hub $check" FAIL "synthetic mutation requires the isolated fixture Hub"; return 2; } ;;
   esac
   "$CLI" --json "$@" >"$HB/$check.out" 2>&1; code=$?

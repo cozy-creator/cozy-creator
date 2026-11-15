@@ -784,8 +784,6 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy login --key FILE` | `PUT /v1/account/key`; `PUT /v1/account/name` while unnamed |
 | `cozy logout [--everywhere]` | `DELETE /v1/account`; with `--everywhere`, `POST /v1/account/codes` (`sign_out_everywhere`), `POST /v1/account/codes/{id}` |
 | `cozy whoami` | `GET /v1/account` |
-| `cozy org claim` | `POST /v1/orgs/{org}/claim` |
-| `cozy org edit` | `PATCH /v1/orgs/{org}` |
 | `cozy model ls [query]` | `GET /v1/models` |
 | `cozy model ls --on` | `GET /v1/machines/{name}/models`; `--on all`: `GET /v1/machines` |
 | `cozy model show`, `cozy lora show` | `GET /v1/models/{org}/{name}/headers` |
