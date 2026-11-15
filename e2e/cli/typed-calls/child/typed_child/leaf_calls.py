@@ -16,10 +16,11 @@ class PrimeRequest(msgspec.Struct, kw_only=True, frozen=True):
 class PrimeResult(msgspec.Struct, kw_only=True, frozen=True):
     prime: bool
     python: str
+    fingerprint: str
 
 judge: Operation[PrimeRequest, PrimeResult] = Operation(
     distribution='xs198-typed-leaf', module='typed_leaf', export='judge',
-    declaration='sha256:ede4f762e24a14d238dbb60b2d416a59ae1f8f4ebfcc9d4b90557b296b051ece', request=PrimeRequest, result=PrimeResult,
+    declaration='sha256:00ff8319611447c1be01d0c60df2e93aa0c545b01e3844f90032ad9f3d282563', request=PrimeRequest, result=PrimeResult,
     models=(),
 )
 

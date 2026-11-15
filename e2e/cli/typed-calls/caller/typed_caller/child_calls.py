@@ -19,6 +19,7 @@ class Result(msgspec.Struct, kw_only=True, frozen=True):
     prime: bool
     python: str
     descendant_python: str
+    fingerprint: str
 
 class WeightRequest(msgspec.Struct, kw_only=True, frozen=True):
     pass
@@ -30,7 +31,7 @@ class WeightResult(msgspec.Struct, kw_only=True, frozen=True):
 
 shade: Operation[Request, Result] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='shade',
-    declaration='sha256:cac2106f26f01a624f6f9fa15d396be42f0b82c244e8daa41b474bce899ca010', request=Request, result=Result,
+    declaration='sha256:3b7e5578265f6bdb33ac6f672afb7811d6ec6cfea535039684c948124e62d05a', request=Request, result=Result,
     models=(),
 )
 
