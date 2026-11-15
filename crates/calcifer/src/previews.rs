@@ -63,9 +63,9 @@ pub(crate) async fn serve(
     if project.is_none() && held.is_some_and(|held| held.split(',').any(|t| t.trim() == preview.tag)) {
         return Ok(private((StatusCode::NOT_MODIFIED, [(header::ETAG, tag)]).into_response()));
     }
-    // A preview is a picture, and never one that can hold script (SVG): whatever else a package's executor sends is none (the guard
-    // also sandboxes every /v1 answer).
-    if !preview.media_type.starts_with("image/") || preview.media_type.starts_with("image/svg") {
+    // A preview is a picture: whatever else a package's executor sends is none. An SVG's script runs nowhere: the guard sends every /v1
+    // answer sandboxed, an SVG's with `script-src 'none'` too.
+    if !preview.media_type.starts_with("image/") {
         return none();
     }
     let text = |value: &str| HeaderValue::from_str(value).unwrap_or(HeaderValue::from_static(""));

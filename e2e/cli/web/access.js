@@ -143,6 +143,10 @@ function devConfig(text) {
   for (const [at, tab] of tabs.entries()) check(`tab_${at + 1}_works`, (await read(tab)) === 200 && (await tab.locator('.gate').count()) === 0);
   check('nothing_minted', minted.length === 0, minted);
 
+  // An SVG with script, as a package may make one (Paul, 11-14: "we can use SVGs, but also block scripts"): drawn as an <img> on the
+  // page; opened from the page as a document, it's sandboxed with `script-src 'none'`, and its <script> and onload ask for nothing.
+  await svgRuns(context, tabs[0], base, project, folder);
+
   // Another site, and another port of this computer: refused, however it asks.
   const elsewhere = await attacker();
   const port = elsewhere.address().port;
@@ -214,6 +218,42 @@ function devConfig(text) {
   await browser.close();
   process.exit(failures.length ? 1 : 0);
 })().catch(died);
+
+async function svgRuns(context, tab, base, project, folder) {
+  const tool = join(__dirname, '..', 'project', 'svg.py');
+  try {
+    execFileSync(process.env.COZY, ['--json', 'run', `${tool}/svg`, '--on', 'local'], { cwd: folder, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 600_000 });
+  } catch (error) {
+    check('svg_made', false, String(error.stderr ?? error).slice(-600));
+    return;
+  }
+  const made = (projectJson(folder, 'GET', '/runs?limit=10').runs ?? []).find((run) => run.target?.endsWith('/svg') && run.status === 'completed');
+  check('svg_made', Boolean(made), made);
+  if (!made) return;
+  const url = `/v1/projects/${project.id}/runs/${encodeURIComponent(made.id)}/outputs/picture`;
+  const marked = [];
+  context.on('request', (request) => { if (request.url().includes('svg=')) marked.push(request.url()); });
+  const width = await tab.evaluate((src) => new Promise((done) => {
+    const img = new Image();
+    img.onload = () => done(img.naturalWidth);
+    img.onerror = () => done(0);
+    img.src = src;
+  }), url);
+  check('svg_drawn_as_img', width > 0, width);
+  const page = await context.newPage();
+  await page.goto(`${base}/p/${project.code}`);
+  await page.waitForSelector('.top');
+  const answered = page.waitForResponse((response) => response.url().includes('/outputs/picture'));
+  await page.evaluate((src) => { location.href = src; }, url);
+  const answer = await answered;
+  await sleep(3000);
+  const headers = answer.headers();
+  const policy = headers['content-security-policy'] ?? '';
+  seen.svg = { status: answer.status(), type: headers['content-type'], policy, sniff: headers['x-content-type-options'], marked };
+  check('svg_opened_sandboxed_without_script', answer.status() === 200 && /^image\/svg/.test(headers['content-type'] ?? '') && /(^|;)\s*sandbox(\s|;|$)/.test(policy) && policy.includes("script-src 'none'") && headers['x-content-type-options'] === 'nosniff', seen.svg);
+  check('svg_script_ran_nothing', marked.length === 0, marked);
+  await page.close();
+}
 
 /** Another account's own headless Chrome, launched by Playwright as that account and driven from here: Calcifer's page as that
  *  account sees it. */

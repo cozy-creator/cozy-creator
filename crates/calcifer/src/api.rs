@@ -425,15 +425,17 @@ async fn guard(
         }
     };
     let headers = response.headers_mut();
-    // Nothing under /v1 is a page: whatever it holds (a package's preview, a file of a project) can run no script on this origin,
-    // even opened as a URL.
+    // Nothing under /v1 is a page: whatever it holds (a package's preview, a run's output, a file of a project) runs in no origin of
+    // Calcifer's, even opened as a URL; an SVG, which can carry script, runs none at all.
     if api_route {
-        let policy = match headers.get(header::CONTENT_SECURITY_POLICY).and_then(|policy| policy.to_str().ok()) {
-            Some(policy) if !policy.split(';').any(|directive| directive.trim() == "sandbox") => HeaderValue::from_str(&format!("{policy}; sandbox")).ok(),
-            Some(_) => None,
-            None => Some(HeaderValue::from_static("sandbox")),
-        };
-        if let Some(policy) = policy {
+        let svg = headers.get(header::CONTENT_TYPE).and_then(|kind| kind.to_str().ok()).is_some_and(|kind| kind.starts_with("image/svg"));
+        let mut policy = headers.get(header::CONTENT_SECURITY_POLICY).and_then(|policy| policy.to_str().ok()).unwrap_or_default().to_owned();
+        for directive in ["sandbox"].into_iter().chain(svg.then_some("script-src 'none'")) {
+            if !policy.split(';').any(|held| held.trim() == directive) {
+                policy = if policy.is_empty() { directive.to_owned() } else { format!("{policy}; {directive}") };
+            }
+        }
+        if let Ok(policy) = HeaderValue::from_str(&policy) {
             headers.insert(header::CONTENT_SECURITY_POLICY, policy);
         }
     }
