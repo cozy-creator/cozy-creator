@@ -76,6 +76,8 @@ interface Drawn {
   latent?: Latent
   wave?: { graphics: Graphics; began: number; alpha: number; spread: number }
   meter?: { run: number; fraction: number; since: number }
+  stateDot?: Box
+  meterBox?: Box
   alive: boolean
 }
 
@@ -242,6 +244,7 @@ export class PixiScene {
     body.x -= node.box.x; body.y -= node.box.y
     const { ground, ink } = drawn
     ground.clear(); ink.clear()
+    drawn.stateDot = undefined; drawn.meterBox = undefined
     drawn.hits = []
     const labels = new Set<string>()
     const pictures = new Set<string>()
@@ -279,7 +282,9 @@ export class PixiScene {
     }
     drawn.hits.unshift({ box: body, part: "body" })
     if (show.progress?.fraction !== undefined && !node.view.canceling) {
-      ink.rect(body.x, body.y, body.w * this.meter(drawn), Math.min(body.h, 3 / zoom)).fill(colors.running)
+      const w = body.w * this.meter(drawn), h = Math.min(body.h, 3 / zoom)
+      ink.rect(body.x, body.y, w, h).fill(colors.running)
+      drawn.meterBox = { x: body.x, y: body.y, w, h }
     }
     if (node.selected || node.view.hot) {
       const thickness = (node.selected ? 6 : 2) / zoom
@@ -304,7 +309,10 @@ export class PixiScene {
     const rise = node.selected && !far ? Math.min(0, 9 - 9 / zoom) : 0
     const y = HEAD - 12 - size * 1.25 + rise
     const dot = show.state ? size * 0.42 : 0
-    if (show.state) ink.circle(2 + dot / 2, y + size * 0.66, dot / 2).fill(colors[show.state])
+    if (show.state) {
+      ink.circle(2 + dot / 2, y + size * 0.66, dot / 2).fill(colors[show.state])
+      drawn.stateDot = { x: 2, y: y + size * 0.66 - dot / 2, w: dot, h: dot }
+    }
     const left = show.state ? dot + 8 : 2
     const controls = far ? 0 : 32 + (show.version ? 40 : 0)
     const title = this.label(drawn, labels, "title", show.title, left, y, node.box.w - left - controls, size, colors.ink, true, true)
@@ -620,6 +628,7 @@ export class PixiScene {
 
   private askLatent(drawn: Drawn) {
     const latent = drawn.latent
+    const world = (box?: Box) => box ? { x: drawn.node.box.x + box.x, y: drawn.node.box.y + box.y, width: box.w, height: box.h } : null
     const project = this.options.store.projectId
     if (!latent || !project || !this.visible || this.stopped) return
     clearTimeout(latent.timer)
@@ -749,7 +758,9 @@ export class PixiScene {
         fontSize: Number(label.style.fontSize), fontFamily: label.style.fontFamily, weight: label.style.fontWeight,
         ...(key === "title" ? { title: drawn.presentation.title } : {}),
       }])),
-      state: drawn.presentation.state, unseen: drawn.presentation.unseen, progress: drawn.presentation.progress ?? null,
+      state: drawn.presentation.state, unseen: drawn.presentation.unseen,
+      progress: drawn.presentation.progress ? { ...drawn.presentation.progress, fraction: drawn.meter?.fraction ?? drawn.presentation.progress.fraction } : null,
+      stateDot: world(drawn.stateDot), meter: world(drawn.meterBox),
       controls: drawn.hits.filter(hit => hit.part === "delete" || hit.part === "cancel").map(hit => ({ part: hit.part, x: drawn.node.box.x + hit.box.x, y: drawn.node.box.y + hit.box.y, width: hit.box.w, height: hit.box.h })),
       wave: drawn.wave ? { active: true, x: body.x, y: body.y, width: body.w, height: body.h, animation: this.reducedMotion.matches ? "none" : "render-wave", alpha: drawn.wave.alpha, spread: drawn.wave.spread, cycleMs: 2400, reducedMotion: this.reducedMotion.matches } : null,
       media: {
