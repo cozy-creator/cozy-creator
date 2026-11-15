@@ -179,9 +179,10 @@ def pin_seed_sdk(project: Path, sdk: SeedSdk) -> None:
         # This fixture locks the native candidate for this runner, not unavailable wheels
         # for the other OS jobs. Each OS seeds its own isolated Hub and SDK cohort.
         runner = f"sys_platform == '{sys.platform}' and platform_machine == '{platform.machine()}'"
-        uv["environments"] = [
-            f"({marker}) and ({runner})" for marker in uv.get("environments", [])
-        ] or [runner]
+        authored = " or ".join(f"({marker})" for marker in uv.get("environments", []))
+        # uv rejects an impossible alternative even when another matches. Intersect the
+        # authored union once; a wholly disjoint union still fails uv's requirement check.
+        uv["environments"] = [f"({authored}) and ({runner})" if authored else runner]
     for wheel in (sdk.runtime, sdk.tensorfs):
         if wheel is None:
             continue
