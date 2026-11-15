@@ -62,6 +62,8 @@ export function CanvasSurface(props: Props) {
   const [failed, setFailed] = useState<string | null>(null)
   const hover = useRef<string | null>(null)
   const nativeName = useRef<string | null>(null)
+  const committedBodies = useRef<{ native: string | null; focused: string | null }>({ native: null, focused: null })
+  const releasedBodies = useRef(new Set<string>())
   const update = useRef<() => void>(() => {})
   const isActive = useRef(active)
   isActive.current = active
@@ -78,6 +80,15 @@ export function CanvasSurface(props: Props) {
     hover.current = hovered
     // Keep passive pixels and hit geometry until React has actually committed their native replacement.
     nativeName.current = native?.data.name ?? null
+    const next = {
+      native: native && view ? native.id : null,
+      focused: active && focused && !entering ? controller.getNodes().find(node => node.data.name === store.resolveName(focused))?.id ?? null : null,
+    }
+    if (!active) releasedBodies.current.clear()
+    else for (const id of [committedBodies.current.native, committedBodies.current.focused]) {
+      if (id && id !== next.native && id !== next.focused) releasedBodies.current.add(id)
+    }
+    committedBodies.current = next
     update.current()
   }, [hovered, focused, entering, overlayVersion, active])
   useEffect(() => { enabled.current(); update.current() }, [active, disabled])
@@ -117,14 +128,29 @@ export function CanvasSurface(props: Props) {
     const interactions = () => controller.setInteractionEnabled(visible() && !isDisabled.current && !drag && !marquee)
     enabled.current = () => { scene?.setVisible(visible()); interactions(); if (!visible()) { cancel(); cancelAnimationFrame(frame); frame = 0 } }
     const inBounds = (x: number, y: number) => { const box = element.getBoundingClientRect(); return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom }
+    // React can release a native surface before the next GPU update restores its hit regions. Only that surface's content body
+    // bridges the interval: no title, control, arbitrary node envelope, or hidden GPU resource is kept alive for hit testing.
+    const releasedBodyAt = (point: { x: number; y: number }, excluded: ReadonlySet<string> = new Set<string>()) => {
+      for (const id of [...releasedBodies.current].reverse()) {
+        if (excluded.has(id)) continue
+        const node = controller.getNode(id), view = node && store.get(node.data.name)
+        if (!node || !view) continue
+        const body = view.entity
+          ? { x: node.bounds.x, y: node.bounds.y + HEAD, w: node.bounds.w, h: Math.max(0, node.bounds.h - HEAD) }
+          : pictureBox({ id: node.id, name: node.data.name, box: node.bounds, view, selected: Boolean(node.selected) })
+        if (point.x >= body.x && point.x <= body.x + body.w && point.y >= body.y && point.y <= body.y + body.h) return node
+      }
+      return null
+    }
     const nodeAt = (x: number, y: number, excluded = new Set<string>()) => {
       if (!inBounds(x, y)) return null
-      const hit = scene?.hitTest(controller.screenToWorld({ x, y }), excluded)
+      const point = controller.screenToWorld({ x, y })
+      const hit = scene?.hitTest(point, excluded)
       if (hit) return controller.getNodes().find(node => node.data.name === hit.name) ?? null
       const native = document.elementFromPoint(x, y)?.closest<HTMLElement>(".canvas-node[data-id]")
       const id = native?.dataset.id
       if (id && element.contains(native) && !excluded.has(id)) return controller.getNode(id) ?? null
-      return null
+      return releasedBodyAt(point, excluded)
     }
     const nativeInput = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest("button,input,select,textarea,[contenteditable],.canvas-control"))
     const announceSelection = () => {
@@ -187,6 +213,7 @@ export function CanvasSurface(props: Props) {
         if (nativeName.current) hiddenNames.add(nativeName.current)
         if (store.focusedName.get() && !store.focusEntering.get()) hiddenNames.add(store.focusedName.get()!)
         scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenNames })
+        releasedBodies.current.clear()
       }
       const wasAnimating = animating
       if (refresh || animating) animating = scene.advance(now)
@@ -312,8 +339,8 @@ export function CanvasSurface(props: Props) {
         const node = nodeAt(event.clientX, event.clientY)
         const hit = node && (hover.current !== node.data.name || !previewIntent) ? scene?.hitTest(controller.screenToWorld({ x: event.clientX, y: event.clientY })) : null
         const nativeMedia = event.target instanceof Element && event.target.closest(".media")?.closest<HTMLElement>(".canvas-node[data-id]")?.dataset.id === node?.id
-        const body = hit?.part === "body" || nativeMedia
-        const point = node && body && !event.buttons && !nativeInput(event.target) && store.get(node.data.name)?.asset?.kind === "video" ? { x: event.clientX, y: event.clientY } : undefined
+        const body = hit?.part === "body" || nativeMedia || (node && releasedBodyAt(controller.screenToWorld({ x: event.clientX, y: event.clientY }))?.id === node.id)
+        const point = node && body && event.isTrusted && !event.buttons && !nativeInput(event.target) && store.get(node.data.name)?.asset?.kind === "video" ? { x: event.clientX, y: event.clientY } : undefined
         changeHover(node?.data.name ?? null, point)
       }
     }
@@ -479,6 +506,7 @@ export function CanvasSurface(props: Props) {
       window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", cancel)
       window.removeEventListener("keydown", keyDown); window.removeEventListener("keyup", keyUp)
       scene?.destroy(); stage?.destroy({ children: true }); renderer?.destroy({ removeView: true, releaseGlobalResources: true })
+      releasedBodies.current.clear()
       store.canvasAt = () => null
       delete (element as HTMLDivElement & { canvasInspection?: unknown }).canvasInspection
       update.current = () => {}; enabled.current = () => {}

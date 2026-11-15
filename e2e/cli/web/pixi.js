@@ -113,9 +113,8 @@ async function candidate(context, origin, directory) {
   const at = `/v1/projects/${encodeURIComponent(made.id)}`;
   const asset = async name => (await api(at)).assets.find(row => row.name === name);
   const placed = async name => (await api(`${at}/canvas`)).cards[name];
-  const opened = cli(['open', '--json'], folder);
-  const link = new URL(opened.url);
-  if (link.origin !== origin || link.hash || link.search || link.pathname !== `/projects/${encodeURIComponent(made.id)}`) throw new Error("cozy open did not return this project's plain Calcifer URL");
+  if (typeof made.code !== 'string' || !made.code) throw new Error('cozy new did not return the project code');
+  const link = new URL(`/p/${encodeURIComponent(made.code)}`, origin);
   const nativeStorage = await api('/v1/project-storage');
   if (nativeStorage.version !== 3 || typeof nativeStorage.daemon_birth !== 'string' || !nativeStorage.daemon_birth || !String(nativeStorage.principal ?? '').startsWith('user:')) throw new Error('Calcifer did not prove the native project-storage principal');
   const extra = JSON.parse(process.env.CHROME_ARGS ?? '[]');
@@ -254,6 +253,38 @@ async function candidate(context, origin, directory) {
   await picture('pixi_renamed', 'reload_real_pixels');
   const reloaded = await placed('pixi_renamed');
   check('reload_keeps_position', Math.abs(reloaded.x - moved.x) < 0.1 && Math.abs(reloaded.y - moved.y) < 0.1, reloaded);
+
+  // Retiring a native hover card must not leave a body-hit gap before the next GPU scene update. A MutationObserver delivers one
+  // pointer event at that exact boundary; it does not change the camera, renderer, document, or hover state itself.
+  p = await point('pixi_renamed');
+  await page.mouse.move(p.x, p.y);
+  await until('native card owns the resting image', async () => ({ native: await page.locator('.canvas-node').count(), rendered: (await inspect('card', 'pixi_renamed'))?.rendered }), value => value.native === 1 && !value.rendered);
+  await page.evaluate(point => {
+    const root=document.querySelector('.canvas-root'),inspection=root.canvasInspection;
+    const title=inspection.card('pixi_renamed').title,header={x:title.x+title.width/2,y:title.y+title.height/2};
+    const snap=label=>({label,hit:inspection.hitTest(point),headerHit:inspection.hitTest(header),native:root.querySelectorAll('.canvas-node').length,rendered:Boolean(inspection.card('pixi_renamed').rendered),interaction:inspection.interaction()});
+    window.__nativeRelease={snapshots:[snap('native settled')],done:false};
+    const observer=new MutationObserver(()=>{
+      if(root.querySelector('.canvas-node'))return;
+      observer.disconnect();
+      window.__nativeRelease.snapshots.push(snap('native removed'));
+      const move=new PointerEvent('pointermove',{bubbles:true,pointerType:'mouse',buttons:0,clientX:point.x,clientY:point.y});
+      root.querySelector('canvas').dispatchEvent(move);
+      window.__nativeRelease.dispatchedTrusted=move.isTrusted;
+      window.__nativeRelease.snapshots.push(snap('move before GPU restoration'));
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{window.__nativeRelease.snapshots.push(snap('handoff settled'));window.__nativeRelease.done=true;}));
+    });
+    observer.observe(root,{childList:true,subtree:true});
+  },p);
+  await page.mouse.move(20,20);
+  await until('native release boundary observed',()=>page.evaluate(()=>window.__nativeRelease.done),Boolean);
+  const release=seen.native_release=await page.evaluate(()=>window.__nativeRelease);
+  const removed=release.snapshots[1],accepted=release.snapshots[2],restored=release.snapshots[3];
+  check('native_release_body_remains_reachable',removed.native===0 && !removed.rendered && removed.hit?.name==='pixi_renamed' && removed.hit.part==='body',removed);
+  check('native_release_does_not_invent_header_hits',removed.headerHit===null,removed.headerHit);
+  check('native_release_accepts_one_move_without_retry',accepted.interaction.requestedHover==='pixi_renamed' && restored.native===1,release);
+  if(accepted.interaction.requestedHover!=='pixi_renamed' || restored.native!==1)throw new Error('native release lost the only pointer move before GPU restoration');
+  await picture('pixi_renamed','native_release_returns_real_pixels');
 
   // Real pointer presses establish Pixi's internal drag state; blur is delivered explicitly in this headless browser.
   const blank = await openCanvas(page);
