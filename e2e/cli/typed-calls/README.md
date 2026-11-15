@@ -1,9 +1,9 @@
 # Typed calls through separate installed environments
 
-This is a real CPU package chain (caller → child → legacy leaf → private self call), executed with `cozy run` in the default home. The leaf uses SymPy through a private self call and can raise an `InvalidRequest`.
+This is a real CPU package chain (caller → child → legacy leaf → private self call), executed with `cozy run` in the default home. The leaf computes primality with SymPy and an xxhash fingerprint through a private self call and can raise an `InvalidRequest`.
 The middle child receives and returns an image and
 reads one value from an explicitly selected local checkpoint. The caller must import and
-install neither `typed_child` nor `sympy`; its result reports those facts and both Python
+install neither `typed_child` nor the callee-only dependency `xxhash`; its result reports those facts and both Python
 executable paths. Both children declare private operations, omitted from generated code. The leaf deliberately
 has no `cozy-calls` extra: uv retains its ordinary dependencies when that extra is requested.
 
@@ -33,10 +33,22 @@ Use two tiny local F32 safetensors files with different first values. Both model
 return their actual first value and different checkpoint identities. The media result must
 be PNG with pixel (0,0) equal to RGBA (7,11,19,95); the failure result must carry
 `typed_fixture_failure` and a nonempty child request identity. Every result must report
-`child_installed=false`, `compute_installed=false`, and different caller/child Python paths.
+`child_installed=false`, `callee_dependency_installed=false`, and different caller/child Python paths.
 Do not claim process or custody qualification from source description or imports alone.
 
 The published declaration is `[project.optional-dependencies] cozy-calls = ["child[cozy-calls]"]`.
 The middle package declares its own onward edge the same way. Wheel `Requires-Dist` entries
 carry the recursive closure. The first result must also return a nonempty `descendant_python`
 from the real leaf; middle and leaf share the held managed environment.
+
+## Shared machine layer
+
+The platform deliberately exposes its shared Torch layer to every Python package (cl-715),
+including transitive dependencies such as SymPy. This fixture preserves that guarantee.
+It reports `shared_torch_available`, `shared_sympy_available`, and `torch_imported` separately;
+availability does not establish an import. The actual inspected local Torch2.15.0+cu132
+layer contains Torch/SymPy and contains neither xxhash nor the fixture packages.
+The leaf now uses xxhash for a real 64-bit fingerprint of the requested number, forwarded
+through B to A as `fingerprint`; the successful media case must contain 16 hexadecimal
+characters. Only the callee-specific dependency's absence is asserted. The Python SDK
+change does not promise a Torch-free platform environment; native execution is xs-153.
