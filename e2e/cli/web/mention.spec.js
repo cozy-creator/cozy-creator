@@ -3,7 +3,7 @@
 // never lands in a chip; a video it can't use is struck through, saying why on hover (Paul, 11-12); a rename is the chip's and the stored
 // field's; a selection of three let go on it appends three. Rendered, its prompt holds Amy's file and only Walk's name, and `cozy run watch`
 // says so once.
-const { test, expect, box, focus, middle, fixtureTool, MP4, png } = require('./fixtures');
+const { test, expect, focus, fixtureTool, MP4, png, canvasCard, canvasPoint, canvasVisible, selectedNames, hoverBox } = require('./fixtures');
 const { carry } = require('./geometry');
 const { backAfter, carryBox, fit, leave } = require('./hands');
 
@@ -38,7 +38,7 @@ test('mention', async ({ page, project, api, cli }) => {
   await project.import(png(60), { name: 'bea', at: { x: 720, y: 0 } });
   await project.add({ name: 'still', tool: STILL, kind: 'image', at: { x: 360, y: 460 } });
   await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.some((tool) => tool.local && tool.id === STILL), { message: 'the project lists its local tool' }).toBe(true);
-  for (const name of ['amy', 'walk', 'bea', 'still']) await expect(box(page, name)).toBeVisible();
+  for (const name of ['amy', 'walk', 'bea', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
   const words = region.locator('.in-frame .mention-text[data-field="instructions"]');
@@ -60,7 +60,7 @@ test('mention', async ({ page, project, api, cli }) => {
 
   await test.step('Walk let go on the box, and names pasted plain and rich: chips at once', async () => {
     await leave(page);
-    await carryBox(page, 'walk', await middle(box(page, 'still').locator('.media')));
+    await carryBox(page, 'walk', await canvasPoint(page, 'still'));
     await expect.poll(said, { message: 'the drop is its name' }).toBe('A sheet of <amy> and <walk>');
     await focus(page, 'still');
     await expect(words).toBeFocused();
@@ -96,11 +96,11 @@ test('mention', async ({ page, project, api, cli }) => {
 
   await test.step('Amy renamed Ann: the chip and the stored field', async () => {
     await leave(page);
-    await box(page, 'amy').locator('.nm').click();
+    await (await hoverBox(page, 'amy')).locator('.nm').click();
     const field = page.getByRole('textbox', { name: 'Name', exact: true });
     await field.fill('ann');
     await field.press('Enter');
-    await expect(box(page, 'ann')).toBeVisible();
+    await expect.poll(() => canvasVisible(page, 'ann')).toBe(true);
     await expect.poll(said, { message: 'the stored field names Ann' }).toBe('A sheet of <ann> and <walk> with <ann> and <walk.1> with <ann> and <walk.1>');
     await focus(page, 'still');
     await expect.soft(words.locator('.chip[data-mention="ann"]')).toHaveText(['<Ann>', '<Ann>', '<Ann>']);
@@ -109,21 +109,21 @@ test('mention', async ({ page, project, api, cli }) => {
 
   await test.step('a selection of three let go on it appends three', async () => {
     await leave(page);
-    const row = await Promise.all(['ann', 'walk', 'bea'].map((name) => box(page, name).boundingBox()));
+    const row = await Promise.all(['ann', 'walk', 'bea'].map(async (name) => (await canvasCard(page, name)).bounds));
     // From open canvas under the row's left end to past its top right: the rectangle touches the three and not the box under them.
     const from = { x: row[0].x - 16, y: Math.max(...row.map((at) => at.y + at.height)) + 16 };
     const to = { x: row[2].x + row[2].width + 16, y: Math.min(...row.map((at) => at.y)) - 16 };
-    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), from), 'the rectangle starts on open canvas').toBe(true);
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('canvas-pane') && !document.querySelector('.canvas-root')?.canvasInspection?.hitTest({ x, y }), from), 'the rectangle starts on open canvas').toBe(true);
     await page.keyboard.down('Shift');
     await page.mouse.move(from.x, from.y);
     await page.mouse.down();
     await page.mouse.move(to.x, to.y, { steps: 8 });
     await page.mouse.up();
     await page.keyboard.up('Shift');
-    await expect(page.locator('.react-flow__node .card[aria-selected="true"]')).toHaveCount(3);
+    await expect.poll(() => selectedNames(page)).toEqual(['ann', 'bea', 'walk']);
     const was = await said();
-    const held = page.locator('.react-flow__nodesselection-rect');
-    await backAfter(page, ['ann', 'walk', 'bea'], async () => carry(page, await middle(held), await middle(box(page, 'still').locator('.media'))));
+    // Carry one selected member: the product moves the whole selection together.
+    await backAfter(page, ['ann', 'walk', 'bea'], async () => carry(page, await canvasPoint(page, 'walk', 'title'), await canvasPoint(page, 'still')));
     await expect.poll(async () => (await said()).startsWith(was) && (await said()).slice(was.length).match(/<[^>]+>/g)?.sort(), { message: 'three refs appended' }).toEqual(['<ann>', '<bea>', '<walk>']);
   });
 

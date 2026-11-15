@@ -101,7 +101,10 @@ cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q -E '^NAME +GPU +GPUS
   || check "machine rent: no catalog table: $(head -c 300 "$OUT/rent-catalog.txt")"
 cozy --json machine rent > "$OUT/rent-catalog.json" 2> "$OUT/rent-catalog.err" && J 'type == "array" and all(.[]; .name | length > 0)' "$OUT/rent-catalog.json" \
   || check "machine rent --json: no catalog array: $(head -c 300 "$OUT/rent-catalog.json") $(head -c 200 "$OUT/rent-catalog.err")"
-code=0; in_project "$RUN_PROJECT" --json run birefnet/remove_background --file "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
+# Pinned to the checkout's release: an RC-only package (a prerelease, xs-196 C) is refused package_rc_only before the sign-in check.
+bir=birefnet/remove_background; v=$(sed -n 's/^version = "\(.*\)"$/\1/p' "${PACKAGES:-/nonexistent}/birefnet/pyproject.toml" 2>/dev/null | head -1)
+[ -z "$v" ] || bir="birefnet/remove_background@$v"
+code=0; in_project "$RUN_PROJECT" --json run "$bir" --file "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q 'cozy login' "$OUT/rent-signed-out.json" || check "run --on new signed out: exit $code, not refused for sign-in: $(head -c 300 "$OUT/rent-signed-out.json")"
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n' > "$OUT/id_private"
 code=0; cozy --json machine rent rtx-4090 --ssh "$OUT/id_private" > "$OUT/rent-ssh.json" 2> "$OUT/rent-ssh.err" || code=$?
@@ -1203,6 +1206,63 @@ cozy --json run ls --all --package zhengpeng7/birefnet > "$OUT/by-package.json" 
 cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0) and all(.runs[]; .machine == "local")' "$OUT/by-machine.json" \
   || check "run ls --on local: other machines listed"
 cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
+}
+
+# cl-998: a command a run carries out ends a failed run as a typed refusal: after the run's events (`--json`), the envelope with
+# the run's reason code and its next step. Each run here fails on the machine: an install whose build has no module, a model file
+# whose tensor runs past its end, the same file uploaded.
+# run_refused <dir> <name> <exit code>: a failed run among its events, its exit non-zero, and its last line the envelope with that run's code.
+run_refused() {
+[ "$3" != 0 ] || check "run failures: $2 exited 0"
+python3 - "$1/$2.ndjson" <<'PY' || check "run failures: $2 isn't a typed refusal: $(tail -c 500 "$1/$2.ndjson") $(tail -c 300 "$1/$2.err")"
+import json, sys
+lines = []
+for line in open(sys.argv[1]):
+  try:
+      lines.append(json.loads(line))
+  except ValueError:
+      pass
+failed = [line["run"] for line in lines if isinstance(line, dict) and line.get("type") in ("run.failed", "run.canceled")]
+assert failed, "no failed run among its events"
+code = (failed[-1].get("reason") or {}).get("code") or "run_failed"
+error = (lines[-1] if isinstance(lines[-1], dict) else {}).get("error") or {}
+assert error.get("code") == code, f"its envelope says {error.get('code')!r}, its run {code!r}"
+assert error.get("next"), "its envelope names no next step"
+PY
+}
+
+run_failures() {
+[ -n "$LOCAL" ] || return 0
+step "a failed run's command is a typed refusal (cl-998)"
+local root=$OUT/run-failures project bad account code
+project=$root/project bad=$root/bad.safetensors
+mkdir -p "$root"
+cozy --json new --unencrypted "$project" > "$root/new.json" 2>&1 || { check "run failures: cozy new: $(tail -c 300 "$root/new.json")"; return 0; }
+# package install: its code builds no module (`uv pip install --editable` fails on the machine; uv lock, here, doesn't build it).
+cp -r "$here/weightless" "$root/nomodule"
+sed -i 's/^module-name = "e2e_weightless"/module-name = "e2e_no_such_module"/' "$root/nomodule/pyproject.toml"
+sed -i 's/^name = "e2e-weightless"/name = "e2e-no-module"/' "$root/nomodule/pyproject.toml"
+code=0; (cd "$project" && cozy --json package install "$root/nomodule" --on local) > "$root/install.ndjson" 2> "$root/install.err" || code=$?
+run_refused "$root" install "$code"
+# model install: a .safetensors file whose one tensor runs past its end.
+python3 - "$bad" <<'PY'
+import json, struct, sys
+header = json.dumps({"w": {"dtype": "F32", "shape": [1024], "data_offsets": [0, 4096]}}).encode()
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header)
+PY
+code=0; cozy --json model install "$bad" local/e2e-cl998-bad --on local > "$root/download.ndjson" 2> "$root/download.err" || code=$?
+run_refused "$root" download "$code"
+# model upload: the same file, signed in to the suite's Hub, then signed out again.
+if [ -z "${E2E_HUB_LOG:-}" ] || [ -z "${E2E_HUB_EMAIL:-}" ]; then
+  check "run failures: e2e/isolated.sh named no Hub log or email to sign in with"
+elif signin "$E2E_HUB_EMAIL" > "$root/login.json"; then
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  code=0; cozy --json model upload "$bad" "${account:-e2e}/cl998-bad-$RANDOM" --lane bf16 --on local > "$root/upload.ndjson" 2> "$root/upload.err" || code=$?
+  run_refused "$root" upload "$code"
+  cozy --json logout > "$root/logout.json" 2>&1 || check "run failures: logout: $(tail -c 300 "$root/logout.json")"
+else
+  check "run failures: cozy login failed: $(tail -c 300 "$root/login.json")"
+fi
 }
 
 # cl-987: a project's key names its runs, `KEY-N`, from any folder: proposed from its name, kept in its project.db (so it goes

@@ -5,7 +5,7 @@
 // five where they were.
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, observeStill } = require('./fixtures');
+const { test, expect, observeStill, canvasCard, canvasPoint, canvasVisible } = require('./fixtures');
 const { carry, drawn, onCanvas, rows, rowsOf } = require('./geometry');
 
 const NODES = ['image', 'video', 'audio', 'text'];
@@ -33,7 +33,7 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
   const dropAt = async (row, i, what) => {
     const point = POINTS[i];
     const was = (await project.assets()).map((asset) => asset.name);
-    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), point), `${what}: let go on open canvas`).toBe(true);
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('canvas-pane') && !document.querySelector('.canvas-root')?.canvasInspection?.hitTest({ x, y }), point), `${what}: let go on open canvas`).toBe(true);
     const flow = await onCanvas(page, point);
     await carry(page, row, point);
     let name;
@@ -41,7 +41,7 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
       name = (await project.assets()).map((asset) => asset.name).find((one) => !was.includes(one));
       return name ?? null;
     }, { message: `${what} makes a box` }).not.toBeNull();
-    await expect(box(page, name), `${what} on the canvas`).toBeVisible();
+    await expect.poll(() => canvasVisible(page, name), { message: `${what} on the canvas` }).toBe(true);
     made[name] = { what, point, flow };
     return name;
   };
@@ -49,10 +49,8 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
   const whereLetGo = async (name) => {
     const { what, point, flow } = made[name];
     // The box as drawn: its node, its name over its card, and the card.
-    const rect = await box(page, name).evaluate((card) => {
-      const all = [card.closest('.react-flow__node'), card, card.querySelector('.head')].filter(Boolean).map((el) => el.getBoundingClientRect());
-      return { left: Math.min(...all.map((r) => r.left)), top: Math.min(...all.map((r) => r.top)), right: Math.max(...all.map((r) => r.right)), bottom: Math.max(...all.map((r) => r.bottom)) };
-    });
+    const card = await canvasCard(page, name), r = card.bounds;
+    const rect = { left: r.x, top: r.y, right: r.x + r.width, bottom: r.y + r.height };
     expect.soft(rect.left <= point.x && point.x <= rect.right && rect.top <= point.y && point.y <= rect.bottom, `${what}: drawn over where it was let go, ${JSON.stringify(point)} in ${JSON.stringify(rect)}`).toBe(true);
     const row = (await rowsOf(project, [name]))[name];
     const want = placedAt(flow);
@@ -99,15 +97,12 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     names.tool = await dropAt(row, 4, `Tools › Image › ${id}`);
     await whereLetGo(names.tool);
     expect.soft(await project.asset(names.tool), 'the tool box: what it makes, of that tool, blank').toMatchObject({ kind: hub.makes, tool: hub.id, versions: 0 });
-    await expect.soft(box(page, names.tool).locator('.tile-under .node-tool'), 'it says "Package · Tool" under its picture').toHaveText(named(hub));
+    await expect.configure({ soft: true }).poll(async () => (await canvasCard(page, names.tool))?.rendered?.labels.tool?.fullText, { message: 'it says "Package · Tool" under its picture' }).toBe(named(hub));
   });
 
   await test.step('drop a video tool, then an image tool, onto the blank Image box', async () => {
     const target = names.image;
-    const onIt = async () => {
-      const rect = await box(page, target).locator('.media').first().boundingBox();
-      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-    };
+    const onIt = () => canvasPoint(page, target);
     await openOperation('video');
     const video = implementations('video').and(palette.locator('[data-tool^="minimax-h3/"]')).first();
     const videoId = await video.getAttribute('data-tool');
@@ -137,7 +132,7 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
   });
 
   await test.step('right-click the tool box, then reload', async () => {
-    const { x, y } = await box(page, names.tool).locator('.media').first().boundingBox().then((r) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 }));
+    const { x, y } = await canvasPoint(page, names.tool);
     await page.mouse.click(x, y, { button: 'right' });
     const menu = page.getByRole('menu', { name: `${names.tool}'s menu` });
     await expect(menu).toBeVisible();
@@ -154,7 +149,7 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     const [held, shown] = [await rows(project), await drawn(page)];
     await page.reload();
     await expect(page.locator('.stage')).toBeVisible();
-    for (const name of all) await expect(box(page, name), `${name} after the reload`).toBeVisible();
+    for (const name of all) await expect.poll(() => canvasVisible(page, name), { message: `${name} after the reload` }).toBe(true);
     await still('after the reload');
     expect.soft(Object.fromEntries(all.map((name) => [name, held[name]])), 'the rows as they were').toEqual(Object.fromEntries(Object.entries(await rows(project)).filter(([name]) => all.includes(name))));
     const again = await drawn(page);

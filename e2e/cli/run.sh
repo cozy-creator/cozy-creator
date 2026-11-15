@@ -18,6 +18,7 @@ parse "$@"
 . "$(dirname "$0")/lifetime.sh"
 . "$(dirname "$0")/lines.sh"
 . "$(dirname "$0")/ondemand.sh"
+. "$(dirname "$0")/disk.sh"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
@@ -41,6 +42,8 @@ parse "$@"
 . "$(dirname "$0")/envcost.sh"
 . "$(dirname "$0")/egress.sh"
 . "$(dirname "$0")/stuck.sh"
+. "$(dirname "$0")/rentalself.sh"
+. "$(dirname "$0")/reports.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -521,9 +524,11 @@ case $SHARD in
     broken_answers
     run_filters
     project_keys
+    run_failures
     run_playback
     hub_away
     lock_refresh
+    performance_data
     bound_runs
     own_references
     lane_fit
@@ -533,6 +538,7 @@ case $SHARD in
     hostile_media
     egress
     hostile_inputs
+    private_weights
     unseen
     machine_checkout
     local_edits
@@ -570,6 +576,7 @@ case $SHARD in
     run_playback
     hub_away
     lock_refresh
+    performance_data
     logs
   " ;;
   executors) parts="
@@ -591,6 +598,8 @@ case $SHARD in
   env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
   ondemand) parts="ondemand_ahead ondemand_need ondemand_install logs" ;;
+  # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
+  disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
   plan) parts="estimate_line plan_picks plan_published prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
@@ -603,6 +612,7 @@ case $SHARD in
     yaml_requests
     run_filters
     project_keys
+    run_failures
     bound_runs
     own_references
     lane_fit
@@ -612,6 +622,7 @@ case $SHARD in
     hostile_media
     egress
     hostile_inputs
+    private_weights
     machine_show_runs
     writes_once
     project_stream
@@ -682,6 +693,7 @@ case $SHARD in
   projectvault) parts="
     vault_times
     shared_scratch
+    open_unlocks
     projectvault
     vault_leftovers
     vault_swapped
@@ -727,10 +739,16 @@ case $SHARD in
     path_manifest
     from_source
     rental_end
+    rental_end_again
     logs
   " ;;
-  # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs (cl-977): about 10 min.
-  stuck) parts="stuck_exit logs" ;;
+  # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a
+  # stood-in Hub and provider (cl-977): about 12 min.
+  stuck) parts="
+    stuck_exit
+    rental_self
+    logs
+  " ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating

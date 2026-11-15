@@ -1,4 +1,3 @@
-import type { NodeProps } from "@xyflow/react"
 import { memo } from "react"
 import type { Entity } from "../types"
 import { buttonsOnly } from "./Card"
@@ -75,6 +74,6 @@ const EntityBody = memo(function EntityBody({ name }: { name: string }) {
 })
 
 /** What a file's entities say, read only, until the format holds only assets. */
-export function EntityCard({ data }: NodeProps<ElementNode>) {
+export function EntityCard({ data }: Pick<ElementNode, "data">) {
   return <EntityBody name={data.name} />
 }

@@ -334,6 +334,12 @@ impl Lifecycle {
         state.sampled = epoch;
     }
 
+    /// The journal could not be read after admission epoch `epoch`: its last reading stands for it, so the idle clock runs on
+    /// what was last known rather than stopping (cl-977).
+    pub(crate) fn keep_reading(&self, epoch: u64) {
+        self.state.lock().unwrap().sampled = epoch;
+    }
+
     /// The last job end this lifecycle has read.
     pub(crate) fn ended_ms(&self) -> i64 {
         self.state.lock().unwrap().jobs.ended_ms
@@ -489,15 +495,21 @@ pub(crate) async fn release_when_idle(
     provider: Option<super::provider::ProviderSelf>,
     engine: Arc<crate::execution::Engine>,
 ) {
-    let (mut next_ask, mut unanswered) = (0, 2_500);
+    let (mut next_ask, mut unanswered, mut unread) = (0, 2_500, false);
     loop {
         let (seen, epoch) = (engine.activity_epoch(), lifecycle.epoch());
         match engine.jobs(lifecycle.ended_ms()) {
-            Ok((working, ended_ms)) => lifecycle.observe(Jobs { working, ended_ms }, epoch),
+            Ok((working, ended_ms)) => {
+                lifecycle.observe(Jobs { working, ended_ms }, epoch);
+                unread = false;
+            }
+            // Its last reading stands, and the idle clock and the release run on it (cl-977): an unreadable journal never holds
+            // a rental, and it is read again at the next activity or deadline.
             Err(error) => {
-                tracing::warn!("cannot read this rental's jobs: {error}");
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
+                if !std::mem::replace(&mut unread, true) {
+                    tracing::warn!("cannot read this rental's jobs ({error}); its last reading stands, and its idle clock runs on");
+                }
+                lifecycle.keep_reading(epoch);
             }
         }
         let now = now_ms();
@@ -572,7 +584,10 @@ pub(crate) fn exit_when_idle(
         let (seen, epoch) = (engine.activity_epoch(), lifecycle.epoch());
         match engine.jobs(lifecycle.ended_ms()) {
             Ok((working, ended_ms)) => lifecycle.observe(Jobs { working, ended_ms }, epoch),
-            Err(error) => tracing::warn!("cannot read this machine's jobs: {error}"),
+            Err(error) => {
+                tracing::warn!("cannot read this machine's jobs ({error}); its last reading stands");
+                lifecycle.keep_reading(epoch);
+            }
         }
         let Some(since) = lifecycle.idle_since() else {
             engine.wait_activity(seen, None);
@@ -634,14 +649,11 @@ fn on_its_own(contact_ms: i64, deadline_ms: i64, grace: i64, now: i64) -> bool {
     now >= contact_ms.min(deadline_ms) + grace
 }
 
+/// Ends this pod at its provider, asking until the provider takes it (cl-977): returns only without a provider credential, when
+/// stopping is all it can do.
 async fn end_itself(provider: Option<&super::provider::ProviderSelf>) {
     match provider {
-        Some(provider) => match provider.end().await {
-            Ok(()) => tracing::info!("the provider accepted this pod's end"),
-            Err(error) => {
-                tracing::error!("the provider did not end this pod ({error}); stopping")
-            }
-        },
+        Some(provider) => provider.end_until_gone().await,
         None => tracing::error!("no provider credential; stopping"),
     }
 }

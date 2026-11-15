@@ -75,7 +75,7 @@ product_seedvr2() {
   av seedvr2-1440p 1440
 }
 product_sdxl() { cell sdxl "$(pkg sdxl generate)" prompt="$SCENE, photo" seed:=$((R + 3)); }
-product_flux_3() {
+product_flux_3_klein() {
   cell klein "$(pkg flux.3-klein generate_turbo)" prompt="$CHAR" prompt_upsampling:=true seed:=$((R + 4))
   K=$(output klein 'png|webp|jpg')
   refs klein-refs flux.3-klein generate_turbo $((R + 19))

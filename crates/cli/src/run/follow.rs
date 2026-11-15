@@ -163,8 +163,9 @@ pub(crate) async fn follow_until(
     }
 }
 
-/// [`follow`] for a command a run carries out (`cozy machine update`): a run that failed or was canceled is the command's
-/// refusal, said once as a typed error with its reason's code (`--json`: the envelope after the run's events).
+/// [`follow`] for a command a run carries out (`machine update`, `package install`, `model install`, `model upload`, `model
+/// quantize`): a run that failed or was canceled is the command's refusal, said once as a typed error with its reason's code and
+/// remedy (`--json`: the envelope after the run's events, cl-998).
 pub(crate) async fn carry_out(ctx: &Context, run: Run) -> Result<Run, Error> {
     let (run, interrupted) = watch(ctx, run, ctx.json, interrupt()).await?;
     if matches!(run.status, Status::Failed | Status::Canceled) {

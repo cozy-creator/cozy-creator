@@ -5,7 +5,7 @@ import { useState } from "react"
 import { Navigate } from "react-router-dom"
 import { useConnection } from "../app/Connection"
 import { useTo } from "../app/Shell"
-import type { Account as Who, Code, OrgClaim } from "../api/calcifer"
+import type { Account as Who, Code, OrgClaim, Settings as SettingsDocument } from "../api/calcifer"
 import { Copyable } from "../ui/Copyable"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -190,11 +190,38 @@ function SignOut({ who, onDone }: { who: Who; onDone: () => void }) {
 }
 
 function Settings() {
+  const { client, queries } = useConnection()
   const [showNsfw, setShowNsfw] = useShowNsfw()
+  const ask = useAsk()
+  const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: ({ signal }) => client.settings(signal) })
+  // Shown at once, then confirmed: a refusal puts it back.
+  const change = (next: SettingsDocument) => {
+    const before = settings
+    queries.setQueryData(["settings"], next)
+    void ask.run(async () => {
+      try {
+        queries.setQueryData(["settings"], await client.changeSettings(next))
+      } catch (failure) {
+        queries.setQueryData(["settings"], before)
+        throw failure
+      }
+    })
+  }
   return (
     <Section title="Settings">
       <ShowNsfw shown={showNsfw} onChange={setShowNsfw} />
       <p className="muted">Applies to model and LoRA lists throughout Creator.</p>
+      <label className="row center">
+        <input
+          type="checkbox"
+          checked={settings?.send_performance_data ?? true}
+          disabled={!settings}
+          onChange={(event) => settings && change({ ...settings, send_performance_data: event.target.checked })}
+        />
+        Send anonymous performance data
+      </label>
+      <p className="muted">Each run's package, models, versions, GPU, size and times. Never prompts, images, names or who ran it.</p>
+      <Failure error={ask.error} lead="Couldn't change it" />
     </Section>
   )
 }

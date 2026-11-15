@@ -8,7 +8,7 @@
 // (project/rounded.py sizes as H3: 16:9 at 1344x768, 1.37:1 at 1024x768, which is 4:3 in pixels), still once its box's shape is cleared;
 // a file its pixels' nearest standard ratio within about 2%, else the simplest whole one; a corner pulled near 4:3 sets 4:3, and far from
 // any sets the ratio as pulled and says it. Dark says the same.
-const { test, expect, box, canvasIdle, focus, middle, fixtureTool, MP4, png } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave } = require('./hands');
 
@@ -23,12 +23,11 @@ const ratioOf = (shape) => shape.split(':').map(Number).reduce((w, h) => w / h);
 
 /** A point of `name`'s picture on the canvas a hand can press to carry it: not under what floats over it, nor on a button. */
 const reach = (page, name) => page.evaluate((name) => {
-  const node = document.querySelector(`.react-flow__node:has(.card[data-asset="${name}"])`);
-  const at = (node?.querySelector('.card > .media') ?? node)?.getBoundingClientRect();
+  const root = document.querySelector('.canvas-root'), scene = root?.canvasInspection, at = scene?.card(name)?.body;
   if (!at) return null;
-  for (let y = at.top + 4; y < Math.min(at.bottom, innerHeight); y += 8) for (let x = at.left + 4; x < Math.min(at.right, innerWidth); x += 8) {
+  for (let y = at.y + 4; y < Math.min(at.y + at.height, innerHeight); y += 8) for (let x = at.x + 4; x < Math.min(at.x + at.width, innerWidth); x += 8) {
     const el = document.elementFromPoint(x, y);
-    if (el?.closest('.react-flow__node')?.querySelector('.card')?.dataset.asset === name && !el.closest('button')) return { x, y };
+    if (el && root.contains(el) && scene.hitTest({ x, y })?.name === name && !el.closest('button')) return { x, y };
   }
   return null;
 }, name);
@@ -66,7 +65,7 @@ test('fields', async ({ page, project, api, cli }) => {
     [every, when] = [EVERY, WHEN].map((id) => tools.find((tool) => tool.local && tool.id === id));
     return Boolean(every && when);
   }, { message: 'the project lists its local tools' }).toBe(true);
-  for (const name of ['walk', 'coast', 'every', 'when', 'scene', 'still']) await expect(box(page, name)).toBeVisible();
+  for (const name of ['walk', 'coast', 'every', 'when', 'scene', 'still']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
   const fieldsOf = async (name) => (await project.asset(name))?.fields ?? {};
@@ -148,9 +147,9 @@ test('fields', async ({ page, project, api, cli }) => {
     await slot.scrollIntoViewIfNeeded();
     // The canvas right of what Focus shows, where walk is carried from.
     const strip = await page.evaluate(() => {
-      const at = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+      const root = document.querySelector('.canvas-root'), at = root.canvasInspection.camera(), pane = root.getBoundingClientRect();
       const right = Math.max(...[...document.querySelectorAll('.focus-viewport .focus-card > .here-under, .focus-viewport .focus-card .media')].map((el) => el.getBoundingClientRect().right));
-      return { x: Math.round((right + 24 - at.e) / at.a), y: Math.round((innerHeight / 2 - at.f) / at.a) };
+      return { x: Math.round((right + 24 - pane.x - at.x) / at.zoom), y: Math.round((innerHeight / 2 - pane.y - at.y) / at.zoom) };
     });
     await project.api.patch(project.at('/canvas'), { cards: { walk: strip } });
     const stood = async () => {
@@ -226,18 +225,18 @@ test('fields', async ({ page, project, api, cli }) => {
     expect.soft(made, 'each take its rounded size, and the shape it asked').toEqual({ widescreen: { aspect_ratio: '16:9', width: 1344, height: 768 }, academy: { aspect_ratio: '1.37:1', width: 1024, height: 768 } });
     await fit(page);
     /** What a box at rest says under it of its shape. */
-    const says = (name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"]) .tile-line .ratio-rest`).first();
-    for (const [name, , , want] of imports) await expect.soft(says(name), `${name}, a file, says its pixels' ${want}`).toHaveText(want);
-    await expect.soft(says('widescreen'), 'a 16:9 render of 1344x768 says 16:9').toHaveText('16:9');
-    await expect.soft(says('academy'), 'a 1.37:1 render of 1024x768 says 1.37:1').toHaveText('1.37:1');
+    const says = (name) => canvasLabel(page, name, 'shape');
+    for (const [name, , , want] of imports) await expect.configure({ soft: true }).poll(() => says(name), { message: `${name}, a file, says its pixels' ${want}` }).toBe(want);
+    await expect.configure({ soft: true }).poll(() => says('widescreen'), { message: 'a 16:9 render of 1344x768 says 16:9' }).toBe('16:9');
+    await expect.configure({ soft: true }).poll(() => says('academy'), { message: 'a 1.37:1 render of 1024x768 says 1.37:1' }).toBe('1.37:1');
     // Its box's shape cleared, its take still says what it asked for, never its pixels' 4:3.
     await api.patch(project.at('/assets/academy'), { fields: { aspect_ratio: null } });
     await expect.poll(async () => (await fieldsOf('academy')).aspect_ratio ?? null, { message: 'academy cleared' }).toBe(null);
-    await expect.soft(says('academy'), 'its take says what it asked, once its box is cleared').toHaveText('1.37:1');
+    await expect.configure({ soft: true }).poll(() => says('academy'), { message: 'its take says what it asked, once its box is cleared' }).toBe('1.37:1');
 
     /** `pulled`'s corner pulled until its picture is `ratio` wide to 1 tall: what it said as it was held, and what it saved. */
     const pull = async (ratio) => {
-      const node = page.locator('.react-flow__node:has(.card[data-asset="pulled"])');
+      const node = await hoverBox(page, 'pulled');
       const corner = await node.locator('.corner').first().boundingBox();
       const media = await node.locator('.media').first().boundingBox();
       const before = (await fieldsOf('pulled')).aspect_ratio;
@@ -257,20 +256,20 @@ test('fields', async ({ page, project, api, cli }) => {
     };
     const near = await pull(1.32);
     expect.soft(near, 'pulled near 4:3, it sets 4:3').toEqual({ live: '4:3', saved: '4:3' });
-    await expect.soft(says('pulled'), 'and says it').toHaveText('4:3');
+    await expect.configure({ soft: true }).poll(() => says('pulled'), { message: 'and says it' }).toBe('4:3');
     const free = await pull(1.6);
     const off = (a, b) => Math.abs(Math.log(ratioOf(a) / (typeof b === 'number' ? b : ratioOf(b))));
     const as = free.saved;
     expect.soft(typeof as === 'string' && !STANDARD.includes(as) && off(as, 1.6) < 0.03 && !STANDARD.some((shape) => off(as, shape) <= 0.02), `pulled far from any, it stays as pulled: ${JSON.stringify(free)}`).toBe(true);
     expect.soft(free.live, 'said as pulled').toBe(as);
-    await expect.soft(says('pulled'), 'and says it').toHaveText(String(as));
+    await expect.configure({ soft: true }).poll(() => says('pulled'), { message: 'and says it' }).toBe(String(as));
 
     await page.evaluate(() => localStorage.setItem('cozy.theme', 'dark'));
     await page.reload();
-    await expect(box(page, 'pulled')).toBeVisible();
+    await expect.poll(() => canvasVisible(page, 'pulled')).toBe(true);
     await fit(page);
     const wanted = { wide: '16:9', tall: '9:16', square: '1:1', odd: '3:1', widescreen: '16:9', academy: '1.37:1', pulled: String(as) };
-    for (const [name, want] of Object.entries(wanted)) await expect.soft(says(name), `dark: ${name} says ${want}`).toHaveText(want);
+    for (const [name, want] of Object.entries(wanted)) await expect.configure({ soft: true }).poll(() => says(name), { message: `dark: ${name} says ${want}` }).toBe(want);
   });
 
   // Last: a Hub whose LoRA cards hold no triggers fails it, with every step before it already reported.

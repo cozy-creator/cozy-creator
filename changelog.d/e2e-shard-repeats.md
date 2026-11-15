@@ -1,0 +1,1 @@
+e2e: a `<shard>@<n>` repeat gets its shard's setup (browser deps, vault driver, selfupdate builds, pinned software) like the shard itself; release run 43730247606's web-engines@2 and @3 had no vault driver.

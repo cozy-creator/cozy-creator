@@ -1,5 +1,6 @@
 //! Open the current project in a browser and print its local URL. A `--json` caller is a program: it gets the link, and no browser starts.
 use std::{
+    io::IsTerminal as _,
     net::{Ipv4Addr, TcpListener},
     process::ExitCode,
 };
@@ -30,7 +31,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     let (calcifer, project) = match args.port {
         Some(port) => select_port(ctx, port).await?,
         None => {
-            let project = project::identity(ctx).await?;
+            let project = identity_or_unlock(ctx).await?;
             (ctx.calcifer().await?, project)
         }
     };
@@ -55,6 +56,18 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     } };
     output::document(ctx, &opened);
     Ok(ExitCode::SUCCESS)
+}
+
+/// A locked project unlocks at a terminal, then opens (cl-1002). `--json` and pipes never ask for a credential: they get
+/// `project_locked`, which names `cozy vault unlock`.
+async fn identity_or_unlock(ctx: &Context) -> Result<Address, Error> {
+    match project::identity(ctx).await {
+        Err(error) if error.code == "project_locked" && !ctx.json && std::io::stdin().is_terminal() && ctx.term.stderr => {
+            project::vault::unlock_for_open(ctx).await?;
+            project::identity(ctx).await
+        }
+        answer => answer,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -102,7 +115,7 @@ async fn select_port(ctx: &Context, port: u16) -> Result<(Client, Address), Erro
                 Kind::Conflict, "calcifer_port", format!("Calcifer did not start on the requested port {port}"),
             ));
         }
-        project::identity(ctx).await
+        identity_or_unlock(ctx).await
     }.await;
     match selected {
         Ok(project) => Ok((calcifer, project)),

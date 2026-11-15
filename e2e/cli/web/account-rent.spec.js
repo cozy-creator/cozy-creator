@@ -1,4 +1,6 @@
-// account-rent (cl-973 core cell 24, solo): the account and renting, as a person does them in the page. Signed out by Account's inline
+// account-rent (cl-973 core cell 24, solo): the account and renting, as a person does them in the page. On the stand-in too, render-time
+// (cl-1004): beside Render, how long a box takes where it would go, from 15 s (a slow box once it ran, none for a fast one), and Slow here
+// on an H3 shot this computer, which has no GPU, would run on its CPU: our measurement of the stand-in's rtx-4090, and Rent with it. Signed out by Account's inline
 // confirm, Rent says to sign in; a wrong code stays in the form in plain words, the code the isolated Hub logs signs in, and nothing of
 // the Hub's is in the browser. On localfit's GPU stand-in (a proxy in front of the isolated Hub that sells an rtx-4090 and places runs on
 // it), a box this computer would render poorly asks on itself, Rent a GPU first: Run here anyway renders here and is kept (canceled as it
@@ -8,17 +10,20 @@
 // (e2e/cli/rental.sh).
 // $E2E_HUB_EMAIL and $E2E_HUB_LOG (e2e/isolated.sh): the suite's account, and the isolated Hub's log of the codes it would mail.
 const { execFile, spawn } = require('child_process');
-const { appendFileSync, readFileSync, readdirSync } = require('fs');
+const { appendFileSync, mkdirSync, readFileSync, readdirSync } = require('fs');
 const http = require('http');
 const { dirname, join } = require('path');
 const { promisify } = require('util');
-const { test, expect, box, canvasIdle, focus } = require('./fixtures');
+const { test, expect, canvasIdle, focus, canvasVisible } = require('./fixtures');
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite runs where e2e/isolated.sh sets it`); })();
 const run = promisify(execFile);
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** A tool that composes a GPU function loading BiRefNet (heavy.py): local code, so the Hub places no card for it. */
 const HEAVY = `${join(__dirname, 'heavy.py')}/heavy`;
+/** Weightless local code that takes `seconds`, never run on this job's machine before (render-time's slow box), and one the setup warmed. */
+const WAITS = `${join(__dirname, '..', 'project', 'waits.py')}/wait`;
+const DRAW = `${join(__dirname, '..', 'project', 'draw.py')}/draw`;
 /** What the isolated Hub's docker provider runs, here on this runner. */
 const CONTAINERS = ['ps', '-aq', '--filter', 'label=com.cozy.tensorhub.provider=docker'];
 
@@ -160,8 +165,14 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
   // Two boxes this computer would render poorly, on the open canvas.
   await project.add({ name: 'heavy', tool: HEAVY, kind: 'image', fields: { instructions: 'a lantern in fog', seconds: 8 }, at: { x: 0, y: 0 } });
   await project.add({ name: 'kite', tool: kite, kind: 'image', fields: { instructions: 'a red kite over dunes' }, at: { x: 420, y: 0 } });
-  await expect(box(page, 'heavy')).toBeVisible();
-  await expect(box(page, 'kite')).toBeVisible();
+  // render-time's: a slow box, a fast one, and a 15 s H3 shot from the Hub.
+  const shotTool = (seeded['minimax-h3'] ?? []).find((id) => /\/generate$/.test(id));
+  expect(shotTool, `the seed's H3 shot among ${JSON.stringify(seeded['minimax-h3'])}`).toBeDefined();
+  await project.add({ name: 'slow', tool: WAITS, kind: 'image', fields: { instructions: 'a slow lamp', seconds: 24 }, at: { x: 840, y: 0 } });
+  await project.add({ name: 'quick', tool: DRAW, kind: 'image', fields: { instructions: 'a quick lamp' }, at: { x: 0, y: 460 } });
+  await project.add({ name: 'shot', tool: shotTool, kind: 'video', fields: { beats: [{ description: 'Waves roll onto a beach at dusk.', duration: 15 }], turbo: true }, at: { x: 420, y: 460 } });
+  await expect.poll(() => canvasVisible(page, 'heavy')).toBe(true);
+  await expect.poll(() => canvasVisible(page, 'kite')).toBe(true);
 
   try {
     await test.step('Account › Sign out, an inline confirm; signed in again, a wrong code first, then the code the Hub logs', async () => {
@@ -237,10 +248,119 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect.poll(async () => (await api.get('/v1/machines/local')).status?.gpus, { message: "local's GPUs", timeout: 60_000 }).toEqual([]);
     });
 
+    await test.step('Render time: a slow box says how long beside Render, a fast one nothing; Slow here on an H3 shot opens Rent with its card', async () => {
+      const fits = `/v1/projects/${encodeURIComponent(project.id)}/fit`;
+      /** The next estimate the page asks for `name`, as Calcifer answers it. */
+      const estimated = async (name) => {
+        const answer = await page.waitForResponse((one) => one.request().method() === 'POST' && new URL(one.url()).pathname === fits && one.request().postDataJSON()?.names?.[0] === name, { timeout: 60_000 });
+        return (await answer.json()).estimates?.[0];
+      };
+      const shots = join(need('OUT'), 'web', 'render-time');
+      mkdirSync(shots, { recursive: true });
+      /** The page at 1440×900 and 1920×1080, on paper and dark (each a reload, as the page's own switch keeps it), for a person to look
+       *  at (look-at-your-own-ui); `again` puts back what's looked at after each reload. */
+      const look = async (what, again) => {
+        for (const theme of ['dark', 'paper']) {
+          await page.evaluate((chosen) => { localStorage.setItem('cozy.theme', chosen); }, theme);
+          await page.reload();
+          await again();
+          for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+            await page.setViewportSize({ width, height });
+            await canvasIdle(page);
+            await page.screenshot({ path: join(shots, `${what}-${width}x${height}-${theme}.png`) });
+          }
+        }
+        await page.setViewportSize({ width: 1600, height: 1000 });
+      };
+      await page.goto(project.url());
+      await expect.poll(() => canvasVisible(page, 'slow')).toBe(true);
+      await zoomToFit(page);
+      const leave = async () => {
+        await page.getByRole('region', { name: 'Focused asset' }).getByRole('button', { name: 'Back to canvas' }).click();
+        await expect(page.getByRole('region', { name: 'Focused asset' })).toHaveCount(0);
+        await canvasIdle(page);
+      };
+
+      // Never run here: nothing to say. Once rendered, it says about how long beside Render.
+      let answered = estimated('slow');
+      let region = await focus(page, 'slow');
+      const time = region.getByRole('note', { name: 'Render time' });
+      expect.soft(await answered, 'the slow box before it ran: nothing measured').toMatchObject({ machine: 'local', run_ms: 0, basis: 'none' });
+      await expect.soft(time, 'no time before it ran').toHaveCount(0);
+      await region.getByRole('button', { name: 'Render', exact: true }).click();
+      await expect.poll(async () => (await project.asset('slow')).versions ?? 0, { message: "slow's first take", timeout: 240_000 }).toBe(1);
+      await expect.soft(time, 'beside Render once it ran, about how long').toHaveText(/^about (2\d|3\d) s$/, { timeout: 30_000 });
+      const timed = async () => {
+        await expect(await focus(page, 'slow')).toBeVisible();
+        await expect.soft(page.getByRole('region', { name: 'Focused asset' }).getByRole('note', { name: 'Render time' })).toBeVisible({ timeout: 30_000 });
+      };
+      // This computer's runs are its project's own (xs-160), so its machine times none of them: the estimate stands on the
+      // project's run here (`prior`).
+      const ran = (await api.post(project.at('/fit'), { names: ['slow'] })).estimates?.[0];
+      expect.soft(ran, "by this project's run here").toMatchObject({ machine: 'local', basis: 'prior' });
+      expect.soft(ran?.run_ms, 'its run here, about its 24 s').toBeGreaterThanOrEqual(20_000);
+      await look('slow', timed);
+      await leave();
+
+      // Fast: once rendered here, under 15 s, so nothing is said.
+      region = await focus(page, 'quick');
+      await region.getByRole('button', { name: 'Render', exact: true }).click();
+      await expect.poll(async () => (await project.asset('quick')).versions ?? 0, { message: "quick's first take", timeout: 120_000 }).toBe(1);
+      const quick = (await api.post(project.at('/fit'), { names: ['quick'] })).estimates?.[0];
+      expect.soft({ basis: quick?.basis, fast: (quick?.run_ms ?? 0) > 0 && (quick?.run_ms ?? 0) < 15_000 }, 'the fast box, timed and short').toEqual({ basis: 'prior', fast: true });
+      await expect.soft(region.getByRole('note', { name: 'Render time' }), 'a short render says no time').toHaveCount(0);
+      await expect.soft(region.getByRole('button', { name: 'Slow here' })).toHaveCount(0);
+      await leave();
+
+      // An H3 shot: this computer has no GPU, and the stand-in's rtx-4090, the Hub's pick, takes our measurement of it there.
+      answered = estimated('shot');
+      region = await focus(page, 'shot');
+      const shot = await answered;
+      expect.soft(shot, 'H3 on this computer, which has no GPU').toMatchObject({ machine: 'local', card: '', faster: { rent: { sku: CARD.name, card: 'RTX 4090' } } });
+      // release-gate 43211705140: 335.1 s for the 15 s shot on one RTX 4090 (api::estimate's references.tsv).
+      expect.soft(shot?.faster?.run_ms, 'the 15 s shot on a rented RTX 4090, as we measured it').toBe(335_100);
+      const slowHere = region.getByRole('button', { name: 'Slow here', exact: true });
+      await expect(slowHere, 'Slow here beside Render').toBeVisible();
+      await expect.soft(region.getByRole('note', { name: 'Render time' }), 'no time on a CPU nothing measured').toHaveCount(0);
+      const shown = async () => {
+        await focus(page, 'shot');
+        await expect(slowHere).toBeVisible({ timeout: 30_000 });
+      };
+      await look('shot', shown);
+      const notice = page.getByRole('group', { name: 'Slow here', exact: true });
+      const opened = async () => {
+        await shown();
+        if (!(await notice.count())) await slowHere.click();
+        await expect(notice).toBeVisible();
+        await notice.scrollIntoViewIfNeeded();
+      };
+      await slowHere.click();
+      await expect(notice, 'it opens under the box').toBeVisible();
+      await expect.soft(notice, 'in view, next to Render').toBeInViewport();
+      await expect.soft(notice.locator('p').first()).toHaveText('This computer has no GPU, so this would run on its CPU, slowly. On a rented RTX 4090, about 6 min.');
+      await expect.soft(notice.locator('p').nth(1)).toHaveText('A rented RTX 4090 runs it for $0.69/h.');
+      await look('shot-notice', opened);
+      // A press that begins inside and ends outside leaves it open; a click outside closes it; Slow here opens it again.
+      const inside = await notice.locator('p').first().boundingBox();
+      await page.mouse.move(inside.x + 4, inside.y + inside.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(inside.x + 4, inside.y - 120, { steps: 4 });
+      await page.mouse.up();
+      await expect.soft(notice, 'a drag out of it leaves it open').toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect.soft(notice, 'Escape closes it').toHaveCount(0);
+      await expect(page.getByRole('region', { name: 'Focused asset' }), 'and only it').toHaveAttribute('data-focused-asset', 'shot');
+      await slowHere.click();
+      await expect(notice).toBeVisible();
+      await notice.getByRole('button', { name: 'Rent an RTX 4090', exact: true }).click();
+      await expect(page, 'Machines, the card asked for').toHaveURL(`${project.url('machines')}?rent=${CARD.name}&gpus=1`);
+      expect.soft(asked.filter((one) => one.names?.includes('shot')), 'Rent renders nothing').toEqual([]);
+    });
+
     await test.step('A heavy box asks first; Run here anyway renders here, then Cancel; Render again, and again after a reload', async () => {
       await page.goto(project.url());
-      await expect(box(page, 'heavy')).toBeVisible();
-      await expect(box(page, 'kite')).toBeVisible();
+      await expect.poll(() => canvasVisible(page, 'heavy')).toBe(true);
+      await expect.poll(() => canvasVisible(page, 'kite')).toBe(true);
       await zoomToFit(page);
       let region = await focus(page, 'heavy');
       const asking = region.getByRole('group', { name: 'Render here?' });

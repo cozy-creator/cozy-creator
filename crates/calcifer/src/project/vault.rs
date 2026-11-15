@@ -70,7 +70,7 @@ fn mounting(e: project_mount::Error) -> Error {
 }
 fn key(e: project_vault::Error) -> Error {
     match e {
-        rejected @ project_vault::Error::Unlock => Error::new(Kind::Credential, "vault_unlock_failed", rejected.to_string()),
+        rejected @ (project_vault::Error::Unlock | project_vault::Error::Recovery) => Error::new(Kind::Credential, "vault_unlock_failed", rejected.to_string()),
         other => error("vault_key", other),
     }
 }
@@ -790,6 +790,18 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>
 }
 
 pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress) -> Result<VaultChanged, Error> {
+    // A page's activity only restarts the idle clock, under the session's own lock: it never waits for or refuses on the project's
+    // gate, which any request in flight holds (that request restarted the clock itself).
+    if ask.action == "activity" {
+        if let Some(session) = held(root) {
+            let mut session = session.lock().expect("vault session");
+            if !session.closing && !expired(&session) && session.timer.activity() {
+                session.active_ms = super::now_ms();
+                say(root, "activity op", || "its idle clock restarts on a page's activity".into());
+            }
+        }
+        return Ok(VaultChanged { vault: reported_status(api, root), recovery_secret: None, ended: vec![], skipped_files: vec![] });
+    }
     if ask.action == "lock" && !encrypted(root) {
         return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked"));
     }
@@ -1019,15 +1031,6 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked")); }
             // Locking a locked project is a no-op, after retiring what a dead Calcifer's views left.
             if held(root).is_some() { close(api, root, transition, browser)?; } else { retire_orphaned_views(root)?; }
-        }
-        "activity" => {
-            if let Some(session) = held(root) {
-                let mut session = session.lock().expect("vault session");
-                if !session.closing && !expired(&session) && session.timer.activity() {
-                    session.active_ms = super::now_ms();
-                    say(root, "activity op", || "its idle clock restarts on a page's activity".into());
-                }
-            }
         }
         "passphrase" | "recovery" => {
             let session = held(root).ok_or_else(|| locked(root))?;

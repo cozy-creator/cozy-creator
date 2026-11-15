@@ -7,6 +7,8 @@
 #                the default key, and `machine ssh` says what stands in the way: not ready yet, or signed out (not "not
 #                a rental"). `logout` revokes a key this computer enrolled, never one installed with `login --key`,
 #                which another computer may hold; a pod signs in with a key of its own (`login --export`).
+#   rental_end_again  cl-977: an end that failed (signed out) is asked again by Calcifer itself, paced: signed in again, the
+#                rental ends with no second `machine end`, and its container goes.
 
 # signin <cozy login args...>: `cozy login`, answered with the newest code the Hub logs after it starts. The Hub spaces
 # enrollments to one email 30 s apart: refused that, it waits as told and asks again.
@@ -167,4 +169,37 @@ cozy --json login --key "$held/laptop-key-2.json" > /dev/null 2>&1 && cozy --jso
 # Signed out, as the suite was.
 cozy --json logout > /dev/null 2>&1 || true
 rm -rf "$held"
+}
+
+rental_end_again() {
+step "an end that failed is asked again by Calcifer itself (cl-977)"
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "rental_end_again: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
+local pid rental code at ended=''
+signin "$E2E_HUB_EMAIL" > "$OUT/again-login.json" || { check "rental_end_again: cozy login failed: $(tail -c 300 "$OUT/again-login.json")"; return; }
+cozy --json machine rent cpu -y > "$OUT/again-rent.ndjson" 2> "$OUT/again-rent.err" & pid=$!
+for _ in $(seq 180); do
+  rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$OUT/again-rent.ndjson" 2> /dev/null | tail -1 || true)
+  [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+  break
+done
+kill -KILL "$pid" 2> /dev/null || true
+wait "$pid" 2> /dev/null || true
+[ -n "$rental" ] || { check "rental_end_again: machine rent cpu: no rental accepted: $(tail -c 400 "$OUT/again-rent.ndjson")"; cozy --json logout > /dev/null 2>&1 || true; return; }
+cozy --json logout > /dev/null 2>&1 || check "rental_end_again: logout failed"
+code=0; cozy --json machine end "$rental" --force -y > "$OUT/again-end.json" 2> "$OUT/again-end.err" || code=$?
+[ "$code" != 0 ] && J '.error.code == "end_failed"' "$OUT/again-end.json" || check "rental_end_again: machine end signed out: exit $code, not end_failed: $(tail -c 300 "$OUT/again-end.json")"
+signin "$E2E_HUB_EMAIL" > "$OUT/again-login-2.json" || { check "rental_end_again: cozy login again failed: $(tail -c 300 "$OUT/again-login-2.json")"; return; }
+# Asked again a minute after it failed (then two, four...): no `machine end` from here.
+at=$(date +%s)
+for _ in $(seq 240); do
+  cozy --json machine show "$rental" > "$OUT/again-show.json" 2> /dev/null || true
+  J '.state == "ended"' "$OUT/again-show.json" && { ended=1; break; }
+  sleep 1
+done
+[ -n "$ended" ] || check "rental_end_again: Calcifer never asked its end again: $(jq -c '{state, end_failed, end_unconfirmed}' "$OUT/again-show.json" 2> /dev/null) $(($(date +%s) - at)) s after sign-in"
+for _ in $(seq 90); do [ -z "$(docker ps -aq --filter label=com.cozy.tensorhub.provider=docker)" ] && break; sleep 1; done
+[ -z "$(docker ps -aq --filter label=com.cozy.tensorhub.provider=docker)" ] \
+  || { check "rental_end_again: the Hub still runs its container"; docker ps -aq --filter label=com.cozy.tensorhub.provider=docker | xargs -r docker rm -f > /dev/null; }
+[ -z "$ended" ] || echo "rental_end_again: $rental ended by Calcifer's own second ask, $(($(date +%s) - at)) s after sign-in"
+cozy --json logout > /dev/null 2>&1 || true
 }

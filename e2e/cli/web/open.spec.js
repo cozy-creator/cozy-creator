@@ -9,7 +9,7 @@
 const { randomBytes } = require('crypto');
 const { existsSync, readFileSync, realpathSync } = require('fs');
 const { dirname, join } = require('path');
-const { test, expect, recordAddress, stays } = require('./fixtures');
+const { test, expect, recordAddress, stays, canvasVisible } = require('./fixtures');
 
 const NO_SESSION = 'No project open here';
 const HOME_LINE = 'No project open. Pick one above, or press +.';
@@ -55,7 +55,7 @@ test('open', { tag: '@engines' }, async ({ context, newContext, project, api, si
 
   await test.step("the project's address opens this tab as Calcifer's own page, with nothing minted or sent", async () => {
     const streamed = page.waitForRequest(streaming);
-    await page.goto(project.url());
+    await signIn(page, project.url());
     await expect(signedIn(page, project)).toHaveAttribute('aria-current', 'page');
     const stream = await streamed;
     expect.soft(await stream.headerValue('authorization'), "the page's stream carries no credential").toBeNull();
@@ -156,20 +156,20 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
   await test.step('a tab opens its project, and going to another never blanks the screen', async () => {
     await tab(project).click();
     await expect(page).toHaveURL(project.url());
-    await expect(page.locator('.react-flow__node').first()).toBeVisible();
+    await expect.poll(() => canvasVisible(page, 'only_a')).toBe(true);
     await expect.soft(page.locator('main.gate, .unread'), 'opened').toHaveCount(0);
     // Each frame from here: the bar, a canvas, and no gate.
     await page.evaluate(() => {
       window.__frames = [];
       window.__sampling = true;
       const look = () => {
-        window.__frames.push({ top: Boolean(document.querySelector('header.top')), canvas: Boolean(document.querySelector('.react-flow')), gate: Boolean(document.querySelector('main.gate')) });
+        window.__frames.push({ top: Boolean(document.querySelector('header.top')), canvas: Boolean(document.querySelector('.canvas-pixels')), gate: Boolean(document.querySelector('main.gate')) });
         if (window.__sampling) requestAnimationFrame(look);
       };
       requestAnimationFrame(look);
     });
     await tab(b).click();
-    await expect(page.locator('.card[data-asset="only_b"]')).toBeAttached();
+    await expect.poll(() => canvasVisible(page, 'only_b')).toBe(true);
     await expect(page.locator('main.gate')).toHaveCount(0);
     const frames = await page.evaluate(() => { window.__sampling = false; return window.__frames; });
     const blank = frames.filter((frame) => !frame.top || !frame.canvas || frame.gate);
@@ -219,12 +219,12 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     expect.soft(await stays(page), 'it stays where it is').toEqual({ path: `/p/${row.code}`, moves: [] });
     expect.soft(await drawn(page, NO_SESSION), 'no gate at any moment').toBe(0);
     await expect.soft(page.locator('.unread, main.gate'), 'none now').toHaveCount(0);
-    await expect.soft(page.locator(`.card[data-asset="${only}"]`), 'and its canvas').toBeAttached();
+    await expect.configure({ soft: true }).poll(() => canvasVisible(page, only), { message: 'and its canvas' }).toBe(true);
   };
 
   await test.step('Calcifer killed and back: the tab goes on where it is, and the new one answers its reads', async () => {
     await page.goto(project.url());
-    await expect(page.locator('.react-flow__node').first()).toBeVisible();
+    await expect.poll(() => canvasVisible(page, 'only_a')).toBe(true);
     await killed();
     await kept(project, 'only_a');
     // The page's own read, as it asks: no Authorization.
@@ -234,11 +234,11 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
 
   await test.step("another project's tab, Calcifer killed and back again, then reloaded: its canvas in place, no gate before or after", async () => {
     await page.goto(`${api.origin}/p/${b.code}`);
-    await expect(page.locator('.card[data-asset="only_b"]')).toBeAttached();
+    await expect.poll(() => canvasVisible(page, 'only_b')).toBe(true);
     await killed();
     await kept(b, 'only_b');
     await page.reload();
-    await expect(page.locator('.card[data-asset="only_b"]')).toBeAttached();
+    await expect.poll(() => canvasVisible(page, 'only_b')).toBe(true);
     await kept(b, 'only_b');
   });
 });

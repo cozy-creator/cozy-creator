@@ -6,6 +6,9 @@
 #   hostile_inputs  A video input that names other files or the network (a concat list, a DASH manifest, an HLS
 #                   playlist), sent as video/mp4 past Calcifer's sniff, is refused by the Runtime's decoder, which opens
 #                   none of them; a real clip beside them is read.
+#   private_weights A model the local machine just uploaded, private, read by a run (cl-1009, the release gate's qwen-lora flow):
+#                   its run capability puts its executor on TensorD's own Hub gateway (cl-675), an origin TensorD declares
+#                   local for its executors and nothing a run or Hub answer names. 0.26.0 refused it at the model's load.
 # TensorD is asked as any client holding the machine's authorization asks it (egress.py, a key `machine authorize` admits).
 
 # redirector_start <log>: E2E_REDIRECT, which lib.sh declared local, answering /missing… 404 and anything else with a
@@ -125,4 +128,37 @@ redirector_stop
 [ ! -e "$dir/opened" ] || check "hostile inputs: a decoded input opened the file its concat list names"
 kill "$reader" 2> /dev/null || true
 echo "hostile inputs: $(jq -c 'map_values(.refusal.code // .outcome.reason.code // .outcome.status)' "$dir/machine.json" 2> /dev/null || true)"
+}
+
+private_weights() {
+step "a run reads a model this machine just uploaded, private, through TensorD's gateway (cl-1009)"
+[ -n "$LOCAL" ] || return 0
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "private weights: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
+local dir=$OUT/private-weights account model commit
+rm -rf "$dir"; mkdir -p "$dir"
+signin "$E2E_HUB_EMAIL" > "$dir/login.json" || { check "private weights: cozy login failed: $(tail -c 300 "$dir/login.json")"; return; }
+account=$(cozy --json whoami | jq -r '.account // empty')
+model=${account:-e2e}/cl1009-vae-$RANDOM
+# A `vae` as parts.py reads one: its file's metadata (`part`, `size`) is its config.
+python3 -I - "$dir/vae.safetensors" <<'PY'
+import json, random, struct, sys
+n = 65536
+raw = json.dumps({"__metadata__": {"part": "vae-private", "size": str(n)}, "w": {"dtype": "F32", "shape": [n], "data_offsets": [0, 4 * n]}}).encode()
+raw += b" " * (-len(raw) % 8)
+values = random.Random(1009).random
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + struct.pack(f"<{n}f", *(values() for _ in range(n))))
+PY
+if run_submit "$dir" upload model upload "$dir/vae.safetensors:vae" "$model" --lane f32 --source-format as-is --on local > /dev/null \
+  && run_wait "$dir" upload && [ "$(run_get "$dir" upload .status)" = completed ]; then
+  commit=$(jq -r '.. | objects | .commit? // empty' "$dir/upload.ndjson" 2> /dev/null | tail -1) || true
+  if [ -z "$commit" ]; then
+    check "private weights: the upload named no commit: $(tail -c 300 "$dir/upload.ndjson")"
+  elif cell private-weights "$here/script/parts.py" --model "vae=$model@$commit"; then
+    J '.result.vae.part == "vae-private" and .result.transformer.part == "dit"' "$OUT/private-weights.json" \
+      || check "private weights: not e2e/parts's transformer with $model's VAE: $(jq -c .result "$OUT/private-weights.json")"
+  fi
+else
+  check "private weights: model upload $model --on local: $(run_get "$dir" upload '.reason.message' | head -c 300)"
+fi
+cozy --json logout > "$dir/logout.json" 2>&1 || check "private weights: logout: $(tail -c 300 "$dir/logout.json")"
 }

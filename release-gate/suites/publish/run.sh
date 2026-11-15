@@ -33,6 +33,16 @@ export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 systemctl --user set-environment SSL_CERT_FILE="$SSL_CERT_FILE"
 systemctl --user restart cozy-calcifer > calcifer-restart.log 2>&1 || true
 for _ in $(seq 30); do cozy --json whoami > /dev/null 2>&1 && break; sleep 2; done
+# A candidate as a file, its digest checked: `machine update` takes a release version or a file, never a URL (xs-196 C).
+cand() {
+  case $1 in
+    https://*) local f="$OUT/candidates/$(basename "${1%%#*}")" want=${1##*#sha256=}; mkdir -p "$OUT/candidates"
+      [ -f "$f" ] || curl -fsSL --retry 5 --retry-all-errors "${1%%#*}" -o "$f" || return 1
+      [ "$want" = "$1" ] || [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$want" ] || return 1; echo "$f" ;;
+    *) echo "$1" ;;
+  esac
+}
+RT=$(cand "$RT") && TF=$(cand "$TF") || { expect publish-candidates FAIL "a candidate wheel didn't fetch or match its sha256"; verdict; }
 [ -z "$RT$TF" ] || cozy --json machine update local ${RT:+--runtime "$RT"} ${TF:+--tensorfs "$TF"} -y > machine-update.json 2>&1 \
   || { expect publish-candidates FAIL "the machine refused the candidates: $(tail -c 300 machine-update.json)"; verdict; }
 

@@ -3308,13 +3308,41 @@ const PLACED_AGAIN: u32 = 3;
 
 /// How a job's quote reads its package (`Walk::quotable`).
 #[derive(Clone, Copy, Debug)]
-enum PackageRead {
+pub(super) enum PackageRead {
     /// As its turn would, not waiting for its install: none while that's going (`host::Wait::Quote`).
     Now,
     /// Once its install is done (`host::Wait::Job`).
     Installed,
     /// Statically, its install neither asked for nor waited on (`Host::foreseen`): a job waiting for another's output.
     Foreseen,
+}
+
+/// Job `key` as its machines quote it: the function its tool `with` names, with `made`'s choices, its package read as `read` says; else
+/// why not. None: its install is going, and `read` doesn't wait for it. The walk's quote and `fit`'s estimate alike (cl-1004).
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn job_of(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, String> {
+    let api = host.api();
+    let package = match read {
+        PackageRead::Now => host.package(hub, with, dir, &on, host::Wait::Quote(&key)).await,
+        PackageRead::Installed => host.package(hub, with, dir, &on, host::Wait::Job(&key, None)).await,
+        PackageRead::Foreseen => host.foreseen(hub, with, dir, &on).await,
+    };
+    let package = match package {
+        Err(e) if e.code == host::INSTALLING => return Ok(None),
+        Err(e) => return Err(format!("{with}: {}", e.message)),
+        Ok(package) => package,
+    };
+    let renderer = match package.maker() {
+        Ok(Some(renderer)) => renderer,
+        Ok(None) => return Err(format!("{with} names no function")),
+        Err(e) => return Err(format!("{with}: {}", e.message)),
+    };
+    let models = fit::checkpoints(&api, hub, &package, &renderer.function, &made).await;
+    let size = v1::JobSize::of(&Value::Object(made));
+    let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
+        interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
+    });
+    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on }))
 }
 
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
@@ -3936,31 +3964,7 @@ impl Walk {
     /// not. None: its install is going, and `read` doesn't wait for it.
     async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, String> {
         let (began, job) = (std::time::Instant::now(), key.clone());
-        let quoted = async {
-            let api = self.host.api();
-            let dir = &self.folder().dir;
-            let package = match read {
-                PackageRead::Now => self.host.package(hub, with, dir, &on, host::Wait::Quote(&key)).await,
-                PackageRead::Installed => self.host.package(hub, with, dir, &on, host::Wait::Job(&key, None)).await,
-                PackageRead::Foreseen => self.host.foreseen(hub, with, dir, &on).await,
-            };
-            let package = match package {
-                Err(e) if e.code == host::INSTALLING => return Ok(None),
-                Err(e) => return Err(format!("{with}: {}", e.message)),
-                Ok(package) => package,
-            };
-            let renderer = match package.maker() {
-                Ok(Some(renderer)) => renderer,
-                Ok(None) => return Err(format!("{with} names no function")),
-                Err(e) => return Err(format!("{with}: {}", e.message)),
-            };
-            let models = fit::checkpoints(&api, hub, &package, &renderer.function, &made).await;
-            let size = v1::JobSize::of(&Value::Object(made));
-            let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
-                interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
-            });
-            Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on }))
-        }.await;
+        let quoted = job_of(&self.host, &self.folder().dir, key, on, hub, with, made, read).await;
         crate::private_io::diagnose(&self.folder().dir, || {
             let said = match &quoted {
                 Ok(Some(quoted)) => quoted.function.clone(),

@@ -1035,10 +1035,13 @@ pub struct RunList {
 }
 
 /// `PUT /v1/events/{stream}`: the projects a page on that stream shows, which Calcifer holds open
-/// while it lasts or until it shows others.
+/// while it lasts or until it shows others, and whether it shows a machine's view: its runs that
+/// are no project's (installs, updates). A page stream hears a run only of what it shows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Shown {
     pub projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub machines: bool,
 }
 
 /// The Readers installed by `PUT /v1/events/{stream}`. IDs not in `held` are not acknowledged;
@@ -1252,9 +1255,13 @@ pub struct Machine {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ending: Option<String>,
     /// Why its last end failed (this computer's sign-in, or the Hub's refusal): nothing was ended,
-    /// and a rental may still bill. Ending it again asks again.
+    /// and a rental may still bill. Ending it again asks again; Calcifer also asks again, paced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_failed: Option<String>,
+    /// An ending rental its Hub took the release of minutes ago and has not said is gone: it may still
+    /// bill, and Calcifer keeps asking (cl-977).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_unconfirmed: Option<String>,
     /// In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rc: Option<RcFollow>,
@@ -2275,6 +2282,15 @@ pub struct LegacyRows {
 pub struct LegacyFolder {
     pub path: std::path::PathBuf,
     pub runs: u64,
+}
+
+/// `GET` and `PUT /v1/settings`: this computer's settings Calcifer holds, in config.toml's `[calcifer]`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Settings {
+    /// Each run's function, package, versions, GPU, size and times go to the Hub anonymously: never its prompts, inputs,
+    /// outputs or names, and nothing that says who ran it (cl-1006).
+    pub send_performance_data: bool,
 }
 
 /// `GET /v1/status`: this Calcifer at a glance. It never waits on a Hub.

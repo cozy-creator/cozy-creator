@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query"
-import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type CSSProperties, type PointerEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
 import { runFullQuery, runQuery } from "../api/queries"
 import { holdMedia, playingHere } from "../api/events"
-import { THUMB_TRIES, thumbWait, whenThumb } from "../api/thumbs"
+import { THUMB_TRIES, thumbPending, thumbWait, whenThumb } from "../api/thumbs"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
 import type { MainFile } from "../api/calcifer"
@@ -75,9 +75,9 @@ export function Thumb({
   onSize?: (aspect: number) => void
   onShown?: () => void
 }) {
-  const { client } = useConnection()
+  const { client, bridge, privateViewEpoch, signedOut } = useConnection()
   const store = useCanvasStore()
-  const [image, setImage] = useState<{ path: string; src: string; request: number; live: () => boolean }>()
+  const [image, setImage] = useState<{ path: string; src: string; request: number; live: () => boolean; failed: () => void }>()
   const [loaded, setLoaded] = useState<string>()
   const nextRequest = useRef(0)
   const [failedPath, setFailedPath] = useState<string>()
@@ -88,31 +88,50 @@ export function Thumb({
   const [tries, setTries] = useState<{ base?: string; n: number }>({ n: 0 })
   const attempt = tries.base === base ? tries.n : 0
   const path = base && attempt ? `${base}&try=${attempt}` : base
-  const wait = useRef<(() => void) | undefined>(undefined)
-  useEffect(() => () => wait.current?.(), [])
-  const failed = (at: string) => {
-    if (!projectId || attempt + 1 >= THUMB_TRIES) return setFailedPath(at)
-    setImage(undefined)
-    wait.current?.()
-    wait.current = whenThumb(projectId, sha256, thumbWait(attempt + 1), () => setTries({ base, n: attempt + 1 }))
-  }
+  const latestPath = useRef(path)
+  latestPath.current = path
+  const retries = useRef<{ base?: string; errors: number; pending: number }>({ errors: 0, pending: 0 })
   useEffect(() => {
-    if (!path) return
-    let live = true
-    const epoch = projectId ? mediaEpoch.get(projectId) ?? 0 : 0
-    const current = () => live && (!projectId || (mediaEpoch.get(projectId) ?? 0) === epoch)
+    if (!path || !projectId) return
+    let live = true, checking = false
+    let wait: (() => void) | undefined
+    let probe: AbortController | undefined
+    const epoch = mediaEpoch.get(projectId) ?? 0
+    const projectEpoch = bridge.projectEpoch(projectId)
     const request = ++nextRequest.current
+    const current = () => live && !probe?.signal.aborted && nextRequest.current === request && latestPath.current === path
+      && store.active && store.projectId === projectId && !signedOut.get() && (mediaEpoch.get(projectId) ?? 0) === epoch && bridge.projectEpoch(projectId) === projectEpoch
+    if (retries.current.base !== base) retries.current = { base, errors: 0, pending: 0 }
+    const retry = retries.current
+    const failed = async (checkPending: boolean) => {
+      if (!current() || checking) return
+      checking = true
+      let pending = false
+      if (checkPending) {
+        probe = new AbortController()
+        try { pending = await thumbPending(client.transport, path, probe.signal) } catch { /* An unknown failure still uses the bounded error budget. */ }
+      }
+      if (!current()) return
+      if (pending) { retry.errors = 0; retry.pending = Math.min(5, retry.pending + 1) }
+      else if (++retry.errors >= THUMB_TRIES) { setFailedPath(path); return }
+      setImage(undefined)
+      wait = whenThumb(projectId, sha256, thumbWait(pending ? retry.pending : retry.errors), () => {
+        wait = undefined
+        if (current()) setTries({ base, n: attempt + 1 })
+      })
+    }
+    const stop = () => { live = false; probe?.abort(); wait?.() }
+    const unwatch = privateViewEpoch.subscribe(() => { if (bridge.projectEpoch(projectId) !== projectEpoch) stop() })
+    const unsign = signedOut.subscribe(() => { if (signedOut.get()) stop() })
     void client.transport.src(path).then((src) => {
       if (!current()) { if (src.startsWith("blob:")) URL.revokeObjectURL(src); return }
       setFailedPath(undefined)
-      setImage({ path, src, request, live: current })
-    }, () => {
-      if (live) failed(path)
-    })
+      setImage({ path, src, request, live: current, failed: () => { void failed(true) } })
+    }, () => { void failed(false) })
     return () => {
-      live = false
+      unwatch(); unsign(); stop()
     }
-  }, [client, path])
+  }, [client, bridge, privateViewEpoch, signedOut, store, projectId, path])
   // A strip that can't be made leaves the poster under it as it was.
   if (path && failedPath === path) return strip || wave ? null : <span className="media-note">No preview</span>
   const waiting = pulse && loaded !== path ? <span className="thumb-wait" /> : null
@@ -129,12 +148,14 @@ export function Thumb({
       style={frame === undefined ? undefined : { transform: `translateX(${(-frame * 100) / (strip ?? 1)}%)` }}
       onError={() => {
         if (image.path !== path || !image.live()) return
-        failed(image.path)
+        image.failed()
       }}
       onLoad={(event) => {
         if (image.path !== path || !image.live()) return
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
+        retries.current.errors = 0
+        retries.current.pending = 0
         arrived.add(drawn)
         setLoaded(image.path)
         onShown?.()
@@ -148,24 +169,59 @@ export function Thumb({
  * Whether a video's preview plays: once the pointer has rested on it a moment. Only a pointer that moves counts, as a pan slides tiles under
  * one that doesn't; a finger has nothing to rest, and a held button is a drag. A wheel ends it, and so does a press, until the pointer leaves.
  */
-export function usePreview(video: boolean) {
+/** A real unpressed mouse move onto a passive video, carried across its native overlay's mount. */
+export interface PreviewHover {
+  x: number
+  y: number
+  at: number
+  signal: AbortSignal
+}
+
+export function usePreview(video: boolean, initialHover?: PreviewHover) {
   const [on, setOn] = useState(false)
   const resting = useRef<number | undefined>(undefined)
   const pressed = useRef(false)
-  useEffect(() => () => clearTimeout(resting.current), [])
-  const end = () => {
-    if (resting.current === undefined) return
+  const target = useRef<HTMLElement | null>(null)
+  const consumed = useRef<PreviewHover | undefined>(undefined)
+  const visible = useSignal(tabShown)
+  const hold = useCallback((element: HTMLElement | null) => { target.current = element }, [])
+  const end = useCallback(() => {
     clearTimeout(resting.current)
     resting.current = undefined
     setOn(false)
-  }
+  }, [])
+  useEffect(() => () => clearTimeout(resting.current), [])
+  useEffect(() => { if (!video || !visible) end() }, [video, visible, end])
+  useEffect(() => {
+    if (!initialHover) {
+      if (consumed.current) { consumed.current = undefined; end() }
+      return
+    }
+    if (consumed.current === initialHover) return
+    consumed.current = initialHover
+    if (!video || !visible || initialHover.signal.aborted) return
+    const underPointer = () => {
+      const element = target.current
+      const hit = document.elementFromPoint(initialHover.x, initialHover.y)
+      return Boolean(element && hit && element.contains(hit) && !hit.closest("button,input,select,textarea,[contenteditable],.nm"))
+    }
+    initialHover.signal.addEventListener("abort", end, { once: true })
+    if (resting.current === undefined && underPointer()) {
+      resting.current = window.setTimeout(() => {
+        if (!initialHover.signal.aborted && !pressed.current && underPointer()) setOn(true)
+        else resting.current = undefined
+      }, Math.max(0, PREVIEW_AFTER_MS - (performance.now() - initialHover.at)))
+    }
+    return () => { initialHover.signal.removeEventListener("abort", end); end() }
+  }, [initialHover, video, visible, end])
   const leave = {
+    ref: hold,
     onPointerLeave() {
       pressed.current = false
       end()
     },
   }
-  if (!video) return { on: false, hover: leave }
+  if (!video || !visible) return { on: false, hover: leave }
   return {
     on,
     hover: {
@@ -413,7 +469,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
     // Its transport has the Play.
     if (controller) return null
     return (
-      <button type="button" className="play nodrag" aria-label="Play" onClick={() => setState("waiting")}>
+      <button type="button" className="play canvas-control" aria-label="Play" onClick={() => setState("waiting")}>
         <Icon name="play" />
       </button>
     )
@@ -423,7 +479,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
     <>
       <Tag
         ref={element}
-        className={`live nodrag nopan nowheel ${field}`}
+        className={`live canvas-control ${field}`}
         controls={!controller}
         preload="none"
         onTimeUpdate={(event) => onTime?.(event.currentTarget.currentTime)}
@@ -436,7 +492,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime, control
         }}
       />
       {/* A stop, not ✕: in a corner ✕ reads as close or delete (Paul, 11-12). */}
-      <button type="button" className="stop nodrag" aria-label="Stop" title="Stop" onClick={() => stopRef.current()}>
+      <button type="button" className="stop canvas-control" aria-label="Stop" title="Stop" onClick={() => stopRef.current()}>
         <Icon name="stop" />
       </button>
     </>
@@ -757,7 +813,7 @@ function Making({ view, name, run, cardWidth }: { view: ElementView; name: strin
   )
 }
 
-export function Media({ view, name, cardWidth, restWidth = cardWidth, children }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode }) {
+export function Media({ view, name, cardWidth, restWidth = cardWidth, children, previewHover }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode; previewHover?: PreviewHover }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const { asset, placing, preview } = view
@@ -790,7 +846,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const orbit = field === "video" ? orbitOf(shown) : null
   const turning = open && orbit && here && source && "path" in source && store.projectId ? { path: client.file(store.projectId, source.path), orbit } : null
   // On the canvas: an opened box plays the file itself.
-  const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here)
+  const { on: previewing, hover } = usePreview(field === "video" && Boolean(here) && !view.here, previewHover)
   const tools = useSignal(store.tools)
   const words = lineOf(valuesOf(view), asset ? fieldsOf(asset, tools) : [])
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
@@ -862,7 +918,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
       {failedTake ? <FailedHere whole message={failedTake.message.replace(`${name}: `, "")} copy={bodyText(failedTake, watch?.run, undefined)} /> : failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}
-      {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
+      {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action canvas-control" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit: open it and drag to turn">
@@ -891,7 +947,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 function FailedHere({ message, copy, whole = false }: { message: string; copy: string; whole?: boolean }) {
   return (
     <div className={`run-face lines failed ${whole ? "whole" : ""}`} data-phase="failed">
-      <p className="face-state error-text nodrag nopan">
+      <p className="face-state error-text canvas-control">
         <b title={message}><span className="face-words">Didn't render: {message}</span></b>
         <CopyError text={copy} />
       </p>
@@ -971,7 +1027,7 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
           <video
             ref={element}
             src={src}
-            className={open ? "nodrag nopan nowheel" : undefined}
+            className={open ? "canvas-control" : undefined}
             muted={!open}
             loop={!open}
             autoPlay={!open}
