@@ -30,7 +30,39 @@ async function died(why) {
 
 const NAMES = ['light', 'dark', 'middle'];
 
-/** Diagnostics only. Keep the hover verdict's original 28-channel threshold and width requirements unchanged. */
+/** A one-world-pixel hover outline, two world pixels outside the media. At fractional device coordinates it can cover two pixels,
+ * neither the opaque line colour. Project each observed RGB vector onto line-minus-background; its alpha must match that device
+ * pixel's geometric coverage. The background comes from two neighboring pixels outside the outline, never from CSS or a fake image.
+ * Eight RGB levels bound local texture/quantization error; this is stricter than the solid-ring colour tolerance, not a wider one. */
+function hoverCoverage(read, body, color, dpr, zoom = 1) {
+  const noise=8,width=zoom,offset=2*zoom;
+  const sides=[['left',body.x,body.y+body.height/2,1,true],['right',body.x+body.width,body.y+body.height/2,-1,true],
+    ['top',body.y,body.x+body.width/2,1,false],['bottom',body.y+body.height,body.x+body.width/2,-1,false]];
+  return sides.map(([side,edge,across,inward,horizontal])=>{
+    const [low,high]=[(edge-inward*(offset+width))*dpr,(edge-inward*offset)*dpr].sort((a,b)=>a-b);
+    const start=Math.floor(low),end=Math.ceil(high)-1,outside=inward===1?start-1:end+1;
+    const pixel=coordinate=>horizontal?read(coordinate,Math.round(across*dpr)):read(Math.round(across*dpr),coordinate);
+    const near=pixel(outside),far=pixel(outside-inward),samples=[];
+    let visible=false;
+    for(let coordinate=start;coordinate<=end;coordinate++) {
+      const observed=pixel(coordinate),steps=(coordinate-outside)*inward;
+      const background=near.map((value,c)=>value+(value-far[c])*steps),toward=color.map((value,c)=>value-background[c]);
+      const square=toward.reduce((sum,value)=>sum+value*value,0);
+      const alpha=square?observed.reduce((sum,value,c)=>sum+(value-background[c])*toward[c],0)/square:NaN;
+      const expected=Math.min(coordinate+1,high)-Math.max(coordinate,low);
+      const residual=Math.max(...observed.map((value,c)=>Math.abs(value-background[c]-alpha*toward[c])));
+      const uncertainty=square?noise*toward.reduce((sum,value)=>sum+Math.abs(value),0)/square:Infinity;
+      const valid=Number.isFinite(alpha) && residual<=noise && Math.abs(alpha-expected)<=uncertainty && background.every(value=>value>=0 && value<=255);
+      if(expected*Math.max(...toward.map(Math.abs))>2*noise && Math.max(...observed.map((value,c)=>Math.abs(value-background[c])))>2*noise)visible=true;
+      samples.push({coordinate,observed,background,expectedCoverage:expected,coverage:Number.isFinite(alpha)?alpha:null,residual:Number.isFinite(residual)?residual:null,uncertainty:Number.isFinite(uncertainty)?uncertainty:null,valid});
+    }
+    const valid=visible && samples.length>0 && samples.every(sample=>sample.valid);
+    const estimatedWidth=samples.every(sample=>sample.coverage!==null)?samples.reduce((sum,sample)=>sum+sample.coverage,0)/dpr:null;
+    return {side,valid,width:valid?estimatedWidth:0,estimatedWidth,expectedWidth:width,outlineOffset:offset,noise,backgroundSamples:[near,far],samples};
+  });
+}
+
+/** Raw 28-channel ray samples remain available beside the antialiasing-aware result for comparison with older receipts. */
 async function hoverDiagnostics(page, name = 'light', path) {
   const state=await page.evaluate(name=>{
     const root=document.querySelector('.canvas-root'), inspection=root?.canvasInspection;
@@ -64,7 +96,7 @@ async function hoverDiagnostics(page, name = 'light', path) {
       return {side,width,accepted,minimumDistance:Number.isFinite(minimumDistance)?minimumDistance:null,samples};
     });
   };
-  return {...state,screenshot:path ?? null,inspectionRays:coverage(state.body),nativeRays:coverage(state.native.media)};
+  return {...state,screenshot:path ?? null,inspectionRays:coverage(state.body),nativeRays:coverage(state.native.media),hoverCoverageBasis:{model:'observed = background + coverage * (line - background)',background:'two adjacent outside pixels, linearly extrapolated',worldOutlineWidth:1,worldOutlineOffset:2,rgbNoise:8},antialiasedHover:state.body?hoverCoverage(read,state.body,state.expected,state.dpr,state.camera?.zoom ?? 1):null};
 }
 
 async function main() {
@@ -160,10 +192,10 @@ async function main() {
     });
   };
   const rings = async () => {
-    const palette = await colors(), selected = await selectedBoxes(page), dpr = await page.evaluate(() => devicePixelRatio);
-    const read=screenshotPixels(await page.screenshot()), out={ ...palette, zoom:await zoomOf(), boxes:{} };
+    const palette = await colors(), selected = await selectedBoxes(page), dpr = await page.evaluate(() => devicePixelRatio), zoom=await zoomOf();
+    const read=screenshotPixels(await page.screenshot()), out={ ...palette, zoom, boxes:{} };
     for (const name of NAMES) {
-      const body=(await canvasBox(page,name)).body, sides=edge(read,body,palette.select,dpr), hovered=edge(read,body,palette.line,dpr);
+      const body=(await canvasBox(page,name)).body, sides=edge(read,body,palette.select,dpr), hovered=hoverCoverage(read,body,palette.line,dpr,zoom);
       out.boxes[name]={selected:selected.includes(name),width:Math.min(...sides.map(side=>side.width)),glow:sides.filter(side=>side.glow).length>=2,hoverWidth:Math.min(...hovered.map(side=>side.width)),hoverSides:hovered,sides};
     }
     return out;
@@ -257,4 +289,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch((why) => died(why.stack ?? why));
-module.exports = { hoverDiagnostics };
+module.exports = { hoverDiagnostics, hoverCoverage };
