@@ -329,6 +329,8 @@ export class CanvasStore {
   private carets = new Map<string, (name: string) => void>()
   /** Has these assets, and what's said of the project, read. */
   readAgain: (names: string[]) => void = () => {}
+  /** Has the project read whole. */
+  readWhole: () => void = () => {}
   /** These boxes are off this page: no read asks for them. */
   forget: (names: string[]) => void = () => {}
   /** Calcifer answered taking these off: what the stream says of them after is another writer's, and read. */
@@ -392,6 +394,11 @@ export class CanvasStore {
   /** On its way out, until a read begun after when its delete was answered: one from before doesn't bring it back, and one from after says, as
    * another writer may have put it back. */
   private deleting = new Map<string, number>()
+  /** When each of `deleting` was taken off: a read begun before can only say it was there. */
+  private deletingFrom = new Map<string, number>()
+  /** Of `deleting`, those a read begun after they were taken off found there before their delete was answered: another writer's, read again
+   *  once it is. */
+  private heldBack = new Set<string>()
   /** The etags an asset's own writes left, since a read last caught up. */
   private own = new Map<string, Set<string>>()
   /** Names about to land: what was dropped here, and nothing a read found. */
@@ -976,8 +983,21 @@ export class CanvasStore {
     const entities = state.entities ?? []
     const present = new Set([...state.assets, ...entities].map((element) => element.name))
     const before = [...this.views.keys()]
-    for (const [name, until] of this.deleting) if (!present.has(name) || until < this.began) this.deleting.delete(name)
+    // A box there in a read begun before its delete was answered may be another writer's under its name (macOS e2e 43722005881: the
+    // stream's "gone" then "changed" came before the delete's answer): read again once that's answered, whole, which never 404s.
+    let again = false
+    for (const [name, until] of this.deleting) {
+      if (!present.has(name) || until < this.began) {
+        this.deleting.delete(name)
+        this.deletingFrom.delete(name)
+        this.heldBack.delete(name)
+      } else if (this.began > (this.deletingFrom.get(name) ?? NOT_YET)) {
+        if (until === NOT_YET) this.heldBack.add(name)
+        else again = true
+      }
+    }
     for (const name of this.deleting.keys()) present.delete(name)
+    if (again) this.readWhole()
     // A rename on its way has landed once Calcifer answered it before this read began, or has the new name and not the old. With both,
     // another writer took the name meanwhile: that box isn't this one, and the answer says what becomes of this one.
     for (const [from, to] of this.renames) {
@@ -2764,6 +2784,7 @@ export class CanvasStore {
       const id = this.ids.get(name)!
       const box: Gone = { name, view: this.views.get(name)!, row: this.position(name) ?? this.rows?.get(name) ?? { x: 0, y: 0 } }
       this.deleting.set(name, NOT_YET)
+      this.deletingFrom.set(name, nextProjectOrder())
       this.rows?.delete(name)
       this.removeNode(name)
       this.forget([name])
@@ -2772,11 +2793,14 @@ export class CanvasStore {
         done: () => {
           if (this.deleting.has(name)) this.deleting.set(name, nextProjectOrder())
           this.forgotten([name])
+          if (this.heldBack.delete(name)) this.readWhole()
         },
         // Its answer was lost: its first try did it.
         landed: (error) => (error.status === 404 ? { name } : undefined),
         refused: (error) => {
           this.deleting.delete(name)
+          this.deletingFrom.delete(name)
+          this.heldBack.delete(name)
           this.bringBack(box)
           this.readAgain([name])
           this.history.forget(edit)
@@ -2793,6 +2817,8 @@ export class CanvasStore {
   private bringBack(box: Gone, pending?: number) {
     const { view, name, row } = box
     this.deleting.delete(name)
+    this.deletingFrom.delete(name)
+    this.heldBack.delete(name)
     this.rows?.set(name, row)
     this.views.set(name, { ...view, pending })
     this.flow?.addNodes(this.node(name, row))
@@ -2951,6 +2977,7 @@ export class CanvasStore {
       if (!snap.view) {
         if (!now || now.placing) continue
         this.deleting.set(name, NOT_YET)
+        this.deletingFrom.set(name, nextProjectOrder())
         this.rows?.delete(name)
         this.removeNode(name)
         this.forget([name])
@@ -2990,6 +3017,7 @@ export class CanvasStore {
         for (const { ask } of overlays) ask.until = at
         for (const name of hidden) if (this.deleting.has(name)) this.deleting.set(name, at)
         this.forgotten(hidden)
+        if (hidden.filter((name) => this.heldBack.delete(name)).length) this.readWhole()
         for (const name of back) {
           const id = this.ids.get(name)
           if (id) this.served.set(id, name)
@@ -3002,7 +3030,11 @@ export class CanvasStore {
       release: () => {
         for (const { drop } of overlays) drop()
         for (const name of back) this.patch(name, { pending: nextProjectOrder() })
-        for (const name of hidden) this.deleting.delete(name)
+        for (const name of hidden) {
+          this.deleting.delete(name)
+          this.deletingFrom.delete(name)
+          this.heldBack.delete(name)
+        }
         for (const name of moved) this.masks.delete(name)
         // Each name it put back goes back to what Calcifer has, and what took that name meanwhile, another writer's, shows as Calcifer has it.
         for (const { id, from } of renamed) {

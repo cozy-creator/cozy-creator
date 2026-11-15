@@ -153,6 +153,7 @@ function ProjectSync({ id }: { id: string }) {
     store.readAgain = (names) => bridge.readAgain(id, names)
     store.forget = (names) => bridge.forget(id, names)
     store.forgotten = (names) => bridge.forgotten(id, names)
+    store.readWhole = () => bridge.changed(id, {})
   }, [bridge, store, id])
   return null
 }
@@ -904,6 +905,20 @@ function Canvas({
       window.removeEventListener("paste", paste)
     }
   }, [active, store, client, flow, placer, visibleCentre, chosen, selectOnly])
+
+  // Shift, Ctrl or Cmd as the press has them: React Flow learns them from its own key listener a render later, so a click just after the key
+  // went down took it alone, and what was selected went (macOS e2e 43722005881: 4 ms from Shift to the click). Before React Flow's own
+  // handlers, every press says what it holds.
+  useEffect(() => {
+    const press = (event: MouseEvent) => {
+      const multi = event.shiftKey || event.metaKey || event.ctrlKey
+      if (flowStore.getState().multiSelectionActive !== multi) flowStore.setState({ multiSelectionActive: multi })
+    }
+    for (const type of ["pointerdown", "mousedown"]) window.addEventListener(type, press as EventListener, true)
+    return () => {
+      for (const type of ["pointerdown", "mousedown"]) window.removeEventListener(type, press as EventListener, true)
+    }
+  }, [flowStore])
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
   // A click selects a box, and only it (Shift, Ctrl or Cmd add to what's selected); a double click or tap opens it (Paul, 11-12).
