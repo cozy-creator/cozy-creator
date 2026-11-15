@@ -95,6 +95,7 @@ async function candidate(context, origin, directory) {
   };
   const status = await api('/v1/status');
   seen.backend = { origin, pid: holder.pid, version: status.version };
+  seen.harness = { path: __filename, sha256: digest(readFileSync(__filename)) };
   mkdirSync(resolve(process.env.PIXI_OUT), { recursive: true });
   out = mkdtempSync(join(resolve(process.env.PIXI_OUT), 'pixi-'));
   const folder = join(out, 'project');
@@ -284,6 +285,8 @@ async function candidate(context, origin, directory) {
   check('native_release_does_not_invent_header_hits',removed.headerHit===null,removed.headerHit);
   check('native_release_accepts_one_move_without_retry',accepted.interaction.requestedHover==='pixi_renamed' && restored.native===1,release);
   if(accepted.interaction.requestedHover!=='pixi_renamed' || restored.native!==1)throw new Error('native release lost the only pointer move before GPU restoration');
+  // The dispatched event did not move Chrome's physical cursor. Resynchronize it after the no-retry assertion, before leaving normally.
+  await page.mouse.move(p.x+1,p.y);
   await picture('pixi_renamed','native_release_returns_real_pixels');
 
   // Real pointer presses establish Pixi's internal drag state; blur is delivered explicitly in this headless browser.
