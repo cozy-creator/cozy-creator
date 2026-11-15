@@ -11,7 +11,7 @@
 const { execFileSync } = require('node:child_process');
 const { createHash, randomUUID } = require('node:crypto');
 const { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('node:fs');
-const { homedir } = require('node:os');
+const { homedir, cpus, loadavg, release, totalmem } = require('node:os');
 const { extname, join, resolve } = require('node:path');
 
 const COUNTS = [100, 1000, 5000], WIDTH = 1600, HEIGHT = 1000, REPEATS = 3;
@@ -217,6 +217,7 @@ async function candidate(context, origin) {
   const dpr = Number(process.env.DPR ?? 1), extra = JSON.parse(process.env.CHROME_ARGS ?? '[]');
   if (![1, 2].includes(dpr) || !Array.isArray(extra) || extra.some(arg => typeof arg !== 'string' || /swiftshader|llvmpipe|lavapipe|disable-gpu(?:$|=)/i.test(arg))) throw new Error('DPR must be 1 or 2 and CHROME_ARGS must select hardware');
   const { chromium } = require(process.env.PLAYWRIGHT);
+  seen.host = { platform: process.platform, arch: process.arch, kernel: release(), cpu: cpus()[0]?.model, logical_cpus: cpus().length, memory_bytes: totalmem(), initial_load: loadavg(), ...(process.platform === 'linux' ? { cpu_affinity: readFileSync('/proc/self/status', 'utf8').match(/^Cpus_allowed_list:\s+(.+)$/m)?.[1] } : {}) };
   seen.browser_args = ['--enable-gpu', '--disable-software-rasterizer', ...extra]; seen.protocol.dpr = dpr;
   browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true, args: seen.browser_args, timeout: STEP });
   seen.browser = browser.version();
@@ -232,7 +233,7 @@ async function candidate(context, origin) {
   seen.gpu_process = (await cdp.send('SystemInfo.getInfo')).gpu;
   const processes = async () => {
     const at = performance.now(), { processInfo } = await cdp.send('SystemInfo.getProcessInfo');
-    return { at, processes: processInfo.map(process => { let memory = null; try { const text = readFileSync(`/proc/${process.id}/smaps_rollup`, 'utf8'); memory = { pss_kib: Number(text.match(/^Pss:\s+(\d+)/m)?.[1]), rss_kib: Number(text.match(/^Rss:\s+(\d+)/m)?.[1]) }; } catch { /* Explicitly unavailable on other OSs or exited processes. */ } return { id: process.id, type: process.type, cpu_seconds: process.cpuTime, memory }; }) };
+    return { at, host_load: loadavg(), processes: processInfo.map(process => { let memory = null; try { const text = readFileSync(`/proc/${process.id}/smaps_rollup`, 'utf8'); memory = { pss_kib: Number(text.match(/^Pss:\s+(\d+)/m)?.[1]), rss_kib: Number(text.match(/^Rss:\s+(\d+)/m)?.[1]) }; } catch { /* Explicitly unavailable on other OSs or exited processes. */ } return { id: process.id, type: process.type, cpu_seconds: process.cpuTime, memory }; }) };
   };
   const canvas = page.getByRole('region', { name: 'Project canvas', exact: true });
   const inspect = (method, arg) => canvas.evaluate((element, { method, arg }) => element.canvasInspection?.[method]?.(arg) ?? null, { method, arg });
