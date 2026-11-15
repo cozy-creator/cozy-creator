@@ -429,6 +429,24 @@ impl Engine {
         for subject in subjects.iter().filter(|subject| subject.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
             let _ = fs::remove_file(self.root.join("triage").join(format!("{subject}.json")));
         }
+        // Their outputs' trees: one whose every file is theirs is theirs, and its use and retained output go with it.
+        let theirs: std::collections::HashSet<String> = objects.iter().map(|object| object.sha256.clone()).collect();
+        let mut objects = objects;
+        let mut uses: Vec<String> = theirs.iter().cloned().collect();
+        let mut outputs = vec![];
+        let native_outputs = self.journal.lock().unwrap().machine_native_outputs()?;
+        for (actor, owner, source) in native_outputs {
+            let Ok(native) = crate::stored::decode::<crate::stored::NativeByteRetentionRequest>(&source) else { continue };
+            let Some(manifest) = native.source.as_ref().and_then(|source| source.manifest.as_ref()) else { continue };
+            let manifest = tensorfs::format::ObjectRef { sha256: tensorfs::sha256::hex(&manifest.digest), length: manifest.length };
+            let Some(roots) = crate::trees::roots(&self.store, &manifest) else { continue };
+            if roots.len() > 1 && roots[1..].iter().all(|file| theirs.contains(&file.sha256)) {
+                uses.push(crate::trees::name(&native.retention_id));
+                objects.push(manifest);
+                outputs.push((actor, owner));
+            }
+        }
+        self.journal.lock().unwrap().retire_native_outputs(&outputs)?;
         // Only objects the store holds, at the length it holds them (a record's digest names no length).
         let objects: Vec<_> = objects.into_iter().filter_map(|mut object| {
             let held = self.store.path(&object).ok().and_then(|path| fs::metadata(path).ok())?;
@@ -439,7 +457,6 @@ impl Engine {
             // The machine's soft roots go too (they judge again at the next sweep): they would hold the retired objects.
             *self.roots.lock().unwrap() = crate::storage::Roots::default();
             // Their own uses go with them: a use naming only their objects is theirs.
-            let uses: Vec<String> = objects.iter().map(|object| object.sha256.clone()).collect();
             self.store.retire_objects(&objects, &uses, &[]).map_err(crate::storage::io_error)?;
         }
         Ok(true)
