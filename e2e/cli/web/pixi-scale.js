@@ -341,6 +341,7 @@ async function candidate(context, origin) {
   if (page && out) { await page.screenshot({ path: join(out, 'failure.png'), timeout: 5000 }).catch(() => {}); seen.failed_resources = await page.locator('.canvas-root').evaluate(element => element.canvasInspection?.resources()).catch(() => null); }
 }).finally(async () => {
   await seen.candidate?.dispose?.().catch(() => {});
+  if (seen.candidate?.errors.length) failures.push({ name: 'candidate-cleanup', detail: seen.candidate.errors });
   await browser?.close().catch(() => {});
   if (out) save('result.json', { failures, seen, receipt: out });
   process.stdout.write(`${clean(JSON.stringify({ failures, receipt: out, prepared: seen.prepared }, null, 2))}\n`);

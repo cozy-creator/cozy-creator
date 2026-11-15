@@ -6,9 +6,9 @@
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
-const { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, readFileSync, writeFileSync } = require('node:fs');
 const { homedir } = require('node:os');
-const { extname, join, resolve } = require('node:path');
+const { join, resolve } = require('node:path');
 const { inflateSync } = require('node:zlib');
 const { png, MP4, openCanvas } = require('./page');
 
@@ -69,45 +69,10 @@ function pixels(bytes) {
   };
 }
 
-/** Static delivery only: API, session, project-file and media requests always reach the real origin unchanged. */
+/** Built static files at the real origin, with actual security headers and normal HTTP cache behavior. */
 async function candidate(context, origin, directory) {
   if (!directory) return;
-  const dist = realpathSync(directory), files = new Map();
-  const walk = (path, prefix = '') => {
-    for (const entry of readdirSync(path, { withFileTypes: true })) {
-      const name = `${prefix}/${entry.name}`, file = join(path, entry.name);
-      if (entry.isDirectory()) walk(file, name);
-      else if (entry.isFile()) files.set(name, readFileSync(file));
-      else throw new Error(`candidate contains a non-regular file: ${name}`);
-    }
-  };
-  walk(dist);
-  const index = files.get('/index.html');
-  if (!index || /@vite\/client|__COZY_DEVELOPMENT_NONCE__/.test(index.toString())) throw new Error('CANDIDATE_DIST must contain the built UI');
-  const mime = { '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.woff': 'font/woff', '.woff2': 'font/woff2', '.wasm': 'application/wasm', '.json': 'application/json', '.txt': 'text/plain', '.ico': 'image/x-icon' };
-  let security = null;
-  seen.candidate = { dist, files: [...files].map(([path, body]) => ({ path, sha256: digest(body), bytes: body.length })), static_requests: [], documents: [] };
-  await context.route(`${origin}/**`, async route => {
-    const request = route.request(), url = new URL(request.url());
-    if (url.origin !== origin || url.pathname.startsWith('/v1') || request.method() !== 'GET') return route.continue();
-    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
-      const response = await route.fetch();
-      const headers = response.headers();
-      if (!response.ok() || !headers['content-type']?.includes('text/html') || !headers['content-security-policy']) {
-        await route.fulfill({ response });
-        return;
-      }
-      security = Object.fromEntries(Object.entries(headers).filter(([name]) => ['content-security-policy', 'referrer-policy', 'x-content-type-options', 'cross-origin-opener-policy', 'cross-origin-embedder-policy'].includes(name)));
-      seen.candidate.documents.push({ path: url.pathname, status: response.status(), csp_sha256: digest(headers['content-security-policy']) });
-      for (const name of ['content-length', 'content-encoding', 'transfer-encoding', 'etag', 'last-modified']) delete headers[name];
-      await route.fulfill({ response, headers: { ...headers, 'cache-control': 'no-store' }, body: index });
-      return;
-    }
-    const body = files.get(decodeURIComponent(url.pathname));
-    if (!body || !security) return route.continue();
-    seen.candidate.static_requests.push(url.pathname);
-    await route.fulfill({ status: 200, headers: { ...security, 'content-type': mime[extname(url.pathname)] ?? 'application/octet-stream', 'cache-control': 'no-store' }, body });
-  });
+  seen.candidate = await require('./candidate-cdp').candidateCDP(page, origin, directory);
 }
 
 (async () => {
@@ -385,6 +350,8 @@ async function candidate(context, origin, directory) {
   }
   if (page && out) await page.screenshot({ path: join(out, 'failure.png'), timeout: 5000 }).catch(() => {});
 }).finally(async () => {
+  await seen.candidate?.dispose?.().catch(() => {});
+  if (seen.candidate?.errors.length) failures.push(`candidate delivery: ${JSON.stringify(seen.candidate.errors)}`);
   if (browser) await browser.close().catch(() => {});
   const result = clean(JSON.stringify({ failures, seen, receipt: out }, null, 2));
   if (out) writeFileSync(join(out, 'result.json'), `${result}\n`);
