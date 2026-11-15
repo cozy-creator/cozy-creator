@@ -55,6 +55,25 @@ change does not promise a Torch-free platform environment; native execution is x
 
 ## Acceptance runner
 
+The existing CLI e2e harness selects this cell with `--shard typed-calls`. Its normal
+start installs the candidate cohort in the default home and creates the project. The cell
+copies these three packages into `$OUT/typed-calls/fixture`, pins the exact `--runtime`
+wheel in each, locks the caller, and regenerates both reference modules with that wheel's
+public `cozy-runtime calls` command. It then runs the assertions below; all locks,
+generated modules, commands, watch records and outputs remain under `$OUT/typed-calls`.
+The shard needs Linux and a local candidate Runtime wheel. It rents no machine, downloads
+no model weights, and creates only two tiny local F32 checkpoints.
+
+```sh
+bash e2e/cli/run.sh --out /absolute/fresh-receipts --shard typed-calls \
+  --tensord /absolute/candidate/cozy --tensorfs /absolute/candidate/tensorfs.whl \
+  --runtime /absolute/candidate/cozy_runtime.whl --packages /absolute/packages
+```
+
+Use the existing e2e workflow's isolated Hub wrapper and candidate setup for CI, with
+`select=cli` and `shards=["typed-calls"]`; no CPU model suite or GPU lane is needed.
+The usual `e2e-cli-linux-typed-calls` artifact includes this cell's receipts.
+
 After the coordinator installs the combined candidate, run this cell from the Creator
 checkout with an existing normal Cozy project and a fixture copy locked on that candidate:
 
