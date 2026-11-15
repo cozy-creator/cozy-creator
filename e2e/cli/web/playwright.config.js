@@ -8,7 +8,11 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 
 const out = join(process.env.OUT || tmpdir(), 'web');
-const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME } };
+// A runner has no GPU, so each browser draws WebGL in software. The canvas asks for a context without a major performance caveat
+// (CanvasSurface.tsx); Chrome's SwiftShader is named so it never rests on Chrome's deprecated automatic fallback, and Firefox is told to
+// give its software context without the caveat, as Chrome's does. The browser's setting, not the page's: each cell's bars stand.
+const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME, args: ['--enable-unsafe-swiftshader'] } };
+const firefox = { browserName: 'firefox', launchOptions: { firefoxUserPrefs: { 'webgl.force-enabled': true, 'webgl.disable-fail-if-major-performance-caveat': true } } };
 
 module.exports = defineConfig({
   testDir: __dirname,
@@ -32,7 +36,7 @@ module.exports = defineConfig({
   },
   projects: [
     { name: 'chrome', grepInvert: /@solo|@vault/, use: chrome },
-    { name: 'firefox', grep: /@engines/, use: { browserName: 'firefox' } },
+    { name: 'firefox', grep: /@engines/, use: firefox },
     { name: 'webkit', grep: /@engines/, use: { browserName: 'webkit' } },
     { name: 'vault', grep: /@vault/, use: chrome },
     { name: 'solo', grep: /@solo/, timeout: 300_000, use: chrome },

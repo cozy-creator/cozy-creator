@@ -150,12 +150,13 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     await expect(page).toHaveURL(project.url());
     await expect.poll(() => canvasVisible(page, 'only_a')).toBe(true);
     await expect.soft(page.locator('main.gate, .unread'), 'opened').toHaveCount(0);
-    // Each frame from here: the bar, a canvas, and no gate.
+    // Each frame from here: the bar, the canvas with its paper under it, and no gate. The WebGL picture over the paper is the project's own
+    // and transparent, made again for each project; one frame without it paints the same paper.
     await page.evaluate(() => {
       window.__frames = [];
       window.__sampling = true;
       const look = () => {
-        window.__frames.push({ top: Boolean(document.querySelector('header.top')), canvas: Boolean(document.querySelector('.canvas-pixels')), gate: Boolean(document.querySelector('main.gate')) });
+        window.__frames.push({ top: Boolean(document.querySelector('header.top')), canvas: Boolean(document.querySelector('.stage .canvas-root') && document.querySelector('.stage :is(.paper-world, .paper-landscape)')), gate: Boolean(document.querySelector('main.gate')) });
         if (window.__sampling) requestAnimationFrame(look);
       };
       requestAnimationFrame(look);
