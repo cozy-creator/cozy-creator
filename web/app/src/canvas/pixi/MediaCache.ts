@@ -37,6 +37,7 @@ interface Entry {
   bytes: number
   aspect?: number
   tries: number
+  pendingChecks?: number
   failed: boolean
   controller?: AbortController
   waiting?: () => void
@@ -155,6 +156,18 @@ export class MediaCache {
       } else {
         const response = await this.client.transport.fetch(request.path, { signal: controller.signal })
         httpStatus = response.status
+        if (response.status === 202 && request.sha256) {
+          void response.body?.cancel()
+          if (!live()) return
+          // Accepted work is still pending, not a failed image. A large thumbnail queue can outlast the error retry budget.
+          entry.tries = 0
+          entry.pendingChecks = Math.min(5, (entry.pendingChecks ?? 0) + 1)
+          entry.waiting = whenThumb(this.project, request.sha256, thumbWait(entry.pendingChecks), () => {
+            entry.waiting = undefined
+            this.pump()
+          })
+          return
+        }
         if (!response.ok || response.status === 202) {
           stage = "http"
           void response.body?.cancel()
