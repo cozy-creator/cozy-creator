@@ -190,7 +190,7 @@ impl Machines {
             calcifer,
         });
         me.calcifer.serve_with(&me);
-        match me.store().machines() {
+        match me.store().live_machines() {
             Ok(rows) => {
                 // `local` is followed once recorded, while its TensorD runs.
                 let others = rows.iter().filter(|r| r.kind != MachineKind::Local);
@@ -314,7 +314,7 @@ impl Machines {
         if here {
             self.local_row()?;
         }
-        let rows = self.store().machines().map_err(internal)?;
+        let rows = self.store().live_machines().map_err(internal)?;
         let mut machines = Vec::new();
         let listed = |r: &&MachineRow| r.state != MachineState::Ended && (here || r.kind != MachineKind::Local);
         for row in rows.iter().filter(listed) {
@@ -1540,7 +1540,7 @@ impl Machines {
     /// Where a render's job goes with no machine chosen (`api::calcifer::render_set`), by what's held here this moment.
     pub(crate) fn automatic(&self) -> Vec<On> {
         let here = platform::Os::CURRENT.local_inference();
-        let rows = self.store().machines().unwrap_or_default();
+        let rows = self.store().live_machines().unwrap_or_default();
         let listed = |row: &&MachineRow| row.state != MachineState::Ended && (here || row.kind != MachineKind::Local);
         let machines: Vec<Machine> = rows.iter().filter(listed).filter_map(|row| self.picture(row).ok()).collect();
         wire::render_set(&machines)
