@@ -24,4 +24,3 @@ judge: Operation[PrimeRequest, PrimeResult] = Operation(
     models=(), assets_parameter='',
     wire_request=None,
 )
-

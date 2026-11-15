@@ -24,10 +24,10 @@ rm -rf "$co" && mkdir -p "$co"
 cp -r "$here/../../release-gate/suites/hub/pkg" "$co/minimax-h3-tools" && mv "$co/minimax-h3-tools/ci_hub_pkg" "$co/minimax-h3-tools/minimax_h3_tools"
 sed -i -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$co/minimax-h3-tools/pyproject.toml" "$co/minimax-h3-tools/package.toml"
 sed -i 's/^RELEASE = "0.1.0"$/RELEASE = "source"/' "$co/minimax-h3-tools/minimax_h3_tools/__init__.py"
-package_at "$co/e2e-source-relay" e2e_source_relay '"cozy-runtime>=0.45", "msgspec>=0.19", "minimax-h3-tools"' \
-  "$(printf '\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
-import minimax_h3_tools
+package_at "$co/e2e-source-relay" e2e_source_relay '"cozy-runtime>=0.47.0.dev0,<0.48", "msgspec>=0.19"' \
+  "$(printf '\n[project.optional-dependencies]\ncozy-calls = ["minimax-h3-tools[cozy-calls]>=0.1.0"]\n[tool.uv.sources]\nminimax-h3-tools = { index = "tensorhub" }')" <<'PY'
 import msgspec
+from e2e_source_relay_calls import Text, echo
 
 from cozy_runtime.author import App, call
 
@@ -44,12 +44,15 @@ class Relayed(msgspec.Struct):
 
 
 async def relay(payload: Relay) -> Relayed:
-    echoed = await call(minimax_h3_tools.echo, payload=minimax_h3_tools.Text(text=payload.text))
+    echoed = await call(echo, Text(text=payload.text))
     return Relayed(text=echoed.text, release=echoed.release)
 
 
 app.entrypoint(relay, accelerator=False)
 PY
+# The same generated seed interface; source overrides change RELEASE, not its declaration.
+cp "$here/relay/e2e_relay/echo_calls.py" "$co/e2e-source-relay/e2e_source_relay_calls.py"
+sed -i 's/only-include = \["e2e_source_relay.py"\]/only-include = ["e2e_source_relay.py", "e2e_source_relay_calls.py"]/' "$co/e2e-source-relay/pyproject.toml"
 # Tools a box is made of, for the page's list.
 cp -r "$here/project/boxed" "$co/e2e-boxed"
 git -C "$co" init -q -b rc/e2e && git -C "$co" add -A && git -C "$co" -c user.name=e2e -c user.email=e2e@localhost commit -qm checkout \

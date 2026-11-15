@@ -61,4 +61,3 @@ weighted: Operation[WeightRequest, WeightResult] = Operation(
     models=('weights',), assets_parameter='',
     wire_request=None,
 )
-

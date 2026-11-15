@@ -10,7 +10,7 @@ import msgspec
 from cozy_runtime.author import App, Context, ImageFrame, Outputs, Seed, call
 from cozy_runtime.fields import Image, Prompt, Range
 from cozy_runtime.media import ImageFile
-from e2e_probe_callee import EnlargeInput, ShadeInput, enlarge, shade
+from .callee_calls import EnlargeInput, ShadeInput, enlarge, shade
 
 app = App()
 SIDE = 16
@@ -56,7 +56,7 @@ class NotYet(Exception):
 @app.tool(label="Probe: composed", named="composed", accelerator=False)
 async def composed(ctx: Context, payload: Compose, out: Outputs) -> Composed:
     """Shade the page in the other package; lighten it here if that came out dark; enlarge it if asked."""
-    shaded = await call(shade, payload=ShadeInput(image=payload.page, amount=payload.darkness, hold=payload.hold))
+    shaded = await call(shade, ShadeInput(image=payload.page, amount=payload.darkness, hold=payload.hold))
     out.publish("image", shaded.image, label="Shaded")
     if payload.fails_until and not os.path.exists(payload.fails_until):
         raise NotYet(f"{payload.fails_until} isn't there yet")
@@ -65,5 +65,5 @@ async def composed(ctx: Context, payload: Compose, out: Outputs) -> Composed:
         page = (await call(tint, TintInput(image=page))).image
         out.publish("image", page, label="Lightened")
     if payload.enlarge:
-        page = (await call(enlarge, payload=EnlargeInput(image=page))).image
+        page = (await call(enlarge, EnlargeInput(image=page))).image
     return Composed(page)

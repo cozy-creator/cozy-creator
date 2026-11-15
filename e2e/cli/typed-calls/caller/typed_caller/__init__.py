@@ -54,16 +54,16 @@ async def run(payload: Ask) -> Answer:
     shared_torch_available = importlib.util.find_spec("torch") is not None
     shared_sympy_available = importlib.util.find_spec("sympy") is not None
     if payload.choice:
-        result = await call(
+        selected = await call(
             weighted,
             WeightRequest(),
             models={"weights": ModelChoice(ref=payload.choice)},
         )
         return Answer(
             python=sys.executable,
-            child_python=result.python,
-            value=result.value,
-            checkpoint=result.checkpoint,
+            child_python=selected.python,
+            value=selected.value,
+            checkpoint=selected.checkpoint,
             child_installed=child_installed,
             callee_dependency_installed=callee_dependency_installed,
             shared_torch_available=shared_torch_available,
