@@ -637,7 +637,13 @@ case $SHARD in
   " ;;
   project-stream) parts="project_stream logs" ;;
   # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path.
-  slow) parts="slow_runs logs" ;;
+  slow) parts="
+    slow_runs
+    state_restart
+    logs
+  " ;;
+  # Calcifer restarted on a large store, its disk slow (cl-1010).
+  restart) parts="state_restart logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
   web-2) web_cells=(${WEB_2[@]+"${WEB_2[@]}"}); parts="web_lane logs" ;;
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
