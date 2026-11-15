@@ -21,7 +21,9 @@ import type {
   ErrorBody,
   Families,
   Fit,
+  HeldAnswer,
   HeldFile,
+  HeldRequest,
   History,
   HistoryStep,
   HistoryStepped,
@@ -182,6 +184,9 @@ export interface RunFilter {
   machine?: string
 }
 
+/** A `POST` that only asks what Calcifer holds (`…/held`): a read, tried again as one, and no write of the page's. */
+const asks = (path: string) => path.split("?")[0].endsWith("/held")
+
 export class Client {
   readonly transport: Transport
   private hooks: Hooks
@@ -207,7 +212,7 @@ export class Client {
   private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
     // By segment, not route literal: scripts/web-routes.sh reads every `/v1/` string here as a call.
     const [, , root] = path.split("?")[0].split("/")
-    const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && !(root === "down" && path.split("/").length === 3)
+    const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && !(root === "down" && path.split("/").length === 3) && !asks(path)
     if (writing && this.frozen && !options.action && root !== "events") {
       throw new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving its edits before closing" })
     }
@@ -223,7 +228,7 @@ export class Client {
     const headers = new Headers(init.headers)
     headers.set(PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION)
     init = { ...init, headers }
-    const safe = init.method !== "POST" || new Headers(init.headers).has("Idempotency-Key")
+    const safe = init.method !== "POST" || asks(path) || new Headers(init.headers).has("Idempotency-Key")
     const say = (attempt: number) => {
       this.hooks.attempt(attempt)
       options.onAttempt?.(attempt)
@@ -310,18 +315,18 @@ export class Client {
 
   // Files
 
-  /** `true` when held whole, else the ranges held, `[first, last]` inclusive. */
-  async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void, projectId?: string): Promise<true | [number, number][]> {
+  /** The ranges of the file `digest` Calcifer holds, `[start, end)`; `[0, length)` once it holds it whole. Asked as an answer either way
+   *  (`POST …/held`), never a `HEAD`'s 404, which a browser logs as an error. */
+  async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void, projectId?: string): Promise<[number, number][]> {
+    const asked = { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ digests: [digest] } satisfies HeldRequest), signal }
     const response = projectId === undefined
-      ? await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { onAttempt })
-      : await this.send(`/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "HEAD", signal }, { onAttempt })
-    // 200: held whole. 204: none of it, or the ranges `Cozy-Held` says.
-    if (response.status === 200) return true
-    // A pod's `Cozy-*` headers are hostile too: read as numbers, and a nonsense range is no range.
+      ? await this.send("/v1/files/held", { ...asked, method: "POST" }, { onAttempt })
+      : await this.send(`/v1/project-files/held?project=${encodeURIComponent(projectId)}`, { ...asked, method: "POST" }, { onAttempt })
+    const answer = (await response.json()) as HeldAnswer
+    // A pod's answer is hostile too: read as numbers, and a nonsense range is no range.
     const ranges: [number, number][] = []
-    for (const part of (response.headers.get("Cozy-Held") ?? "").split(",")) {
-      const [first, last] = part.split("-").map(Number)
-      if (Number.isSafeInteger(first) && Number.isSafeInteger(last) && first >= 0 && last >= first) ranges.push([first, last])
+    for (const [start, end] of answer.held?.find((row) => row.digest === digest)?.ranges ?? []) {
+      if (Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 0 && end > start) ranges.push([start, end])
     }
     return ranges
   }

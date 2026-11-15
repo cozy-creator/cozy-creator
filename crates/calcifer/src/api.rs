@@ -279,6 +279,8 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/tools/list", post(crate::toolbox::change))
         .route("/v1/tools/browse", get(crate::toolbox::browse))
         .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
+        .route("/v1/project-files/held", post(crate::runs::files::project_held_files))
+        .route("/v1/files/held", post(crate::runs::files::held_files))
         .route(
             "/v1/project-files/{name}",
             axum::routing::put(crate::runs::files::project_put)
