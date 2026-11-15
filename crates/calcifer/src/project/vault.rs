@@ -397,7 +397,21 @@ fn milliseconds(seconds: u64) -> i64 { i64::try_from(seconds).unwrap_or(i64::MAX
 fn expired(session: &Session) -> bool { session.timer.expired() }
 
 /// Its view can no longer be opened: a lock revoked it, its clocks ran out, or its mount is gone. The sweeper locks it.
-fn lapsed(session: &Session) -> bool { session.closing || expired(session) || !session.mount.is_mounted().unwrap_or(false) }
+fn lapsed(session: &Session) -> bool { session.closing || expired(session) || !mounted(session) }
+
+/// Whether its view is still mounted. A mount state it cannot read is mounted: a live session never lapses on a failed
+/// read (a lock then ended its work and refused, e2e 43700377280). The health record says it happened, at most once a minute.
+fn mounted(session: &Session) -> bool {
+    session.mount.is_mounted().unwrap_or_else(|_| {
+        static SAID: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+        let mut said = SAID.lock().expect("mount reads");
+        if !said.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+            *said = Some(std::time::Instant::now());
+            crate::health::service_health(crate::health::HealthEvent::MountUnread);
+        }
+        true
+    })
+}
 
 fn timer(idle: u64, maximum: u64) -> SessionTimer {
     SessionTimer::new(SessionPolicy { idle_seconds: (idle > 0).then_some(idle), maximum_seconds: (maximum > 0).then_some(maximum) })
@@ -788,7 +802,18 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
             return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![] });
         }
     }
-    let mut transition = exclusive(&root)?;
+    // What the lock ended is still settling (its runs' last writes hold the project a moment): it waits for that as the drain
+    // above does, else answers locking with what it ended, and the sweeper locks once it has settled.
+    let settling = !ended.is_empty();
+    let gate = if settling { exclusive_within(&root, LOCK_DRAIN) } else { exclusive(&root) };
+    let mut transition = match gate {
+        Ok(transition) => transition,
+        Err(busy) if settling && busy.code == "project_busy" => {
+            progress.readable = readable_token(root);
+            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![] });
+        }
+        Err(error) => return Err(error),
+    };
     progress.phase("preparing");
     let draining = std::time::Instant::now() + LOCK_DRAIN;
     let mut changed = loop {
