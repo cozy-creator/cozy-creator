@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]>=0.47.0.dev0,<0.48", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.48.0.dev0,<0.49", "msgspec>=0.19"]
 # ///
 """The tools cells' every-type fixture (the web suite's fields cell, and the binder's weightless cell 1): weightless tools whose boxes hold every type the SDK
 has, groups two deep, so the page draws each and each reaches the function as typed. `shot` makes a video of its plate's bytes, or of the take it picks up from, shows each segment as it ends, and says in

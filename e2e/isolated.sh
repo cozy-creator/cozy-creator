@@ -66,7 +66,10 @@ relay() {
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
   account=$(cozy --json whoami | jq -r '.account // empty')
   export E2E_RELAY_PUBLISHED=$seed/publish-e2e-relay.json
+  [ -n "${COZY_TEST_SEED_SDK:-}" ] || { echo "no selected SDK reached the positive relay fixture" >&2; return 1; }
+  uv run -q --no-project "$here/seed_sdk.py" pin --project "$copy" "${cohort_args[@]}" || return 1
   if (cd "$copy" && cozy --json package publish -y) > "$E2E_RELAY_PUBLISHED" 2>&1; then
+    uv run -q --no-project "$here/seed_sdk.py" verify --project "$copy" "${cohort_args[@]}" --receipt "$E2E_SEED_COHORT" || return 1
     export E2E_RELAY=$account/e2e-relay
     log "published $E2E_RELAY 0.1.0"
   else
@@ -76,7 +79,19 @@ relay() {
   fi
 }
 
-# held: e2e-relay's code published again as `e2e-held` 0.1.0 and 0.2.0rc1, as a package built for the open RC's Runtime is
+# Historical release selection needs code the old Runtime can execute. The existing weightless echo has that contract;
+# the positive managed relay imports Operation and belongs to Runtime 0.48.
+historical_relay() {
+  local copy=$1 fixture=$here/../release-gate/suites/hub/pkg
+  mkdir -p "$copy"
+  cp "$fixture/pyproject.toml" "$copy/pyproject.toml"
+  cp -r "$fixture/ci_hub_pkg" "$copy/e2e_relay"
+  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-relay"/' -e 's/ci_hub_pkg/e2e_relay/g' \
+    -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.45"/' "$copy/pyproject.toml"
+  sed -i 's/def echo(/def relay(/' "$copy/e2e_relay/__init__.py"
+}
+
+# held: the historical weightless relay published as `e2e-held` 0.1.0 and 0.2.0rc1, as a package built for the open RC's Runtime is
 # published (cl-922): newer by PEP 440, for machines on the RC only; and as `e2e-newer` 0.1.0 and 0.1.1 (held_prerelease,
 # cl-952, se-128). Then floors (runtime_floor, cl-952): `e2e-floor` 0.1.0 (cozy-runtime>=0.45) and 0.2.0
 # (cozy-runtime>=0.45.1,<0.46); `e2e-capped` 0.1.0 and 0.2.0 (cozy-runtime>=0.45,<0.45.1, which no Runtime from 0.45.1
@@ -88,9 +103,9 @@ held() {
   for name in e2e-held:0.1.0 e2e-held:0.2.0rc1 e2e-newer:0.1.0 e2e-newer:0.1.1 e2e-floor:0.1.0 'e2e-floor:0.2.0:>=0.45.1,<0.46' \
     e2e-capped:0.1.0 'e2e-capped:0.2.0:>=0.45,<0.45.1'; do
     IFS=: read -r name version runtime <<< "$name"
-    rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
+    rm -rf "$copy" && mkdir -p "$seed/packages" && historical_relay "$copy"
     sed -i -e "s/^name = \"e2e-relay\"$/name = \"$name\"/" -e "s/^version = \"0.1.0\"$/version = \"$version\"/" "$copy/pyproject.toml"
-    [ -z "$runtime" ] || sed -i "s/\"cozy-runtime>=0.45\"/\"cozy-runtime$runtime\"/" "$copy/pyproject.toml"
+    [ -z "$runtime" ] || sed -i "s/\"cozy-runtime[^\"]*\"/\"cozy-runtime$runtime\"/" "$copy/pyproject.toml"
     if ! (cd "$copy" && cozy --json package publish -y) > "$seed/publish-$name-$version.json" 2>&1; then
       E2E_HELD_REFUSED="$name $version: $(tail -c 400 "$seed/publish-$name-$version.json" | tr '\n' ' ')"
       export E2E_HELD_REFUSED
@@ -99,23 +114,25 @@ held() {
     log "published $account/$name $version"
   done
   export E2E_HELD=$account/e2e-held E2E_NEWER=$account/e2e-newer E2E_FLOOR=$account/e2e-floor E2E_CAPPED=$account/e2e-capped
-  rm -rf "$copy" && cp -r "$here/cli/relay" "$copy"
-  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-lies"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.44"/' "$copy/pyproject.toml"
+  rm -rf "$copy" && historical_relay "$copy"
+  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-lies"/' -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.44"/' "$copy/pyproject.toml"
+  # Keep the precise dishonest-import assertion without a managed dependency that requires the new SDK.
+  sed -i 's/from cozy_runtime.author import App$/from cozy_runtime.author import App, call/' "$copy/e2e_relay/__init__.py"
   export E2E_LIES=$seed/publish-e2e-lies.json
   if (cd "$copy" && cozy --json package publish -y) > "$E2E_LIES" 2>&1; then log "published $account/e2e-lies 0.1.0, which it should have refused"
   else log "publishing e2e-lies was refused: $(tail -c 300 "$E2E_LIES" | tr '\n' ' ')"; fi
 }
 
 # rc_floor (rc_floor, xs-194): e2e-relay's code as `e2e-rcfloor` 0.1.0, whose floor only the open RC meets
-# (cozy-runtime>=0.47.0.dev0,<0.48) and which names no Runtime wheel: publishing it locks the RC's newest build. What it said
+# (cozy-runtime>=0.48.0.dev0,<0.49) and which names no Runtime wheel: publishing it locks the RC's newest build. What it said
 # is exported, a refusal too, for the cell to judge.
 rc_floor() {
   local copy=$seed/packages/e2e-rcfloor account
   account=$(cozy --json whoami | jq -r '.account // empty')
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
-  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.47.0.dev0,<0.48"/' "$copy/pyproject.toml"
+  sed -i 's/^name = "e2e-relay"$/name = "e2e-rcfloor"/' "$copy/pyproject.toml"
   export E2E_RCFLOOR_PUBLISHED=$seed/publish-e2e-rcfloor.json E2E_RCFLOOR=$account/e2e-rcfloor
-  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.47.0.dev0)"
+  if (cd "$copy" && cozy --json package publish -y) > "$E2E_RCFLOOR_PUBLISHED" 2>&1; then log "published $E2E_RCFLOOR 0.1.0 (cozy-runtime>=0.48.0.dev0)"
   else log "publishing e2e-rcfloor was refused: $(tail -c 300 "$E2E_RCFLOOR_PUBLISHED" | tr '\n' ' ')"; fi
 }
 
@@ -125,7 +142,7 @@ next() {
   local copy=$seed/packages/e2e-next account
   account=$(cozy --json whoami | jq -r '.account // empty')
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/../release-gate/suites/hub/pkg" "$copy"
-  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-next"/' -e 's/"cozy-runtime>=0.30"/"cozy-runtime>=0.46.0"/' "$copy/pyproject.toml"
+  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-next"/' -e 's/"cozy-runtime[^"]*"/"cozy-runtime>=0.46.0"/' "$copy/pyproject.toml"
   (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-next.json" 2>&1 \
     || { echo "publishing e2e-next failed: $(tail -c 600 "$seed/publish-e2e-next.json")" >&2; return 1; }
   export E2E_NEXT=$account/e2e-next
@@ -333,7 +350,7 @@ if [ -n "$needs" ]; then
   for f in pyproject.toml package.toml; do
     sed -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$tools/$f" > "$tools/$f.next" && mv "$tools/$f.next" "$tools/$f"
   done
-  publish "$tools"
+  publish "$tools" cohort
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
   [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944).
