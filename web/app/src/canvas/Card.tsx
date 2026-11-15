@@ -17,6 +17,7 @@ import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapeNear } from "./controls"
 import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, Thumb, usePreview } from "./Media"
+import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { ratioWords } from "./ratios"
@@ -143,8 +144,7 @@ function nextTake(store: CanvasStore, view: ElementView, name: string, tools: Ma
     const prompt = view.hereWords ? document.querySelector<HTMLElement>(`.card.here[data-asset="${CSS.escape(name)}"] .in-frame .mention-text`) : null
     if (writes && prompt) {
       prompt.focus()
-      window.getSelection()?.selectAllChildren(prompt)
-      window.getSelection()?.collapseToEnd()
+      caretToEnd(prompt)
       return
     }
     if (writes) return store.writeNext(name)
