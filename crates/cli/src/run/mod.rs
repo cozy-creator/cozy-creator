@@ -222,15 +222,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
         return match local(ctx, &written, &cwd)? {
             None => describe(ctx, &written, None, args.on.as_deref(), None).await,
             Some((package, function)) => {
-                let project = match crate::project::identity(ctx).await {
-                    Ok(project) => Some(project.id),
-                    Err(error) if error.code == "not_in_a_project" => None,
-                    Err(error) => return Err(error),
-                };
-                let code = match &project {
-                    Some(id) => Sender::for_project(ctx, id).await?.code(&package).await?,
-                    None => Sender::independent_code(ctx, &package).await?,
-                };
+                let (code, project) = Sender::local_code(ctx, &package).await?;
                 describe(ctx, &function.unwrap_or_default(), Some(&code), args.on.as_deref(), project.as_deref()).await
             }
         };

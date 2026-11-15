@@ -18,12 +18,11 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
     let on = args.placement.on()?;
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    // Local code goes by content, and is project data: its recipe runs in the current project.
+    // Local code goes by content: its recipe runs in the current project, or outside any as the machine's.
     let (package, code, project) = match crate::run::local(ctx, &args.package, &cwd)? {
         Some((path, _)) => {
-            let project = crate::project::required(ctx).await?;
-            let code = crate::send::Sender::for_project(ctx, &project).await?.code(&path).await?;
-            (String::new(), Some(code), Some(project))
+            let (code, project) = crate::send::Sender::local_code(ctx, &path).await?;
+            (String::new(), Some(code), project)
         }
         None => (args.package, None, None),
     };
