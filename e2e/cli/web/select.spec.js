@@ -11,10 +11,10 @@ const NAMES = Object.keys(PLACES);
 let baseline;
 const near = (a, b, tolerance = 28) => a.every((value, i) => Math.abs(value - b[i]) <= tolerance);
 
-/** Fractional native hover strokes are judged by device-pixel coverage against adjacent pixels in this screenshot.
- * The native card's paper shadow is part of that local background; a bare GPU screenshot does not contain it.
- * Even the 0.25 px stroke must visibly change a channel by at least 3; projection residuals remain bounded to 8 RGB levels. */
-function hoverCoverage(read, body, color, dpr, zoom = 1) {
+/** Fractional native hover strokes are judged against the same native card with only its outline suppressed.
+ * At 25%, the outline, paper border and picture can share one device pixel; adjacent pixels do not contain that underpaint.
+ * The restored outline must still match geometric coverage, change a channel by at least 3, and stay within 8 RGB residual levels. */
+function hoverCoverage(read, body, color, dpr, zoom = 1, withoutOutline = null) {
   const noise=8,width=zoom,offset=2*zoom;
   const sides=[['left',body.x,body.y+body.height/2,1,true],['right',body.x+body.width,body.y+body.height/2,-1,true],
     ['top',body.y,body.x+body.width/2,1,false],['bottom',body.y+body.height,body.x+body.width/2,-1,false]];
@@ -26,7 +26,7 @@ function hoverCoverage(read, body, color, dpr, zoom = 1) {
     let visible=false;
     for(let coordinate=start;coordinate<=end;coordinate++) {
       const observed=pixel(coordinate),steps=(coordinate-outside)*inward;
-      const background=near.map((value,c)=>value+(value-far[c])*steps),toward=color.map((value,c)=>value-background[c]);
+      const background=withoutOutline ? (horizontal ? withoutOutline(coordinate,Math.round(across*dpr)) : withoutOutline(Math.round(across*dpr),coordinate)) : near.map((value,c)=>value+(value-far[c])*steps),toward=color.map((value,c)=>value-background[c]);
       const square=toward.reduce((sum,value)=>sum+value*value,0);
       const alpha=square?observed.reduce((sum,value,c)=>sum+(value-background[c])*toward[c],0)/square:NaN;
       const expected=Math.min(coordinate+1,high)-Math.max(coordinate,low);
@@ -77,17 +77,51 @@ async function rings(page) {
     };
     const result = { select: color('--select'), hover: color('--line2'), dpr: devicePixelRatio, zoom: inspection.camera().zoom,
       bodies: Object.fromEntries(names.map(name => [name, inspection.card(name)?.body])) };
+    const native = [...document.querySelectorAll('.canvas-node .card')].find(card => card.matches(':hover'));
+    const media = native?.querySelector(':scope > .media');
+    if (media) {
+      const r = media.getBoundingClientRect(), style = getComputedStyle(media);
+      result.native = { name: native.dataset.asset, shadow: style.boxShadow, body: { x: r.x, y: r.y, width: r.width, height: r.height },
+        outline: { style: style.outlineStyle, width: style.outlineWidth, color: style.outlineColor, offset: style.outlineOffset } };
+    }
     probe.remove(); return result;
   }, NAMES);
-  const read = screenshotPixels(await page.screenshot());
+  let withoutOutline = null, artifacts;
+  if (state.native) {
+    const media = page.locator(`.canvas-node .card[data-asset=${JSON.stringify(state.native.name)}] > .media`).first();
+    artifacts = { withoutOutline: test.info().outputPath(`hover-${state.zoom}-without-outline.png`), restored: test.info().outputPath(`hover-${state.zoom}-restored.png`) };
+    const inline = await media.evaluate(el => {
+      const held = { value: el.style.getPropertyValue('outline-style'), priority: el.style.getPropertyPriority('outline-style') };
+      el.style.setProperty('outline-style', 'none', 'important');
+      return held;
+    });
+    try {
+      const control = await media.evaluate(el => { const r = el.getBoundingClientRect(), style = getComputedStyle(el); return { style: style.outlineStyle, shadow: style.boxShadow, body: { x: r.x, y: r.y, width: r.width, height: r.height } }; });
+      expect(control, 'only the outline is suppressed; native geometry and shadow stay intact').toEqual({ style: 'none', shadow: state.native.shadow, body: state.native.body });
+      withoutOutline = screenshotPixels(await page.screenshot({ path: artifacts.withoutOutline }));
+    } finally {
+      await media.evaluate((el, held) => {
+        if (held.value) el.style.setProperty('outline-style', held.value, held.priority);
+        else el.style.removeProperty('outline-style');
+      }, inline);
+    }
+    const restored = await media.evaluate(el => {
+      const r = el.getBoundingClientRect(), style = getComputedStyle(el);
+      return { shadow: style.boxShadow, body: { x: r.x, y: r.y, width: r.width, height: r.height },
+        outline: { style: style.outlineStyle, width: style.outlineWidth, color: style.outlineColor, offset: style.outlineOffset } };
+    });
+    expect(restored, 'the native hover outline and geometry are restored after its negative control').toEqual({ shadow: state.native.shadow, body: state.native.body, outline: state.native.outline });
+  }
+  const read = screenshotPixels(await page.screenshot(artifacts ? { path: artifacts.restored } : {}));
   return Object.fromEntries(NAMES.map(name => {
     const body = state.bodies[name];
     if (!body) return [name, null];
     const sides = edge(read, body, state.select, state.dpr);
-    const hovered = hoverCoverage(read, body, state.hover, state.dpr, state.zoom);
+    const native = state.native?.name === name ? state.native : null;
+    const hovered = hoverCoverage(read, native?.body ?? body, state.hover, state.dpr, state.zoom, native ? withoutOutline : null);
     const px = Math.min(...sides.map(side => side.width));
     return [name, { solid: sides.every(side => side.width >= 3), look: px >= 3 ? 'selection' : hovered.every(side => side.valid) ? 'hover' : 'neither',
-      glow: sides.filter(side => side.glow).length >= 2, px, sides, hovered }];
+      glow: sides.filter(side => side.glow).length >= 2, px, sides, hovered, ...(native ? { native, artifacts, zoom: state.zoom, dpr: state.dpr } : {}) }];
   }));
 }
 
@@ -209,8 +243,16 @@ test('select', async ({ page, project }) => {
 
       await test.step('a hover never looks selected', async () => {
         await hoverBox(page, 'D');
-        await expect.poll(() => rings(page).then((said) => said.D.look), 'D looks hovered').toBe('hover');
-        expect.soft((await rings(page)).D, 'a hover has no glow').toMatchObject({ glow: false });
+        let hovered;
+        try {
+          await expect.poll(async () => { hovered = (await rings(page)).D; return hovered.look; }, 'D looks hovered').toBe('hover');
+        } finally {
+          if (hovered) {
+            await test.info().attach(`hover-${zoom}-rays`, { body: Buffer.from(JSON.stringify(hovered, null, 2)), contentType: 'application/json' });
+            for (const [kind, path] of Object.entries(hovered.artifacts ?? {})) await test.info().attach(`hover-${zoom}-${kind}`, { path, contentType: 'image/png' });
+          }
+        }
+        expect.soft(hovered, 'a hover has no glow').toMatchObject({ glow: false });
         expect.soft(await selectedNames(page)).not.toContain('D');
         await page.mouse.move(2, 500);
       });
