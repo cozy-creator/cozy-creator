@@ -34,7 +34,7 @@ pub fn machine(lifetime: Lifetime) -> ExitCode {
 fn run(lifetime: Lifetime) -> io::Result<()> {
     use crate::machine::{identity, provider::ProviderSelf, ssh, supervise, update};
     // Where this binary was started from, before anything can rename another over it.
-    if let Err(error) = platform::exe::record() {
+    if let Err(error) = platform::exe::record(::api::VERSION) {
         eprintln!("cannot record this binary's launch path ({error}): it never activates another");
     }
     // Linux names the calling thread: this one, before any other starts.

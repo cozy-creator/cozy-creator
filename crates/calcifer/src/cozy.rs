@@ -148,7 +148,7 @@ pub(crate) fn installed(home: &Home) -> Result<PathBuf, Error> {
     if let Some(found) = home.launcher() {
         return Ok(found);
     }
-    let exe = platform::exe::record().map_err(|e| Error::internal("installed_unrecorded", e.to_string()))?.path.clone();
+    let exe = platform::exe::record(::api::VERSION).map_err(|e| Error::internal("installed_unrecorded", e.to_string()))?.path.clone();
     Ok(api::update::homebrew(&exe).unwrap_or(exe))
 }
 
