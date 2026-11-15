@@ -1285,8 +1285,12 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     let from = describer_requirement(dir, runtime)?;
     let mut command = self::uv(uv, dir);
     command.args(["tool", "run", "--no-progress", "--python", python, "--from", from.as_str()]);
-    if let Some(tensorfs) = locked_requirement(dir, "tensorfs") {
-        command.args(["--with", &tensorfs]);
+    // Carry the locked pair only when this reader chose that lock's Runtime. A caller's
+    // explicit machine Runtime remains authoritative and must not inherit a different lock's TensorFS.
+    if runtime.is_some() && runtime == locked_runtime(dir).as_deref() {
+        if let Some(tensorfs) = locked_requirement(dir, "tensorfs") {
+            command.args(["--with", &tensorfs]);
+        }
     }
     if runtime.is_none() && from != "cozy-runtime@latest" {
         // Refresh within the bounds, ignoring an older installed tool even when it meets them.
