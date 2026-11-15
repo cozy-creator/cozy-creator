@@ -26,16 +26,24 @@ const panel = (page) => page.getByRole('region', { name: 'New project', exact: t
 const folderField = (page) => panel(page).getByLabel("New project's folder", { exact: true });
 const index = async (api) => (await api.get('/v1/projects?limit=1000')).projects;
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-/** Each request a context's pages make to Calcifer that mints a credential (`/v1/session…`) or sends one (an Authorization header). */
+/** Each request a context's pages make to Calcifer that mints a credential (`/v1/session…`) or sends one (an Authorization header). Called,
+ *  it stops listening and answers once every header it asked for is read, while the cell is live (run 43730158102: a read left for after
+ *  the cell failed it with "Test ended"). */
 function credentials(context, origin) {
   const seen = { minted: [], sent: [] };
-  context.on('request', async (request) => {
+  const reads = [];
+  const listen = (request) => {
     if (!request.url().startsWith(origin)) return;
     const path = new URL(request.url()).pathname;
     if (path.startsWith('/v1/session')) seen.minted.push(`${request.method()} ${path}`);
-    if (await request.headerValue('authorization')) seen.sent.push(`${request.method()} ${path}`);
-  });
-  return seen;
+    reads.push(request.headerValue('authorization').then((value) => { if (value) seen.sent.push(`${request.method()} ${path}`); }));
+  };
+  context.on('request', listen);
+  return async () => {
+    context.off('request', listen);
+    await Promise.all(reads);
+    return seen;
+  };
 }
 /** What this tab keeps in Web Storage that holds `secret`. */
 const keeps = (page, secret) => page.evaluate((secret) => [localStorage, sessionStorage].flatMap((store) => Object.keys(store).filter((key) => key.includes(secret) || (store.getItem(key) ?? '').includes(secret))), secret);
@@ -77,7 +85,7 @@ test('open', { tag: '@engines' }, async ({ context, newContext, project, api, si
     await expect(signedIn(other, project)).toHaveAttribute('aria-current', 'page');
     await expect.soft(gate(other)).toHaveCount(0);
     expect.soft(await drawn(other, NO_SESSION), 'no gate at any moment').toBe(0);
-    expect.soft(theirs, 'nothing minted or sent').toEqual({ minted: [], sent: [] });
+    expect.soft(await theirs(), 'nothing minted or sent').toEqual({ minted: [], sent: [] });
   });
 
   await test.step('/ opens no project by itself and says what to do', async () => {
@@ -115,7 +123,7 @@ test('open', { tag: '@engines' }, async ({ context, newContext, project, api, si
     expect.soft(await api.get(`/v1/projects/${encodeURIComponent(opened.id)}/vault`), 'unencrypted').toMatchObject({ encrypted: false });
   });
 
-  expect.soft(asked, 'nothing minted or sent, all along').toEqual({ minted: [], sent: [] });
+  expect.soft(await asked(), 'nothing minted or sent, all along').toEqual({ minted: [], sent: [] });
 });
 
 test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, project, api, guards, removeAfter, calciferControl }) => {
