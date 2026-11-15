@@ -168,6 +168,7 @@ def render(source: str) -> str:
         "    | ChildForget",
         "    | GpuRelease",
         "    | ModelPrefetch",
+        "    | ModelNeed",
         "    | Publish",
         "    | CheckpointItem",
         "    | StageMemoLookup",

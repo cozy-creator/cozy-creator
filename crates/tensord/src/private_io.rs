@@ -374,6 +374,13 @@ pub(crate) fn warning(engine: &crate::execution::Engine, run: &str, detail: impl
     }
 }
 
+/// What a run's work says, kept out of the global subscriber the same way.
+pub(crate) fn info(engine: &crate::execution::Engine, run: &str, detail: impl std::fmt::Display) {
+    if current().is_none() && matches!(engine.private_storage(run), Ok(None)) {
+        tracing::info!(run, "{detail}");
+    }
+}
+
 /// Public provider weights keep the shared model cache. A private local weight file
 /// cannot be imported there until model imports have their own protected-store contract.
 pub(crate) fn check_model_source(source: &str) -> io::Result<()> {
