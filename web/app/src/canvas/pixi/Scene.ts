@@ -1,4 +1,4 @@
-import { CanvasTextMetrics, Container, Graphics, Rectangle, Sprite, Text, Texture, TilingSprite } from "pixi.js"
+import { CanvasTextMetrics, Color, Container, Graphics, Rectangle, Sprite, Text, Texture, TilingSprite } from "pixi.js"
 import type { Client } from "../../api/client"
 import type { CanvasStore } from "../CanvasStore"
 import type { Box } from "../graph"
@@ -92,6 +92,7 @@ export class PixiScene {
   private clock?: ReturnType<typeof setTimeout>
   private fontEpoch = 0
   private checkers = new Map<string, Texture>()
+  private palette?: { theme: SceneUpdate["theme"]; colors: Palette; glow: number; alpha: number }
   private measure = document.createElement("canvas").getContext("2d")!
   private segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
@@ -111,6 +112,15 @@ export class PixiScene {
   update(input: SceneUpdate) {
     if (this.stopped) return
     this.input = input
+    if (this.palette?.theme !== input.theme) {
+      // CSS remains the source of the selection colors. Read once for the whole scene when its theme changes.
+      const css = getComputedStyle(document.documentElement)
+      const base = COLORS[input.theme]
+      const select = new Color(css.getPropertyValue("--select").trim() || base.select)
+      const gap = new Color(css.getPropertyValue("--select-gap").trim() || base.gap)
+      const glow = new Color(css.getPropertyValue("--select-glow").trim() || base.select)
+      this.palette = { theme: input.theme, colors: { ...base, select: select.toNumber(), gap: gap.toNumber() }, glow: glow.toNumber(), alpha: glow.alpha }
+    }
     const zoom = Math.max(0.0001, input.camera.zoom)
     const margin = 96 / zoom
     const screen: Box = { x: -input.camera.x / zoom - margin, y: -input.camera.y / zoom - margin, w: input.screen.width / zoom + margin * 2, h: input.screen.height / zoom + margin * 2 }
@@ -220,7 +230,7 @@ export class PixiScene {
     const input = this.input!
     const zoom = Math.max(0.0001, input.camera.zoom)
     const far = bandOf(zoom) > 0
-    const colors = COLORS[input.theme]
+    const colors = this.palette!.colors
     const { node, presentation: show } = drawn
     const body = pictureBox(node)
     body.x -= node.box.x; body.y -= node.box.y
@@ -269,6 +279,10 @@ export class PixiScene {
       const thickness = (node.selected ? 6 : 2) / zoom
       const inset = far ? Math.min(thickness, Math.min(body.w, body.h) / 4) : -6 / zoom
       const box = { x: body.x + inset, y: body.y + inset, w: Math.max(1, body.w - inset * 2), h: Math.max(1, body.h - inset * 2) }
+      if (node.selected) {
+        // Three inexpensive feathered strokes keep the existing screen-space glow without one blur filter per selected card.
+        for (const [width, alpha] of [[48, 0.08], [32, 0.18], [20, 0.32]]) ink.rect(body.x, body.y, body.w, body.h).stroke({ width: width / zoom, color: this.palette!.glow, alpha: this.palette!.alpha * alpha, alignment: 0.5 })
+      }
       ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thickness + 2 / zoom, color: colors.gap, alignment: 0.5 })
       ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thickness, color: colors.select, alignment: 0.5 })
     }
@@ -651,6 +665,35 @@ export class PixiScene {
       if (drawn.latent?.bitmap) latentBytes += drawn.latent.bitmap.width * drawn.latent.bitmap.height * 4
     }
     return { ...this.cache.resourceStats(), totalCards: this.input?.nodes.length ?? 0, visibleCards: this.records.size, loadedCards, labels, estimatedLabelBytes: labelBytes, latentBytes, activeLatents, activeDecoders: 0 }
+  }
+
+  /** Read-only geometry of actual retained display objects. This is diagnostics, never proof that the GPU presented their pixels. */
+  inspect(name: string) {
+    const drawn = [...this.records.values()].find((record) => record.node.name === name)
+    if (!drawn || !this.visible) return null
+    const body = pictureBox(drawn.node)
+    const main = drawn.pictures.get("main")
+    const texture = main?.current?.texture
+    // The internal cache key names transport paths. Only its width/source category can leave this renderer.
+    const [path, width, local] = main?.current ? JSON.parse(main.current.key) as [string, number, boolean] : ["", 0, false]
+    const displayed = main?.displayed ?? ""
+    const sha = displayed.startsWith("blob:") ? drawn.node.view.preview?.sha256 : /^(sha256:)?[0-9a-f]{64}$/i.test(displayed) ? displayed : undefined
+    const latent = drawn.latent
+    return {
+      body: { x: body.x, y: body.y, width: body.w, height: body.h },
+      labels: Object.fromEntries([...drawn.texts].map(([key, label]) => [key, {
+        text: label.text, x: drawn.node.box.x + label.x, y: drawn.node.box.y + label.y, width: label.width, height: label.height,
+        fontSize: Number(label.style.fontSize), fontFamily: label.style.fontFamily, weight: label.style.fontWeight,
+        ...(key === "title" ? { title: drawn.presentation.title } : {}),
+      }])),
+      state: drawn.presentation.state, unseen: drawn.presentation.unseen, progress: drawn.presentation.progress ?? null,
+      media: {
+        ready: Boolean(texture), failed: Boolean(main?.failed), local, width: texture?.width ?? 0, height: texture?.height ?? 0,
+        requestedWidth: this.resolution(body.w), resolution: local ? "local" : path.includes("/thumbs/") ? String(width) : "original",
+        ...(sha ? { sha: sha.replace(/^sha256:/, "") } : {}),
+      },
+      latent: latent?.texture ? { tag: latent.tag, width: latent.texture.width, opacity: latent.sprite.alpha } : null,
+    }
   }
 
   private remove(drawn: Drawn) {
