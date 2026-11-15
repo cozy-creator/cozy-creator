@@ -586,12 +586,12 @@ impl Calcifer {
         open.or_else(||self.opened(&row.owner).filter(|owner|owner.root()==root)).map(Some).ok_or_else(||StoreError::Locked("project_not_open".into()))
     }
     /// What names `row` to a person (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's own; its
-    /// number alone while its project is locked.
+    /// number alone while its project isn't open. Naming a run never opens its project (a lock may be closing it).
     pub(crate) fn run_name(&self,row:&RunRow)->String {
-        match self.row_owner(row) {
-            Ok(Some(owner)) => format!("{}-{}", owner.key(), row.number),
-            Ok(None) => format!("{}-{}", ::api::calcifer::project::MACHINE_KEY, row.number),
-            Err(_) => row.number.to_string(),
+        let Some(root)=&row.project_root else { return format!("{}-{}", ::api::calcifer::project::MACHINE_KEY, row.number) };
+        match self.live_owners().into_iter().find(|owner| owner.root()==root) {
+            Some(owner) => format!("{}-{}", owner.key(), row.number),
+            None => row.number.to_string(),
         }
     }
     pub(crate) fn row_store(&self,row:&RunRow)->store::Result<store::RunStore<'_>> {
