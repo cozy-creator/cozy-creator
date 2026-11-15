@@ -210,6 +210,7 @@ for k in "${names[@]}"; do
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
+  say "$k: the GPU before: $(gpu | paste -sd';')"  # what each process holds as the cell starts (cr-297)
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
