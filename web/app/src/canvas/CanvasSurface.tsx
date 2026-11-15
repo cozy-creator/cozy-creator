@@ -144,6 +144,7 @@ export function CanvasSurface(props: Props) {
       const moved = was.x !== camera.x || was.y !== camera.y || was.zoom !== camera.zoom
       if (moved) settle = 2
       const names: SceneNode[] = []
+      const offering = element.closest(".stage")?.hasAttribute("data-offering") ?? false
       sceneWork = false
       const machines = queries.getQueryData(machinesQuery(client).queryKey)?.machines ?? []
       for (const node of controller.getNodes()) {
@@ -168,7 +169,8 @@ export function CanvasSurface(props: Props) {
         const tool = view.asset?.tool ? store.tools.get().get(view.asset.tool) : undefined
         const pkg = tool?.installs ?? tool?.package
         const installing = !run && pkg ? machines.flatMap(m => ownActivity(m, store.projectId)).find(o => o.kind === "install" && o.subject === pkg) : undefined
-        names.push({ id: node.id, name: node.data.name, box, view, selected: Boolean(node.selected), runContext: run || installing ? { run, machine, on, installing } : undefined })
+        const dragging = store.isDragging(node.data.name)
+        names.push({ id: node.id, name: node.data.name, box, view, selected: Boolean(node.selected), gliding: node.gliding, dragging, offering: dragging && offering, runContext: run || installing ? { run, machine, on, installing } : undefined })
       }
       const hiddenNames = new Set<string>()
       if (hover.current) hiddenNames.add(store.resolveName(hover.current))
