@@ -89,9 +89,9 @@ say "working: run $N silent ${took}s (window ${WINDOW}s) completed; $NAME stayed
 
 pid=$(service)
 [ -n "$pid" ] || fail "silent: no TensorD service on the pod: $(sh 'ps -eo pid,ppid,stat,comm' | head -20)"
-sh "kill -STOP $pid" || fail "silent: kill -STOP $pid"
+# One SSH call stops it and reads its state: a later `machine ssh` waits on the machine it just stopped (43756749942).
+state=$(sh "kill -STOP $pid && sleep 1 && cut -d' ' -f3 /proc/$pid/stat") || fail "silent: kill -STOP $pid"
 T0=$(date +%s)
-state=$(sh "cut -d' ' -f3 /proc/$pid/stat")
 [ "$state" = T ] || fail "silent: the service $pid is '$state', not stopped"
 say "silent: TensorD's service $pid stopped (its container and supervisor run on); the Hub must release it within $((WINDOW + SLACK))s"
 until gone "$RID"; do
