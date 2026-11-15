@@ -30,6 +30,8 @@ def places(home: Path, temp: Path, **extra: Path) -> dict[str, Path]:
             "cozy_cache": cozy / "cache", "calcifer": cozy / "calcifer", "machine": machine, "machine_state": state,
             "machine_start_log": state / "start.log", "machine_logs": state / "logs", "engine": engine,
             "engine_execution": engine / "execution", "engine_triage": engine / "execution/triage",
+            "engine_journal": engine / "execution/executions.sqlite3", "engine_journal_wal": engine / "execution/executions.sqlite3-wal",
+            "engine_logs": engine / "execution/logs", "engine_results": engine / "execution/results", "engine_staging": engine / "execution/staging",
             "engine_gpu": engine / "gpu", "runner_temp": temp, "hub": temp / "e2e/hub",
             "tmp": Path("/tmp"), "var_tmp": Path("/var/tmp"), "dev_shm": Path("/dev/shm"), **extra}
 
