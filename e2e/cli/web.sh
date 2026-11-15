@@ -418,41 +418,24 @@ web_gate_cost
 }
 
 # What the gate costs (Paul, 11-14), from Calcifer's own Server-Timing ([calcifer] diagnostics): per request, its checks on a kept
-# connection (guard, admit), and per connection, the peer lookup; idle, then with 3,000 other loopback connections open (web/busy.js).
-# Linux also says what reading /proc/net/tcp{,6} would cost, the scan sock_diag spares. A measurement: only a missing number fails.
+# connection (guard, admit), and per connection, the peer lookup; idle, then with 6,000 other loopback sockets open in a newer process
+# (web/gate.js, web/busy.js). Linux also says what reading /proc/net/tcp{,6} costs, the scan sock_diag spares. Only a missing number fails.
 web_gate_cost() {
-local label busy pid one kept=() i
-for i in $(seq 200); do kept+=(-o /dev/null "$base/v1/status"); done
-for label in idle busy; do
-  busy=
-  if [ "$label" = busy ]; then
-    ulimit -n 16384 2> /dev/null || true
-    node "$(web_path "$here/web/busy.js")" 3000 > "$OUT/web-busy.out" 2>&1 & busy=$!
-    until grep -q '^ready' "$OUT/web-busy.out" 2> /dev/null; do
-      kill -0 "$busy" 2> /dev/null || { check "web-gate: busy.js ended: $(tail -c 300 "$OUT/web-busy.out")"; return; }
-      sleep 0.2
-    done
-  fi
-  # A new connection each: each pays its lookup once.
-  for i in $(seq 60); do curl -sS -o /dev/null -D - -H "Authorization: Bearer $(jq -r .token < "$lock")" "$base/v1/status"; done | tr -d '\r' | grep -i '^server-timing' > "$OUT/web-gate-$label-new.txt" || true
-  # One connection kept: the checks alone.
-  curl -sS -D - -H "Authorization: Bearer $(jq -r .token < "$lock")" "${kept[@]}" | tr -d '\r' | grep -i '^server-timing' > "$OUT/web-gate-$label-kept.txt" || true
-  if [ -r /proc/net/tcp ]; then
-    one=$(date +%s%N); for i in $(seq 20); do cat /proc/net/tcp /proc/net/tcp6 > /dev/null; done
-    echo "$(( ($(date +%s%N) - one) / 20000 )) $(cat /proc/net/tcp /proc/net/tcp6 | wc -l)" > "$OUT/web-gate-$label-proc.txt" || true
-  fi
-  [ -z "$busy" ] || { kill "$busy" 2> /dev/null; wait "$busy" 2> /dev/null || true; }
-done
-jq -n --rawfile idle_new "$OUT/web-gate-idle-new.txt" --rawfile idle_kept "$OUT/web-gate-idle-kept.txt" \
-  --rawfile busy_new "$OUT/web-gate-busy-new.txt" --rawfile busy_kept "$OUT/web-gate-busy-kept.txt" \
-  --arg idle_proc "$(cat "$OUT/web-gate-idle-proc.txt" 2> /dev/null)" --arg busy_proc "$(cat "$OUT/web-gate-busy-proc.txt" 2> /dev/null)" --arg os "${RUNNER_OS:-$(uname -s)}" '
-  def ms($text; $name): [$text | split("\n")[] | capture($name + ";dur=(?<v>[0-9.]+)")? | .v | tonumber] | sort;
-  def stats: if length == 0 then null else {n: length, median: .[length / 2 | floor], p95: .[length * 0.95 | floor], max: .[-1]} end;
-  def proc($text): ($text | split(" ")) as $f | if ($f | length) == 2 then {read_ms: ($f[0] | tonumber / 1000), rows: ($f[1] | tonumber)} else null end;
-  {os: $os,
-   idle: {lookup_ms: (ms($idle_new; "peer") | stats), checks_ms: ((ms($idle_kept; "guard") | stats) // null), admit_ms: (ms($idle_kept; "admit") | stats), proc: proc($idle_proc)},
-   busy: {lookup_ms: (ms($busy_new; "peer") | stats), checks_ms: (ms($busy_kept; "guard") | stats), admit_ms: (ms($busy_kept; "admit") | stats), proc: proc($busy_proc)}}' > "$OUT/web-gate.json" \
-  || { check "web-gate: its numbers didn't read"; return; }
+local one i rows
+ulimit -n 16384 2> /dev/null || true
+node "$(web_path "$here/web/gate.js")" "$base" "$token" 3000 > "$OUT/web-gate.json" 2> "$OUT/web-gate.err" \
+  || { check "web-gate: gate.js failed: $(tail -c 300 "$OUT/web-gate.err")"; return; }
+if [ -r /proc/net/tcp ]; then
+  one=$(date +%s%N); for rows in $(seq 20); do cat /proc/net/tcp /proc/net/tcp6 > /dev/null; done
+  rows=$(cat /proc/net/tcp /proc/net/tcp6 | wc -l)
+  jq --argjson us "$(( ($(date +%s%N) - one) / 20000 ))" --argjson rows "$rows" '. + {proc_read_us_idle: $us, proc_rows_idle: $rows}' "$OUT/web-gate.json" > "$OUT/web-gate.next" && mv "$OUT/web-gate.next" "$OUT/web-gate.json"
+  node "$(web_path "$here/web/busy.js")" 3000 > "$OUT/web-busy.out" 2>&1 & i=$!
+  until grep -q '^ready' "$OUT/web-busy.out" 2> /dev/null; do kill -0 "$i" 2> /dev/null || break; sleep 0.2; done
+  one=$(date +%s%N); for rows in $(seq 20); do cat /proc/net/tcp /proc/net/tcp6 > /dev/null; done
+  rows=$(cat /proc/net/tcp /proc/net/tcp6 | wc -l)
+  jq --argjson us "$(( ($(date +%s%N) - one) / 20000 ))" --argjson rows "$rows" '. + {proc_read_us_busy: $us, proc_rows_busy: $rows}' "$OUT/web-gate.json" > "$OUT/web-gate.next" && mv "$OUT/web-gate.next" "$OUT/web-gate.json"
+  kill "$i" 2> /dev/null || true; wait "$i" 2> /dev/null || true
+fi
 J '.idle.lookup_ms and .busy.lookup_ms and .idle.admit_ms and .busy.admit_ms' "$OUT/web-gate.json" || check "web-gate: Calcifer said no Server-Timing: $(jq -c . "$OUT/web-gate.json")"
 echo "web-gate: $(jq -c . "$OUT/web-gate.json")"
 }
