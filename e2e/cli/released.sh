@@ -19,6 +19,9 @@ if starter_project "$P" > "$OUT/released-new.json" 2>&1; then
   # An encrypted one too (cl-995): its keybag (format 2: both slots Argon2id, one lane) and its filesystem's own
   # parameters are the release's; the candidate opens it by passphrase and by recovery secret (`released_vault`).
   printf '%s\n' 'synthetic released vault passphrase' > "$OUT/released-vault.pass" && chmod 600 "$OUT/released-vault.pass"
+  # FUSE 2 (fusermount, libfuse.so.2) in whichever shard runs this cell (executors, released), as stuck.sh installs it.
+  [ "$RUNNER_OS" != Linux ] || { command -v fusermount > /dev/null && ldconfig -p | grep -q 'libfuse\.so\.2'; } \
+    || bash "$here/install-vault-driver.sh" > "$OUT/released-driver.log" 2>&1 || check "released project: no FUSE 2: $(tail -c 300 "$OUT/released-driver.log")"
   cozy --json new "$OUT/encrypted-by-release" --passphrase-file "$OUT/released-vault.pass" --recovery-out "$OUT/released-vault.recovery" \
     > "$OUT/released-vault-new.json" 2>&1 && (cd "$OUT/encrypted-by-release" && cozy --json vault lock) > "$OUT/released-vault-lock.json" 2>&1 \
     || check "released project: $released made no encrypted project: $(tail -c 300 "$OUT/released-vault-new.json") $(tail -c 200 "$OUT/released-vault-lock.json")"
