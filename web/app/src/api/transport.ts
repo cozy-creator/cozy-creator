@@ -62,10 +62,15 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     const epoch = state.epoch
     return { signal: state.active.signal, check: () => { if (state!.blocked || state!.epoch !== epoch) throw new DOMException("Project view retired", "AbortError") } }
   }
-  // The token whose storage proof stands: proven once, not before each request, so what's written as the page goes leaves at once
-  // (`keepalive`). A refused session or an unreachable Calcifer proves it again.
+  // The token whose storage proof stands: proven once, not before each request. A refused session or an unreachable Calcifer proves it
+  // again. What's written as the page goes (`keepalive`) leaves at once on the proof this page made for its token: it has no later turn, and
+  // Firefox fails what's in flight as soon as the page navigates, before `pagehide`, which drops the standing proof (cl-973).
   let proven: string | null = null
-  const unproven = () => proven !== session()?.token
+  let provenOnce: string | null = null
+  const unproven = (keepalive?: boolean) => {
+    const token = session()?.token
+    return proven !== token && !(keepalive && provenOnce === token)
+  }
   const storage = async (signal?: AbortSignal | null) => {
     const token = session()?.token
     if (!token) throw new Error("A browser session is required before opening project data")
@@ -81,7 +86,7 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     if (session()?.token !== token || capability?.version !== 3 || typeof birth !== "string" || !birth || capability?.daemon_birth !== birth || capability?.principal !== principal) {
       throw new Error("Calcifer cannot prove project storage protocol 3 for this private session")
     }
-    proven = token
+    proven = provenOnce = token
   }
   const needsStorage = (path: string) => ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/events"].some((prefix) => path.startsWith(prefix))
   return {
@@ -98,7 +103,7 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     async fetch(path, init = {}) {
       const project = guard(path)
       const signal = project ? (init.signal ? AbortSignal.any([init.signal, project.signal]) : project.signal) : init.signal
-      if (needsStorage(path) && unproven()) {
+      if (needsStorage(path) && unproven(init.keepalive)) {
         try { await storage(signal) } catch (error) { if (error instanceof SessionRefused) return error.response; throw error }
       }
       project?.check()
