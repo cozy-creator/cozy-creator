@@ -23,7 +23,8 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   the candidate Runtime's real executor (`python -I -m cozy_runtime.internal.executor`), driven over the seam with
   TensorD's frames (`drive.py`), on tiny random weights its fixture builds from the package's own model classes
   (`tiny/<package>.py`, ingested by TensorFS's import or writer). Each cell judges its output (present, finite, not
-  flat, thumbnails within tolerance of `refs/<package>.json`); a two-rank cell runs a gloo group through the executor
+  flat, thumbnails within tolerance of `refs/<package>.json`, or of `refs/<package>.<amd|intel>.json` where the two
+  vendors' CPUs sum bf16 differently); a two-rank cell runs a gloo group through the executor
   and equals its one-rank twin sample by sample (0.5/255 allowed in the worst frame). An orchestrator's child calls run
   on a child executor through the driver's stand-in for TensorD's call broker. With `--cozy`, each package also goes
   through cozy's CLI (`cli.sh`): its code uploaded with an empty file and described as the executor's interface says,
