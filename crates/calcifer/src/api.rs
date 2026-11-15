@@ -638,7 +638,7 @@ pub(crate) async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRo
 
 /// The project that has or had `key` here. A project's keys are registered as it opens: one not opened since it was unlocked (or
 /// since this cozy) opens first. A locked project's are in no index, only in its project.db (Paul 11-15): its key is unknown here.
-async fn keyed_project(api: &Arc<Api>, key: &str) -> Result<Option<String>, Refusal> {
+pub(crate) async fn keyed_project(api: &Arc<Api>, key: &str) -> Result<Option<String>, Refusal> {
     let store = api.calcifer.store();
     if let Some(id) = store.key_owner(key).map_err(store_refusal)? { return Ok(Some(id)); }
     let known = store.known_projects().map_err(store_refusal)?;
