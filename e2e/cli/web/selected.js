@@ -14,7 +14,7 @@ const { canvasBox, canvasView, selectedBoxes, screenshotPixels } = require('./pa
 
 const failures = [];
 const seen = {};
-noStall(seen, died);
+if (require.main === module) noStall(seen, died);
 let during = 'the start';
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
@@ -30,7 +30,44 @@ async function died(why) {
 
 const NAMES = ['light', 'dark', 'middle'];
 
-(async () => {
+/** Diagnostics only. Keep the hover verdict's original 28-channel threshold and width requirements unchanged. */
+async function hoverDiagnostics(page, name = 'light', path) {
+  const state=await page.evaluate(name=>{
+    const root=document.querySelector('.canvas-root'), inspection=root?.canvasInspection;
+    const native=[...document.querySelectorAll('.canvas-node')].find(node=>node.querySelector('.card')?.dataset.asset===name);
+    const card=native?.querySelector('.card'),media=card?.querySelector(':scope > .media');
+    const rect=element=>{if(!element)return null;const b=element.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height};};
+    const style=element=>{if(!element)return null;const s=getComputedStyle(element);return {outlineStyle:s.outlineStyle,outlineWidth:s.outlineWidth,outlineOffset:s.outlineOffset,outlineColor:s.outlineColor,boxShadow:s.boxShadow,opacity:s.opacity,visibility:s.visibility,transform:s.transform,borderTopWidth:s.borderTopWidth,borderLeftWidth:s.borderLeftWidth};};
+    const probe=document.createElement('span');probe.style.color='var(--line2)';document.body.append(probe);const line=getComputedStyle(probe).color;probe.remove();
+    const rgb=line.match(/[\d.]+/g).map(Number).slice(0,3),expected=line.startsWith('color(')?rgb.map(value=>value*255):rgb;
+    const body=inspection?.card(name)?.body ?? null;
+    const under=body?document.elementFromPoint(body.x+body.width/2,body.y+body.height/2):null;
+    return {name,theme:document.documentElement.dataset.theme ?? 'paper',dpr:devicePixelRatio,camera:inspection?.camera(),body,expected,line,
+      native:{present:Boolean(native),selected:native?.classList.contains('selected'),node:rect(native),card:rect(card),media:rect(media),mediaStyle:style(media),cardStyle:style(card),nodeStyle:style(native),worldStyle:style(native?.closest('.canvas-world')),
+        hovered:{node:native?.matches(':hover'),card:card?.matches(':hover'),media:media?.matches(':hover')},images:[...media?.querySelectorAll('img') ?? []].map(image=>({complete:image.complete,width:image.naturalWidth,height:image.naturalHeight}))},
+      underBodyCenter:under?{tag:under.tagName,className:String(under.className),asset:under.closest('.card')?.dataset.asset}:null};
+  },name);
+  const bytes=await page.screenshot(path?{path}:{}),read=screenshotPixels(bytes);
+  const coverage=body=>{
+    if(!body)return null;
+    const rays=[['left',t=>[body.x+t,body.y+body.height/2]],['right',t=>[body.x+body.width-t,body.y+body.height/2]],['top',t=>[body.x+body.width/2,body.y+t]],['bottom',t=>[body.x+body.width/2,body.y+body.height-t]]];
+    return rays.map(([side,point])=>{
+      let width=0,run=0,minimumDistance=Infinity,accepted=0;
+      const samples=[];
+      for(let offset=-20;offset<=20;offset+=0.5){
+        const [x,y]=point(offset),px=Math.round(x*state.dpr),py=Math.round(y*state.dpr);
+        if(px<0 || py<0 || px>=read.width || py>=read.height){samples.push([offset,px,py,null]);run=0;continue;}
+        const rgb=read(px,py),distance=Math.max(...rgb.map((value,c)=>Math.abs(value-state.expected[c])));
+        minimumDistance=Math.min(minimumDistance,distance);samples.push([offset,px,py,...rgb]);
+        if(distance<=28){accepted++;run+=0.5;width=Math.max(width,run);}else run=0;
+      }
+      return {side,width,accepted,minimumDistance:Number.isFinite(minimumDistance)?minimumDistance:null,samples};
+    });
+  };
+  return {...state,screenshot:path ?? null,inspectionRays:coverage(state.body),nativeRays:coverage(state.native.media)};
+}
+
+async function main() {
   const base = calcifer();
   const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
@@ -127,7 +164,7 @@ const NAMES = ['light', 'dark', 'middle'];
     const read=screenshotPixels(await page.screenshot()), out={ ...palette, zoom:await zoomOf(), boxes:{} };
     for (const name of NAMES) {
       const body=(await canvasBox(page,name)).body, sides=edge(read,body,palette.select,dpr), hovered=edge(read,body,palette.line,dpr);
-      out.boxes[name]={selected:selected.includes(name),width:Math.min(...sides.map(side=>side.width)),glow:sides.filter(side=>side.glow).length>=2,hoverWidth:Math.min(...hovered.map(side=>side.width)),sides};
+      out.boxes[name]={selected:selected.includes(name),width:Math.min(...sides.map(side=>side.width)),glow:sides.filter(side=>side.glow).length>=2,hoverWidth:Math.min(...hovered.map(side=>side.width)),hoverSides:hovered,sides};
     }
     return out;
   };
@@ -180,6 +217,7 @@ const NAMES = ['light', 'dark', 'middle'];
     const point = await middle('light');
     await page.mouse.move(point.x, point.y);
     const look = await ringsWhen((now) => now.boxes.light?.hoverWidth > 0);
+    seen[`${theme}_hover_diagnostics`]=await hoverDiagnostics(page,'light',process.env.SHOT?`${process.env.SHOT}-${theme}-hover.png`:undefined);
     check(`${theme}_hover_is_not_selection`, bare(look.boxes.light, look) && look.boxes.light.hoverWidth > 0 && look.boxes.light.hoverWidth < 3, look.boxes.light);
     check(`${theme}_selection_is_not_the_check_green`, JSON.stringify(look.select) !== JSON.stringify(look.cur) && JSON.stringify(look.select) !== JSON.stringify(look.line), { select: look.select, cur: look.cur, line: look.line });
     await page.mouse.move(2, 500);
@@ -216,4 +254,7 @@ const NAMES = ['light', 'dark', 'middle'];
   await browser.close();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(failures.length ? 1 : 0);
-})().catch((why) => died(why.stack ?? why));
+}
+
+if (require.main === module) main().catch((why) => died(why.stack ?? why));
+module.exports = { hoverDiagnostics };
