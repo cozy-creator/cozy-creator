@@ -1201,6 +1201,9 @@ for table in ["legacy_project_runs", "legacy_run_owners"]:
     db.execute(f"CREATE TABLE kept.{table} AS SELECT * FROM main.{table} WHERE id IN (SELECT value FROM json_each(?))", (ids,))
     n = db.execute(f"SELECT count(*) FROM kept.{table}").fetchone()[0]
     assert n == 2, f"{table}: {n} fenced rows of the project, not 2"
+# Its old index row too, which a first import retires once nothing of it is pending (lab's is still there).
+db.execute("CREATE TABLE kept.legacy_project_projects AS SELECT * FROM main.legacy_project_projects")
+assert db.execute("SELECT count(*) FROM kept.legacy_project_projects").fetchone()[0] == 1, "not the project's one old index row"
 PY
 remote_custody_admits() {
   in_project "$P" --json status > "$OUT/remote-custody-$1-status.json" 2> "$OUT/remote-custody-$1-status.err" \
@@ -1214,7 +1217,8 @@ remote_custody_admits() {
 }
 cozy --json machine ls > /dev/null && db_calcifer || { check "remote custody: this cozy again"; in_cozy "$now"; return; }
 remote_custody_admits first
-# As an earlier import left lab: the runs pending custody in project.db, and their old rows still in Calcifer's store.
+# As an earlier import left lab: the runs pending custody in project.db, their old rows and the project's old index row still
+# in Calcifer's store.
 pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder") && term_calcifer "$pid" || { in_cozy "$now"; return; }
 python3 - "$P/project.db" "$HOME/.cozy/calcifer/state.db" "$D/source.db" <<'PY' || { check "remote custody: lab's state"; in_cozy "$now"; return; }
 import sqlite3, sys
@@ -1224,8 +1228,8 @@ project.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 store = sqlite3.connect(sys.argv[2], isolation_level=None)
 store.execute("ATTACH ? AS kept", (sys.argv[3],))
 store.execute("BEGIN")
-for table in ["legacy_project_runs", "legacy_run_owners"]:
-    store.execute(f"INSERT INTO main.{table} SELECT * FROM kept.{table}")
+for table in ["legacy_project_runs", "legacy_run_owners", "legacy_project_projects"]:
+    store.execute(f"INSERT OR IGNORE INTO main.{table} SELECT * FROM kept.{table}")
 store.execute("COMMIT")
 store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 PY
