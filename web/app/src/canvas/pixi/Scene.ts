@@ -108,8 +108,18 @@ export class PixiScene {
   private input?: SceneUpdate
   private visible = true
   private stopped = false
+  /** Method-call diagnostics, not renderer frames or GPU draw calls. */
+  private sceneUpdates = 0
+  private cardPaints = 0
   private clock?: ReturnType<typeof setTimeout>
   private fontEpoch = 0
+  private paintZoom = 1
+  private paintDpr = 1
+  private zoomBand: 0 | 1 | 2 = 0
+  private titleSize = TITLE
+  private labelResolution = 1
+  private selectionScale = 1
+  private viewBounds: Box = { x: 0, y: 0, w: 0, h: 0 }
   private checkers = new Map<string, Texture>()
   private palette?: { theme: SceneUpdate["theme"]; colors: Palette; glow: number; alpha: number; chip: number; chipInk: number }
   private measure = document.createElement("canvas").getContext("2d")!
@@ -134,6 +144,16 @@ export class PixiScene {
 
   update(input: SceneUpdate) {
     if (this.stopped) return
+    this.sceneUpdates++
+    const zoom = Math.max(0.0001, input.camera.zoom)
+    const cameraPaintChanged = this.paintZoom !== zoom || this.paintDpr !== input.screen.dpr || this.palette?.theme !== input.theme
+    this.paintZoom = zoom
+    this.paintDpr = input.screen.dpr
+    this.zoomBand = bandOf(zoom)
+    this.titleSize = Math.max(TITLE, BODY * nameZoomOf(zoom))
+    this.labelResolution = Math.max(1, Math.min(8, 2 ** Math.ceil(Math.log2(Math.max(0.001, input.camera.zoom * input.screen.dpr)))))
+    this.selectionScale = 2 ** Math.ceil(Math.log2(zoom))
+    this.viewBounds = { x: -input.camera.x / zoom, y: -input.camera.y / zoom, w: input.screen.width / zoom, h: input.screen.height / zoom }
     this.input = input
     if (this.palette?.theme !== input.theme) {
       // CSS remains the source of the selection colors. Read once for the whole scene when its theme changes.
@@ -145,7 +165,6 @@ export class PixiScene {
       this.palette = { theme: input.theme, colors: { ...base, select: select.toNumber(), gap: gap.toNumber() }, glow: glow.toNumber(), alpha: glow.alpha,
         chip: new Color(css.getPropertyValue("--ember").trim() || base.select).toNumber(), chipInk: new Color(css.getPropertyValue("--ember2").trim() || base.ink).toNumber() }
     }
-    const zoom = Math.max(0.0001, input.camera.zoom)
     const margin = 96 / zoom
     const screen: Box = { x: -input.camera.x / zoom - margin, y: -input.camera.y / zoom - margin, w: input.screen.width / zoom + margin * 2, h: input.screen.height / zoom + margin * 2 }
     const live = new Set<string>()
@@ -173,10 +192,12 @@ export class PixiScene {
       }
       if (!node.dragging || !node.offering || this.reducedMotion.matches) drawn.carry = undefined
       else if (!previous.dragging || !previous.offering) drawn.carry = { began: now, scale: previous.dragging ? 1.015 : 1, alpha: previous.dragging ? 0.94 : 1 }
-      const density = this.resolution(node.box.w)
-      const titleScale = Math.max(TITLE, BODY * nameZoomOf(zoom))
       // World position alone never rebuilds labels or reloads textures. Camera changes only touch scale-sensitive drawing buckets.
-      const signature = [node.box.w, node.box.h, node.selected, input.theme, bandOf(zoom), titleScale, density, this.textResolution(), node.selected ? 2 ** Math.ceil(Math.log2(zoom)) : "", this.fontEpoch].join(":")
+      // In particular an unchanged pan needs no per-card signature string/array or resolution calculation.
+      const signatureChanged = !drawn.signature || cameraPaintChanged || previous.box.w !== node.box.w || previous.box.h !== node.box.h || previous.selected !== node.selected || drawn.fontEpoch !== this.fontEpoch
+      const signature = signatureChanged
+        ? [node.box.w, node.box.h, node.selected, input.theme, this.zoomBand, this.titleSize, this.resolution(node.box.w), this.labelResolution, node.selected ? this.selectionScale : "", this.fontEpoch].join(":")
+        : drawn.signature
       const changed = previous.view !== node.view || drawn.tools !== tools || drawn.context !== node.runContext || drawn.signature !== signature || Boolean(node.view.entity)
       drawn.node = node
       drawn.container.zIndex = node.dragging ? 2 : node.selected ? 1 : 0
@@ -202,7 +223,7 @@ export class PixiScene {
   }
 
   private textResolution(): number {
-    return Math.max(1, Math.min(8, 2 ** Math.ceil(Math.log2(Math.max(0.001, this.input!.camera.zoom * this.input!.screen.dpr)))))
+    return this.labelResolution
   }
 
   private truncate(value: string, width: number, size: number, family: string, bold = false): string {
@@ -264,9 +285,10 @@ export class PixiScene {
   }
 
   private draw(drawn: Drawn) {
+    this.cardPaints++
     const input = this.input!
-    const zoom = Math.max(0.0001, input.camera.zoom)
-    const far = bandOf(zoom) > 0
+    const zoom = this.paintZoom
+    const far = this.zoomBand > 0
     const colors = this.palette!.colors
     const { node, presentation: show } = drawn
     const body = pictureBox(node)
@@ -308,7 +330,7 @@ export class PixiScene {
         this.label(drawn, labels, "local-progress", show.progress.state, 12, body.y + body.h / 2 - BODY, body.w - 24, BODY, colors.ink, false, true)
       }
       this.drawHeader(drawn, labels, colors, far)
-      if (!far) this.drawUnder(drawn, labels, colors, zoom)
+      if (!far) this.drawUnder(drawn, labels, colors)
     }
     drawn.hits.unshift({ box: body, part: "body" })
     if (show.progress?.fraction !== undefined && !node.view.canceling) {
@@ -317,7 +339,7 @@ export class PixiScene {
       drawn.meterBox = { x: body.x, y: body.y, w, h }
     }
     if (node.selected || node.view.hot) {
-      const selectionZoom = node.selected ? 2 ** Math.ceil(Math.log2(zoom)) : zoom
+      const selectionZoom = node.selected ? this.selectionScale : zoom
       const thickness = (node.selected ? 6 : 2) / selectionZoom
       const inset = far ? Math.min(thickness, Math.min(body.w, body.h) / 4) : -6 / selectionZoom
       const box = { x: body.x + inset, y: body.y + inset, w: Math.max(1, body.w - inset * 2), h: Math.max(1, body.h - inset * 2) }
@@ -335,9 +357,8 @@ export class PixiScene {
 
   private drawHeader(drawn: Drawn, labels: Set<string>, colors: Palette, far: boolean) {
     const { node, presentation: show, ink } = drawn
-    const zoom = this.input!.camera.zoom
-    const size = Math.max(TITLE, BODY * nameZoomOf(zoom))
-    const rise = node.selected && !far ? Math.min(0, 9 - 9 / (2 ** Math.ceil(Math.log2(zoom)))) : 0
+    const size = this.titleSize
+    const rise = node.selected && !far ? Math.min(0, 9 - 9 / this.selectionScale) : 0
     const y = HEAD - 12 - size * 1.25 + rise
     const dot = show.state ? size * 0.42 : 0
     if (show.state) {
@@ -414,10 +435,10 @@ export class PixiScene {
     })
   }
 
-  private drawUnder(drawn: Drawn, labels: Set<string>, colors: Palette, zoom: number) {
+  private drawUnder(drawn: Drawn, labels: Set<string>, colors: Palette) {
     const { node, presentation: show } = drawn
     const body = pictureBox(node)
-    let y = body.y - node.box.y + body.h + 2 + 9 / (2 ** Math.ceil(Math.log2(zoom)))
+    let y = body.y - node.box.y + body.h + 2 + 9 / this.selectionScale
     if (show.tool || show.shape || show.from) {
       const shapeWidth = show.shape ? Math.min(node.box.w * 0.55, this.textWidth(show.shape, BODY, SANS)) : 0
       this.label(drawn, labels, "tool", [show.tool, show.from].filter(Boolean).join(" · "), 0, y, node.box.w - shapeWidth - 10, BODY, colors.mute)
@@ -637,7 +658,8 @@ export class PixiScene {
   private latentFor(drawn: Drawn) {
     const view = drawn.node.view
     const run = drawn.node.runContext?.run ?? view.run
-    const eligible = this.visible && this.onScreen(drawn) && run?.status === "in_progress" && run.machine_state !== "queued" && view.viewed === undefined && !view.glimpse && !view.asset?.pinned && ["image", "video"].includes(view.asset?.kind ?? "") && Boolean(this.options.store.projectId)
+    const kind = view.asset?.kind
+    const eligible = this.visible && run?.status === "in_progress" && run.machine_state !== "queued" && view.viewed === undefined && !view.glimpse && !view.asset?.pinned && (kind === "image" || kind === "video") && Boolean(this.options.store.projectId) && this.onScreen(drawn)
     if (!eligible || !run) { this.dropLatent(drawn); return }
     if (drawn.latent?.run !== run.number) {
       this.dropLatent(drawn)
@@ -657,7 +679,7 @@ export class PixiScene {
   private waveFor(drawn: Drawn) {
     const view = drawn.node.view
     const running = !view.here && Boolean(view.asset?.standing === "making" || view.queued || view.asked !== undefined)
-    if (!this.visible || !this.onScreen(drawn) || !running) {
+    if (!running || !this.visible || !this.onScreen(drawn)) {
       drawn.wave?.graphics.destroy()
       drawn.wave = undefined
       return
@@ -673,7 +695,7 @@ export class PixiScene {
     const main = drawn.pictures.get("main")
     // Import bytes have their own already-decoded preview, with no import-phase pulse (cl-918).
     const waiting = main?.pending && !main.current && !main.failed && !main.local
-    if (!this.visible || !this.onScreen(drawn) || !waiting) {
+    if (!waiting || !this.visible || !this.onScreen(drawn)) {
       drawn.loadingPulse?.graphics.destroy()
       drawn.loadingPulse = undefined
     } else if (!drawn.loadingPulse) {
@@ -685,8 +707,10 @@ export class PixiScene {
 
   private landingFor(drawn: Drawn) {
     const view = drawn.node.view
+    const fresh = view.landing && !view.placing && !view.preview && !this.landed.has(drawn.node.id)
+    if (!drawn.landing && !fresh) return
     if (!this.visible || !this.onScreen(drawn)) { this.finishLanding(drawn); return }
-    if (!drawn.landing && view.landing && !view.placing && !view.preview && !this.landed.has(drawn.node.id)) {
+    if (!drawn.landing && fresh) {
       this.landed.add(drawn.node.id)
       drawn.landing = { began: performance.now(), scale: 0.82, alpha: 0 }
     }
@@ -848,8 +872,10 @@ export class PixiScene {
 
   private scheduleClock() {
     if (this.clock || !this.visible || this.stopped) return
-    const ticking = (drawn: Drawn) => this.onScreen(drawn) && Boolean(drawn.presentation.progress?.time)
-    if (![...this.records.values()].some(ticking)) return
+    const ticking = (drawn: Drawn) => Boolean(drawn.presentation.progress?.time) && this.onScreen(drawn)
+    let needed = false
+    for (const drawn of this.records.values()) if (ticking(drawn)) { needed = true; break }
+    if (!needed) return
     this.clock = setTimeout(() => {
       this.clock = undefined
       for (const drawn of this.records.values()) if (ticking(drawn)) {
@@ -862,9 +888,7 @@ export class PixiScene {
   }
 
   private onScreen(drawn: Drawn): boolean {
-    const { camera, screen } = this.input!
-    const zoom = Math.max(0.0001, camera.zoom)
-    return intersects(this.glidedBox(drawn, performance.now()), { x: -camera.x / zoom, y: -camera.y / zoom, w: screen.width / zoom, h: screen.height / zoom })
+    return intersects(drawn.glide ? this.glidedBox(drawn, performance.now()) : drawn.node.box, this.viewBounds)
   }
 
   /** Called only after the host actually renders. A requested new version cannot be acknowledged while an older texture stands in. */
@@ -876,8 +900,10 @@ export class PixiScene {
     const digest = (value?: string) => value?.replace(/^sha256:/, "").toLowerCase()
     for (const drawn of this.records.values()) {
       const view = drawn.node.view
+      const unseen = view.asset?.unseen
+      if (!unseen?.length || drawn.container.alpha <= 0 || this.options.store.get(drawn.node.name) !== view) continue
       const shown = shownOf(view)
-      if (!shown || shown.number === undefined || !view.asset?.unseen?.includes(shown.number) || drawn.container.alpha <= 0 || this.options.store.get(drawn.node.name) !== view) continue
+      if (!shown || shown.number === undefined || !unseen.includes(shown.number)) continue
       const world = (box: Box): Box => ({ x: drawn.container.x + box.x * drawn.container.scale.x, y: drawn.container.y + box.y * drawn.container.scale.y, w: box.w * drawn.container.scale.x, h: box.h * drawn.container.scale.y })
       const body = pictureBox(drawn.node)
       if (!intersects(world({ x: body.x - drawn.node.box.x, y: body.y - drawn.node.box.y, w: body.w, h: body.h }), viewport)) continue
@@ -922,7 +948,7 @@ export class PixiScene {
       if (drawn.latent) activeLatents++
       if (drawn.latent?.bitmap) latentBytes += drawn.latent.bitmap.width * drawn.latent.bitmap.height * 4
     }
-    return { ...this.cache.resourceStats(), totalCards: this.input?.nodes.length ?? 0, visibleCards: this.records.size, loadedCards, labels, estimatedLabelBytes: labelBytes, latentBytes, activeLatents, activeDecoders: 0 }
+    return { ...this.cache.resourceStats(), totalCards: this.input?.nodes.length ?? 0, visibleCards: this.records.size, loadedCards, labels, estimatedLabelBytes: labelBytes, latentBytes, activeLatents, activeDecoders: 0, sceneUpdates: this.sceneUpdates, cardPaints: this.cardPaints }
   }
 
   /** Read-only geometry of actual retained display objects. This is diagnostics, never proof that the GPU presented their pixels. */
