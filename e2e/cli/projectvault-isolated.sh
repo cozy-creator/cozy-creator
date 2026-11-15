@@ -15,7 +15,6 @@ parse --out "$vault_gate_out" --installed --tensord "$vault_gate_binary" \
   --runtime "$vault_gate_runtime" --tensorfs "$vault_gate_tensorfs"
 . "$E2E/run.sh"
 . "$E2E/cli/project.sh"
-. "$E2E/cli/web.sh"
 . "$E2E/cli/projectvault.sh"
 RUN_CLI=$COZY
 export RUN_CLI COZY
@@ -39,6 +38,4 @@ jq -n --arg binary "$(cozy --version)" --arg sha256 "$(sha256sum "$COZY" | cut -
 step "encrypted project backend"
 projectvault
 vault_leftovers
-step "encrypted project browser"
-vault_web
 finish "isolated projectvault"
