@@ -229,7 +229,8 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     const run = await newRun(api, project, before);
     await expect(rowOf(run.number), 'the CLI run listed live').toBeVisible({ timeout: 30_000 });
     await rowOf(run.number).getByRole('link').click();
-    await expect(drawer.locator('.drawer-head')).toContainText(`Run ${run.number}`);
+    // Named as a person names it from any folder: KEY-N (cl-987).
+    await expect(drawer.locator('.drawer-head')).toContainText(`Run ${run.name}`);
     await expect(head).toContainText('running', { timeout: 120_000 });
     await expect.soft(head, 'its end, live').toContainText('completed', { timeout: 120_000 });
     await expect.soft(log, 'its log, to its end').toContainText('completed');
