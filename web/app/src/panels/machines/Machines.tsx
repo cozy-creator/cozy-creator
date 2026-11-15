@@ -27,7 +27,8 @@ function MachineRow({ machine, now, here }: { machine: Machine; now: number; her
       {trying && machine.attempt && <small className="under">Still trying, attempt {machine.attempt.number}</small>}
       {machine.state === "ready" && machine.kind === "rental" && <small className="under">{endsWords(machine, now)}</small>}
       {machine.end_failed && <small className="under warn">Not shut down, may still be billing: {machine.end_failed}</small>}
-      {machine.state === "ending" && <small className="under warn">{machine.ending ? `Waiting to end it: ${machine.ending}` : "Bills until its Hub affirms it gone"}</small>}
+      {machine.end_unconfirmed && <small className="under warn">Not confirmed gone: {machine.end_unconfirmed}</small>}
+      {machine.state === "ending" && !machine.end_unconfirmed && <small className="under warn">{machine.ending ? `Waiting to end it: ${machine.ending}` : "Bills until its Hub affirms it gone"}</small>}
       <Checks machine={machine}>
         <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)}>
           Details

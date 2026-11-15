@@ -1255,9 +1255,13 @@ pub struct Machine {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ending: Option<String>,
     /// Why its last end failed (this computer's sign-in, or the Hub's refusal): nothing was ended,
-    /// and a rental may still bill. Ending it again asks again.
+    /// and a rental may still bill. Ending it again asks again; Calcifer also asks again, paced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_failed: Option<String>,
+    /// An ending rental its Hub took the release of minutes ago and has not said is gone: it may still
+    /// bill, and Calcifer keeps asking (cl-977).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_unconfirmed: Option<String>,
     /// In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rc: Option<RcFollow>,

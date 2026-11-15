@@ -733,6 +733,7 @@ case $SHARD in
     path_manifest
     from_source
     rental_end
+    rental_end_again
     logs
   " ;;
   # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a
