@@ -1,0 +1,1 @@
+A run's preview is served only as png, jpeg, webp, gif or avif, its type read case-blind with its parameters off; on Linux the /proc fallback of the loopback peer lookup waits its turn among the four full lookups (#3252 follow-ups, cl-985).

@@ -178,7 +178,7 @@ impl From<store::Error> for Failure {
                 }
                 Kind::Io
             }
-            store::Error::Full { .. } => Kind::Full,
+            store::Error::Full { .. } | store::Error::Short { .. } => Kind::Full,
             store::Error::Absent(_) => Kind::NotFound,
             store::Error::Mismatch { .. } => Kind::Integrity,
             store::Error::Invalid { .. } => Kind::Invalid,

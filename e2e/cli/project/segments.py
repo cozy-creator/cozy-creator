@@ -2,10 +2,12 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19", "numpy>=1.26"]
 # ///
-"""web/segments.js's stand-in for MiniMax H3's shot (cl-907), weightless: a segment for each of its beats in turn, each its beat's length
-of its own colour and tone, and each after the first `wait` seconds in counted steps. Its plan is logged as H3 logs it (`h3 shot segments`),
-which is what Calcifer lays a run's progress on. Each shows as it lands joined after those before it, as minimax-h3 0.11.1 publishes them
-(`Segment 1 of 3`, `Segments 1-2 of 3`), and the last is the whole video, the take."""
+"""MiniMax H3's shot's stand-in (cl-907) for web/segments.js and the web suite's video cell, weightless: a segment for each of its beats in
+turn, each its beat's length of its own colour and tone, and each after the first `wait` seconds in counted steps. Its plan is logged as H3
+logs it (`h3 shot segments`), which is what Calcifer lays a run's progress on. Each shows as it lands joined after those before it, as
+minimax-h3 0.11.1 publishes them (`Segment 1 of 3`, `Segments 1-2 of 3`), and the last is the whole video, the take. Its take says where each
+segment after the first starts (`seams`, se-130), and it takes a pickup, as H3 does, so its segments offer Redo (web/video.spec.js); it
+renders every segment again."""
 
 import time
 from collections.abc import Iterator
@@ -15,7 +17,7 @@ from typing import Annotated
 import msgspec
 import numpy as np
 from cozy_runtime.author import App, Context, Outputs, Telemetry
-from cozy_runtime.fields import Audio, Image, Prompt, Range, Total, Video
+from cozy_runtime.fields import Audio, Image, Pickup, Prompt, Range, Total, Video
 from cozy_runtime.media import DecodedAudioChunk, DecodedAudioFormat, DecodedMediaHeader, DecodedVideoFormat, DecodedVideoFrame, VideoFile
 
 app = App()
@@ -36,10 +38,13 @@ class Segments(msgspec.Struct, kw_only=True):
     summary: Prompt[Image | Video | Audio] = Prompt()
     beats: list[Beat] = []
     wait: Annotated[float, Range(0, 120)] = 30
+    pickup: Pickup | None = None
 
 
 class Take(msgspec.Struct):
     video: VideoFile
+    #: Where each segment after the first starts, in frames (se-130).
+    seams: list[int] = []
 
 
 def _tone(index: int, start: int, count: int) -> DecodedAudioChunk:
@@ -93,6 +98,6 @@ def segments(ctx: Context, payload: Segments, out: Outputs, tel: Telemetry) -> T
         if last:
             video = joined.finish().video
             out.publish("video", video, label="Video")
-            return Take(video)
+            return Take(video, [start * FPS for start in starts[1:]])
         out.publish("video", so_far, label=f"Segments 1-{index + 1} of {count}" if index else f"Segment 1 of {count}")
     raise AssertionError("a shot has at least one segment")

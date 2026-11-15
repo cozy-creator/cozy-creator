@@ -58,7 +58,8 @@ async fn lookup(peer: SocketAddr, local: Option<SocketAddr>, accepted: SystemTim
     if let Some(found) = quick {
         return found;
     }
-    // A few at a time: macOS's full lookup reads every socket of this account's processes, Windows' every connection.
+    // A few at a time: macOS's full lookup reads every socket of this account's processes, Windows' every connection, Linux's
+    // /proc fallback (netlink closed) every socket.
     let _turn = LOOKUPS.acquire().await.map_err(|_| "lookup_failed")?;
     tokio::task::spawn_blocking(move || platform::net::tcp_peer_user(peer, local, accepted)).await.map_err(|_| "lookup_failed")?
 }

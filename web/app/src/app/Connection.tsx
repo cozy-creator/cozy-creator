@@ -415,6 +415,12 @@ export async function connect(): Promise<Boot> {
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
   stream.subscribe(heardThumb)
+  // Runs of no project (installs, updates) come only while something here shows them: a machine's view, or the runs of no project.
+  const machineView = ({ queryKey }: { queryKey: readonly unknown[] }) => queryKey[0] === "maintenance-runs" || queryKey[0] === "maintenance-run"
+  queries.getQueryCache().subscribe(({ type, query }) => {
+    if (!["observerAdded", "observerRemoved", "removed"].includes(type) || !machineView(query)) return
+    stream.showMachines(queries.getQueryCache().findAll({ predicate: machineView }).some((held) => held.getObserversCount() > 0))
+  })
   stream.subscribe((event) => {
     if (event.type === "hello") outbox.back()
   })

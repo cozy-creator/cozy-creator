@@ -6,7 +6,7 @@ mod apple;
 mod cuda;
 mod faults;
 
-pub use cuda::memory_classes;
+pub use cuda::open as open_cuda;
 pub use faults::{Fault, watch_faults};
 
 use crate::{Error, Result};
@@ -32,7 +32,7 @@ pub struct Gpu {
     /// The lane rule's row: an NVIDIA card's compute capability (`9.0` on a Hopper), an Apple
     /// GPU's newest Metal family (`apple9`); empty when the driver does not say.
     pub capability: String,
-    /// [`memory_classes`] fills it from CUDA's device attributes; the probe leaves it `None`.
+    /// [`open_cuda`] reads it from CUDA's device attributes; the probe leaves it `None`.
     pub memory_class: Option<MemoryClass>,
 }
 

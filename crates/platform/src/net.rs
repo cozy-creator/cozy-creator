@@ -106,8 +106,10 @@ mod sys {
         }
     }
 
-    pub(super) fn quick(peer: SocketAddr, local: SocketAddr, accepted: SystemTime) -> Option<Result<User, &'static str>> {
-        Some(tcp_peer_user(peer, local, accepted))
+    /// The one socket from sock_diag; where netlink is closed, none: `/proc/net/tcp{,6}`, a read of every socket, waits for its
+    /// turn among the full lookups (Calcifer's four at a time) as macOS's and Windows' do.
+    pub(super) fn quick(peer: SocketAddr, local: SocketAddr, _accepted: SystemTime) -> Option<Result<User, &'static str>> {
+        diag(peer, local).ok()
     }
 
     const NETLINK_SOCK_DIAG: libc::c_int = 4;

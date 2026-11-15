@@ -89,8 +89,8 @@ function tabsOf(order: KnownProject[], id: string | null, count: number): KnownP
 }
 
 /** As many tabs as fit their room, the rest behind "N more", and what's said beside them. The room is the bar's free space, whatever its
- *  tabs, so a refit moves nothing it watches: whatever changes (the window, what else is in the bar, the fonts, a word beside them), the
- *  tabs are refit in that frame and none is drawn squeezed. A hidden copy of every tab says what each takes. */
+ *  tabs, so a refit moves nothing it watches. What it holds changing refits it in that frame; its room changing, by the next. A hidden copy
+ *  of every tab says what each takes. */
 function ProjectTabs({ id, readable, children }: { id: string | null; readable: boolean; children: ReactNode }) {
   const { client, stream } = useConnection()
   const to = useTo()
@@ -144,11 +144,19 @@ function ProjectTabs({ id, readable, children }: { id: string | null; readable: 
     }
   })
   useLayoutEffect(() => setCount(fit.current()), [named])
-  // Made once, before anything else can watch the bar: what watches it later sees the tabs already refit.
+  // A size changed from outside (the window, the bar, the fonts, a word beside them) refits at the next frame, never inside the observer: a
+  // render there takes in whatever else is waiting (a project just listed grows the hidden copy it watches), and WebKit says the loop (cl-973).
   useLayoutEffect(() => {
-    const watch = new ResizeObserver(() => flushSync(() => setCount(fit.current())))
+    let frame = 0
+    const watch = new ResizeObserver(() => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => flushSync(() => setCount(fit.current())))
+    })
     for (const held of [room.current, beside.current, sizes.current]) if (held) watch.observe(held)
-    return () => watch.disconnect()
+    return () => {
+      cancelAnimationFrame(frame)
+      watch.disconnect()
+    }
   }, [])
 
   return (
