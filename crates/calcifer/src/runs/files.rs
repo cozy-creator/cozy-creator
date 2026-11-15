@@ -67,8 +67,10 @@ fn private_store(root: &Path) -> Result<Arc<Store>, Error> {
     Ok(store)
 }
 
+/// Where `digest` is held for the project whose files are under `root`: its own store, else what's held for anyone (`PUT /v1/files`).
+/// The one place a file is held, for an import, an apply, a run's binder and the held probe alike.
 pub(crate) fn held_for(root: &Path, digest: &Digest) -> Option<PathBuf> {
-    held_in(private_store(root).ok()?.as_ref(), digest)
+    private_store(root).ok().and_then(|store| held_in(&store, digest)).or_else(|| held(digest))
 }
 
 /// Read-only source for the one-way legacy migration. The digest and length
@@ -345,6 +347,8 @@ pub(crate) async fn head(UrlPath(name): UrlPath<String>) -> Result<Response, Ref
 async fn head_in(storage: Arc<Store>, name: String) -> Result<Response, Refusal> {
     let digest = named(&name)?;
     let (path, ranges) = held_of(&storage, digest).await?;
+    // A project's store holds a file sent to it, or one held for anyone, as `held_for` finds them.
+    let path = path.or_else(|| held(&digest));
     let Some(path) = path else {
         return Ok((StatusCode::NOT_FOUND, [held_header(&ranges)]).into_response());
     };
@@ -373,16 +377,19 @@ pub(crate) async fn project_held_files(State(api): State<Arc<Api>>, Query(scope)
 }
 
 async fn held_all(storage: Arc<Store>, ask: HeldRequest) -> Result<Json<HeldAnswer>, Refusal> {
-    let mut held = Vec::with_capacity(ask.digests.len());
+    let mut answer = Vec::with_capacity(ask.digests.len());
     for name in ask.digests {
-        let (path, ranges) = held_of(&storage, named(&name)?).await?;
+        let digest = named(&name)?;
+        let (path, ranges) = held_of(&storage, digest).await?;
+        // As `held_for` finds a file for a project: its own store, else what's held for anyone.
+        let path = path.or_else(|| held(&digest));
         let ranges = match path {
             Some(path) => whole(file(named(&name)?, &path)?.length),
             None => ranges,
         };
-        held.push(HeldObject { digest: name, ranges });
+        answer.push(HeldObject { digest: name, ranges });
     }
-    Ok(Json(HeldAnswer { held }))
+    Ok(Json(HeldAnswer { held: answer }))
 }
 
 /// Where `digest` is held whole, else none and the ranges of it held: an upload that has every byte is first verified, and says how that went.
