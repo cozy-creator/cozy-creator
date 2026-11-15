@@ -200,12 +200,11 @@ case $key in
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
   cli:ondemand) needs='packages birefnet downloads spare' ;;
-  # Models & LoRAs, the VAE slot, the triggers of SDXL's, Ideogram 4's and Krea 2's LoRAs (`prompts`) and heavy.py's BiRefNet; macOS and
-  # Windows run no models.
-  cli:web-suite) needs='packages birefnet loras vaes prompts'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
+  # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
+  cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
   cli:env-cost) needs='packages birefnet' ;;
   cli:plan) needs='packages birefnet downloads' ;;
-  cli:) needs='packages birefnet downloads spare loras vaes fits parts prompts' ;;
+  cli:) needs='packages birefnet downloads spare loras vaes fits parts' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
