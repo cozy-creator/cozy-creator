@@ -12,6 +12,7 @@ directory so earlier failures stay available.
 
 import argparse
 import json
+import os
 import re
 import struct
 import subprocess
@@ -20,12 +21,16 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cozy", default="/home/fidika/.cozy/bin/cozy")
+    binary = "cozy.exe" if os.name == "nt" else "cozy"
+    parser.add_argument("--cozy", default=str(Path.home() / ".cozy" / "bin" / binary))
     parser.add_argument("--project", required=True, type=Path)
     parser.add_argument("--fixture", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--model-prefix", required=True)
     args = parser.parse_args()
+    args.project = args.project.resolve()
+    args.fixture = args.fixture.resolve()
+    args.out = args.out.resolve()
     if not re.fullmatch(r"[a-z][a-z0-9-]+", args.model_prefix):
         parser.error("model-prefix must be a fresh lowercase local model name prefix")
     args.out.mkdir(parents=True, exist_ok=False)
