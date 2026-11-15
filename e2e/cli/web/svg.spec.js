@@ -7,7 +7,9 @@ const { test, expect, fixtureTool, screenshotPixels } = require('./fixtures');
 const SVG = fixtureTool('svg.py/svg');
 const RED = [204, 51, 51];
 
-test('svg', async ({ page, context, project, cli }) => {
+test('svg', async ({ page, context, project, cli, guards }) => {
+  // The browser saying it blocked the SVG's script, opened by itself in its sandbox, is the rule at work.
+  guards.allow(/Blocked script execution in '[^']*\/outputs\/picture' because the document's frame is sandboxed/);
   const asked = [];
   context.on('request', (request) => { if (request.url().includes('svg=')) asked.push(request.url()); });
   let made;
