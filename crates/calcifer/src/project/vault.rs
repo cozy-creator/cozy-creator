@@ -94,6 +94,23 @@ pub(super) fn project_id(root: &FsPath) -> Option<String> {
     Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| keybag.info().project_id)
 }
 
+/// A locked project's id and public code, from its own keybag (cl-984): the index keeps neither.
+pub(crate) fn kept_in_keybag(root: &FsPath) -> Option<(String, String)> {
+    Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|keybag| { let info = keybag.info(); (info.project_id, info.code) })
+}
+
+/// An unlocked project's public code, kept in its keybag beside its id so a compact link finds it once locked (cl-984).
+pub(crate) fn keep_code(root: &FsPath, code: &str) -> Result<(), Error> {
+    let Some(session) = held(root) else { return Ok(()) };
+    let mut session = session.lock().expect("vault session");
+    if session.keybag.info().code == code { return Ok(()); }
+    let mut keybag = session.keybag.clone();
+    keybag.set_code(code).map_err(key)?;
+    keybag.save(&root.join(KEYBAG_FILE)).map_err(key)?;
+    session.keybag = keybag;
+    Ok(())
+}
+
 pub(crate) fn plain_project_id(root: &FsPath) -> Option<String> {
     if encrypted(root) { return None; }
     let metadata = fs::symlink_metadata(root.join(super::db::DB)).ok()?;
