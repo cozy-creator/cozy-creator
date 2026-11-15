@@ -342,7 +342,8 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
     // than at 100%, never less (cl-885).
     const BODY = 12.5 * 1.35;
     const [full, half] = [looks.find((one) => Math.abs(one.zoom - 1) < 0.005), looks.find((one) => Math.abs(one.zoom - 0.5) < 0.005)];
-    const small = Object.entries(half?.sizes ?? {}).filter(([name, size]) => !(size.screen >= BODY - 0.05 && half.parts[name] >= full.parts[name] - 1e-6)).map(([name, size]) => ({ name, screen: size.screen, part: half.parts[name], at_100: full.parts[name] }));
+    // Its part of the box is held against 100% where it was drawn at both: at 100% the view holds only some of the column.
+    const small = Object.entries(half?.sizes ?? {}).filter(([name, size]) => !(size.screen >= BODY - 0.05 && (full.parts[name] === undefined || half.parts[name] >= full.parts[name] - 1e-6))).map(([name, size]) => ({ name, screen: size.screen, part: half.parts[name], at_100: full.parts[name] }));
     expect.soft(half && Object.keys(half.sizes).length > 0 ? small : 'no look at 50%', 'at 50% every name the body size on screen, more of its box than at 100%').toEqual([]);
 
     // As each is drawn at 100%, 45%, 25% and the farthest, at both sizes, paper and dark.

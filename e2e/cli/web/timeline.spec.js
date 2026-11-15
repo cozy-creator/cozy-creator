@@ -170,7 +170,9 @@ test('timeline', async ({ page, project }) => {
       return still;
     }, { message: 'the player at rest' }).toBe(true);
     const [player, timeline, side] = [JSON.parse(last), await region.locator('.tl').boundingBox(), await region.locator('.here-side').boundingBox()];
-    expect.soft(player.width, 'the player, px wide').toBeGreaterThanOrEqual(viewport.width * 0.45);
+    // Its frame is the cut's (VideoEditor.tsx: its first clip's, here the square title): full size is the room's whole width or height,
+    // whichever that frame meets first.
+    expect.soft(player.width >= viewport.width * 0.45 || player.height >= viewport.height * 0.5, `the player full size: ${JSON.stringify(player)}`).toBe(true);
     expect.soft(player.height, 'the player, px high').toBeGreaterThanOrEqual(viewport.height * 0.35);
     expect.soft(timeline.y, 'the timeline under the player').toBeGreaterThanOrEqual(player.y + player.height - 1);
     expect.soft(timeline.width, 'the timeline as wide as the player').toBeGreaterThanOrEqual(player.width * 0.9);
