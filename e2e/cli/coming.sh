@@ -87,9 +87,15 @@ echo "coming: large, held: $board"
 J --arg m "$name" '(.why // "" | startswith("waits for \($m), ready ")) and .machine == $m and .run == null' <<< "$board" \
   || check "coming: large, sooner on $name, isn't held for it: $board"
 sleep 12
+# Held, by its own state: still waiting, held for the rental, with no call of it there. Its code may be installed ahead there (a warm run,
+# which can fail harmlessly); a send blocked on such an install looked the same to a count of the project's calls (e2e 43717354038), and
+# ends below: once the rental ends, large completes on stand-c, never failed.
 in_project "$P" --json run ls --limit 0 > "$OUT/coming-held.json"
-J '[.runs[] | select(.kind == "call")] | length == 2' "$OUT/coming-held.json" \
-  || check "coming: a run was sent for large while its machine is on its way: $(jq -c '[.runs[] | {number, machine, status}]' "$OUT/coming-held.json")"
+J --arg m "$name" '[.runs[] | select(.machine == $m and .kind == "call")] | length == 0' "$OUT/coming-held.json" \
+  || check "coming: a call was sent to $name for large while it's on its way: $(jq -c '[.runs[] | {number, kind, target, machine, status}]' "$OUT/coming-held.json")"
+board=$(status "$P" | jq -c '.board.jobs[]? | select(.asset == "large")' || true)
+J --arg m "$name" '.state == "waiting" and (.why // "" | startswith("waits for \($m), ready ")) and .run == null' <<< "$board" \
+  || check "coming: large isn't held for $name after 12 s: $board"
 
 # The rental ended: large goes to stand-c.
 timeout 120 cozy --json machine end "$name" --force -y > "$OUT/coming-end.json" 2>&1 || check "coming: machine end $name: $(tail -c 300 "$OUT/coming-end.json")"
@@ -109,4 +115,9 @@ J '[.runs[] | select(.target | test("/echo"))] | .[0].machine == "stand-c"' "$OU
   || check "coming: run --on new didn't run on stand-c: $(jq -c '[.runs[] | {number, target, machine, status}]' "$OUT/coming-new-runs.json")"
 cozy --json machine ls | J '[.machines[] | select(.kind == "rental" and .state != "ended")] | length == 0' \
   || check "coming: run --on new rented: $(cozy --json machine ls | jq -c '[.machines[] | {name, kind, state}]')"
+# Where its walk placed each box and why, kept in the project with calcifer.diagnostics on (run.sh), never in Calcifer's log.
+cp "$P/.vault-calcifer/diagnostics/walk.log" "$OUT/coming-walk.log" 2> /dev/null || true
+[ -s "$OUT/coming-walk.log" ] && grep -q ' goes to ' "$OUT/coming-walk.log" \
+  || check "coming: the project's walk log says no placement, with diagnostics on: $(tail -c 300 "$OUT/coming-walk.log" 2> /dev/null)"
+tail -n 60 "$OUT/coming-walk.log" 2> /dev/null || true
 }

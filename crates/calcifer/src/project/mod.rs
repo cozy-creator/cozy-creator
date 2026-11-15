@@ -226,6 +226,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/unpin", post(unpin))
         .route("/v1/projects/{id}/rename", post(rename))
+        .route("/v1/projects/{id}/legacy", get(legacy))
         .route("/v1/projects/{id}/machines", put(machines))
         .route("/v1/projects/{id}/reclaim", post(reclaim))
         .route("/v1/projects/{id}/assets", post(assets::create))
@@ -2198,6 +2199,16 @@ async fn reclaim(
 /// it, what renders going say of it, its row on the canvas, and its box's name and every `<from>`, unless the project has moved to `to` already. A name is no input, so
 /// what stood on the text that said `from` stands on the text that says `to`. The lock goes before the text, and the old name finds its row until the text says so: a read
 /// between is never of an empty box. Nothing on disk moves.
+/// `GET /v1/projects/{id}/legacy`: its history from before projects kept their own: imported, and still in Calcifer's store (cl-984).
+async fn legacy(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Json<api::calcifer::LegacyHistory>, Refusal> {
+    // As a project read does: what can be imported is, first.
+    let journal = api.projects.store(&api, &id).await.map_err(Refusal)?;
+    let (project, root) = journal.execution_scope();
+    let (project, root) = (project.to_owned(), root.to_owned());
+    let history = tokio::task::block_in_place(|| crate::legacy_status::project(api.calcifer.maintenance_store(), &journal, &root, &project))?;
+    Ok(Json(history))
+}
+
 async fn rename(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -3310,6 +3321,7 @@ enum PackageRead {
 fn unplanned(walker: &mut Walker, dir: &str, key: &str, why: String) {
     if walker.unplanned.get(key) != Some(&why) {
         warn!("{dir}: {key} isn't planned: {why}; it goes to the first of its machines that takes it");
+        crate::private_io::diagnose(FsPath::new(dir), || format!("{key} isn't planned: {why}"));
         walker.unplanned.insert(key.to_owned(), why);
     }
 }
@@ -3754,7 +3766,16 @@ impl Walk {
                 }
                 let (key, wanted) = (key.clone(), wanted.clone());
                 work.push(async move {
+                    let began = std::time::Instant::now();
                     let made = self.item(&key, &wanted).await;
+                    crate::private_io::diagnose(&self.folder().dir, || {
+                        let said = match &made {
+                            Ok(Some((_, function))) => format!("{function} listed"),
+                            Ok(None) => "nothing to list".into(),
+                            Err(error) => format!("none: {}", error.message),
+                        };
+                        format!("{key} ahead on {} in {} ms: {said}", wanted.machine, began.elapsed().as_millis())
+                    });
                     let item = match made {
                         Ok(item) => item,
                         Err(error) => {
@@ -3914,6 +3935,7 @@ impl Walk {
     /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices, its package read as `read` says; else why
     /// not. None: its install is going, and `read` doesn't wait for it.
     async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, String> {
+        let (began, job) = (std::time::Instant::now(), key.clone());
         let quoted = async {
             let api = self.host.api();
             let dir = &self.folder().dir;
@@ -3939,6 +3961,14 @@ impl Walk {
             });
             Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on }))
         }.await;
+        crate::private_io::diagnose(&self.folder().dir, || {
+            let said = match &quoted {
+                Ok(Some(quoted)) => quoted.function.clone(),
+                Ok(None) => "none: its install is going".into(),
+                Err(why) => format!("none: {why}"),
+            };
+            format!("quote {job} ({read:?}, {with}) in {} ms: {said}", began.elapsed().as_millis())
+        });
         quoted
     }
 
@@ -4078,15 +4108,20 @@ impl Walk {
         let mut walker = self.project.walker.lock().expect("walker lock");
         for ((at, job), placement) in jobs.iter().zip(placed) {
             let unsent = &unsent[*at];
-            // Where a waiting job is fetched ahead.
-            let ahead = |walker: &mut Walker, on: &On| drop(walker.foreseen.insert(unsent.key.clone(), Some(on.clone())));
+            // Where a waiting job is fetched ahead, said when that changes.
+            let ahead = |walker: &mut Walker, on: &On, planned: bool| {
+                if walker.foreseen.insert(unsent.key.clone(), Some(on.clone())).flatten().as_ref() != Some(on) {
+                    let how = if planned { "planned" } else { "no machine planned" };
+                    crate::private_io::diagnose(&self.folder().dir, || format!("{} waits; fetched ahead on {on}, {how}: {}", unsent.key, said(&placement.offers)));
+                }
+            };
             let Some((_, chosen)) = placement.chosen else {
                 walker.placed.remove(&unsent.key);
                 walker.starts.remove(&unsent.key);
                 // A waiting job none of its machines was planned for goes where a ready one would at its turn: the first of them, which
                 // fetches ahead for it.
                 match job.on.first().filter(|_| !unsent.ready) {
-                    Some(first) => ahead(&mut walker, first),
+                    Some(first) => ahead(&mut walker, first, false),
                     None => drop(walker.foreseen.remove(&unsent.key)),
                 }
                 if unsent.ready {
@@ -4101,13 +4136,14 @@ impl Walk {
             let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
             walker.starts.insert(unsent.key.clone(), (chosen.start_at_ms, fits));
             if !unsent.ready {
-                ahead(&mut walker, &chosen.machine);
+                ahead(&mut walker, &chosen.machine, true);
                 continue;
             }
             // Where each job goes, said when that changes: what placement weighed, for anyone asking why a job went where it did.
             if walker.placed.get(&unsent.key).is_none_or(|was| was.soonest.machine != chosen.machine) {
                 let quoted = said(&placement.offers);
                 info!("{dir}: {} goes to {}: {quoted}", unsent.key, chosen.machine);
+                crate::private_io::diagnose(&self.folder().dir, || format!("{} goes to {}: {quoted}", unsent.key, chosen.machine));
             }
             walker.unplanned.remove(&unsent.key);
             walker.placed.insert(unsent.key.clone(), Placed { offers: placement.offers, soonest: chosen });
@@ -4300,9 +4336,10 @@ impl Walk {
                     graph.read_again(|job_ask| lock.walk.asks.iter().any(|other| other.id == job_ask && other.digest == ask.digest), &reading.nodes);
                 }
                 let gone = |name: &str| names.as_ref().is_some_and(|names| !names.contains(&name_key(name)));
-                // With several machines it stays here while its planned machine has no GPU for it, so nothing commits early to the wrong
-                // queue; it is placed again as their Status moves.
-                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free { .. }) && placed.get(&key).is_some_and(|placed| placed.soonest.waits_ms(now_ms()) > 0) {
+                // With several machines it stays here while its planned machine has no GPU for it, or is still on its way (a rental
+                // booting, whose boot counts as its preparation: no wait past it), so nothing commits early to the wrong queue or to a
+                // machine that may never serve; it is placed again as their Status moves, or once that machine serves or ends.
+                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free { .. }) && placed.get(&key).is_some_and(|placed| placed.soonest.ready_at_ms.is_some() || placed.soonest.waits_ms(now_ms()) > 0) {
                     acts.push(Act::Held { id });
                     continue;
                 }
@@ -4496,7 +4533,7 @@ impl Walk {
                     self.project.walker.lock().expect("walker lock").quotables.entry(key).or_insert(job);
                 }
                 Ok(None) => {}
-                Err(_) => {}
+                Err(why) => crate::private_io::diagnose(&self.folder().dir, || format!("{key} isn't fetched ahead: {why}")),
             },
             Done::Sent { id, key, ask, name, kind, inputs, result } => match result {
                 Ok(()) => {
@@ -5037,7 +5074,9 @@ impl Walk {
                 }
                 Reach::Fetch => {
                     self.say(Told::Said { message: format!("{name}: fetching {field} from {}", file.machine), name: Some(name.clone()) });
+                    let began = std::time::Instant::now();
                     let fetched = self.fetching(&digest, &file.machine).await;
+                    crate::private_io::diagnose(&self.folder().dir, || format!("{key} waited {} ms for {field} from {}", began.elapsed().as_millis(), file.machine));
                     fetched.map_err(|why| cannot(&name, format!("{field} is on {}, and can't be had: {why}", file.machine)))?;
                 }
                 Reach::Gone => return Err(cannot(&name, format!("{field} is gone from its machine {}", file.machine))),
@@ -5081,10 +5120,16 @@ impl Walk {
         let source = match &renderer.local {
             None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone(), digest: self.pinned(&hub, &renderer).map_err(named)? }),
             Some(path) => {
+                let began = std::time::Instant::now();
                 let prepared = self.again(|| async {
                     let scope = crate::private_io::of_path(&self.folder().dir)?;
                     crate::private_io::context(scope, self.host.ready(path, &placed, &hub, host::Wait::Job(key, Some(&member)))).await
-                }).await.map_err(named)?;
+                }).await;
+                crate::private_io::diagnose(&self.folder().dir, || {
+                    let how = prepared.as_ref().map_or_else(|error| format!("not: {}", error.code), |_| "ready".to_owned());
+                    format!("{key}'s code on {placed}: {how} in {} ms", began.elapsed().as_millis())
+                });
+                let prepared = prepared.map_err(named)?;
                 staged.extend(prepared.files);
                 warnings.extend(prepared.from.map(|from| Warning { code: api::calcifer::FROM_SOURCE.into(), message: from.line() }));
                 v1::Source::Local(prepared.source)
@@ -5149,6 +5194,7 @@ impl Walk {
                 return Err(error);
             }
         };
+        crate::private_io::diagnose(&self.folder().dir, || format!("{key} ({name}) sent to {}: run {}", run.machine.as_deref().unwrap_or("-"), run.number));
         self.folder().update_walk(|walk| match walk.pending.get_mut(key) {
             Some(pending) => {
                 pending.run = run.number;

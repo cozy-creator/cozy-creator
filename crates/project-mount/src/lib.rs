@@ -311,7 +311,9 @@ impl Provider {
             return apfs::create(self, backing, secret);
         }
         let mut command = self.command("create");
-        command.args(["--format", "lite"]).arg(backing);
+        // The secret is the keybag's 256 random bits: securefs's own password stretching adds nothing and cost
+        // ~3 s on every create and mount (cl-995). A backing made before keeps its stored parameters and still mounts.
+        command.args(["--format", "lite", "--argon2-t", "1", "--argon2-m", "8", "--argon2-p", "1"]).arg(backing);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
