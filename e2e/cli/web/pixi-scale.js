@@ -220,6 +220,7 @@ async function candidate(context, origin) {
   const canvas = page.getByRole('region', { name: 'Project canvas', exact: true });
   const inspect = (method, arg) => canvas.evaluate((element, { method, arg }) => element.canvasInspection?.[method]?.(arg) ?? null, { method, arg });
   const camera = () => inspect('camera'), resources = () => inspect('resources');
+  const cameraCenter = async () => { const box = await canvas.boundingBox(); if (!box) throw new Error('canvas bounds unavailable'); await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); };
   const settled = async () => { let before, same = 0; return until('camera settle', camera, value => { const next = JSON.stringify(value); same = value && next === before ? same + 1 : 0; before = next; return same >= 3; }); };
   const passive = async () => { await page.mouse.move(15, 15); await until('native overlay released', () => page.locator('.canvas-node').count(), count => count === 0); };
   const fit = async () => { await page.getByRole('button', { name: /, more zoom options$/ }).click(); await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click(); await passive(); await settled(); };
@@ -296,11 +297,11 @@ async function candidate(context, origin) {
       result.selection_ms = performance.now() - selectStart; check(`${project.count}/${repeat}/selection-response`, result.selection_ms <= 1000, result.selection_ms);
       await passive(); await timed(result, 'pan', pan, 'all-visible');
       await working(); result.gradual_initial_load = await ready(project.count);
-      await timed(result, 'gradualzoom', async () => { await page.mouse.move(WIDTH * .6, HEIGHT * .55); await page.keyboard.down('Control'); try { for (let n = 0; n < 26; n++) { await page.mouse.wheel(0, 35); await pause(40); } } finally { await page.keyboard.up('Control'); } await passive(); await settled(); });
+      await timed(result, 'gradualzoom', async () => { await cameraCenter(); await page.keyboard.down('Control'); try { for (let n = 0; n < 26; n++) { await page.mouse.wheel(0, 35); await pause(40); } } finally { await page.keyboard.up('Control'); } await passive(); await settled(); });
       result.gradual_load = await ready(project.count);
       result.gradual_camera = await camera();
       check(`${project.count}/${repeat}/gradual-all-visible`, result.gradual_load.resources.visibleCards === project.count && result.gradual_load.resources.loadedCards === project.count, result.gradual_load.resources);
-      await timed(result, 'gradualzoom-in', async () => { await page.mouse.move(WIDTH * .6, HEIGHT * .55); await page.keyboard.down('Control'); try { for (let n = 0; n < 26; n++) { await page.mouse.wheel(0, -35); await pause(40); } } finally { await page.keyboard.up('Control'); } await passive(); await settled(); });
+      await timed(result, 'gradualzoom-in', async () => { await cameraCenter(); await page.keyboard.down('Control'); try { for (let n = 0; n < 26; n++) { await page.mouse.wheel(0, -35); await pause(40); } } finally { await page.keyboard.up('Control'); } await passive(); await settled(); });
       result.zoomed_in_load = await ready(project.count);
       await page.mouse.wheel(80, 50); await settled();
       const home = await timed(result, 'Home', async () => { await canvas.focus(); await page.keyboard.press('f'); await passive(); await settled(); });
