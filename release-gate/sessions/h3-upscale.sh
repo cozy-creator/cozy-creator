@@ -6,8 +6,10 @@
 #   clip_prompt    the take's file as a box (no latents: an uploaded video) with the shot's words as the prompt
 #   clip_bare      the same with no text at 0.7: it runs and warns, and holds the source (frames.py regen, the gate's bar)
 # Each upscale is held against the shot by frames.py regen; frames 72 and 288 of each, side by side, in $OUT/frames. params:
-#   to       1080p (default), 1440p or 2160p
-#   prompt   the overriding prompt
+#   to        1080p (default), 1440p or 2160p
+#   prompt    the overriding prompt
+#   runtime   the Runtime's manylinux wheel, https://…#sha256=<hex> (a pure wheel has none of its kernels)
+#   tensorfs  optional: TensorFS's wheel, the same way
 . "$(dirname "$0")/lib.sh"
 TO=$(param to 1080p)
 OVERRIDE=$(param prompt "A grandmother in a bright red tracksuit and round sunglasses rides a skateboard in a concrete skate park at night, in heavy falling snow under orange floodlights.")
@@ -15,7 +17,15 @@ WAS=$PACKAGES/was/minimax-h3 NOW=$PACKAGES/now/minimax-h3 GATE=$(cd "$(dirname "
 [[ $TO =~ ^(1080|1440|2160)p$ ]] || fail "to $TO"
 for t in "$WAS" "$NOW"; do [ -f "$t/pyproject.toml" ] || fail "no packages_refs checkout ${t#"$PACKAGES"/}"; done
 grep -q 'prompt: Annotated\[Prompt' "$NOW/h3.py" || fail "now's Upscale takes no prompt"
-W=${RUNTIME_WHEEL:-}; [ -n "$W" ] || fail "no Runtime: dispatch with runtime_ref"
+# wheel <url#sha256=hex>: the wheel fetched into $OUT/wheels, its digest checked; nothing printed when it isn't that.
+wheel() {
+  [[ $1 == https://*'#sha256='* ]] || return 1
+  local f; f=$OUT/wheels/$(basename "${1%%#*}" | sed 's/%2B/+/g'); mkdir -p "$OUT/wheels"
+  curl -fsSL --retry 5 --retry-all-errors "${1%%#*}" -o "$f" && [ "$(sha256sum "$f" | cut -c1-64)" = "${1##*sha256=}" ] && echo "$f"
+}
+URL=$(param runtime); RT=$(wheel "$URL") || fail "runtime: no manylinux wheel at ${URL:-(none named)} (https://…#sha256=<hex>)"
+UPDATE=(--runtime "$RT"); URL=$(param tensorfs)
+if [ -n "$URL" ]; then TF=$(wheel "$URL") || fail "tensorfs: no wheel at $URL"; UPDATE+=(--tensorfs "$TF"); fi
 command -v ffprobe > /dev/null || fail "no ffmpeg"
 IFS=$'\t' read -r HERO WHO MOTION _ < <(grep -m1 $'^Skater\t' "$GATE/scenarios.tsv")
 [ -n "$MOTION" ] || fail "no Skater row in scenarios.tsv"
@@ -73,8 +83,8 @@ cp "$REF/seed.jpg" "$OUT/skater.jpg"
 run_page import "$OUT/skater.jpg" --name "$HERO" > "$OUT/import.txt" 2>&1 || fail "import: $(cat "$OUT/import.txt")"
 quote 5400
 rent
-step update machine update "$NAME" --tensord "$(command -v cozy)" --runtime "$W" -y || fail "update"
-say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .status.runtime, gpu: .status.gpus[0].name}')"
+step update machine update "$NAME" --tensord "$(command -v cozy)" "${UPDATE[@]}" -y || fail "update"
+say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"
 
 say "the shot: the gate's Skater request (15 s, seed 2026102801) from was, as a box"
 run_page add take --tool "$WAS/generate" --fields "$(jq -cn --arg d "<$HERO> $MOTION" '{seed: 2026102801, beats: [{duration: 15, description: $d}]}')" \
