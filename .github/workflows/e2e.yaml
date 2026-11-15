@@ -709,7 +709,7 @@ jobs:
         # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
         # web-1, web-2, web-3, web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once. Manual shard selections
         # remain available.
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","local-code"]') }}
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","local-code","typed-calls"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
@@ -728,6 +728,8 @@ jobs:
       - uses: ./.creator/e2e/candidates
         with:
           packages_ref: ${{ needs.affected.outputs.packages }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
@@ -1057,6 +1059,8 @@ jobs:
       - uses: ./.creator/e2e/candidates
         with:
           packages_ref: ${{ needs.affected.outputs.packages }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}
@@ -1118,6 +1122,8 @@ jobs:
       - uses: ./.creator/e2e/candidates
         with:
           packages_ref: ${{ needs.affected.outputs.packages }}
+          runtime_ref: ${{ needs.affected.outputs.runtime }}
+          stack_ref: ${{ needs.affected.outputs.stack }}
           repo: ${{ needs.affected.outputs.repo }}
           ref: ${{ needs.affected.outputs.ref }}
           build: ${{ env.BUILD }}

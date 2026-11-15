@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -76,8 +77,30 @@ func main() {
 			"method": response.Request.Method, "path": response.Request.URL.EscapedPath(), "status": response.StatusCode,
 		})
 	}
-	server := &http.Server{Handler: proxy, TLSConfig: &tls.Config{
+	sdk := http.StripPrefix("/__cozy_sdk/", http.FileServer(http.Dir(filepath.Join(dir, "sdk"))))
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/__cozy_sdk/") {
+			proxy.ServeHTTP(w, r)
+			return
+		}
+		observed := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		sdk.ServeHTTP(observed, r)
+		traceMu.Lock()
+		defer traceMu.Unlock()
+		_ = json.NewEncoder(trace).Encode(map[string]any{"method": r.Method, "path": r.URL.EscapedPath(), "status": observed.status})
+	})
+	server := &http.Server{Handler: handler, TLSConfig: &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}}}}
 	fmt.Println("https://" + listener.Addr().String())
 	log.Fatal(server.ServeTLS(listener, "", ""))
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
 }
