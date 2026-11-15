@@ -1,6 +1,6 @@
 """Tiny real PAN2 modules, including Qwen3.5 and Wan2.2, with PAN2's fixed caption-header token ids.
 
-The byte vocabulary is deliberately small. The production crop boundary still sees
+The synthetic word vocabulary is deliberately small. The production crop boundary still sees
 [im_start, user, newline] = [248045, 846, 198], rather than waiving the crop check.
 Full-size/max-duration quality and latency are qualified separately on H200.
 """
@@ -30,7 +30,10 @@ def tokenizer(folder: Path) -> None:
     words = {"[UNK]": 0, "\n": 198, "user": 846, "system": 847, "assistant": 848,
              "<|endoftext|>": 248044, "<|im_start|>": 248045, "<|im_end|>": 248046}
     made = Tokenizer(token_models.WordLevel(words, unk_token="[UNK]"))
-    made.pre_tokenizer = pre_tokenizers.Split(Regex(r"(\n|[^\S\n]+)"), behavior="isolated")
+    made.pre_tokenizer = pre_tokenizers.Sequence([
+        pre_tokenizers.Split(Regex(r"[^\S\n]+"), behavior="removed"),
+        pre_tokenizers.Split(Regex(r"\n"), behavior="isolated"),
+    ])
     specials = ("<|endoftext|>", "<|im_start|>", "<|im_end|>")
     made.add_special_tokens([AddedToken(s, special=True, normalized=False) for s in specials])
     made.save(str(folder / "tokenizer.json"))
@@ -56,7 +59,6 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         linear_conv_kernel_dim=4, linear_key_head_dim=8, linear_value_head_dim=8,
         linear_num_key_heads=2, linear_num_value_heads=2,
         layer_types=["linear_attention"] * 3 + ["full_attention"],
-        partial_rotary_factor=0.25,
         rope_parameters={"rope_type": "default", "rope_theta": 10000.0, "partial_rotary_factor": 0.25},
     )
     save(module(Qwen3_5TextModel(text)), out / "text_encoder")
