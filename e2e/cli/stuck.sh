@@ -30,6 +30,37 @@ stuck_gone() {
   return 1
 }
 # ready <seconds>: `machine show local` says ready within that long (it starts the machine).
+# diagnose <name>: what a failed step needs read, into $OUT/stuck-<name>.diag: the connections to the machine's port, TensorD's
+# processes and threads, the runs, and the last lines of TensorD's and Calcifer's logs.
+stuck_diagnose() {
+  local port
+  port=$(cat "$STUCK_ROOT/machine/api-port" 2> /dev/null)
+  {
+    echo "== connections to :$port"; ss -tnpoi state established "( sport = :$port or dport = :$port )" 2>&1
+    echo "== tensord threads"; ps -eLo pid,tid,ppid,stat,wchan:32,comm | awk 'NR == 1 || $6 == "tensord" || $6 ~ /^tokio/ || $6 ~ /^machine-/'
+    echo "== runs"; timeout 30 cozy --json run ls --all --limit 10 2>&1 | head -c 4000
+    echo "== tensord log"; stuck_log | tail -40
+    echo "== calcifer"; tail -40 "$HOME/.cozy/calcifer/diagnostics.log" 2>&1
+  } > "$OUT/stuck-$1.diag" 2>&1
+}
+# The connections to the machine's port every 20 s while <pid> lives, into $OUT/stuck-<name>.ss.
+stuck_watch_connections() {
+  local port
+  port=$(cat "$STUCK_ROOT/machine/api-port" 2> /dev/null)
+  while kill -0 "$2" 2> /dev/null; do
+    { date -u +%T; ss -tnpoi state established "( sport = :$port or dport = :$port )"; } >> "$OUT/stuck-$1.ss" 2>&1
+    sleep 20
+  done
+}
+# settled <seconds>: no update run on local left unsettled, within that long.
+stuck_settled() {
+  for _ in $(seq "$1"); do
+    timeout 30 cozy --json run ls --all --on local > "$OUT/stuck-runs.json" 2> /dev/null || true
+    J '[.runs[]? | select(.kind == "update" and (.status | IN("completed", "failed", "canceled") | not))] | length == 0' "$OUT/stuck-runs.json" && return 0
+    sleep 1
+  done
+  return 1
+}
 stuck_ready() {
   for _ in $(seq "$1"); do
     cozy --json machine show local > "$OUT/stuck-machine.json" 2> "$OUT/stuck-machine.err" || true
@@ -84,7 +115,10 @@ step "stuck: an update's restart past a service that can't exit"
 first=$(stuck_service)
 echo "$first" > "$trap"
 t0=$SECONDS
-cozy --json machine update local --gpu-memory-limit off -y > "$OUT/stuck-update.json" 2>&1 || check "stuck: the update failed: $(tail -c 300 "$OUT/stuck-update.json")"
+timeout 300 cozy --json machine update local --gpu-memory-limit off -y > "$OUT/stuck-update.json" 2>&1 &
+local updating=$!
+stuck_watch_connections update "$updating" &
+wait "$updating" || { check "stuck: the update failed: $(tail -c 300 "$OUT/stuck-update.json")"; stuck_diagnose update; }
 took=$((SECONDS - t0))
 grep -q "holding a flush" "$OUT/trapfs.log" || check "stuck: the filesystem held no flush from pid $first"
 stuck_in_kernel "$first" || check "stuck: pid $first, the service before, isn't waiting in the kernel: $(stuck_states "$first")"
@@ -92,7 +126,7 @@ echo "stuck: pid $first's threads: $(stuck_states "$first")"
 # 10 s to exit, 60 s with no progress, then the next service's boot.
 [ "$took" -le 200 ] || check "stuck: the update took ${took} s past a service that can't exit"
 stuck_log | grep -q "pid $first can't exit: thread " || check "stuck: TensorD's log doesn't say pid $first can't exit"
-stuck_ready 30 || check "stuck: the machine isn't ready after its update: $(tail -c 300 "$OUT/stuck-machine.json")"
+stuck_ready 30 || { check "stuck: the machine isn't ready after its update: $(tail -c 300 "$OUT/stuck-machine.json")"; stuck_diagnose after-update; }
 J --argjson pid "$first" 'any(.status.stuck[]?; .pid == $pid and .command == "the TensorD before this one")' "$OUT/stuck-machine.json" \
   || check "stuck: machine show local lists no stuck pid $first: $(jq -c .status.stuck "$OUT/stuck-machine.json")"
 cozy machine show local > "$OUT/stuck-show.txt" 2>&1 || true
@@ -101,7 +135,8 @@ grep -qE "pid $first \(the TensorD before this one\), killed .* stuck in the ker
 cozy machine ls > "$OUT/stuck-ls.txt" 2>&1 || true
 grep -qE '^local .*1 stuck' "$OUT/stuck-ls.txt" || check "stuck: machine ls doesn't mark local stuck: $(grep '^local' "$OUT/stuck-ls.txt")"
 J '.broken == null' "$OUT/stuck-machine.json" || check "stuck: a machine with no GPU is broken: $(jq -c .broken "$OUT/stuck-machine.json")"
-(cd "$here" && cell stuck-after-update ./weightless/reverse "text=stuck$RANDOM") || check "stuck: no run went to the machine after its update"
+stuck_settled 120 || { check "stuck: the update run never settled: $(jq -c '[.runs[]? | select(.kind == "update") | {number, status, waiting}]' "$OUT/stuck-runs.json")"; stuck_diagnose unsettled; }
+stuck_ready 60 && stuck_settled 5 && { (cd "$here" && cell stuck-after-update ./weightless/reverse "text=stuck$RANDOM") || check "stuck: no run went to the machine after its update"; }
 echo "stuck: updated in ${took} s past pid $first, which waits in the kernel"
 
 step "stuck: a stop and a start beside a TensorD that can't exit"
@@ -109,11 +144,11 @@ parent=$(machine_pid)
 kill "$parent"
 stuck_gone "$parent" 30 || check "stuck: the machine (pid $parent) runs 30 s after its stop"
 t0=$SECONDS
-stuck_ready 120 || check "stuck: the machine didn't start beside pid $first: $(tail -c 300 "$OUT/stuck-machine.json")"
+stuck_ready 120 || { check "stuck: the machine didn't start beside pid $first: $(tail -c 300 "$OUT/stuck-machine.json")"; stuck_diagnose beside; }
 took=$((SECONDS - t0))
 [ "$(cat "$STUCK_ROOT/machine/api-port")" = "$port" ] || check "stuck: the machine left its port $port to the stuck pid $first: now $(cat "$STUCK_ROOT/machine/api-port")"
 J --argjson pid "$first" 'any(.status.stuck[]?; .pid == $pid)' "$OUT/stuck-machine.json" || check "stuck: after its start, pid $first isn't listed"
-(cd "$here" && cell stuck-after-start ./weightless/reverse "text=stuck$RANDOM") || check "stuck: no run went to the machine started beside pid $first"
+stuck_ready 60 && { (cd "$here" && cell stuck-after-start ./weightless/reverse "text=stuck$RANDOM") || check "stuck: no run went to the machine started beside pid $first"; }
 echo "stuck: started in ${took} s beside pid $first, on port $port"
 
 step "stuck: a stop whose service can't exit"
@@ -199,7 +234,7 @@ fi
 step "stuck: released, the silent start serves"
 : > "$trap"
 stuck_ready 90 || check "stuck: the machine didn't serve once its log answered: $(tail -c 300 "$OUT/stuck-machine.json")"
-(cd "$here" && cell stuck-after-silent ./weightless/reverse "text=late$RANDOM") || check "stuck: no run went to the machine once it served"
+stuck_ready 60 && { (cd "$here" && cell stuck-after-silent ./weightless/reverse "text=late$RANDOM") || check "stuck: no run went to the machine once it served"; }
 for _ in $(seq 120); do kill -0 "$any" 2> /dev/null || break; sleep 1; done
 kill "$any" 2> /dev/null || true
 wait "$any" 2> /dev/null || true
