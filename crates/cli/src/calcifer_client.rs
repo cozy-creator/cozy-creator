@@ -924,10 +924,11 @@ impl Client {
             // Nobody holds the home: start one. Again too when the last start lost to a
             // Calcifer that was stopping, which held the lock until it went.
             if child.is_none() && self.lock_free() {
-                match managed {
+                child = match managed {
                     // The manager stops starting a service killed or failed too often lately
                     // (`Services::clear`): its refusal is cleared once a start, so a Calcifer that
-                    // keeps failing by itself is still said.
+                    // keeps failing by itself is still said. With no manager (Windows), the process
+                    // started is watched as a detached one is (cl-989).
                     true => services
                         .start(&spec)
                         .or_else(|refused| match std::mem::replace(&mut cleared, true) {
@@ -935,8 +936,8 @@ impl Client {
                             false => services.clear(&spec).and_then(|()| services.start(&spec)),
                         })
                         .map_err(failed)?,
-                    false => child = Some(spawn(&spec).map_err(failed)?),
-                }
+                    false => Some(spawn(&spec).map_err(failed)?),
+                };
             }
             tokio::time::sleep(SAMPLE).await;
             if let Some(error) = refusal(&refused) {
