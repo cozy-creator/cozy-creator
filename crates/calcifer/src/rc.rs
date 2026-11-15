@@ -294,6 +294,7 @@ impl Machines {
     /// while one is: each idle one behind the RC moves. With none up, nothing wakes until one is.
     pub(crate) async fn follow_rcs(self: Arc<Self>) {
         loop {
+            let took = crate::took::Took::new("follow_rcs");
             let up = match self.store().machines() {
                 Ok(rows) => {
                     let local = |row: &&crate::store::MachineRow| {
@@ -307,6 +308,7 @@ impl Machines {
                 }
                 Err(_) => true,
             };
+            drop(took);
             match up {
                 true => tokio::select! {
                     () = tokio::time::sleep(EVERY) => {}

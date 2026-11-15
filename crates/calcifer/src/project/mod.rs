@@ -440,6 +440,17 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
 /// The index, last used first: each project opened here whose folder still holds it. One whose folder is gone (deleted, moved, on a
 /// drive that isn't there) leaves the index as it's found so, and its name is free. Its `project.db` keeps its id and name: opened
 /// again by its path it is back as it was, or as `<name>_2` if another took the name meanwhile.
+/// Where project `id` was, if its folder is gone: it leaves the index as `indexed` lets it go. None while it's there, or can't be told.
+pub(crate) fn gone(api: &Api, id: &str) -> Option<PathBuf> {
+    let store = api.calcifer.store();
+    match store.known_project(id) {
+        Ok(Some(entry)) if vault::keeps_index(&entry.path) => None,
+        Ok(Some(entry)) => store.projects_gone(std::slice::from_ref(&entry.id)).ok().map(|()| entry.path),
+        Ok(None) => store.project_gone(id, "").ok().flatten().map(|gone| gone.path),
+        Err(_) => None,
+    }
+}
+
 fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     let store = api.calcifer.store();
     let failed = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
@@ -455,13 +466,25 @@ fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
         // A locked project still has its canonical id. Do not mint a public
         // code until an opened view can recover the code stored in its DB.
         if vault::encrypted(&entry.path) { continue; }
+        let db = entry.path.join(db::DB);
+        if UNCODED.lock().expect("uncoded lock").get(&entry.id) == Some(&stamp(&db)) { continue; }
         match backfill_code(store, entry) {
-            Ok(code) => entry.code = code,
-            Err(error) => warn!("keeping the existing project link for {}: {}", entry.path.display(), error.message),
+            Ok(code) => {
+                UNCODED.lock().expect("uncoded lock").remove(&entry.id);
+                entry.code = code;
+            }
+            Err(error) => {
+                warn!("keeping the existing project link for {}: {}", entry.path.display(), error.message);
+                UNCODED.lock().expect("uncoded lock").insert(entry.id.clone(), stamp(&db));
+            }
         }
     }
     Ok(here)
 }
+
+/// Each project whose code couldn't be backfilled, by id, with its `project.db` as it was then (`stamp`): tried again only once that
+/// file changes, never on each list.
+static UNCODED: std::sync::LazyLock<Mutex<HashMap<String, String>>> = std::sync::LazyLock::new(Mutex::default);
 
 /// An older project keeps its existing link if its public code cannot be recorded.
 fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject) -> Result<String, Error> {
@@ -494,7 +517,7 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
             let code = code::parse(text).unwrap_or_default();
             let gone = api.calcifer.store().project_gone(text, &code).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
             Err(match gone {
-                Some(path) => Error::new(Kind::NotFound, "project_folder_gone", format!("this project's folder is gone: {}", path.display()))
+                Some(gone) => Error::new(Kind::NotFound, "project_folder_gone", format!("this project's folder is gone: {}", gone.path.display()))
                     .remedy("move the folder back, or open another project")
                     .next("cozy new <folder>"),
                 None => Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy open"),
@@ -1475,10 +1498,20 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
 async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> Result<Json<api::calcifer::project::Address>, Refusal> {
     if api::target::written_as_path(reference.trim()) {
         let project = api.projects.get(&api, &reference)?;
-        return Ok(Json(api::calcifer::project::Address { id: project.id.clone(), code: project.code.clone() }));
+        return Ok(Json(api::calcifer::project::Address { id: project.id.clone(), code: project.code.clone(), gone: None }));
     }
-    let entry = known(&api, &reference).map_err(Refusal)?;
-    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code }))
+    let entry = match known(&api, &reference) {
+        Ok(entry) => entry,
+        // One whose folder went is still known by what it was known by: said, not refused (cl-980).
+        Err(error) => {
+            let code = code::parse(&reference).unwrap_or_default();
+            return match api.calcifer.store().project_gone(&reference, &code) {
+                Ok(Some(gone)) => Ok(Json(api::calcifer::project::Address { id: gone.id, code: gone.code, gone: Some(gone.path.to_string_lossy().into_owned()) })),
+                _ => Err(Refusal(error)),
+            };
+        }
+    };
+    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code, gone: None }))
 }
 
 /// Where its rows differ from its document (cl-885): nowhere, always. What e2e checks after each write.

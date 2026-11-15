@@ -88,7 +88,7 @@ pub enum Error {
 pub(crate) enum AllocationFailure {
     DriverOutOfMemory(usize),
     /// The pages fit, not beside the driver's reserve: `reclaim::acquire` gives what is idle and
-    /// done for it, never a wait, and short of that takes the reserve.
+    /// done for it, an idle peer's before our weights, and short of that takes the reserve.
     ReserveShort(usize),
     Other(Error),
 }

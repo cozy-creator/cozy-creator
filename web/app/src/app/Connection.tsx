@@ -283,6 +283,13 @@ class Bridge {
         void this.queries.invalidateQueries({ queryKey: ["project-vault", event.id] })
         break
       }
+      // Its folder gone, nothing of it is read again: whatever shows it says where it was (cl-980).
+      case "project.gone":
+        this.queries.setQueryData(["project-gone", event.id], event.path)
+        void this.queries.cancelQueries({ queryKey: ["project", event.id] })
+        void this.queries.cancelQueries({ queryKey: ["canvas", event.id] })
+        void this.queries.invalidateQueries({ queryKey: ["projects"] })
+        break
       case "project.changed":
         const revision = event.cursor ? JSON.stringify([event.cursor.generation, event.cursor.sequence]) : event.rev
         if (this.revs.get(event.id) !== revision) {

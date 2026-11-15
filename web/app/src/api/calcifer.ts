@@ -2177,7 +2177,11 @@ preview?: number | null, };
 /**
  * `GET /v1/projects/{id}/address`: project identity without evaluating its assets; accepts a containing directory.
  */
-export type ProjectAddress = { id: string, code: string, };
+export type ProjectAddress = { id: string, code: string,
+/**
+ * Its folder is gone: where it was (cl-980). Nothing of it reads.
+ */
+gone?: string | null, };
 
 /**
  * A project event's position in one controller process. Generations never compare across
@@ -3078,7 +3082,7 @@ gone?: Array<string>,
 /**
  * What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
  */
-head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "board.updated", project: string, board: Board, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "thumb", project: string, sha256: string, } | { "type": "resync" };
+head?: boolean, cursor?: ProjectEventCursor | null, } | { "type": "project.vault", id: string, state: string, } | { "type": "project.gone", id: string, path: string, } | { "type": "canvas", id: string, seq: number, cards: { [key in string]: Card | null }, } | { "type": "board.updated", project: string, board: Board, } | { "type": "job.updated", project: string, job: Job, seq: number, } | { "type": "ahead.updated", project: string, ahead: Ahead, } | { "type": "history", id: string, undo?: HistoryEntry | null, redo?: HistoryEntry | null, } | { "type": "thumb", project: string, sha256: string, } | { "type": "resync" };
 
 /**
  * A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network

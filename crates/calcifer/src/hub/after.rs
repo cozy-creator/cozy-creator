@@ -91,8 +91,7 @@ impl Calcifer {
             }
             After::Keep(filed) => {
                 let row = row.machine.as_deref().and_then(|name| machines.named(name).ok().flatten());
-                let status = row.and_then(|row| machines.picture(&row).ok()?.status);
-                if let Some(runtime) = status.map(|status| status.runtime).filter(|runtime| !runtime.is_empty()) {
+                if let Some(runtime) = row.and_then(|row| machines.frame(&row.name)).map(|frame| frame.runtime).filter(|runtime| !runtime.is_empty()) {
                     crate::local_code::keep(machines.hubs.home(), &filed, &runtime, &result["interface"]);
                 }
                 return;

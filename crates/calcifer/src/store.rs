@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -994,7 +994,8 @@ macro_rules! journal_methods {
     pub(crate) fn working(&self, machine: &str) -> Result<u32> {
         self.read(|conn| {
             let going = conn.query_row(
-                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND kind <> 'update' AND state IN ('sent', 'accepted') AND (?2 IS NULL OR owner=?2) AND custody='owned'",
+                // `state <> 'settled'` reads `runs_owed`, not every run.
+                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND state <> 'settled' AND kind <> 'update' AND state IN ('sent', 'accepted') AND (?2 IS NULL OR owner=?2) AND custody='owned'",
                 params![machine,self.owner_id()],
                 |r| r.get(0),
             )?;
@@ -1005,11 +1006,13 @@ macro_rules! journal_methods {
     /// Whether this journal is at rest: no run going or waiting but an update, and none ended in the last `quiet_ms` (xs-195:
     /// `local` moves to the RC only then, never between a render's steps).
     pub(crate) fn at_rest(&self, quiet_ms: i64) -> Result<bool> {
+        if now_ms() - LAST_ENDED_MS.load(Ordering::Relaxed).max(*STARTED_MS) < quiet_ms {
+            return Ok(false);
+        }
         self.read(|conn| {
             let busy: bool = conn.query_row(
-                "SELECT EXISTS (SELECT 1 FROM runs WHERE state <> 'settled' AND kind <> 'update' AND (?2 IS NULL OR owner=?2))
-                     OR EXISTS (SELECT 1 FROM runs WHERE settled_at > ?1 AND kind <> 'update' AND (?2 IS NULL OR owner=?2))",
-                params![now_ms() - quiet_ms, self.owner_id()],
+                "SELECT EXISTS (SELECT 1 FROM runs WHERE state <> 'settled' AND kind <> 'update' AND (?1 IS NULL OR owner=?1))",
+                params![self.owner_id()],
                 |r| r.get(0),
             )?;
             Ok(!busy)
@@ -1382,7 +1385,8 @@ macro_rules! journal_methods {
     /// The machines' runs not yet settled, oldest first: what a starting Calcifer drives.
     pub(crate) fn unsettled(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY number")?;
+            // `+number`: ordered after reading `runs_owed`, never by walking every run in number order.
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY +number")?;
             let ids = statement
                 .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1395,7 +1399,7 @@ macro_rules! journal_methods {
     /// Calcifer's own runs not yet settled: those an earlier Calcifer stopped under, or that are going now.
     pub(crate) fn unsettled_here(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY number")?;
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY +number")?;
             let ids = statement
                 .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2041,6 +2045,7 @@ impl Store {
     }
 
     pub(crate) fn open(path: &Path) -> Result<Self> {
+        std::sync::LazyLock::force(&STARTED_MS);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         }
@@ -2107,6 +2112,28 @@ impl Store {
             reader: Mutex::new(reader),
             durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
         })
+    }
+
+    /// The warm items this journal's runs set on `machine` (`spec.set`), without what a Status says of them: of a machine's warm
+    /// set, what this controller's views show. Read from its warm runs that carry a set (`runs_warm`), never every run.
+    pub(crate) fn warm_items(&self, machine: &str) -> Result<Vec<v1::WarmItem>> {
+        let rows = self.read(|conn| {
+            let mut statement = conn.prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM runs WHERE kind = 'warm' AND machine = ?1 AND instr(spec, CAST('\"set\":{{' AS BLOB)) > 0"
+            ))?;
+            let rows = statement.query_map([machine], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })?;
+        let mut items: Vec<v1::WarmItem> = vec![];
+        // A run of a project adapter, from when there were any, is no one's to read (`runs`); one that can't be opened sets nothing.
+        let rows = rows.into_iter().filter_map(|row| row.ok()).filter(|row| !row.target.to_ascii_lowercase().contains("/project-adapter-"));
+        for item in rows.flat_map(|row| row.spec.set.map(|set| set.items).unwrap_or_default()) {
+            let item = v1::WarmItem { holds: String::new(), held_back: String::new(), ..item };
+            if !items.contains(&item) {
+                items.push(item);
+            }
+        }
+        Ok(items)
     }
 
     pub(crate) fn migration_required(&self) -> Result<bool> {
@@ -2901,7 +2928,9 @@ fn run_list_indexes(conn: &Connection) -> Result<()> {
     let private = private_run_target();
     conn.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS runs_private_targets ON runs(number) WHERE {private};
-         CREATE INDEX IF NOT EXISTS runs_list_metadata ON runs(number,target,state,status,machine,out_dir,id,{private});"
+         CREATE INDEX IF NOT EXISTS runs_list_metadata ON runs(number,target,state,status,machine,out_dir,id,{private});
+         DROP INDEX IF EXISTS runs_settled_at;
+         CREATE INDEX IF NOT EXISTS runs_warm ON runs(machine) WHERE kind = 'warm';"
     ))?;
     Ok(())
 }
@@ -3324,8 +3353,16 @@ fn lifecycle(tx: &Transaction, id: &str) -> Result<Event> {
     Ok(Event::lifecycle(seq, record(tx, &row)?, false))
 }
 
+/// When a run other than an update last ended here, in any journal (`at_rest`); a Calcifer counts its start as one, as a run may
+/// have ended just before it.
+static LAST_ENDED_MS: AtomicI64 = AtomicI64::new(0);
+static STARTED_MS: std::sync::LazyLock<i64> = std::sync::LazyLock::new(now_ms);
+
 /// Settles the run: its outputs can no longer change, and its terminal event is the last.
 fn end(tx: &Transaction, id: &str, status: Status, reason: Option<Reason>) -> Result<Vec<Event>> {
+    if tx.query_row("SELECT kind <> 'update' FROM runs WHERE id = ?1", [id], |r| r.get::<_, bool>(0)).optional()?.unwrap_or(true) {
+        LAST_ENDED_MS.fetch_max(now_ms(), Ordering::Relaxed);
+    }
     let mut events = vec![];
     let open: Vec<(String, i64)> = {
         let mut statement = tx.prepare("SELECT name, idx FROM outputs WHERE run = ?1 AND done = 0 ORDER BY created_seq")?;

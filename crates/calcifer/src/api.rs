@@ -305,6 +305,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .layer(middleware::from_fn(guard))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(no_store))
+        .layer(middleware::from_fn(crate::took::request))
         .with_state(api)
 }
 
@@ -887,10 +888,12 @@ pub(crate) async fn events(
         }
     }
     let owner = api.calcifer.row_owner(&row)?;
+    let named = crate::project_of(&row);
     let inert = row.custody_pending || owner.as_ref().is_some_and(|owner| owner.project_id() != row.owner);
     if !inert { pending.extend(api.calcifer.live(&row.id)); }
     let follow = Follow {
         owner,
+        named,
         inert,
         vault_token: crate::project::vault::readable_token(&row.out_dir),
         _following: (row.state != RunState::Settled).then(|| crate::project::vault::following(&row.out_dir)).flatten(),
@@ -909,6 +912,8 @@ pub(crate) async fn events(
 /// One SSE subscriber's place in its run's stream.
 struct Follow {
     owner:Option<crate::project::RunOwner>,
+    /// Its project's id and name, which each record it sends names as GET's does: the store's records name none.
+    named: Option<(String, String)>,
     inert:bool,
     vault_token: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// A run still going, followed: its encrypted project stays unlocked meanwhile.
@@ -929,7 +934,12 @@ impl Follow {
     async fn next(mut self) -> Option<(Result<sse::Event, Infallible>, Self)> {
         loop {
             if self.vault_token.as_ref().is_some_and(|token| !token.load(std::sync::atomic::Ordering::Acquire)) { return None; }
-            if let Some(event) = self.pending.pop_front() {
+            if let Some(mut event) = self.pending.pop_front() {
+                if let (Some((id, name)), Event::Created { run, .. } | Event::Queued { run, .. } | Event::InProgress { run, .. }
+                    | Event::Completed { run, .. } | Event::Failed { run, .. } | Event::Canceled { run, .. }) = (&self.named, &mut event)
+                {
+                    (run.project_id, run.project) = (Some(id.clone()), Some(name.clone()));
+                }
                 self.ended |= event.is_terminal();
                 let mut sent = sse::Event::default();
                 if let Some(sequence) = event.sequence_number() {
