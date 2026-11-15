@@ -6,7 +6,7 @@
 const { createHash } = require('crypto');
 const { readdirSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasIdle, focus, middle, png } = require('./fixtures');
+const { test, expect, box, canvasIdle, focus, middle, png, TEXT_END } = require('./fixtures');
 const { drag, drawn, rows, rowsOf } = require('./geometry');
 
 const WORDS = 'a lighthouse in <hei.2> beside <other>';
@@ -124,7 +124,7 @@ test('box-actions', async ({ page, project, api }) => {
     const region = await focus(page, 'words');
     const field = region.locator('.mention-text[data-field="text"]').first();
     await field.click();
-    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.press(TEXT_END);
     await page.keyboard.press('ControlOrMeta+v');
     await expect.poll(async () => ((await field.innerText()).match(/lighthouse/g) ?? []).length, { message: 'Ctrl+V in words pastes the words' }).toBe(2);
     await page.keyboard.press('Escape');

@@ -4,7 +4,7 @@
 // Machines lists what `cozy machine ls` does; tabs share one `GET /v1/events`, which the second takes on when the first closes. The CLI has
 // no verb that renames or moves a box (a node file holds kind, description, text, approved, takes and rev): those two are the API's.
 const { mkdirSync, writeFileSync } = require('fs');
-const { test, expect, box, canvasIdle, focus, fixtureTool, png } = require('./fixtures');
+const { test, expect, box, canvasIdle, focus, fixtureTool, png, TEXT_END } = require('./fixtures');
 
 /** Polls whose miss leaves the cell going, as `expect.soft` does. */
 const softly = expect.configure({ soft: true });
@@ -152,7 +152,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     const region = await focus(page, 'cli_a');
     const words = region.getByRole('textbox', { name: 'Text', exact: true });
     await words.click();
-    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.press(TEXT_END);
     const typing = page.keyboard.type(' TYPED-MEANWHILE', { delay: 150 });
     const reads = await hold(page, 'GET', project.at('/assets/cli_a'));
     rev = await revOf(cli, 'cli_a');
@@ -190,7 +190,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     const region = await focus(page, 'cli_typed');
     const words = region.getByRole('textbox', { name: 'Text', exact: true });
     await words.click();
-    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.press(TEXT_END);
     const saves = await hold(page, 'PATCH', project.at('/assets/cli_typed'));
     await page.keyboard.type(' IN-THE-WINDOW');
     await expect.poll(() => saves.calls.length, { message: 'its words sent at the pause, and held' }).toBe(1);

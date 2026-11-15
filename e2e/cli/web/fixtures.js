@@ -275,9 +275,13 @@ const test = base.extend({
   guards: async ({}, use) => {
     const said = [];
     const allowed = [];
-    const say = (line) => { if (!allowed.some((re) => re.test(line))) said.push(line); };
+    let over = false;
+    const say = (line) => { if (!over && !allowed.some((re) => re.test(line))) said.push(line); };
     await use({
       allow: (...patterns) => { allowed.push(...patterns); },
+      /** The cell is over: what its pages say from here is Playwright's doing as it closes them (WebKit's screenshot adds a
+       *  `<style>body {}</style>`, which the page's CSP refuses), not the page's. */
+      over: () => { over = true; },
       async watch(context) {
         await context.exposeBinding('__cozyGuard', (_, line) => say(line));
         await context.addInitScript(guardPage);
@@ -296,6 +300,7 @@ const test = base.extend({
     await guards.watch(context);
     await context.addInitScript(watchBoxes);
     await use(context);
+    guards.over();
   },
 
   /** Another browser context, as another person's browser: guarded, closed after the cell. */
@@ -307,6 +312,7 @@ const test = base.extend({
       await guards.watch(context);
       return context;
     });
+    guards.over();
     for (const context of made) await context.close();
   },
 
@@ -432,7 +438,11 @@ function recordAddress() {
  *  round several times a second), and each move of its address since its document loaded: the other declared window. */
 const stays = (page) => page.evaluate((ms) => new Promise((done) => setTimeout(() => done({ path: location.pathname, moves: window.__moves }), ms)), 3000);
 
+/** The keys that put the caret at the start and the end of what's typed: macOS binds no Meta+Home or Meta+End (Home and End scroll there). */
+const TEXT_START = process.platform === 'darwin' ? 'Meta+ArrowUp' : 'Control+Home';
+const TEXT_END = process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End';
+
 /** A local fixture tool (e2e/cli/project/<file>/<function>), as a box or `cozy run` names it. */
 const fixtureTool = (path) => join(__dirname, '..', 'project', path);
 
-module.exports = { test, expect, box, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, DARK_OPEN, MP4, photo, png, wav };
+module.exports = { test, expect, box, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, TEXT_END, TEXT_START, DARK_OPEN, MP4, photo, png, wav };

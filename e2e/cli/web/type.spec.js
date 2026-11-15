@@ -3,7 +3,7 @@
 // keeps every character (cl-904). Another writer's words while the page's are on their way, and a second tab typing in the same box: both
 // stand, merged by character, with nothing asked. H3's Shot: Summary before its Beats, + Beat adds one, and a beat holds six lines with no
 // scroll of its own.
-const { test, expect, box, focus } = require('./fixtures');
+const { test, expect, box, focus, TEXT_END, TEXT_START } = require('./fixtures');
 const { fit, leave } = require('./hands');
 
 const SENTENCE = 'The quick brown fox jumps over 12 lazy dogs; ';
@@ -124,11 +124,11 @@ test('type', { tag: '@engines' }, async ({ page, context, project, api, signIn }
     await expect(there).toHaveText(merged);
     const hold = await holdWrites(page, 'shared');
     await here.click();
-    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.press(TEXT_END);
     await page.keyboard.type(' A-end.');
     await expect.poll(() => hold.asked.length, { message: "the first tab's save asked" }).toBeGreaterThan(0);
     await there.click();
-    await other.keyboard.press('ControlOrMeta+Home');
+    await other.keyboard.press(TEXT_START);
     await other.keyboard.type('B-start. ');
     await expect.poll(() => fieldOf('shared', 'text'), { message: "the second tab's words saved" }).toBe(`B-start. ${merged}`);
     await hold.release();
