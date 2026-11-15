@@ -18,7 +18,7 @@ web_chrome() {
 # web_suite <lane> <cell...> (cl-973): each cell web/<cell>.spec.js, several at once through Playwright Test (web/playwright.config.js)
 # on this job's Calcifer, each on a project and a browser context of its own. Then one check a failed cell, and each cell's time and the
 # 1-minute load as it ended. <lane>: 1, 2, 3 (Chrome), engines (Firefox's `@engines` cells, and `@vault`), solo (`@solo`, one at a time),
-# native, or a cell's own name (by hand: whichever project takes it).
+# native (one at a time, as it holds `@solo` tests), or a cell's own name (by hand: whichever project takes it, one at a time).
 web_suite() {
   local lane=$1 pw=$OUT/playwright-test chrome cell engine code line web=$OUT/web
   local projects=() workers=() filters=()
@@ -42,8 +42,9 @@ web_suite() {
       bash "$here/install-browser-deps.sh" "$pw" > "$OUT/web-firefox-deps.log" 2>&1 \
         || { check "web-$lane: Firefox's dependencies failed: $(tail -c 300 "$OUT/web-firefox-deps.log")"; return; } ;;
     solo) projects=(solo) workers=(--workers=1) ;;
-    native) projects=(chrome solo); [ "${RUNNER_OS:-}" != macOS ] || projects+=(webkit) ;;
-    *) projects=(chrome vault solo) ;;
+    # Native and by hand, one test at a time: a `@solo` test stops the Calcifer the others share.
+    native) projects=(chrome solo) workers=(--workers=1); [ "${RUNNER_OS:-}" != macOS ] || projects+=(webkit) ;;
+    *) projects=(chrome vault solo) workers=(--workers=1) ;;
   esac
   for engine in firefox webkit; do
     [[ " ${projects[*]} " != *" $engine "* ]] || node "$pw/node_modules/playwright-core/cli.js" install "$engine" > "$OUT/web-$engine-install.log" 2>&1 \
