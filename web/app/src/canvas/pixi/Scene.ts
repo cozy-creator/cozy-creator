@@ -2,6 +2,7 @@ import { CanvasTextMetrics, Color, Container, Graphics, Rectangle, Sprite, Text,
 import type { Client } from "../../api/client"
 import type { CanvasStore } from "../CanvasStore"
 import type { Box } from "../graph"
+import { GLIDE_MS } from "../clear"
 import { bandOf, HEAD, nameZoomOf, SUB_ROW, hexOf, shownOf } from "../shown"
 import { chipWords, withMentions } from "../text"
 import { MediaCache, MIN_TEXTURE_WIDTH, THUMB_SOURCE_WIDTH, type MediaHandle, type MediaRequest } from "./MediaCache"
@@ -80,6 +81,8 @@ interface Drawn {
   wave?: { graphics: Graphics; began: number; alpha: number; spread: number }
   loadingPulse?: { graphics: Graphics; began: number; alpha: number; shape?: string }
   landing?: { began: number; scale: number; alpha: number }
+  glide?: { began: number; from: Box }
+  carry?: { began: number; scale: number; alpha: number }
   meter?: { run: number; fraction: number; since: number }
   stateDot?: Box
   meterBox?: Box
@@ -88,6 +91,13 @@ interface Drawn {
 
 const inside = (point: { x: number; y: number }, box: Box) => point.x >= box.x && point.y >= box.y && point.x <= box.x + box.w && point.y <= box.y + box.h
 const intersects = (a: Box, b: Box) => a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y
+/** The existing CSS curves, evaluated only while a visible card is moving or rendering. */
+const ease = (x: number, x1 = 0.25, y1 = 0.6, x2 = 0.3, y2 = 1) => {
+  let lo = 0, hi = 1
+  const curve = (t: number, a: number, b: number) => 3 * (1 - t) ** 2 * t * a + 3 * (1 - t) * t * t * b + t ** 3
+  for (let n = 0; n < 12; n++) { const t = (lo + hi) / 2; if (curve(t, x1, x2) < x) lo = t; else hi = t }
+  return curve((lo + hi) / 2, y1, y2)
+}
 
 /** One passive WebGL scene. Its host owns the renderer, camera transform, gestures and demand-frame scheduler. */
 export class PixiScene {
@@ -140,10 +150,13 @@ export class PixiScene {
     const screen: Box = { x: -input.camera.x / zoom - margin, y: -input.camera.y / zoom - margin, w: input.screen.width / zoom + margin * 2, h: input.screen.height / zoom + margin * 2 }
     const live = new Set<string>()
     const tools = this.options.store.tools.get()
+    const now = performance.now()
+    const inView = (box: Box) => intersects({ ...box, y: box.y - 40, h: box.h + 160 }, screen)
     for (const node of input.nodes) {
-      if (input.hiddenNames?.has(node.name) || !intersects({ ...node.box, y: node.box.y - 40, h: node.box.h + 160 }, screen)) continue
-      live.add(node.id)
       let drawn = this.records.get(node.id)
+      // A target outside the viewport must not remove a card while its visible pixels are still sliding there.
+      if (input.hiddenNames?.has(node.name) || (!inView(node.box) && !((node.gliding || drawn?.glide) && drawn && inView(this.glidedBox(drawn, now))))) continue
+      live.add(node.id)
       if (!drawn) {
         const container = new Container({ eventMode: "none" })
         const ground = new Graphics(), pixels = new Container(), ink = new Graphics(), labels = new Container()
@@ -153,14 +166,20 @@ export class PixiScene {
         this.records.set(node.id, drawn)
       }
       const previous = drawn.node
+      const moved = previous.box.x !== node.box.x || previous.box.y !== node.box.y || previous.box.w !== node.box.w || previous.box.h !== node.box.h
+      if (node.dragging || this.reducedMotion.matches || !this.visible || (moved && !node.gliding)) drawn.glide = undefined
+      else if (node.gliding && moved) {
+        drawn.glide = { began: now, from: { ...this.glidedBox(drawn, now) } }
+      }
+      if (!node.dragging || !node.offering || this.reducedMotion.matches) drawn.carry = undefined
+      else if (!previous.dragging || !previous.offering) drawn.carry = { began: now, scale: previous.dragging ? 1.015 : 1, alpha: previous.dragging ? 0.94 : 1 }
       const density = this.resolution(node.box.w)
       const titleScale = Math.max(TITLE, BODY * nameZoomOf(zoom))
       // World position alone never rebuilds labels or reloads textures. Camera changes only touch scale-sensitive drawing buckets.
       const signature = [node.box.w, node.box.h, node.selected, input.theme, bandOf(zoom), titleScale, density, this.textResolution(), node.selected ? 2 ** Math.ceil(Math.log2(zoom)) : "", this.fontEpoch].join(":")
       const changed = previous.view !== node.view || drawn.tools !== tools || drawn.context !== node.runContext || drawn.signature !== signature || Boolean(node.view.entity)
       drawn.node = node
-      drawn.container.position.set(node.box.x, node.box.y)
-      drawn.container.zIndex = node.selected ? 1 : 0
+      drawn.container.zIndex = node.dragging ? 2 : node.selected ? 1 : 0
       if (changed || !drawn.signature) {
         drawn.signature = signature
         drawn.tools = tools
@@ -676,11 +695,32 @@ export class PixiScene {
   private finishLanding(drawn: Drawn) {
     if (!drawn.landing) return
     drawn.landing = undefined
-    drawn.container.scale.set(1)
-    drawn.container.alpha = 1
-    drawn.container.position.set(drawn.node.box.x, drawn.node.box.y)
     const current = this.options.store.get(drawn.node.name)
     if (this.options.store.active && current === drawn.node.view && current.landing) this.options.store.patch(drawn.node.name, { landing: undefined })
+  }
+
+  private glidedBox(drawn: Drawn, now: number): Box {
+    const target = drawn.node.box, glide = drawn.glide
+    if (!glide || this.reducedMotion.matches) return target
+    const t = Math.min(1, Math.max(0, (now - glide.began) / GLIDE_MS)), p = ease(t, 0.2, 0.9, 0.3, 1)
+    return { x: glide.from.x + (target.x - glide.from.x) * p, y: glide.from.y + (target.y - glide.from.y) * p, w: glide.from.w + (target.w - glide.from.w) * p, h: glide.from.h + (target.h - glide.from.h) * p }
+  }
+
+  /** One transform owner composes the target's glide, the picked-up card, and its landing. */
+  private transform(drawn: Drawn, now: number) {
+    const { node, container, landing, carry } = drawn
+    const box = this.glidedBox(drawn, now)
+    let scale = node.dragging ? node.offering ? 0.7 : 1.015 : 1
+    let alpha = node.dragging ? node.offering ? 0.55 : 0.94 : 1
+    if (carry) {
+      const p = ease(Math.min(1, Math.max(0, (now - carry.began) / 90)), 0, 0, 0.58, 1)
+      scale = carry.scale + (scale - carry.scale) * p
+      alpha = carry.alpha + (alpha - carry.alpha) * p
+    }
+    scale *= landing?.scale ?? 1
+    container.scale.set(box.w / node.box.w * scale, box.h / node.box.h * scale)
+    container.position.set(box.x + box.w * (1 - scale) / 2, box.y + box.h * (1 - scale) / 2)
+    container.alpha = alpha * (landing?.alpha ?? 1)
   }
 
   /** Host-owned demand scheduling: a visible render breathes; idle, hidden and reduced-motion scenes request no animation frames. */
@@ -688,14 +728,15 @@ export class PixiScene {
     if (!this.visible || this.stopped || !this.input) return false
     let animated = false
     const zoom = Math.max(0.0001, this.input.camera.zoom)
-    // CSS render-wave's cubic-bezier(0.25, 0.6, 0.3, 1), solved only for the few cards actually rendering.
-    const ease = (x: number, x1 = 0.25, y1 = 0.6, x2 = 0.3, y2 = 1) => {
-      let lo = 0, hi = 1
-      const curve = (t: number, a: number, b: number) => 3 * (1 - t) ** 2 * t * a + 3 * (1 - t) * t * t * b + t ** 3
-      for (let n = 0; n < 12; n++) { const t = (lo + hi) / 2; if (curve(t, x1, x2) < x) lo = t; else hi = t }
-      return curve((lo + hi) / 2, y1, y2)
-    }
     for (const drawn of this.records.values()) {
+      if (drawn.glide) {
+        if (this.reducedMotion.matches || now - drawn.glide.began >= GLIDE_MS) drawn.glide = undefined
+        else animated = true
+      }
+      if (drawn.carry) {
+        if (this.reducedMotion.matches || now - drawn.carry.began >= 90) drawn.carry = undefined
+        else animated = true
+      }
       const landing = drawn.landing
       if (landing) {
         const phase = Math.max(0, now - landing.began) / 260
@@ -704,12 +745,10 @@ export class PixiScene {
           const progress = phase < 0.6 ? ease(phase / 0.6, 0.2, 0.9, 0.3, 1) : ease((phase - 0.6) / 0.4, 0.2, 0.9, 0.3, 1)
           landing.scale = phase < 0.6 ? 0.82 + 0.22 * progress : 1.04 - 0.04 * progress
           landing.alpha = phase < 0.6 ? progress : 1
-          drawn.container.scale.set(landing.scale)
-          drawn.container.alpha = landing.alpha
-          drawn.container.position.set(drawn.node.box.x + drawn.node.box.w * (1 - landing.scale) / 2, drawn.node.box.y + drawn.node.box.h * (1 - landing.scale) / 2)
           animated = true
         }
       }
+      this.transform(drawn, now)
       const loading = drawn.loadingPulse
       if (loading) {
         const body = pictureBox(drawn.node)
@@ -825,7 +864,7 @@ export class PixiScene {
   private onScreen(drawn: Drawn): boolean {
     const { camera, screen } = this.input!
     const zoom = Math.max(0.0001, camera.zoom)
-    return intersects(drawn.node.box, { x: -camera.x / zoom, y: -camera.y / zoom, w: screen.width / zoom, h: screen.height / zoom })
+    return intersects(this.glidedBox(drawn, performance.now()), { x: -camera.x / zoom, y: -camera.y / zoom, w: screen.width / zoom, h: screen.height / zoom })
   }
 
   /** Called only after the host actually renders. A requested new version cannot be acknowledged while an older texture stands in. */
@@ -869,7 +908,7 @@ export class PixiScene {
     this.cache.setVisible(visible)
     if (!visible) {
       clearTimeout(this.clock); this.clock = undefined
-      for (const drawn of this.records.values()) { this.dropLatent(drawn); this.finishLanding(drawn) }
+      for (const drawn of this.records.values()) { this.dropLatent(drawn); this.finishLanding(drawn); drawn.glide = undefined; drawn.carry = undefined; this.transform(drawn, performance.now()) }
     } else if (this.input) this.update(this.input)
     this.options.invalidate()
   }
@@ -898,21 +937,24 @@ export class PixiScene {
     const displayed = main?.displayed ?? ""
     const sha = displayed.startsWith("blob:") ? drawn.node.view.preview?.sha256 : /^(sha256:)?[0-9a-f]{64}$/i.test(displayed) ? displayed : undefined
     const latent = drawn.latent
-    const scale = drawn.container.scale.x
-    const world = (box?: Box) => box ? { x: drawn.container.x + box.x * scale, y: drawn.container.y + box.y * scale, width: box.w * scale, height: box.h * scale } : null
+    const scaleX = drawn.container.scale.x, scaleY = drawn.container.scale.y
+    const world = (box?: Box) => box ? { x: drawn.container.x + box.x * scaleX, y: drawn.container.y + box.y * scaleY, width: box.w * scaleX, height: box.h * scaleY } : null
     const paintedBody = world({ x: body.x - drawn.node.box.x, y: body.y - drawn.node.box.y, w: body.w, h: body.h })!
     return {
       body: paintedBody,
+      transform: { x: drawn.container.x, y: drawn.container.y, scaleX, scaleY, alpha: drawn.container.alpha },
+      glide: drawn.glide ? { active: true, durationMs: GLIDE_MS } : null,
+      dragging: Boolean(drawn.node.dragging), offering: Boolean(drawn.node.dragging && drawn.node.offering),
       labels: Object.fromEntries([...drawn.texts].map(([key, label]) => [key, {
         text: label.text, fullText: drawn.fullTexts.get(key) ?? label.text, ...world({ x: label.x, y: label.y, w: label.width, h: label.height })!,
-        fontSize: Number(label.style.fontSize) * scale, fontFamily: label.style.fontFamily, weight: label.style.fontWeight,
+        fontSize: Number(label.style.fontSize) * scaleY, fontFamily: label.style.fontFamily, weight: label.style.fontWeight,
         ...(key === "title" ? { title: drawn.presentation.title } : {}),
       }])),
       state: drawn.presentation.state, unseen: drawn.presentation.unseen,
       progress: drawn.presentation.progress ? { ...drawn.presentation.progress, fraction: drawn.meter?.fraction ?? drawn.presentation.progress.fraction } : null,
       stateDot: world(drawn.stateDot), meter: world(drawn.meterBox),
       controls: drawn.hits.filter(hit => hit.part === "delete" || hit.part === "cancel").map(hit => ({ part: hit.part, ...world(hit.box)! })),
-      wave: drawn.wave ? { active: true, ...paintedBody, animation: this.reducedMotion.matches ? "none" : "render-wave", alpha: drawn.wave.alpha * drawn.container.alpha, spread: drawn.wave.spread * scale, cycleMs: 2400, reducedMotion: this.reducedMotion.matches } : null,
+      wave: drawn.wave ? { active: true, ...paintedBody, animation: this.reducedMotion.matches ? "none" : "render-wave", alpha: drawn.wave.alpha * drawn.container.alpha, spread: drawn.wave.spread * scaleX, spreadY: drawn.wave.spread * scaleY, cycleMs: 2400, reducedMotion: this.reducedMotion.matches } : null,
       loadingPulse: drawn.loadingPulse ? { active: true, alpha: drawn.loadingPulse.alpha, cycleMs: 2800, reducedMotion: this.reducedMotion.matches } : null,
       landing: drawn.landing ? { active: true, scale: drawn.landing.scale, alpha: drawn.landing.alpha, durationMs: 260 } : null,
       references: [...drawn.pictures].filter(([key]) => key.startsWith("reference-")).map(([key, picture]) => ({ key, ready: picture.sprite.visible, ...world({ x: picture.sprite.x, y: picture.sprite.y, w: picture.sprite.width, h: picture.sprite.height })!, ...(/^(sha256:)?[0-9a-f]{64}$/i.test(picture.displayed ?? "") ? { sha: picture.displayed!.replace(/^sha256:/, "") } : {}) })),

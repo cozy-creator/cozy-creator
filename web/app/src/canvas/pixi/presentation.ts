@@ -23,6 +23,10 @@ export interface SceneNode {
   box: Box
   view: ElementView
   selected: boolean
+  /** Transient presentation flags; box remains the canonical target used by the store. */
+  gliding?: boolean
+  dragging?: boolean
+  offering?: boolean
   /** Host query subscriptions can supply the same machine/install context as native RunFace. */
   runContext?: RunContext
 }
