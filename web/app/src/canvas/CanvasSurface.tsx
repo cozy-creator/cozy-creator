@@ -336,7 +336,8 @@ export function CanvasSurface(props: Props) {
         callbacks.current.onDrag(event, current[0], current)
         invalidate(); return
       }
-      if (!pointerDown && event.pointerType === "mouse") {
+      // A press, wherever it began (a card's corner, its words), keeps the card it began on until it's let go (click-off-needs-press-outside).
+      if (!pointerDown && event.pointerType === "mouse" && !event.buttons) {
         const node = nodeAt(event.clientX, event.clientY)
         const hit = node && (hover.current !== node.data.name || !previewIntent) ? scene?.hitTest(controller.screenToWorld({ x: event.clientX, y: event.clientY })) : null
         const nativeMedia = event.target instanceof Element && event.target.closest(".media")?.closest<HTMLElement>(".canvas-node[data-id]")?.dataset.id === node?.id
@@ -411,7 +412,7 @@ export function CanvasSurface(props: Props) {
       }
       pointerDown = false; changeHover(null); settle = 3; invalidate()
     }
-    const leave = () => { stopHoverPreview(); if (!pointerDown) changeHover(null) }
+    const leave = (event: PointerEvent) => { stopHoverPreview(); if (!pointerDown && !event.buttons) changeHover(null) }
     const handlers = { pointerdown: down, pointermove: move, pointerup: up, pointercancel: cancel, dblclick: double, contextmenu: menu, wheel, pointerleave: leave }
     for (const [name, handler] of Object.entries(handlers)) element.addEventListener(name, handler as EventListener, { capture: name === "pointerdown", passive: false })
     window.addEventListener("blur", cancel)
