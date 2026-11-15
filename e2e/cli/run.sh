@@ -40,6 +40,7 @@ parse "$@"
 . "$(dirname "$0")/render.sh"
 . "$(dirname "$0")/source.sh"
 . "$(dirname "$0")/envcost.sh"
+. "$(dirname "$0")/notraces.sh"
 . "$(dirname "$0")/egress.sh"
 . "$(dirname "$0")/stuck.sh"
 . "$(dirname "$0")/rentalself.sh"
@@ -588,6 +589,8 @@ case $SHARD in
     remove
   " ;;
   # A project the newest release made, read by the candidate (cl-930); then the release refuses the candidate's store.
+  # Paul's no-traces invariant on this runner's OS (macOS, Windows): containment's lock scans without its browser or root (cl-984).
+  notraces) parts="no_traces logs" ;;
   released) parts="released_project update logs" ;;
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
