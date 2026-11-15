@@ -5,8 +5,12 @@
 //! from younger ones. As each starts it takes its width in the plan that ends all that waits soonest, of those capping every job at
 //! one width; within 2% the wider plan wins, its first results coming sooner. So a lone job runs wide and several queued jobs one
 //! GPU each. A machine's downloads and installs each go one at a time in job order (Paul 11-12), so a job's weights come after
-//! those of the jobs ahead of it.
-use std::collections::{BTreeMap, HashMap, HashSet};
+//! those of the jobs ahead of it. A function none of whose runs it knows is timed by the caller's prior, else by our measurement of it
+//! on that card (`reference`, cl-1004), else a minute.
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::LazyLock,
+};
 
 use crate::machine::{self as v1, Basis, EstimateJob, JobSize, Queued, Quote, StatusFrame, TimedRun};
 
@@ -198,6 +202,80 @@ fn known(function: &str, card: &str, nvlink: bool) -> Vec<(u32, f64)> {
         .collect()
 }
 
+/// One of our measurements of a function on one GPU of a card (cl-1004, Paul 11-15: "a typical inference time for that model + type
+/// of request on the GPU it'll land on"): what a machine that never ran it is quoted, scaled to the request's size. Each row names its
+/// gate run (`estimate/references.tsv`, written by `release-gate/bench.py references` from a release's gate).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reference {
+    /// `package/function`, the package without its org.
+    pub function: String,
+    /// As its driver names it, the vendor's words aside: `RTX 4090`.
+    pub card: String,
+    /// The request measured; its `refs` the pictures and videos it read.
+    pub size: JobSize,
+    /// Its warm time, ms.
+    pub ms: f64,
+    pub proof: String,
+}
+
+static REFERENCES: LazyLock<Vec<Reference>> = LazyLock::new(|| {
+    let number = |field: &str| field.parse::<f64>().ok().filter(|n| *n > 0.0);
+    (include_str!("estimate/references.tsv").lines())
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .filter_map(|line| {
+            let [function, card, refs, megapixels, frames, steps, seconds, warm, proof] = line.split('\t').collect::<Vec<_>>()[..] else { return None };
+            let size = JobSize {
+                megapixels: number(megapixels),
+                frames: number(frames).map(|n| n as u64),
+                steps: number(steps).map(|n| n as u64),
+                tokens: None,
+                seconds: number(seconds),
+                refs: refs.parse().ok(),
+            };
+            Some(Reference { function: function.into(), card: card.into(), size, ms: number(warm)? * 1e3, proof: proof.into() })
+        })
+        .collect()
+});
+
+/// A card's name as words: lower case, the vendor's words and punctuation aside (`NVIDIA GeForce RTX 4090`, `rtx-4090`: `rtx 4090`).
+fn words(card: &str) -> Vec<String> {
+    let lower = card.to_ascii_lowercase();
+    let spaced: String = lower.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' }).collect();
+    spaced.split_whitespace().filter(|word| !matches!(*word, "nvidia" | "geforce")).map(str::to_owned).collect()
+}
+
+/// Whether `gpu`, as its driver or a Hub names it, is a row's `card`: its words begin with the card's, and what follows them names no
+/// other model of it (`RTX 4070 Ti` is no `RTX 4070`; `H100 80GB HBM3 SXM` is an `H100 80GB HBM3`).
+pub fn is_card(gpu: &str, card: &str) -> bool {
+    let (gpu, card) = (words(gpu), words(card));
+    !card.is_empty()
+        && gpu.starts_with(&card)
+        && !gpu.get(card.len()).is_some_and(|next| matches!(next.as_str(), "ti" | "super" | "d" | "laptop" | "mobile" | "max"))
+}
+
+/// Our rows of `function` (`org/package/function`, `package/function`, either with `@release`), every card's.
+pub fn references(function: &str) -> impl Iterator<Item = &'static Reference> {
+    let function = function.split('@').next().unwrap_or_default().to_owned();
+    REFERENCES.iter().filter(move |row| function == row.function || function.ends_with(&format!("/{}", row.function)))
+}
+
+/// Of `rows`, the one most like `size`: the nearest `refs`, then the nearest size; and its time scaled to `size`.
+pub fn nearest<'r>(rows: impl Iterator<Item = &'r Reference>, size: &JobSize) -> Option<(&'r Reference, f64)> {
+    let refs = size.refs.unwrap_or(0);
+    let unlike = |row: &Reference| (row.size.refs.unwrap_or(0).abs_diff(refs), size.ratio(&row.size).ln().abs());
+    let row = rows.min_by(|a, b| {
+        let (a, b) = (unlike(a), unlike(b));
+        a.0.cmp(&b.0).then(a.1.total_cmp(&b.1))
+    })?;
+    Some((row, row.ms * size.ratio(&row.size)))
+}
+
+/// `function`'s time on one GPU of `gpu` (as its driver names it) at `size`, by our row of that card most like it. None: we measured
+/// none of it there.
+pub fn reference(function: &str, gpu: &str, size: &JobSize) -> Option<f64> {
+    nearest(references(function).filter(|row| is_card(gpu, &row.card)), size).map(|(_, ms)| ms)
+}
+
 /// A function's time on a machine: its compute on one GPU, how it scales, its load onto the GPUs, and what they stand on.
 #[derive(Clone, Debug)]
 pub struct Time {
@@ -324,14 +402,21 @@ impl Machine {
         }
     }
 
-    /// `function` timed here, scaling as `KNOWN` says for this card and link until two widths ran here; and of `widths`, those it
+    /// `function` timed here (else by the caller's prior, else by our `reference` for this card), scaling as `KNOWN` says for this card
+    /// and link until two widths ran here; and of `widths`, those it
     /// may run at: one GPU, and a wider one only once timed faster than one GPU here or known faster here (cr-268: never wider than
     /// proven). A count asked for (one width) passes as it is.
     pub fn timed(&self, function: &str, size: &JobSize, prior_ms: f64, widths: Vec<u32>, warm: bool) -> (Time, Vec<u32>) {
         let known = known(function, &self.card, self.nvlink);
         let scaling = known.iter().max_by_key(|(width, _)| *width).map(|(width, speedup)| Scaling::of((1, *speedup), (*width, 1.0)));
         let runs = self.times.get(function).map_or(&[][..], Vec::as_slice);
-        let time = time(runs, size, prior_ms, scaling, warm);
+        let mut time = time(runs, size, prior_ms, scaling, warm);
+        // Nothing of it timed here and no prior: our measurement of it on this card (cl-1004).
+        if time.basis == Basis::None
+            && let Some(ms) = reference(function, &self.card, size)
+        {
+            time = Time { one_ms: ms, basis: Basis::Reference, ..time };
+        }
         let widths = match widths.len() {
             0 | 1 => widths,
             _ => widths.into_iter().filter(|width| *width == 1 || time.faster.contains(width) || known.iter().any(|(w, _)| w == width)).collect(),

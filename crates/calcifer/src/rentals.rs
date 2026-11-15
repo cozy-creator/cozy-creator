@@ -181,8 +181,8 @@ impl Hubs {
         Some(OnItsWay { ready_at_ms, sku, card: rental.requested_accelerator_model.clone(), gpus })
     }
 
-    /// What `function` (`org/package/function`) took on the cards `origin` rents, as it said within the last minutes; none from a
-    /// Hub that keeps none or didn't answer in time.
+    /// What `function` (`org/package/function`) took on each GPU, as `origin` said within the last minutes from every cozy's
+    /// anonymous reports; none from a Hub that keeps none or didn't answer in time. Asked with no credential.
     pub(crate) async fn run_times(&self, origin: &str, function: &str) -> Option<types::RunTimes> {
         let key = (origin.to_owned(), function.to_owned());
         if let Some((at, said)) = lock(&self.run_times).get(&key)
@@ -190,7 +190,7 @@ impl Hubs {
         {
             return said.clone();
         }
-        let asked = async { self.reader(origin).ok()?.run_times(function).await.ok() };
+        let asked = async { self.anonymous(origin).ok()?.run_times(function).await.ok() };
         let said = tokio::time::timeout(RUN_TIMES_LATE, asked).await.ok().flatten();
         lock(&self.run_times).insert(key, (std::time::Instant::now(), said.clone()));
         said
@@ -944,36 +944,6 @@ impl Machines {
         })
     }
 
-    /// Tells a rental's Hub what a published function's run took there (cl-915), so placement elsewhere knows its card's times
-    /// before a machine of it has run anything. Said in the background; a Hub that keeps none is left be.
-    pub(crate) fn report_run(self: &Arc<Self>, row: &RunRow, outcome: &v1::Outcome) {
-        let Some(machine) = row.machine.as_deref() else { return };
-        let Ok(Some(rental)) = self.store().machine(machine) else { return };
-        let Some(id) = rental.rental_id.clone().filter(|_| rental.kind == MachineKind::Rental) else { return };
-        let Some(v1::Source::Release(release)) = &row.spec.source else { return };
-        if outcome.status != "succeeded" || outcome.memoized || outcome.execution_ms == 0 || row.kind != api::calcifer::Kind::Call {
-            return;
-        }
-        let measured: serde_json::Value = outcome.measurements.as_ref().and_then(|m| serde_json::from_str(m.get()).ok()).unwrap_or_default();
-        let width = measured["execution"]["degree"].as_u64().and_then(|d| u32::try_from(d).ok()).unwrap_or(1).max(1);
-        let payload: serde_json::Value = row.spec.payload.as_ref().and_then(|p| serde_json::from_str(p.get()).ok()).unwrap_or_default();
-        let run = types::RunTime {
-            function: format!("{}/{}", release.package, row.spec.entrypoint),
-            release: release.release.clone(),
-            width,
-            size: v1::JobSize::of(&payload),
-            execution_ms: outcome.execution_ms,
-            measured_at: None,
-        };
-        let (me, hub) = (self.clone(), rental.hub.clone());
-        self.spawn(async move {
-            let said = async { me.hubs.client(&hub)?.report_run_times(&id, &types::RunTimesReport { runs: vec![run] }).await.map_err(|e| hub_refusal(&hub, e)) };
-            if let Err(e) = said.await {
-                tracing::debug!(rental = id, "telling its Hub a run's time: {}", e.message);
-            }
-        });
-    }
-
     /// Asks again what a Calcifer that stopped had asked a Hub and not heard back. A run asked
     /// for is held from placement meanwhile.
     pub(crate) fn resume_asks(self: &Arc<Self>) {
@@ -999,6 +969,23 @@ impl Machines {
                 }
                 if let Some(run) = &ask.run {
                     lock(&me.renting).remove(run);
+                }
+            });
+        }
+        // An end that failed before this Calcifer is asked again, paced, while its rental stands: it may still bill (cl-977).
+        for ask in self.store().failed_end_asks().unwrap_or_default() {
+            let standing = ask.machine.as_deref().and_then(|name| self.row(name).ok())
+                .is_some_and(|row| row.kind == MachineKind::Rental && row.state != MachineState::Ended);
+            if !standing {
+                continue;
+            }
+            let me = self.clone();
+            self.spawn(async move {
+                tokio::time::sleep(END_AGAIN_FIRST).await;
+                let failed = me.store().ask(&ask.key).ok().flatten().is_some_and(|now| now.state == AskState::Failed);
+                if failed && me.store().reopen_ask(&ask.key).is_ok() {
+                    me.calcifer.machine_changed();
+                    me.finish_end(ask).await;
                 }
             });
         }
@@ -1386,6 +1373,38 @@ impl Machines {
         if let Some(name) = &ask.machine {
             self.outputs_landed(&ask.key, name).await;
         }
+        // A rental whose end failed may still bill: it is asked again, paced, for as long as it stands and nothing else asks
+        // (cl-977). An end asked again meanwhile (`machine end`) carries on in its place.
+        let mut again = END_AGAIN_FIRST;
+        let mut ask = ask;
+        while !self.end_once(&ask).await {
+            if ask.hub.is_empty() {
+                return;
+            }
+            tokio::time::sleep(again).await;
+            again = (again * 2).min(END_AGAIN_MOST);
+            // Read again: its machine may have been renamed meanwhile (its Hub named its host), and another end may have taken over.
+            let now = match self.store().ask(&ask.key) {
+                Ok(Some(now)) if now.state == AskState::Failed => now,
+                _ => return,
+            };
+            let Some(name) = now.machine.clone() else { return };
+            if !self.row(&name).is_ok_and(|row| row.state != MachineState::Ended) {
+                return;
+            }
+            if let Err(e) = self.store().reopen_ask(&now.key) {
+                return warn!(ask = now.key, "asking its end again: {e}");
+            }
+            warn!(machine = name, "asking its Hub again to end it: it may still bill");
+            self.calcifer.machine_changed();
+            ask = now;
+        }
+    }
+
+    /// One course of the end asked under `ask`: true once its Hub affirms the pod gone (or an added machine is removed), false once
+    /// it failed, settled as failed (`end_failed`). Its Hub silent past `END_UNCONFIRMED` after it took the release is noted on the
+    /// ask (`end_unconfirmed`), and asked on.
+    async fn end_once(self: &Arc<Self>, ask: &Ask) -> bool {
         let id = ask.digest.clone();
         let mut pause = Duration::ZERO;
         let settle = |outcome: Result<(), String>| {
@@ -1397,6 +1416,7 @@ impl Machines {
                 warn!(ask = ask.key, "{e}");
             }
             self.calcifer.machine_changed();
+            outcome.is_ok()
         };
         // An added machine is removed from this controller: no Hub is asked.
         if ask.hub.is_empty() {
@@ -1405,21 +1425,21 @@ impl Machines {
             }
             return settle(Ok(()));
         }
-        let mut released = false;
+        let (mut released, mut noted) = (None::<tokio::time::Instant>, false);
         loop {
             pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(30));
             let client = match self.hubs.client(&ask.hub) {
                 Ok(client) => client,
                 Err(e) => return settle(Err(said(&e))),
             };
-            if !released {
+            if released.is_none() {
                 // Read now: an end asked again may have been rewritten.
                 let by_pod = self.store().ask(&ask.key).ok().flatten().is_some_and(|now| EndBody::of(&now).by_pod);
                 let release = client.release_rental(&id, by_pod).await;
                 match release.map_err(|e| hub_refusal(&ask.hub, e)) {
                     // Released, or released already (a conflict): its end is read below.
-                    Ok(()) => released = true,
-                    Err(e) if e.kind == Kind::Conflict => released = true,
+                    Ok(()) => released = Some(tokio::time::Instant::now()),
+                    Err(e) if e.kind == Kind::Conflict => released = Some(tokio::time::Instant::now()),
                     Err(e) if e.kind == Kind::NotFound => {
                         return settle(Err(format!(
                             "release_unconfirmed: {} does not know rental {id}; nothing was ended",
@@ -1433,7 +1453,16 @@ impl Machines {
                     Err(e) => return settle(Err(said(&e))),
                 }
             }
-            if released {
+            if let Some(at) = released {
+                if !noted && at.elapsed() >= END_UNCONFIRMED {
+                    noted = true;
+                    let minutes = END_UNCONFIRMED.as_secs() / 60;
+                    let said = format!("its Hub took the release {minutes} min ago and has not said the pod is gone: it may still be billing; Calcifer keeps asking");
+                    match self.store().note_ask(&ask.key, &said) {
+                        Ok(()) => self.calcifer.machine_changed(),
+                        Err(e) => warn!(ask = ask.key, "{e}"),
+                    }
+                }
                 match client.get_rental(&id).await {
                     Ok(rental) => {
                         let gone_now = gone(&rental.state).then(|| cause(&rental));
@@ -1468,6 +1497,12 @@ impl Hubs {
         Ok(rental)
     }
 }
+
+/// A failed end is asked again this long after, doubling to `END_AGAIN_MOST` (cl-977: a rental whose end failed may still bill).
+const END_AGAIN_FIRST: Duration = Duration::from_secs(60);
+const END_AGAIN_MOST: Duration = Duration::from_secs(30 * 60);
+/// How long a Hub may take, once it took a release, before the end shows `end_unconfirmed`: `cozy machine end`'s own wait.
+const END_UNCONFIRMED: Duration = Duration::from_secs(300);
 
 /// The key a rental's end is asked under: one end per rental, asked again under the same key.
 fn end_key(rental_id: &str) -> String {

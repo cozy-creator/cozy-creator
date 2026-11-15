@@ -247,6 +247,8 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/play", get(crate::play::play))
         .route("/v1/down", post(down))
         .route("/v1/status", get(status))
+        .route("/v1/settings", get(crate::reports::show).put(crate::reports::change))
+        .route("/v1/legacy", get(legacy))
         .route("/v1/activity", get(activity))
         .route("/v1/machines", get(machines::list).post(machines::create))
         .route(
@@ -757,6 +759,12 @@ async fn down(State(api): State<Arc<Api>>) -> Result<Json<Down>, Refusal> {
         stopping: true,
         owed,
     }))
+}
+
+/// `GET /v1/legacy`: the old runs Calcifer's store still holds, by the folder each names (cl-984).
+async fn legacy(State(api): State<Arc<Api>>) -> Result<Json<::api::calcifer::LegacyRows>, Refusal> {
+    let rows = tokio::task::block_in_place(|| crate::legacy_status::store(api.calcifer.maintenance_store()))?;
+    Ok(Json(rows))
 }
 
 async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Refusal> {

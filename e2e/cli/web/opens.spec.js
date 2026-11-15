@@ -11,7 +11,7 @@ const { readdirSync, rmSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
 const zlib = require('zlib');
-const { test: base, expect, canvasIdle } = require('./fixtures');
+const { test: base, expect, canvasIdle, screenshotPixels } = require('./fixtures');
 const { runnerSpeed } = require('./speed');
 
 const PICTURES = 50;
@@ -82,38 +82,42 @@ const SAMPLER = () => {
       }
     }).observe({ type: 'long-animation-frame', buffered: true });
   } catch {}
-  const pulsing = (node) => node.getAnimations({ subtree: true }).some((one) => one.animationName === 'loading-pulse');
-  // Light, as it runs in every frame of every tab on the page's own thread: a box is read in full only until its picture is drawn, its
-  // place read once a change, and whether it pulses every fourth frame. React Flow hides a box it hasn't measured by its inline style.
-  const onScreen = (node) => {
-    const box = node.getBoundingClientRect();
-    return box.width > 0 && box.height > 0 && box.right > 0 && box.bottom > 0 && box.left < innerWidth && box.top < innerHeight;
+  // Retained display objects and native overlays establish timing; independent screenshots below establish their pixels.
+  const onScreen = (box) => box.width > 0 && box.height > 0 && box.x + box.width > 0 && box.y + box.height > 0 && box.x < innerWidth && box.y < innerHeight;
+  const readCard = (name) => {
+    const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
+    if (!inspection || !root.checkVisibility()) return null;
+    const card = inspection.card(name);
+    if (!card) return null;
+    const native = root.querySelector(`.canvas-node:has(.card[data-asset=${JSON.stringify(name)}])`);
+    if (native?.checkVisibility()) {
+      const bounds = native.getBoundingClientRect(), host = native.querySelector('.buffered-image'), img = host?.querySelector('img');
+      return { bounds, body: host?.getBoundingClientRect() ?? bounds, ready: Boolean(host?.dataset.displayedSha && img?.complete && img.naturalWidth > 0), pulsing: native.getAnimations({ subtree: true }).some(one => one.animationName === 'loading-pulse') };
+    }
+    const render = card.rendered;
+    if (!render || render.transform.alpha <= 0) return null;
+    const camera = inspection.camera(), pane = root.getBoundingClientRect(), transform = render.transform;
+    const bounds = { x: pane.x + camera.x + transform.x * camera.zoom, y: pane.y + camera.y + transform.y * camera.zoom, width: card.bounds.width * transform.scaleX, height: card.bounds.height * transform.scaleY };
+    return { bounds, body: render.body, ready: Boolean(render.media.ready && !render.media.failed && render.media.width > 0), pulsing: Boolean(render.loadingPulse?.active) };
   };
+  window.__opensCard = readCard;
   const tick = () => {
     const now = performance.now();
     seen.frames++;
-    for (const node of document.querySelectorAll('.react-flow__node')) {
-      const name = node.querySelector('.card[data-asset]')?.dataset.asset;
-      if (!name) continue;
+    const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+    for (const name of inspection?.resources()?.frames ? inspection.names() : []) {
+      if (seen.nodes[name]?.preview != null) continue;
+      const card = readCard(name);
+      if (!card) continue;
       const row = seen.nodes[name] ??= { frame: null, preview: null, waiting: 0, pulsing: 0, onScreen: false };
-      if (row.preview !== null || node.style.visibility === 'hidden') continue;
-      if (row.frame === null) {
-        row.frame = now;
-        row.onScreen = onScreen(node);
-      }
-      const host = node.querySelector('.buffered-image');
-      const img = host?.querySelector('img');
-      if (host?.dataset.displayedSha && img?.complete && img.naturalWidth > 0) {
-        row.preview = now;
-        row.onScreen = onScreen(node);
-        continue;
-      }
+      if (row.frame === null) { row.frame = now; row.onScreen = onScreen(card.bounds); }
+      if (card.ready) { row.preview = now; row.onScreen = onScreen(card.body); continue; }
       // One on screen without its picture yet pulses, once it's been up three frames (50 ms).
       if (seen.frames % 4 || now - row.frame <= 50) continue;
-      row.onScreen = onScreen(node);
+      row.onScreen = onScreen(card.bounds);
       if (!row.onScreen) continue;
       row.waiting++;
-      if (pulsing(node)) row.pulsing++;
+      if (card.pulsing) row.pulsing++;
       else if (seen.misses.length < 20) seen.misses.push({ name, at: Math.round(now) });
     }
     requestAnimationFrame(tick);
@@ -121,20 +125,18 @@ const SAMPLER = () => {
   requestAnimationFrame(tick);
 };
 
-/** Every box's place on screen, each frame for `ms`, and the canvas's transform then. */
+/** Every retained/native box's actual screen transform each frame; logical presence alone never counts as drawn. */
 const FRAMES = (ms) => new Promise((done) => {
   const frames = [];
   const end = performance.now() + ms;
-  const pane = document.querySelector('.react-flow').getBoundingClientRect();
+  const root = document.querySelector('.canvas-root'), pane = root.getBoundingClientRect();
   const tick = () => {
-    const viewport = document.querySelector('.react-flow__viewport');
-    const drawn = {};
-    for (const node of document.querySelectorAll('.react-flow__node')) {
-      const name = node.querySelector('.card[data-asset]')?.dataset.asset;
-      const box = node.getBoundingClientRect();
-      if (name && box.width > 0 && box.height > 0 && node.style.visibility !== 'hidden') drawn[name] = [box.x, box.y, box.width, box.height];
+    const inspection = root.canvasInspection, drawn = {};
+    for (const name of inspection?.names() ?? []) {
+      const card = window.__opensCard(name), box = card?.bounds;
+      if (box && box.width > 0 && box.height > 0) drawn[name] = [box.x, box.y, box.width, box.height];
     }
-    frames.push({ at: performance.now(), transform: viewport ? getComputedStyle(viewport).transform : null, drawn });
+    frames.push({ at: performance.now(), transform: inspection?.camera() ?? null, drawn });
     if (performance.now() < end) requestAnimationFrame(tick);
     else done({ pane: [pane.x, pane.y, pane.width, pane.height], frames });
   };
@@ -284,12 +286,74 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
   // Where a thumbnail can be kept: the project's own store, and the caches before it.
   const stores = (one) => [join(one.view, '.thumbs'), join(homedir(), '.cozy', 'cache', 'thumbs'), join(one.view, '.vault-calcifer', 'thumbs')];
   const pictures = [];
+  const pixelReferences = [];
+  // Pick three source regions without a wrapping gradient edge. Their RGB means tolerate thumbnail filtering, not another picture.
+  const referencePixels = (bytes) => {
+    const read = screenshotPixels(bytes), samples = [];
+    for (const v of [0.27, 0.53, 0.69]) {
+      for (const u of [0.23, 0.41, 0.64, 0.79]) {
+        const mean = [0, 0, 0], low = [255, 255, 255], high = [0, 0, 0];
+        let count = 0;
+        for (let y = Math.floor(v * SIDE) - 20; y <= Math.floor(v * SIDE) + 20; y++) for (let x = Math.floor(u * SIDE) - 20; x <= Math.floor(u * SIDE) + 20; x++) {
+          read(x, y).forEach((value, c) => { mean[c] += value; low[c] = Math.min(low[c], value); high[c] = Math.max(high[c], value); });
+          count++;
+        }
+        if (high.some((value, c) => value - low[c] > 80)) continue;
+        samples.push({ u, v, rgb: mean.map(value => value / count) });
+        break;
+      }
+    }
+    expect(samples.length, 'three independently decoded source regions').toBe(3);
+    return samples;
+  };
+  // Called after timing observations have ended. Geometry chooses probes; only independently decoded screenshot RGB can pass them.
+  const provePixels = async (label, page, indices = Array.from({ length: PICTURES }, (_, i) => i)) => {
+    await page.mouse.move(4, 4);
+    await canvasIdle(page);
+    await expect.poll(() => page.evaluate((names) => {
+      const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+      return names.every(name => {
+        const render = inspection?.card(name)?.rendered;
+        return !render || (!render.landing && !render.glide && render.transform.alpha >= 0.999);
+      });
+    }, indices.map(named)), { message: `${label}: presentation settled before its untimed pixel proof`, timeout: 5000 }).toBe(true);
+    const probes = await page.evaluate((references) => {
+      const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection, points = [], missing = [];
+      for (const { name, samples } of references) {
+        const card = inspection?.card(name), body = card?.body;
+        if (!body) { missing.push(name); continue; }
+        for (const sample of samples) {
+          const x = body.x + body.width * sample.u, y = body.y + body.height * sample.v;
+          if (x < 2 || y < 2 || x >= innerWidth - 2 || y >= innerHeight - 2) continue;
+          const top = document.elementFromPoint(x, y);
+          if (top && root.contains(top) && top.matches('canvas.canvas-pixels')) points.push({ name, x, y, rgb: sample.rgb });
+        }
+      }
+      return { points, missing };
+    }, indices.map(i => ({ name: named(i), samples: pixelReferences[i] })));
+    const screenshot = await page.screenshot({ scale: 'css' }), read = screenshotPixels(screenshot), errors = [];
+    for (const point of probes.points) {
+      const actual = [0, 0, 0];
+      for (let y = -1; y <= 1; y++) for (let x = -1; x <= 1; x++) read(point.x + x, point.y + y).forEach((value, c) => { actual[c] += value / 9; });
+      if (actual.some((value, c) => Math.abs(value - point.rgb[c]) > 24)) errors.push({ name: point.name, at: [point.x, point.y], actual, expected: point.rgb });
+    }
+    const result = { cards: new Set(probes.points.map(point => point.name)).size, samples: probes.points.length, missing: probes.missing, errors, screenshot_sha256: createHash('sha256').update(screenshot).digest('hex') };
+    expect.soft(result.missing, `${label}: every expected card has geometry for its pixel proof`).toEqual([]);
+    expect.soft(result.samples, `${label}: screenshot proof has visible thumbnail probes`).toBeGreaterThan(0);
+    expect.soft(errors, `${label}: visible thumbnail pixels match their original PNGs`).toEqual([]);
+    if (errors.length || probes.missing.length || !probes.points.length) await testInfo.attach(`${label}-pixels`, { body: screenshot, contentType: 'image/png' });
+    return result;
+  };
 
   await test.step('two copies of 50 pictures, plaintext and encrypted, each thumbnail stored as its file lands', async () => {
     expect.soft(sealed.vault, 'the sealed copy is encrypted and unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
     expect(sealed.view, "the sealed copy's readable view").toBeTruthy();
     const made = Date.now();
-    for (let i = 0; i <= PICTURES; i++) pictures.push(picture(i));
+    for (let i = 0; i <= PICTURES; i++) {
+      const bytes = picture(i);
+      pictures.push(bytes);
+      pixelReferences.push(referencePixels(bytes));
+    }
     seen.fixture = { pictures: PICTURES, mb: Math.round(pictures[0].length / 1e5) / 10, made_ms: Date.now() - made };
     const importing = Date.now();
     for (const [kind, one] of Object.entries(projects)) {
@@ -400,6 +464,8 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       thumbnails_made: made,
       wire: wire.since(from),
     };
+    result.timing_boundary = 'retained display-object/native preview readiness observed on animation frames; screenshot pixels verified after timing';
+    result.pixels = await provePixels(label, page);
     seen[label] = result;
     const said = (what) => `${label}: ${what}: ${JSON.stringify({ ...result, trace: undefined, preview_times_ms: undefined })}`;
     expect.soft(result.pulsed_while_waiting, said('every box waiting for its preview pulses')).toBe(result.waited_for_preview);
@@ -433,6 +499,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       }, PICTURES)) !== null, { message: `${kind}: fitted, all ${PICTURES} previews drawn`, timeout: WAIT_MS, intervals: [100] }).toBe(true);
       seen[`${kind}_fitted`] = { all_previews_ms: fitted === null ? null : Math.max(0, Math.round(fitted - fitting)) };
       expect.soft(fitted !== null && fitted - fitting <= BAR.previews_warm_ms, `${kind}: fitted, all ${PICTURES} previews within ${BAR.previews_warm_ms} ms: ${JSON.stringify(seen[`${kind}_fitted`])}`).toBe(true);
+      seen[`${kind}_fitted`].pixels = await provePixels(`${kind}_fitted`, first);
       await context.close();
     });
   }
@@ -460,7 +527,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       const { context, wire, first } = await fresh(theme);
       await first.goto(one.url);
       let pulsing = 0;
-      await soft.poll(async () => (pulsing = await first.evaluate(() => [...document.querySelectorAll('.react-flow__node')].filter((node) => node.getAnimations({ subtree: true }).some((held) => held.animationName === 'loading-pulse')).length)), { message: `${theme}: boxes pulse while their previews are made`, timeout: 15_000, intervals: [50] }).toBeGreaterThanOrEqual(3);
+      await soft.poll(async () => (pulsing = await first.evaluate(() => (document.querySelector('.canvas-root')?.canvasInspection?.names() ?? []).filter(name => window.__opensCard(name)?.pulsing).length)), { message: `${theme}: boxes pulse while their previews are made`, timeout: 15_000, intervals: [50] }).toBeGreaterThanOrEqual(3);
       seen[`pulse_${theme}`] = { pulsing };
       await opening(`backfill_${theme}`, first, wire, one, { go: false, bars: false });
       await context.close();
@@ -513,16 +580,15 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     const { pane, frames } = await watching;
     const heights = {};
     for (const frame of frames) {
-      const scale = Number(/matrix\(([^,]+)/.exec(frame.transform ?? '')?.[1] ?? 1);
+      const scale = frame.transform?.zoom ?? 1;
       for (const [name, box] of Object.entries(frame.drawn)) heights[name] = Math.max(heights[name] ?? 0, box[3] / scale);
     }
     const tall = quantile(Object.values(heights).sort((a, b) => a - b), 0.5) ?? W;
     const missing = [];
     const zooms = new Set();
     for (const frame of frames) {
-      const matrix = /matrix\(([^)]+)\)/.exec(frame.transform ?? '')?.[1]?.split(',').map(Number);
-      if (!matrix) continue;
-      const [scale, , , , tx, ty] = matrix;
+      if (!frame.transform) continue;
+      const { zoom: scale, x: tx, y: ty } = frame.transform;
       zooms.add(scale.toFixed(3));
       const origin = [pane[0] + tx, pane[1] + ty];
       for (let i = 0; i < PICTURES; i++) {
@@ -535,15 +601,14 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     seen.zoom_out = { frames: frames.length, zooms: zooms.size, missing: missing.length, first_missing: missing.slice(0, 8) };
     expect.soft(zooms.size, `zooming out moved the view: ${JSON.stringify(seen.zoom_out)}`).toBeGreaterThanOrEqual(2);
     expect.soft(missing, `zooming out draws every box in view in every frame: ${JSON.stringify(seen.zoom_out)}`).toEqual([]);
+    seen.zoom_out.pixels = await provePixels('zoom_out', first);
 
     // A file landing while it's open: its thumbnail made as it lands, and drawn soon after.
     const name = named(PICTURES);
     await first.evaluate((name) => {
       const look = () => {
-        const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector(`.card[data-asset="${name}"]`));
-        const host = node?.querySelector('.buffered-image');
-        const img = host?.querySelector('img');
-        if (host?.dataset.displayedSha && img?.complete && img.naturalWidth > 0) window.__landed = Date.now();
+        const card = window.__opensCard(name), body = card?.body;
+        if (card?.ready && body.width > 0 && body.height > 0 && body.x + body.width > 0 && body.y + body.height > 0 && body.x < innerWidth && body.y < innerHeight) window.__landed = Date.now();
         else requestAnimationFrame(look);
       };
       requestAnimationFrame(look);
@@ -559,6 +624,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     seen.landed = { import_ms: landed - landing, shown_ms: shownAt === null ? null : shownAt - landed, stored: madeNow.map((file) => file.replace(projects.plain.view, '')) };
     expect.soft(shownAt !== null && shownAt - landed <= BAR.landed_ms, `a landed picture is drawn within ${BAR.landed_ms} ms: ${JSON.stringify(seen.landed)}`).toBe(true);
     expect.soft(madeNow.some((file) => file.startsWith(join(projects.plain.view, '.thumbs'))), `a landed picture has its thumbnail stored in its project: ${JSON.stringify(seen.landed)}`).toBe(true);
+    seen.landed.pixels = await provePixels('landed', first, [PICTURES]);
     await context.close();
   });
 

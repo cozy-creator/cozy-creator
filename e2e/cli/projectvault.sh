@@ -243,6 +243,41 @@ open_unlocks() (
 
 # cl-886: encryption leaves nothing outside its vault. A conversion killed midway is recovered by the next start; Calcifer
 # never opens its own `.cozy-*` folders as projects; and no file outside the vault holds the project's plaintext.
+# Encrypted create and unlock times through the CLI (cl-995): a create (its two key slots, its filesystem and first database),
+# an unlock by passphrase and one by recovery secret. Calcifer's health.log names any phase of a second or more (`vault keys`,
+# `vault filesystem`, `vault mount`, `vault project database`).
+vault_times() (
+  step "encrypted create and unlock times (cl-995)"
+  [ -n "$LOCAL" ] || exit 0
+  local work secrets at create by_passphrase by_recovery
+  work=$(mktemp -d "$OUT/vault-times.XXXXXX") secrets=$(mktemp -d "$OUT/vault-times-credentials.XXXXXX")
+  trap 'in_project "$work/p" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic timing passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  ms() { date +%s%3N; }
+  locked() {
+    in_project "$work/p" --json vault lock > "$work/lock.json" 2>&1 || true
+    for _ in $(seq 60); do [ "$(in_project "$work/p" --json vault status | jq -r .state)" = locked ] && return; sleep 0.5; done
+    fail "vault times: the project did not lock: $(tail -c 300 "$work/lock.json")"
+  }
+  at=$(ms)
+  cozy --json new "$work/p" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" 2> "$work/new.err" \
+    || fail "vault times: cozy new: $(tail -c 300 "$work/new.err")"
+  create=$(($(ms) - at))
+  locked
+  at=$(ms)
+  in_project "$work/p" --json vault unlock --passphrase-file "$secrets/passphrase" --idle 0 > "$work/unlock-passphrase.json" 2>&1 \
+    || fail "vault times: unlock by passphrase: $(tail -c 300 "$work/unlock-passphrase.json")"
+  by_passphrase=$(($(ms) - at))
+  locked
+  at=$(ms)
+  in_project "$work/p" --json vault unlock --recovery-file "$secrets/recovery" --idle 0 > "$work/unlock-recovery.json" 2>&1 \
+    || fail "vault times: unlock by recovery secret: $(tail -c 300 "$work/unlock-recovery.json")"
+  by_recovery=$(($(ms) - at))
+  jq -cn --argjson c "$create" --argjson p "$by_passphrase" --argjson r "$by_recovery" \
+    '{create_ms: $c, unlock_passphrase_ms: $p, unlock_recovery_ms: $r}' | tee "$OUT/vault-times.json" | sed 's/^/vault times: /'
+  grep 'task="vault' "$HOME/.cozy/calcifer/health.log" 2> /dev/null | tail -n 12 || echo "vault times: no vault phase took a second"
+)
+
 # An ordinary and an unlocked encrypted project run on the machine's executors, one code path, each call in its own scratch
 # inside its project; BiRefNet stays warm across them; locked, nothing of the encrypted one is outside it (cl-984;
 # e2e/cli/shared_scratch.py). isolated.sh published e2e-scratch and BiRefNet's model.

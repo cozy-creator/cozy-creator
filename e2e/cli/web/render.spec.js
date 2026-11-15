@@ -1,5 +1,5 @@
 // render (cl-973 core cell 11), on local: "A still" from the palette, typed in and rendered by Render, lists its take the frame after the
-// press and keeps that one id until it lands in place, unreloaded; another box rendered by Ctrl+Enter says Queued, then Rendering, with a
+// press and keeps that one id until it lands in place, unreloaded, its pending tile and its Cancel naming its run KEY-N; another box rendered by Ctrl+Enter says Queued, then Rendering, with a
 // faded preview of its latents until its take replaces it, and its finish note's View opens it. Render all: a box waiting on another says
 // so and shows none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
 // rendering, and their takes go.
@@ -8,7 +8,7 @@
 // starts before the other's install ends.
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasIdle, focus, middle, openPoint, fixtureTool, png } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, openPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
 
 const TOOL = fixtureTool('tool.py');
 const STILL = `${TOOL}/still`;
@@ -143,34 +143,46 @@ const notesOver = (page, ms) => page.evaluate((ms) => new Promise((done) => {
 const recordBox = (page, name) => page.evaluate((name) => {
   const log = ((window.__said ??= {})[name] = []);
   const look = () => {
-    const card = document.querySelector(`.react-flow__node .card[data-asset="${CSS.escape(name)}"]`);
-    const open = document.querySelector(`[data-focused-asset="${CSS.escape(name)}"]`);
-    const face = [...document.querySelectorAll('[role="status"]')].find((one) => one.getAttribute('aria-label') === `${name}'s render`);
+    const open = document.querySelector(`[data-focused-asset=${JSON.stringify(name)}]`);
+    const card = open?.querySelector('.card') ?? document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}]`);
+    const shown = document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered;
+    const face = [...document.querySelectorAll('[role="status"]')].find(one => one.getAttribute('aria-label') === `${name}'s render`);
     const meter = card?.querySelector('[role="progressbar"][aria-label="The whole job"]');
     const preview = card?.querySelector('.latent-preview img');
     return {
-      face: face?.querySelector('.face-state b')?.textContent ?? null,
-      time: face?.querySelector('.face-time')?.textContent ?? null,
-      dot: (open?.querySelector('.focus-title .state-dot') ?? card?.querySelector('.head .state-dot'))?.getAttribute('aria-label') ?? null,
-      meter: meter ? Number(meter.getAttribute('aria-valuenow')) : null,
-      preview: preview?.complete && preview.naturalWidth > 0 ? Number(getComputedStyle(preview).opacity) : null,
+      face: face?.querySelector('.face-state b')?.textContent ?? (shown?.progress ? [shown.labels.progress?.fullText, shown.labels.count?.fullText].filter(Boolean).join(' ') : null),
+      time: face?.querySelector('.face-time')?.textContent ?? shown?.labels.time?.fullText ?? null,
+      dot: (open?.querySelector('.focus-title .state-dot') ?? card?.querySelector('.head .state-dot'))?.getAttribute('aria-label') ?? ({ queued: 'Queued', running: 'Rendering', failed: 'Failed', unseen: 'New, not looked at' }[shown?.state] ?? null),
+      meter: meter ? Number(meter.getAttribute('aria-valuenow')) : shown?.meter && shown.progress?.fraction !== undefined ? Math.round(shown.progress.fraction * 100) : null,
+      preview: preview?.complete && preview.naturalWidth > 0 ? Number(getComputedStyle(preview).opacity) : shown?.latent?.opacity ?? null,
     };
   };
-  new MutationObserver(() => {
+  const sample = () => {
     const now = look();
     if (JSON.stringify(now) !== JSON.stringify(log.at(-1))) log.push(now);
-  }).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
-  log.push(look());
+  };
+  // Native Focus can commit Queued and then Rendering between frames; preserve that ordering while also sampling Pixi frames.
+  new MutationObserver(sample).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+  const frame = () => { sample(); requestAnimationFrame(frame); };
+  frame();
+}, name);
+const renderState = (page, name) => page.evaluate(name => {
+  const shown = document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered;
+  if (shown) return shown.progress ? [shown.labels.progress?.fullText, shown.labels.count?.fullText].filter(Boolean).join(' ') : null;
+  return [...document.querySelectorAll('[role="status"]')].find(one => one.getAttribute('aria-label') === `${name}'s render`)?.querySelector('.face-state b')?.textContent ?? null;
 }, name);
 const said = (page, name) => page.evaluate((name) => window.__said[name], name);
 
-/** Focus's takes column for `name` on every change, by take id; and, heard before the page's own handler, the column as Render was pressed
- *  and in the next frame. */
+/** Focus's takes column for `name` on every change, by take id, with what each pending tile of a run and its Cancel say; and, heard before
+ *  the page's own handler, the column as Render was pressed and in the next frame. */
 const recordTakes = (page, name) => page.evaluate((name) => {
   const look = () => {
     const side = document.querySelector(`[data-focused-asset="${CSS.escape(name)}"] .here-side`);
     const ids = (selector) => [...(side?.querySelectorAll(selector) ?? [])].map((tile) => tile.getAttribute('data-take-id')).filter(Boolean);
-    return { open: Boolean(side), making: ids('.take.making[data-take-id]'), landed: ids('.take[data-take][data-take-id]') };
+    const runs = [...(side?.querySelectorAll('.take.making[data-run]') ?? [])].map((tile) => ({
+      run: tile.getAttribute('data-run'), tile: tile.getAttribute('title'), cancel: tile.closest('.take-at')?.querySelector('.take-off')?.getAttribute('aria-label') ?? null,
+    }));
+    return { open: Boolean(side), making: ids('.take.making[data-take-id]'), landed: ids('.take[data-take][data-take-id]'), runs };
   };
   const takes = (window.__takes = { log: [look()], pressed: null });
   new MutationObserver(() => {
@@ -255,6 +267,11 @@ test('render', async ({ page, project, api, cli }) => {
     const log = await page.evaluate(() => window.__takes.log);
     const listed = log.findIndex((look) => look.making.includes(take) || look.landed.includes(take));
     expect.soft(log.slice(listed).filter((look) => look.open && !look.making.includes(take) && !look.landed.includes(take)), 'never off the column until it lands').toEqual([]);
+    // Its pending tile and its Cancel name its run KEY-N, as the run drawer does, in every look (cl-987, #3341).
+    const { key } = await api.get(project.at('/key'));
+    const named = log.flatMap((look) => look.runs);
+    expect.soft(Boolean(key) && named.length > 0 && named.every(({ run, tile, cancel }) => tile === `Run ${key}-${run}` && cancel === `Cancel run ${key}-${run}`),
+      `its pending tile and its Cancel say Run ${key}-N: ${JSON.stringify(named.slice(0, 4))}`).toBe(true);
     await softly.poll(() => drawn(region.locator('.focus-viewer')), { message: 'its take drawn where it was made' }).toBe(shaOf(made, 1));
     expect.soft(await page.evaluate(() => window.__unreloaded), 'with no reload').toBe(true);
     await back(page);
@@ -269,9 +286,30 @@ test('render', async ({ page, project, api, cli }) => {
     await page.keyboard.press('ControlOrMeta+Enter');
     await asked;
     await back(page);
+    await expect.poll(async () => (await canvasCard(page, 'latent'))?.rendered?.latent?.opacity ?? 0, { message: 'a passive latent preview is drawn', timeout: 120_000 }).toBeGreaterThan(0);
+    const latentBody = (await canvasCard(page, 'latent')).rendered.body, previewPixels = screenshotPixels(await page.screenshot({ scale: 'css' }));
+    const previewColours = new Set();
+    for (let y = 7; y < 12; y++) for (let x = 1; x < 12; x++) previewColours.add(previewPixels(latentBody.x + latentBody.width * x / 12, latentBody.y + latentBody.height * y / 12).map(value => Math.round(value / 8)).join());
+    expect.soft(previewColours.size, 'the passive latent preview paints nonuniform pixels below the prompt text').toBeGreaterThan(8);
     await expect.poll(async () => (await project.asset('latent'))?.versions, { message: "latent's take", timeout: 120_000 }).toBe(1);
     const latent = await project.asset('latent');
-    await softly.poll(() => drawn(box(page, 'latent')), { message: 'its take replaces the preview' }).toBe(shaOf(latent, 1));
+    await softly.poll(async () => { const shown = (await canvasCard(page, 'latent'))?.rendered; return shown?.media.ready ? shown.media.sha : null; }, { message: 'its take replaces the preview' }).toBe(shaOf(latent, 1));
+    await expect.poll(async () => { const shown = (await canvasCard(page, 'latent'))?.rendered; return Boolean(shown && !shown.landing && !shown.glide && shown.transform.alpha === 1); }, { message: 'the final output presentation settles' }).toBe(true);
+    const main = latent.prefixes.find(version => version.number === 1).main;
+    const answer = await api.raw('GET', project.at(`/${main.path.split('/').map(encodeURIComponent).join('/')}`));
+    expect(answer.ok, 'the real final PNG can be read').toBe(true);
+    const expectedPixels = screenshotPixels(Buffer.from(await answer.arrayBuffer()));
+    const finalBody = (await canvasCard(page, 'latent')).rendered.body, finalPixels = screenshotPixels(await page.screenshot({ scale: 'css' }));
+    const mean = (read, x, y, width, height) => {
+      const sum = [0, 0, 0]; let count = 0;
+      for (let py = Math.ceil(y); py < y + height; py++) for (let px = Math.ceil(x); px < x + width; px++) { read(px, py).forEach((value, c) => { sum[c] += value; }); count++; }
+      return sum.map(value => value / count);
+    };
+    for (const [u, v] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+      const actual = mean(finalPixels, finalBody.x + finalBody.width * (u - 0.1), finalBody.y + finalBody.height * (v - 0.1), finalBody.width * 0.2, finalBody.height * 0.2);
+      const expected = mean(expectedPixels, expectedPixels.width * (u - 0.1), expectedPixels.height * (v - 0.1), expectedPixels.width * 0.2, expectedPixels.height * 0.2);
+      expect.soft(Math.max(...actual.map((value, c) => Math.abs(value - expected[c]))), `final output replaces faded latent pixels at ${u},${v}`).toBeLessThanOrEqual(24);
+    }
     const sayings = await said(page, 'latent');
     const dots = sayings.map((look) => look.dot);
     const queued = dots.indexOf('Queued');
@@ -283,8 +321,8 @@ test('render', async ({ page, project, api, cli }) => {
     const faded = sayings.map((look) => look.preview).filter((opacity) => opacity !== null);
     expect.soft(faded.length, 'a preview of its latents shows as it renders').toBeGreaterThan(0);
     expect.soft(faded.every((opacity) => opacity > 0 && opacity < 1), `faded: ${faded.join(' ')}`).toBe(true);
-    await expect.soft(box(page, 'latent').locator('.latent-preview'), 'its take replaces it').toHaveCount(0);
-    await expect.soft(face(page, 'latent')).toHaveCount(0);
+    await softly.poll(async () => (await canvasCard(page, 'latent'))?.rendered?.latent ?? null, { message: 'its take replaces it' }).toBeNull();
+    await softly.poll(() => renderState(page, 'latent')).toBeNull();
 
     // Landed at rest: its note names it and its take, and View opens it on that take.
     const note = page.locator('[data-note]').filter({ hasText: 'latent finished: version 1' });
@@ -304,14 +342,16 @@ test('render', async ({ page, project, api, cli }) => {
     await recordBox(page, 'after');
     await recordBox(page, 'slow');
     await page.getByRole('button', { name: /^Render all \d+$/ }).click();
-    await expect(face(page, 'after').locator('.face-state b'), 'after waits for slow').toHaveText(/^Waiting for <slow>/, { timeout: 60_000 });
+    await expect.poll(() => renderState(page, 'after'), { message: 'after waits for slow', timeout: 60_000 }).toMatch(/^Waiting for <slow>/);
   });
 
   await test.step('Cancel one box while it waits for its input and another while it renders', async () => {
+    await hoverBox(page, 'after');
     await face(page, 'after').getByRole('button', { name: "Cancel after's render", exact: true }).click();
+    await page.mouse.move(2, 500);
     await expect.poll(() => settled(project, 'after'), { message: 'after canceled, its take gone' }).toEqual({ takes: 0, making: 0, versions: 0 });
-    await expect.soft(face(page, 'after')).toHaveCount(0);
-    await expect(face(page, 'slow').locator('.face-state b'), 'slow renders').toHaveText(/^Drawing/, { timeout: 90_000 });
+    await softly.poll(() => renderState(page, 'after')).toBeNull();
+    await expect.poll(() => renderState(page, 'slow'), { message: 'slow renders', timeout: 90_000 }).toMatch(/^Drawing/);
     // The whole job's meter, at rest, rises as it goes and never goes back. Nothing like slow ran here, so its estimate is its own steps',
     // and those say no time left until its second (43405964751: 99 from then on, "6s / 6s" then "7s / 21s"): the meter isn't pinned by it.
     const rising = async () => {
@@ -331,10 +371,12 @@ test('render', async ({ page, project, api, cli }) => {
     await softly.poll(firstStep, { message: "slow's time left once its first step is done, s", timeout: 15_000 }).toBeGreaterThanOrEqual(10);
     const [run] = (await project.asset('slow'))?.making ?? [];
     expect(run, "slow's run").toBeTruthy();
+    await hoverBox(page, 'slow');
     await face(page, 'slow').getByRole('button', { name: "Cancel slow's render", exact: true }).click();
+    await page.mouse.move(2, 500);
     await expect.poll(() => settled(project, 'slow'), { message: 'slow canceled, its take gone', timeout: 30_000 }).toEqual({ takes: 0, making: 0, versions: 0 });
     await softly.poll(async () => (await api.get(project.at(`/runs/${run}`))).status, { message: `run ${run}` }).toBe('canceled');
-    await expect.soft(face(page, 'slow')).toHaveCount(0);
+    await softly.poll(() => renderState(page, 'slow')).toBeNull();
     const waited = (await said(page, 'after')).map((look) => look.face).filter(Boolean);
     expect.soft(waited.some((words) => /^Waiting for <slow>/.test(words)), `after says it waits for slow: ${waited.join(' | ')}`).toBe(true);
     expect.soft(waited.filter((words) => /Drawing|\b\d+ \/ 10\b/.test(words)), "after shows none of slow's progress").toEqual([]);

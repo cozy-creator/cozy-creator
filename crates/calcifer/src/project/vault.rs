@@ -550,7 +550,9 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let runtime = project_runtime(root)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
+    let took = crate::took::Took::new("vault mount");
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
+    drop(took);
     let canonical_view = platform::durable::canonical(mounted.view()).map_err(provider)?;
     ROOTS.lock().expect("vault roots").insert(mounted.view().to_owned(), root.to_owned());
     ROOTS.lock().expect("vault roots").insert(canonical_view.clone(), root.to_owned());
@@ -788,6 +790,18 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>
 }
 
 pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress) -> Result<VaultChanged, Error> {
+    // A page's activity only restarts the idle clock, under the session's own lock: it never waits for or refuses on the project's
+    // gate, which any request in flight holds (that request restarted the clock itself).
+    if ask.action == "activity" {
+        if let Some(session) = held(root) {
+            let mut session = session.lock().expect("vault session");
+            if !session.closing && !expired(&session) && session.timer.activity() {
+                session.active_ms = super::now_ms();
+                say(root, "activity op", || "its idle clock restarts on a page's activity".into());
+            }
+        }
+        return Ok(VaultChanged { vault: reported_status(api, root), recovery_secret: None, ended: vec![], skipped_files: vec![] });
+    }
     if ask.action == "lock" && !encrypted(root) {
         return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked"));
     }
@@ -880,18 +894,26 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
     let operation = operation(root);
     let _operation = operation.lock().expect("vault operation");
     let _access = exclusive(root)?;
+    let took = crate::took::Took::new("vault keys");
     let created = Keybag::create(id, passphrase).map_err(key)?;
+    drop(took);
     let recovery = created.recovery_secret.expose().to_owned();
     let outcome = (|| {
+        let took = crate::took::Took::new("vault filesystem");
         created.secret.with_bytes(|bytes| engine.create(&root.join(BACKING), bytes)).map_err(provider)?;
+        drop(took);
         // Persist the wrapping slots before writing any project state: the user's known passphrase
         // can reopen this backing even if setup or delivery of the recovery response is interrupted.
         created.keybag.save(&root.join(KEYBAG_FILE)).map_err(key)?;
         let runtime = project_runtime(root)?;
         let view = project_mount::view_path(&runtime).map_err(provider)?;
+        let took = crate::took::Took::new("vault mount");
         let mut target = created.secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes,
             MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
+        drop(took);
+        let took = crate::took::Took::new("vault project database");
         let initialized = super::new_database(target.view(), id, name, written);
+        drop(took);
         target.try_unmount().map_err(provider)?;
         retire_runtime(&runtime)?;
         initialized?;
@@ -947,7 +969,9 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             progress.phase("opening");
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "this project is not encrypted")); }
             let keybag = Keybag::load(&root.join(KEYBAG_FILE)).map_err(key)?;
+            let took = crate::took::Took::new("vault keys");
             let secret = keybag.unlock(credential(ask)?).map_err(key)?;
+            drop(took);
             if let Some(session) = held(root) {
                 let mut session = session.lock().expect("vault session");
                 if session.mount.is_mounted().map_err(provider)? {
@@ -1007,15 +1031,6 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked")); }
             // Locking a locked project is a no-op, after retiring what a dead Calcifer's views left.
             if held(root).is_some() { close(api, root, transition, browser)?; } else { retire_orphaned_views(root)?; }
-        }
-        "activity" => {
-            if let Some(session) = held(root) {
-                let mut session = session.lock().expect("vault session");
-                if !session.closing && !expired(&session) && session.timer.activity() {
-                    session.active_ms = super::now_ms();
-                    say(root, "activity op", || "its idle clock restarts on a page's activity".into());
-                }
-            }
         }
         "passphrase" | "recovery" => {
             let session = held(root).ok_or_else(|| locked(root))?;

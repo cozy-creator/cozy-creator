@@ -1,7 +1,7 @@
 // move (cl-973 core cell 5), at zoom 1: a box dragged by its head lands where it was let go, the pointer's own move to 2 px, and the API's row
 // says the same; a selection moves together, by one move, and one Undo puts it all back; a reload keeps what's left; a drag on open canvas pans
 // it and moves no box.
-const { test, expect, box, canvasIdle, middle, openPoint, png } = require('./fixtures');
+const { test, expect, canvasIdle, openPoint, png, canvasPoint, canvasVisible, selectedNames } = require('./fixtures');
 const { camera, drag, drawn, rows, rowsOf } = require('./geometry');
 
 // Pictures 240 wide, a row of three, clear of each other.
@@ -15,12 +15,12 @@ const placeOf = (held) => Object.fromEntries(Object.entries(held).map(([name, { 
 
 test('move', { tag: '@engines' }, async ({ page, project }) => {
   for (const [i, name] of NAMES.entries()) await project.import(png(60 + 50 * i), { name, at: PLACES[name] });
-  for (const name of NAMES) await expect(box(page, name)).toBeVisible();
+  for (const name of NAMES) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await page.getByRole('button', { name: /more zoom options$/ }).click();
   await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
   await canvasIdle(page);
   expect((await camera(page)).zoom, 'all three fit at 100%').toBeCloseTo(1, 4);
-  const head = (name) => middle(box(page, name).locator('.head .nm'));
+  const head = (name) => canvasPoint(page, name, 'title');
 
   let afterOne;
   let drawnAfterOne;
@@ -38,14 +38,14 @@ test('move', { tag: '@engines' }, async ({ page, project }) => {
   });
 
   await test.step('drag A and B together', async () => {
-    const a = await middle(box(page, 'A').locator('.media').first());
-    const b = await middle(box(page, 'B').locator('.media').first());
+    const a = await canvasPoint(page, 'A');
+    const b = await canvasPoint(page, 'B');
     await page.mouse.click(a.x, a.y);
     await page.keyboard.down('Shift');
     await page.mouse.click(b.x, b.y);
     await page.keyboard.up('Shift');
-    await expect(box(page, 'A')).toHaveAttribute('aria-selected', 'true');
-    await expect(box(page, 'B')).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(() => selectedNames(page)).toContain('A');
+    await expect.poll(() => selectedNames(page)).toContain('B');
     const shown = await drawn(page);
     const from = await head('A');
     const by = { x: 60, y: 40 };
@@ -65,7 +65,7 @@ test('move', { tag: '@engines' }, async ({ page, project }) => {
   await test.step('reload', async () => {
     await page.reload();
     await expect(page.locator('.stage')).toBeVisible();
-    for (const name of NAMES) await expect(box(page, name)).toBeVisible();
+    for (const name of NAMES) await expect.poll(() => canvasVisible(page, name)).toBe(true);
     await canvasIdle(page);
     expect.soft(offBy(placeOf(await rows(project)), afterOne, { x: 0, y: 0 }, NAMES), 'the reload keeps them').toEqual([]);
     expect.soft(offBy(await drawn(page), drawnAfterOne, { x: 0, y: 0 }, NAMES), 'drawn where they were').toEqual([]);

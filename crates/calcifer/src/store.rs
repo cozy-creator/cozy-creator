@@ -1108,6 +1108,25 @@ macro_rules! journal_methods {
     }
 
     /// Asks a failed ask again.
+    /// Notes why a pending ask is not done yet, without settling it: `reason` while it stays pending.
+    pub(crate) fn note_ask(&self, key: &str, reason: &str) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("UPDATE asks SET reason = ?2 WHERE key = ?1 AND state = 'pending'", params![key, reason])?;
+            Ok(())
+        })
+    }
+
+    /// The end asks that failed: Calcifer asks each again, paced, while its machine stands (cl-977).
+    pub(crate) fn failed_end_asks(&self) -> Result<Vec<Ask>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(&format!(
+                "SELECT {ASK_COLUMNS} FROM asks WHERE state = 'failed' AND kind = 'end' ORDER BY created_at"
+            ))?;
+            let rows = statement.query_map([], ask_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            unlocked_rows(rows)
+        })
+    }
+
     pub(crate) fn reopen_ask(&self, key: &str) -> Result<()> {
         self.write(|tx| {
             tx.execute(
@@ -3289,6 +3308,7 @@ impl From<&MachineRow> for Machine {
             reach: None,
             ending: None,
             end_failed: None,
+            end_unconfirmed: None,
             rc: None,
         }
     }

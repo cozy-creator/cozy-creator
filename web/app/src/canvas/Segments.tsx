@@ -93,7 +93,7 @@ export function Segments({ name, view }: { name: string; view: ElementView }) {
     playback.seek(Math.round(Math.max(0, Math.min(last - 1, (event.clientX - box.left) / scale))))
   }
   return (
-    <div className="tl tl-take nodrag nopan nowheel" aria-label="Timeline">
+    <div className="tl tl-take canvas-control" aria-label="Timeline">
       <div className={`tl-bar ${pickup ? "redoes" : ""}`} role="toolbar" aria-label="Its segments">
         {made && of && (
           <span className="continues" title={made.take}>
@@ -174,7 +174,7 @@ export function LeadIn({ name, view }: { name: string; view: ElementView }) {
   const keptSeconds = going.out_frame / fps
   const newSeconds = Math.max(0, total - (going.beats_from ?? keptSeconds))
   return (
-    <div className="lead-in nodrag nopan" role="group" aria-label="Continues a video">
+    <div className="lead-in canvas-control" role="group" aria-label="Continues a video">
       <span className="lead-in-frame" style={{ aspectRatio: file.width && file.height ? file.width / file.height : 16 / 9 }}>
         <WalkedFrames sha256={file.sha256} cardWidth={160} at={Math.min(1, going.out_frame / last)} />
       </span>
@@ -185,7 +185,7 @@ export function LeadIn({ name, view }: { name: string; view: ElementView }) {
           <span className="new" />
         </span>
       </span>
-      <button type="button" className="tb nodrag" onClick={() => store.stopContinuing(name)}>
+      <button type="button" className="tb canvas-control" onClick={() => store.stopContinuing(name)}>
         Cancel
       </button>
       {gone && <span className="lead-in-gone">Its latents went with {gone}: the join may show</span>}
@@ -206,7 +206,7 @@ export function ContinueFrom({ name, view }: { name: string; view: ElementView }
     <label className="slide continue-from">
       <span className="ctl-name">Continue</span>
       <select
-        className="field nodrag"
+        className="field canvas-control"
         aria-label="Continue a video from its end"
         value=""
         onChange={(event) => {

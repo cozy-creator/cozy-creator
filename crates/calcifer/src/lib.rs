@@ -26,6 +26,7 @@ mod hub;
 mod health;
 mod kept;
 mod legacy_cleanup;
+mod legacy_status;
 mod lanes;
 mod link;
 mod local;
@@ -45,6 +46,7 @@ pub(crate) mod private_io;
 mod play;
 mod project;
 mod rentals;
+mod reports;
 mod runs;
 pub mod serve;
 mod slow;
@@ -1491,10 +1493,68 @@ impl Calcifer {
         eta::Prior::of(&self.history(target), machine, &self.gpu_of(machine), megapixels(&input)).map(|prior| prior.with_steps(steps))
     }
 
-    /// What a run of `target` of `size` takes on one GPU of `machine`'s kind, as runs like it took: a machine's estimate's
-    /// `prior_ms`. 0: none ran.
+    /// What a run of `target` of `size` takes on one GPU of `machine`'s kind where that machine ran none of it: a machine's estimate's
+    /// `prior_ms`. This computer's runs of it on that GPU; else our measurement of it on that card, which for a release the estimator
+    /// reads itself (`estimate::reference`) but local code it knows only by its manifest; else `scaled_ms` (cl-1004). 0: none.
     pub(crate) fn prior_ms(&self, target: &str, machine: &str, size: &v1::JobSize) -> u64 {
-        eta::one_gpu_ms(&self.history(target), machine, &self.gpu_of(machine), size).map_or(0, |ms| ms as u64)
+        let (history, gpu) = (self.history(target), self.gpu_of(machine));
+        let ms = (eta::one_gpu_ms(&history, machine, &gpu, size))
+            .or_else(|| (!target.contains('@')).then(|| ::api::estimate::reference(target, &gpu, size)).flatten())
+            .or_else(|| self.scaled_ms(target, &gpu, size, &history).map(|(ms, _)| ms));
+        ms.map_or(0, |ms| ms as u64)
+    }
+
+    /// What a run of `target` of `size` takes on one GPU of `gpu` (as its driver or a Hub names it), by what's known here without asking
+    /// anyone (cl-1004): this computer's runs of it on that card, else our measurement of it there (`estimate::reference`), else
+    /// `scaled_ms`; and what that stands on. None: nothing.
+    pub(crate) fn typical_ms(&self, target: &str, gpu: &str, size: &v1::JobSize) -> Option<(f64, v1::Basis)> {
+        let history = self.history(target);
+        if let Some(ms) = self.card_ran_ms(&history, gpu, size) {
+            return Some((ms, v1::Basis::Prior));
+        }
+        if let Some(ms) = ::api::estimate::reference(target, gpu, size) {
+            return Some((ms, v1::Basis::Reference));
+        }
+        self.scaled_ms(target, gpu, size, &history)
+    }
+
+    /// What `history`'s runs on `gpu`, whichever machine, say a run of `size` takes on one of it.
+    fn card_ran_ms(&self, history: &[eta::Took], gpu: &str, size: &v1::JobSize) -> Option<f64> {
+        let ran = history.iter().map(|took| took.gpu.as_str()).find(|ran| !ran.is_empty() && ::api::estimate::is_card(ran, gpu))?;
+        eta::one_gpu_ms(history, "", ran, size)
+    }
+
+    /// What a run of `target` of `size` takes on one GPU of `gpu` where nothing of it ran on that card here and we measured none of it
+    /// there (cl-1004): our measurement on another card, else this computer's runs on one, times that card's Hub speed over this one's
+    /// (cl-897's speeds, the Hub's last word on its release), from the card nearest it in speed. None: no speed for this card, or
+    /// nothing of it on any card with one.
+    fn scaled_ms(&self, target: &str, gpu: &str, size: &v1::JobSize, history: &[eta::Took]) -> Option<(f64, v1::Basis)> {
+        if gpu.is_empty() || ::api::estimate::reference(target, gpu, size).is_some() {
+            return None;
+        }
+        let hub = self.machines()?.hubs.default_origin();
+        let speeds = project::fit::speeds_now(&hub, target)?;
+        let speed = |card: &str| speeds.iter().find(|(sold, _)| ::api::estimate::is_card(card, sold)).map(|(_, speed)| *speed).filter(|speed| *speed > 0.0);
+        let to = speed(gpu)?;
+        let mut cards: Vec<(String, v1::Basis)> = (::api::estimate::references(target)).map(|row| (row.card.clone(), v1::Basis::Reference)).collect();
+        cards.extend(history.iter().filter(|took| took.width <= 1 && !took.gpu.is_empty()).map(|took| (took.gpu.clone(), v1::Basis::Prior)));
+        let mut seen: Vec<(String, v1::Basis)> = vec![];
+        cards.retain(|card| !seen.contains(card) && {
+            seen.push(card.clone());
+            true
+        });
+        (cards.into_iter())
+            .filter_map(|(card, basis)| {
+                let from = speed(&card)?;
+                let ms = match basis {
+                    v1::Basis::Reference => ::api::estimate::nearest(::api::estimate::references(target).filter(|row| row.card == card), size)?.1,
+                    _ => eta::one_gpu_ms(history, "", &card, size)?,
+                };
+                // This computer's runs before ours, at one distance.
+                Some(((from / to).ln().abs(), basis == v1::Basis::Reference, ms * from / to, basis))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+            .map(|(_, _, ms, basis)| (ms, basis))
     }
 
     /// What a run of `target` like `input` takes on one GPU of each card it ran on away from this computer, by those runs: each card's
@@ -1535,7 +1595,9 @@ impl Calcifer {
                 let outcome = row.outcome.as_ref()?;
                 let result: Option<serde_json::Map<String, serde_json::Value>> = outcome.result.as_ref().and_then(|r| serde_json::from_str(r.get()).ok());
                 let made = result.as_ref().and_then(|result| Some(result.get("width")?.as_f64()? * result.get("height")?.as_f64()? / 1e6));
-                eta::Took::of(row.machine.as_deref()?, &outcome.gpu, row.started_at_ms?, outcome.execution_ms, outcome.measurements.as_ref()?.get(), made)
+                let took = eta::Took::of(row.machine.as_deref()?, &outcome.gpu, row.started_at_ms?, outcome.execution_ms, outcome.measurements.as_ref()?.get(), made)?;
+                let input: serde_json::Value = row.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
+                Some(eta::Took { size: v1::JobSize::of(&input), ..took })
             })
             .collect()
     }
@@ -1543,9 +1605,12 @@ impl Calcifer {
     /// What a run of `target` of `size` takes on one GPU of `card` (a rental's, as its Hub sells it: `RTX 4090`), by this computer's
     /// runs on that card: for a machine on its way, which has run nothing yet (cl-915).
     pub(crate) fn card_ms(&self, target: &str, card: &str, size: &v1::JobSize) -> Option<f64> {
-        let history = self.history(target);
-        let gpu = history.iter().map(|took| took.gpu.as_str()).find(|gpu| eta::same_card(gpu, card))?.to_owned();
-        eta::one_gpu_ms(&history, "", &gpu, size)
+        self.card_ran_ms(&self.history(target), card, size)
+    }
+
+    /// `scaled_ms` of `target` on `card`, for a machine on its way.
+    pub(crate) fn card_scaled_ms(&self, target: &str, card: &str, size: &v1::JobSize) -> Option<f64> {
+        self.scaled_ms(target, card, size, &self.history(target)).map(|(ms, _)| ms)
     }
 
     /// Its machine's GPU from the moment it has one, not only once it ran (cl-921): on its record and every lifecycle event, as it goes.
@@ -1861,6 +1926,34 @@ impl Calcifer {
                 Err(Stop::Released(message)) if name == "local" => {
                     self.waiting(id, format!("local is restarting: {message}"));
                     pause.wait(wake, Some(&mut changed)).await;
+                }
+                // A rental's word that it released itself is not its end: its Hub's is (cl-977, as for a releasing Status). Until
+                // the Hub affirms it gone it is `ending`, and `machine ls` never says gone while it may bill. A run it was never sent
+                // leaves it now, as from one offline; one it holds settles with that end.
+                Err(Stop::Released(message)) if machine.kind == ::api::calcifer::MachineKind::Rental => {
+                    if let Some(machines) = self.machines()
+                        && let Err(e) = machines.released_itself(&name)
+                    {
+                        warn!(run = %id, machine = %name, "confirming its release with its Hub: {}", e.message);
+                    }
+                    if run.state == State::Queued {
+                        let left = match (run.pinned, run.wants.as_str()) {
+                            (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
+                            _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
+                                code: "machine_released".into(),
+                                message: format!("{name} released itself before it took the run: {message}"),
+                                next: vec![format!("cozy run {} … --on new", run.target)],
+                                ..Default::default()
+                            })),
+                        };
+                        match left {
+                            Ok(events) => self.publish(id, events),
+                            Err(e) => warn!(run = %id, "{e}"),
+                        }
+                    } else {
+                        self.waiting(id, format!("{name} released itself; waiting for its Hub to confirm it ended: {message}"));
+                        pause.wait(wake, Some(&mut changed)).await;
+                    }
                 }
                 Err(Stop::Released(message)) => {
                     if let Err(e) = self.machine_ended(&name, &message) {
@@ -2312,7 +2405,7 @@ impl Calcifer {
                     let events = self.with_run_store(id.as_str(), |store| store.settle(id.as_str(), &outcome, durable))?;
                     let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
                     self.publish(id, events);
-                    // What it took on a rented card, for its Hub's placement of runs on that card (cl-915).
+                    // What it took, anonymously, unless this computer turned performance data off (cl-1006).
                     if let (Some(machines), Ok(Some(row))) = (self.machines(), self.with_run_store(id.as_str(), |store| store.run(id.as_str()))) {
                         machines.report_run(&row, &outcome);
                     }

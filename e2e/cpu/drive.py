@@ -9,6 +9,8 @@ model's real classes at a tiny config, written into a throwaway store by TensorF
     drive.py <package dir> <interface.json> <fixture.py> <out dir> [--refs DIR] [--only cell,...] [--record]
 
 Prints one line per cell: PASS|FAIL|SKIP <package> <entry> <cell> <seconds>s[: first error line]. Exit 1 on any FAIL.
+Outputs are judged against refs/<package>.json, or refs/<package>.<amd|intel>.json where the two vendors' CPUs differ
+(`stored`: bf16 sums in another order on each, deterministic on one; Paul 11-06, determinism desirable, not required).
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import contextlib
 import importlib.util
 import itertools
 import json
+import math
 import os
 import shutil
 import socket
@@ -232,6 +235,12 @@ class Saved(TypedDict):
     media_type: str
 
 
+class RawFrame(TypedDict):
+    handle: str
+    raw: str
+    facts: dict[str, Json]
+
+
 class Reply(TypedDict, total=False):
     reply: str
     event: str
@@ -252,6 +261,7 @@ class Reply(TypedDict, total=False):
     detail: str
     outcome: Outcome
     outputs: list[dict[str, Json]]
+    frames: list[RawFrame]
     result: Json
     #: A hello's: the executor makes previews; a progress frame's preview, and a log's message
     previews: int
@@ -663,9 +673,44 @@ def differ(a: list[float], b: list[float]) -> tuple[float, float]:
     return (float(gap.mean()), float(gap.max())) if gap.size else (0.0, 0.0)
 
 
+def raw_video(path: Path, facts: dict[str, Json]) -> dict[str, npt.NDArray[np.generic]]:
+    """The Runtime's sealed RGB8/planar-F32 snapshot, before TensorD's MP4 post phase."""
+    shape = facts.get("shape")
+    if not isinstance(shape, list) or len(shape) != 4:
+        raise Failed(f"{path.name} has no four-axis video shape")
+    dims: list[int] = []
+    for value in shape:
+        if type(value) is not int or value <= 0:
+            raise Failed(f"{path.name} has an invalid video dimension")
+        dims.append(value)
+
+    def count(key: str) -> int:
+        value = facts.get(key, 0)
+        if type(value) is not int or value < 0:
+            raise Failed(f"{path.name} has invalid {key}")
+        return value
+
+    size, channels, audio_samples = count("video_bytes"), count("audio_channels"), count("audio_samples")
+    if dims[-1] != 3 or size != math.prod(dims) or bool(channels) != bool(audio_samples):
+        raise Failed(f"{path.name} has inconsistent raw video/audio facts")
+    data = path.read_bytes()
+    if len(data) != size + channels * audio_samples * 4:
+        raise Failed(f"{path.name} does not hold its declared RGB8/F32 samples")
+    found: dict[str, npt.NDArray[np.generic]] = {"": np.frombuffer(data, dtype=np.uint8, count=size).reshape(dims)}
+    if channels:
+        audio = np.frombuffer(data, dtype="<f4", count=channels * audio_samples, offset=size)
+        if not np.isfinite(audio).all():
+            raise Failed(f"{path.name} holds non-finite audio")
+        found[".audio"] = np.clip(audio, -1, 1) * 127.5 + 127.5
+    return found
+
+
 def samples(path: Path, media_type: str) -> dict[str, npt.NDArray[np.generic]]:
     """An output's samples as 0-255 numbers: a picture or a video's frames decoded, a video's sound, else its bytes."""
     if media_type.startswith("video/"):
+        facts = path.with_suffix(path.suffix + ".json")
+        if path.suffix == ".raw" and facts.exists():
+            return raw_video(path, cast(dict[str, Json], json.loads(facts.read_text())))
         import av
 
         found: dict[str, npt.NDArray[np.generic]] = {}
@@ -753,6 +798,11 @@ def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
         path = spooled(spool, ref)
         files.append(path)
         named[output] = (path, media_type)
+        if path.suffix == ".raw" and media_type.startswith("video/"):
+            registered = next((f for f in reply.get("frames", []) if f["handle"] == ref), None)
+            if registered is None:
+                raise Failed(f"raw video {output} has no Runtime frame registration")
+            path.with_suffix(path.suffix + ".json").write_text(json.dumps(registered["facts"]))
         if not path.stat().st_size:
             if output not in empty:
                 raise Failed(f"output {output} is empty")
@@ -787,6 +837,10 @@ def frames(path: Path, media_type: str, result: Json) -> Iterator[npt.NDArray[np
     its encoder (AAC) turns a last-bit difference between a group's sum and one rank's into whole-band noise, so a sound
     is judged by its thumbnail (`compare`)."""
     if media_type.startswith("video/"):
+        if path.suffix == ".raw" and path.with_suffix(path.suffix + ".json").exists():
+            for frame in samples(path, media_type)[""]:
+                yield frame.astype(np.int16)
+            return
         import av
 
         with av.open(str(path)) as container:
@@ -972,6 +1026,30 @@ def load_fixture(path: Path, package: str) -> Fixture:
     return cast(Fixture, module)
 
 
+def cpu() -> str:
+    """This computer's CPU as each reply names it (`execution_observation.accelerator`: the Runtime's `cpu_name`, the
+    model name in /proc/cpuinfo), or ''."""
+    with contextlib.suppress(OSError):
+        for row in Path("/proc/cpuinfo").read_text().splitlines():
+            if row.startswith("model name"):
+                return row.partition(":")[2].strip()
+    return ""
+
+
+def stored(folder: Path, package: str) -> tuple[Path, str]:
+    """The file of `package`'s references for this CPU's vendor, and what each cell's line says of it. bf16 matmuls sum
+    in another order on Intel than on AMD, alike on every CPU of one vendor: a tiny model's picture can move past a
+    reference's tolerance between them (krea-2 lineart, 13/255 in one block: e2e 43758038887 on AMD bit for bit,
+    43758045155, 43758051105, 43758057029 on three Intels the same). Determinism is desirable, not required (Paul 11-06),
+    so a package whose cells differ keeps `<package>.amd.json` and `<package>.intel.json`, one whose don't
+    `<package>.json`. Another vendor reads AMD's and says so. `--record` writes the file read."""
+    name = cpu()
+    vendor = next((v for v in ("amd", "intel") if v in name.lower()), "")
+    own = folder / f"{package}.{vendor or 'amd'}.json"
+    path = own if own.exists() else folder / f"{package}.json"
+    return path, "" if vendor else f"{name or 'this CPU'} is neither AMD nor Intel: AMD's references ({path.name})"
+
+
 def main() -> int:
     package_dir, interface_path, fixture_path, out = (Path(a).resolve() for a in sys.argv[1:5])
     flags = sys.argv[5:]
@@ -991,13 +1069,14 @@ def main() -> int:
     waive = cast(dict[str, str], getattr(fixture, "WAIVE", {}))
     #: `module:NAME` -> the literal it takes in the executor (a release geometry shrunk)
     patch = {k: repr(v) for k, v in cast(dict[str, object], getattr(fixture, "PATCH", {})).items()}
-    references_path = (Path(flags[flags.index("--refs") + 1]) if "--refs" in flags else HERE / "refs") / f"{package}.json"
+    references_path, unknown = stored(Path(flags[flags.index("--refs") + 1]) if "--refs" in flags else HERE / "refs", package)
     references = cast(dict[str, Seen], json.loads(references_path.read_text())) if references_path.exists() else {}
     failed = 0
 
     def line(ok: bool, entry: str, name: str, started: float, why: str = "") -> None:
         nonlocal failed
         failed += not ok
+        why = "; ".join(filter(None, (why, unknown)))
         print(f"{'PASS' if ok else 'FAIL'} {package} {entry} {name} {time.monotonic() - started:.1f}s{': ' + why if why else ''}",
               flush=True)
 

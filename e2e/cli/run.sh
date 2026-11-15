@@ -18,6 +18,7 @@ parse "$@"
 . "$(dirname "$0")/lifetime.sh"
 . "$(dirname "$0")/lines.sh"
 . "$(dirname "$0")/ondemand.sh"
+. "$(dirname "$0")/disk.sh"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
@@ -41,6 +42,8 @@ parse "$@"
 . "$(dirname "$0")/envcost.sh"
 . "$(dirname "$0")/egress.sh"
 . "$(dirname "$0")/stuck.sh"
+. "$(dirname "$0")/rentalself.sh"
+. "$(dirname "$0")/reports.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -72,12 +75,14 @@ step status; fixture_calcifer | tee "$OUT/status.json"
 step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
-# web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985).
-case $SHARD in projectvault | plan | stuck) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+# web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
+# its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
+case $SHARD in projectvault | plan | stuck | coming) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
-# calcifer.diagnostics (tests only), its warnings in calcifer/diagnostics.log, which the job collects with the other logs.
+# calcifer.diagnostics (tests only), its warnings in calcifer/diagnostics.log, which the job collects with the other logs; each
+# project's walk keeps its decisions in its own storage (.vault-calcifer/diagnostics/walk.log).
 calcifer_diagnostics() {
   local config=$HOME/.cozy/config.toml
   awk '/^diagnostics *=/ { next } { print } /^\[calcifer\]/ { print "diagnostics = true"; put = 1 } END { if (!put) printf "\n[calcifer]\ndiagnostics = true\n" }' "$config" > "$config.next" && mv "$config.next" "$config"
@@ -519,9 +524,11 @@ case $SHARD in
     broken_answers
     run_filters
     project_keys
+    run_failures
     run_playback
     hub_away
     lock_refresh
+    performance_data
     bound_runs
     own_references
     lane_fit
@@ -568,6 +575,7 @@ case $SHARD in
     run_playback
     hub_away
     lock_refresh
+    performance_data
     logs
   " ;;
   executors) parts="
@@ -589,6 +597,8 @@ case $SHARD in
   env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
   ondemand) parts="ondemand_ahead ondemand_need ondemand_install logs" ;;
+  # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
+  disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
   plan) parts="estimate_line plan_picks plan_published prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
@@ -601,6 +611,7 @@ case $SHARD in
     yaml_requests
     run_filters
     project_keys
+    run_failures
     bound_runs
     own_references
     lane_fit
@@ -665,6 +676,7 @@ case $SHARD in
     db_closes
     old_takes
     db_migrate
+    db_legacy
     db_opens
     db_migrate_large
     db_waits
@@ -677,6 +689,7 @@ case $SHARD in
   projectdb-purged) parts="db_purged logs" ;;
   projectdb-closes) parts="db_closes logs" ;;
   projectvault) parts="
+    vault_times
     shared_scratch
     open_unlocks
     projectvault
@@ -693,6 +706,8 @@ case $SHARD in
   projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
+  # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984).
+  projectdb-legacy) parts="db_legacy logs" ;;
   # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
   projectdb-migrate-large) parts="db_migrate_large logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).
@@ -722,10 +737,16 @@ case $SHARD in
     path_manifest
     from_source
     rental_end
+    rental_end_again
     logs
   " ;;
-  # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs (cl-977): about 10 min.
-  stuck) parts="stuck_exit logs" ;;
+  # Stops, restarts, updates and starts past a TensorD that can't exit, and a start that hangs, then a rental's own end against a
+  # stood-in Hub and provider (cl-977): about 12 min.
+  stuck) parts="
+    stuck_exit
+    rental_self
+    logs
+  " ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating

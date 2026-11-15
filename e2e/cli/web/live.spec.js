@@ -4,7 +4,7 @@
 // Machines lists what `cozy machine ls` does; tabs share one `GET /v1/events`, which the second takes on when the first closes. The CLI has
 // no verb that renames or moves a box (a node file holds kind, description, text, approved, takes and rev): those two are the API's.
 const { mkdirSync, writeFileSync } = require('fs');
-const { test, expect, box, canvasIdle, focus, fixtureTool, png, TEXT_END } = require('./fixtures');
+const { test, expect, canvasIdle, focus, fixtureTool, png, TEXT_END, canvasCard, canvasText, canvasLabel, screenshotPixels } = require('./fixtures');
 
 /** Polls whose miss leaves the cell going, as `expect.soft` does. */
 const softly = expect.configure({ soft: true });
@@ -15,18 +15,25 @@ const SLOW = fixtureTool('tool.py/slow');
 
 /** In the page: `window.__shown(spec, ms)` resolves with the time of the first frame `spec` holds on the canvas, or null after `ms`. */
 function watchCanvas() {
-  const card = (name) => document.querySelector(`.react-flow__node .card[data-asset="${CSS.escape(name)}"]`);
+  const inspect = () => document.querySelector('.canvas-root')?.canvasInspection;
+  const native = (name) => document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}], [data-focused-asset=${JSON.stringify(name)}] .card[data-asset=${JSON.stringify(name)}]`);
   const holds = (spec) => {
     if (spec.all) return spec.all.every(holds);
-    if (spec.gone) return !card(spec.gone);
-    if (spec.focused) return Boolean(document.querySelector(`[data-focused-asset="${CSS.escape(spec.focused)}"]`));
-    const el = card(spec.name);
-    if (!el) return false;
-    if (spec.text !== undefined && !el.textContent.includes(spec.text)) return false;
-    if (spec.label !== undefined && el.querySelector('.node-version-label')?.textContent !== spec.label) return false;
+    if (spec.gone) return Boolean(inspect()) && !inspect().names().includes(spec.gone) && !native(spec.gone);
+    if (spec.focused) return Boolean(document.querySelector(`[data-focused-asset=${JSON.stringify(spec.focused)}]`));
+    const card = inspect()?.card(spec.name), el = native(spec.name), shown = card?.rendered;
+    if (!card) return false;
+    if (!(shown && shown.transform.alpha > 0) && !el?.checkVisibility()) return false;
+    const text = el?.textContent ?? [shown?.words, ...Object.values(shown?.labels ?? {}).map(label => label.fullText)].filter(Boolean).join(' ');
+    if (spec.text !== undefined && !text.includes(spec.text)) return false;
+    if (spec.label !== undefined && (shown?.labels.version?.fullText ?? el?.querySelector('.node-version-label')?.textContent) !== spec.label) return false;
     if (spec.at) {
-      const { e, f } = new DOMMatrix(getComputedStyle(el.closest('.react-flow__node')).transform);
-      if (Math.abs(e - spec.at.x) > 0.5 || Math.abs(f - spec.at.y) > 0.5) return false;
+      const root = document.querySelector('.canvas-root'), camera = inspect().camera(), pane = root.getBoundingClientRect();
+      const node = el?.closest('.canvas-node'), rect = node?.checkVisibility() ? node.getBoundingClientRect() : null;
+      if (!rect && !shown) return false;
+      const x = (rect ? (rect.x - pane.x - camera.x) / camera.zoom : shown.transform.x) + card.position.x - (card.bounds.x - pane.x - camera.x) / camera.zoom;
+      const y = (rect ? (rect.y - pane.y - camera.y) / camera.zoom : shown.transform.y) + card.position.y - (card.bounds.y - pane.y - camera.y) / camera.zoom;
+      if (Math.abs(x - spec.at.x) > 0.5 || Math.abs(y - spec.at.y) > 0.5) return false;
     }
     return true;
   };
@@ -105,7 +112,6 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
   mkdirSync(testInfo.outputDir, { recursive: true });
   const file = (name) => testInfo.outputPath(name);
   await page.evaluate(watchCanvas);
-  const card = (name) => box(page, name);
 
   await test.step('the CLI and an API client add, set words, import, rename, approve and move: each live on the open canvas', async () => {
     const nodes = file('nodes.json');
@@ -118,11 +124,21 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await timed(page, 'cozy apply: a picture imported, two takes', { name: 'cli_pic' }, () => apply(cli, nodes, { cli_pic: { kind: 'image', takes: [{ file: file('one.png') }, { file: file('two.png') }] } }));
     // Each shows the version that is its state; the other is approved.
     let was = (await project.asset('cli_pic')).version;
-    await expect.soft(card('cli_pic').locator('.node-version-label'), 'cli_pic shows the version that is its state').toHaveText(`v${was}`);
+    await softly.poll(() => canvasLabel(page, 'cli_pic', 'version'), { message: 'cli_pic shows the version that is its state' }).toBe(`v${was}`);
     let other = was === 2 ? 1 : 2;
     rev = await revOf(cli, 'cli_pic');
     await timed(page, `cozy apply: take ${other} approved`, { name: 'cli_pic', label: `v${other}` }, () => apply(cli, nodes, { cli_pic: { rev, approved: other } }));
     expect.soft((await project.asset('cli_pic')).approved, 'cozy apply approved it').toBe(other);
+    await page.mouse.move(2, 500);
+    const approved = await project.asset('cli_pic');
+    const wanted = String(approved.prefixes.find(version => version.number === other).main.sha256).replace(/^sha256:/, '');
+    await expect.poll(async () => { const shown = (await canvasCard(page, 'cli_pic'))?.rendered; return shown?.media.ready && !shown.landing ? shown.media.sha : null; }, { message: 'the approved take is decoded and presented' }).toBe(wanted);
+    const body = (await canvasCard(page, 'cli_pic')).body, pixels = screenshotPixels(await page.screenshot({ scale: 'css' }));
+    for (const [u, v] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+      const actual = pixels(body.x + body.width * u, body.y + body.height * v), expected = [other === 1 ? 30 : 90, 255 * u, 255 * v];
+      expect.soft(Math.max(...actual.map((value, i) => Math.abs(value - expected[i]))), `cli_pic source pixels at ${u},${v}`).toBeLessThanOrEqual(32);
+    }
+
 
     // An API client, as another program writes.
     await timed(page, 'API: a text box', { name: 'api_a', text: 'Words from the API' }, () => project.add({ name: 'api_a', kind: 'text', fields: { text: 'Words from the API' } }));
@@ -131,7 +147,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await api.post(project.at('/assets/api_pic/versions'), { source: await project.upload(png(210)) });
     await timed(page, 'API: a rename', { all: [{ name: 'api_b', text: 'Second API words' }, { gone: 'api_a' }] }, () => api.post(project.at('/rename'), { from: 'api_a', to: 'api_b' }));
     was = (await project.asset('api_pic')).version;
-    await expect.soft(card('api_pic').locator('.node-version-label'), 'api_pic shows the version that is its state').toHaveText(`v${was}`);
+    await softly.poll(() => canvasLabel(page, 'api_pic', 'version'), { message: 'api_pic shows the version that is its state' }).toBe(`v${was}`);
     other = was === 2 ? 1 : 2;
     await timed(page, `API: take ${other} approved`, { name: 'api_pic', label: `v${other}` }, () => api.post(project.at('/approve'), { name: 'api_pic', version: String(other) }));
     expect.soft((await project.asset('api_pic')).approved, 'the API approved it').toBe(other);
@@ -287,7 +303,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await expect(tab.locator('.stage')).toBeVisible();
     await tab.bringToFront();
     await project.add({ name: 'tab_a', kind: 'text', fields: { text: 'Seen in the second tab' } });
-    await expect(box(tab, 'tab_a'), "the second tab hears the first tab's stream").toContainText('Seen in the second tab');
+    await expect.poll(() => canvasText(tab, 'tab_a'), { message: "the second tab hears the first tab's stream" }).toContain('Seen in the second tab');
     expect.soft(its.length, 'the second tab opens no stream of its own').toBe(0);
 
     // The first closes: the second takes the stream on, says what it shows, and changes still arrive.
@@ -296,7 +312,7 @@ test('live', async ({ page, context, project, api, cli, signIn, guards }, testIn
     await softly.poll(() => its.length, { message: 'the second tab opens the one stream' }).toBe(1);
     expect.soft((await shown).ok(), 'it tells Calcifer what it shows').toBe(true);
     await api.patch(project.at('/assets/tab_a'), { fields: { text: 'After the first tab closed' } });
-    await expect.soft(box(tab, 'tab_a'), 'changes keep arriving').toContainText('After the first tab closed');
+    await softly.poll(() => canvasText(tab, 'tab_a'), { message: 'changes keep arriving' }).toContain('After the first tab closed');
     expect.soft(its.length, 'still one stream').toBe(1);
   });
 });

@@ -108,6 +108,17 @@ pub(crate) enum Supervised {
 /// linked file counts no byte), and its group is killed when `stop` is canceled. The second is
 /// resolution, never a verdict.
 pub(crate) fn supervise(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> io::Result<Supervised> {
+    watch(child, stop, wrote, None)
+}
+
+/// `supervise` for work no run waits on, an update's staging (cl-977): its group is also killed once it shows no progress at
+/// all (no CPU used or owed, no byte read or written: `platform::process::meter`) for `platform::contain::STALL`, answered as a
+/// `TimedOut` error saying so. An update never hangs on a resolver or an install that stopped moving.
+pub(crate) fn supervise_progressing(child: &mut Child, stop: Option<&crate::stop::Stop>) -> io::Result<Supervised> {
+    watch(child, stop, &|_| (), Some(platform::contain::STALL))
+}
+
+fn watch(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64), stall: Option<Duration>) -> io::Result<Supervised> {
     let exact = match Birth::of(child.id()).map_err(io::Error::from) {
         Ok(birth) => Exact::open(&birth)?,
         Err(error) if gone(&error) => None,
@@ -119,16 +130,36 @@ pub(crate) fn supervise(child: &mut Child, stop: Option<&crate::stop::Stop>, wro
     let mut canceled = false;
     // What each process of the group wrote so far: a gone member keeps what it wrote.
     let mut writes = std::collections::HashMap::new();
+    // What the group showed of progress, and since when it showed nothing new (`stall` only).
+    let (mut shown, mut still) = (std::collections::HashMap::new(), std::time::Instant::now());
     while !exact.wait_for(Duration::from_secs(1))? {
         if canceled {
             continue;
         }
-        let group = std::iter::once(exact.birth().pid).chain(group_members(exact.birth()).into_iter().map(|m| m.pid));
-        for (pid, bytes) in group.filter_map(|pid| Some((pid, written_bytes(pid)?))) {
+        let group: Vec<u32> = std::iter::once(exact.birth().pid).chain(group_members(exact.birth()).into_iter().map(|m| m.pid)).collect();
+        for (pid, bytes) in group.iter().filter_map(|pid| Some((*pid, written_bytes(*pid)?))) {
             let held: &mut u64 = writes.entry(pid).or_default();
             *held = (*held).max(bytes);
         }
         wrote(writes.values().sum());
+        if let Some(stall) = stall {
+            // A member whose meter can't be read decides nothing: it counts as moving.
+            let mut moved = false;
+            for pid in &group {
+                match platform::process::meter(*pid) {
+                    Some(now) => moved |= shown.insert(*pid, now) != Some(now),
+                    None => moved = true,
+                }
+            }
+            if moved {
+                still = std::time::Instant::now();
+            } else if still.elapsed() >= stall {
+                exact.kill()?;
+                let _ = child.wait();
+                return Err(io::Error::new(io::ErrorKind::TimedOut, format!(
+                    "it showed no progress (no CPU, no byte read or written) for {} s, and was ended", stall.as_secs())));
+            }
+        }
         if stop.is_some_and(|stop| stop.is_cancelled()) {
             exact.kill()?;
             canceled = true;

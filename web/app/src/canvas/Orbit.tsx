@@ -189,7 +189,7 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
 
   return (
     <div
-      className={`orbit nodrag nopan nowheel ${ready ? "ready" : ""}`}
+      className={`orbit canvas-control ${ready ? "ready" : ""}`}
       role="slider"
       tabIndex={0}
       aria-label="Turn"
@@ -226,12 +226,12 @@ export function OrbitView({ path, shown, orbit }: { path: string; shown: Shown; 
       <div className="orbit-bar">
         <Dial angle={shownAngle} />
         <span className="orbit-deg">{Math.round(shownAngle) % 360}°</span>
-        <button type="button" className="orbit-act nodrag" aria-pressed={spinning} onClick={spin}>
+        <button type="button" className="orbit-act canvas-control" aria-pressed={spinning} onClick={spin}>
           {spinning ? "Stop" : "Spin"}
         </button>
         <button
           type="button"
-          className="orbit-act nodrag"
+          className="orbit-act canvas-control"
           onClick={() => {
             stopSpin()
             turn(0)

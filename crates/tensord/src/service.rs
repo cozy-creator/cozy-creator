@@ -436,15 +436,17 @@ impl Service {
     /// The machine's garbage for a store admit of `incoming` bytes that finds the disk short,
     /// before the store evicts a model (`Store::on_short`): never kernels, memoized stages or
     /// run objects. Then the idle executors whose open models alone keep the room it needs end
-    /// (`end_idle_for_disk`), so the store's eviction can take those models.
-    pub(crate) fn reclaim_for(&self, incoming: u64) {
+    /// (`end_idle_for_disk`), so the store's eviction can take those models. True when any ended.
+    pub(crate) fn reclaim_for(&self, incoming: u64) -> bool {
         self.sweep(incoming, false);
-        if let Some(store) = self.store() {
-            let ended = self.end_idle_for_disk(&store, incoming);
-            if !ended.is_empty() {
-                tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(incoming), ended.join(", "));
-            }
+        let Some(store) = self.store() else {
+            return false;
+        };
+        let ended = self.end_idle_for_disk(&store, incoming);
+        if !ended.is_empty() {
+            tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(incoming), ended.join(", "));
         }
+        !ended.is_empty()
     }
 
     /// Room on the disk for the `missing` bytes of run `run`'s weights, before any is wanted: the

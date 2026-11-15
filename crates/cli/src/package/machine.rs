@@ -33,7 +33,7 @@ struct Installed {
 /// Calcifer names the newest release when none is given, and retires the older ones the machine holds once it is in.
 pub(crate) async fn install(ctx: &Context, package: String, code: Option<api::code::LocalCode>, release: Option<String>, on: Option<On>, project: Option<String>) -> Result<ExitCode, Error> {
     let submitted = run::job(ctx, job::PACKAGE_INSTALL, &PackageInstall { package, release }, on, code, project).await?;
-    let settled = run::follow(ctx, submitted).await?;
+    let settled = run::carry_out(ctx, submitted).await?;
     if ctx.json || settled.status != Status::Completed {
         return Ok(run::exit_code(&settled));
     }

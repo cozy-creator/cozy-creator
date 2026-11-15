@@ -125,5 +125,10 @@ for q in $packages; do
   break
 done
 pass=$(grep -c '^PASS' "$OUT/cells.txt" || true) fail=$(grep -c '^FAIL' "$OUT/cells.txt" || true)
-echo "cpu: $pass passed, $fail failed in $((SECONDS - started)) s"
+# The CPU the references were chosen by (drive.py `stored`): AMD's and Intel's bf16 sums differ.
+cpu=$(sed -n '/^model name/{s/^model name[[:space:]]*: *//p;q}' /proc/cpuinfo 2> /dev/null || true)
+case ${cpu,,} in *amd*) refs="AMD's references" ;; *intel*) refs="Intel's references" ;; *) refs="AMD's references, the vendor unknown" ;; esac
+said="cpu: $pass passed, $fail failed in $((SECONDS - started)) s on ${cpu:-an unnamed CPU} ($refs)"
+echo "$said"
+[ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "### $said" >> "$GITHUB_STEP_SUMMARY"
 [ "$fail" = 0 ] && [ "$pass" != 0 ]

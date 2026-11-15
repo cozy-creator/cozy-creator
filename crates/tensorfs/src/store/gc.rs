@@ -622,7 +622,7 @@ fn exclusive(path: &std::path::Path) -> Result<Option<File>> {
 mod removal_tests;
 
 /// Bytes for people: MiB to a tenth below a GiB, else GiB to a hundredth.
-fn size(bytes: u64) -> String {
+pub(super) fn size(bytes: u64) -> String {
     match bytes < 1 << 30 {
         true => format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64),
         false => format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64),

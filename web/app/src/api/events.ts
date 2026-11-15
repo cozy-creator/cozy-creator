@@ -8,7 +8,8 @@ export type Health =
   | { state: "reconnecting"; attempt: number }
   | { state: "signed_out" }
 
-type Presence = { tab: string; project: string | null; revision: number }
+/** What a tab shows: a project, and whether a machine's view, where runs of no project show (installs, updates). */
+type Presence = { tab: string; project: string | null; revision: number; machines: boolean }
 type Acknowledged = Presence & { stream: string; refusal?: ProjectShowRefusal }
 type Waiter = { project: string; done(): void; fail(error: unknown): void }
 type Confirmed = { stream: string; key: string; readers: number; reply: ProjectShowReply | null }
@@ -67,6 +68,8 @@ export class EventStream {
   private alive: Promise<void>
   /** The project this tab shows. */
   private showing: string | null = null
+  /** This tab shows a machine's view. */
+  private machines = false
   private revision = 0
   private acknowledged: Acknowledged | null = null
   private waiters = new Set<Waiter>()
@@ -114,6 +117,14 @@ export class EventStream {
     else this.announce()
   }
 
+  /** This tab shows a machine's view, or not: only then does Calcifer send it runs of no project. */
+  showMachines(on: boolean) {
+    if (on === this.machines) return
+    this.machines = on
+    if (this.holding) this.heard(this.presence())
+    else this.announce()
+  }
+
   /** Await this tab's held acknowledgement (legacy services confirm completion only). Owns no Reader. */
   whenShown(project: string, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
@@ -135,7 +146,7 @@ export class EventStream {
   }
 
   private presence(): Presence {
-    return { tab: this.tab, project: this.showing, revision: this.revision }
+    return { tab: this.tab, project: this.showing, revision: this.revision, machines: this.machines }
   }
 
   private announce() {
@@ -194,7 +205,8 @@ export class EventStream {
     if (this.telling || !this.stream || !this.following || this.following.signal.aborted) return
     const snapshot = [...this.shown.values()]
     const projects = [...new Set(snapshot.flatMap(({ project }) => project === null ? [] : [project]))].sort()
-    const key = projects.join()
+    const machines = snapshot.some((one) => one.machines)
+    const key = `${projects.join()}${machines ? " machines" : ""}`
     const stream = this.stream
     const readers = this.readers
     if (this.told?.stream === stream && this.told.key === key && this.told.readers === readers) {
@@ -203,7 +215,7 @@ export class EventStream {
     }
     this.telling = true
     try {
-      const reply = await this.client.show(stream, projects, this.following.signal)
+      const reply = await this.client.show(stream, projects, machines, this.following.signal)
       if (this.stream === stream && this.readers === readers) {
         this.told = { stream, key, readers, reply }
         this.confirm(snapshot, this.told)

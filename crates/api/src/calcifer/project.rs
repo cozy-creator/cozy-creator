@@ -1079,7 +1079,7 @@ fn one() -> u32 {
 }
 
 /// `POST /v1/projects/{id}/fit` and `…/fit/here`: what a render of `names` on this computer (`local`) asks of it, `all` and `outdated` as
-/// a render reads them.
+/// a render reads them; and how long each box named takes where a render of it would go now.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct FitAsk {
@@ -1098,6 +1098,38 @@ pub struct Fit {
     /// What the Hub places them all on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rent: Option<RentFor>,
+    /// Each box named (not `all`), where a render of it would go now and how long it runs there (cl-1004).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub estimates: Vec<BoxEstimate>,
+}
+
+/// A box's typical inference time where a render of it would go now (cl-1004): the machine placement would choose, quoted from what each
+/// machine last said, nothing started, updated or rented.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct BoxEstimate {
+    pub name: String,
+    pub machine: String,
+    /// Its GPU in a person's words: `RTX 4090`. Empty: none, so its CPU.
+    pub card: String,
+    /// The run itself there, at the GPUs it would take: no queue, install, download or load. 0: unknown.
+    pub run_ms: u64,
+    pub basis: crate::machine::Basis,
+    /// The tool's recommended GPU (the Hub's pick for its release), when a rented one runs it more than 3× faster and a minute sooner,
+    /// or it would run here on a CPU.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faster: Option<Faster>,
+}
+
+/// A rented GPU that runs a box far faster than where it would go.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Faster {
+    /// Its run there, as `BoxEstimate::run_ms`.
+    pub run_ms: u64,
+    /// Both times, in a line: `On this computer's RTX 4070 this takes about 38 min; on a rented RTX 5090, about 6 min.`
+    pub line: String,
+    pub rent: RentFor,
 }
 
 /// One tool this computer would run poorly.

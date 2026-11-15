@@ -5,7 +5,7 @@
 const { spawnSync } = require('child_process');
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, focus, middle, openPoint, png } = require('./fixtures');
+const { test, expect, focus, middle, openPoint, png, canvasCard, canvasPoint, canvasVisible } = require('./fixtures');
 const { carry } = require('./geometry');
 const { carryBox, ffmpeg, fit, toolRow } = require('./hands');
 
@@ -43,7 +43,7 @@ test('timeline', async ({ page, project }) => {
   const blue = plate(test.info().outputPath('blue.mp4'), 'blue', 3, 880);
   const title = png(0, 400, 400, false, () => GREEN);
   await project.import(red, { name: 'red', at: { x: 0, y: 0 } });
-  await expect(box(page, 'red')).toBeVisible();
+  await expect.poll(() => canvasVisible(page, 'red')).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
   const clipsOf = () => region.locator('.tl-clip').evaluateAll((all) => all.map((el) => ({ name: el.dataset.name, in: Number(el.dataset.in), out: Number(el.dataset.out), frames: Number(el.dataset.frames) })));
@@ -141,14 +141,14 @@ test('timeline', async ({ page, project }) => {
     const before = new Set((await project.assets()).map((asset) => asset.name));
     await carry(page, await middle(await toolRow(page, 'Video Timeline', 'cozy/edit')), await openPoint(page));
     await expect.poll(async () => (edit = (await project.assets()).find((asset) => asset.tool === 'cozy/edit' && !before.has(asset.name))?.name), { message: 'its box' }).toBeTruthy();
-    await expect(box(page, edit)).toBeVisible();
-    await expect(page.locator('.card.landing')).toHaveCount(0);
+    await expect.poll(() => canvasVisible(page, edit)).toBe(true);
+    await expect.poll(async () => Boolean((await canvasCard(page, edit))?.rendered?.landing?.active)).toBe(false);
     // Let go where there was room, it may stand partly out of view: both in view to carry one onto the other.
     await fit(page);
   });
 
   await test.step('three clips: a box let go on it, and two files on its timeline', async () => {
-    await carryBox(page, 'red', await middle(box(page, edit).locator('.media')));
+    await carryBox(page, 'red', await canvasPoint(page, edit));
     await expect.poll(async () => JSON.stringify((await project.asset(edit)).fields?.timeline ?? null), { message: 'red on its timeline' }).toContain('<red>');
     await focus(page, edit);
     await expect(region.locator('.tl-clip')).toHaveCount(1);

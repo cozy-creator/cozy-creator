@@ -1,36 +1,38 @@
 // Where things are on the canvas, for the canvas cells (cl-973): its camera, a point of the screen on it, the rows the API holds, what's
 // drawn on what, and a hand's carry and drag.
-const { expect } = require('./fixtures');
+const { expect, screenshotPixels } = require('./fixtures');
 
-/** The camera as the canvas draws it: its pan and zoom. */
-const camera = (page) => page.evaluate(() => {
-  const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-  return { x: m.e, y: m.f, zoom: m.a };
-});
+/** Read-only camera geometry; screenshots prove its presented result separately. */
+const camera = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.camera() ?? null);
 
 /** The same camera, to a pixel. */
-const sameCamera = (a, b) => Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.zoom - b.zoom) < 0.0005;
+const sameCamera = (a, b) => Boolean(a && b) && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.zoom - b.zoom) < 0.0005;
 
-/** A point of the screen on the canvas, as the page places what's let go there (React Flow's screenToFlowPosition). */
+/** A screen point in canvas coordinates, accounting for the actual root's origin. */
 const onCanvas = (page, point) => page.evaluate(({ x, y }) => {
-  const pane = document.querySelector('.react-flow').getBoundingClientRect();
-  const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-  return { x: (x - pane.left - m.e) / m.a, y: (y - pane.top - m.f) / m.a };
+  const root = document.querySelector('.canvas-root'), view = root.canvasInspection.camera(), pane = root.getBoundingClientRect();
+  return { x: (x - pane.left - view.x) / view.zoom, y: (y - pane.top - view.y) / view.zoom };
 }, point);
 
 /** Each box's row as the API holds it: `{x, y, w}` by name. */
 const rows = async (project) => (await project.api.get(project.at('/canvas'))).cards;
 
-/** Each box drawn, by name: where its node is on the canvas (React Flow's own translate, its row as drawn) and its card's size, both in
- *  canvas units, and the card's rect on the canvas, which a box's body may be narrower than its row and inset in. */
+/** Actual retained display transforms, or the committed native card, in world units. Culled cards are absent.
+ *  This establishes geometry, not pixel identity. */
 const drawn = (page) => page.evaluate(() => {
-  const pane = document.querySelector('.react-flow').getBoundingClientRect();
-  const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-  return Object.fromEntries([...document.querySelectorAll('.react-flow__node .card[data-asset]')].map((card) => {
-    const at = new DOMMatrix(getComputedStyle(card.closest('.react-flow__node')).transform);
-    const r = card.getBoundingClientRect();
-    const rect = { x: (r.left - pane.left - m.e) / m.a, y: (r.top - pane.top - m.f) / m.a, w: r.width / m.a, h: r.height / m.a };
-    return [card.dataset.asset, { x: at.e, y: at.f, w: rect.w, h: rect.h, card: rect }];
+  const root = document.querySelector('.canvas-root'), inspection = root.canvasInspection, view = inspection.camera(), pane = root.getBoundingClientRect();
+  return Object.fromEntries(inspection.names().flatMap(name => {
+    const card = inspection.card(name), native = document.querySelector(`.canvas-node:has(.card[data-asset=${JSON.stringify(name)}])`);
+    if (!card.rendered && !native) return [];
+    let rect;
+    if (native) {
+      const r = native.getBoundingClientRect();
+      rect = { x: (r.x - pane.x - view.x) / view.zoom, y: (r.y - pane.y - view.y) / view.zoom, w: r.width / view.zoom, h: r.height / view.zoom };
+    } else {
+      const transform = card.rendered.transform;
+      rect = { x: transform.x, y: transform.y, w: card.bounds.width / view.zoom * transform.scaleX, h: card.bounds.height / view.zoom * transform.scaleY };
+    }
+    return [[name, { ...rect, card: { ...rect } }]];
   }));
 });
 
@@ -84,27 +86,18 @@ async function rowsOf(project, names) {
   return held;
 }
 
-/** What's drawn in `clip` of the screen, read from a screenshot decoded in the page: its commonest colour, and how many pixels are off it
- *  by more than `by` in a channel, of how many. */
+/** Screenshot pixels decoded independently of the browser: commonest colour and pixels off it by more than by per channel. */
 async function colours(page, clip, by = 16) {
-  const shot = await page.screenshot({ clip });
-  return page.evaluate(async ({ b64, by }) => {
-    const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], { type: 'image/png' }));
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const context = canvas.getContext('2d');
-    context.drawImage(bitmap, 0, 0);
-    const { data } = context.getImageData(0, 0, bitmap.width, bitmap.height);
-    const counts = new Map();
-    for (let i = 0; i < data.length; i += 4) {
-      const key = ((data[i] >> 3) << 10) | ((data[i + 1] >> 3) << 5) | (data[i + 2] >> 3);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    const common = [...counts].sort((a, b) => b[1] - a[1])[0][0];
-    const want = [((common >> 10) & 31) * 8 + 4, ((common >> 5) & 31) * 8 + 4, (common & 31) * 8 + 4];
-    let off = 0;
-    for (let i = 0; i < data.length; i += 4) if (Math.abs(data[i] - want[0]) > by || Math.abs(data[i + 1] - want[1]) > by || Math.abs(data[i + 2] - want[2]) > by) off++;
-    return { common: want, off, of: data.length / 4 };
-  }, { b64: shot.toString('base64'), by });
+  const read = screenshotPixels(await page.screenshot({ clip })), counts = new Map();
+  for (let y = 0; y < read.height; y++) for (let x = 0; x < read.width; x++) {
+    const [r, g, b] = read(x, y), key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const common = [...counts].sort((a, b) => b[1] - a[1])[0][0];
+  const want = [((common >> 10) & 31) * 8 + 4, ((common >> 5) & 31) * 8 + 4, (common & 31) * 8 + 4];
+  let off = 0;
+  for (let y = 0; y < read.height; y++) for (let x = 0; x < read.width; x++) if (read(x, y).some((v, i) => Math.abs(v - want[i]) > by)) off++;
+  return { common: want, off, of: read.width * read.height };
 }
 
 module.exports = { camera, carry, colours, drag, drawn, lying, onCanvas, rows, rowsOf, sameCamera };

@@ -65,6 +65,7 @@ import type {
   RunQuote,
   RunRequest,
   Runs,
+  Settings,
   SignedOut,
   Submitted,
   Target,
@@ -289,14 +290,23 @@ export class Client {
     return this.json("/v1/status")
   }
 
+  settings(signal?: AbortSignal): Promise<Settings> {
+    return this.json("/v1/settings", { signal })
+  }
+
+  changeSettings(settings: Settings): Promise<Settings> {
+    return this.write("PUT", "/v1/settings", settings)
+  }
+
   /** The one stream, opened once: `EventStream` does its own reconnecting. */
   events(signal: AbortSignal): Promise<Response> {
     return this.transport.fetch("/v1/events", { signal, headers: { Accept: "text/event-stream" } })
   }
 
-  /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts. One that ended is told again on the next. */
-  async show(stream: string, projects: string[], signal: AbortSignal): Promise<ProjectShowReply | null> {
-    const body = JSON.stringify({ projects })
+  /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts, and whether one shows a machine's view: the stream
+   *  hears runs only of these. One that ended is told again on the next. */
+  async show(stream: string, projects: string[], machines: boolean, signal: AbortSignal): Promise<ProjectShowReply | null> {
+    const body = JSON.stringify({ projects, machines })
     const response = await this.send(`/v1/events/${encodeURIComponent(stream)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body }, { once: signal })
     // Older services confirm completion without saying which Readers they could install.
     return response.status === 204 ? null : response.json()
