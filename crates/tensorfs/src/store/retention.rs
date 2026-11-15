@@ -30,6 +30,8 @@ pub(crate) const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const SWEEP: Duration = Duration::from_secs(10 * 60);
 /// The most `make_room` waits for the fence's readers, who hold it only between reading metadata and holding what it names.
 const ROOM_WAIT: Duration = Duration::from_secs(30);
+/// The most an admit waits for the holds of processes `on_short` ended to go as they exit.
+const HOLDS_WAIT: Duration = Duration::from_secs(10);
 
 /// Digests kept while a process holds them: never unlocked by hand, so a forked child that
 /// inherited the descriptor keeps holding them until it exits or execs.
@@ -326,14 +328,26 @@ impl Store {
         let mut collections = self.collections.lock().unwrap_or_else(PoisonError::into_inner);
         // Judged again once another's collection ends: what it freed was for its own bytes.
         if due() || short()? > 0 {
-            // The machine's garbage goes before any model (`on_short`).
-            if let (Some(reclaim), 1..) = (self.reclaim.get(), short()?) {
-                (reclaim.0)(incoming);
-            }
+            // The machine's garbage goes before any model (`on_short`), and idle processes holding models end.
+            let ended = match (self.reclaim.get(), short()?) {
+                (Some(reclaim), 1..) => (reclaim.0)(incoming),
+                _ => false,
+            };
             if let Some(_gc) = try_collect(self)? {
                 // A store GC cannot walk (a ref or header of another format) keeps all it holds.
                 if let Err(e) = self.upkeep(due(), &stamp, &short) {
                     tracing::warn!("tensorfs: cache upkeep skipped: {e}");
+                }
+            }
+            // What the ended processes held goes as each exits: collected again meanwhile, for as long as `HOLDS_WAIT`.
+            let began = Instant::now();
+            while ended && short()? > 0 && began.elapsed() < HOLDS_WAIT {
+                std::thread::sleep(Duration::from_millis(200));
+                if let Some(_gc) = try_collect(self)? {
+                    if let Err(e) = self.upkeep(false, &stamp, &short) {
+                        tracing::warn!("tensorfs: cache upkeep skipped: {e}");
+                        break;
+                    }
                 }
             }
             *collections += 1;

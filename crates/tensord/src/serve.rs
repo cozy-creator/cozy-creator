@@ -196,7 +196,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     crate::objects::restore(&service.engine, &engine.join("writes"))?;
     // A short store admit frees the machine's garbage before the store evicts a model.
     let reclaimer = Arc::downgrade(&service);
-    store.on_short(move |incoming| reclaimer.upgrade().into_iter().for_each(|service| service.reclaim_for(incoming)));
+    store.on_short(move |incoming| reclaimer.upgrade().is_some_and(|service| service.reclaim_for(incoming)));
     // The jobs this root held (a preparation the restart ended counts as ended now): Status
     // reports the true deadline from the first frame.
     let (working, ended_ms) = service.engine.jobs(0)?;

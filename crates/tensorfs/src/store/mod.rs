@@ -195,7 +195,7 @@ pub struct Store {
 }
 
 /// What frees disk outside a store for bytes coming in, before it evicts a model.
-struct Reclaim(Box<dyn Fn(u64) + Send + Sync>);
+struct Reclaim(Box<dyn Fn(u64) -> bool + Send + Sync>);
 
 impl std::fmt::Debug for Reclaim {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -260,8 +260,9 @@ impl Store {
     }
 
     /// Frees the machine's own garbage before this handle (and its clones) evicts a model:
-    /// `reclaim(incoming)` runs when an admit of `incoming` bytes finds the disk short. Set once.
-    pub fn on_short(&self, reclaim: impl Fn(u64) + Send + Sync + 'static) {
+    /// `reclaim(incoming)` runs when an admit of `incoming` bytes finds the disk short; true when it ended processes
+    /// whose holds go as they exit. Set once.
+    pub fn on_short(&self, reclaim: impl Fn(u64) -> bool + Send + Sync + 'static) {
         let _ = self.reclaim.set(Reclaim(Box::new(reclaim)));
     }
 
