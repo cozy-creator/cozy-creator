@@ -621,7 +621,7 @@ pub(crate) fn find_current(api:&Api,key:&str)->Result<RunRow,Refusal> {
 
 /// The run `KEY-N` names from any scope (cl-987): run N of the project that has or had the key, `COZY-N` Calcifer's own. None when
 /// `text` is no such name, or no project here has the key.
-async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRow>, Refusal> {
+pub(crate) async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRow>, Refusal> {
     let Some((key, number)) = ::api::calcifer::project::run_name(text) else { return Ok(None) };
     let journal = match key.as_str() {
         ::api::calcifer::project::MACHINE_KEY => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
