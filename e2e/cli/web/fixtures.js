@@ -375,8 +375,10 @@ async function canvasIdle(page) {
   await expect(page.locator('[data-focused-asset][data-entering]')).toHaveCount(0);
 }
 
-/** A box opened by a double click on its middle: Focus names it, has drawn in, and the canvas is still. Focus's region. */
+/** A box opened by a double click on its middle: Focus names it, has drawn in, and the canvas is still. Focus's region. Measured once the
+ *  canvas is still: a camera on its way back from Focus moves the box from under the pointer. */
 async function focus(page, name) {
+  await canvasIdle(page);
   const { x, y } = await middle(box(page, name).locator('.media').first());
   await page.mouse.dblclick(x, y);
   const region = page.getByRole('region', { name: 'Focused asset' });
