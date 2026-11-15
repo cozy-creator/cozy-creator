@@ -69,7 +69,6 @@ import type {
   Target,
   ToolList,
   ToolListChange,
-  ToolUi,
   Tools,
   Unpinned,
   Updating,
@@ -488,8 +487,8 @@ export class Client {
   }
 
   /** One asset as it is now: what a change of it costs, whatever else the project holds. */
-  asset(id: string, name: string): Promise<AssetVersions> {
-    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`)
+  asset(id: string, name: string, signal?: AbortSignal): Promise<AssetVersions> {
+    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { signal })
   }
 
   projectAddress(reference: string): Promise<ProjectAddress> {
@@ -609,12 +608,6 @@ export class Client {
     const asked = new URLSearchParams({ limit: String(limit) })
     if (q) asked.set("q", q)
     return this.json(`/v1/tools/browse?${asked}`, { signal })
-  }
-
-  /** Where to import a tool's component from. `project`: local code it names can answer. */
-  toolUi(id: string, project: string | null): Promise<ToolUi> {
-    const asked = project ? `?${new URLSearchParams({ project })}` : ""
-    return this.json(`/v1/tools/${encodeURIComponent(id)}/ui${asked}`)
   }
 
   /** These assets' queued work dropped and their runs canceled. */

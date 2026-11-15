@@ -14,6 +14,12 @@
 //!   of starting a later job's: one job's download at a time at full speed, its tail never shared
 //!   with the next (cl-905); a job's own parts follow one another with the link full. A task nothing
 //!   wants stops (cl-686).
+//! - **Giving way.** Places go to the most urgent waiting range first. Every place taken, a range in flight gives
+//!   its place up at its next bytes to one waiting at an earlier job's order, and asks again from the byte it reached.
+//!   While an object at order 0 is under way (an emergency: what a running call reads now), every other request gives
+//!   way at its next bytes and nothing else starts, in every downloader of the process (`LINK`), so it has the whole
+//!   link; then the rest go on (cl-966). A transfer outside the downloader at an order (an install's packages, from
+//!   their own index) holds what comes after it in that downloader the same way while it lasts ([`Shared::give_way`]).
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every byte
 //!   enters the store's admission, which hashes it: wrong bytes are never admitted. A process sharing
 //!   the store that is fetching an object is waited for, not raced (tfs-142).
@@ -22,7 +28,7 @@
 //! - **Every answer that is not 2xx is logged** with its object, range and attempt, and counted.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -189,6 +195,39 @@ pub struct Fetching {
     pub hedged: u32,
 }
 
+/// Downloaders made in this process, for their lines.
+static DOWNLOADERS: AtomicU64 = AtomicU64::new(0);
+
+/// The one link every downloader of this process shares, whichever store each fills (TensorD's: one per project's
+/// store): how many have an emergency under way, and each of them, woken when the last one ends. While any has
+/// one, every other downloader's requests wait as its own do.
+struct Link {
+    urgent: AtomicUsize,
+    sharers: Mutex<Vec<std::sync::Weak<Shared>>>,
+}
+
+static LINK: Link = Link { urgent: AtomicUsize::new(0), sharers: Mutex::new(Vec::new()) };
+
+impl Link {
+    /// A downloader's emergencies ended; the last on the link, what waits in every downloader asks again.
+    fn left(&self) {
+        if self.urgent.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.calmed();
+        }
+    }
+
+    fn calmed(&self) {
+        lock(&self.sharers).retain(|sharer| match sharer.upgrade() {
+            Some(shared) => {
+                shared.moved.notify_waiters();
+                shared.queued.notify_waiters();
+                true
+            }
+            None => false,
+        });
+    }
+}
+
 fn unix_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
@@ -213,6 +252,34 @@ impl Waiter {
     }
 }
 
+impl Drop for Shared {
+    /// Gone with an emergency still counted, it leaves the link.
+    fn drop(&mut self) {
+        if self.on_link.swap(false, Ordering::AcqRel) {
+            LINK.left();
+        }
+    }
+}
+
+/// A transfer outside the downloader at its order (`Shared::give_way`): dropped, what waited for it goes on.
+pub struct GiveWay {
+    shared: Arc<Shared>,
+    order: u64,
+}
+
+impl Drop for GiveWay {
+    fn drop(&mut self) {
+        let mut queue = lock(&self.shared.queue);
+        if let Some(count) = queue.aside.get_mut(&self.order) {
+            *count -= 1;
+            if *count == 0 {
+                queue.aside.remove(&self.order);
+            }
+        }
+        self.shared.calmed(&queue);
+    }
+}
+
 impl Drop for Waiter {
     fn drop(&mut self) {
         if self.task.waiters.fetch_sub(1, Ordering::AcqRel) == 1 {
@@ -226,13 +293,28 @@ struct Queue {
     tasks: HashMap<String, Arc<Task>>,
     heap: BinaryHeap<Reverse<(u64, u64, String)>>,
     seq: u64,
+    /// Its tasks at order 0 (emergencies).
+    urgent: usize,
+    /// Transfers outside the downloader, by order (`Shared::give_way`).
+    aside: BTreeMap<u64, usize>,
 }
 
 impl Queue {
+    /// The order past which every request waits: 0 during an emergency, else the most urgent transfer outside.
+    fn floor(&self) -> u64 {
+        match self.urgent {
+            0 => self.aside.keys().next().copied().unwrap_or(u64::MAX),
+            _ => 0,
+        }
+    }
+
     /// `task` leaves the queue, unless a task of its own already took its object's place.
     fn remove(&mut self, task: &Arc<Task>) {
         if self.tasks.get(&task.object.sha256).is_some_and(|t| Arc::ptr_eq(t, task)) {
             self.tasks.remove(&task.object.sha256);
+            if task.priority.load(Ordering::Acquire) == 0 {
+                self.urgent -= 1;
+            }
         }
     }
 
@@ -254,6 +336,18 @@ pub(crate) struct Shared {
     pub volume: Option<VolumeOrigin>,
     queue: Mutex<Queue>,
     queued: Notify,
+    /// A task's order moved earlier (`want`), or the floor rose: what waits for a place asks again.
+    moved: Notify,
+    /// `Queue::floor`, read without the queue's lock.
+    floor: AtomicU64,
+    /// When the floor last moved, and what had been received by then (`floor_moved`).
+    floor_since: Mutex<(Instant, u64)>,
+    /// Its own runtime, which says each move of the floor: a caller's thread may say nothing (a project's).
+    runtime: tokio::runtime::Handle,
+    /// Which downloader it is, of the process's: each project has its own.
+    id: u64,
+    /// Whether it counts in `LINK.urgent`: an emergency of its own is under way.
+    on_link: AtomicBool,
     closed: AtomicBool,
     closing: Notify,
     /// Requests in flight, across every object, as many as the ramp allows (`Pace`).
@@ -296,6 +390,8 @@ enum Failed {
     /// Ask again (after the answer's stated wait, when it gave one).
     Again(String, Option<Duration>),
     Fatal(Refusal),
+    /// It gave its place up to a more urgent range (`Slots::outranked`): its bytes so far stay, and it asks again from there.
+    GaveWay,
 }
 
 impl From<Refusal> for Failed {
@@ -533,18 +629,24 @@ struct Places {
     free: usize,
     /// Places the ramp gave up that are still out: each is kept as it comes back.
     owed: usize,
-    waiting: VecDeque<oneshot::Sender<Slot>>,
+    /// Who waits for a place, by order and then arrival: the most urgent first.
+    waiting: BTreeMap<(u64, u64), oneshot::Sender<Slot>>,
+    arrivals: u64,
 }
 
 /// A place among the requests in flight.
 struct Slot(Arc<Slots>);
+
+/// A range's ask for a place (`Shared::place`).
+type Asking<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Slot> + Send + 'a>>;
 
 impl Slots {
     fn new(free: usize) -> Arc<Slots> {
         Arc::new(Slots(Mutex::new(Places { free, ..Places::default() })))
     }
 
-    async fn take(self: &Arc<Self>) -> Slot {
+    /// A place for a range at `order`.
+    async fn take(self: &Arc<Self>, order: u64) -> Slot {
         let waiting = {
             let mut places = lock(&self.0);
             if places.free > 0 {
@@ -552,29 +654,49 @@ impl Slots {
                 return Slot(Arc::clone(self));
             }
             let (sent, waiting) = oneshot::channel();
-            places.waiting.push_back(sent);
+            places.arrivals += 1;
+            let arrival = places.arrivals;
+            places.waiting.insert((order, arrival), sent);
             waiting
         };
         waiting.await.expect("a place's sender lives as long as its queue")
     }
 
+    /// Whether a range in flight at `order` gives its place up: every place is taken, and a range waits for one at an
+    /// earlier job's order, or at 0 (what a running call reads now).
+    fn outranked(&self, order: u64) -> bool {
+        let mut places = lock(&self.0);
+        if places.free > 0 {
+            return false;
+        }
+        while let Some(first) = places.waiting.first_entry() {
+            if first.get().is_closed() {
+                first.remove();
+                continue;
+            }
+            let urgent = first.key().0;
+            return urgent < order && (urgent == 0 || job(urgent) < job(order));
+        }
+        false
+    }
+
     /// A free place, when nothing waits for one.
     fn idle(self: &Arc<Self>) -> Option<Slot> {
         let mut places = lock(&self.0);
-        places.waiting.retain(|waiter| !waiter.is_closed());
+        places.waiting.retain(|_, waiter| !waiter.is_closed());
         (places.free > 0 && places.waiting.is_empty()).then(|| {
             places.free -= 1;
             Slot(Arc::clone(self))
         })
     }
 
-    /// A place back: owed to the ramp, else to the first waiter still waiting, else free.
+    /// A place back: owed to the ramp, else to the most urgent waiter still waiting, else free.
     fn give(self: &Arc<Self>, places: &mut Places) {
         if places.owed > 0 {
             places.owed -= 1;
             return;
         }
-        while let Some(waiter) = places.waiting.pop_front() {
+        while let Some((_, waiter)) = places.waiting.pop_first() {
             match waiter.send(Slot(Arc::clone(self))) {
                 Ok(()) => return,
                 // Its waiter left: the same place goes on to the next.
@@ -623,6 +745,12 @@ impl Shared {
             volume,
             queue: Mutex::default(),
             queued: Notify::new(),
+            moved: Notify::new(),
+            floor: AtomicU64::new(u64::MAX),
+            floor_since: Mutex::new((Instant::now(), 0)),
+            runtime: tokio::runtime::Handle::current(),
+            id: DOWNLOADERS.fetch_add(1, Ordering::Relaxed),
+            on_link: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             closing: Notify::new(),
             slots: Slots::new(START.min(requests.max(1))),
@@ -771,13 +899,16 @@ impl Shared {
         }
     }
 
-    /// `slot` takes the back half of the in-flight range with the most left of those whose object is an
+    /// `slot` takes the back half of the in-flight range with the most left of those not held whose object is an
     /// earlier job's than order `before` (of any, when None), while that half is at least `STEAL`. The
     /// slot back when there is none.
     fn take_half(&self, slot: Slot, before: Option<u64>) -> Option<Slot> {
         let flights = lock(&self.flights).clone();
         let urgent = |flight: &&Arc<Flight>| {
-            before.is_none_or(|before| flight.taken.as_ref().is_some_and(|(task, _)| job(task.priority.load(Ordering::Acquire)) < job(before)))
+            flight.taken.as_ref().is_some_and(|(task, _)| {
+                let order = task.priority.load(Ordering::Acquire);
+                !self.held(order) && before.is_none_or(|before| job(order) < job(before))
+            })
         };
         let most = flights.iter().filter(urgent).max_by_key(|flight| {
             let span = lock(&flight.span);
@@ -819,7 +950,7 @@ impl Shared {
             }
             let rate = front.saturating_sub(judged.seen) as f64 / took.as_secs_f64();
             (judged.seen, judged.since) = (front, Instant::now());
-            if flight.stopped() || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
+            if flight.stopped() || self.held(task.priority.load(Ordering::Acquire)) || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
                 continue;
             }
             if sent >= HEDGES_AT_ONCE {
@@ -875,11 +1006,18 @@ impl Shared {
                 task.waiters.fetch_add(1, Ordering::AcqRel);
                 if priority < task.priority.load(Ordering::Acquire) {
                     task.priority.store(priority, Ordering::Release);
+                    if priority == 0 {
+                        queue.urgent += 1;
+                        self.calmed(&queue);
+                    }
                     if !task.started.load(Ordering::Acquire) {
                         queue.seq += 1;
                         let seq = queue.seq;
                         queue.heap.push(Reverse((priority, seq, object.sha256.clone())));
                     }
+                    // What waits for a place at its old order asks again: the dispatcher, and its ranges.
+                    self.queued.notify_one();
+                    self.moved.notify_waiters();
                 }
                 task
             }
@@ -908,6 +1046,10 @@ impl Shared {
                 let seq = queue.seq;
                 queue.heap.push(Reverse((priority, seq, object.sha256.clone())));
                 queue.tasks.insert(object.sha256.clone(), Arc::clone(&task));
+                if priority == 0 {
+                    queue.urgent += 1;
+                    self.calmed(&queue);
+                }
                 self.busy_one();
                 self.queued.notify_one();
                 task
@@ -919,39 +1061,115 @@ impl Shared {
     /// The order of the most urgent task nobody has started that someone still wants, which stays in line.
     fn next(&self) -> Option<u64> {
         let mut queue = lock(&self.queue);
+        let mut next = None;
         while let Some(Reverse((priority, _, sha256))) = queue.heap.peek().cloned() {
             if let Some(task) = queue.tasks.get(&sha256).cloned() {
                 if !task.started.load(Ordering::Acquire) && task.priority.load(Ordering::Acquire) == priority {
                     if !queue.unwanted(&task) {
-                        return Some(priority);
+                        next = Some(priority);
+                        break;
                     }
                     self.unbusy();
                 }
             }
             queue.heap.pop();
         }
-        None
+        self.calmed(&queue);
+        next
     }
 
-    /// The most urgent task nobody has started that someone still wants.
+    /// `queue`'s floor, as read without its lock; risen, what waits under it wakes.
+    fn calmed(&self, queue: &Queue) {
+        let floor = queue.floor();
+        let was = self.floor.swap(floor, Ordering::AcqRel);
+        // Its emergency is the link's too: counted before its line's time, so another downloader's start after it holds.
+        let urgent = queue.urgent > 0;
+        if urgent != self.on_link.swap(urgent, Ordering::AcqRel) {
+            if urgent {
+                LINK.urgent.fetch_add(1, Ordering::AcqRel);
+            } else {
+                LINK.left();
+            }
+        }
+        if was != floor {
+            self.floor_moved(was, floor);
+        }
+        if was < floor {
+            self.moved.notify_waiters();
+            self.queued.notify_waiters();
+        }
+    }
+
+    /// One line for each move of the floor, with when it moved (`at_ms`, under the queue's lock) and what was
+    /// received while it stood at `from`. Said on its runtime, where its transfers' lines are.
+    fn floor_moved(&self, from: u64, to: u64) {
+        let (at_ms, received) = (unix_ms(), self.stats.received.load(Ordering::Relaxed));
+        let (bytes, seconds) = {
+            let mut since = lock(&self.floor_since);
+            let stood = (received.saturating_sub(since.1), since.0.elapsed().as_secs_f64());
+            *since = (Instant::now(), received);
+            stood
+        };
+        let shown = |order: u64| if order == u64::MAX { "none".to_string() } else { order.to_string() };
+        let (from, to, downloader) = (shown(from), shown(to), self.id);
+        self.runtime.spawn(async move {
+            let mb_s = bytes as f64 / seconds.max(1e-3) / 1e6;
+            tracing::info!(downloader, from = %from, to = %to, at_ms, bytes, seconds, mb_s, "floor moved");
+        });
+    }
+
+    /// Whether a request at `order` waits: an emergency (order 0, this downloader's or another's on the link) or a
+    /// transfer outside comes before it.
+    fn held(&self, order: u64) -> bool {
+        order > self.floor.load(Ordering::Acquire) || order != 0 && LINK.urgent.load(Ordering::Acquire) > 0
+    }
+
+    /// It shares the process's link (`LINK`): another downloader's last emergency ending wakes what waits here.
+    pub(crate) fn join_link(self: &Arc<Self>) {
+        lock(&LINK.sharers).push(Arc::downgrade(self));
+    }
+
+    /// Until the guard drops, what comes after `order` waits as during an emergency: a transfer outside the
+    /// downloader at that order (an install's packages, from their index) has the link.
+    pub(crate) fn give_way(self: &Arc<Self>, order: u64) -> GiveWay {
+        let mut queue = lock(&self.queue);
+        *queue.aside.entry(order).or_default() += 1;
+        self.calmed(&queue);
+        GiveWay { shared: Arc::clone(self), order }
+    }
+
+    /// The most urgent task nobody has started that someone still wants, unless the floor holds it:
+    /// read under the queue's lock, as the floor moves, so none starts past one that fell meanwhile.
     fn pop(&self) -> Option<Arc<Task>> {
         let mut queue = lock(&self.queue);
-        while let Some(Reverse((priority, _, sha256))) = queue.heap.pop() {
+        let mut popped = None;
+        while let Some(Reverse((priority, _, sha256))) = queue.heap.peek().cloned() {
             let Some(task) = queue.tasks.get(&sha256).cloned() else {
+                queue.heap.pop();
                 continue;
             };
             if task.started.load(Ordering::Acquire) || task.priority.load(Ordering::Acquire) != priority {
+                queue.heap.pop();
                 continue;
             }
             if queue.unwanted(&task) {
                 self.unbusy();
+                queue.heap.pop();
                 continue;
             }
+            if priority > queue.floor() || priority != 0 && LINK.urgent.load(Ordering::Acquire) > 0 {
+                break;
+            }
+            queue.heap.pop();
             task.started.store(true, Ordering::Release);
             task.enter(Phase::Starting);
-            return Some(task);
+            // Under the lock the floor moves under: its line comes in the order they happened.
+            tracing::info!(object = %task.object.sha256, bytes = task.object.length, priority, "fetching");
+            popped = Some(task);
+            break;
         }
-        None
+        self.calmed(&queue);
+        popped
     }
 
     /// `object`'s task as its waiters see it; None when none is open (landed, failed or unwanted).
@@ -969,14 +1187,21 @@ impl Shared {
     }
 
     fn finish(&self, task: &Arc<Task>, outcome: Result<Tier>) {
-        lock(&self.queue).remove(task);
+        {
+            let mut queue = lock(&self.queue);
+            queue.remove(task);
+            self.calmed(&queue);
+        }
         task.done.send_replace(Some(outcome));
         self.unbusy();
     }
 
     /// Whether nothing wants `task` any more; then it has left the queue (`Queue::unwanted`).
     fn unwanted(&self, task: &Arc<Task>) -> bool {
-        lock(&self.queue).unwanted(task)
+        let mut queue = lock(&self.queue);
+        let unwanted = queue.unwanted(task);
+        self.calmed(&queue);
+        unwanted
     }
 
     /// Resolves once nothing wants `task`.
@@ -989,9 +1214,24 @@ impl Shared {
     /// Starts tasks as requests come free, most urgent first: the request it was started with is its first.
     pub(crate) async fn dispatch(self: Arc<Self>) {
         loop {
-            let permit = tokio::select! {
-                slot = self.slots.take() => slot,
-                () = self.closed() => return,
+            // A place at the order of what is next, asked again as something more urgent comes.
+            // During an emergency, nothing else starts.
+            let permit = loop {
+                let notified = self.queued.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                let next = self.next();
+                if next.is_some_and(|next| self.held(next)) {
+                    tokio::select! {
+                        () = notified => continue,
+                        () = self.closed() => return,
+                    }
+                }
+                tokio::select! {
+                    slot = self.slots.take(next.unwrap_or(u64::MAX)) => break slot,
+                    () = notified => {}
+                    () = self.closed() => return,
+                }
             };
             let notified = self.queued.notified();
             tokio::pin!(notified);
@@ -1015,7 +1255,6 @@ impl Shared {
                 continue;
             };
             let priority = task.priority.load(Ordering::Acquire);
-            tracing::info!(object = %task.object.sha256, bytes = task.object.length, priority, "fetching");
             let shared = Arc::clone(&self);
             tokio::spawn(async move {
                 let began = Instant::now();
@@ -1179,16 +1418,47 @@ impl Shared {
 
     /// One range in a place among the requests in flight (`slot` when it has one: the task's first, or
     /// the free place that took it).
+    /// Given way to a more urgent range (`Slots::outranked`), it asks for a place again at its own order.
     async fn part(&self, task: &Task, mut part: Part<'_>, here: &HttpLocation<'_>, slot: Option<Slot>) -> Result<()> {
-        let _slot = match slot {
-            Some(slot) => slot,
-            None => self.slots.take().await,
-        };
-        self.range(task, here, &mut part).await
+        let mut slot = slot;
+        loop {
+            let _place = match slot.take() {
+                Some(place) => place,
+                None => self.place(task).await,
+            };
+            if self.range(task, here, &mut part).await? {
+                return Ok(());
+            }
+        }
     }
 
-    /// One range, asked again by the one rule (`ask`) from the byte reached, to its end.
-    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>) -> Result<()> {
+    /// A place for one of `task`'s ranges at its order, asked again when that order moves earlier (`want`).
+    async fn place(&self, task: &Task) -> Slot {
+        let mut asked: Option<(u64, Asking<'_>)> = None;
+        loop {
+            let moved = self.moved.notified();
+            tokio::pin!(moved);
+            moved.as_mut().enable();
+            let order = task.priority.load(Ordering::Acquire);
+            if self.held(order) {
+                asked = None;
+                moved.await;
+                continue;
+            }
+            if asked.as_ref().is_none_or(|(at, _)| *at != order) {
+                asked = Some((order, Box::pin(self.slots.take(order))));
+            }
+            let (_, waiting) = asked.as_mut().expect("asked above");
+            tokio::select! {
+                place = waiting => return place,
+                () = moved => {}
+            }
+        }
+    }
+
+    /// One range, asked again by the one rule (`ask`) from the byte reached, to its end. False: it gave its place up
+    /// (`Failed::GaveWay`), its bytes so far written.
+    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>) -> Result<bool> {
         let (mut backoff, mut attempt, mut still) = (Backoff::transfer(), 0, 0);
         let (began, first) = (Instant::now(), part.reached);
         loop {
@@ -1199,7 +1469,7 @@ impl Shared {
                 Ok(()) => {
                     part.flush().await?;
                     if part.flight.stopped() {
-                        return Ok(());
+                        return Ok(true);
                     }
                     // Its race's others stop: what they lack, it has.
                     part.flight.race.won(&part.flight);
@@ -1215,7 +1485,11 @@ impl Shared {
                         let mut typical = lock(&self.typical);
                         *typical = Some(typical.map_or(rate, |was| 0.8 * was + 0.2 * rate));
                     }
-                    return Ok(());
+                    return Ok(true);
+                }
+                Err(Failed::GaveWay) => {
+                    part.flush().await?;
+                    return Ok(false);
                 }
                 Err(Failed::Fatal(refusal)) => return Err(refusal),
                 Err(Failed::Again(why, wait)) => (why, wait, part.reached > from),
@@ -1329,6 +1603,10 @@ impl Shared {
                     // A steal moved the end back: what is past it is another request's.
                     if !part.push(task, &data).await? {
                         break;
+                    }
+                    let order = task.priority.load(Ordering::Acquire);
+                    if self.held(order) || self.slots.outranked(order) {
+                        return Err(Failed::GaveWay);
                     }
                 }
                 Ok(None) => break,

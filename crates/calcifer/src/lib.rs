@@ -50,7 +50,6 @@ mod sessions;
 mod slow;
 mod state;
 mod store;
-mod tool_ui;
 mod toolbox;
 mod took;
 mod update;

@@ -116,6 +116,10 @@ def main() -> int:
         return 1
     imported = subprocess.run([sys.executable, str(HERE.parent / "page.py"), "import", str(project), str(clip), "--name", "look"], capture_output=True, text=True)
     check("look_imported", imported.returncode == 0, imported.stderr[-500:])
+    if imported.returncode != 0:
+        # Every shot reads <look>: said here, not as the first take the rest can't make.
+        print(json.dumps({"failures": failures, "seen": seen}, indent=1, default=str))
+        return 1
     node("mara", SHAPED, "picture", {"prompt": "Mara, in a red raincoat."}, "image")
     node("shot_1", SHOTS, "shoot", {"summary": "<mara> on <look>."})
     node("shot_2", SHOTS, "shoot", {"summary": "Then <look>."})

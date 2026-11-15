@@ -654,6 +654,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const owner = here ? store.inPlace : null
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
+  const drawn = useSignal(store.drawn)
   const tools = useSignal(store.tools)
   const namePress = useRef<{ x: number; y: number } | null>(null)
   const self = useRef<HTMLDivElement>(null)
@@ -903,7 +904,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               }}
             />
           )}
-          {asset && !view.placing && !lite && (!focused || view.hereWords) && <Corner name={name} view={view} width={width} focused={focused} />}
+          {drawn && asset && !view.placing && !lite && (!focused || view.hereWords) && <Corner name={name} view={view} width={width} focused={focused} />}
         </Media>
       </FocusFrame>}
       {plays && <Segments name={name} view={view} />}
@@ -912,8 +913,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {focused && asset?.kind === "video" && !asset.timeline && !editing && <OrbitToggle view={view} name={name} />}
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
-      {!here && !focused && <Under view={view} name={name} lite={lite} />}
-      {!here && !focused && <TileMeter view={view} />}
+      {drawn && !here && !focused && <Under view={view} name={name} lite={lite} />}
+      {drawn && !here && !focused && <TileMeter view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
         <div className="rest-asking nodrag nopan nowheel">
