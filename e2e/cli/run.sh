@@ -69,11 +69,12 @@ step status; fixture_calcifer | tee "$OUT/status.json"
 step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
-case $SHARD in projectvault | plan | web-core) calcifer_diagnostics ;; esac
+case $SHARD in projectvault | plan | web-core | projectdb-prepares) calcifer_diagnostics ;; esac
 }
 
 # A vault failure, or a web-core cell's, names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings
-# in calcifer/diagnostics.log, which the job collects with the other logs.
+# in calcifer/diagnostics.log, which the job collects with the other logs; each project's walk keeps its decisions in its own storage
+# (.vault-calcifer/diagnostics/walk.log), which a web cell keeps beside its JSON (web_proof).
 calcifer_diagnostics() {
   local config=$HOME/.cozy/config.toml
   awk '/^diagnostics *=/ { next } { print } /^\[calcifer\]/ { print "diagnostics = true"; put = 1 } END { if (!put) printf "\n[calcifer]\ndiagnostics = true\n" }' "$config" > "$config.next" && mv "$config.next" "$config"
