@@ -1,0 +1,1 @@
+A box waiting for another's take is placed and prepared ahead again while its local tool installs: its quote reads the tool statically, once, instead of answering "installing" until a later wake, so its machine fetches its code and weights during the take it waits for.

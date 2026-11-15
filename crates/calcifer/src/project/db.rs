@@ -368,6 +368,7 @@ fn read_lock(conn: &Connection, at: &Path) -> Result<Lock, Error> {
         match row.map_err(e)? {
             (kind, name, value) if kind == "reserved" => drop(lock.reserved.insert(name, decode(at, value)?)),
             (kind, name, value) if kind == "makes" => drop(lock.makes.insert(name, value)),
+            (kind, name, value) if kind == "release" => drop(lock.releases.insert(name, value)),
             _ => {}
         }
     }
@@ -465,6 +466,19 @@ pub(crate) fn set_key(conn: &Connection, at: &Path, key: &str, fresh: bool) -> R
     tx.execute("INSERT INTO project_keys (key, ord) VALUES (?1, (SELECT COALESCE(MAX(ord), 0) + 1 FROM project_keys))
         ON CONFLICT (key) DO UPDATE SET ord = excluded.ord", [key]).map_err(e)?;
     tx.commit().map_err(e)
+}
+
+/// `set_key` as a project opens: never waiting on another program's write lock, which may be holding it for minutes. False when one
+/// holds it: the index keeps the key, and the next open writes it here (cl-987).
+pub(crate) fn set_key_now(conn: &Connection, at: &Path, key: &str, fresh: bool) -> Result<bool, Error> {
+    if locked_elsewhere(conn) { return Ok(false); }
+    conn.busy_timeout(std::time::Duration::ZERO).map_err(|e| sql(at, e))?;
+    let done = set_key(conn, at, key, fresh);
+    conn.busy_timeout(WAIT).map_err(|e| sql(at, e))?;
+    match done {
+        Err(error) if error.code == "file_held" => Ok(false),
+        done => done.map(|()| true),
+    }
 }
 
 /// How many of its transactions changed it, read alone: for a project nothing holds open.
@@ -1109,13 +1123,16 @@ fn lock_written(tx: &Transaction, before: &Lock, after: &Lock) -> rusqlite::Resu
             tx.execute("INSERT INTO lock_runs (ord, record) VALUES (?1, ?2)", params![ord as i64, json(row)])?;
         }
     }
-    if before.reserved != after.reserved || before.makes != after.makes {
+    if before.reserved != after.reserved || before.makes != after.makes || before.releases != after.releases {
         tx.execute("DELETE FROM facts", [])?;
         for (name, tags) in &after.reserved {
             tx.execute("INSERT INTO facts (kind, name, value) VALUES ('reserved', ?1, ?2)", params![name, json(tags)])?;
         }
         for (tool, kind) in &after.makes {
             tx.execute("INSERT INTO facts (kind, name, value) VALUES ('makes', ?1, ?2)", params![tool, kind])?;
+        }
+        for (release, digest) in &after.releases {
+            tx.execute("INSERT INTO facts (kind, name, value) VALUES ('release', ?1, ?2)", params![release, digest])?;
         }
     }
     Ok(())

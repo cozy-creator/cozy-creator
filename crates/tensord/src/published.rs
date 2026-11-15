@@ -106,6 +106,8 @@ pub(crate) struct Request {
     /// Empty: the newest this signer holds, else the Hub's newest. Whether a held one was yanked
     /// is its controller's to know: Calcifer names a release.
     pub release: String,
+    /// The release digest its files must have (a project's lock, Calcifer's kept card; xs-196); empty: none.
+    pub digest: String,
     /// Unpublished code this machine already holds, in place of the release.
     pub installed: Option<Installation>,
     /// The account an unpublished package's org-relative model names belong to.
@@ -881,6 +883,16 @@ impl Publisher {
 
     /// The installation a request names. An unnamed release is the newest this signer holds, so
     /// a machine holding one asks the Hub nothing.
+    /// The installation the request's alias names for this signer, unless the run pinned a release digest other than the one its
+    /// files were checked against (xs-196): then none, and the release is read again at its Hub, which must have the pinned files.
+    fn held_by_alias(&self, service: &Service, actor: &str, request: &Request) -> io::Result<Option<Installation>> {
+        let held = service.engine.installation(actor, &self.alias(service, actor, request)?)?;
+        let pinned = |held: &Installation| {
+            request.installed.is_some() || request.digest.is_empty() || kept_card(&service.catalog.root().join(&held.generation)).is_some_and(|card| card.digest == request.digest)
+        };
+        Ok(held.filter(pinned))
+    }
+
     fn alias(&self, service: &Service, actor: &str, request: &Request) -> io::Result<String> {
         if let Some(installed) = &request.installed {
             return Ok(installed.alias.clone());
@@ -986,7 +998,7 @@ impl Publisher {
     ) -> io::Result<Option<Prepared>> {
         let held = match &request.installed {
             Some(installed) => Some(installed.clone()),
-            None => service.engine.installation(actor, &self.alias(service, actor, request)?)?,
+            None => self.held_by_alias(service, actor, request)?,
         };
         let Some(installation) = held else {
             return Ok(None);
@@ -1051,10 +1063,7 @@ impl Publisher {
     ) -> Result<Prepared, Failure> {
         let held = match &request.installed {
             Some(installed) => Some(installed.clone()),
-            None => service
-                .engine
-                .installation(actor, &self.alias(service, actor, request).map_err(io_failure)?)
-                .map_err(io_failure)?,
+            None => self.held_by_alias(service, actor, request).map_err(io_failure)?,
         };
         let installation = match held {
             Some(held) if service.catalog.resolve(&held.generation).is_ok() => held,
@@ -1116,7 +1125,9 @@ impl Publisher {
         let torch = self.layer(job, Some(source))?.map(|layer| layer.pins()).unwrap_or_default();
         let alias = self.release_alias(request, &release);
         if let Some(held) = service.engine.installation(actor, &alias).map_err(io_failure)? {
-            if service.catalog.resolve(&held.generation).is_ok() {
+            // One built from other files than the run pinned is read again at its Hub, which must have the pinned ones.
+            let pinned = || request.digest.is_empty() || kept_card(&service.catalog.root().join(&held.generation)).is_some_and(|card| card.digest == request.digest);
+            if service.catalog.resolve(&held.generation).is_ok() && pinned() {
                 return Ok(held);
             }
         }
@@ -1188,16 +1199,18 @@ impl Publisher {
     /// card whose wheels the store no longer holds is read again: its URLs expire.
     fn card(&self, service: &Service, actor: &str, request: &Request, release: &str, catalog: &dyn Fn() -> Result<Catalog, Failure>) -> Result<Card, Failure> {
         let earlier = self.earlier(service, actor, request, release);
-        let kept = earlier.as_ref().and_then(|dir| serde_json::from_slice::<Card>(&fs::read(dir.join(CARD)).ok()?).ok());
-        match kept.filter(|card| card.wheels.iter().all(|wheel| self.held_file(wheel))) {
+        let kept = earlier.as_deref().and_then(kept_card);
+        // One checked against other files than the run pinned is read again at its Hub, which must have the pinned ones (xs-196).
+        let pinned = |card: &Card| request.digest.is_empty() || card.digest == request.digest;
+        match kept.filter(|card| card.wheels.iter().all(|wheel| self.held_file(wheel)) && pinned(card)) {
             Some(card) => Ok(card),
-            None => hub_card(&catalog()?, &request.package, release, &self.sdk.python),
+            None => hub_card(&catalog()?, &request.package, release, &self.sdk.python, &request.digest),
         }
     }
 
     /// The installation of the request's release this signer holds, its environment here; none: one installs.
     pub(crate) fn held_installation(&self, service: &Service, actor: &str, request: &Request) -> io::Result<Option<Installation>> {
-        let held = service.engine.installation(actor, &self.alias(service, actor, request)?)?;
+        let held = self.held_by_alias(service, actor, request)?;
         Ok(held.filter(|held| service.catalog.resolve(&held.generation).is_ok()))
     }
 
@@ -1306,7 +1319,7 @@ impl Publisher {
         later.sort_by(|(a, _), (b, _)| b.is_stable().cmp(&a.is_stable()).then_with(|| b.cmp(a)));
         let mut unread = false;
         for (_, candidate) in later.iter().take(5) {
-            let Ok(locked) = hub_card(catalog, package, candidate, &self.sdk.python)
+            let Ok(locked) = hub_card(catalog, package, candidate, &self.sdk.python, "")
                 .and_then(|card| read_lock(&card.pyproject, &card.lock, Some(source))) else {
                 unread = true;
                 continue;
@@ -2000,11 +2013,22 @@ struct Card {
     pyproject: String,
     lock: String,
     wheels: Vec<HubFile>,
+    /// The release digest of the files these were checked against (`::api::hub::types::release_digest`); empty from a Hub before
+    /// xs-196.
+    #[serde(default)]
+    digest: String,
 }
 const CARD: &str = "release.json";
 
-/// `release`'s install plan, read at its Hub.
-fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str) -> Result<Card, Failure> {
+/// The card kept beside the environment at `generation`.
+fn kept_card(generation: &Path) -> Option<Card> {
+    serde_json::from_slice(&fs::read(generation.join(CARD)).ok()?).ok()
+}
+
+/// `release`'s install plan, read at its Hub, its files held to `pinned`, a release digest (empty: none; xs-196): the digest of
+/// the files its Hub lists must be that one, and each document and wheel the plan hands over one of those files, or a wheel its
+/// uv.lock pins by hash.
+fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str, pinned: &str) -> Result<Card, Failure> {
     let (org, name) = package.split_once('/').unwrap_or_default();
     let read = format!("the install plan of {package}@{release} at {}", catalog.origin());
     let plan = catalog.install_plan(org, name, release, None).map_err(|e| absent(e, "release_absent", &read, || {
@@ -2025,13 +2049,44 @@ fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str) -> Re
         HubFile::new(&file.url, &file.digest, &file.path, file.length.try_into().unwrap_or(0))
             .ok_or(("package_prepare_plan_invalid", format!("the release's plan names an unusable file {}", file.path)))
     });
-    Ok(Card {
+    let card = Card {
         interface,
         python: plan.python_version.clone().filter(|v| !v.is_empty()).unwrap_or_else(|| python.to_string()),
         pyproject: text("pyproject.toml", &plan.pyproject)?,
         lock: text("uv.lock", &plan.uv_lock)?,
         wheels: wheels.collect::<Result<_, _>>()?,
-    })
+        digest: String::new(),
+    };
+    Ok(Card { digest: release_files(&card, &plan.release_files, &format!("{package}@{release} at {}", catalog.origin()), pinned)?, ..card })
+}
+
+/// The release digest of `files`, the release's as its Hub lists them, checked (xs-196): `pinned` when the run pinned one, and
+/// `card`'s pyproject.toml, uv.lock and every wheel among them (a wheel may instead be one the uv.lock pins by hash).
+fn release_files(card: &Card, files: &[::api::hub::types::PackageReleaseFile], named: &str, pinned: &str) -> Result<String, Failure> {
+    let changed = |why: String| ("release_changed", format!("{named} isn't the release this run was pinned to: {why}. A published release never changes, so these are other files"));
+    if files.is_empty() {
+        return match pinned.is_empty() {
+            true => Ok(String::new()),
+            false => Err(changed(format!("its Hub lists none of its files to hold to {pinned}"))),
+        };
+    }
+    let digest = ::api::hub::types::release_digest(files);
+    if !pinned.is_empty() && digest != pinned {
+        return Err(changed(format!("its files' digest is {digest}, not {pinned}")));
+    }
+    let of = |bytes: &str| format!("sha256:{}", sha256::hex_digest(bytes.as_bytes()));
+    for (path, document) in [("pyproject.toml", &card.pyproject), ("uv.lock", &card.lock)] {
+        if !files.iter().any(|file| file.path == path && file.digest == of(document)) {
+            return Err(changed(format!("the {path} it handed over isn't the release's")));
+        }
+    }
+    for wheel in &card.wheels {
+        let listed = files.iter().any(|file| file.digest == format!("sha256:{}", wheel.sha256)) || card.lock.contains(&format!("sha256:{}", wheel.sha256));
+        if !listed {
+            return Err(changed(format!("{} isn't one of its files, nor a wheel its uv.lock pins", wheel.name)));
+        }
+    }
+    Ok(digest)
 }
 
 /// `card` kept beside the environment at `generation` for the release's later environments.

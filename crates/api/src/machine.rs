@@ -541,6 +541,10 @@ pub struct Release {
     pub package: String,
     /// Empty: the newest its signer holds here, else the Hub's newest.
     pub release: String,
+    /// The release digest its files must have (`hub::types::release_digest`): a project's lock, or the card this computer
+    /// keeps (xs-196). Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub digest: String,
 }
 
 /// Local code: `manifest` names a JSON object written with `PUT /v1/objects`:

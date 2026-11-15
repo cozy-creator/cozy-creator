@@ -43,6 +43,7 @@ import { comingOff, goingOn, holdsPictures, type ToolStep, wontGoOn } from "./to
 import type { Operation } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 import { mergeValue, same, spliceOf, wordsChanged } from "./words"
+import { answered, keepLeft, type Left, leftOver } from "./left"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
 export type ElementData = { name: string; width: number }
@@ -328,6 +329,8 @@ export class CanvasStore {
   readAgain: (names: string[]) => void = () => {}
   /** These boxes are off this page: no read asks for them. */
   forget: (names: string[]) => void = () => {}
+  /** Calcifer answered taking these off: what the stream says of them after is another writer's, and read. */
+  forgotten: (names: string[]) => void = () => {}
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
   /** Opens Rent, with a GPU that holds it chosen when one is known. */
@@ -1097,6 +1100,7 @@ export class CanvasStore {
       this.seen = true
       this.onFirstRead?.(present.size > 0)
       this.separate()
+      this.sendLeft()
     } else {
       for (const { name } of fresh) this.unsettle(name, "placed")
     }
@@ -2374,16 +2378,37 @@ export class CanvasStore {
 
   /**
    * The page goes: each box's words typed or on their way go once more, one write a box, which goes on past the page (`keepalive`). What was on its way
-   * may not have reached Calcifer, and what waited its turn never would. The same words twice change nothing.
+   * may not have reached Calcifer, and what waited its turn never would. The same words twice change nothing. Each is kept for the next load too,
+   * which sends it again under its key (`left.ts`): a write that didn't get out as the page went still lands.
    */
   private leaving() {
     const project = this.projectId
     if (!project || this.gone) return
     this.gone = true
+    const left: Left[] = []
     for (const [name, view] of this.views) {
       const id = this.ids.get(name)
       if (!view.asset || !id || !(view.drafts || view.writing)) continue
-      void this.client.patchAsset(project, this.served.get(id) ?? name, this.body(id, { ...view.sent, ...view.drafts }), { keepalive: true }).catch(() => {})
+      const write = { name: this.served.get(id) ?? name, body: this.body(id, { ...view.sent, ...view.drafts }), action: crypto.randomUUID(), at: Date.now() }
+      left.push(write)
+      void this.client.patchAsset(project, write.name, write.body, { keepalive: true, action: write.action }).catch(() => {})
+    }
+    keepLeft(project, left)
+  }
+
+  /** What this tab wrote as it last went, each sent again in its turn under its key: Calcifer does it once, whether or not the first reached it. */
+  private sendLeft() {
+    const project = this.projectId
+    if (!project) return
+    for (const left of leftOver(project)) {
+      this.outbox.add({
+        send: (once) => this.client.patchAsset(project, left.name, left.body, { once, action: left.action }),
+        done: () => answered(project, left.action),
+        refused: (error) => {
+          answered(project, left.action)
+          say(`Couldn't save what was typed in ${left.name} as the page went`, error)
+        },
+      })
     }
   }
 
@@ -2714,6 +2739,7 @@ export class CanvasStore {
         send: (once, action) => this.client.deleteAsset(this.projectId!, this.served.get(id) ?? name, { once, edit, action }),
         done: () => {
           if (this.deleting.has(name)) this.deleting.set(name, nextProjectOrder())
+          this.forgotten([name])
         },
         // Its answer was lost: its first try did it.
         landed: (error) => (error.status === 404 ? { name } : undefined),
@@ -2931,6 +2957,7 @@ export class CanvasStore {
         const at = nextProjectOrder()
         for (const { ask } of overlays) ask.until = at
         for (const name of hidden) if (this.deleting.has(name)) this.deleting.set(name, at)
+        this.forgotten(hidden)
         for (const name of back) {
           const id = this.ids.get(name)
           if (id) this.served.set(id, name)

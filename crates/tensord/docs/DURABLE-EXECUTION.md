@@ -150,7 +150,9 @@ fails as `machine_disk_full`.
 
 Write objects: each verified object gets a TensorFS object root (`roots/objects/<sha>.json`)
 before its Write is acknowledged, and a run's references (`run_objects`: its inputs, tree members
-and local source; a parent's adopted child results) commit with its acceptance. `Objects::sweep`
+and local source; a parent's adopted child results) commit with its acceptance. A project's run
+keeps this bookkeeping (uploads, uses, run objects, held memos) in `<view>/.vault-machine/objects.sqlite3`,
+opened only under its verified scope; the machine journal holds only unscoped runs'. `Objects::sweep`
 releases a root once no unfinished run (any state but completed, failed or canceled) names it and
 nothing used it for the 7-day TTL, or for 10 minutes while the store's disk is low; the store's GC
 then takes the bytes. A root written just before a crash ages from its own mtime.

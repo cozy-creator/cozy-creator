@@ -59,7 +59,8 @@ parse() {
       --rent-lock) RENT_LOCK=$2 ;;
       --publication-log) PUBLICATION_LOG=$2 ;;
       --installed) INSTALLED=1; shift; continue ;;
-      --shard) SHARD=$2 ;;
+      # `<shard>@<n>`: a dispatch's nth repeat of a shard, its own job and artifact (a race's cell run again).
+      --shard) SHARD=${2%@*} ;;
       --model) MODEL=1; shift; continue ;;
       --release) RELEASE=$(cd "$2" && pwd) ;;
       *) echo "unknown argument $1" >&2; exit 2 ;;

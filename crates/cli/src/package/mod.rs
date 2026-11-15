@@ -85,12 +85,10 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             None => catalog::search(ctx, &query.join(" "), output::at_most("--limit", limit, 200), offset).await,
         },
         Command::Install { package, placement } => match local(ctx, &package)? {
-            // Local code is project data: it installs into the current project's environments.
             Some(path) => {
                 let on = placement.on()?;
-                let project = crate::project::required(ctx).await?;
-                let code = crate::send::Sender::for_project(ctx, &project).await?.code(&path).await?;
-                machine::install(ctx, String::new(), Some(code), None, on, Some(project)).await
+                let (code, project) = crate::send::Sender::local_code(ctx, &path).await?;
+                machine::install(ctx, String::new(), Some(code), None, on, project).await
             }
             None => {
                 let named = PackageRef::parse(&package)?;
@@ -102,9 +100,9 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             placement,
         } => {
             let names = names(&packages)?;
-            // A local package lives in its project's environments: it leaves them there.
+            // A local package installed in a project leaves that project; outside any, the machine's.
             let project = match names.iter().any(|name| name.starts_with("local/")) {
-                true => Some(crate::project::required(ctx).await?),
+                true => crate::project::here(ctx).await?,
                 false => None,
             };
             machine::uninstall(ctx, &names, placement.on()?, project).await

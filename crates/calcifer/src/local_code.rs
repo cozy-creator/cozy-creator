@@ -576,7 +576,9 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     }
     if !done.is_dir() {
         let project = Project::read(sent.clone())?;
-        let say = |line: &str| tracing::info!("{}: {line}", project.name);
+        // A project's own code is the project's: nothing of it in Calcifer's log (cl-984).
+        let private = crate::private_io::current().is_some();
+        let say = |line: &str| if !private { tracing::info!("{}: {line}", project.name) };
         let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let part = done.with_extension(format!("part-{}-{nanos}", std::process::id()));
@@ -1292,11 +1294,16 @@ pub(crate) fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option
     Ok((said.trim_end().to_owned(), document))
 }
 
-/// What each copy of local code last read as, by the Runtime that read it, and whether it's its machine's own reading. One read
-/// at a time of each: any other waits and takes it. A copy never changes, so its reading stands for as long as Calcifer runs, but
-/// a static describer's only until the machine's own is kept.
+/// What each copy of local code last read as, in its project (None: the machine's), by the Runtime that read it, and whether it's
+/// its machine's own reading. One read at a time of each: any other waits and takes it. A copy never changes, so its reading stands
+/// for as long as Calcifer runs or its project stays open, but a static describer's only until the machine's own is kept.
 type Described = Arc<tokio::sync::Mutex<Option<((String, Value), bool)>>>;
-static DESCRIBED: LazyLock<Mutex<HashMap<(LocalCode, Option<String>), Described>>> = LazyLock::new(Mutex::default);
+static DESCRIBED: LazyLock<Mutex<HashMap<(Option<String>, LocalCode, Option<String>), Described>>> = LazyLock::new(Mutex::default);
+
+/// A project's readings leave memory when it locks or closes.
+pub(crate) fn forget_readings(project: &str) {
+    DESCRIBED.lock().expect("described lock").retain(|(owner, _, _), _| owner.as_deref() != Some(project));
+}
 
 /// The Runtime the machine `on` last said it runs, asking it nothing: no machine starts for a read.
 fn last_runtime(api: &Api, on: &On) -> Option<String> {
@@ -1316,12 +1323,11 @@ pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &st
 
 async fn described(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
     let runtime = last_runtime(api, on);
-    let held = if crate::private_io::current().is_some() {
+    let project = crate::private_io::current().map(|scope| scope.storage.project_id);
+    if project.is_some() {
         copied(api.machines.hubs.home(), code)?;
-        Described::default()
-    } else {
-        DESCRIBED.lock().expect("described lock").entry((code.clone(), runtime.clone())).or_default().clone()
-    };
+    }
+    let held = DESCRIBED.lock().expect("described lock").entry((project, code.clone(), runtime.clone())).or_default().clone();
     let mut held = held.lock().await;
     if let Some((known, own)) = held.as_ref() {
         if *own {
@@ -1340,29 +1346,28 @@ async fn described(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Resu
         return Ok(found);
     }
     let home = api.machines.hubs.home();
-    let private = crate::private_io::current().is_some();
-    if let Some(known) = Some(()).filter(|()| !private).and_then(|()| static_kept(home, code, hub, runtime.as_deref())) {
+    if let Some(known) = static_kept(home, code, hub, runtime.as_deref()) {
         *held = Some((known.clone(), false));
         return Ok(known);
     }
     let known = read_interface(api, code, on, hub, runtime.clone()).await?;
-    if !private {
-        keep_static(home, code, hub, runtime.as_deref(), &known);
-    }
+    keep_static(home, code, hub, runtime.as_deref(), &known);
     *held = Some((known.clone(), false));
     Ok(known)
 }
 
 /// Where the static describer's reading of a tree is kept across Calcifer's restarts (xs-195): by the tree's content, its package's
-/// place in it, the Hub its lock is for and the Runtime that read it. A restart reads again only what changed.
-fn static_file(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> PathBuf {
+/// place in it, the Hub its lock is for and the Runtime that read it, in its project's own storage (else the machine's). A restart
+/// reads again only what changed.
+fn static_file(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> Option<PathBuf> {
     let key = Digest::of(format!("{}\n{}\n{hub}\n{}", code.tree, code.at, runtime.unwrap_or_default()).as_bytes());
-    home.calcifer().join("described").join(format!("{}.json", &hex(&key)[..32]))
+    let dir = crate::private_io::cache(crate::private_io::current().as_ref(), home.calcifer().join("described"), "described").ok()?;
+    Some(dir.join(format!("{}.json", &hex(&key)[..32])))
 }
 
 /// The static reading kept for this tree, said used now.
 fn static_kept(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>) -> Option<(String, Value)> {
-    let path = static_file(home, code, hub, runtime);
+    let path = static_file(home, code, hub, runtime)?;
     let mut kept: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
     let package = kept["package"].as_str()?.to_owned();
     let document = kept["interface"].take();
@@ -1376,7 +1381,7 @@ fn keep_static(home: &Home, code: &LocalCode, hub: &str, runtime: Option<&str>, 
     if !interface(document) {
         return;
     }
-    let path = static_file(home, code, hub, runtime);
+    let Some(path) = static_file(home, code, hub, runtime) else { return };
     let Some(dir) = path.parent() else { return };
     let kept = serde_json::json!({ "package": package, "interface": document });
     // A reading that can't be kept is read again after the next restart.

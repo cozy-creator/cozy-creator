@@ -260,7 +260,7 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
             return Err(usage("model_base_invalid", "a run's weights output uploads as it is; upload a model source on a base"));
         }
         // It runs where the weights are, whatever `on` names.
-        let mut submit = from_run(api, reference, &destination, &lane)?;
+        let mut submit = from_run(api, reference, &destination, &lane).await?;
         submit.warnings.extend(warnings);
         return Ok(Planned::Run { submit: Box::new(submit), after: Some(display(false)), notes: vec![], mirror });
     }
@@ -328,12 +328,17 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
 
 /// `run:N[#output]`: the run's weights output, a WARM run on the machine that holds it, uploaded
 /// as a checkpoint of `destination` in `lane` without running it again.
-fn from_run(api: &Api, reference: &str, destination: &str, lane: &str) -> Result<SubmitRun, Refusal> {
+async fn from_run(api: &Arc<Api>, reference: &str, destination: &str, lane: &str) -> Result<SubmitRun, Refusal> {
     let (number, output) = match reference.split_once('#') {
         Some((number, output)) => (number, Some(output)),
         None => (reference, None),
     };
-    let run = api.calcifer.record(&crate::api::find_current(api, number)?)?;
+    // `KEY-N` names a project's run from any scope (cl-987); the upload is no project's.
+    let row = match crate::api::named_run(api, number).await? {
+        Some(row) => row,
+        None => crate::api::find_current(api, number)?,
+    };
+    let run = api.calcifer.record(&row)?;
     let item = weights(&run, output)?;
     let machine = run.machine.clone().ok_or_else(|| {
         Refusal(Error::new(Kind::Conflict, "run_unplaced", format!("run {} never reached a machine", run.name)))

@@ -9,7 +9,13 @@ specific)". A project keeps its own data: its page state, run history, input and
 where the project is; locking hides it, deleting removes it. Installed packages (one environment per package release, local
 code's by its lock), PyTorch, uv's cache and Pythons, models, LoRAs and Hub weights are the machine's, shared by every project.
 One TensorD engine serves every project: its executors take any project's runs, each run's inputs and outputs in its
-project's spool and store. TensorD's journal keeps a project run's row with its payloads in the project.
+project's spool and store. TensorD's journal keeps a project run's row with its payloads in the project, and its object
+bookkeeping (uploads, uses, run objects, held memos) in `.vault-machine/objects.sqlite3`.
+
+Paul, 2026-11-15: once an encrypted project is locked "there is no traces of it on the computer elsewhere, in any way. There are
+no temp files leftover, no records of the prompts or the runs, etc." At lock, TensorD retires every machine journal row of the
+project's runs and every row its scope keyed, and Calcifer's index keeps only an opaque handle and the folder, so a list can offer
+Unlock; unlocking registers it again from its own project.db. The containment shard's lock scans prove it (`e2e/cli/containment`).
 
 
 All project data that Cozy stores automatically belongs in the project's directory. For an encrypted project, durable contents belong inside its encrypted filesystem. This includes run identities and history, inputs, outputs, logs and errors, retry records, derived caches, source, execution scratch, browser project preferences and private execution bookkeeping. An encrypted outside journal or a hash-only outside execution index is still a violation.
@@ -17,6 +23,8 @@ All project data that Cozy stores automatically belongs in the project's directo
 Calcifer may retain a project reference consisting of its opaque identity, location and opaque route code. Names, last-use times, walking state, run counters and project-derived cache entries are not part of that exception. Unrelated installation, account and machine state remains independent; it must not contain project/run associations or content.
 
 Project ownership is explicit before any submission or storage write. A locked, unknown or unavailable project must refuse; it cannot fall through to global maintenance state. Project run numbers are scoped to the project, while existing opaque run identities remain stable.
+
+Code in no project is not project data (cl-990): a checkout installed, described or quantized from outside any project is a machine-wide package, as a Hub package is, through Calcifer's own runs and the machine's stores. From a project, local code is that project's. Calcifer's tools for a project's code (Python install, describe, lock) run the same on Linux, macOS and Windows: their stdio, caches and scratch in the project's view, their processes ended before each returns.
 
 Choosing a remote machine or renting one retains the existing remote processing flow and creates a working copy on that machine. Local canonical history, staged inputs, downloaded outputs and local caches remain project-owned. The local mounted path and proof token are never sent to the remote worker. Provider storage and erasure are outside this local containment guarantee; no protected remote workspace is implied.
 

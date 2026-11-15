@@ -4,16 +4,19 @@ import type { ProjectView, ProjectViewPatch } from "../api/calcifer"
 
 // Project preferences are durable only in project.db. These maps are this tab's live view.
 const privateProjects = new Set<string>()
+/** Checked and found unencrypted: unknown is neither. */
+const plainProjects = new Set<string>()
 const blockedProjects = new Set<string>()
 const views = new Map<string, ProjectView>()
 export const privateProject = (id: string | null) => id !== null && privateProjects.has(id)
+export const plainProject = (id: string) => plainProjects.has(id)
 export function forgetProjectView(id: string) {
   blockedProjects.add(id)
   views.delete(id)
 }
 export function protectProjectView(id: string, encrypted: boolean) {
-  if (encrypted) { privateProjects.add(id) }
-  else privateProjects.delete(id)
+  if (encrypted) { privateProjects.add(id); plainProjects.delete(id) }
+  else { privateProjects.delete(id); plainProjects.add(id) }
 }
 
 /** Called only after a successful, un-aborted read under this project's current viewing lease. */

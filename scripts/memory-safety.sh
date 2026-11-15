@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The memory-safety guard (xs-067, cl-722): unsafe only in unsafe-boundaries.txt's files, no known advisory in
-# Cargo.lock. `build` runs it when a lockfile, a manifest, an `allow(unsafe_code)` or this guard's own files change.
+# Cargo.lock. `build` runs it on every change (xs-196): an advisory published since the lock last moved fails too.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export LC_ALL=C

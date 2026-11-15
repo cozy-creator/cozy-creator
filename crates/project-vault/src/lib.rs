@@ -95,6 +95,7 @@ pub struct KeybagInfo {
     pub project_id: String,
     pub generation: u64,
     pub key_id: String,
+    pub code: String,
 }
 
 /// A portable encrypted keybag. Only authenticated ciphertext contains the filesystem secret.
@@ -106,6 +107,9 @@ pub struct Keybag {
     project_id: String,
     generation: u64,
     key_id: String,
+    /// The project's public route code, kept beside its id: a locked project's compact link resolves from its own folder.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    code: String,
     passphrase_envelope: Envelope,
     recovery_envelope: Envelope,
 }
@@ -295,6 +299,7 @@ impl Keybag {
             project_id: project_id.to_owned(),
             generation,
             key_id,
+            code: String::new(),
             passphrase_envelope: Envelope::empty(),
             recovery_envelope: Envelope::empty(),
         };
@@ -317,7 +322,17 @@ impl Keybag {
             project_id: self.project_id.clone(),
             generation: self.generation,
             key_id: self.key_id.clone(),
+            code: self.code.clone(),
         }
+    }
+
+    /// Keep `code` as the project's public route code.
+    pub fn set_code(&mut self, code: &str) -> Result<()> {
+        if code.len() > 64 || !code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return Err(Error::Format("invalid project code"));
+        }
+        self.code = code.to_owned();
+        Ok(())
     }
 
     /// Load a bounded, fully validated ciphertext-only keybag.
@@ -450,7 +465,9 @@ impl Keybag {
             .generation
             .checked_add(1)
             .ok_or(Error::GenerationExhausted)?;
-        Self::create_generation(&self.project_id, generation, passphrase)
+        let mut created = Self::create_generation(&self.project_id, generation, passphrase)?;
+        created.keybag.code = self.code.clone();
+        Ok(created)
     }
 
     fn validate(&self) -> Result<()> {

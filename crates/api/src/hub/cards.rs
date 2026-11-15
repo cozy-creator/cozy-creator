@@ -30,6 +30,11 @@ impl Card {
         self.document["summary"].as_str().unwrap_or_default()
     }
 
+    /// The release's digest (`types::release_digest`), as its Hub served it: none from a Hub before it, or a card kept before.
+    pub fn digest(&self) -> Option<&str> {
+        self.document["release"]["digest"].as_str().filter(|digest| !digest.is_empty())
+    }
+
     /// The package interface document, as the Hub answered it.
     pub fn interface_document(&self) -> &Value {
         &self.document["package_interface"]
@@ -94,10 +99,12 @@ pub async fn card(
     package: &str,
     release: &str,
 ) -> Result<Card, Error> {
-    if let Some(card) = kept(root, hub, package, release) {
-        return Ok(card);
+    match kept(root, hub, package, release) {
+        Some(card) if card.digest().is_some() => Ok(card),
+        // Kept before its Hub served digests (xs-196): read once more for it, else as it stands.
+        Some(card) => Ok(from_hub(client, root, hub, package, release).await.ok().filter(|read| read.digest().is_some()).unwrap_or(card)),
+        None => from_hub(client, root, hub, package, release).await,
     }
-    from_hub(client, root, hub, package, release).await
 }
 
 /// The card of `release` with its requirements: one kept without them is read again and kept, or, with no Hub, stands as it is.
@@ -109,7 +116,7 @@ pub async fn card_requiring(
     release: &str,
 ) -> Result<Card, Error> {
     match kept(root, hub, package, release) {
-        Some(card) if card.requirements().is_some() => Ok(card),
+        Some(card) if card.requirements().is_some() && card.digest().is_some() => Ok(card),
         Some(card) => Ok(from_hub(client, root, hub, package, release).await.unwrap_or(card)),
         None => from_hub(client, root, hub, package, release).await,
     }

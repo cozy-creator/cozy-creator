@@ -308,11 +308,6 @@ impl Store {
         })
     }
 
-    /// A locked project's keys leave this index (cl-987): its project.db keeps them, and its next open registers them again.
-    pub(crate) fn project_keys_forgotten(&self, id: &str) -> Result<()> {
-        self.write(|tx| { tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?; Ok(()) })
-    }
-
     /// The project `key` names here, now or before (cl-987).
     pub(crate) fn key_owner(&self, key: &str) -> Result<Option<String>> {
         self.read(|conn| Ok(conn.query_row("SELECT project_keys.id FROM project_keys JOIN projects ON projects.id = project_keys.id WHERE key = ?1",
@@ -325,6 +320,30 @@ impl Store {
             let mut statement = conn.prepare("SELECT key FROM project_keys WHERE id = ?1 AND current = 0 ORDER BY rowid")?;
             Ok(statement.query_map([id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })
+    }
+
+    /// A locked encrypted project keeps only where it is here (cl-984): an opaque handle and its folder, so a list offers Unlock.
+    /// Its id, code and anything else go, their pages overwritten and the WAL emptied; unlocking opens it, which registers it again
+    /// from its own project.db.
+    pub(crate) fn project_locked(&self, id: &str, path: &Path) -> Result<()> {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).expect("the OS gives random bytes");
+        let handle = format!("locked-{}", hex::encode(bytes));
+        self.write(|tx| {
+            tx.pragma_update(None, "secure_delete", "ON")?;
+            tx.execute("DELETE FROM projects WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
+            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
+            // Its keys too (cl-987): its project.db keeps them, its next open registers them again, and its KEY-N is unknown here meanwhile.
+            tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
+            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, '')", params![handle, path.to_string_lossy()])?;
+            Ok(())
+        })?;
+        for _ in 0..40 {
+            let busy: i64 = self.read(|conn| Ok(conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?))?;
+            if busy == 0 { return Ok(()); }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        Err(StoreError::Protected("a reader holds the index's older pages of a locked project".into()))
     }
 
     /// Whether each project is being walked, which the next start walks again.

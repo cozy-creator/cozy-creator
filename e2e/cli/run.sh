@@ -425,11 +425,6 @@ for at in 1 2 1; do
 done
 in_project "$RUN_PROJECT" --json package uninstall local/one_script --on local > "$OUT/uninstall-one-script.json" 2>&1 \
   || check "package uninstall local/one_script failed: $(tail -c 300 "$OUT/uninstall-one-script.json")"
-# Outside any project, a local package is refused typed, naming where to go.
-mkdir -p "$OUT/outside-projects"
-code=0; (cd "$OUT/outside-projects" && cozy --json package uninstall local/one_script --on local) > "$OUT/uninstall-outside.json" 2> "$OUT/uninstall-outside.err" || code=$?
-[ "$code" != 0 ] && J '.error.code == "project_required" and (.error.next | index("cozy new"))' "$OUT/uninstall-outside.json" \
-  || check "package uninstall outside a project: exit $code, not project_required naming cozy new: $(tail -c 300 "$OUT/uninstall-outside.json")"
 }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
@@ -472,6 +467,7 @@ case $SHARD in
     egress
     hostile_inputs
     unseen
+    machine_checkout
     local_edits
     path_manifest
     rental_end
@@ -704,6 +700,7 @@ case $SHARD in
   local-code) parts="
     uv_at_once
     unseen
+    machine_checkout
     local_edits
     hub_dependency
     hub_published
@@ -718,8 +715,9 @@ case $SHARD in
   " ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
-  # cozy updates itself for a package that needs a newer cozy (cl-978): its own runner, as it replaces this computer's cozy.
-  selfupdate) parts="self_update logs" ;;
+  # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating
+  # itself for a package that needs a newer cozy (cl-978).
+  selfupdate) parts="self_forward self_update logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="
     machine_show_runs
