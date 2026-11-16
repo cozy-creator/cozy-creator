@@ -378,6 +378,10 @@ impl LocalSources {
             fs::write(&ready, serde_json::to_vec(&built).map_err(std::io::Error::other)?)?;
             // Compiled once for every project's run of it: the generation that names it is a project's (cl-984).
             environment::compile_bytecode(&platform::paths::venv_python(&environment));
+            let managed = platform::paths::venv_python(&environment::managed_calls_env(&environment));
+            if managed.is_file() {
+                environment::compile_bytecode(&managed);
+            }
         }
         let built: environment::Built = serde_json::from_slice(&fs::read(&ready)?).map_err(std::io::Error::other)?;
         // One generation per environment, tree and project: a run of code unchanged since reads it as it is. Its project names

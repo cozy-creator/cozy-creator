@@ -286,7 +286,11 @@ impl Service {
     /// (`Pool::installed`).
     pub(crate) fn installed(&self, held: &crate::catalog::HeldGeneration) {
         if !crate::private_io::is_private_path(&held.record.python) {
-            crate::published::environment::compile_bytecode(&held.record.python);
+            // A callee's nested environment too: uncompiled, each of its executors compiles what it imports.
+            let callees = held.record.callees.iter().filter_map(|callee| callee.python.as_ref());
+            for python in std::iter::once(&held.record.python).chain(callees).collect::<std::collections::BTreeSet<_>>() {
+                crate::published::environment::compile_bytecode(python);
+            }
         }
         if let Some(gpu) = self.gpu() {
             gpu.installed(held.clone());

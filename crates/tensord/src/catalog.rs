@@ -53,7 +53,7 @@ pub(crate) struct Generation {
 /// Another package's App, executed from its admitted dependency environment.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Callee {
-    /// A separately prepared managed-call environment; old records share the caller's.
+    /// The caller's nested managed-call environment (`cozy-calls`); None runs it from the caller's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python: Option<PathBuf>,
     pub distribution: String,
@@ -163,12 +163,13 @@ impl Catalog {
                 )))
             }
         }
-        let managed = platform::paths::venv_python(
-            &fs::canonicalize(directory.join("env"))?.join(".cozy-calls")
-        );
-        for python in record.callees.iter().filter_map(|callee| callee.python.as_ref()) {
-            if python != &managed || !python.is_file() {
-                return Err(invalid("callee interpreter does not name its held managed environment"));
+        if record.callees.iter().any(|callee| callee.python.is_some()) {
+            let env = crate::published::environment::managed_calls_env(&fs::canonicalize(directory.join("env"))?);
+            let managed = platform::paths::venv_python(&env);
+            for python in record.callees.iter().filter_map(|callee| callee.python.as_ref()) {
+                if python != &managed || !python.is_file() {
+                    return Err(invalid("callee interpreter does not name its held managed environment"));
+                }
             }
         }
         Ok(HeldGeneration {
@@ -232,7 +233,7 @@ impl HeldGeneration {
             // The cached callee path is canonical; it must not choose another generation's tree.
             let env = self.record.python.parent().and_then(Path::parent)
                 .ok_or_else(|| invalid("generation interpreter has no environment"))?;
-            held.record.python = platform::paths::venv_python(&env.join(".cozy-calls"));
+            held.record.python = platform::paths::venv_python(&crate::published::environment::managed_calls_env(env));
         }
         held.record.package = callee.package.clone();
         held.record.version = callee.version.clone();

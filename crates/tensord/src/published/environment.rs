@@ -97,10 +97,15 @@ impl Publisher {
         let said = |reason: Option<String>| job.waiting(reason);
         let _turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
         let layer = self.layer(job, None)?;
-        let built = self.build_selected(env, project, job, layer.as_deref())?;
-        if !project.managed_calls && has_managed_calls(project.dir) {
+        let mut built = self.build_selected(env, project, job, layer.as_deref())?;
+        // Only a lock names the cozy-calls closure; an unlocked project's would repeat the caller's.
+        if !project.managed_calls && project.locked.is_some() && has_managed_calls(project.dir) {
             let managed = Project { managed_calls: true, fetch: None, ..*project };
-            self.build_selected(&env.join(MANAGED_CALLS), &managed, job, layer.as_deref())?;
+            let called = self.build_selected(&managed_calls_env(env), &managed, job, layer.as_deref())?;
+            if !called.fallback.is_empty() && called.fallback != built.fallback {
+                built.fallback = [built.fallback, format!("its callees: {}", called.fallback)]
+                    .into_iter().filter(|w| !w.is_empty()).collect::<Vec<_>>().join("; ");
+            }
         }
         Ok(built)
     }
@@ -1026,8 +1031,10 @@ pub(crate) fn compile_bytecode(python: &Path) {
     }
 }
 
-/// Its nested prepared environment belongs to the same generation lifetime and lock.
-const MANAGED_CALLS: &str = ".cozy-calls";
+/// A caller's managed-call environment, nested in its own: the same generation lifetime and lock.
+pub(crate) fn managed_calls_env(env: &Path) -> PathBuf {
+    env.join(".cozy-calls")
+}
 
 fn has_managed_calls(project: &Path) -> bool {
     fs::read_to_string(project.join("pyproject.toml")).ok()
@@ -1040,6 +1047,6 @@ fn managed_python(python: &Path) -> Option<PathBuf> {
     // Local generations share one immutable environment; cached callee records must not
     // retain whichever generation symlink happened to describe it first.
     let environment = fs::canonicalize(python.parent()?.parent()?).ok()?;
-    let path = platform::paths::venv_python(&environment.join(MANAGED_CALLS));
+    let path = platform::paths::venv_python(&managed_calls_env(&environment));
     path.is_file().then_some(path)
 }
