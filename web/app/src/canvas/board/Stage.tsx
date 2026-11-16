@@ -82,8 +82,9 @@ export function Stage(props: StageProps) {
     let wakeTimer: ReturnType<typeof setTimeout> | undefined
     let dirty = true, animating = false, frames = 0, width = element.clientWidth, height = element.clientHeight
     // The open, counted (cl-1018): frames rendered from the first tick that has the project read to the first with every box in view built
-    // (cards) and with every picture in view drawn (previews); and each of those frames' start, scene and render ms.
+    // (cards); how many frames drew pictures until every one in view is drawn (previews); and each of those frames' start, scene and render ms.
     const open = { read: -1, cards: -1, previews: -1, log: [] as number[][] }
+    let pictured = 0, drewMore = 0
     const stops: (() => void)[] = []
     const stage = new Container({ eventMode: "static" })
     const ticker = new Ticker()
@@ -172,7 +173,11 @@ export function Stage(props: StageProps) {
         const rendered = performance.now(), held = scene.coverage
         if (open.log.length < 24) open.log.push([Math.round(began), Math.round(updated - began), Math.round(rendered - updated)])
         if (open.cards < 0 && held.inView > 0 && held.built >= held.inView) open.cards = frames - open.read
-        if (open.cards >= 0 && held.pictured >= held.wanting) open.previews = frames - open.read
+        // Previews: the frames that drew more pictures than the one before, until all are drawn; a frame an animation alone asked for (the
+        // loading pulse on a GPU) draws none and isn't counted.
+        if (held.pictured > pictured) drewMore++
+        pictured = held.pictured
+        if (open.cards >= 0 && held.pictured >= held.wanting) open.previews = drewMore
       }
       try { scene.didRender() } catch (error) { console.error("Seen:", error) }
       if (!board.camera.hasDrawn && ((store.hasRead && store.empty) || [...scene.views()].length > 0)) board.camera.markDrawn()
