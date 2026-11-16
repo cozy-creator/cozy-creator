@@ -3,5 +3,7 @@
 // so there ANGLE takes SwiftShader as its device (as layout.spec.js does everywhere).
 const SOFTWARE = { linux: ['--enable-unsafe-swiftshader'], win32: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] };
 const chromeArgs = (...more) => [...(SOFTWARE[process.platform] ?? []), ...more];
+/** Whether this runner has no GPU of its own (Linux and Windows): Chrome draws in software there. */
+const gpuless = process.platform in SOFTWARE;
 
-module.exports = { chromeArgs };
+module.exports = { chromeArgs, gpuless };
