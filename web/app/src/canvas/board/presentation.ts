@@ -189,7 +189,7 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
   const continued = pickup && store.mentionOf(pickup.take.replace(/^<|>$/g, ""), name)
   const from = continued && continued.name !== store.resolveName(name) ? `from ${continued.name}` : ""
   let note = ""
-  if (shown?.absent && !arriving) note = shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"
+  if (shown?.absent && !arriving) note = shown.machine ? `Stored on ${shown.machine}` : "Stored on another computer"
   else if (view.placing && !output) note = ({ waiting: "Waiting", reading: "Reading the file", sending: "Uploading the file", adding: "Adding the file" })[view.placing.stage]
   else if (!output && !words) note = asset?.timeline ? "Drag videos and images here" : kind === "audio" ? "Audio" : kind === "file" ? "A file" : makes(view) ? kind === "video" ? "Video" : kind === "image" ? "Image" : "" : ""
   const unused = (asset?.unused ?? []).filter((one) => one.at === at).map((one) => one.mention)

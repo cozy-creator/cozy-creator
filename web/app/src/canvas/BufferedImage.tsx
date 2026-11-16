@@ -300,6 +300,6 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
 
   return <>
     <span ref={host} className="buffered-image" data-loading={sha256 && !shown && !failed ? "" : undefined} style={{ position: "absolute", inset: 0, display: "block", pointerEvents: "none" }} />
-    {failed && <span className="media-note">Selected image unavailable</span>}
+    {failed && <span className="media-note">This image isn't available</span>}
   </>
 }
