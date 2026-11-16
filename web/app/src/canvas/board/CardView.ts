@@ -23,7 +23,9 @@ export interface Palette {
 export interface CardState { hover: Part | null; dragging: boolean; offering: boolean; resizing: string | null; dropTarget: boolean; broken: boolean }
 export interface CardEnv {
   palette: Palette; theme: string; zoom: number; band: 0 | 1 | 2; titleSize: number; resolution: number; epoch: number; moving: boolean
-  media: Media; reduced: boolean; software: boolean; invalidate(): void
+  media: Media; reduced: boolean
+  /** A software renderer, or frames measured slow: decorative animation stands still. */
+  software: boolean; invalidate(): void
   request(picture: ScenePicture, width: number): { source: MediaSource; width: number; local: boolean } | null
   onRevealed(name: string, aspect: number | undefined, local: boolean): void
 }

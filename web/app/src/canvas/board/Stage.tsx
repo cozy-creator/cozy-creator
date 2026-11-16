@@ -49,6 +49,9 @@ export interface StageProps {
   onDragCancel(nodes: ElementNode[]): void
 }
 
+/** A frame slower than this on average, from frame to frame, is a slow machine's: decorative animation stands still. */
+const SLOW_FRAME_MS = 40
+
 /** The canvas: one renderer, frames drawn on demand, the scene, the camera, input, and DOM only where text is typed. */
 export function Stage(props: StageProps) {
   const { store, active, disabled } = props
@@ -90,14 +93,22 @@ export function Stage(props: StageProps) {
     // Frames on demand: asked for, the next animation frame draws. Not Pixi's Ticker: started on demand it skips a frame stamped before its start,
     // and a box let go between a frame's vsync and its callbacks showed a frame late.
     let frame = 0, running = false, last = 0
+    // How long a frame takes here, from frame to frame while the canvas draws on: slow (a software renderer, a weak or saving machine), the
+    // render wave and loading pulse stand still, as they do with reduced motion, so a shimmer never takes the CPU from the machine's own work.
+    let pace = 16, paced = 0, slow = false
     const loop = (time: number) => {
       frame = 0
-      const delta = Math.min(100, Math.max(0, time - last))
+      const took = time - last
+      if (paced++ > 0) {
+        pace += (Math.min(took, 500) - pace) * 0.1
+        slow = slow ? pace > SLOW_FRAME_MS / 2 : pace > SLOW_FRAME_MS
+      }
+      const delta = Math.min(100, Math.max(0, took))
       last = time
       tick(delta)
       if (running && !stopped) frame = requestAnimationFrame(loop)
     }
-    const start = () => { if (running) return; running = true; last = performance.now(); frame = requestAnimationFrame(loop) }
+    const start = () => { if (running) return; running = true; last = performance.now(); paced = 0; frame = requestAnimationFrame(loop) }
     const stop = () => { running = false; cancelAnimationFrame(frame); frame = 0 }
     const media = new Media({ client, project: store.projectId ?? "", changed: () => invalidate() })
     const visible = () => latest.current.active && tabShown.get() && !lost
@@ -169,7 +180,7 @@ export function Stage(props: StageProps) {
           const hidden = new Set<string>()
           const focus = store.focusedName.get()
           if (focus && !store.focusEntering.get()) hidden.add(store.resolveName(focus))
-          const result = scene.update({ moving: board.camera.isMoving, camera: board.camera.getViewport(), width, height, dpr: devicePixelRatio || 1, settled: !board.camera.isMoving, theme: theme.get() === "dark" ? "dark" : "paper", now: performance.now(), hidden, offering: element.closest(".stage")?.hasAttribute("data-offering") ?? false })
+          const result = scene.update({ moving: board.camera.isMoving, camera: board.camera.getViewport(), width, height, dpr: devicePixelRatio || 1, settled: !board.camera.isMoving, slow, theme: theme.get() === "dark" ? "dark" : "paper", now: performance.now(), hidden, offering: element.closest(".stage")?.hasAttribute("data-offering") ?? false })
           animating = result.animating
           clearTimeout(wakeTimer)
           if (result.wake !== null) wakeTimer = setTimeout(invalidate, result.wake)

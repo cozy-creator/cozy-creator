@@ -12,7 +12,7 @@ import type { Media } from "./Media"
 import { pictureBox, present, type Presentation, type RunContext, type SceneNode, type ScenePicture } from "./presentation"
 import { fontEpoch } from "./text"
 
-export interface Frame { moving: boolean; camera: Viewport; width: number; height: number; dpr: number; settled: boolean; theme: string; now: number; hidden: ReadonlySet<string>; offering: boolean }
+export interface Frame { moving: boolean; slow: boolean; camera: Viewport; width: number; height: number; dpr: number; settled: boolean; theme: string; now: number; hidden: ReadonlySet<string>; offering: boolean }
 interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; seen?: number; decoding?: number; waits?: boolean }
 
 const MARGIN = 160
@@ -150,7 +150,7 @@ export class Scene {
     const band = bandOf(zoom)
     return {
       palette: this.palette!.colors, theme: frame.theme, zoom, band, titleSize: Math.max(TITLE, BODY * nameZoomOf(zoom)),
-      resolution: this.resolution, epoch: fontEpoch(), moving: frame.moving, media: this.o.media, reduced: matchMedia("(prefers-reduced-motion: reduce)").matches, software: this.o.software,
+      resolution: this.resolution, epoch: fontEpoch(), moving: frame.moving, media: this.o.media, reduced: matchMedia("(prefers-reduced-motion: reduce)").matches, software: this.o.software || frame.slow,
       invalidate: this.o.invalidate,
       request: (picture, width) => this.request(picture, width, frame.dpr),
       onRevealed: (name, aspect, local) => {
