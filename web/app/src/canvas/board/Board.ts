@@ -43,7 +43,11 @@ export class Board {
 
   getNodes = (): readonly CanvasNode[] => this.nodes
   getNode = (id: string): CanvasNode | undefined => this.byId.get(id)
-  byName = (name: string): CanvasNode | undefined => { const id = this.names.get(name); return id ? this.byId.get(id) : undefined }
+  /** The first card by this name, as the page has always looked one up (a transient duplicate never hides the first). */
+  byName = (name: string): CanvasNode | undefined => {
+    const id = this.names.get(name), node = id ? this.byId.get(id) : undefined
+    return node && node.data.name === name && this.nodes.find((held) => held.data.name === name) === node ? node : this.nodes.find((held) => held.data.name === name)
+  }
   selected = (): CanvasNode[] => this.nodes.filter((node) => node.selected)
 
   subscribeNodes = (listener: Listener) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
@@ -70,7 +74,8 @@ export class Board {
     if (!changed.size && ordered.length === this.nodes.length && ordered.every((node, i) => node === this.nodes[i])) return
     this.byId = next
     this.nodes = ordered
-    this.names = new Map(ordered.map((node) => [node.data.name, node.id]))
+    this.names = new Map()
+    for (const node of ordered) if (!this.names.has(node.data.name)) this.names.set(node.data.name, node.id)
     for (const id of changed) this.index(id)
     for (const listener of this.listeners) listener(changed)
   }
@@ -86,7 +91,7 @@ export class Board {
       // A rename frees its old name only if that name still points here: another card may already hold it.
       if (previous && previous.data.name !== node.data.name && this.names.get(previous.data.name) === node.id) this.names.delete(previous.data.name)
       this.byId.set(node.id, node)
-      this.names.set(node.data.name, node.id)
+      if (!this.names.has(node.data.name)) this.names.set(node.data.name, node.id)
       this.index(node.id)
       changed.add(node.id)
     }
