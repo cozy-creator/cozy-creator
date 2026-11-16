@@ -400,10 +400,13 @@ local follower=$!
 for _ in $(seq 120); do n=$(grep -oE '^run [A-Z][A-Z0-9]*-[0-9]+ ' "$OUT/across.txt" | head -1 | cut -d' ' -f2) && [ -n "$n" ] && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"
 systemctl --user restart cozy-calcifer || check "systemctl --user restart cozy-calcifer failed"
+# Still following once the restarted Calcifer serves, then to the run's end: it says nothing of the restart itself (cl-1066).
+local through=1
+sleep 2; kill -0 "$follower" 2> /dev/null && through=0
 wait "$follower" || true
 code=$(cat "$OUT/across.code" 2>/dev/null) || code=
-{ [ "$code" = 0 ] && grep -q "Calcifer restarted; following run $n again" "$OUT/across.txt"; } \
-  || check "across: the follow of run ${n:-?} did not go on past the restart (exit $code): $(tail -c 300 "$OUT/across.txt")"
+{ [ "$through" = 0 ] && [ "$code" = 0 ] && grep -qw completed "$OUT/across.txt"; } \
+  || check "across: the follow of run ${n:-?} did not go on past the restart (alive after it: $through, exit $code): $(tail -c 300 "$OUT/across.txt")"
 cozy --json run watch "$n" --once | J '.status == "completed"' || check "across: run $n did not complete"
 
 step "a burst of Calcifer restarts past systemd's start limit"
