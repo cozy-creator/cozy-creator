@@ -35,17 +35,11 @@ export function RenderTime({ name, view }: { name: string; view: ElementView }) 
   if (!estimate) return null
   const machine = estimate.machine === "local" ? "this computer" : estimate.machine
   const where = estimate.card ? `${machine}'s ${estimate.card}` : machine
-  // Scaled from other cards' times (th-377): a guess, said so.
-  const guessed = estimate.basis === "scaled"
-  const title = guessed
-    ? `Estimated for ${where}, once it starts: nothing measured on it, so other GPUs' times scaled to it`
-    : `Typical time on ${where}, once it starts`
   return (
     <>
       {estimate.run_ms >= SHOWN_MS && (
-        <span className="render-time" role="note" aria-label="Render time" title={title}>
+        <span className="render-time" role="note" aria-label="Render time" title={`Typical time on ${where}, once it starts`}>
           {about(estimate.run_ms)}
-          {guessed && " (estimated)"}
         </span>
       )}
       {estimate.faster && (

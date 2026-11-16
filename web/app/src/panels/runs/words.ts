@@ -33,15 +33,13 @@ export const secondsLeft = (run: Run): number | undefined => run.progress?.eta_s
 /** That nothing like it has run anywhere this computer knows, and it has no step of its own yet, to tell how long it takes. */
 const firstRun = (run: Run) => run.progress?.eta_s === undefined && run.progress?.eta_basis === "first_run"
 
-/** How long is left: `41s left`, `about 3m10s left` while that's little trusted, `(estimated)` from another card's runs; or that it
- *  isn't known yet. */
+/** How long is left: `41s left`, `about 3m10s left` while that's little trusted; or that it isn't known yet. */
 export function eta(run: Run): string | null {
   const progress = run.progress
   if (firstRun(run)) return "time left not known yet: nothing like it has run"
   if (progress?.eta_s == null) return null
   // Only the bytes it moves are known: at least that.
   if (progress.eta_basis === "bytes") return `at least ${span(progress.eta_s)} left`
-  if (progress.eta_basis === "card") return `about ${span(progress.eta_s)} left (estimated)`
   return `${(progress.eta_confidence ?? 1) < 0.5 ? "about " : ""}${span(progress.eta_s)} left`
 }
 
