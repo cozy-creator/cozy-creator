@@ -160,6 +160,9 @@ pub mod path {
     pub const STATUS: &str = "/v1/status";
     /// `POST`: renews a rental's idle deadline; answers the frame.
     pub const KEEPALIVE: &str = "/v1/keepalive";
+    /// `POST` by this computer's controller: a project whose folder is gone (cl-1031). Every record of it here goes, as a lock's
+    /// does: 204 once nothing of it is here, 409 while a folder it ran in still holds it or its runs are active.
+    pub const PROJECT_GONE: &str = "/v1/project-gone/{project_id}";
     /// `POST` a [`super::RunRequest`] of [`super::RunKind::Update`], the one request a controller of
     /// another release sends; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";
@@ -1005,12 +1008,20 @@ pub struct EstimateJob {
     /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
     /// this machine has measured none of the function.
     pub prior_ms: u64,
+    /// How many of this machine's own runs `prior_ms` is, which its frame doesn't time (a project's private runs, cl-1047): its quote
+    /// is then Measured. 0: runs elsewhere.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub prior_runs: u32,
     /// The soonest it can start, ms from now: when what it reads is made.
     #[serde(skip_serializing_if = "is_zero")]
     pub after_ms: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
@@ -1048,7 +1059,7 @@ pub struct JobSize {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seconds: Option<f64>,
     /// The pictures and videos it reads, where its caller counted them (a box's mentions and slots): no unit of its time, but which
-    /// measured request it is most like (`estimate::reference`).
+    /// measured request it is most like (`estimate::References`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refs: Option<u32>,
 }
@@ -1133,8 +1144,11 @@ pub enum Basis {
     Measured,
     /// The caller's `prior_ms`.
     Prior,
-    /// Our measurement of it on this card (`estimate::reference`), scaled to its size.
+    /// Its release's benchmark of this card (`estimate::References`, cl-1024), scaled to its size.
     Reference,
+    /// Estimated: its release's benchmark of another card, scaled to this one by how the two compare across the functions both were
+    /// measured on, else by the Hub's spec speeds (`References::time`; Paul 11-15, "a rough guess"). Never counted as measured.
+    Scaled,
     /// Nothing: a minute is assumed.
     #[default]
     None,

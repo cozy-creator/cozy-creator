@@ -1,0 +1,1 @@
+- A project's own runs of a function on a machine count as that machine's measurement: the plan quotes it Measured, so a job stays where its project measured it and its weights are (cl-1047).

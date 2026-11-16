@@ -46,7 +46,8 @@ const SCHEMA: &str = "
         reason TEXT,
         created_at INTEGER NOT NULL,
         alias TEXT,
-        held TEXT
+        held TEXT,
+        ended_at INTEGER
     ) STRICT;
     CREATE UNIQUE INDEX machines_rental ON machines (rental_id) WHERE rental_id IS NOT NULL;
     CREATE UNIQUE INDEX machines_alias ON machines (alias) WHERE alias IS NOT NULL;
@@ -363,9 +364,18 @@ fn migrate_maintenance_runs(writer: &mut Connection) -> Result<()> {
     loop {
         let tx = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_batch("DELETE FROM temp.maintenance_batch")?;
+        // Ids alone first, from the id index: a store with none left to move (every start until cl-1003's cut) reads no fenced
+        // run's row, which on a laptop's store is a scan of more than a gigabyte (cl-1010).
         let batch: Vec<(String, String)> = {
-            let mut stmt = tx.prepare(&format!("SELECT id, idempotency_key FROM legacy_project_runs WHERE id NOT IN (SELECT id FROM temp.maintenance_fenced) {owners} LIMIT 2000"))?;
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+            let mut ids = tx.prepare(&format!("SELECT id FROM legacy_project_runs WHERE id NOT IN (SELECT id FROM temp.maintenance_fenced) {owners} LIMIT 2000"))?;
+            let ids: Vec<String> = ids.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let mut key = tx.prepare("SELECT idempotency_key FROM legacy_project_runs WHERE id = ?1")?;
+            let mut batch = vec![];
+            for id in ids {
+                let keyed: String = key.query_row([&id], |row| row.get(0))?;
+                batch.push((id, keyed));
+            }
+            batch
         };
         if batch.is_empty() { tx.commit()?; break; }
         {
@@ -505,6 +515,15 @@ fn job_column(writer: &mut Connection) -> Result<()> {
 }
 
 /// A store made before a hold by hand was kept (cl-952) gains that column: no machine held.
+/// When a machine ended, which its row is kept 90 days from (`prune`). One that ended before has none: its creation stands in.
+fn ended_at_column(writer: &Connection) -> Result<()> {
+    let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('machines') WHERE name = 'ended_at')", [], |r| r.get(0))?;
+    if !has {
+        writer.execute_batch("ALTER TABLE machines ADD COLUMN ended_at INTEGER")?;
+    }
+    Ok(())
+}
+
 fn held_column(writer: &mut Connection) -> Result<()> {
     let has: bool = writer.query_row(
         "SELECT EXISTS (SELECT 1 FROM pragma_table_info('machines') WHERE name = 'held')",
@@ -564,6 +583,13 @@ const ANSWERS: &str = "
         body BLOB NOT NULL,
         at_ms INTEGER NOT NULL
     ) STRICT;";
+/// How long an ended machine's row is kept (Paul 11-15: "keep other rental data for like 90 days or so, so that users can go back
+/// and see what they did").
+const KEPT_FOR_MS: i64 = 90 * 24 * 3600 * 1000;
+/// How many a machine's end takes out: more than end meanwhile, few enough to hold the writer briefly.
+const PRUNED_EACH: i64 = 16;
+/// A run this much older than the measurements kept, still not settled, never will be: `drop_measurements` goes past it.
+const GIVEN_UP_MS: i64 = 30 * 24 * 3600 * 1000;
 /// The newest run number whose measurements `drop_measurements` has gone past.
 const MEASUREMENTS_DROPPED: &str = "CREATE TABLE IF NOT EXISTS measurements_dropped (through INTEGER NOT NULL) STRICT;";
 /// How long an answer is kept for its write's retries.
@@ -1559,63 +1585,6 @@ macro_rules! journal_methods {
         })
     }
 
-    /// Drops the measurements of the next runs that settled before `before_ms`, past the last one done (kept, so a start never
-    /// reads the old ones again: cl-1010), in one short write. False: no run past it is that old.
-    pub(crate) fn drop_measurements(&self, before_ms: i64) -> Result<bool> {
-        self.write(|tx| {
-            let after: i64 = tx.query_row("SELECT coalesce(max(through), 0) FROM measurements_dropped", [], |row| row.get(0))?;
-            let mut next = tx.prepare("SELECT number, created_at FROM runs WHERE number > ?1 ORDER BY number LIMIT 64")?;
-            let next = next
-                .query_map([after], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            // A run that settled before then was created before then, and numbers go up with time.
-            let Some(through) = next.iter().take_while(|(_, created)| *created < before_ms).last().map(|(n, _)| *n) else {
-                return Ok(false);
-            };
-            let ids: Vec<String> = {
-                let mut rows = tx.prepare("SELECT id FROM runs WHERE number > ?1 AND number <= ?2 AND settled_at < ?3")?;
-                rows.query_map(params![after, through, before_ms], |row| row.get(0))?
-                    .collect::<rusqlite::Result<_>>()?
-            };
-            for id in ids {
-                let outcome: Option<Vec<u8>> = tx.query_row("SELECT outcome FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
-                if let Some(bytes) = outcome {
-                    if let Some(plain) = vault::open_payload(&run_context(&id, "outcome"), &bytes).map_err(private_error)? {
-                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
-                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
-                                let bytes = seal_run(
-                                    tx,
-                                    &id,
-                                    &run_context(&id, "outcome"),
-                                    &serde_json::to_vec(&value).expect("serializes"),
-                                )?;
-                                tx.execute("UPDATE runs SET outcome = ?2 WHERE id = ?1", params![id, bytes])?;
-                            }
-                        }
-                    }
-                }
-                let calls: Vec<(i64, String)> = {
-                    let mut rows = tx.prepare("SELECT seq, text FROM run_logs WHERE run = ?1 AND level = 'call'")?;
-                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?)))?
-                        .collect::<rusqlite::Result<_>>()?
-                };
-                for (seq, text) in calls {
-                    let context = log_context(&id, seq as u64);
-                    if let Some(plain) = vault::open_payload(&context, text.as_bytes()).map_err(private_error)? {
-                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
-                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
-                                let text = seal_run_text(tx, &id, &context, &value.to_string())?;
-                                tx.execute("UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2", params![id, seq, text])?;
-                            }
-                        }
-                    }
-                }
-            }
-            tx.execute("DELETE FROM measurements_dropped", [])?;
-            tx.execute("INSERT INTO measurements_dropped (through) VALUES (?1)", [through])?;
-            Ok(true)
-        })
-    }
 
     /// Places an unplaced run on `machine`.
     pub(crate) fn place(&self, id: &str, machine: &str) -> Result<bool> {
@@ -2118,6 +2087,66 @@ impl Store {
     journal_methods!();
 
     fn owner_id(&self)->Option<&str> { None }
+
+    /// Calcifer's own journal only: its table is in state.db. Drops the measurements of the next runs that settled before `before_ms`, past the last one done (kept, so a start never
+    /// reads the old ones again: cl-1010), in one short write. False: no run past it is that old.
+    pub(crate) fn drop_measurements(&self, before_ms: i64) -> Result<bool> {
+        self.write(|tx| {
+            let after: i64 = tx.query_row("SELECT coalesce(max(through), 0) FROM measurements_dropped", [], |row| row.get(0))?;
+            let mut next = tx.prepare("SELECT number, created_at, state = 'settled' AND settled_at < ?2 FROM runs WHERE number > ?1 ORDER BY number LIMIT 64")?;
+            let next = next
+                .query_map([after, before_ms], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            // A run that settled before then was created before then, and numbers go up with time. The walk keeps its place before a
+            // run still going (or settled since), to drop its measurements once it's old too; one a month older still never will be.
+            let past = |(_, created, done): &&(i64, i64, bool)| *created < before_ms && (*done || *created < before_ms - GIVEN_UP_MS);
+            let Some(through) = next.iter().take_while(past).last().map(|(n, ..)| *n) else {
+                return Ok(false);
+            };
+            let ids: Vec<String> = {
+                let mut rows = tx.prepare("SELECT id FROM runs WHERE number > ?1 AND number <= ?2 AND settled_at < ?3")?;
+                rows.query_map(params![after, through, before_ms], |row| row.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for id in ids {
+                let outcome: Option<Vec<u8>> = tx.query_row("SELECT outcome FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
+                if let Some(bytes) = outcome {
+                    if let Some(plain) = vault::open_payload(&run_context(&id, "outcome"), &bytes).map_err(private_error)? {
+                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
+                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
+                                let bytes = seal_run(
+                                    tx,
+                                    &id,
+                                    &run_context(&id, "outcome"),
+                                    &serde_json::to_vec(&value).expect("serializes"),
+                                )?;
+                                tx.execute("UPDATE runs SET outcome = ?2 WHERE id = ?1", params![id, bytes])?;
+                            }
+                        }
+                    }
+                }
+                let calls: Vec<(i64, String)> = {
+                    let mut rows = tx.prepare("SELECT seq, text FROM run_logs WHERE run = ?1 AND level = 'call'")?;
+                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                for (seq, text) in calls {
+                    let context = log_context(&id, seq as u64);
+                    if let Some(plain) = vault::open_payload(&context, text.as_bytes()).map_err(private_error)? {
+                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
+                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
+                                let text = seal_run_text(tx, &id, &context, &value.to_string())?;
+                                tx.execute("UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2", params![id, seq, text])?;
+                            }
+                        }
+                    }
+                }
+            }
+            tx.execute("DELETE FROM measurements_dropped", [])?;
+            tx.execute("INSERT INTO measurements_dropped (through) VALUES (?1)", [through])?;
+            Ok(true)
+        })
+    }
     fn admit_submission(&self, new: &NewRun) -> Result<()> {
         if new.project.is_some() { return Err(StoreError::Protected("project_store_required".into())); }
         Ok(())
@@ -2132,12 +2161,52 @@ impl Store {
 
     pub(crate) fn machine_ended(&self, machine: &str, reason: &str) -> Result<Vec<(RunId, Event)>> {
         let row = self.machine(machine)?.ok_or_else(|| StoreError::UnknownMachine(machine.into()))?;
-        self.write(|tx| { tx.execute("UPDATE machines SET state = 'ended', reason = ?2 WHERE name = ?1", params![machine, reason])?; Ok(()) })?;
-        self.runs_on_ended_machine(machine, row.served, reason)
+        self.write(|tx| {
+            tx.execute("UPDATE machines SET state = 'ended', reason = ?2, ended_at = coalesce(ended_at, ?3) WHERE name = ?1", params![machine, reason, now_ms()])?;
+            Ok(())
+        })?;
+        let ended = self.runs_on_ended_machine(machine, row.served, reason);
+        // A machine that ends takes out a few ended past 90 days.
+        if let Err(e) = self.prune_machines(PRUNED_EACH) { tracing::warn!("ended machines past 90 days: {e}"); }
+        ended
+    }
+
+    /// Takes out ended machines older than [`KEPT_FOR_MS`] that no kept run names, at most `limit`, with their logs, and gives the pages
+    /// back (a new store vacuums incrementally): the store keeps 90 days of them, with no timer (Paul 11-15). Not while the legacy
+    /// history's rows can still name them (cl-1003). Its own check stands for the foreign key's, which with no index on runs(machine) (one
+    /// would take the unsettled-run plans) read every run for each machine: off for this transaction only. How many went.
+    pub(crate) fn prune_machines(&self, limit: i64) -> Result<usize> {
+        let before = now_ms() - KEPT_FOR_MS;
+        let (pruned, commit) = {
+            let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            if has_table(&conn, "legacy_project_runs")? { return Ok(0); }
+            conn.pragma_update(None, "foreign_keys", "OFF")?;
+            let pruned = (|| -> Result<usize> {
+                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS pruned_machines (name TEXT PRIMARY KEY); DELETE FROM temp.pruned_machines;")?;
+                tx.execute(
+                    "INSERT INTO temp.pruned_machines SELECT name FROM machines WHERE state = 'ended' AND coalesce(ended_at, created_at) < ?1
+                         AND name NOT IN (SELECT machine FROM runs WHERE machine IS NOT NULL) LIMIT ?2",
+                    params![before, limit],
+                )?;
+                if has_table(&tx, "machine_logs")? {
+                    tx.execute("DELETE FROM machine_logs WHERE machine IN (SELECT name FROM temp.pruned_machines)", [])?;
+                }
+                let pruned = tx.execute("DELETE FROM machines WHERE name IN (SELECT name FROM temp.pruned_machines)", [])?;
+                if pruned > 0 { tx.execute_batch("PRAGMA incremental_vacuum(256)")?; }
+                tx.commit()?;
+                Ok(pruned)
+            })();
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            (pruned?, self.durable.committed())
+        };
+        self.durable.wait(commit)?;
+        Ok(pruned)
     }
 
     pub(crate) fn open(path: &Path) -> Result<Self> {
         std::sync::LazyLock::force(&STARTED_MS);
+        let began = std::time::Instant::now();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         }
@@ -2153,6 +2222,8 @@ impl Store {
         writer.pragma_update(None, "temp_store", "MEMORY")?;
         match writer.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? {
             0 => {
+                // Pages a prune frees go back to the disk (`prune`).
+                writer.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
                 let tx = writer.transaction()?;
                 tx.execute_batch(SCHEMA)?;
                 tx.pragma_update(None, "user_version", VERSION)?;
@@ -2165,6 +2236,7 @@ impl Store {
                 job_column(&mut writer)?;
                 attempt_column(&mut writer)?;
                 held_column(&mut writer)?;
+                ended_at_column(&writer)?;
                 fence_legacy_projects(&mut writer)?;
             }
             VERSION => {
@@ -2174,6 +2246,7 @@ impl Store {
                 job_column(&mut writer)?;
                 attempt_column(&mut writer)?;
                 held_column(&mut writer)?;
+                ended_at_column(&writer)?;
             }
             other => return Err(StoreError::Version(other)),
         }
@@ -2187,9 +2260,14 @@ impl Store {
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
         writer.execute_batch(crate::state::TABLES)?;
         writer.execute_batch(MACHINE_LOGS)?;
+        // The store step's parts, in the closed health log: a slow start names its slow part (cl-1010).
+        let said = |part: &'static str, since: std::time::Instant| tracing::info!(target: "cozy.service_health", step = part, ms = since.elapsed().as_millis() as u64, "started");
+        said("store_schema", began);
+        let legacy = std::time::Instant::now();
         index_legacy_owners(&mut writer)?;
         migrate_maintenance_asks(&mut writer)?;
         migrate_maintenance_runs(&mut writer)?;
+        said("store_legacy", legacy);
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;
         writer.pragma_update(None,"synchronous",if wal {"NORMAL"} else {"FULL"})?;
@@ -2953,13 +3031,13 @@ fn export_settled(tx: &Transaction, run: &str, name: &str, index: u32, rev: u64,
     }])
 }
 
-/// Whether an output stays on its machine (`OutputItem::stays`): its run's result declares it `Latents`, by its name.
-const STAYS: &str =
-    "EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
 
-/// An output owed to this computer: its newest revision neither landed nor given up, no checkpoint, and none that stays.
+/// An output owed to this computer: its newest revision neither landed nor given up, no checkpoint, and none that stays on another
+/// machine. A local run's latents land in its project like any output (cl-1046): an ordinary file of its take, there as long as the
+/// take is, which purge takes with it; still unlisted to a person (`STAYS`).
 pub(super) const OWED: &str = "outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
-    AND NOT EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
+    AND NOT EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name
+        AND held.machine IS NOT 'local')";
 
 const OUTPUT_COLUMNS: &str = "name, idx, rev, length, digest, media_type, done, path, exported_rev,
     CASE WHEN failed_rev = rev THEN export_error END, checkpoint, run, cozy_project_root()";
@@ -3018,11 +3096,11 @@ fn put_machine_in(tx: &Transaction, machine: &MachineRow) -> Result<()> {
     }
     tx.execute(
         "INSERT INTO machines (name, kind, hub, rental_id, worker_id, address, pin, key, state,
-             served, reason, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             served, reason, created_at, ended_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CASE WHEN ?9 = 'ended' THEN ?12 END)
          ON CONFLICT (name) DO UPDATE SET kind = ?2, hub = ?3, rental_id = ?4, worker_id = ?5,
              address = ?6, pin = ?7, key = ?8, state = ?9, served = served OR ?10, reason = ?11,
-             held = CASE WHEN rental_id IS ?4 THEN held END",
+             held = CASE WHEN rental_id IS ?4 THEN held END, ended_at = CASE WHEN ?9 = 'ended' THEN coalesce(ended_at, ?12) END",
         params![
             machine.name,
             machine_kind(machine.kind),
@@ -3064,6 +3142,7 @@ fn run_list_indexes(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS runs_list_metadata ON runs(number,target,state,status,machine,out_dir,id,{private});
          DROP INDEX IF EXISTS runs_settled_at;
          CREATE INDEX IF NOT EXISTS runs_warm ON runs(machine) WHERE kind = 'warm';
+         DROP INDEX IF EXISTS runs_machine;
          CREATE INDEX IF NOT EXISTS runs_warm_set ON runs(machine) WHERE kind = 'warm' AND instr(spec, CAST('\"set\":{{' AS BLOB)) > 0;"
     ))?;
     Ok(())
@@ -3692,10 +3771,13 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
     let mut statement = conn.prepare(&format!(
         "SELECT name, idx, rev, length, digest, media_type, label, done,
              CASE WHEN exported_rev = rev THEN path END, CASE WHEN failed_rev = rev THEN export_error END,
-             checkpoint, {STAYS}, width, height, measured_ms, duration_us
+             checkpoint, 0, width, height, measured_ms, duration_us
          FROM outputs WHERE run = ?1 ORDER BY created_seq"
     ))?;
     let settled_ok = row.status == Some(Status::Completed);
+    // Its outputs that stay on its machine, read once: STAYS read the run's row again for each output, through its outcome (cl-1010).
+    let stays: Vec<String> = conn.query_row("SELECT stays FROM runs WHERE id = ?1", [row.id.as_str()], |r| r.get::<_, String>(0)).optional()?
+        .and_then(|stays| serde_json::from_str(&stays).ok()).unwrap_or_default();
     let items = statement.query_map([row.id.as_str()], |r| {
         let name: String = r.get(0)?;
         let index = r.get::<_, i64>(1)? as u32;
@@ -3717,6 +3799,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
             (true, true) => ItemStatus::Completed,
             (true, false) => ItemStatus::Incomplete,
         };
+        let stays = stays.contains(&name);
         let label = sql_text(r, 6, &output_context(row.id.as_str(), &name, index, rev, "label"))?;
         let export_error = sql_optional_text(r, 9, &output_context(row.id.as_str(), &name, index, rev, "export_error"))?;
         Ok(OutputItem {
@@ -3737,8 +3820,8 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
             status,
             path: path.filter(|_| checkpoint.is_none()),
             export_error: export_error.filter(|_| checkpoint.is_none()),
+            stays,
             checkpoint,
-            stays: r.get(11)?,
         })
     })?;
     let placed = (conn.query_row("SELECT placed FROM run_placements WHERE run = ?1", [row.id.as_str()], |r| r.get::<_, String>(0)).optional())

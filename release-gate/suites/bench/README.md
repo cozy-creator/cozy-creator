@@ -55,8 +55,10 @@ A cell FAILs when
 ## Stored numbers
 
 `../../baselines/<version>.json`: per group the pod, its reference workload, each cell's medians and spread (Cozy only).
-`bench.py references baselines/<version>.json --out crates/api/src/estimate/references.tsv` turns its one-GPU uncapped cells into
-the times a machine that never ran a function is quoted, and the page shows before a render (cl-1004): commit it with the baseline. Reference outputs are assets of the `release-gate-baselines` release (`bench-<version>-<group>-<cell>.<ext>`), fetched
+`bench.py references baselines/<version>.json --packages <checkout>` turns its uncapped cells into each package's benchmarks
+(`benchmarks.json` in its folder), which its release carries (promote.sh, cl-1024): what a machine that never ran a function is
+quoted and the page shows before a render. The `t-*`/`mt-*` cells time each box tool at its defaults for them; `benchmarks-seed.json`
+stands in until a baseline is stored. Reference outputs are assets of the `release-gate-baselines` release (`bench-<version>-<group>-<cell>.<ext>`), fetched
 into `baselines/refs/` (untracked).
 
 ## End-to-end arms (xs-171)

@@ -175,6 +175,8 @@ pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::
         nvlink,
         times,
         now_ms: crate::machine::lifecycle::now_ms(),
+        // Its own packing knows no release's benchmarks (cl-1024): what it never ran here is a minute; Calcifer's quotes know them.
+        references: None,
     };
     let queued: Vec<v1::Queued> = roots.iter().map(|root| root.queued.clone()).collect();
     let (jobs, _) = machine.queue(&queued);

@@ -452,6 +452,23 @@ fi
 [ "$(row "$RUN_PROJECT" described .fields.description)" = '"An orange card."' ] || check "descriptions: the stored one is now $(row "$RUN_PROJECT" described .fields)"
 }
 
+# se-138 (Paul's clamp-and-warn rule): a size or count that isn't one of a choice's values runs at the nearest one and says
+# so, never at a default larger than asked (cr-299's `to: 768p` ran at 1440p); a word that names none goes as its default.
+choice_clamp() {
+step "a choice given a value it doesn't offer: the nearest, said"
+# `to=768p` is typed by `cozy run` as a resolution (runs/bind.rs `tiers`); a word it doesn't offer is refused there, so `mode` goes as JSON.
+if cell choice "$here/project/choice.py/size" to=768p megapixels:=3 'mode:="slow"'; then
+  grep -q 'to=1080p megapixels=2 mode=full' "$OUT/choice.ndjson" \
+    || check "choice: 768p and 3 didn't run as 1080p and 2, or slow not as full: $(grep -oE '"given": *"[^"]*"' "$OUT/choice.ndjson" | head -1)"
+  cozy --json --full run watch "$(cat "$OUT/choice.number")" --once > "$OUT/choice.json" 2>&1
+  local said
+  for said in "\"768p\" isn't one of 1080p, 1440p, 2160p, so it's \"1080p\"" "3 isn't one of 2, 4, so it's 2" "\"slow\" isn't one of fast, full, so it's its default"; do
+    grep -qF "$(jq -Rr '@json' <<< "$said" | sed 's/^"//; s/"$//')" "$OUT/choice.json" "$OUT/choice.ndjson" "$OUT/choice.err" 2> /dev/null \
+      || grep -qF "$said" "$OUT/choice.err" 2> /dev/null || check "choice: the run didn't say: $said"
+  done
+fi
+}
+
 # cl-883: an orbit mentioned by angle. A dropped video, turned to an orbit as its box's Orbit switch does (PATCH its version's
 # metadata), reaches a function as the frame at an angle, a picture, and as the frames turned between two, a clip:
 # `floor(angle / 360 × 48)`, wrapping past 360° and across 0°. Its frames are greys, frame n at 5n, so the function says which
@@ -640,6 +657,8 @@ AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless LOCK_FIXTURE=
 ls -d "$seen"/project/.vault-calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package in the project: $(ls "$seen/project/.vault-calcifer/code" 2> /dev/null | head -3)"
 # Publishing a project's package is an explicit export: it gets as far as the sign-in it needs.
 DIR=weightless refused_inside publish not_logged_in package publish
+# Its benchmarks come from this project's warm runs of it on a GPU (cl-1024): this CPU runner made none, so there's nothing to write.
+DIR=weightless refused_inside benchmarks no_benchmarks package benchmarks
 # A model installed from a project's file is an explicit export: it is the machine's.
 inside model --json model install ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
   && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"

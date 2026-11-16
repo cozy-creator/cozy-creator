@@ -45,6 +45,12 @@ impl Card {
         Some(self.document.get("requirements")?.as_array()?.iter().filter_map(Value::as_str).collect())
     }
 
+    /// Its publisher's benchmarks (cl-1024). None for a release published before the Hub kept them: a card read from a Hub without
+    /// them is of such a release, so it is never read again for them.
+    pub fn benchmarks(&self) -> Vec<crate::estimate::Benchmark> {
+        serde_json::from_value(self.document["benchmarks"].clone()).unwrap_or_default()
+    }
+
 }
 
 /// Where `hub`'s cards live under `root`, the cozy home.
@@ -185,6 +191,14 @@ pub fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card
     let path = file(&dir(root, hub, package), release);
     let document: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     read(&document).ok()
+}
+
+/// The packages (`org/name`) with a card kept from `hub`.
+pub fn kept_packages(root: &Path, hub: &str) -> Vec<String> {
+    let entries = |dir: &Path| std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| e.path().is_dir()).collect::<Vec<_>>();
+    (entries(&hub_dir(root, hub)).into_iter())
+        .flat_map(|org| entries(&org.path()).into_iter().map(move |name| format!("{}/{}", org.file_name().to_string_lossy(), name.file_name().to_string_lossy())))
+        .collect()
 }
 
 /// The releases of `package` whose cards are kept.

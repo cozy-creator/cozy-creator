@@ -5,8 +5,8 @@
 //! replace the file whole once they match the revision's digest; `.part.held` beside it keeps the
 //! stretches in place, so a transfer cut off resumes with the rest; a tree output is a directory
 //! replaced the same way. One exporter works per run with something to export, started by the
-//! run's output events or, at startup, from the store. What stays on its machine (`OutputItem::stays`)
-//! is no export's: `bring` fetches it when something needs it. `serve` answers
+//! run's output events or, at startup, from the store. What stays on another machine (`OutputItem::stays`)
+//! is no export's: `bring` fetches it when something needs it; a local run's lands as any output does (cl-1046). `serve` answers
 //! `GET /v1/runs/{id}/outputs/{name}` from the exported file.
 use std::{
     collections::HashMap,
@@ -190,7 +190,8 @@ impl Calcifer {
         Ok(())
     }
 
-    pub(super) fn spawn_task(&self, task: impl Future<Output = ()> + Send + 'static) {
+    /// A task of Calcifer's that ends with it (`close`).
+    pub(crate) fn spawn_task(&self, task: impl Future<Output = ()> + Send + 'static) {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(task);

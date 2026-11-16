@@ -189,6 +189,11 @@ impl Machine {
         json(send(self.request(Method::GET, path::PROJECT_MIGRATE, &[&scope.storage.project_id])).await?).await
     }
 
+    /// Project `id`'s folder is gone (cl-1031): nothing of it stays on this machine.
+    pub(crate) async fn project_gone(&self, id: &str) -> Result<(), Error> {
+        send(self.request(Method::POST, path::PROJECT_GONE, &[id])).await.map(|_| ())
+    }
+
     pub(crate) async fn close_private(&self) -> Result<(), Error> {
         self.migrate_private().await?;
         let scope = self.private.as_ref().ok_or_else(|| Error::Answer("closing private storage requires a selected project".into()))?;

@@ -319,9 +319,11 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
 - Calcifer quotes each machine a job may go to itself (cl-967), from the Status it pushes, with the estimator TensorD packs its queue by
   (`api::estimate::quote`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's
   lane commit, bytes and repository, from its Hub card), `size` (`JobSize::of` its payload), `gpu` and `prior_ms` (eta's time for it on one
-  GPU of that kind, from runs at one width; with none and no measurement of ours on that card, ours or those runs on another card
-  scaled by the Hub's speeds). A machine that ran none of it and has no prior is timed by our measurement of its card
-  (`api::estimate::reference`, cl-1004), else a minute. A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
+  GPU of that kind, from this computer's runs at one width on it; `prior_runs`, how many of that machine's own runs it is: a project's,
+  read in its scope, which the machine never times itself, so its quote is `measured`, cl-1047). A machine that ran none of it and has
+  no prior is timed by its release's benchmarks (`api::estimate::References`, cl-1024: of its card, else another card's times its Hub
+  speed over this one's, the card nearest in speed; local code from source, a packages checkout's or a project's `./dir`, by its own
+  `benchmarks.json`: rows travel with the package, in its source before it is published, on the Hub after), else a minute; a machine packing its own queue knows no benchmarks. A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
   finishes soonest after those placed before it, then single moves while the whole ends sooner. A ready job goes when its planned machine
   has a GPU for it (one machine: at once); each machine is told its upcoming jobs (`PUT /v1/upcoming`) and, idle with nothing planned
   while others hold unstarted work it can run, what to prepare (`PUT /v1/prepare`).
@@ -329,8 +331,8 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
   `boot.expected_ready_at`, from its provider and card's recent boots and the phase it's in; else 4 min from its attempt's start; not before
   its image's pull can end; once overdue, as long again as it's late, at least 30 s; an order its Hub has had no pod for a minute isn't
   quoted), then quoted as a machine that holds nothing (`placement::Picture`), the runs already sent to it ahead of the jobs asked, each
-  timed by this computer's runs on its card, else our measurement of that card, else another card's scaled by the Hub's speeds, else a
-  minute; run reports never time anything (cl-1006). Its quote's `ready_ms` says when.
+  timed by this computer's runs on its card, else its release's benchmarks, else a minute; run reports never time anything
+  (cl-1006). Its quote's `ready_ms` says when.
   A job held for one says so on the board: `why` `waits for pluto, ready in about 2 min`, `machine` pluto.
 - A machine that can't run it at all (`fits: false`: its weights too big for the disk, its GPUs out of service) has no finish
   and is never chosen. Of the rest the soonest finish wins; within 2% (or 1 s), a machine that serves before one on its way, one whose
@@ -575,8 +577,10 @@ hand), and one a Calcifer stopped under fails `calcifer_stopped`: asking again i
 - `cozy/package_publish` `{root, yanked}`, of `code`: Calcifer's own run. It locks first when it has no `uv.lock`, answering that
   one as `lock` for the client to write; stages, relocks for this Hub's account
   index, builds, carries its git dependencies' wheels, describes, uploads what the Hub lacks and
-  finalizes (`yanked`: committed yanked, never the newest release). Its result is `Published`
-  (`status: already published` for a version the Hub holds).
+  finalizes (`yanked`: committed yanked, never the newest release). Its `benchmarks.json`, beside its pyproject.toml when it has
+  one, goes with the release as its benchmarks (cl-1024): every row whole and naming one of its functions, refused by row
+  (`benchmarks_invalid`) before anything uploads. Its result is `Published` (`status: already published` for a version the Hub
+  holds).
 
 **Packages.**
 - `GET /v1/packages?q=&limit=&offset=` (limit 1–200, 20; offset 0): `PackageSearch {packages, total, older}`. Rows retain `created_at`; optional `updated_at` is the Hub's update timestamp, never inferred from creation.
@@ -690,18 +694,26 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   its operation if it has no state, and nothing else. `new`, or `n` over 1, also draws `n` new seeds for those named; a pinned one's state doesn't move.
   `--take`, `--in`: one asset's new take keeps the start of that take, or the one in use (`400 take_unknown`), for a function that fills `continue_from` from `take`: it gets that take's `video`, `latents` and `at_s`, and one its package didn't make is `409 take_not_continued`. `202 {id, path}`, or `200` when
   its key asked it already. The work goes on in the project's walk and is followed on its board.
-- `POST /v1/projects/{id}/fit` `{names, outdated?}`: `{tools: [{tool, label, names, line, bytes, here?}], rent?: {sku, gpus, card, vram_gb, usd_micros_per_hour, line}}`. What a render of `names` (or `all`, as `runs` reads it) on this computer alone would do poorly, a tool a row, said before it's sent. A tool is done poorly with no GPU when its function loads a model on one, as it would then run on the CPU, degraded; on a GPU its weights fill more than three quarters of, the Hub's rule for a card that holds them; on a GPU that also draws the screen (the machine's status `gpus[].display`), which a render makes lag; and when its runs here take more than 3× and a minute longer than its runs on a rented card (the Hub's pick, else another card it ran on scaled by the Hub's speeds). Its `bytes` are what the Hub places a run of its release by (`POST /v1/rental-placements`), local code's those of its models' releases, either with a checkpoint on a box in place of its model's; 0 when the Hub doesn't say in 5 s. `line` says why, how long it takes here against a rented card when this computer ran it on one (else how long it took here), and that it slows the screen; `rent` is what the Hub places them on: the biggest card of its picks for those not yet said for, else for all. `here`: Render here was said of it on this computer. A client asks this only of a render whose machines are `local` alone, and shows Rent a <card> first, then Run here anyway: with another, the walk gives `local` nothing it would do poorly, nor anything while its GPU draws the screen. A render sent to `local` alone that asked nothing (`cozy render --on local`) says the same line, and `cozy run` on `local` warns it, never asking. Nothing is listed while `local` hasn't said what it has, for what loads no model or runs on no GPU, or for what Calcifer makes itself. What the Hub says is kept 10 minutes.
+- `POST /v1/projects/{id}/fit` `{names, outdated?}`: `{tools: [{tool, label, names, line, bytes, here?}], rent?: {sku, gpus, card, vram_gb, usd_micros_per_hour, line}}`. What a render of `names` (or `all`, as `runs` reads it) on this computer alone would do poorly, a tool a row, said before it's sent. A tool is done poorly with no GPU when its function loads a model on one, as it would then run on the CPU, degraded; on a GPU its weights fill more than three quarters of, the Hub's rule for a card that holds them; on a GPU that also draws the screen (the machine's status `gpus[].display`), which a render makes lag; and when its runs here take more than 3× and a minute longer than a rented card its release measured would (the card `faster` names, below; local code: another card it ran on). Its `bytes` are what the Hub places a run of its release by (`POST /v1/rental-placements`), local code's those of its models' releases, either with a checkpoint on a box in place of its model's; 0 when the Hub doesn't say in 5 s. `line` says why, how long it takes here against a rented card when this computer ran it on one (else how long it took here), and that it slows the screen; `rent` is what the Hub places them on: the biggest card of its picks for those not yet said for, else for all. `here`: Render here was said of it on this computer. A client asks this only of a render whose machines are `local` alone, and shows Rent a <card> first, then Run here anyway: with another, the walk gives `local` nothing it would do poorly, nor anything while its GPU draws the screen. A render sent to `local` alone that asked nothing (`cozy render --on local`) says the same line, and `cozy run` on `local` warns it, never asking. Nothing is listed while `local` hasn't said what it has, for what loads no model or runs on no GPU, or for what Calcifer makes itself. What the Hub says is kept 10 minutes.
   Each box named (not `all`) also gets `estimates: [{name, machine, card, run_ms, basis, faster?: {run_ms, line, rent}}]` (cl-1004),
   whatever its machines: where a render of it would go now (its project's machines, else the render set; each quoted as "Placement"
   quotes it, from what it last said, nothing started, updated or rented; the soonest finish as placement chooses it), its GPU (`card`,
   empty for none) and the run alone there (`run_ms`: its quote's finish less its start, no queue, install, download or load; 0 when
-  nothing says, `basis` `none`). `faster` is the tool's recommended GPU, the Hub's pick for its release, when that runs it more than 3×
-  faster and a minute sooner, or the machine has no GPU for a function that loads a model on one: its time there, both times in a
-  `line`, and the `rent`. A time where nothing of it ran (here, on the pick, in `line` and in `tools`) is what's typical on that card:
-  this computer's runs on it, else our measurement of it (`api::estimate::reference`, the release gate's numbers, published with each
-  release), else ours or this computer's runs on another card scaled by the Hub's per-SKU speeds, the card nearest in speed. A run's
-  media seconds (every `duration` in its input), frames, megapixels, steps and tokens scale each, and the pictures it reads pick the
-  measurement most like it. The page shows `run_ms` beside Render from 15 s, and `faster` as a notice that opens Rent with its card.
+  nothing says, `basis` `none`). `faster` is the card to rent instead, when the machine runs it more than 3× slower and a minute
+  longer than one would, or has no GPU for a function that loads a model on one (cl-1024): of the cards the Hub rents that hold it on
+  one GPU (a checkout's package from source: its newest release's), only those its benchmarks (its release's, or its source's)
+  measured, never a speed-scaled guess, the cheapest a render (price × time), the faster
+  of those as cheap; its time there, both times and its cost a render in a `line`, and the `rent`. A time where nothing of it ran
+  (here and in `tools`) is what's typical on that card: this computer's runs on it, else its release's benchmark of that card (`basis`
+  `reference`), else an estimate (`scaled`, th-377): another card's benchmark times how the two compare, the median of their time ratio
+  over the functions both have benchmarks for in the cards kept here, else the Hub's per-SKU speeds; of the cards with a benchmark,
+  the median of those so related, else the one nearest in speed. `cozy run` says `scaled` as "estimated". A run's media seconds (every `duration` in its input),
+  frames, megapixels, steps and tokens scale each, and the pictures it reads pick the benchmark most like it. The page shows `run_ms` beside Render from 15 s, and `faster` as a notice that opens Rent with its card.
+- `GET /v1/projects/{id}/benchmarks?package=`: `{benchmarks: [{function, gpu, gpus, request, warm_ms, cold_ms?, ran_on?, note}]}`
+  (cl-1024): `package`'s (`[org/]name`) from this project's completed runs of its functions on a GPU, whichever release or local copy
+  ran, grouped by function, GPU (as its driver names it), count and request (`JobSize::of` its input): each group with a warm run
+  (its executor prepared before it started), its warm runs' median and its cold runs'. What `cozy package benchmarks` writes to
+  `benchmarks.json`, which publish attaches. Nothing is run.
 - `POST /v1/projects/{id}/fit/here` `{names, outdated?}`: the same, each tool listed kept as rendered here in `state.db`, by what this computer's GPUs are (their names and usable memory, or none) and its weights: `here` then holds until another computer, or weights half as big again, such as a bigger checkpoint on its box.
 - `POST /v1/projects/{id}/approve` `{name, version}`: `{name, noun, number, files, path, stale, warnings?}`. `version` is a short run of digits, its version, or anything else a hash prefix, which pins any file of the project; `number` is 0 when it is no version's. Writes the version's main file's hash as that asset's `approved`.
   Makes any tool whose reads settled, with no machine.
@@ -801,6 +813,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy package info` | `GET /v1/packages/{org}/{name}` |
 | `cozy package install` | local code's tree `PUT`, `POST /v1/runs` of `cozy/package_install` (`POST /v1/run-quotes` first for `new`); `GET /v1/runs/{id}/events` |
 | `cozy package uninstall` | `POST /v1/runs` of `cozy/package_remove`; `GET /v1/runs/{id}/events` |
+| `cozy package benchmarks [package] [--out FILE]` | `GET /v1/projects/{id}/benchmarks?package=`; writes `benchmarks.json` here (else `--out`) |
 | `cozy package yank [--undo]` | `POST` (`DELETE`) `/v1/packages/{org}/{name}/releases/{release}/yank` |
 | `cozy package lock` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_lock`, `GET /v1/runs/{id}/events`; the CLI writes the `uv.lock` its result holds |
 | `cozy package publish` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_publish`, `GET /v1/runs/{id}/events`; a `lock` its result holds, the CLI writes |

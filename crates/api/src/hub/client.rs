@@ -420,20 +420,25 @@ impl Client {
         self.json(request.query(&query).json(&json!({}))).await
     }
 
-    /// Declares a release's files; an upload grant for each the Hub lacks.
+    /// Declares a release's files, and its benchmarks when it has any (cl-1024); an upload grant for each file the Hub lacks.
     pub async fn begin_package_release(
         &self,
         org: &str,
         name: &str,
         release: &str,
         files: &[PackageDeclaredFile],
+        benchmarks: &[PackageBenchmark],
     ) -> Result<PackageReleaseGrants, Error> {
         let request = self.at(
             Method::POST,
             "/v1/packages/{org}/{name}/publish/{release}",
             &[org, name, release],
         );
-        self.json(request.json(&json!({"files": files}))).await
+        let body = match benchmarks.is_empty() {
+            true => json!({"files": files}),
+            false => json!({"files": files, "benchmarks": benchmarks}),
+        };
+        self.json(request.json(&body)).await
     }
 
     pub async fn finalize_package_release(

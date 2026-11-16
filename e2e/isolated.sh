@@ -42,11 +42,14 @@ if [ -n "${COZY_TEST_SEED_SDK:-}" ]; then
   [ -z "${GITHUB_STEP_SUMMARY:-}" ] || { printf '\n### Isolated seed cohort\n\n'; cat "$seed/cohort.txt"; } >> "$GITHUB_STEP_SUMMARY"
 fi
 
-# publish <dir> [cohort]: a package's copy; only cohort sources take the selected SDK.
-# Deliberate old-floor/negative fixtures keep their own requirements and source selection.
+# publish <dir> [cohort]: a package's own directory published at the root, from a copy (publication writes its lock), with its
+# benchmarks.json (cl-1024): its own, else release-gate's seed's rows when it has any, as a promotion carries the gate's. Only cohort
+# sources take the selected SDK; deliberate old-floor/negative fixtures keep their own requirements and source selection.
 publish() {
   local copy=$seed/packages/${1##*/}
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$1" "$copy"
+  [ -f "$copy/benchmarks.json" ] \
+    || jq -e --arg p "${1##*/}" '.[$p] // empty' "$here/../release-gate/benchmarks-seed.json" > "$copy/benchmarks.json" 2> /dev/null || rm -f "$copy/benchmarks.json"
   if [ "${2:-}" = cohort ]; then
     [ -n "${COZY_TEST_SEED_SDK:-}" ] || { echo "no selected SDK reached isolated package seeding" >&2; return 1; }
     uv run -q --no-project "$here/seed_sdk.py" pin --project "$copy" "${cohort_args[@]}" || return 1
@@ -236,7 +239,10 @@ case $key in
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
-  cli:ondemand) needs='packages birefnet downloads spare' ;;
+  cli:ondemand) needs='packages birefnet downloads' ;;
+  # pagebox's 1.6 GB (`spare`) beside the install (cl-1007).
+  cli:ondemand-share) needs='packages birefnet downloads spare' ;;
+  cli:ondemand-ramp) needs='packages spare' ;;
   cli:disk) needs='packages disk' ;;
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
@@ -332,6 +338,8 @@ if [ "$suite" = imports ]; then
   packages=$staged
   log "imports locks verified against the owned Hub; authoritative checkout unchanged"
 fi
+# The packages checkout, for a cell that runs one from source (account-rent's render time from source, cl-1024).
+[ -z "$packages" ] || export E2E_PACKAGES=$packages
 
 if [ "$needs" = next ]; then
   next

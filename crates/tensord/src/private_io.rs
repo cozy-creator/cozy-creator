@@ -204,6 +204,11 @@ pub(crate) fn retain(
 
 /// Root first refuses active jobs and reaps only this scope's idle executors. Then the
 /// cache can be dropped so no retained upload/store handle silently keeps FUSE busy.
+/// A project whose folder is gone: its verified scope and store handle go (cl-1031).
+pub(crate) fn forget(project_id: &str) {
+    VERIFIED.lock().unwrap().remove(project_id);
+}
+
 pub(crate) fn close(descriptor: &LocalPrivateStorage, actor: &str) -> io::Result<()> {
     let mut all = VERIFIED.lock().unwrap();
     let Some(scope) = all.get(&descriptor.project_id) else {
