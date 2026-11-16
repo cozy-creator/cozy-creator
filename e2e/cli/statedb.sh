@@ -9,7 +9,7 @@
 #                  late (slow_proxy.py): every route a client asks answers in 200 ms while it takes up what it left, and none is
 #                  said slow in health.log, nor the start's purge (cl-1010)
 #   vault_purge_due a deleted box's next purge is in state.db for a plaintext project only, kept while its folder is away and taken up
-#                  unopened at the next start once it's back, and made by a copy that sets aside a row holding files; an encrypted
+#                  at the next start once it's back, and made by a copy that sets aside a row holding files; an encrypted
 #                  one's never, unlocked or locked, and it's still purged once its window ended and it's unlocked again (cl-1010)
 # Uses project.sh's `api` and projectdb.sh's `kill9`, `db_calcifer`, `calcifer_halt` and `undo_window`.
 
@@ -255,9 +255,10 @@ cozy --json machine ls > /dev/null || check "restart: Calcifer didn't start agai
 
 # cl-1010: a start opens only the projects whose deleted boxes are due, by the times state.db keeps (`purge_due`), so a due time once kept
 # is never lost while its files stay: a plaintext project's folder away when its window ends keeps it, and once back the next start purges
-# it unopened; a copy that sets aside a row holding files keeps one too. Of a locked encrypted project Calcifer keeps only its folder
-# (Paul's no-traces rule): a row saying something was deleted in it, and when, is kept for none. An encrypted project's due time is held
-# only while it's unlocked, and its unlock's open reads it again from its own project.db.
+# it, no request naming it; a copy that sets aside a row holding files keeps one too. (A project whose folder is away when the index is
+# listed, by a page or a `cozy new`, leaves the index as cl-1031 says, and is purged once it's opened again.) Of a locked encrypted
+# project Calcifer keeps only its folder (Paul's no-traces rule): a row saying something was deleted in it, and when, is kept for none.
+# An encrypted project's due time is held only while it's unlocked, and its unlock's open reads it again from its own project.db.
 vault_purge_due() (
   step "a deleted box's next purge: kept for a plaintext project while its folder is away, never for an encrypted one; purged after (cl-1010)"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault purge due: Linux runners only"; exit 0; }
@@ -289,25 +290,15 @@ for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
 ' "$work/red.png" "$work/blue.png" || fail "vault purge due: no pictures"
   # A short undo window before any project opens: Calcifer restarts for it, which would lock an open encrypted project.
   undo_window "$lock" 20
-
-  step "vault purge due: a plaintext project's deleted box is due in state.db, and stays due while its folder is away"
-  cozy --json new --unencrypted "$plain" > "$work/plain-new.json" 2>&1 || fail "vault purge due: new plaintext project: $(tail -c 300 "$work/plain-new.json")"
-  project_import "$plain" "$work/blue.png" pic > /dev/null || fail "vault purge due: the plaintext project's picture wasn't imported"
-  plain_id=$(id_of "$plain") plain_pic=$(asset_of "$plain" pic | jq -r '.sha256 // empty')
-  [ -n "$plain_id" ] && [ -n "$plain_pic" ] && in_files "$plain" "$plain_pic" || fail "vault purge due: the plaintext project's picture isn't in its files/"
-  project_api "$plain" /assets/pic -X DELETE > /dev/null || fail "vault purge due: the plaintext project's box wasn't deleted"
-  plain_at=$(date +%s)
-  rows=$(due_rows "$plain_id")
-  [ "$rows" = 1 ] || check "vault purge due: the plaintext project's deleted box isn't due in state.db ($rows rows)"
-  # Its folder away (a drive unplugged) while it's still open, and when its window ends.
-  mv "$plain" "$plain.away" || fail "vault purge due: the plaintext project's folder couldn't be moved away"
-  cozy --json run list > /dev/null 2>&1 || true
-
-  step "vault purge due: a copy that sets aside a row holding files makes its project due"
+  # Every project made first: a `cozy new` lists the index, which a folder away would leave (cl-1031).
   cozy --json new --unencrypted "$copies" > "$work/copies-new.json" 2>&1 || fail "vault purge due: new copies project: $(tail -c 300 "$work/copies-new.json")"
   project_import "$copies" "$work/red.png" pic > /dev/null || fail "vault purge due: the copies project's picture wasn't imported"
   copies_id=$(id_of "$copies")
   [ -n "$copies_id" ] || fail "vault purge due: the copies project has no id"
+  cozy --json new --unencrypted "$plain" > "$work/plain-new.json" 2>&1 || fail "vault purge due: new plaintext project: $(tail -c 300 "$work/plain-new.json")"
+  project_import "$plain" "$work/blue.png" pic > /dev/null || fail "vault purge due: the plaintext project's picture wasn't imported"
+  plain_id=$(id_of "$plain") plain_pic=$(asset_of "$plain" pic | jq -r '.sha256 // empty')
+  [ -n "$plain_id" ] && [ -n "$plain_pic" ] && in_files "$plain" "$plain_pic" || fail "vault purge due: the plaintext project's picture isn't in its files/"
 
   step "vault purge due: an encrypted project's deleted box is due nowhere outside it, unlocked or locked"
   cozy --json new "$P" --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" > "$work/new.json" 2> "$work/new.err" \
@@ -324,13 +315,22 @@ for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
   locked lock || fail "vault purge due: lock: $(head -c 300 "$work/lock.json")"
   rows=$(due_rows "$id")
   [ "$rows" = 0 ] || check "vault purge due: state.db holds the locked encrypted project's next purge ($rows rows)"
-  # Its window ends while it's locked: nothing can read it then.
-  while [ $(($(date +%s) - deleted_at)) -le 22 ]; do sleep 1; done
+
+  step "vault purge due: a plaintext project's deleted box is due in state.db, and stays due while its folder is away"
+  project_api "$plain" /assets/pic -X DELETE > /dev/null || fail "vault purge due: the plaintext project's box wasn't deleted"
+  plain_at=$(date +%s)
+  rows=$(due_rows "$plain_id")
+  [ "$rows" = 1 ] || check "vault purge due: the plaintext project's deleted box isn't due in state.db ($rows rows)"
+  # Its folder away (a drive unplugged) while it's still open after the request, a machine-wide read meanwhile, and as its window ends.
+  mv "$plain" "$plain.away" || fail "vault purge due: the plaintext project's folder couldn't be moved away"
+  cozy --json machine ls > /dev/null 2>&1 || true
+  # Both windows end, the encrypted one's while it's locked: nothing can read it then.
+  while [ $(($(date +%s) - plain_at)) -le 22 ] || [ $(($(date +%s) - deleted_at)) -le 22 ]; do sleep 1; done
   rows=$(due_rows "$id")
   [ "$rows" = 0 ] || check "vault purge due: past its window, state.db holds the locked encrypted project's next purge ($rows rows)"
-  [ $(($(date +%s) - plain_at)) -gt 22 ] || fail "vault purge due: the plaintext project's window hasn't ended yet"
   rows=$(due_rows "$plain_id")
   [ "$rows" = 1 ] || check "vault purge due: its folder away as its window ended, the plaintext project's next purge wasn't kept ($rows rows)"
+  mv "$plain.away" "$plain" || fail "vault purge due: the plaintext project's folder couldn't be moved back"
 
   step "vault purge due: unlocked past its window, the deleted box's file goes"
   in_project "$P" --json vault unlock --passphrase-file "$secrets/pass" --idle 0 > "$work/unlock.json" 2> "$work/unlock.err" \
@@ -343,22 +343,20 @@ for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
   [ "$rows" = 0 ] || check "vault purge due: after its purge, state.db holds the encrypted project's next purge ($rows rows)"
   locked relock || check "vault purge due: lock after the purge: $(head -c 300 "$work/relock.json")"
 
-  step "vault purge due: the plaintext project's folder back, the next start purges it unopened"
-  mv "$plain.away" "$plain" || fail "vault purge due: the plaintext project's folder couldn't be moved back"
+  step "vault purge due: the plaintext project's folder back, the next start purges it, no request naming it"
   calcifer_halt || fail "vault purge due: Calcifer didn't stop"
   # The copies project's row for pic_2 set aside, as a name a box lost leaves it until a rename or `reclaim`: no versions of its own,
-  # its file discarded.
-  db_sql "$copies" "INSERT INTO lock_assets (key, record) SELECT 'pic_2', json_remove(json_set(record, '\$.name', 'pic_2'), '\$.id') FROM lock_assets WHERE key = 'pic';
-    INSERT INTO versions (key, number, discarded, record) SELECT 'pic_2', number, 1, json_remove(record, '\$.id') FROM versions WHERE key = 'pic';" \
-    || fail "vault purge due: the copies project's orphan row wasn't made"
+  # its file discarded. Rows are keyed by `name_key`: `pic 2`.
+  db_sql "$copies" "INSERT INTO lock_assets (key, record) SELECT 'pic 2', json_remove(json_set(record, '\$.name', 'pic_2'), '\$.id') FROM lock_assets WHERE key = 'pic';
+    INSERT INTO versions (key, number, discarded, record) SELECT 'pic 2', number, 1, json_remove(record, '\$.id') FROM versions WHERE key = 'pic';" \
+    || fail "vault purge due: the copies project's set-aside row wasn't made"
   cozy --json machine ls > /dev/null || fail "vault purge due: Calcifer didn't start again"
-  # Not opened: no request names it. Its row, due since its window ended, is taken up as Calcifer starts.
   for _ in $(seq 150); do in_files "$plain" "$plain_pic" || break; sleep 0.2; done
   ! in_files "$plain" "$plain_pic" || check "vault purge due: back after its window, the plaintext project's deleted box kept its file past a start"
   rows=$(due_rows "$plain_id")
   [ "$rows" = 0 ] || check "vault purge due: after its purge, state.db holds the plaintext project's next purge ($rows rows)"
 
-  step "vault purge due: a copy named as a set-aside row with files makes its project due"
+  step "vault purge due: a copy named as a set-aside row holding a file makes its project due"
   rows=$(due_rows "$copies_id")
   [ "$rows" = 0 ] || check "vault purge due: the copies project was due before its copy ($rows rows)"
   made=$(project_api "$copies" /copies -X POST -H 'Content-Type: application/json' -d '{"boxes": [{"from": "pic"}]}' | jq -r '.made[0].name // empty') \
