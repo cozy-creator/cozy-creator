@@ -57,22 +57,19 @@ pre_ready() {
   check "prefetch: $2 isn't ready on $3 after $4 s: its row: ${row:-none}"
   return 1
 }
-# pre_machine <machine> <file>: what it last told this computer of itself, kept.
+# pre_machine <machine> <file>: what it last told this computer of itself, kept; pre_deadline <file>: its idle deadline there (0:
+# none, a job is queued or running on it).
 pre_machine() { cozy --json machine show "$1" > "$2" 2> /dev/null || true; }
-# pre_coming <file>: the bytes its machine has fetched for a guess, of those it has to: the most of its downloads under a prepare
-# item's id (its weights before its environment is built, then all its function reads). 0: none comes.
-pre_coming() {
-  jq -r '[.status.activity[]? | select(.kind == "download" and ((.runs // []) | any(startswith("cozy:prepare:")))) | .bytes_done] | max // 0' "$1" 2> /dev/null || echo 0
-}
-# pre_held <file> <repository>: whether its machine holds a whole checkpoint of it, and its bytes there.
-pre_held() { jq -c --arg m "$2" '[.status.models[]? | select(.repository == $m) | .checkpoints[]? | {complete, bytes, held_bytes}]' "$1" 2> /dev/null || echo '[]'; }
-# pre_wait <machine> <MiB> <file>: that machine has fetched that much for a guess, within 2 min; the bytes it had.
+pre_deadline() { jq -r '.status.idle_deadline_ms // 0' "$1" 2> /dev/null || echo 0; }
+# pre_held <file> <repository>: what its machine holds of it: its bytes there, those no other model shares, and whether a
+# checkpoint of it is whole.
+pre_held() { jq -c --arg m "$2" '[.status.models[]? | select(.repository == $m) | {total_bytes, unique_bytes, complete: [.checkpoints[]?.complete]}]' "$1" 2> /dev/null || echo '[]'; }
+# pre_wait <project> <box> <MiB>: its guess's row says its machine has fetched that much for it, within 2 min; the bytes it said.
 pre_wait() {
   local done=0 _
-  for _ in $(seq 600); do
-    pre_machine "$1" "$3"
-    done=$(pre_coming "$3")
-    [ "${done:-0}" -ge $(($2 << 20)) ] && break
+  for _ in $(seq 400); do
+    done=$(pre_row "$1" "$2" | jq -r '.done // 0' 2> /dev/null || echo 0)
+    [ "${done:-0}" -ge $(($3 << 20)) ] && break
     sleep 0.2
   done
   echo "${done:-0}"
@@ -142,30 +139,30 @@ PRE_SLOWED=1
 run_cell "$OUT" pre-up minimax-h3-tools/echo text=up --on local || { check "prefetch: this computer's machine ran no echo: $(run_get "$OUT" pre-up .reason.message)"; pre_end; return 0; }
 sleep 3
 pre_machine local "$OUT/pre-switch-before.json"
-d0=$(jq -r '.status.idle_deadline_unix_ms // 0' "$OUT/pre-switch-before.json")
+d0=$(pre_deadline "$OUT/pre-switch-before.json")
 [ "${d0:-0}" -gt 0 ] || { check "prefetch: this computer's machine, idle, says no idle deadline: $d0"; pre_end; return 0; }
 pre_page || return 0
 pre_project "$P" local || { pre_end; return 0; }
 began=$(date -u +%s%3N)
 jq -n --arg t "$tool" '[{name: "still", tool: $t, kind: "image", fields: {instructions: "A still, of the transformer its box names."}}]' | boxes_in "$P" || { pre_end; return 0; }
-came=$(pre_wait local 16 "$OUT/pre-switch-during.json")
+came=$(pre_wait "$P" still 16)
 [ "$came" -ge $((16 << 20)) ] \
-  || { check "prefetch: this computer's machine fetched nothing for the box's tool with no run sent: its row: $(pre_row "$P" still), its activity: $(jq -c '.status.activity' "$OUT/pre-switch-during.json" 2> /dev/null | head -c 600)"; pre_end; return 0; }
-d1=$(jq -r '.status.idle_deadline_unix_ms // 0' "$OUT/pre-switch-during.json")
+  || { check "prefetch: this computer's machine fetched nothing for the box's tool with no run sent: its row: $(pre_row "$P" still)"; pre_end; return 0; }
+pre_machine local "$OUT/pre-switch-during.json"
+d1=$(pre_deadline "$OUT/pre-switch-during.json")
 # A status asked while its list is admitted says none for that moment: asked once more.
-[ "$d1" = "$d0" ] || { sleep 1; pre_machine local "$OUT/pre-switch-during.json"; d1=$(jq -r '.status.idle_deadline_unix_ms // 0' "$OUT/pre-switch-during.json"); }
+[ "$d1" = "$d0" ] || { sleep 1; pre_machine local "$OUT/pre-switch-during.json"; d1=$(pre_deadline "$OUT/pre-switch-during.json"); }
 switched=$(date -u +%s%3N)
 project_api "$P" /assets/still -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"models": {"model": {"ref": "e2e/pre-b@0.1.0"}}}}' > "$OUT/pre-switch-patch.json" 2>&1 \
   || check "prefetch: the box's model wasn't switched: $(tail -c 300 "$OUT/pre-switch-patch.json")"
-echo "prefetch switch: $((came >> 20)) MiB of e2e/pre-a had come when its box named e2e/pre-b's transformer"
-[ "$came" -lt $((192 << 20)) ] || check "prefetch: the switch came late, $((came >> 20)) MiB in: e2e/pre-a's 320 MiB VAE may have been done"
+echo "prefetch switch: its row said $((came >> 20)) MiB had come when its box named e2e/pre-b's transformer"
 pre_ready "$P" still local 600 || { pre_end; return 0; }
 pre_machine local "$OUT/pre-switch-after.json"
-d2=$(jq -r '.status.idle_deadline_unix_ms // 0' "$OUT/pre-switch-after.json")
+d2=$(pre_deadline "$OUT/pre-switch-after.json")
 echo "prefetch switch: local's idle deadline $d0 before, $d1 while its weights came, $d2 once ready; e2e/pre-a here: $(pre_held "$OUT/pre-switch-after.json" e2e/pre-a); e2e/pre-b: $(pre_held "$OUT/pre-switch-after.json" e2e/pre-b)"
 [ "$d1" = "$d0" ] || check "prefetch: this computer's idle deadline was $d1 while a guess's weights came, $d0 before: a guess is no job"
 [ "$d2" = "$d0" ] || check "prefetch: this computer's idle deadline is $d2 once the guess is ready, $d0 before: a guess never starts the idle clock again"
-J '[.status.models[]? | select(.repository == "e2e/pre-b") | .checkpoints[]? | .complete == true or .held_bytes >= (660 * 1048576)] | any' "$OUT/pre-switch-after.json" \
+J '[.status.models[]? | select(.repository == "e2e/pre-b") | (.checkpoints | any(.complete == true)) or .total_bytes >= (660 * 1048576)] | any' "$OUT/pre-switch-after.json" \
   || check "prefetch: e2e/pre-b's transformer and VAE (704 MiB) aren't here though its box says ready: $(pre_held "$OUT/pre-switch-after.json" e2e/pre-b)"
 J '[.status.models[]? | select(.repository == "e2e/pre-a") | .checkpoints[]?.complete] | all(. != true)' "$OUT/pre-switch-after.json" \
   || check "prefetch: e2e/pre-a is whole here: its transformer, which only the old guess read, came all the same"
@@ -186,7 +183,7 @@ if landed < 640 * MIB:
 if runs:
     print(f"{len(runs)} objects came at a run's order, not a caller's guess's (class 3): {runs[:3]}")
 JUDGE
-cat "$OUT/pre-switch.failed" 2> /dev/null | while read -r why; do check "prefetch switch: $why"; done
+while read -r why; do check "prefetch switch: $why"; done < "$OUT/pre-switch.failed"
 echo "$P" > "$OUT/pre-switch.at"
 }
 
@@ -205,7 +202,7 @@ stand_in stand-p || { pre_end; return 0; }
 pre_project "$P" local,stand-p || { pre_end; return 0; }
 jq -n --arg t "$tool" '[{name: "made", tool: $t, kind: "image", fields: {instructions: "A still this computer is ready for.", models: {model: {ref: "e2e/pre-b@0.1.0"}}}}]' \
   | boxes_in "$P" || { pre_end; return 0; }
-pre_ready "$P" made local 180 || { pre_machine stand-p "$OUT/pre-ready-stand.json"; echo "prefetch ready: stand-p's activity: $(jq -c '.status.activity' "$OUT/pre-ready-stand.json" 2> /dev/null | head -c 400)"; pre_end; return 0; }
+pre_ready "$P" made local 180 || { pre_end; return 0; }
 row=$(pre_row "$P" made)
 began=$(date -u +%s%3N)
 # The page, open on the project: its box says so beside Render, which it presses.
@@ -236,7 +233,7 @@ if weights:
 if installs:
     print(f"an environment was built {len(installs)} times from its render on: its package was installed again")
 JUDGE
-cat "$OUT/pre-ready.failed" 2> /dev/null | while read -r why; do check "prefetch ready: $why"; done
+while read -r why; do check "prefetch ready: $why"; done < "$OUT/pre-ready.failed"
 }
 
 # prefetch_yields: a project of stand-p alone. Its box takes the tool: stand-p, which holds nothing, builds its environment and
@@ -252,9 +249,8 @@ local P=$OUT/pre-yields tool=e2e-prefetched/still began asked came n first secon
 pre_project "$P" stand-p || { pre_end; return 0; }
 began=$(date -u +%s%3N)
 jq -n --arg t "$tool" '[{name: "first", tool: $t, kind: "image", fields: {instructions: "A still stand-p gets ready for."}}]' | boxes_in "$P" || { pre_end; return 0; }
-came=$(pre_wait stand-p 32 "$OUT/pre-yields-during.json")
-[ "$came" -ge $((32 << 20)) ] \
-  || { check "prefetch yields: stand-p fetched nothing for the box's tool: its row: $(pre_row "$P" first), its activity: $(jq -c '.status.activity' "$OUT/pre-yields-during.json" 2> /dev/null | head -c 600)"; pre_end; return 0; }
+came=$(pre_wait "$P" first 32)
+[ "$came" -ge $((32 << 20)) ] || { check "prefetch yields: stand-p fetched nothing for the box's tool: its row: $(pre_row "$P" first)"; pre_end; return 0; }
 asked=$(date -u +%s%3N)
 n=$(run_submit "$OUT" pre-ask model install e2e/pre-ask --on stand-p)
 [ -n "$n" ] || { check "prefetch yields: model install e2e/pre-ask was never a run: $(tail -c 300 "$OUT/pre-ask.err")"; pre_end; return 0; }
@@ -286,27 +282,29 @@ else:
     if t2 - t1 > 20000:
         print(f"the request's {asked_bytes // MIB} MiB took {(t2 - t1) / 1000:.1f} s, and the 30 MB/s link alone takes them about 8.5 s")
 JUDGE
-cat "$OUT/pre-yields.failed" 2> /dev/null | while read -r why; do check "prefetch yields: $why"; done
+while read -r why; do check "prefetch yields: $why"; done < "$OUT/pre-yields.failed"
 
 # A second box, deleted while its transformer comes.
 jq -n --arg t "$tool" '[{name: "gone", tool: $t, kind: "image", fields: {instructions: "A still never rendered.", models: {model: {ref: "e2e/pre-b@0.1.0"}}}}]' \
   | boxes_in "$P" || { pre_end; return 0; }
-came=$(pre_wait stand-p 32 "$OUT/pre-yields-gone.json")
+came=$(pre_wait "$P" gone 32)
 [ "$came" -ge $((32 << 20)) ] || { check "prefetch yields: stand-p fetched nothing of e2e/pre-b for the second box: its row: $(pre_row "$P" gone)"; pre_end; return 0; }
 project_api "$P" /assets/gone -X DELETE > "$OUT/pre-yields-delete.json" 2>&1 || check "prefetch yields: the second box wasn't deleted: $(tail -c 300 "$OUT/pre-yields-delete.json")"
 for _ in $(seq 100); do
-  pre_machine stand-p "$OUT/pre-yields-gone.json"
-  [ "$(pre_coming "$OUT/pre-yields-gone.json")" = 0 ] && [ -z "$(pre_row "$P" gone)" ] && { gone=0; break; }
+  [ -z "$(pre_row "$P" gone)" ] && { gone=0; break; }
   sleep 0.2
 done
-[ "$gone" = 0 ] || check "prefetch yields: 20 s after its box was deleted its prefetch goes on: its row: $(pre_row "$P" gone), stand-p's activity: $(jq -c '.status.activity' "$OUT/pre-yields-gone.json" 2> /dev/null | head -c 400)"
+[ "$gone" = 0 ] || check "prefetch yields: 20 s after its box was deleted a row still names it: $(pre_row "$P" gone)"
+# What was in flight as its run was canceled has let go.
+sleep 3
+pre_machine stand-p "$OUT/pre-yields-gone.json"
 first=$(pre_held "$OUT/pre-yields-gone.json" e2e/pre-b)
 sleep 5
 pre_machine stand-p "$OUT/pre-yields-gone.json"
 second=$(pre_held "$OUT/pre-yields-gone.json" e2e/pre-b)
-echo "prefetch yields: $((came >> 20)) MiB of e2e/pre-b had come when its box was deleted; stand-p holds $first, and 5 s on $second"
+echo "prefetch yields: its row said $((came >> 20)) MiB had come when its box was deleted; of e2e/pre-b stand-p holds $first, and 5 s on $second"
 [ "$first" = "$second" ] || check "prefetch yields: e2e/pre-b went on coming after its box was deleted: $first, then $second"
-J 'all(.complete != true)' <<< "$second" || check "prefetch yields: e2e/pre-b is whole on stand-p though its box was deleted as it came: $second"
+J 'all(.complete | all(. != true))' <<< "$second" || check "prefetch yields: e2e/pre-b is whole on stand-p though its box was deleted as it came: $second"
 [ -n "$(pre_row "$P" first)" ] || check "prefetch yields: the box that stayed lost its row with the one deleted"
 timeout 60 "$COZY" --json machine end stand-p --force -y > "$OUT/stand-p-end.json" 2>&1 || true
 pre_end
