@@ -228,8 +228,8 @@ def main() -> None:
             # The release notes' workaround, as a person does it: the hung machine ended, then the lock asked again.
             facts["lock_failed"] = (done.stdout[-400:] + done.stderr[-400:]).decode(errors="replace")
             os.kill(pid, signal.SIGKILL)
-            again = subprocess.run([str(cell.cli), "--json", "vault", "lock"], cwd=cell.project, capture_output=True, timeout=BOUND * 3)
-            facts["workaround"] = {"lock_exit": again.returncode, "state": cell.state(), "mounted": mounted(view),
+            retried = subprocess.run([str(cell.cli), "--json", "vault", "lock"], cwd=cell.project, capture_output=True, timeout=BOUND * 3)
+            facts["workaround"] = {"lock_exit": retried.returncode, "state": cell.state(), "mounted": mounted(view),
                                    "scan": traces(scanner, cell.out, "workaround", [cell.project.resolve()])}
             raise AssertionError(f"the lock failed while local was stopped: {facts['lock_failed']}; the workaround: {facts['workaround']}")
         lines = [line for line in done.stdout.splitlines() if line.strip()]
