@@ -116,7 +116,9 @@ pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf}
 impl Drop for RequestActivity {
     fn drop(&mut self) {
         let mut requests=self.api.projects.requests.lock().expect("project requests");
-        if let Some(count)=requests.get_mut(&self.root) { *count-=1; if *count==0 {requests.remove(&self.root);} }
+        let Some(count)=requests.get_mut(&self.root) else { return };
+        *count-=1;
+        if *count==0 { requests.remove(&self.root); drop(requests); vault::work_ended(&self.root); }
     }
 }
 impl Projects {
