@@ -1088,10 +1088,10 @@ foreach ($rule in $allowed) {
             return  # POSIX PTY below; Windows still qualifies the noninteractive guard above.
         import socket
 
-        # The default browser, as the user set it ($BROWSER): it writes down each address `cozy open` starts it at (cl-1067).
+        # The user's browser, as they set it ($BROWSER): a Chrome that writes down each private window `cozy open` asks of it (cl-1067).
         browser_log = self.out / 'open-browser-argv.txt'
-        browser = self.out / 'open-browser'
-        browser.write_text('#!/bin/sh\nprintf \'%s\\n\' "$1" >> "$COZY_TEST_BROWSER_LOG"\n')
+        browser = self.out / 'google-chrome'
+        browser.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$COZY_TEST_BROWSER_LOG"\n')
         browser.chmod(0o755)
         environment = dict(os.environ if self.cli_env is None else self.cli_env)
         environment['BROWSER'] = str(browser)

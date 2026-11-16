@@ -1,7 +1,7 @@
 """`cozy open` in a locked encrypted project (cl-1002). At a terminal it asks for the passphrase or the recovery secret, unlocks,
-and opens: the default browser started at the page's URL, which it prints (cl-1067). `--json` and a pipe never ask: they refuse
-`project_locked`, naming `cozy vault unlock`, and start no browser. `cozy status` at a terminal unlocks as open does (cl-1066): every
-verb shares that path.
+and opens: a private window of the user's browser started at the page's URL, which it prints (cl-1067). `--json` and a pipe never
+ask: they refuse `project_locked`, naming `cozy vault unlock`, and start no browser. `cozy status` at a terminal unlocks as open does
+(cl-1066): every verb shares that path.
 
 open_unlock.py --cozy BIN --project DIR --passphrase FILE --recovery FILE --out DIR
 """
@@ -37,10 +37,10 @@ def main() -> None:
     passphrase = args.passphrase.read_text().strip()
     recovery = args.recovery.read_text().strip()
 
-    # The default browser, as the user set it: $BROWSER, which writes down the address it was given.
-    browser = args.out / "browser"
+    # The user's browser, as they set it ($BROWSER): a Chrome that writes down what it was asked to open.
+    browser = args.out / "google-chrome"
     browser_log = args.out / "browser-opened.txt"
-    browser.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{browser_log}'\n")
+    browser.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{browser_log}'\n")
     browser.chmod(0o755)
     env = dict(os.environ, BROWSER=str(browser))
     receipt: dict[str, object] = {}
@@ -115,8 +115,8 @@ def main() -> None:
         assert found, f"{name}: no URL printed: {stdout}"
         here = json.loads(cozy("--json", "--full", "status").stdout)["project"]["id"]
         assert re.fullmatch(rf"http://(127\.0\.0\.1|localhost|\[::1\]):\d+/projects/{re.escape(here)}", found.group(1)), f"{name}: {found.group(1)}"
-        opens = browser_log.read_text().split() if browser_log.exists() else []
-        assert opens and opens[-1] == found.group(1), f"{name}: the default browser wasn't started at {found.group(1)}: {opens}"
+        opens = browser_log.read_text().splitlines() if browser_log.exists() else []
+        assert opens and opens[-1] == f"--incognito {found.group(1)}", f"{name}: no private window was started at {found.group(1)}: {opens}"
         receipt[name] = {"url": found.group(1), "browser": True}
 
     if state() != "locked":
