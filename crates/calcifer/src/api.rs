@@ -336,8 +336,8 @@ pub(crate) fn speaks_project_storage(headers: &axum::http::HeaderMap) -> bool {
 
 /// What a client released before project storage protocol 3 is told for any project request.
 pub(crate) fn project_storage_protocol_required() -> Refusal {
-    Refusal(Error::new(Kind::Usage, "project_storage_protocol_required", "update this client: project storage protocol 3 is required")
-        .remedy("run the installed cozy (~/.cozy/bin/cozy), or update this one").next("cozy update"))
+    Refusal(Error::new(Kind::Usage, "project_storage_protocol_required", "This cozy is too old to open projects here.")
+        .remedy("Use the installed cozy (~/.cozy/bin/cozy), or update this one.").next("cozy update"))
 }
 
 impl Refusal {
@@ -354,19 +354,19 @@ impl From<StoreError> for Refusal {
 
 /// A key that already names another ask.
 pub(crate) fn conflict(key: &str) -> Error {
-    Error::new(Kind::Conflict, "idempotency_conflict", format!("idempotency key {key:?} already names another run"))
-        .remedy("submit a different run under a new key")
+    Error::new(Kind::Conflict, "idempotency_conflict", format!("The idempotency key {key:?} was already used for a different run."))
+        .remedy("Send a different run with a new key.")
 }
 
 impl From<crate::Error> for Refusal {
     fn from(e: crate::Error) -> Self {
         Refusal(match e {
             crate::Error::Store(StoreError::Conflict(key)) => conflict(&key),
-            crate::Error::Store(StoreError::Locked(_)) => Error::new(Kind::Conflict, "project_locked", "the project is locked; unlock it to read its private run history"),
+            crate::Error::Store(StoreError::Locked(_)) => Error::new(Kind::Conflict, "project_locked", "The project is locked. Unlock it to see its run history."),
             crate::Error::Store(StoreError::UnknownMachine(name)) => Error::new(
                 Kind::NotFound,
                 "machine_not_found",
-                format!("no machine named {name:?}"),
+                format!("There's no machine named {name:?}."),
             )
             .next("cozy machine ls"),
             crate::Error::Store(e) => Error::new(Kind::Internal, "calcifer_store", e.to_string()),
@@ -513,8 +513,8 @@ async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>
     }
     let stopping = api.stopping.clone().read_owned().await;
     if *stopping {
-        return refuse(Kind::Unavailable, STOPPING, "Calcifer is stopping and admits nothing new")
-            .remedy("ask again once it is back; nothing was carried out")
+        return refuse(Kind::Unavailable, STOPPING, "Cozy is stopping, so it didn't do that.")
+            .remedy("Try again once it's back.")
             .into_response();
     }
     let lease = Arc::new(stopping);
@@ -542,9 +542,9 @@ impl<S: Send + Sync> FromRequestParts<S> for IdempotencyKey {
                 refuse(
                     Kind::Usage,
                     "idempotency_key_required",
-                    "this ask needs an Idempotency-Key header",
+                    "This request needs an Idempotency-Key header.",
                 )
-                .remedy("one key names one ask forever; retrying under it is safe")
+                .remedy("One key always names the same request, so retrying with it is safe.")
             })
     }
 }
@@ -582,7 +582,7 @@ impl RunPath {
 pub(crate) fn find_maintenance(api: &Api, key: &str) -> Result<RunRow, Refusal> {
     let store=api.calcifer.maintenance_store();
     let row=store.run(key)?.or(match key.parse() { Ok(number)=>store.run_by_number(number)?,Err(_)=>None });
-    let row=row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","maintenance knows no such run"))?;
+    let row=row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","There's no such run."))?;
     api.calcifer.remember_maintenance_run(row.id.as_str());
     Ok(row)
 }
@@ -591,7 +591,7 @@ pub(crate) fn find_current(api:&Api,key:&str)->Result<RunRow,Refusal> {
     let Some(scope)=crate::private_io::current() else { return find_maintenance(api,key); };
     let store=api.calcifer.project_store(&scope.storage.project_id)?;
     let row=store.run(key)?.or(match key.parse() { Ok(number)=>store.run_by_number(number)?,Err(_)=>None });
-    row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","this project knows no such run"))
+    row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","This project has no such run."))
 }
 
 /// The run `KEY-N` names from any scope (cl-987): run N of the project that has or had the key, `COZY-N` Calcifer's own. None when
@@ -606,7 +606,7 @@ pub(crate) async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRo
             None => return Ok(None),
         },
     };
-    let row = journal.run_by_number(number)?.ok_or_else(|| Refusal(Error::new(Kind::NotFound, "run_not_found", format!("there is no run {key}-{number}")).next("cozy run ls --all")))?;
+    let row = journal.run_by_number(number)?.ok_or_else(|| Refusal(Error::new(Kind::NotFound, "run_not_found", format!("There's no run {key}-{number}.")).next("cozy run ls --all")))?;
     if matches!(journal, crate::store::RunStore::Maintenance(_)) { api.calcifer.remember_maintenance_run(row.id.as_str()); }
     Ok(Some(row))
 }
@@ -638,8 +638,8 @@ pub(crate) async fn find_scoped(api: &Arc<Api>, project: Option<&str>, key: &str
         None if project.is_some() => api.calcifer.maintenance_store().run(key)?.filter(|row| row.target == ::api::calcifer::hub::job::COZY_UPDATE),
         row => row,
     }.ok_or_else(|| match ::api::calcifer::project::run_name(key) {
-        Some((named, _)) => Refusal(Error::new(Kind::NotFound, "run_not_found", format!("no project on this computer has the key {named}")).next("cozy run ls --all")),
-        None => refuse(Kind::NotFound, "run_not_found", "this scope knows no such run"),
+        Some((named, _)) => Refusal(Error::new(Kind::NotFound, "run_not_found", format!("No project on this computer has the key {named}.")).next("cozy run ls --all")),
+        None => refuse(Kind::NotFound, "run_not_found", "There's no such run."),
     })?;
     if project.is_none() || row.target == ::api::calcifer::hub::job::COZY_UPDATE { api.calcifer.remember_maintenance_run(row.id.as_str()); }
     Ok(row)
@@ -662,7 +662,7 @@ pub(crate) struct Listing {
 async fn list(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
     let Query(listing) = query?;
     if listing.project.is_some() && !speaks_project_storage(&headers) { return Err(project_storage_protocol_required()); }
-    if listing.project.is_some() { return Err(refuse(Kind::Usage, "project_context_required", "use the project run-history route")); }
+    if listing.project.is_some() { return Err(refuse(Kind::Usage, "project_context_required", "Ask the project for its runs instead.")); }
     list_scoped(&api, None, listing).await
 }
 
@@ -744,10 +744,10 @@ pub(crate) async fn cancel(
     if row.state == RunState::Settled {
         return Ok((StatusCode::OK, Json(api.calcifer.record(&row)?)));
     }
-    if api.calcifer.row_owner(&row)?.as_ref().is_some_and(|owner|owner.project_id()!=row.owner) { return Err(refuse(Kind::Conflict,"copied_run_inert","copied execution history cannot cancel the original execution")); }
+    if api.calcifer.row_owner(&row)?.as_ref().is_some_and(|owner|owner.project_id()!=row.owner) { return Err(refuse(Kind::Conflict,"copied_run_inert","This run was copied from another project's history, so canceling it here can't stop the original.")); }
     let run = api.calcifer.cancel(&row.id)?;
     let run =
-        run.ok_or_else(|| refuse(Kind::NotFound, "run_not_found", format!("no run {key}")))?;
+        run.ok_or_else(|| refuse(Kind::NotFound, "run_not_found", format!("There's no run {key}.")))?;
     Ok((StatusCode::ACCEPTED, Json(run)))
 }
 

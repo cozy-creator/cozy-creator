@@ -103,7 +103,7 @@ mkdir -p "$M" && in_project "$M" --json new --unencrypted > "$OUT/fw-moved-new.j
   || { check "forward update: $candidate's cozy new: $(tail -c 300 "$OUT/fw-moved-new.json")"; return 0; }
 in_project "$M" run e2e-scratch/probe "marker=FW_MOVED_$RANDOM" --on local > "$OUT/fw-moved.out" 2> "$OUT/fw-moved.err" \
   || check "forward update: a project's probe on local (Runtime $moved_from) failed on $candidate: $(tail -c 400 "$OUT/fw-moved.err")"
-grep -q "upgrading local.s Runtime $moved_from → [^ ]* for this project" "$OUT/fw-moved.err" \
+grep -q "Updating local.s Runtime from $moved_from to [^ ]* for this project" "$OUT/fw-moved.err" \
   || check "forward update: the run didn't say it upgrades local's Runtime $moved_from for this project: $(tail -c 400 "$OUT/fw-moved.err")"
 temporary=$(awk '$1 == "temporary" { print $2 }' "$OUT/fw-moved.out" | tail -1)
 case $temporary in
@@ -189,7 +189,7 @@ su_store() {
 #  - held by hand: its install is refused runtime_held naming `cozy machine update local`, and cozy moves nothing.
 #  - its install folder read-only: refused once, naming `sudo cozy update`, and cozy moves nothing.
 #  - then, once the Latest reads the candidate's store (self_forward measures both: 0.25.0's is 7, 0.26's 8; until then a notice
-#    says so), its install says "updating cozy 0.24.99 → <Latest> for …" once, cozy and Calcifer become the Latest, and the install
+#    says so), its install says "Updating cozy from 0.24.99 to <Latest> for …" once, cozy and Calcifer become the Latest, and the install
 #    completes as it, local moving to its minor; and a run of it, in a project of the Latest's, completes on a Runtime that runs it.
 # The release is GitHub's Latest (signed by its release workflow, which no test build is): `cozy update`'s own source.
 self_update() {
@@ -245,8 +245,8 @@ cozy --json restart > "$OUT/su-restart-2.json" 2>&1 || { check "self update: coz
 
 # The update, said once (as a person reads it, not --json); the install goes on as the Latest.
 code=0; su_install updated --human || code=$?
-[ "$(grep -c 'updating cozy' "$OUT/su-updated.out")" = 1 ] && grep -q "updating cozy $before → $latest for $E2E_NEXT 0.1.0" "$OUT/su-updated.out" \
-  || check "self update: the install didn't say once \"updating cozy $before → $latest for $E2E_NEXT 0.1.0\": $(grep 'updating cozy\|cozy_' "$OUT/su-updated.out" | head -3)"
+[ "$(grep -c 'Updating cozy' "$OUT/su-updated.out")" = 1 ] && grep -q "Updating cozy from $before to $latest for $E2E_NEXT 0.1.0" "$OUT/su-updated.out" \
+  || check "self update: the install didn't say once \"Updating cozy from $before to $latest for $E2E_NEXT 0.1.0\": $(grep 'Updating cozy\|cozy_' "$OUT/su-updated.out" | head -3)"
 [ "$(cozy --version)" = "cozy $latest" ] || { check "self update: cozy is $(cozy --version), not $latest: $(tail -c 400 "$OUT/su-updated.out")"; return; }
 [ "$code" = 0 ] || check "self update: on $latest the install didn't complete: exit $code $(tail -c 400 "$OUT/su-updated.out")"
 jq -e --arg v "$latest" '.version == $v' "$HOME/.cozy/calcifer/calcifer.lock.holder" > /dev/null \

@@ -11,7 +11,7 @@ pub(super) type Unseen=BTreeMap<String,BTreeSet<u32>>;
 pub(super) fn id_of(held:&Boxed)->String {
     if held.id.is_empty() {format!("name:{}",name_key(&held.name))} else {held.id.clone()}
 }
-fn unavailable()->Error {Error::new(Kind::Unavailable,"project_unseen","the project's unseen versions could not be read or kept")}
+fn unavailable()->Error {Error::new(Kind::Unavailable,"project_unseen","Cozy couldn't read or save which versions you haven't looked at yet.")}
 
 pub(super) fn read(folder:&Folder,project:&str)->Result<Unseen,Error> {
     folder.journal_read(|conn| {
@@ -62,9 +62,9 @@ pub(super) async fn seen(State(api):State<Arc<Api>>,Path((id,name,number)):Path<
     let _view=api.projects.store(&api,&id).await.map_err(Refusal)?;
     let project=api.projects.get(&api,&id)?;
     project.require_view().map_err(Refusal)?;
-    let number:u32=number.parse().map_err(|_|Refusal(Error::new(Kind::Validation,"version_unknown","the version number is invalid")))?;
+    let number:u32=number.parse().map_err(|_|Refusal(Error::new(Kind::Validation,"version_unknown","That isn't a valid version number.")))?;
     let held=project.folder.reading_boxes(|written|written.get(&name).map(id_of)).map_err(Refusal)?;
-    let held=held.ok_or_else(||Refusal(Error::new(Kind::NotFound,"asset_unknown","the project has no such box")))?;
+    let held=held.ok_or_else(||Refusal(Error::new(Kind::NotFound,"asset_unknown","There's no box by that name in this project.")))?;
     if keep(&project,&held,number,true).map_err(Refusal)? {crate::events::project_settled(&project.folder.dir);}
     Ok(StatusCode::NO_CONTENT)
 }

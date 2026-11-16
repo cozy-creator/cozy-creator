@@ -145,7 +145,7 @@ impl Upgrade {
     /// The line the run says: `upgrading vanitas's Runtime 0.45.1 → 0.47.0.dev2260 for minimax-h3 0.12.0rc3`.
     pub(crate) fn note(&self) -> Note {
         let (from, to) = (prerelease::shown(&self.from), prerelease::shown(&self.to));
-        Note { level: NoteLevel::Info, message: format!("upgrading {}'s Runtime {from} → {to} for {}", self.machine, self.release) }
+        Note { level: NoteLevel::Info, message: format!("Updating {}'s Runtime from {from} to {to} for {}.", self.machine, self.release) }
     }
 }
 
@@ -263,17 +263,17 @@ impl Machines {
     /// Runtime: its run, none once it finished; one that failed is refused with what happened.
     pub(crate) async fn upgrade(self: &Arc<Self>, upgrade: &Upgrade) -> Result<Option<Run>, Error> {
         let name = upgrade.machine.as_str();
-        let frame = self.frame(name).ok_or_else(|| Error::new(Kind::Unavailable, "machine_unanswered", format!("{name} hasn't said what it runs")))?;
+        let frame = self.frame(name).ok_or_else(|| Error::new(Kind::Unavailable, "machine_unanswered", format!("{name} hasn't reported what it runs yet.")))?;
         let id = self.named(name).ok().flatten().and_then(|row| row.rental_id).unwrap_or_else(|| name.to_owned());
         let key = format!("{FLOOR}{id}-{}-{}", frame.boot_id, upgrade.to);
         let refused = |why: String| {
-            Error::new(Kind::Conflict, "runtime_upgrade_failed", format!("{name}'s Runtime {} → {} for {}: {why}", upgrade.from, upgrade.to, upgrade.release))
+            Error::new(Kind::Conflict, "runtime_upgrade_failed", format!("Couldn't update {name}'s Runtime from {} to {} for {}: {why}", upgrade.from, upgrade.to, upgrade.release))
                 .next(format!("cozy machine update {name} --runtime {}", upgrade.to))
         };
         if let Some(row) = self.store().keyed(&key).map_err(crate::machines::internal)? {
             let run = self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?;
             return match run.status {
-                Status::Failed | Status::Canceled => Err(refused(run.reason.map_or_else(|| "its update didn't finish".to_owned(), |reason| reason.message))),
+                Status::Failed | Status::Canceled => Err(refused(run.reason.map_or_else(|| "the update didn't finish".to_owned(), |reason| reason.message))),
                 // What it says it runs may be from before its restart: TensorD holds the release to its floor as ever.
                 Status::Completed => Ok(None),
                 _ => Ok(Some(run)),

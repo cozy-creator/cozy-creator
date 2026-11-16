@@ -39,7 +39,7 @@ fn an_hour() -> String {
 
 /// A lifetime in seconds: a positive count of seconds, minutes, hours or days (`90s`, `30m`, `24h`, `7d`).
 fn lifetime(text: &str) -> Result<u64, Refusal> {
-    let invalid = || Refusal(Error::new(Kind::Usage, "play_expires_invalid", format!("{text:?} is not a duration like 30m, 24h or 7d")));
+    let invalid = || Refusal(Error::new(Kind::Usage, "play_expires_invalid", format!("{text:?} isn't a duration like 30m, 24h or 7d.")));
     let unit = text.chars().last().ok_or_else(invalid)?;
     let count: u64 = text[..text.len() - unit.len_utf8()].parse().map_err(|_| invalid())?;
     let scale = match unit {
@@ -75,11 +75,11 @@ pub(crate) async fn play(
 ) -> Result<Json<Play>, Refusal> {
     let Query(ask) = query?;
     if ask.output.is_empty() || ask.output.contains(['#', '&', '=', ' ', '\t', '\n']) {
-        return Err(Refusal(Error::new(Kind::Usage, "play_output_invalid", "name one output, or name/index")));
+        return Err(Refusal(Error::new(Kind::Usage, "play_output_invalid", "Name one result, as name or name/index.")));
     }
     let expires_s = lifetime(&ask.expires)?;
     let row = find_scoped(&api, path.project(), path.key()).await?;
-    if row.project_root.is_some() { return Err(Refusal(Error::new(Kind::Conflict,"project_play_unavailable","project playback requires an owned private media transport; read this output through its project route"))); }
+    if row.project_root.is_some() { return Err(Refusal(Error::new(Kind::Conflict,"project_play_unavailable","A project's results can't be streamed this way. Open the result through its project instead."))); }
     let refuse = |kind, code: &str, message: String| Refusal(Error::new(kind, code, message));
     // A run still going may yet make the output; an ended one never will.
     let (name, index) = match ask.output.rsplit_once('/') {
@@ -92,7 +92,7 @@ pub(crate) async fn play(
         return Err(refuse(
             Kind::NotFound,
             "output_not_found",
-            format!("run {} has no output {:?}", run.name, ask.output),
+            format!("Run {} has no result {:?}.", run.name, ask.output),
         ));
     }
     let number = &run.name;
@@ -100,18 +100,18 @@ pub(crate) async fn play(
     let name = row
         .machine
         .clone()
-        .ok_or_else(|| unavailable(format!("run {number} has no machine yet")))?;
+        .ok_or_else(|| unavailable(format!("Run {number} isn't on a machine yet.")))?;
     let machine = api.calcifer.maintenance_store().machine(&name)?;
     let (Some(machine), Some(frame)) = (machine, api.machines.frame(&name)) else {
-        return Err(unavailable(format!("{name} has not reported its status")));
+        return Err(unavailable(format!("{name} hasn't reported its status yet.")));
     };
     let Some(endpoint) = machine.endpoint else {
-        return Err(unavailable(format!("{name} has no address yet")));
+        return Err(unavailable(format!("{name} is still starting up.")));
     };
     let webrtc = frame.webrtc.unwrap_or_default();
     let Some(address) = webrtc.addresses.first() else {
         let reason = match webrtc.unavailable_reason {
-            reason if reason.is_empty() => format!("{name} does not listen for players"),
+            reason if reason.is_empty() => format!("{name} can't stream video to players."),
             reason => reason,
         };
         return Err(Refusal(Error::new(Kind::Unavailable, "webrtc_unavailable", reason).next(format!("cozy machine show {name}"))));
@@ -120,7 +120,7 @@ pub(crate) async fn play(
         .ok()
         .and_then(|pem| SigningKey::from_pkcs8_pem(&pem).ok())
         .ok_or_else(|| {
-            let message = format!("cannot read the signing key {}", machine.key.display());
+            let message = format!("Cozy can't read the signing key {}.", machine.key.display());
             refuse(Kind::Internal, "machine_key_unreadable", message)
         })?;
     let url_for = |token: &str| link(address, &webrtc.fingerprint, token, &row.id, &ask.output);

@@ -177,7 +177,7 @@ for _ in $(seq 400); do
   cozy --json run watch "$n" --once > "$OUT/broken.show.json" 2> /dev/null || true
   status=$(jq -r .status "$OUT/broken.show.json")
   [ "$status" = in_progress ] || break
-  if [ "$since" = 0 ] && jq -e '.waiting // "" | test("fails when asked")' "$OUT/broken.show.json" > /dev/null; then
+  if [ "$since" = 0 ] && jq -e '.waiting // "" | test("failing to report on this run")' "$OUT/broken.show.json" > /dev/null; then
     since=$SECONDS said=$(jq -r .waiting "$OUT/broken.show.json")
   fi
   [ "$since" = 0 ] || [ $((SECONDS - since)) -lt 150 ] || break
@@ -185,7 +185,7 @@ for _ in $(seq 400); do
 done
 journal_table run_measurements_away run_measurements || check "broken: the journal's table couldn't be put back"
 echo "broken: run $n $status after $((SECONDS - since)) s of '$said'; now: $(jq -r '.waiting // empty' "$OUT/broken.show.json")"
-[ "$since" != 0 ] || check "broken: run $n never said local fails when asked about it ($status)"
+[ "$since" != 0 ] || check "broken: run $n never said local is failing to report on it ($status)"
 [ "$status" = in_progress ] || check "broken: run $n settled $status while its machine failed to answer: $(jq -c .reason "$OUT/broken.show.json")"
 settled broken 120
 J '.status == "completed"' "$OUT/broken.show.json" || check "broken: run $n is $(jq -c '[.status, .reason]' "$OUT/broken.show.json"), not completed as its machine says"

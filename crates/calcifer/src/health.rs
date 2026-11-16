@@ -15,7 +15,7 @@ pub(crate) fn diagnostics() -> bool {
 
 pub(crate) fn install(home: &Home, diagnostics: bool) -> Result<(), ::api::error::Error> {
     DIAGNOSTICS.store(diagnostics, std::sync::atomic::Ordering::Relaxed);
-    let failed = || ::api::error::Error::new(::api::error::Kind::Internal, "calcifer_health", "Calcifer cannot open its service health record");
+    let failed = || ::api::error::Error::new(::api::error::Kind::Internal, "calcifer_health", "Cozy can't open its health record.");
     home.open().and_then(|()| durable::private_dir(&home.calcifer())).map_err(|_| failed())?;
     let open = |path: std::path::PathBuf| -> Result<std::fs::File, ::api::error::Error> {
         let mut options = OpenOptions::new();

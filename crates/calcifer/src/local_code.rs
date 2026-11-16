@@ -112,11 +112,11 @@ pub(crate) fn target(text: &str, cwd: Option<&Path>, home: &Path) -> Option<Resu
         return crate::checkout::named(raw).map(Ok);
     };
     if !path.is_absolute() {
-        let said = format!("{raw} is relative, and names no folder of the project's");
-        return Some(Err(Error::new(Kind::Usage, "target_relative", said).remedy("name local code by its path from the project's folder")));
+        let said = format!("{raw} isn't a folder in this project.");
+        return Some(Err(Error::new(Kind::Usage, "target_relative", said).remedy("Name local code by its path from the project's folder.")));
     }
     Some(shared::split(&path).ok_or_else(|| {
-        Error::new(Kind::NotFound, "target_not_found", format!("{raw} is not a package directory or a script beside the project"))
+        Error::new(Kind::NotFound, "target_not_found", format!("{raw} isn't a package folder or a script in the project."))
     }))
 }
 
@@ -146,7 +146,7 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
             None => crate::runs::files::held(digest),
         };
         let not_held = |what: String| {
-            Error::new(Kind::NotFound, "file_not_held", format!("Calcifer holds no {what}")).remedy("PUT its bytes to /v1/files/sha256:<hex> first")
+            Error::new(Kind::NotFound, "file_not_held", format!("Cozy doesn't have {what}.")).remedy("Upload it first (PUT /v1/files/sha256:<hex>).")
         };
         let document = held(&code.tree).ok_or_else(|| not_held(format!("tree document {}", code.tree)))?;
         let document = fs::read(&document).map_err(|e| refuse("code_unreadable", e))?;
@@ -922,8 +922,8 @@ pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
         // Its machine ended before it accepted the install: a machine gone, which a render places again (`project::GONE`).
         let lost = code == "machine_lost" && run.accepted_at_ms.is_none();
         let failed = match lost {
-            true => Error::new(Kind::Unavailable, "machine_ended", format!("the machine ended before it installed this code: {message}")),
-            false => Error::new(Kind::Unavailable, "local_install_failed", format!("the machine did not install this code: {message}")),
+            true => Error::new(Kind::Unavailable, "machine_ended", format!("The machine ended before it installed this code: {message}")),
+            false => Error::new(Kind::Unavailable, "local_install_failed", format!("The machine couldn't install this code: {message}")),
         }
         .cause(code);
         return Err(next.into_iter().chain([format!("cozy run watch {}", run.number)]).fold(failed, Error::next));
@@ -933,13 +933,13 @@ pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
         return Err(Error::new(
             Kind::Unavailable,
             "local_interface_unreadable",
-            "the machine's description of this code is not a package interface",
+            "The machine's description of this code isn't a package interface Cozy can read.",
         ));
     }
     let installation = result["installation"].as_str().map(str::to_owned);
     let machine = run
         .machine
-        .ok_or_else(|| Error::new(Kind::Internal, "local_install_unplaced", "the install ran on no machine"))?;
+        .ok_or_else(|| Error::new(Kind::Internal, "local_install_unplaced", "The install didn't run on any machine."))?;
     Ok(Installed { interface: result["interface"].take(), installation, machine: Some(machine) })
 }
 
@@ -1107,11 +1107,11 @@ pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<
             std::io::ErrorKind::NotFound => Error::new(
                 Kind::Unavailable,
                 "uv_unavailable",
-                format!("{} is gone", command.get_program().to_string_lossy()),
+                format!("{} is missing.", command.get_program().to_string_lossy()),
             )
-            .remedy("run it again: cozy fetches uv when it is missing")
+            .remedy("Try again; Cozy downloads uv when it's missing.")
             .next("cozy doctor"),
-            _ => refuse(code, format!("{what} did not start: {e}")),
+            _ => refuse(code, format!("{what} didn't start: {e}.")),
         };
         (error, String::new())
     })?;

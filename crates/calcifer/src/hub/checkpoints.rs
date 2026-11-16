@@ -280,7 +280,7 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, slots: &[(&str, &Slot)],
             let Some((default_card, default_facts)) = held(api, client, endpoint, hub, default).await else { continue };
             let named = &choice.slot;
             let same_family = |want: &str, reference: &str, card: &types::ModelCard, facts: &Facts| match adapts(card, facts) {
-                Some(got) if !got.eq_ignore_ascii_case(want) => Err(Error::new(Kind::Validation, "model_choice_family", format!("{named} takes {want} LoRAs; {reference} is for {got}"))),
+                Some(got) if !got.eq_ignore_ascii_case(want) => Err(Error::new(Kind::Validation, "model_choice_family", format!("{named} takes {want} LoRAs, but {reference} is for {got}."))),
                 _ => Ok(()),
             };
             if let Some(reference) = choice.reference.as_deref()
@@ -288,24 +288,24 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, slots: &[(&str, &Slot)],
             {
                 match (default_facts.lora, facts.lora) {
                     (false, true) => {
-                        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{named} takes a model; {reference} is a LoRA"))
+                        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{named} takes a model, but {reference} is a LoRA. Add it as a LoRA instead."))
                             .next(format!("cozy run … --lora {named}={reference}")));
                     }
                     (false, false) => {
                         let labelled = |card: &types::ModelCard, facts: &Facts| family(card.model.family.clone(), facts.family.as_deref()).0;
                         if let Some((want, got)) = labelled(&default_card, &default_facts).zip(labelled(&card, &facts)).filter(|(want, got)| !want.eq_ignore_ascii_case(got)) {
-                            return Err(Error::new(Kind::Validation, "model_choice_family", format!("{named} takes a {want} model; {reference} is {got}")));
+                            return Err(Error::new(Kind::Validation, "model_choice_family", format!("{named} takes a {want} model, but {reference} is {got}.")));
                         }
                     }
                     (true, false) => {
-                        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{named} takes a LoRA; {reference} is a model")));
+                        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{named} takes a LoRA, but {reference} is a model.")));
                     }
                     (true, true) => {
                         if let Some(want) = adapts(&default_card, &default_facts) {
                             same_family(&want, reference, &card, &facts)?;
                         }
                         if let Some(why) = default_facts.parts.keeps_lacking(&facts.parts, reads(slot)) {
-                            return Err(Error::new(Kind::Validation, "model_choice_unloadable", format!("{named} can't load {reference}: {why}")));
+                            return Err(Error::new(Kind::Validation, "model_choice_unloadable", format!("{named} can't load {reference}: {why}.")));
                         }
                     }
                 }
@@ -313,7 +313,7 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, slots: &[(&str, &Slot)],
             for adapter in &choice.adapters {
                 let Some((card, facts)) = held(api, client, endpoint, hub, &adapter.reference).await else { continue };
                 if !facts.lora {
-                    return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{} is a model, not a LoRA for {named}", adapter.reference))
+                    return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{} is a model, not a LoRA for {named}. Choose it as the model instead.", adapter.reference))
                         .next(format!("cozy run … --model {named}={}", adapter.reference)));
                 }
                 if let Some(want) = adapts(&default_card, &default_facts) {

@@ -136,7 +136,7 @@ impl Renderer {
         document: &Value,
         local: Option<PathBuf>,
     ) -> Result<Self, Error> {
-        let unknown = || format!("{package}@{release} has no function {function}");
+        let unknown = || format!("{package}@{release} has no function called {function}.");
         let entry = (interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)))
             .ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", unknown()).next(format!("cozy package install {}", shown(package))))?;
         let read = |slots: Vec<&Value>| slots.into_iter().filter_map(|slot| Slot::read(slot).ok()).collect();
@@ -243,7 +243,7 @@ impl Host {
                 let Some(run) = &prepared.install else { return Ok(prepared) };
                 if let Wait::Quote(job) = wait {
                     self.installs.asked(&self.api, &run.id, job)?;
-                    return Err(Error::new(Kind::Unavailable, INSTALLING, format!("its install, run {}, is going", run.number)));
+                    return Err(Error::new(Kind::Unavailable, INSTALLING, format!("Its install (run {}) is still going.", run.number)));
                 }
                 let mut told = self.installs.told.subscribe();
                 let _waiting = match job {
@@ -292,7 +292,7 @@ impl Host {
             let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
             let prepared = crate::stages::stage("local code", self.ready(&path, &on, hub, wait)).await?;
             let Some(document) = prepared.interface else {
-                let said = format!("{with} is not described on {on:?} yet: its first render installs it");
+                let said = format!("{with} isn't installed on {on:?} yet, so its first render installs it.");
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
             };
             let release = prepared.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
@@ -417,7 +417,7 @@ impl Host {
         let mut tail = calcifer.subscribe();
         loop {
             let row = calcifer.maintenance_store().run(id.as_str()).map_err(|e| refused(e.into()))?;
-            let row = row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
+            let row = row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Cozy has no run {id}.")))?;
             let run = calcifer.record(&row).map_err(refused)?;
             if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) {
                 return Ok(run);
@@ -432,7 +432,7 @@ impl Host {
         loop {
             let row = self.journal().and_then(|store|store.run(id.as_str())).map_err(|e| refused(e.into()))?;
             let row =
-                row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
+                row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Cozy has no run {id}.")))?;
             let run = calcifer.record(&row).map_err(refused)?;
             if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && and(&run) {
                 return Ok(run);
@@ -546,7 +546,7 @@ pub(crate) const INSTALLING: &str = "renderer_installing";
 pub(crate) const CANCELED: &str = "render_canceled";
 
 fn canceled() -> Error {
-    Error::new(Kind::Conflict, CANCELED, "canceled while it waited for its install")
+    Error::new(Kind::Conflict, CANCELED, "Canceled while it was waiting for its install.")
 }
 
 /// The installs a project's walk asks for its local code (`Host::ready`), and the jobs waiting on each or whose quotes asked for it. An
@@ -791,7 +791,7 @@ impl Member {
 
     /// Submits `run` under `key` with the others: its run, once they all have.
     pub(crate) async fn submit(self, key: &str, run: SubmitRun) -> Result<Run, Error> {
-        let unsent = || Error::new(Kind::Unavailable, UNSENT, "the runs it went with were dropped before they were sent");
+        let unsent = || Error::new(Kind::Unavailable, UNSENT, "The runs it was grouped with were dropped before they were sent.");
         let Some(together) = self.take() else { return Err(unsent()) };
         let (answer, answered) = tokio::sync::oneshot::channel();
         together.left(Some((key.to_owned(), run, answer)));

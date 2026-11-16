@@ -150,8 +150,8 @@ impl Releases {
     /// The newest release, or why `package` has none to run.
     pub fn newest(&self, package: &str) -> Result<String, Error> {
         self.newest.clone().ok_or_else(|| {
-            Error::new(Kind::NotFound, "package_unreleased", format!("{package} has no release to run"))
-                .remedy("its owner publishes one with `cozy package publish`")
+            Error::new(Kind::NotFound, "package_unreleased", format!("{package} has no release you can run yet."))
+                .remedy("Its owner needs to publish one first.")
         })
     }
 }
@@ -177,7 +177,7 @@ fn absent(error: Error, what: &str) -> Error {
     Error::new(
         Kind::NotFound,
         "package_not_found",
-        format!("the Hub has no {what}"),
+        format!("The Hub has no package {what}."),
     )
     .cause(error.code)
     .next(format!(
@@ -234,14 +234,14 @@ pub(crate) fn read(document: &Value) -> Result<Card, Error> {
         return Err(Error::new(
             Kind::Unavailable,
             "hub.release_card_invalid",
-            "the Hub's release card names no release",
+            "The Hub sent a release card with no release in it.",
         ));
     }
     let interface = Interface::parse(&document["package_interface"]).map_err(|why| {
         Error::new(
             Kind::Unavailable,
             "hub.package_interface_invalid",
-            format!("the Hub's package interface is unreadable: {why}"),
+            format!("Cozy couldn't read the package interface the Hub sent: {why}"),
         )
     })?;
     Ok(Card {

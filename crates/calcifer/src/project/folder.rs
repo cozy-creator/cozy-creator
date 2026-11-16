@@ -1159,7 +1159,7 @@ impl Folder {
     /// Release cached connections before unmounting or moving the storage. The caller has
     /// stopped admissions and checked background work; an in-flight DB operation refuses it.
     pub(crate) fn close_connections(&self, checkpoint: bool) -> Result<(), Error> {
-        let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "a project database operation is still running");
+        let busy = || Error::new(api::error::Kind::Conflict, "project_busy", "Cozy is still working on this project's database. Try again in a moment.");
         if self.shared.checkpointing.load(std::sync::atomic::Ordering::Acquire) { return Err(busy()); }
         let mut writer = self.shared.writing.try_lock().map_err(|_| busy())?;
         let mut reader = self.shared.reading.try_lock().map_err(|_| busy())?;
@@ -1175,12 +1175,12 @@ impl Folder {
                 Some(conn) => conn,
                 None => {
                     extra = rusqlite::Connection::open_with_flags(self.db(), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
-                        .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("open project checkpoint: {e}")))?;
+                        .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("Cozy couldn't open the project to save it: {e}.")))?;
                     &extra
                 }
             };
             let occupied: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
-                .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("checkpoint project before closing: {e}")))?;
+                .map_err(|e| Error::new(api::error::Kind::Unavailable, "vault_database", format!("Cozy couldn't save the project before closing it: {e}.")))?;
             if occupied != 0 { return Err(busy()); }
         }
         let writing = writer.take();
@@ -1312,7 +1312,7 @@ impl Folder {
     }
 
     pub(crate) fn not_a_project(dir: &Path) -> Error {
-        Error::new(Kind::NotFound, "project_not_found", format!("{} holds no {}", dir.display(), db::DB)).next("cozy new")
+        Error::new(Kind::NotFound, "project_not_found", format!("{} has no {}, so it isn't a project.", dir.display(), db::DB)).next("cozy new")
     }
 
     fn id(&self) -> usize {
@@ -1597,7 +1597,7 @@ impl Folder {
                 return Ok(doc);
             }
         }
-        Err(Error::new(Kind::Conflict, "project_changed", "the project kept changing while its document was read; read it again and retry"))
+        Err(Error::new(Kind::Conflict, "project_changed", "The project kept changing while Cozy was reading it. Reload it and try again."))
     }
 
     /// The document an act began from, decoded once in it if what's held hadn't been: at its heads.
@@ -1607,7 +1607,7 @@ impl Folder {
         }
         let doc = Arc::new(db::document(&db::connect(&self.db(), true)?, &self.db())?);
         if !same_heads(&doc.heads(), &act.base.heads) {
-            return Err(Error::new(Kind::Conflict, "project_changed", "the project changed while this edit was being made; read it again and retry"));
+            return Err(Error::new(Kind::Conflict, "project_changed", "The project changed while this edit was being made. Reload it and try again."));
         }
         *act.document.borrow_mut() = Some(doc.clone());
         Ok(doc)
@@ -1838,7 +1838,7 @@ impl Folder {
             return Written::of_snapshot(json);
         }
         let json = self.reading_db(|conn| db::asked(conn, &ask.digest))?
-            .ok_or_else(|| Error::new(Kind::NotFound, "ask_snapshot_missing", format!("the project render {} was asked with is gone", ask.id)))?;
+            .ok_or_else(|| Error::new(Kind::NotFound, "ask_snapshot_missing", format!("The project snapshot that render {} started from is gone.", ask.id)))?;
         Written::of_snapshot(&json)
     }
 
@@ -1882,7 +1882,7 @@ impl Folder {
         if unnamed == 0 || !lock.runs.is_empty() || lock.assets.values().any(|held| held.on_record().next().is_some()) {
             return None;
         }
-        Some(format!("the project lists no versions, so the {unnamed} files nothing names in {FILES}/ may be all that's left of its takes"))
+        Some(format!("The project lists no versions, so the {unnamed} unlisted files in {FILES}/ may be all that's left of its takes."))
     }
 
     /// `lock`'s file table whole, from what needs no record: each file in `files/` names itself, what a version or run names and isn't here has
@@ -2068,7 +2068,7 @@ impl Folder {
     /// Err: why not. A client's own file comes held (`PUT /v1/files`), never by its path.
     pub(crate) async fn import(&self, source: &str) -> Result<Kept, String> {
         if !is_url(source) {
-            return Err("it is neither a held file's sha256:<hex>, a file of the project's nor an http(s) URL".into());
+            return Err("it isn't an uploaded file's sha256:<hex>, a file in this project, or an http(s) link".into());
         }
         let bytes = fetch_url(source).await?;
         let (kind, field) = media(infer::get(&bytes))?;
@@ -2324,14 +2324,14 @@ async fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
     let mut sink = |at: u64, frame: &[u8]| {
         bytes.truncate(at as usize);
         if bytes.len() + frame.len() > URL_MOST {
-            let detail = format!("it is over {} MiB, the most a URL may give: download it and import its path", URL_MOST >> 20);
+            let detail = format!("it's larger than {}, the most Cozy downloads from a link, so download it yourself and import the file", crate::bytes(URL_MOST as f64));
             return Err(Refusal { code: Code::SOURCE_NOT_ALLOWED, detail });
         }
         bytes.extend_from_slice(frame);
         Ok(())
     };
     match tokio::time::timeout(URL_LONGEST, tensorfs::fetch::get_link(url, &mut sink)).await {
-        Err(_) => Err(format!("it did not finish in {} s", URL_LONGEST.as_secs())),
+        Err(_) => Err(format!("it didn't finish downloading within {}", api::calcifer::clock(URL_LONGEST.as_millis() as i64))),
         // A refusal's first sentence says it; the rest is for whoever reads the policy.
         Ok(Err(refused)) => {
             let why = refused.detail.split(". ").next().unwrap_or_default();
@@ -2365,8 +2365,8 @@ fn media(kind: Option<infer::Type>) -> Result<(infer::Type, &'static str), Strin
         MatcherType::Audio => Some("audio"),
         _ => None,
     };
-    let kind = kind.ok_or("it is no picture, video or sound")?;
-    let field = field(&kind).ok_or("it is no picture, video or sound")?;
+    let kind = kind.ok_or("it isn't an image, video or sound file")?;
+    let field = field(&kind).ok_or("it isn't an image, video or sound file")?;
     Ok((kind, field))
 }
 
@@ -2419,13 +2419,13 @@ fn io(error: platform::Error) -> Error {
         && durable::held(source)
     {
         let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
-        return Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program")).remedy("close it, and save again");
+        return Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program.")).remedy("Close it, then save again.");
     }
     Error::new(Kind::Unavailable, "project_io", error.to_string())
 }
 
 fn io_at(path: &Path, error: std::io::Error) -> Error {
-    Error::new(Kind::Unavailable, "project_io", format!("{}: {error}", path.display()))
+    Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't access {}: {error}.", path.display()))
 }
 
 /// Whether two lists of a document's heads name the same ones.

@@ -373,7 +373,7 @@ safetensors_file "$OUT/refused.safetensors"
 refused() {  # refused <name> <cozy args...>
   local name=$1 code=0; shift
   cozy --json "$@" > "$OUT/refused-$name.json" 2> "$OUT/refused-$name.err" || code=$?
-  [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.remedy | contains("--on new"))' "$OUT/refused-$name.json" \
+  [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.next | any(contains("--on new")))' "$OUT/refused-$name.json" \
     || check "cozy $*: exit $code, not refused local_unavailable: $(head -c 300 "$OUT/refused-$name.json") $(head -c 200 "$OUT/refused-$name.err")"
 }
 refused run run birefnet/remove_background --file "image=$dog"
@@ -401,14 +401,14 @@ refused logs machine logs local --lines 5
 refused authorize machine authorize "$key"
 refused doctor doctor --on local
 cozy run birefnet/remove_background --file "image=$dog" > "$OUT/refused.txt" 2>&1 && check "a local run without --on was not refused"
-grep -q "local runs aren't available on" "$OUT/refused.txt" && grep -q -- '--on new' "$OUT/refused.txt" \
-  || check "the refusal does not say local runs aren't available and --on new: $(head -c 300 "$OUT/refused.txt")"
+grep -q "This computer can't run models on" "$OUT/refused.txt" && grep -q -- '--on new' "$OUT/refused.txt" \
+  || check "the refusal does not say this computer can't run models and --on new: $(head -c 300 "$OUT/refused.txt")"
 
 step "no local machine"
 cozy --json machine ls > "$OUT/machines.json" && J '.machines | all(.name != "local")' "$OUT/machines.json" || check "machine ls: a local machine is listed"
-cozy machine ls > "$OUT/machines.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/machines.txt" || check "machine ls does not say local runs aren't available"
+cozy machine ls > "$OUT/machines.txt" 2>&1 && grep -q "This computer can't run models on" "$OUT/machines.txt" || check "machine ls does not say this computer can't run models"
 fixture_calcifer > "$OUT/status.txt" && J '.calcifer.local_usable == false' "$OUT/status.txt" || check "status does not say local runs aren't available"
-cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("aren'"'"'t available"))))' "$OUT/doctor-gated.json" \
+cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("can'"'"'t run models"))))' "$OUT/doctor-gated.json" \
   || check "doctor: not healthy, or no line that local runs aren't available: $(jq -c .checks "$OUT/doctor-gated.json")"
 cozy machine logs local calcifer --lines 5 > "$OUT/log-calcifer.txt" && [ -s "$OUT/log-calcifer.txt" ] || check "machine logs local calcifer: no Calcifer log"
 cozy --json package ls --on all > "$OUT/packages.json" || check "package ls --on all failed"
@@ -590,7 +590,7 @@ if cell angles "$here/project/angles.py/angles" 'pictures:=["<angles_spin:120deg
 fi
 before=$(cozy --json run ls --limit 0 | jq '.runs | length')
 in_project "$RUN_PROJECT" --json run "$here/project/angles.py/angles" 'pictures:=["<angles_plain:120deg>"]' --on local > "$OUT/angles-plain.json" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q mention_not_orbit "$OUT/angles-plain.json" && grep -q 'turn on Orbit' "$OUT/angles-plain.json" \
+{ [ "$code" != 0 ] && grep -q mention_not_orbit "$OUT/angles-plain.json" && grep -q 'Turn on Orbit' "$OUT/angles-plain.json" \
   && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
   || check "angles: an angle of a video that isn't an orbit was not refused mention_not_orbit before any run (exit $code): $(tail -c 300 "$OUT/angles-plain.json")"
 }
@@ -1101,7 +1101,7 @@ fi
 # call's temporary file is in its project's scratch.
 in_project "$RUN_PROJECT" run e2e-scratch/probe "marker=CL1055_MOVED_$RANDOM" --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
   || check "runtime floor: a project's probe run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
-grep -q "upgrading local.s Runtime 0.45.0 → 0.4[7-9][^ ]* for this project" "$OUT/floor-upgrade.err" \
+grep -q "Updating local.s Runtime from 0.45.0 to 0.4[7-9][^ ]* for this project" "$OUT/floor-upgrade.err" \
   || check "runtime floor: the run didn't say it upgrades local's Runtime for this project: $(tail -c 400 "$OUT/floor-upgrade.err")"
 local temporary
 temporary=$(awk '$1 == "temporary" { print $2 }' "$OUT/floor-upgrade.out" | tail -1)
@@ -1132,7 +1132,7 @@ if cell floor-release-older "$E2E_FLOOR/relay@0.1.0" "text=held, asked 0.1.0"; t
 fi
 in_project "$RUN_PROJECT" run "$E2E_CAPPED/relay" text=capped --on local > "$OUT/floor-capped.out" 2> "$OUT/floor-capped.err" \
   || check "runtime floor: the unversioned e2e-capped run failed: $(tail -c 400 "$OUT/floor-capped.err")"
-grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can take does: this run takes 0.1.0" "$OUT/floor-capped.err" \
+grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can move to does, so this run uses 0.1.0" "$OUT/floor-capped.err" \
   || check "runtime floor: on a release of the minor, e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
 if cell floor-release-held "$E2E_HELD/relay" "text=off the RC"; then
   grep -q 'relay@0\.1\.0"' "$OUT/floor-release-held.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/floor-release-held.ndjson" \

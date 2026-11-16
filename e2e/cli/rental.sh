@@ -133,7 +133,7 @@ step "machine end, holding a key the Hub revoked"
 install -m 600 "$held/laptop-key.json" "$key"
 cozy --json whoami > "$OUT/rental-whoami-refused.json" 2> "$OUT/rental-whoami-refused.err" && J '.logged_in == false and .key_refused == true' "$OUT/rental-whoami-refused.json" \
   || check "whoami with a revoked key: not 'no longer accepted': $(tail -c 300 "$OUT/rental-whoami-refused.json")"
-end_refused key-refused 'hub_credential'
+end_refused key-refused 'sign in to the Hub again'
 
 step "machine end, signed in again"
 cozy --json logout > /dev/null 2>&1 || true
