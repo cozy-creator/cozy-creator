@@ -1,6 +1,6 @@
 // restart (cl-1067, solo): Cozy's own Chrome is gone (Paul, 11-16: "why does a restart close chrome tabs? don't do that"; of the private
 // Chrome, "I don't want this anymore"). `cozy open` starts a private window of the user's browser (entrypoints), a tab like any. What's typed in
-// an encrypted project as `cozy vault lock` runs is sent before it locks: the page hears `project.vault saving` and answers once it has, as
+// an encrypted project as `cozy vault lock` runs is sent before it locks: the page hears `project.saving` and answers once it has, as
 // Cozy's own browser was made to. A Calcifer restart leaves the tabs open: a plain project's reconnects and saves what's typed next, an
 // encrypted one's shows the locked page with Unlock, and neither loads again.
 const { randomBytes } = require('crypto');
