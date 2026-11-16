@@ -3,7 +3,8 @@
 # `rent` once per pod (or `order` each, then `ready` each, to boot them together), and works on $NAME; the EXIT trap
 # ends every rental by its own rental id and checks each is gone. RENT_ARGS: more `machine rent` flags (`--ssh`).
 # From the workflow: OUT, SKU, DISK, CAP (USD, all in), RENT, PARAMS (a JSON object), PACKAGES (packages/<name>
-# checkouts), REF (release-gate/ref), HUB (prod or isolated: e2e/test-hub.sh require_ci_rental_hub).
+# checkouts), REF (release-gate/ref), HUB (prod or isolated: e2e/test-hub.sh require_ci_rental_hub). PARAMS'
+# `floor_mb_s` (50; 0 for none) and `floor_after_s` (120) set the slow-host floor (`step`).
 # Every failure is handled here (the trap ends the rental), not by bash -e.
 set +e -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../e2e/test-hub.sh"
@@ -19,6 +20,10 @@ RIDS=()  # every rental this session ordered; $OUT/rental lists them, one a line
 fail() { say "FAIL: $*"; RC=1; exit 1; }
 # param <key> [default]: the session's setting from PARAMS (a non-string as JSON).
 param() { jq -r --arg k "$1" --arg d "${2-}" 'if has($k) then (.[$k] | if type == "string" then . else tojson end) else $d end' <<<"$PARAMS"; }
+# The slow-host floor (`floor_mb_s`, 0 for none; `floor_after_s`): a step whose upload to the pod or weights download still
+# reports under it that long in ends the session, `host too slow`, before the host's link eats the cap (th-377).
+FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
+[[ $FLOOR_MBS =~ ^[0-9]+$ && $FLOOR_AFTER =~ ^[0-9]+$ ]] || fail "floor_mb_s $FLOOR_MBS, floor_after_s $FLOOR_AFTER"
 state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 . "$(dirname "${BASH_SOURCE[0]}")/../machines.sh"
 gone() { local s; s=$(state "$1"); { [ "$s" = ended ] || [ -z "$s" ]; } && ! listed "$1"; }
@@ -83,6 +88,32 @@ kernels() {
   "$root/scripts/triton.sh" "$d" > "$OUT/kernels-${d##*/}.log" 2>&1 || fail "${d##*/}'s Triton sets did not build: $(tail -c 400 "$OUT/kernels-${d##*/}.log")"
   say "kernels ${d##*/}: $(find "$d" -path '*/_triton/manifest.json' -printf '%P ' 2>/dev/null)built in $((SECONDS - t0)) s"
 }
+# floor FILE KINDS: the transfer of KINDS (`downloading`, `uploading|downloading`) FILE reports last, when it is a link's
+# measure (16 MiB or more; a result's never) still in progress and under FLOOR_MBS MB/s. A finished or small transfer
+# judges nothing: a run's small input uploads report a few KiB/s.
+floor() {
+  grep -aoE "($2) .{0,160} [0-9.]+ (B|KiB|MiB|GiB)/[0-9.]+ (B|KiB|MiB|GiB) at [0-9.]+ (B|KiB|MiB|GiB)/s" "$1" |
+    grep -v 'the result' | awk -v f="$FLOOR_MBS" '
+      function b(x, u) { return x * (u == "GiB" ? 2^30 : u == "MiB" ? 2^20 : u == "KiB" ? 2^10 : 1) }
+      { n = split($0, w, /[ \/]+/); done = b(w[n - 7], w[n - 6]); total = b(w[n - 5], w[n - 4])
+        if (total >= 16 * 2^20) { last = $0; rate = b(w[n - 2], w[n - 1]) / 1e6; open = done < total } }
+      END { if (last != "" && open && rate < f) { printf "%.1f MB/s, under the %s MB/s floor (%s)", rate, f, last; exit 0 } exit 1 }'
+}
+# heard SLOW|ended: whether a slow host can end now, and why (HEARD). The Hub learns a host is slow only from the pod's own
+# speed report, which TensorD sends once 1 GiB of weights has arrived (machine/speed.rs): a weights download in flight is
+# let reach it (the guard still ends the pod at the cap); a slow upload with no report sent ends at once, unrecorded.
+heard() {
+  local line
+  line=$(cozy machine logs "$NAME" --since 6h -n 0 2>/dev/null |
+    grep -aoE "reported this host's download speed to the Hub|the Hub took no download speed report: .{0,200}" | tail -1)
+  case $line in
+    reported*) HEARD="its speed report reached the Hub" ;;
+    the\ Hub*) HEARD="${line}" ;;
+    *) [ "$1" != ended ] || { HEARD="host not recorded slow at the Hub (its step ended before a speed report)"; return 0; }
+       [[ $1 != *downloading* ]] || return 1
+       HEARD="host not recorded slow at the Hub (a slow upload, no speed report sent)" ;;
+  esac
+}
 step() {
   local n=$1 directory=$PWD; shift
   local words=("$@")
@@ -96,13 +127,26 @@ step() {
     case $t in /* | .*) if [ -d "$t" ]; then kernels "$t"; else kernels "$(dirname "$t")"; fi ;; esac
   fi
   say "step $n: cozy ${words[*]}"
-  (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0
+  # The floor judges the pod's link: a machine update's uploads to it, and the weights a step on it downloads.
+  local kinds=''
+  if [ "$1" = machine ] && [ "${2:-}" = update ]; then kinds='uploading|downloading'; elif [[ " ${words[*]} " == *" --on "* ]]; then kinds=downloading; fi
+  (cd "$directory" && cozy "${words[@]}") > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0 slow=''
   while kill -0 "$p" 2>/dev/null; do
-    sleep 1; t=$((t + 1)); [ $((t % 30)) = 0 ] || continue
+    sleep 1; t=$((t + 1))
+    if [ "$FLOOR_MBS" != 0 ] && [ -n "$kinds" ] && [ "$t" -ge "$FLOOR_AFTER" ] && [ $((t % 2)) = 0 ]; then
+      if [ -z "$slow" ] && slow=$(floor "$OUT/$n.txt" "$kinds"); then
+        say "$n: host too slow: $slow on $NAME ($RID)"; [[ $slow == *downloading* ]] && say "$n: its download goes on until the pod's log shows its speed report (checked every 30 s)"
+      fi
+      if [ -n "$slow" ] && { [ $((t % 30)) = 0 ] || [[ $slow != *downloading* ]]; } && heard "$slow"; then
+        kill "$p"; fail "host too slow: $(floor "$OUT/$n.txt" "$kinds" || echo "$slow") on $NAME ($RID): $HEARD"
+      fi
+    fi
+    [ $((t % 30)) = 0 ] || continue
     size=$(stat -c %s "$OUT/$n.txt")
     if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; fi
     [ "$still" -lt 900 ] || { kill "$p"; say "$n: no output for 15 min"; return 124; }
   done
+  [ -z "$slow" ] || { heard ended; fail "host too slow: $slow on $NAME ($RID): $HEARD"; }
   wait "$p"; local c=$?
   tail -6 "$OUT/$n.txt" | cut -c1-300 | sed 's/^/    /' >> "$R"
   return $c
