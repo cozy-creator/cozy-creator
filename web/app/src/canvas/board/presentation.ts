@@ -64,6 +64,8 @@ export interface Presentation {
   picture?: ScenePicture
   references: ScenePicture[]
   words: string
+  /** Mentions drawn struck through: gone, or of a kind its tool can't use (Paul, 11-12). */
+  struck: string[]
   note: string
   error?: string
   tool: string
@@ -172,7 +174,7 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
     })
     const left = run?.status === "completed" ? run.arriving?.eta_s : run?.progress?.eta_s
     const since = run ? Math.max(0, (now - run.created_at_ms) / 1000) : undefined
-    const time = since !== undefined && left != null ? ` - ${short(since)} / ${short(since + left)}` : ""
+    const time = since !== undefined && left != null ? `${short(since)} / ${short(since + left)}` : ""
     progress = {
       ...face, time, cancel: !["canceling", "failed", "result"].includes(face.phase),
       fraction: since !== undefined && left != null && left > 0 ? Math.min(0.99, since / (since + left)) : undefined,
@@ -187,7 +189,9 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
   if (shown?.absent && !arriving) note = shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"
   else if (view.placing && !output) note = ({ waiting: "Waiting", reading: "Reading file", sending: "Sending file", adding: "Adding file" })[view.placing.stage]
   else if (!output && !words) note = asset?.timeline ? "Drag videos and stills here" : kind === "audio" ? "Audio" : kind === "file" ? "A file" : makes(view) ? kind === "video" ? "Video" : kind === "image" ? "Image" : "" : ""
+  const struck = mentionsIn(words).filter((mention) => asset?.missing?.includes(mention) || asset?.unused?.some((unused) => unused.mention === mention) || store.mentionOf(mention, name)?.gone)
   return {
+    struck,
     title: view.placing ? store.shownName(store.resolveName(name)) : view.name,
     version: asset?.kind !== "text" && shown?.number !== undefined ? `v${shown.number}` : !asset && isPicture(view) ? "v1" : undefined,
     state: view.entity ? view.linked === "failed" ? "failed" : view.linked === "making" ? "running" : null : viewState(view),

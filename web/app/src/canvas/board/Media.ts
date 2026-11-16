@@ -5,7 +5,7 @@ import { THUMB_TRIES, thumbWait, whenThumb } from "../../api/thumbs"
 export type MediaSource =
   | { kind: "thumb"; sha256: string }
   | { kind: "file"; sha256: string; path: string }
-  | { kind: "output"; run: number; output: string; index: number; rev?: number }
+  | { kind: "output"; run: number | string; output: string; index: number; rev?: number }
   | { kind: "local"; url: string }
 /** `width`: the texture width wanted (a power of two, at least 256; a thumbnail's source is at most 512). */
 export interface MediaRequest { source: MediaSource; width: number }

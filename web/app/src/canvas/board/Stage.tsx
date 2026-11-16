@@ -1,0 +1,284 @@
+// CSP-safe shader uniforms (no eval), and Pixi's optional math methods, which its typings declare whether or not they're installed.
+import "pixi.js/unsafe-eval"
+import "pixi.js/math-extras"
+import { autoDetectRenderer, Container, Rectangle, type Renderer, Ticker } from "pixi.js"
+import { Viewport as PixiViewport } from "pixi-viewport"
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react"
+import { useQueryClient } from "@tanstack/react-query"
+import { useConnection } from "../../app/Connection"
+import { machinesQuery, runFullQuery } from "../../api/queries"
+import { ownActivity, waitsOnOf } from "../../panels/machines/activity"
+import { useSignal, tabShown } from "../../ui/signal"
+import { theme } from "../../ui/theme"
+import { Asking } from "../Asking"
+import type { CanvasStore, ElementNode } from "../CanvasStore"
+import { carried } from "../checkpoints"
+import { NameField } from "../NameField"
+import { HEAD } from "../shown"
+import { viewState } from "../StateDot"
+import type { Viewport } from "./Camera"
+import { MAX_ZOOM, MIN_ZOOM } from "./Camera"
+import { hitOf } from "./CardView"
+import { useBoard } from "./context"
+import { inspection } from "./inspect"
+import { createInteraction } from "./Interaction"
+import { Media } from "./Media"
+import { pictureBox, type RunContext } from "./presentation"
+import { Scene } from "./Scene"
+import { forgetMeasurements, onFontsLoaded } from "./text"
+
+type Pointer = MouseEvent | PointerEvent
+export interface StageProps {
+  store: CanvasStore
+  active: boolean
+  disabled: boolean
+  locked?: boolean
+  children?: ReactNode
+  onReady?(): void
+  onSelectionChange(value: { nodes: readonly ElementNode[] }): void
+  onMoveStart?(): void
+  onMoveEnd(event: unknown, view: Viewport): void
+  onNodeClick(event: MouseEvent, node: ElementNode): void
+  onNodeDoubleClick(event: MouseEvent, node: ElementNode): void
+  onPaneClick(): void
+  onNodeContextMenu(event: MouseEvent, node: ElementNode): void
+  onDragStart(event: Pointer, node: ElementNode, nodes: ElementNode[]): void
+  onDrag(event: Pointer, node: ElementNode, nodes: ElementNode[]): void
+  onDragStop(event: Pointer, node: ElementNode, nodes: ElementNode[]): void
+  onDragCancel(nodes: ElementNode[]): void
+}
+
+/** The canvas: one renderer, one on-demand ticker, the scene, the camera, input, and DOM only where text is typed. */
+export function Stage(props: StageProps) {
+  const { store, active, disabled } = props
+  const board = useBoard()
+  const { client, bridge, privateViewEpoch, signedOut } = useConnection()
+  const queries = useQueryClient()
+  useSignal(privateViewEpoch)
+  const projectEpoch = store.projectId ? bridge.projectEpoch(store.projectId) : 0
+  const loggedOut = useSignal(signedOut)
+  const helpId = useId()
+  const root = useRef<HTMLDivElement>(null)
+  const world = useRef<HTMLDivElement>(null)
+  const latest = useRef(props)
+  latest.current = props
+  const live = useRef({ invalidate: () => {}, enable: () => {} })
+  const [failed, setFailed] = useState<string | null>(null)
+  const [overlays, setOverlays] = useState<{ name: string; draft?: string; asking?: NonNullable<ReturnType<CanvasStore["get"]>>["asking"]; box: { x: number; y: number; w: number; under: number } }[]>([])
+  const [cards, setCards] = useState<{ name: string; label: string; selected: boolean }[]>([])
+  const focused = useSignal(store.focusedName)
+  const entering = useSignal(store.focusEntering)
+  useLayoutEffect(() => { live.current.enable(); live.current.invalidate() }, [active, disabled, focused, entering])
+
+  useEffect(() => {
+    const element = root.current
+    if (!element) return
+    let stopped = false, lost = false
+    let renderer: Renderer | null = null, viewport: PixiViewport | null = null, scene: Scene | null = null
+    let interaction: ReturnType<typeof createInteraction> | null = null
+    let wakeTimer: ReturnType<typeof setTimeout> | undefined
+    let dirty = true, animating = false, frames = 0, width = element.clientWidth, height = element.clientHeight
+    const stops: (() => void)[] = []
+    const stage = new Container({ eventMode: "static" })
+    const ticker = new Ticker()
+    ticker.autoStart = false
+    const media = new Media({ client, project: store.projectId ?? "", changed: () => invalidate() })
+    const visible = () => latest.current.active && tabShown.get() && !lost
+    const invalidate = () => { dirty = true; if (!stopped && renderer && visible() && !ticker.started) ticker.start() }
+    const enable = () => {
+      const on = visible()
+      media.setVisible(on)
+      board.camera.setInteractionEnabled(on && !latest.current.disabled)
+      if (!on) interaction?.cancel()
+    }
+    live.current = { invalidate, enable }
+    const software = { value: false }
+
+    // Run context for a card's progress line: its machine, what it waits on, an install for its tool (RunFace's inputs).
+    const asked = new Set<number>()
+    const contextOf = (view: NonNullable<ReturnType<CanvasStore["get"]>>): RunContext | undefined => {
+      const machines = queries.getQueryData(machinesQuery(client).queryKey)?.machines ?? []
+      let run = view.run
+      const rendering = view.asset?.standing === "making" || view.queued || view.asked !== undefined || Boolean(view.glimpse)
+      if (run && store.projectId && rendering) {
+        const query = runFullQuery(client, store.projectId, run.number, 0)
+        const full = queries.getQueryData(query.queryKey)
+        // Only what the live run lacks: its request. The live run's own fields (queue position, stage) always win.
+        if (full) run = { ...run, request: full.request }
+        else if (!asked.has(run.number)) { asked.add(run.number); void queries.ensureQueryData(query).then(invalidate, () => {}) }
+      }
+      const machine = run?.machine ? machines.find((m) => m.name === run.machine) : undefined
+      const on = run ? waitsOnOf(ownActivity(machine, store.projectId), run) : undefined
+      const tool = view.asset?.tool ? store.tools.get().get(view.asset.tool) : undefined
+      const pkg = tool?.installs ?? tool?.package
+      const installing = !run && pkg ? machines.flatMap((m) => ownActivity(m, store.projectId)).find((o) => o.kind === "install" && o.subject === pkg) : undefined
+      return run || installing ? { run, machine, on, installing } : undefined
+    }
+
+    const placeWorld = () => {
+      const view = board.camera.getViewport()
+      if (world.current) world.current.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.zoom})`
+    }
+
+    const tick = () => {
+      if (stopped || !renderer || !viewport || !scene) return
+      if (!visible()) { ticker.stop(); return }
+      let moving = false
+      try { viewport.update(ticker.deltaMS); moving = board.camera.sync() } catch (error) { console.error("Camera:", error) }
+      if (moving) placeWorld()
+      if (dirty || moving || animating) {
+        dirty = false
+        try {
+          const hidden = new Set<string>()
+          const focus = store.focusedName.get()
+          if (focus && !store.focusEntering.get()) hidden.add(store.resolveName(focus))
+          const result = scene.update({ camera: board.camera.getViewport(), width, height, dpr: devicePixelRatio || 1, settled: !board.camera.isMoving, theme: theme.get() === "dark" ? "dark" : "paper", now: performance.now(), hidden, offering: element.closest(".stage")?.hasAttribute("data-offering") ?? false })
+          animating = result.animating
+          clearTimeout(wakeTimer)
+          if (result.wake !== null) wakeTimer = setTimeout(invalidate, result.wake)
+        } catch (error) { console.error("Scene:", error) }
+      }
+      // A frame always presents, whatever a card did: the canvas never freezes.
+      renderer.render(stage)
+      frames++
+      try { scene.didRender() } catch (error) { console.error("Seen:", error) }
+      if (!board.camera.hasDrawn && ((store.hasRead && store.empty) || [...scene.views()].length > 0)) board.camera.markDrawn()
+      if (!dirty && !moving && !animating && !board.camera.isMoving) ticker.stop()
+    }
+    ticker.add(tick)
+
+    const ready = async () => {
+      const options = { width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias: true, failIfMajorPerformanceCaveat: false }
+      let made: Renderer
+      try { made = await autoDetectRenderer({ ...options, preference: ["webgl", "canvas"] }) }
+      catch { made = await autoDetectRenderer({ ...options, preference: ["canvas"] }) }
+      if (stopped) { made.destroy({ removeView: true }); return }
+      renderer = made
+      if ("gl" in made) {
+        const gl = (made as unknown as { gl: WebGLRenderingContext }).gl
+        const info = gl.getExtension("WEBGL_debug_renderer_info")
+        software.value = /swiftshader|llvmpipe|lavapipe|softpipe|swrast|software/i.test(String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)))
+      } else software.value = true
+      made.canvas.className = "canvas-pixels"
+      element.prepend(made.canvas)
+      const contextLost = (event: Event) => { event.preventDefault(); lost = true; enable() }
+      const contextRestored = () => { lost = false; enable(); scene?.redrawAll(); invalidate() }
+      made.canvas.addEventListener("webglcontextlost", contextLost)
+      made.canvas.addEventListener("webglcontextrestored", contextRestored)
+      stops.push(() => { made.canvas.removeEventListener("webglcontextlost", contextLost); made.canvas.removeEventListener("webglcontextrestored", contextRestored) })
+      viewport = new PixiViewport({ screenWidth: width, screenHeight: height, events: made.events, noTicker: true, passiveWheel: false, ignoreWheelFromOtherElements: true, disableOnContextMenu: true })
+      viewport.enableRenderGroup()
+      viewport.drag({ wheel: true }).pinch().wheel({ wheelZoom: false, trackpadPinch: true, smooth: false }).decelerate({ friction: 0.93 }).clampZoom({ minScale: MIN_ZOOM, maxScale: MAX_ZOOM })
+      stage.hitArea = new Rectangle(0, 0, width, height)
+      stage.addChild(viewport)
+      const layer = new Container({ eventMode: "passive" })
+      viewport.addChild(layer)
+      scene = new Scene({ world: layer, board, store, client, media, software: software.value, invalidate, contextOf })
+      stops.push(board.camera.bind(element, viewport))
+      interaction = createInteraction({
+        root: element, stage, viewport, camera: board.camera, board, store, hitOf,
+        scene: { setHover: (hit) => scene?.setHover(hit), setResize: (name, label) => scene?.setResize(name, label), setMarquee: (box) => scene?.setMarquee(box) },
+        props: () => latest.current, invalidate,
+      })
+      const resize = new ResizeObserver(() => {
+        width = element.clientWidth; height = element.clientHeight
+        if (width > 0 && height > 0 && renderer && viewport) { renderer.resize(width, height, devicePixelRatio || 1); viewport.resize(width, height); stage.hitArea = new Rectangle(0, 0, width, height); invalidate() }
+      })
+      resize.observe(element)
+      stops.push(() => resize.disconnect())
+      // A move to a screen of another density re-renders sharp.
+      let density: MediaQueryList | null = null
+      const watchDensity = () => {
+        density?.removeEventListener("change", densityChanged)
+        density = matchMedia(`(resolution: ${devicePixelRatio || 1}dppx)`)
+        density.addEventListener("change", densityChanged)
+      }
+      const densityChanged = () => { renderer?.resize(width, height, devicePixelRatio || 1); watchDensity(); invalidate() }
+      watchDensity()
+      stops.push(() => density?.removeEventListener("change", densityChanged))
+      enable()
+      latest.current.onReady?.()
+      setFailed(null)
+      invalidate()
+    }
+    void ready().catch((error) => { if (!stopped) setFailed(error instanceof Error ? error.message : String(error)) })
+
+    // What the page shows outside the GPU: the name field and Asking over their boxes, and the accessible list of every card.
+    let listKey = ""
+    const publishDom = () => {
+      const next: typeof overlays = []
+      for (const node of board.getNodes()) {
+        const view = store.get(node.data.name)
+        if (!view) continue
+        const body = pictureBox({ id: node.id, name: node.data.name, box: node.bounds, view, selected: Boolean(node.selected) })
+        const box = { x: node.bounds.x, y: node.bounds.y, w: node.bounds.w, under: body.y + body.h - node.bounds.y }
+        if (view.draft !== undefined || (view.asking && !view.here)) next.push({ name: node.data.name, draft: view.draft, asking: view.here ? undefined : view.asking, box })
+      }
+      setOverlays((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
+      const list = board.getNodes().map((node) => {
+        const view = store.get(node.data.name)
+        const state = view ? viewState(view) : null
+        return { name: node.data.name, label: `${view?.name ?? node.data.name}${state ? `, ${state}` : ""}`, selected: Boolean(node.selected) }
+      })
+      const key = JSON.stringify(list)
+      if (key !== listKey) { listKey = key; setCards(list) }
+    }
+    let announced = ""
+    const announce = () => {
+      const nodes = board.getNodes().filter((node) => node.selected)
+      const key = nodes.map((node) => node.id).join(" ")
+      if (key !== announced) { announced = key; latest.current.onSelectionChange({ nodes }) }
+    }
+    stops.push(
+      board.subscribeNodes(() => { announce(); publishDom(); invalidate() }),
+      board.camera.subscribeCamera(() => { placeWorld(); latest.current.onMoveStart?.() }),
+      board.camera.subscribeCameraEnd((view) => { latest.current.onMoveEnd(null, view); invalidate() }),
+      store.sceneRevision.subscribe(() => { publishDom(); invalidate() }),
+      store.tools.subscribe(invalidate), store.names.subscribe(invalidate), theme.subscribe(invalidate), carried.subscribe(invalidate),
+      tabShown.subscribe(() => { enable(); invalidate() }),
+      onFontsLoaded(() => { scene?.redrawAll(); invalidate() }),
+      queries.getQueryCache().subscribe((event) => {
+        if (event.type !== "updated" || event.action.type !== "success") return
+        const key = event.query.queryKey
+        if ((key[0] === "project-run" && key[1] === store.projectId) || key[0] === "machines") invalidate()
+      }),
+    )
+    publishDom()
+    placeWorld()
+    Object.defineProperty(element, "canvasInspection", {
+      configurable: true,
+      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, ticking: () => ticker.started, renderer: () => renderer, software: () => software.value }),
+    })
+    return () => {
+      stopped = true
+      clearTimeout(wakeTimer)
+      ticker.destroy()
+      interaction?.destroy()
+      for (const stop of stops) stop()
+      scene?.destroy()
+      media.destroy()
+      stage.destroy({ children: true })
+      renderer?.destroy({ removeView: true })
+      forgetMeasurements()
+      delete (element as HTMLDivElement & { canvasInspection?: unknown }).canvasInspection
+      live.current = { invalidate: () => {}, enable: () => {} }
+    }
+  }, [board, store, client, queries, projectEpoch, loggedOut])
+
+  return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby={helpId}>
+    {props.children}
+    <div ref={world} className="canvas-world">
+      {overlays.map(({ name, draft, asking, box }) => <div key={name} className="canvas-over" style={{ left: box.x, top: box.y, width: box.w }}>
+        {draft !== undefined && <div className="canvas-name card"><div className="head" style={{ height: HEAD }}>
+          <NameField name={name} draft={draft} onCancel={() => { if (store.get(name)?.placing) store.cancel(store.resolveName(name)); else store.patch(name, { draft: undefined }) }} />
+        </div></div>}
+        {asking && <div className="rest-asking canvas-control" style={{ top: box.under + 4 }}><Asking name={name} fit={asking.fit} /></div>}
+      </div>)}
+    </div>
+    <ul className="canvas-cards sr-only" role="listbox" aria-label="Boxes on the canvas" aria-multiselectable="true">
+      {cards.map((card) => <li key={card.name} role="option" data-asset={card.name} aria-selected={card.selected}>{card.label}</li>)}
+    </ul>
+    <span id={helpId} className="sr-only">Use arrow keys to select a box, Enter to open it, and Escape to return. Drag empty space to pan; Shift-drag selects a rectangle.</span>
+    {failed && <div className="empty-canvas" role="alert"><p>This browser couldn't draw the canvas ({failed}). Turn on hardware acceleration in its settings, or open this page in another browser.</p></div>}
+  </div>
+}
