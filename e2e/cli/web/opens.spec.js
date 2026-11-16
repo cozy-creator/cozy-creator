@@ -374,8 +374,8 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
   });
 
   /** A browser of its own, its cache cold, and its first tab open. */
-  const fresh = async (theme = 'paper') => {
-    const context = await newContext({ viewport: VIEWPORT });
+  const fresh = async (theme = 'paper', viewport = VIEWPORT) => {
+    const context = await newContext({ viewport });
     await context.addInitScript(SAMPLER);
     await context.addInitScript((theme) => {
       try { localStorage.setItem('cozy.theme', theme); } catch {}
@@ -518,18 +518,21 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     });
   }
 
-  // An old project's thumbnails, none stored: each made in the background as it's asked for, its box pulsing until it's drawn.
+  // An old project's thumbnails, none stored: each made in the background as it's asked for, its box pulsing until it's drawn. At 1440×900,
+  // pictures of it to be looked at (look-at-your-own-ui): the frames with their placeholders, then the previews.
   for (const theme of ['paper', 'dark']) {
     await test.step(`${theme}: none stored, each box pulses while its preview is made`, async () => {
       const one = projects.plain;
       rmSync(join(one.view, '.thumbs'), { recursive: true, force: true });
       rmSync(join(homedir(), '.cozy', 'cache', 'thumbs'), { recursive: true, force: true });
-      const { context, wire, first } = await fresh(theme);
+      const { context, wire, first } = await fresh(theme, { width: 1440, height: 900 });
       await first.goto(one.url);
       let pulsing = 0;
       await soft.poll(async () => (pulsing = await first.evaluate(() => (document.querySelector('.canvas-root')?.canvasInspection?.names() ?? []).filter(name => window.__opensCard(name)?.pulsing).length)), { message: `${theme}: boxes pulse while their previews are made`, timeout: 15_000, intervals: [50] }).toBeGreaterThanOrEqual(3);
       seen[`pulse_${theme}`] = { pulsing };
+      await first.screenshot({ path: testInfo.outputPath(`open-${theme}-1440-placeholders.png`) });
       await opening(`backfill_${theme}`, first, wire, one, { go: false, bars: false });
+      await first.screenshot({ path: testInfo.outputPath(`open-${theme}-1440-previews.png`) });
       await context.close();
     });
   }
