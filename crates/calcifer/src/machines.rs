@@ -769,6 +769,19 @@ impl Machines {
         lines.map_err(|e| log_refusal(&row.name, log, e))
     }
 
+    /// Its GPUs' use, once a second while followed (cl-1100). A machine whose Cozy predates it says so.
+    pub(crate) async fn follow_gpus(&self, text: &str) -> Result<crate::link::Live<v1::GpuUse>, Error> {
+        let (row, link) = self.linked(text)?;
+        link.follow_gpus().await.map_err(|e| match e {
+            LinkError::NotFound => Error::new(
+                Kind::NotFound,
+                "machine_gpu_use_unknown",
+                format!("{} runs an older Cozy that doesn't report GPU use. It will once it updates.", row.name),
+            ),
+            e => refusal(&row.name, e),
+        })
+    }
+
     /// The machine whose kept lines `text` reads: as `named`, or by its name the one ended machine that had it when no live
     /// one has (a rental id names it too; an added machine has none).
     fn kept_named(&self, text: &str) -> Result<Option<MachineRow>, Error> {
@@ -2152,6 +2165,23 @@ pub(crate) async fn logs(
     Ok(Sse::new(events)
         .keep_alive(KeepAlive::default())
         .into_response())
+}
+
+/// `GET /v1/machines/{name}/gpus`, as SSE (cl-1100): `gpus` events, each a `GpuUse` the machine read that second, for as long as the
+/// caller follows. Nothing is read while nobody does.
+pub(crate) async fn gpus(State(api): State<Arc<Api>>, UrlPath(name): UrlPath<String>) -> Result<Response, Refusal> {
+    let readings = api.machines.follow_gpus(&name).await.map_err(Refusal)?;
+    let events = readings
+        .take_while(|reading| std::future::ready(reading.is_ok()))
+        .filter_map(|reading| {
+            let event = reading.ok().map(|reading| {
+                let data = serde_json::to_string(&reading).expect("a reading serializes");
+                Ok::<_, Infallible>(sse::Event::default().event("gpus").data(data))
+            });
+            std::future::ready(event)
+        })
+        .take_until(api.stopped());
+    Ok(Sse::new(events).keep_alive(KeepAlive::default()).into_response())
 }
 
 /// A log read from an instant on: lines before the first stamped at or after it are left out. A

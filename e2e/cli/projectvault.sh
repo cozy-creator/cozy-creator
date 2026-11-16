@@ -708,3 +708,57 @@ vault_native() (
   "$py" "$E2E/cli/vault_native.py" --cli "$COZY" --root "$root" > "$OUT/vault-native.json" 2>&1 || fail "vault native: $(tail -c 1200 "$OUT/vault-native.json")"
   echo "vault native: $(tail -1 "$OUT/vault-native.json")"
 )
+
+# A run on `local` after a lock that ended one, then unlock, a run, lock, unlock, attaches; the vault locks at its maximum (cl-1082;
+# coordinator 11-16: "an ordinary user who locks mid-render"). Nothing is stopped (e2e/cli/vault_reattach.py).
+vault_reattach() (
+  step "a run on local after a lock that ended one, a run, a lock, attaches; the vault locks at its maximum (cl-1082)"
+  [ -n "$LOCAL" ] || exit 0
+  local work secrets project
+  work=$(mktemp -d "$OUT/vault-reattach.XXXXXX") secrets=$(mktemp -d "$OUT/vault-reattach-credentials.XXXXXX")
+  trap 'rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic vault reattach passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  project=$work/reattach-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
+  cozy --json new "$project" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" \
+    || { check "vault reattach: cozy new: $(tail -c 300 "$work/new.json")"; exit 0; }
+  python3 "$E2E/cli/vault_reattach.py" --project "$project" --passphrase-file "$secrets/passphrase" --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" \
+    || { cat "$work/proof.err"; check "vault reattach: $(tail -n 1 "$work/proof.err" | cut -c1-900)"; }
+  in_project "$project" --json vault lock > /dev/null 2>&1 || true
+)
+
+# A run its machine hasn't begun never holds a vault past its maximum: it fails vault_locked and the vault locks (cl-1082; coordinator
+# 11-16: "a vault past its maximum is the privacy promise"). Its machine is a rental on its way: the isolated Hub's docker provider never
+# serves on this runner (coming.sh), so a run asked of it is never begun (e2e/cli/vault_unstarted.py).
+vault_unstarted() (
+  step "a run its machine hasn't begun never holds a vault past its maximum (cl-1082)"
+  [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] && [ -n "${E2E_HUB_LOG:-}" ] \
+    || { echo "vault unstarted: it rents on the isolated Hub of a GitHub runner"; exit 0; }
+  local work secrets project rental='' name='' pid
+  work=$(mktemp -d "$OUT/vault-unstarted.XXXXXX") secrets=$(mktemp -d "$OUT/vault-unstarted-credentials.XXXXXX")
+  # As it found them: no rental, signed out.
+  trap '[ -z "$rental" ] || timeout 120 cozy --json machine end "${name:-$rental}" --force -y > "$work/end.json" 2>&1 || true
+    cozy --json logout > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  signin "$E2E_HUB_EMAIL" > "$work/login.json" || { check "vault unstarted: cozy login: $(tail -c 300 "$work/login.json")"; exit 0; }
+  cozy --json machine rent cpu -y > "$work/rent.ndjson" 2> "$work/rent.err" & pid=$!
+  for _ in $(seq 180); do
+    rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$work/rent.ndjson" 2> /dev/null | tail -1 || true)
+    [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+    break
+  done
+  kill -KILL "$pid" 2> /dev/null || true
+  wait "$pid" 2> /dev/null || true
+  [ -n "$rental" ] || { check "vault unstarted: machine rent cpu: no rental accepted: $(tail -c 300 "$work/rent.ndjson") $(tail -c 300 "$work/rent.err")"; exit 0; }
+  for _ in $(seq 120); do
+    name=$(cozy --json machine ls 2> /dev/null | jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r and .placeholder == null and .state == "booting") | .name' || true)
+    [ -z "$name" ] || break
+    sleep 0.5
+  done
+  [ -n "$name" ] || { check "vault unstarted: $rental was never named on its way"; exit 0; }
+  printf '%s\n' 'synthetic vault unstarted passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  project=$work/unstarted-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
+  cozy --json new "$project" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" \
+    || { check "vault unstarted: cozy new: $(tail -c 300 "$work/new.json")"; exit 0; }
+  python3 "$E2E/cli/vault_unstarted.py" --project "$project" --passphrase-file "$secrets/passphrase" --machine "$name" --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" \
+    || { cat "$work/proof.err"; check "vault unstarted: $(tail -n 1 "$work/proof.err" | cut -c1-900)"; }
+  in_project "$project" --json vault lock > /dev/null 2>&1 || true
+)

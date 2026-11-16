@@ -225,6 +225,46 @@ asset_of "$P" hero | J --arg p "$prompt" '.fields.instructions == $p' || check "
 drop_folder "$P"
 }
 
+# cl-1093: a run's file that landed after its run arrived (a local run's latents, cl-1046) became a loose run row of the project's, and a
+# purge keeps every run row's file: the deleted take's latents stayed. Projects from before the fix hold such rows, so a purge lets them go
+# with the version they belong to. Here a deleted box's version is run 999's and a run row of 999 names its file, as a late landing left
+# it; dated past its window, its file goes at the next open, and so does the row.
+db_purged_late() {
+step "a deleted box's file a late-landed run row names goes with its version (cl-1093)"
+local P=$OUT/purged-late pic aged rows
+cozy --json new --unencrypted "$P" > "$OUT/purged-late-new.log" 2>&1 || { check "purged late: no project: $(tail -c 300 "$OUT/purged-late-new.log")"; return; }
+ffmpeg -v error -y -f lavfi -i 'color=c=orange:size=64x48' -frames:v 1 "$OUT/purged-late.png"
+project_import "$P" "$OUT/purged-late.png" pic > /dev/null || { check "purged late: the box wasn't made"; return; }
+pic=$(asset_of "$P" pic | jq -r '.sha256 // empty')
+[ -n "$pic" ] && in_files "$P" "$pic" || { check "purged late: the box's file isn't in files/"; return; }
+project_api "$P" /assets/pic -X DELETE > /dev/null || { check "purged late: the delete"; return; }
+calcifer_halt || return
+aged=$(python3 -I - "$P/project.db" "$pic" $(((3 * 60 + 1) * 60 * 1000)) <<'PY'
+import json, sqlite3, sys
+db, sha, ago = sqlite3.connect(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+key = db.execute("SELECT key FROM lock_assets WHERE json_extract(record, '$.deleted_ms') IS NOT NULL").fetchone()[0]
+versions = db.execute("UPDATE versions SET record = json_set(record, '$.run', 999) WHERE key = ?", (key,)).rowcount
+ord_ = db.execute("SELECT coalesce(max(ord), -1) + 1 FROM lock_runs").fetchone()[0]
+row = {"id": "cl1093late", "run": 999, "function": "local/late/shot", "output": "latents", "sha256": sha}
+db.execute("INSERT INTO lock_runs (ord, record) VALUES (?, ?)", (ord_, json.dumps(row)))
+db.execute("INSERT INTO run_files (ord, run, function, output, sha256) VALUES (?, 999, 'local/late/shot', 'latents', ?)", (ord_, sha))
+dated = db.execute("UPDATE lock_assets SET record = json_set(record, '$.deleted_ms', json_extract(record, '$.deleted_ms') - ?) WHERE key = ?", (ago, key)).rowcount
+db.execute("UPDATE ops SET at_ms = at_ms - ?", (ago,))
+db.commit()
+print(versions, dated)
+PY
+) || check "purged late: project.db couldn't be set up"
+cozy --json machine ls > /dev/null || check "purged late: Calcifer didn't start again"
+read -r rows _ <<< "$aged"
+[ "${rows:-0}" -ge 1 ] || check "purged late: the deleted box had no version to mark as run 999's: ${aged:-nothing}"
+status "$P" > /dev/null || check "purged late: the project doesn't open past the window"
+for _ in $(seq 150); do in_files "$P" "$pic" || break; sleep 0.2; done
+! in_files "$P" "$pic" || check "purged late: the late run row kept the deleted box's file past its purge"
+rows=$(sql "$P" "SELECT count(*) FROM run_files WHERE sha256 = '$pic'" | jq -r '.[0]')
+[ "$rows" = 0 ] || check "purged late: the late run row stayed after its version's purge ($rows)"
+drop_folder "$P"
+}
+
 # cl-823: Calcifer closes a project nothing reads. Projects of 200 boxes each, made by `cozy apply`, opened by the CLI and shown by a
 # page's stream (`PUT /v1/events/{stream}`): each is open while a call or a stream holds it (its project.db among Calcifer's open files),
 # and closes once the call has answered and once the stream shows another. Calcifer's heap is back within a tenth of where it stood after

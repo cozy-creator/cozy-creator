@@ -25,7 +25,7 @@ hyper-util.workspace = true
 infer.workspace = true
 pep440_rs = { version = "0.7.3", default-features = false }
 reqwest.workspace = true
-rusqlite = { workspace = true, features = ["backup", "functions"] }
+rusqlite = { workspace = true, features = ["backup", "functions", "hooks"] }
 rustls.workspace = true
 serde.workspace = true
 serde_ignored.workspace = true

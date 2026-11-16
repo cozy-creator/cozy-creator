@@ -1,0 +1,34 @@
+/* The machines' strip past its room (MachineTabs): "N more", and each tab at its full width where no one sees it, as .ptabs-ghost. */
+.mtab.more {
+  color: var(--mute);
+}
+.mtab.more:hover {
+  color: var(--ink);
+}
+.mtabs-ghost {
+  position: absolute;
+  width: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+.mtabs-ghost > div {
+  display: flex;
+  width: max-content;
+}
+.mtabs-ghost .dot {
+  width: calc(9px * var(--ui));
+  height: calc(9px * var(--ui));
+  margin: 0;
+}
+/* Machines opened from "N more": a line under those with no tab. */
+.runrow.machine.tabbed {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+/* Under what a machine is working on: its Render here and Details. */
+.activity footer {
+  margin-top: 4px;
+  padding: 8px 4px 2px;
+  border-top: 1px solid var(--line);
+}

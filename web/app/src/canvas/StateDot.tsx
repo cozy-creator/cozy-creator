@@ -29,11 +29,13 @@ export function viewState(view: ElementView): NodeState | null {
   return nodeState(asset, { waiting, failureShown: !(asset?.pinned && faceOf(view) === "media") })
 }
 
-const SAID: Record<NodeState, string> = { queued: "Queued", running: "Rendering", unseen: "New, not looked at", failed: "Failed" }
+export const SAID: Record<NodeState, string> = { queued: "Queued", running: "Rendering", unseen: "New, not looked at", failed: "Failed" }
+/** What its green dot says on hover: "2 new versions, not looked at". */
+export const unseenSaid = (count: number, noun: string) => `${count} new ${noun}${count === 1 ? "" : "s"}, not looked at`
 
 /** A node's state, left of its name, wherever it's shown: its tile, its Focus header, a list of them. Nothing when there's nothing to say. */
 export function StateDot({ state, unseen = 0, noun = "take" }: { state: NodeState | null; unseen?: number; noun?: string }) {
   if (!state) return null
-  const said = state === "unseen" ? `${unseen} new ${noun}${unseen === 1 ? "" : "s"} you haven't looked at` : SAID[state]
+  const said = state === "unseen" ? unseenSaid(unseen, noun) : SAID[state]
   return <span className={`state-dot ${state}`} data-state={state} role="img" aria-label={said} title={said} />
 }

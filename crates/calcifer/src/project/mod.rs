@@ -100,10 +100,13 @@ pub(crate) use thumbs::previews;
 
 /// The projects this Calcifer knows: those open now, by id, which each keeps in its `project.db` (cl-819). Every one it opened is
 /// in `state.db`'s `projects`, by id, with its name and where it last was. A project is open while anything reads it: a call, a
-/// stream, its walk (which goes until nothing is owed), a page showing it. The last of them to let go closes it (cl-823).
+/// stream, its walk (which goes until nothing is owed), a page showing it, and a plaintext one `LINGER` after a request. The last of them
+/// to let go closes it (cl-823).
 #[derive(Default)]
 pub(crate) struct Projects {
     open: Mutex<HashMap<String, Weak<Project>>>,
+    /// Plaintext projects a request used, held until `LINGER` after the last, by id, with their project.db's file as it was then.
+    lingering: Mutex<HashMap<String, Lingering>>,
     /// What was last heard of each published package projects name, by `with`.
     heard: Mutex<HashMap<String, Heard>>,
     /// How many times that changed: what a read said of them is good until then.
@@ -111,12 +114,15 @@ pub(crate) struct Projects {
     /// Held while a project is made: two first uses of one folder (two `cozy new`s, a page and the CLI) make one.
     making: Mutex<()>,
     requests:Mutex<HashMap<PathBuf,usize>>,
+    /// Run submissions being answered, apart from `requests`: one waits for its run's machine, which a vault's maximum doesn't (cl-1082).
+    submits:Mutex<HashMap<PathBuf,usize>>,
 }
 
-pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf}
+pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf,submit:bool}
 impl Drop for RequestActivity {
     fn drop(&mut self) {
-        let mut requests=self.api.projects.requests.lock().expect("project requests");
+        let projects=&self.api.projects;
+        let mut requests=if self.submit { projects.submits.lock() } else { projects.requests.lock() }.expect("project requests");
         let Some(count)=requests.get_mut(&self.root) else { return };
         *count-=1;
         if *count==0 { requests.remove(&self.root); drop(requests); vault::work_ended(&self.root); }
@@ -126,10 +132,20 @@ impl Projects {
     pub(crate) fn active_requests(&self,root:&FsPath)->bool {
         self.requests.lock().expect("project requests").get(&vault::logical(root)).is_some_and(|count|*count>0)
     }
+    /// Whether a run submission to the project is being answered (`track_submit`).
+    pub(crate) fn submitting(&self,root:&FsPath)->bool {
+        self.submits.lock().expect("project requests").get(&vault::logical(root)).is_some_and(|count|*count>0)
+    }
     fn track_request(&self,api:&Arc<Api>,root:&FsPath)->RequestActivity {
         let root=vault::logical(root);
         *self.requests.lock().expect("project requests").entry(root.clone()).or_default()+=1;
-        RequestActivity {api:api.clone(),root}
+        RequestActivity {api:api.clone(),root,submit:false}
+    }
+    /// A run submission being answered: it may wait for its run's machine, so it's no request a vault's lock waits for (cl-1082).
+    fn track_submit(&self,api:&Arc<Api>,root:&FsPath)->RequestActivity {
+        let root=vault::logical(root);
+        *self.submits.lock().expect("project requests").entry(root.clone()).or_default()+=1;
+        RequestActivity {api:api.clone(),root,submit:true}
     }
 }
 
@@ -150,6 +166,8 @@ pub(crate) struct Project {
     /// Cache ownership follows the physical mount, not a replaceable viewer authorization.
     mount_id: Option<vault::MountIdentity>,
     folder: Folder,
+    /// Which file its project.db was as it opened (`db_file`): another there is another project's, or a restored copy, never this one.
+    db_file: Option<(u64, u64)>,
     /// What its files say, as last read.
     model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
     /// What streams were last told of it.
@@ -309,8 +327,14 @@ impl Projects {
     }
 
     /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id, public code or name, or its folder on this computer. Open,
-    /// else opened from the index. It stays open while the answer is held.
+    /// else opened from the index. It stays open while the answer is held, and a plaintext one `LINGER` after.
     fn get(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
+        let project = self.found(api, named)?;
+        self.linger(api, &project);
+        Ok(project)
+    }
+
+    fn found(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
         if let Some(project) = self.open_now(named) {
             return Ok(project);
         }
@@ -328,6 +352,54 @@ impl Projects {
         Ok(project)
     }
 
+    /// A project lingering in `dir` whose project.db isn't the file it was (its folder deleted and made again), let go: what opens there
+    /// now reads the new file, never the old one's connections and document a lingering project would keep shared.
+    fn let_go_replaced(&self, dir: &FsPath) {
+        let now = db_file(dir);
+        let mut lingering = self.lingering.lock().expect("lingering lock");
+        let stale: Vec<String> = lingering.iter().filter(|(_, held)| held.project.folder.dir == dir && held.project.db_file != now).map(|(id, _)| id.clone()).collect();
+        let gone: Vec<Lingering> = stale.iter().filter_map(|id| lingering.remove(id)).collect();
+        drop(lingering);
+        drop(gone);
+    }
+
+    /// Every project held after its last request let go, its connections closed and its WAL emptied first: Calcifer stops.
+    pub(crate) fn close_lingering(&self) {
+        let lingering: Vec<Lingering> = self.lingering.lock().expect("lingering lock").drain().map(|(_, held)| held).collect();
+        for held in lingering {
+            if let Err(error) = held.project.folder.close_connections(true) {
+                warn!(code = %error.code, "a project held after its request didn't close as Calcifer stopped");
+            }
+        }
+    }
+
+    /// `project`, a plaintext one a request used, held open until `LINGER` after this, its last use: one task a project lets it go.
+    fn linger(&self, api: &Arc<Api>, project: &Arc<Project>) {
+        if vault::encrypted(&project.root) {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let held = Lingering { project: project.clone(), until: Instant::now() + LINGER };
+        let fresh = self.lingering.lock().expect("lingering lock").insert(project.id.clone(), held).is_none();
+        if !fresh {
+            return;
+        }
+        let (api, id) = (api.clone(), project.id.clone());
+        runtime.spawn(async move {
+            loop {
+                let Some(until) = api.projects.lingering.lock().expect("lingering lock").get(&id).map(|held| held.until) else { return };
+                tokio::time::sleep_until(until.into()).await;
+                let mut lingering = api.projects.lingering.lock().expect("lingering lock");
+                if lingering.get(&id).is_some_and(|held| held.until <= Instant::now()) {
+                    let gone = lingering.remove(&id);
+                    drop(lingering);
+                    drop(gone);
+                    return;
+                }
+            }
+        });
+    }
+
     /// Project `id` held open by a stream that shows it, until the stream lets it go.
     pub(crate) fn reader(&self, api: &Arc<Api>, id: &str) -> Result<Reader, Refusal> {
         self.get(api, id).map(Reader)
@@ -340,6 +412,7 @@ impl Projects {
         let mount_id = vault::mount_identity(&root);
         let physical = current_view(&root)?;
         let dir = physical.as_path();
+        self.let_go_replaced(dir);
         let (folder, Identified { id, name, code, key }) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
             let identified = identify_loaded(api, dir, folder)?;
             let id = &identified.id;
@@ -359,8 +432,9 @@ impl Projects {
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
+        let file = db_file(dir);
         let project = match open.get(&id).and_then(Weak::upgrade)
-            .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir) {
+            .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir && project.db_file == file) {
             Some(project) => {
                 *project.key.lock().expect("key lock") = key;
                 project
@@ -375,6 +449,7 @@ impl Projects {
                     root,
                     mount_id,
                     folder,
+                    db_file: file,
                     jobs: Jobs::new(id.clone()),
                     model: tokio::sync::Mutex::default(),
                     told: Mutex::default(),
@@ -403,8 +478,8 @@ impl Projects {
         drop(open);
         // Calcifer finds its journal while anything holds it open.
         api.calcifer.note_open(RunOwner::of(&project, &api.calcifer));
-        // Its deleted boxes looked at as it opens: one set aside before cl-919 counts from now.
-        purge::due(&project.id, now_ms());
+        // Its deleted boxes looked at as it opens, if it has any.
+        purge::opened(&project.id, &project.folder);
         // What the legacy cut held for it in this computer's TensorFS store, copied in now it can be read (cl-1003).
         if crate::store::kept_path(&api.machines.hubs.home().calcifer(), &project.root).exists() {
             match keep_left_on_local(&project.root, &api.machines.hubs.home().calcifer()) {
@@ -432,6 +507,31 @@ impl Projects {
 const CANCELED: &str = "version_canceled";
 /// How long what was heard of a package stands before a read asks again, in the background.
 const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// How long a plaintext project a request opened stays open after it: asked again meanwhile (a page's next read, a client's next
+/// call), it isn't loaded again (cl-1010: each run list of a 3,000-box project loaded its whole document, 50–60 ms, 200 four at once).
+/// An encrypted one closes with its request, as every project did.
+const LINGER: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A project held open after a request (`Projects::linger`).
+struct Lingering {
+    project: Arc<Project>,
+    until: Instant,
+}
+
+/// Which file `dir`'s project.db is: its device and inode. Elsewhere none: Windows can't delete a database a process has open.
+fn db_file(dir: &FsPath) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(dir.join("project.db")).ok().map(|meta| (meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
+}
 
 /// Where a run of the project in `dir` lands its outputs.
 pub(crate) fn landing(dir: &FsPath) -> PathBuf {
@@ -547,10 +647,29 @@ fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject
 }
 
 /// The project the index knows by `text`, its id, public code or its name (in any case).
+/// A locked project's row as the project it is now (cl-1090): unlocked since, it's the project its own keybag names in that folder, so a
+/// page that opened it by its handle goes on to its own address. Any other row as it is.
+fn unlocked(entry: crate::state::KnownProject) -> crate::state::KnownProject {
+    if !entry.id.starts_with("locked-") || vault::require_path(&entry.path).is_err() { return entry; }
+    match vault::kept_in_keybag(&entry.path) {
+        Some((id, code)) => crate::state::KnownProject { id, code, ..entry },
+        None => entry,
+    }
+}
+
 fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     let mut indexed = indexed(api)?;
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
-        return Ok(indexed.swap_remove(at));
+        return Ok(unlocked(indexed.swap_remove(at)));
+    }
+    // A locked project's handle, the project opened since by its own id (cl-1090): the project now in that folder, until its next lock,
+    // and only while that folder holds an unlocked encrypted project: never a plain one moved in, never a locked one.
+    if text.starts_with("locked-") {
+        let path = api.calcifer.store().handle_path(text).map_err(|e| Error::internal("calcifer_store", e.to_string()))?
+            .filter(|path| vault::encrypted(path) && vault::require_path(path).is_ok());
+        if let Some(at) = path.and_then(|path| indexed.iter().position(|entry| entry.path == path && !entry.id.starts_with("locked-"))) {
+            return Ok(indexed.swap_remove(at));
+        }
     }
     // A locked project's id and code are no longer in the index (cl-984), only its folder: both are read from its own keybag.
     let code = code::parse(text);
@@ -752,7 +871,8 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
     };
     let row = folder::RunFile { run: made.run, run_id: Some(made.run_id.clone()), function: made.target.to_owned(), output, sha256: made.digest.to_owned(), ..Default::default() };
     let folder = Folder::at(project);
-    let (kept, unlisted) = folder.adopt(dest, made.digest, row, made.measured).map_err(|e| e.message)?;
+    let take = folder.take_run(made.run_id);
+    let (kept, unlisted) = folder.adopt(dest, made.digest, row, made.measured, take).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
     let said = unlisted.map(|why| format!("{} is saved in files/, but Cozy couldn't add it to the project: {}.", made.output, inner(&why.message)));
@@ -1492,7 +1612,7 @@ fn current_view(root: &FsPath) -> Result<PathBuf, Error> {
 impl Project {
     /// Old references are bound to their original physical view, never a recycled drive.
     fn require_view(&self) -> Result<(), Error> {
-        if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir {
+        if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir || db_file(&self.folder.dir) != self.db_file {
             return Err(Error::new(Kind::Conflict, "project_view_changed", "This project's folder changed while it was open. Open the project again."));
         }
         Ok(())
@@ -1808,6 +1928,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     let older = known.len().saturating_sub(limit) as u64;
     let open: HashMap<String, Arc<Project>> = api.projects.now_open().into_iter().map(|project| (project.id.clone(), project)).collect();
     let projects = (known.into_iter().take(limit))
+        .map(unlocked)
         .map(|entry| Known {
             name: entry.name,
             busy: open.get(&entry.id).is_some_and(|project| *project.walking.lock().expect("walking lock")),
@@ -2127,10 +2248,18 @@ fn whereabouts(file: &folder::File) -> (bool, Option<String>) {
     (absent, (absent && file.stays()).then(|| file.machine.clone()))
 }
 
+/// The most of a box of words' version a read of it says: the rest is in its file.
+const WORDS_MAX: usize = 64 * 1024;
+
 /// The file people mean by `files`, as a version lists it.
-fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
+fn main_file(folder: &Folder, lock: &Lock, version: &Version) -> Option<MainFile> {
     let sha256 = version.main()?;
     let file = lock.files.get(sha256)?;
+    let text = (file.field() == format::TEXT && file.here).then(|| {
+        let words = std::fs::read(folder.path(&file.path)).ok()?;
+        let cut = String::from_utf8_lossy(&words[..words.len().min(WORDS_MAX)]).into_owned();
+        Some(cut)
+    }).flatten();
     let output = version.main_output()?.clone();
     let metadata = version.metadata.get(&output).cloned().unwrap_or_default();
     let (absent, machine) = whereabouts(file);
@@ -2140,6 +2269,7 @@ fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
         path: file.path.clone(),
         sha256: sha256.clone(),
         field: file.field().to_owned(),
+        text,
         width: measured(file.width),
         height: measured(file.height),
         duration_ms: measured(file.lasts_ms()),
@@ -2281,7 +2411,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                     latents: version.files.get("latents").and_then(|sha256| lock.files.get(sha256)).filter(|file| file.stays()).map(|file| file.machine.clone()),
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.run,
-                    main: main_file(lock, version),
+                    main: main_file(folder, lock, version),
                     aspect_ratio: version.fields.as_ref().and_then(|fields| fields.get("aspect_ratio")?.as_str()).map(str::to_owned),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
@@ -2972,7 +3102,7 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     }))
     .map_err(Refusal)?;
     if lost.get() {
-        purge::due(&project.id, now_ms() + purge::window_ms());
+        purge::deleted(&project.id, now_ms() + purge::window_ms());
     }
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);
@@ -5440,7 +5570,8 @@ impl Walk {
                 number.set(*last);
             })?;
             version.number = number.get();
-            let pending = Pending { job: key.clone(), kind: asset.kind.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone() };
+            let words = (asset.kind == format::TEXT).then(|| api::calcifer::tool::text_field(&callable).map(str::to_owned)).flatten();
+            let pending = Pending { job: key.clone(), kind: asset.kind.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), words, target: target.clone() };
             let settling = |walk: &mut folder::WalkFile| settle(&mut walk.walk);
             if now.asset(&name).is_some_and(|held| held.failed.is_some()) {
                 self.folder().update_lock(|lock| {
@@ -6019,6 +6150,10 @@ impl Walk {
             };
             saved.insert(file, sha256);
         }
+        // A box of words keeps what its tool answered as its version's file, as a picture is kept (xs-204).
+        if let Some(words) = pending.words.as_deref().zip(run.result.as_ref()).and_then(|(field, result)| api::calcifer::tool::text_in(result, field)) {
+            saved.insert(format::TEXT.to_owned(), folder.keep_words(&words)?);
+        }
         if saved.is_empty() && version.files.is_empty() {
             let said = format!("{name}: run {} finished without saving a file.", run.number);
             return Err(Error::new(Kind::Unavailable, "version_unsaved", said).next(format!("cozy run watch {}", run.number)));
@@ -6397,7 +6532,7 @@ impl Walk {
             }
             Ok(())
         })?;
-        self.landed_unseen(name, number, approve);
+        unseen::landed(&self.project, name, number);
         self.say_landed(name, &version, noun, number)
     }
 
@@ -6436,15 +6571,8 @@ impl Walk {
             }
             tally.execution_ms += version.execution_ms;
         }
-        self.landed_unseen(name, number.get(), approve);
+        unseen::landed(&self.project, name, number.get());
         self.say_landed(name, &version, noun, number.get())
-    }
-
-    /// A version that lands beside an approved one, which the box goes on showing, is unseen until it's looked at (cl-928).
-    fn landed_unseen(&self, name: &str, number: u32, approve: bool) {
-        if !approve {
-            unseen::landed(&self.project, name, number);
-        }
     }
 
     fn say_landed(&self, name: &str, version: &Version, noun: &str, number: u32) -> Result<(), Error> {

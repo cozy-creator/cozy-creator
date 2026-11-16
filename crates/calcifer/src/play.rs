@@ -11,7 +11,6 @@ use api::{
     calcifer::Play,
     machine::capability::{self, Grant},
     error::{Error, Kind},
-    ids::RunId,
 };
 use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey as _};
 use serde::Deserialize;
@@ -37,7 +36,10 @@ fn an_hour() -> String {
     "1h".into()
 }
 
-/// A lifetime in seconds: a positive count of seconds, minutes, hours or days (`90s`, `30m`, `24h`, `7d`).
+/// The longest a link plays: what's asked for longer is this.
+const LONGEST_S: u64 = 30 * 86_400;
+
+/// A lifetime in seconds: a positive count of seconds, minutes, hours or days (`90s`, `30m`, `24h`, `7d`), at most 30 days.
 fn lifetime(text: &str) -> Result<u64, Refusal> {
     let invalid = || Refusal(Error::new(Kind::Usage, "play_expires_invalid", format!("{text:?} isn't a duration like 30m, 24h or 7d.")));
     let unit = text.chars().last().ok_or_else(invalid)?;
@@ -51,18 +53,18 @@ fn lifetime(text: &str) -> Result<u64, Refusal> {
     };
     match count {
         0 => Err(invalid()),
-        count => Ok(count * scale),
+        count => Ok(count.checked_mul(scale).map_or(LONGEST_S, |s| s.min(LONGEST_S))),
     }
 }
 
 /// The player's link: everything it needs rides the fragment, which never leaves the browser.
-fn link(address: &str, fingerprint: &str, token: &str, run: &RunId, output: &str) -> String {
+fn link(address: &str, fingerprint: &str, token: &str, run: &str, output: &str) -> String {
     let fragment = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("v", "1")
         .append_pair("a", address)
         .append_pair("f", fingerprint)
         .append_pair("c", token)
-        .append_pair("r", run.as_str())
+        .append_pair("r", run)
         .append_pair("o", output)
         .finish();
     format!("{PLAYER}#{fragment}")
@@ -79,7 +81,10 @@ pub(crate) async fn play(
     }
     let expires_s = lifetime(&ask.expires)?;
     let row = find_scoped(&api, path.project(), path.key()).await?;
-    if row.project_root.is_some() { return Err(Refusal(Error::new(Kind::Conflict,"project_play_unavailable","A project's results can't be streamed this way. Open the result through its project instead."))); }
+    // A link plays from the machine to whoever holds it: never an encrypted project's output, which only its owner reads (cl-1066).
+    if row.project_root.as_deref().is_some_and(crate::project::vault::encrypted) {
+        return Err(Refusal(Error::new(Kind::Forbidden, "project_play_encrypted", "An encrypted project's results play only in the project, not by a link.")));
+    }
     let refuse = |kind, code: &str, message: String| Refusal(Error::new(kind, code, message));
     // A run still going may yet make the output; an ended one never will.
     let (name, index) = match ask.output.rsplit_once('/') {
@@ -123,8 +128,33 @@ pub(crate) async fn play(
             let message = format!("Cozy can't read the signing key {}.", machine.key.display());
             refuse(Kind::Internal, "machine_key_unreadable", message)
         })?;
-    let url_for = |token: &str| link(address, &webrtc.fingerprint, token, &row.id, &ask.output);
-    let token = token(&signer, endpoint.worker_id, &row.id, ask.output.clone(), expires_s);
+    // A project's run on this computer's machine keeps its outputs in the project's workspace there (cl-1066): the link names it, and
+    // the machine reads there while this Calcifer has it open, as it does again here. A rental keeps them in its own store.
+    let (scope, generation) = match api.calcifer.row_owner(&row).map_err(Refusal::from)? {
+        Some(owner) if name == "local" => {
+            let scope = crate::private_io::scope_for_project(owner.project_id(), owner.root()).map_err(Refusal)?;
+            let held = (scope.storage.project_id.clone(), scope.storage.generation);
+            let link = api.calcifer.link(&name).ok().flatten().ok_or_else(|| unavailable(format!("{name} isn't reachable.")))?;
+            link.with_private(scope).probe_private().await
+                .map_err(|_| unavailable(format!("{name} couldn't open this project's files to play them.")))?;
+            held
+        }
+        _ => (String::new(), 0),
+    };
+    let expires = i64::try_from(expires_s).ok().and_then(|s| (now_ms() / 1000).checked_add(s))
+        .ok_or_else(|| refuse(Kind::Internal, "play_expires_invalid", "This computer's clock is past what a link can say.".into()))?;
+    // The run as its machine knows it: sent again, `<id>~<attempt>`.
+    let sent = row.sent_id();
+    let url_for = |token: &str| link(address, &webrtc.fingerprint, token, &sent, &ask.output);
+    let token = capability::mint(&signer, Grant {
+        machine: endpoint.worker_id,
+        run: sent.clone(),
+        outputs: vec![ask.output.clone()],
+        scope,
+        generation,
+        expires,
+        ..Grant::default()
+    });
     Ok(Json(Play {
         url: url_for(&token),
         address: address.clone(),
@@ -134,20 +164,3 @@ pub(crate) async fn play(
     }))
 }
 
-/// A Cozy-Cap for one output of one run on one machine, for `expires_s` from now.
-fn token(
-    signer: &SigningKey,
-    machine: String,
-    run: &RunId,
-    output: String,
-    expires_s: u64,
-) -> String {
-    let grant = Grant {
-        machine,
-        run: run.to_string(),
-        outputs: vec![output],
-        expires: now_ms() / 1000 + expires_s as i64,
-        ..Grant::default()
-    };
-    capability::mint(signer, grant)
-}

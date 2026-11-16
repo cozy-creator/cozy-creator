@@ -81,6 +81,7 @@ fn routes() -> Router<Machine> {
         .route(path::UPCOMING, put(upcoming))
         .route(path::PREPARE, put(prepare))
         .route(path::MODELS_REMOVE, post(remove_model))
+        .route(path::GPUS, get(gpus))
         .route(path::HEALTH, get(health))
         .fallback(|| async { Refusal::from(Error::not_found("route_not_found", "this machine serves no such path")) })
         .method_not_allowed_fallback(|| async {
@@ -324,6 +325,37 @@ async fn status(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     let frames = super::machine_status::watch(m.identity.clone(), m.runs.clone(), caller.actor)
         .map(|frame| frame.and_then(|frame| event("status", &frame)));
     Ok(sse(m.authority(&caller), frames))
+}
+
+/// `GET /v1/gpus` as SSE (cl-1100): each NVIDIA GPU's busy share and memory in use, read once a second while the caller watches and
+/// never otherwise. One with none to read sends one empty reading. Watching is no activity: it holds no idle clock.
+async fn gpus(State(m): State<Machine>, headers: HeaderMap) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.machine()?;
+    let gpus: Vec<(u32, String)> = m.identity.gpus.iter().map(|gpu| (gpu.device_index, gpu.device_uuid.clone())).collect();
+    let opened = m
+        .call(move |_| Ok(gpus.into_iter().filter_map(|(index, uuid)| Some((index, platform::gpu::Device::open(&uuid).ok()?))).collect::<Vec<_>>()))
+        .await?;
+    let devices = Arc::new(opened);
+    let readings = futures_util::stream::unfold((devices, true), |(devices, first)| async move {
+        if !first {
+            if devices.is_empty() {
+                return std::future::pending().await;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let read = devices.clone();
+        let gpus = tokio::task::spawn_blocking(move || {
+            (read.iter())
+                .filter_map(|(index, device)| device.busy().ok().map(|(busy, used)| v1::GpuReading { index: *index, busy_percent: busy, memory_used_bytes: used }))
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
+        let at_unix_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |at| at.as_millis() as i64);
+        Some((event("gpus", &v1::GpuUse { at_unix_ms, gpus }), (devices, false)))
+    });
+    Ok(sse(m.authority(&caller), readings))
 }
 
 /// One SSE event named `name` whose data is `value`.

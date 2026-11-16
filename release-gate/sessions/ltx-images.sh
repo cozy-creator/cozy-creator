@@ -20,6 +20,8 @@
 #               default); the output's edges held against the clip's (ffmpeg edgedetect, SSIM) beside text's, which had none
 #   video-edges the same by the clip's edges
 #   motion      motion transfer (Paul 11-16): first_frame=<pearl>, "moves the way <clip> does", control=pose
+#   motion-text motion transfer from the instruction alone, no picture: an astronaut on Mars "moving the way <clip> does",
+#               control=pose
 #   keys        now: first_frame=<lighthouse>, a keyframe <lantern> at 2.5 s (frame 60): it lands on frame 60
 #   t2a         now's `sound` (Lightricks' audio-only text-to-audio): 5 s of a line of speech and a door; its FLAC, its
 #               length and level, and a spectrogram ($OUT/sheets/t2a.png)
@@ -28,6 +30,9 @@
 #   retake-sound the same with redo=sound: the picture held against the take, the sound redone in the window
 #   voice       now: <pearl> speaks in <line> (t2a's sound): Licon MSR's picture and voice; the model reads
 #               `Image 1: pearl.` and `Audio 1: line, belongs only to Image 1.`, and the box keeps both mentions
+#   ref-two-up  two subjects, <vangogh> (Image 1) and <pearl> (Image 2), the voice <line> hers, the enhancer on: the model reads
+#               each slot, `Audio 1: line, belongs only to Image 2.`, and the rewrite keeps Image 1, Image 2 and Audio 1
+#               (coordinator 11-16: with two subjects the labels bind each identity and voice)
 # The `now` cells render with prompt_upsampling off unless named `-up`; each keeps the text the model read
 # ($OUT/sheets/<cell>.txt, the result's `prompt`) beside its sheet.
 # Each cell keeps its run record, its video, a contact sheet ($OUT/sheets/<cell>.jpg: the first picture, frames 0, 30, 60, 90 and
@@ -35,7 +40,8 @@
 # Diffusers prepares it): the frame it matches best and the SSIM at frames 0 and 120. One rental; the pod's host RAM must hold the
 # 67 GB model (`ram_gb`). params:
 #   cells     what to run (default: the first six)
-#   seed      2611160            runtime   the Runtime manylinux wheel, https://…#sha256=<hex> (default: RUNTIME_WHEEL)
+#   seed      2611160            runtime   the Runtime manylinux wheel, https://…#sha256=<hex> or a cozy-runtime dev-build run id
+#                                          (default: RUNTIME_WHEEL)
 #   ram_gb    96                 need_s    seconds the cap must buy (5400)
 . "$(dirname "$0")/lib.sh"
 CELLS=$(param cells "was-text,text,first,last,first-last,was-ref") SEED=$(param seed 2611160) URL=$(param runtime)
@@ -43,22 +49,26 @@ RAM=$(param ram_gb 96) NEED=$(param need_s 5400)
 WAS=$PACKAGES/was/ltx-2.5 NOW=$PACKAGES/now/ltx-2.5 FIX=$(cd "$(dirname "$0")" && pwd)/fixtures/ltx-images
 for t in "$WAS" "$NOW"; do [ -f "$t/pyproject.toml" ] || fail "no packages_refs checkout ${t#"$PACKAGES"/}"; done
 grep -q 'last_frame' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 takes no last_frame"
-for c in ref ref-up ref-first sound pickup text-up first-up video video-edges motion keys; do
+for c in ref ref-up ref-first sound pickup text-up first-up video video-edges motion motion-text keys; do
   [[ ",$CELLS," != *",$c,"* ]] || grep -q 'prompt: Prompt\[Image' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 is older than references (cell $c)"
 done
-for c in ref ref-up ref-first voice ref-sheet ref-sheet-up; do
+for c in ref ref-up ref-first voice ref-two-up ref-sheet ref-sheet-up; do
   [[ ",$CELLS," != *",$c,"* ]] || grep -q 'speakers(' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 has no MSR subjects (cell $c)"
 done
 for c in t2a:sound retake:retake retake-sound:retake voice:generate; do
   [[ ",$CELLS," != *",${c%%:*},"* ]] || grep -q "^def ${c#*:}(" "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 has no ${c#*:} tool (cell ${c%%:*})"
 done
-[[ ",$CELLS," != *",voice,"* ]] || { grep -q 'speakers(' "$NOW/ltx_2_5/__init__.py" && [[ ",$CELLS," == *",t2a,"* ]]; } ||
-  fail "cell voice needs now's ltx-2.5 with MSR voices, and cell t2a for its line"
-[ -f "$FIX/pearl.jpg" ] && [ -f "$FIX/teapot.jpg" ] && [ -f "$REF/seed.jpg" ] || fail "no fixtures"
+for c in voice ref-two-up; do
+  [[ ",$CELLS," != *",$c,"* ]] || [[ ",$CELLS," == *",t2a,"* ]] || fail "cell $c needs cell t2a for its line"
+done
+[ -f "$FIX/pearl.jpg" ] && [ -f "$FIX/teapot.jpg" ] && [ -f "$FIX/vangogh.jpg" ] && [ -f "$REF/seed.jpg" ] || fail "no fixtures"
 command -v ffprobe > /dev/null || fail "no ffprobe (pod-session.yaml installs it from the tool cache)"
 mkdir -p "$OUT/wheel" "$OUT/sheets" "$OUT/videos" "$OUT/runs"
-if [ -n "$URL" ]; then
-  [[ $URL == https://*'#sha256='* ]] || fail "runtime is not https://…#sha256=<hex>"
+if [[ $URL =~ ^[0-9]+$ ]]; then
+  # A cozy-runtime dev-build run's manylinux wheel: an unmerged Runtime change, proven before it lands.
+  W=$(wheel_from "$OUT/wheel" "$URL") && [ -n "$W" ] || fail "no manylinux wheel in cozy-runtime run $URL"
+elif [ -n "$URL" ]; then
+  [[ $URL == https://*'#sha256='* ]] || fail "runtime is not https://…#sha256=<hex> or a cozy-runtime dev-build run id"
   W=$OUT/wheel/$(basename "${URL%%#*}" | sed 's/%2B/+/g')
   curl -fsSL --retry 5 --retry-all-errors "${URL%%#*}" -o "$W" || fail "cannot fetch the runtime wheel"
   [ "$(sha256sum "$W" | cut -c1-64)" = "${URL##*sha256=}" ] || fail "runtime wheel sha256"
@@ -67,15 +77,16 @@ else
   [ -n "$W" ] || fail "no Runtime: name \`runtime\`, or dispatch from rc/<x>"
 fi
 J() { jq -e "$@" > /dev/null; }
-# The pictures: the gate's lighthouse, its lantern room cropped from it, a teapot (the bench's) and Vermeer's Girl with a Pearl
-# Earring (public domain, Wikimedia Commons' 1280 px rendition, scaled to 768).
-cp "$REF/seed.jpg" "$OUT/lighthouse.jpg"; cp "$FIX/pearl.jpg" "$OUT/pearl.jpg"
+# The pictures: the gate's lighthouse, its lantern room cropped from it, a teapot (the bench's), Vermeer's Girl with a Pearl
+# Earring and Van Gogh's Self-portrait with Grey Felt Hat (both public domain, Wikimedia Commons' 1280 px renditions, scaled
+# to 768).
+cp "$REF/seed.jpg" "$OUT/lighthouse.jpg"; cp "$FIX/pearl.jpg" "$OUT/pearl.jpg"; cp "$FIX/vangogh.jpg" "$OUT/vangogh.jpg"
 ffmpeg -v error -y -i "$REF/seed.jpg" -vf "crop=420:420:178:40" "$OUT/lantern.jpg" || fail "lantern crop"
 cp "$FIX/teapot.jpg" "$OUT/teapot.jpg"
 # Two drum beats a second for 6 s: a 60 Hz thump and a click, each decaying in 0.12 s, stereo 48 kHz.
 ffmpeg -v error -y -f lavfi -i "aevalsrc='0.9*sin(2*PI*60*t)*exp(-25*mod(t,0.5))+0.3*sin(2*PI*2400*t)*exp(-90*mod(t,0.5))':s=48000:d=6:c=stereo" \
   -c:a pcm_s16le "$OUT/beat.wav" || fail "beat"
-for p in lighthouse lantern teapot pearl beat; do
+for p in lighthouse lantern teapot pearl vangogh beat; do
   f=$OUT/$p.jpg; [ -f "$f" ] || f=$OUT/$p.wav
   run_page import "$f" --name "$p" > "$OUT/import-$p.txt" 2>&1 || fail "import $p: $(cat "$OUT/import-$p.txt")"
 done
@@ -221,19 +232,20 @@ edge_ssim() {
   ffmpeg -v error -i "$OUT/edges-$(basename "$1")" -i "$OUT/edges-$(basename "$2")" -lavfi "[0:v]setpts=N/FRAME_RATE/TB[a];[1:v]setpts=N/FRAME_RATE/TB,scale=640:-2[b];[a][b]ssim=stats_file=$OUT/ssim-edges.txt" -f null - &&
     awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^All:/) { s += substr($i, 5); n++ } } END { printf "%.4f", s / n }' "$OUT/ssim-edges.txt"
 }
-if has video || has video-edges || has motion; then
+if has video || has video-edges || has motion || has motion-text; then
   src=$OUT/videos/was-text.mp4; [ -s "$src" ] || src=$OUT/videos/text.mp4
   if [ -s "$src" ]; then
     cp "$src" "$OUT/clip.mp4"
     run_page import "$OUT/clip.mp4" --name clip > "$OUT/import-clip.txt" 2>&1 || fail "import clip: $(cat "$OUT/import-clip.txt")"
     edged "$OUT/clip.mp4" 121; [ -s "$OUT/videos/text.mp4" ] && edged "$OUT/videos/text.mp4" 121
     FOX="A watercolor painting comes to life: a fox in a red scarf walks through an autumn forest the way <clip> moves, turns its head toward the camera. Rustling leaves."
-    for c in video video-edges motion; do
+    for c in video video-edges motion motion-text; do
       has "$c" || continue
       case $c in
         video) cell "$c" "$NOW" "$(now "$FOX")" ;;
         video-edges) cell "$c" "$NOW" "$(now "$FOX" | jq -c '. + {control: "edges"}')" ;;
         motion) cell "$c" "$NOW" "$(now "The girl in the painting walks slowly through a sunlit outdoor market and turns her head toward the camera, moving the way <clip> does. Market chatter." | jq -c '. + {control: "pose", first_frame: "<pearl>"}')" "$OUT/pearl.jpg" ;;
+        motion-text) cell "$c" "$NOW" "$(now "An astronaut in a white spacesuit walks slowly across a red Martian plain and turns his helmet toward the camera, moving the way <clip> does. Wind and the crunch of boots on gravel." | jq -c '. + {control: "pose"}')" ;;
       esac
       [ -s "$OUT/videos/$c.mp4" ] || continue
       edged "$OUT/videos/$c.mp4" 121
@@ -268,14 +280,31 @@ if has t2a; then
       ffmpeg -v error -y -i "$f" -lavfi "showspectrumpic=s=1024x384:legend=1" "$OUT/sheets/t2a.png" || say "t2a: no spectrogram"
     else say "MISS t2a: no audio"; bad+=(t2a); fi
 fi
-if has voice; then
+if has voice || has ref-two-up; then
   if [ -s "$OUT/videos/t2a.flac" ]; then
     run_page import "$OUT/videos/t2a.flac" --name line > "$OUT/import-line.txt" 2>&1 || fail "import line: $(cat "$OUT/import-line.txt")"
-    cell voice "$NOW" "$(now '<pearl> sits by a sunlit window, turns to the camera and says, in <line>: "Oh, what a lovely day we are having!" A medium close-up, the camera remains static.')" "$OUT/pearl.jpg"
-    if [ -s "$OUT/sheets/voice.txt" ]; then
-      grep -q '^Image 1: pearl\.' "$OUT/sheets/voice.txt" && grep -q '^Audio 1: line, belongs only to Image 1\.' "$OUT/sheets/voice.txt" ||
-        { say "MISS voice: the model read no MSR cast"; bad+=(voice-cast); }
-      J '(.asset.unused // []) | length == 0' "$OUT/runs/voice-asset.json" || { say "MISS voice: the box says a mention is unused"; bad+=(voice-unused); }
+    if has voice; then
+      cell voice "$NOW" "$(now '<pearl> sits by a sunlit window, turns to the camera and says, in <line>: "Oh, what a lovely day we are having!" A medium close-up, the camera remains static.')" "$OUT/pearl.jpg"
+      if [ -s "$OUT/sheets/voice.txt" ]; then
+        grep -q '^Image 1: pearl\.' "$OUT/sheets/voice.txt" && grep -q '^Audio 1: line, belongs only to Image 1\.' "$OUT/sheets/voice.txt" ||
+          { say "MISS voice: the model read no MSR cast"; bad+=(voice-cast); }
+        J '(.asset.unused // []) | length == 0' "$OUT/runs/voice-asset.json" || { say "MISS voice: the box says a mention is unused"; bad+=(voice-unused); }
+      fi
+    fi
+    if has ref-two-up; then
+      cell ref-two-up "$NOW" "$(now '<vangogh> sits at a café table across from <pearl>. <pearl> turns to him and says, in <line>: "Oh, what a lovely day we are having!" while <vangogh> listens with his lips closed. A medium two-person shot, the camera remains static.' up)"
+      f=$OUT/sheets/ref-two-up.txt
+      if [ -s "$f" ]; then
+        grep -q '^Image 1: vangogh\.' "$f" && grep -q '^Image 2: pearl\.' "$f" && grep -q '^Audio 1: line, belongs only to Image 2\.' "$f" ||
+          { say "MISS ref-two-up: the model read no two-subject cast"; bad+=(ref-two-up-cast); }
+        # The text after the three cast lines: the enhancer's rewrite, or the prompt as written when the rewrite lost a label.
+        body=$(awk 'BEGIN { RS = "" } NR > 3' "$f")
+        for l in "Image 1" "Image 2" "Audio 1"; do
+          [[ $body == *"$l"* ]] || { say "MISS ref-two-up: the text the model read lost $l"; bad+=(ref-two-up-labels); break; }
+        done
+        say "ref-two-up adjustments: $(jq -c '[.. | objects | select(has("field") and has("message")) | .message] | unique' "$OUT/runs/ref-two-up.json" 2>/dev/null)"
+        J '(.asset.unused // []) | length == 0' "$OUT/runs/ref-two-up-asset.json" || { say "MISS ref-two-up: the box says a mention is unused"; bad+=(ref-two-up-unused); }
+      fi
     fi
   else
     say "MISS voice: no t2a line to speak in"; bad+=(voice)

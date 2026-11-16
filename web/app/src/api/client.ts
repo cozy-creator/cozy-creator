@@ -33,8 +33,6 @@ import type {
   Keepalive,
   Machine,
   MachineList,
-  MachineModels,
-  MachinePackages,
   MachineUpdate,
   ModelDetail,
   ModelEdit,
@@ -792,12 +790,9 @@ export class Client {
     return this.opened(`${machine(name)}/logs/${log}?lines=${lines}${place}`, signal)
   }
 
-  machinePackages(name: string, signal?: AbortSignal): Promise<MachinePackages> {
-    return this.json(`${machine(name)}/packages`, { signal })
-  }
-
-  machineModels(name: string, signal?: AbortSignal): Promise<MachineModels> {
-    return this.json(`${machine(name)}/models`, { signal })
+  /** Its GPUs' use, a reading each second while the stream is read (cl-1100). */
+  machineGpuEvents(name: string, signal: AbortSignal): Promise<Response> {
+    return this.opened(`${machine(name)}/gpus`, signal)
   }
 
   // Packages

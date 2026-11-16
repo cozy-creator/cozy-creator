@@ -587,6 +587,11 @@ impl Calcifer {
         self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id) || self.export_moving(id))
     }
 
+    /// A run of `project` whose exporter is moving its outputs into it (`writing_into` without the drivers, cl-1082).
+    pub(crate) fn exporting_into(&self, project: &str) -> Option<RunId> {
+        self.routed(project).into_iter().find(|id| self.export_moving(id))
+    }
+
     /// Run `id`'s driver task going, until the returned guard drops with it (cl-1060).
     fn driving(self: &Arc<Self>, id: &RunId) -> Driving {
         lock(&self.driving).insert(id.clone());
@@ -600,9 +605,9 @@ impl Calcifer {
             .filter_map(|(id, _)| RunId::try_from(id.clone()).ok()).collect()
     }
 
-    /// A run of `project` whose driver's task is going (cl-1060): settling, handing on.
-    pub(crate) fn driving_into(&self, project: &str) -> Option<RunId> {
-        self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id))
+    /// The runs of `project` whose drivers' tasks are going (cl-1060): sending, settling, handing on.
+    pub(crate) fn driven_into(&self, project: &str) -> Vec<RunId> {
+        self.routed(project).into_iter().filter(|id| lock(&self.driving).contains(id)).collect()
     }
 
 
@@ -823,10 +828,27 @@ impl Calcifer {
         for (id,wake) in lock(&self.drivers).iter() { if ids.contains(id.as_str()) { wake.notify_waiters(); } }
         lock(&self.warm).clear();
         for behind in lock(&self.behind).values_mut() { behind.retain(|id,_|!ids.contains(id)); }
+        crate::project::purge::forget(&self.store, project);
     }
 
     /// Existing accepted work can settle after viewing closes. This never
     /// constructs a public run response or admits another execution.
+    /// Ends `project`'s runs their machines haven't begun, as its vault locks past its deadline (cl-1082): each in one guarded
+    /// transaction (`Store::end_unstarted`), so a run begun meanwhile is never touched.
+    pub(crate) fn end_unstarted(&self, project: &str) -> Result<Vec<u64>, Error> {
+        let Some(owner) = self.owner_of(project) else { return Ok(vec![]) };
+        let store = owner.store()?;
+        let mut ended = vec![];
+        for id in store.unsettled_unstarted()? {
+            let events = store.end_unstarted(id.as_str())?;
+            if events.is_empty() { continue; }
+            self.publish(&id, events);
+            self.wake(&id);
+            if let Some(row) = store.run(id.as_str())? { ended.push(row.number); }
+        }
+        Ok(ended)
+    }
+
     pub(crate) fn cancel_for_lock(&self,project:&str)->Result<Vec<u64>,Error> {
         let Some(owner)=self.owner_of(project) else {return Ok(vec![]);};
         let store=owner.store()?;

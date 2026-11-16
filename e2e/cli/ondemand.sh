@@ -293,11 +293,12 @@ while read -r why; do check "ondemand-needs: $why"; done < "$OUT/ondemand-needs.
 # TensorD for it (`model_need`), which fetches what of it is absent before every other download (order 0) and answers once it's
 # here: every other request gives way at its next bytes, so the emergency takes the link, and resumes after. The isolated Hub's
 # store is slowed to 30 MB/s (tc on the loopback, from its MinIO's port), so the link is the bottleneck, as on a pod.
+# slow_store <cell> [rate]: another rate for its link (`80mbit`).
 slow_store() {
 local port
 port=$(pgrep -af minio | grep -oE -- '--address[ =]127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$' | head -1)
 [ -n "$port" ] || { check "$1: the isolated Hub's MinIO port wasn't found: $(pgrep -af minio | head -2)"; return 1; }
-sudo tc qdisc add dev lo root handle 1: prio && sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate 240mbit burst 1mb latency 1s \
+sudo tc qdisc add dev lo root handle 1: prio && sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate "${2:-240mbit}" burst 1mb latency 1s \
   && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:3 \
   || { sudo tc qdisc del dev lo root 2> /dev/null; check "$1: the store's link wasn't slowed"; return 1; }
 }
@@ -389,6 +390,205 @@ else:
 JUDGE
 cat "$OUT/ondemand-need.timeline.json"
 while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.failed"
+}
+
+# cl-1101 (Paul, 11-16): "We can download extras (Z) in the background, in anticipation of maybe needing them, but they aren't in
+# the critical path of inference (user request) so they shouldn't be waited on." A call's on-demand models are its guesses, wanted
+# with its needs, and the downloader started them beside its needs: each range took its share of the link. enhance.py's `plain`
+# needs its model (16 MiB: 1.7 s alone over this 10 MB/s link) and guesses two prompt enhancers (96 MiB each) it never reads: its
+# model took 6.5 s and its function started 5 s late (run 43955873288). No guess starts while a need of any run is under way.
+ondemand_behind() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a call's guesses never take the link from its needs (cl-1101)"
+local began
+slow_store ondemand-behind 80mbit || return 0
+began=$(date -u +%s%3N)
+cell ondemand-behind "$here/script/enhance.py/plain" prompt_upsampling:=false seconds:=6 || :
+sudo tc qdisc del dev lo root || check "ondemand-behind: the store's link wasn't restored"
+cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-behind.tensord.log" 2>&1 || check "ondemand-behind: machine logs local failed"
+python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-behind.timeline.json" 2> "$OUT/ondemand-behind.failed" || true
+import json, re, sys
+from datetime import datetime
+from pathlib import Path
+out, began = Path(sys.argv[1]), int(sys.argv[2])
+def at(line):
+    try:
+        return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+# The line's orders (`origin::priority`): 2 + (class << 62 | run << 32 | rank), class 0 a run's needs and 2 a guess.
+needs, guesses = [], []
+for line in (out / "ondemand-behind.tensord.log").read_text(errors="replace").splitlines():
+    t = at(line)
+    found = re.search(r": (fetching|landed) .*bytes=(\d+).*priority=(\d+)", line)
+    if t < began or not found or int(found[3]) < 2:
+        continue
+    kind = (int(found[3]) - 2) >> 62
+    if kind in (0, 2):
+        (needs if kind == 0 else guesses).append((t - began, found[1], int(found[2])))
+weights = [n for n in needs if n[2] >= 1 << 20]
+first = min((t for t, kind, _ in weights if kind == "fetching"), default=None)
+landed = max((t for t, kind, _ in weights if kind == "landed"), default=None)
+size = sum(b for _, kind, b in weights if kind == "landed")
+guessed = min((t for t, kind, _ in guesses if kind == "fetching"), default=None)
+seconds = (landed - first) / 1e3 if first is not None and landed is not None else None
+print(json.dumps({"need_bytes": size, "need_first_fetching_ms": first, "need_landed_ms": landed, "need_seconds": seconds,
+                  "need_mb_s": round(size / seconds / 1e6, 2) if seconds else None, "first_guess_fetching_ms": guessed,
+                  "guess_objects_started": sum(1 for _, kind, _ in guesses if kind == "fetching")}, indent=1))
+fail = lambda why: print(why, file=sys.stderr)
+if landed is None or size < 16 << 20:
+    fail(f"its model didn't come as its need: {size} bytes landed at a run's order")
+elif guessed is None:
+    fail("none of its on-demand models was guessed: nothing started at a guess's order")
+elif guessed < landed:
+    fail(f"a guess started {landed - guessed} ms before its call's need had landed ({size} bytes in {seconds:.1f} s over the 10 MB/s link)")
+JUDGE
+cat "$OUT/ondemand-behind.timeline.json"
+while read -r why; do check "ondemand-behind: $why"; done < "$OUT/ondemand-behind.failed"
+}
+
+# cl-1101 (Paul, 11-16): "the same goes for qwen image 2.1 image's prompt enhancer; it has two (T2I and I2I) but we only need one
+# when we get a request." Qwen Image 2.1's `expander` (a prompt of words) and `rewriter` (one with pictures) are both on demand,
+# and a request reads at most one, as its first stage. enhance.py is that function three times, each with a model (16 MiB) and two
+# enhancers (96 MiB each) of its own, so each request starts cold, over a 10 MB/s link: `words` reads its expander, `edit` its
+# rewriter, `plain` (prompt_upsampling off) neither. A request fetches the enhancer it reads with its other weights, before its
+# function starts, and nothing of the other. ondemand-enhancers.json keeps what each fetched, at which order of the download
+# line, each emergency its function waited on, and the guessed weights dropped unfinished when it ended.
+ondemand_enhancers() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a request fetches the prompt enhancer it reads before it starts, and never the other (cl-1101)"
+local request
+slow_store ondemand-enhancers 80mbit || return 0
+for request in words edit plain; do
+  date -u +%s%3N > "$OUT/enhance-$request.began"
+  case $request in
+    words) cell "enhance-$request" "$here/script/enhance.py/words" || : ;;
+    edit) cell "enhance-$request" "$here/script/enhance.py/edit" pictures:=true || : ;;
+    plain) cell "enhance-$request" "$here/script/enhance.py/plain" prompt_upsampling:=false seconds:=12 || : ;;
+  esac
+  date -u +%s%3N > "$OUT/enhance-$request.ended"
+  cozy --json model ls --on local > "$OUT/enhance-$request.models.json" 2>&1 || check "ondemand-enhancers: model ls --on local failed after $request"
+done
+sudo tc qdisc del dev lo root || check "ondemand-enhancers: the store's link wasn't restored"
+cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-enhancers.tensord.log" 2>&1 || check "ondemand-enhancers: machine logs local failed"
+python3 - "$OUT" <<'JUDGE' > "$OUT/ondemand-enhancers.json" 2> "$OUT/ondemand-enhancers.failed" || true
+import json, re, sys
+from datetime import datetime
+from pathlib import Path
+out = Path(sys.argv[1])
+def at(line):
+    try:
+        return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+# The line's orders (`origin::priority`): 0 an emergency (a started call's read), 1 software, else 2 + (class << 62 | run << 32 |
+# rank): class 0 a run's needs, 1 fetched ahead, 2 a guess, 3 prepared. A line names the order its object started at.
+def order_class(order):
+    return {0: "emergency", 1: "software"}.get(order) or ("need", "ahead", "guess", "prepare")[(order - 2) >> 62]
+moved, floors = [], []
+for line in (out / "ondemand-enhancers.tensord.log").read_text(errors="replace").splitlines():
+    found = re.search(r": (fetching|landed) .*object=(\w+).*bytes=(\d+).*priority=(\d+)", line)
+    if found:
+        moved.append((at(line), found[1], int(found[3]), order_class(int(found[4])), found[2]))
+    if "floor moved" in line:
+        f = dict(re.findall(r"(\w+)=(\S+)", line))
+        floors.append({"downloader": f["downloader"], "from": f["from"], "to": f["to"], "at": int(f["at_ms"]), "bytes": int(f["bytes"]),
+                       "seconds": float(f["seconds"])})
+# Each stand of a downloader's floor at 0, an emergency: (from ms, to ms, the bytes that came meanwhile, seconds).
+def emergencies(began, ended):
+    stands, open_ = [], {}
+    for m in floors:
+        if not began <= m["at"] <= ended + 2000:
+            continue
+        if m["from"] == "0" and m["downloader"] in open_:
+            stands.append((open_.pop(m["downloader"]), m["at"], m["bytes"], m["seconds"]))
+        if m["to"] == "0":
+            open_[m["downloader"]] = m["at"]
+    return stands
+def inside(value, key):
+    if isinstance(value, dict):
+        if key in value:
+            return value
+        value = list(value.values())
+    for each in value if isinstance(value, list) else []:
+        found = inside(each, key)
+        if found is not None:
+            return found
+    return None
+fail = lambda why: print(why, file=sys.stderr)
+reads = {"words": "expander", "edit": "rewriter", "plain": None}
+report = {}
+for request, read in reads.items():
+    try:
+        began, ended = (int((out / f"enhance-{request}.{edge}").read_text()) for edge in ("began", "ended"))
+        record = json.loads((out / f"enhance-{request}.json").read_text())
+        models = json.loads((out / f"enhance-{request}.models.json").read_text()).get("models") or []
+    except (OSError, ValueError) as error:
+        fail(f"{request}: its run left no record to judge: {error}")
+        continue
+    accepted = record.get("accepted_at_ms") or began
+    held = {}
+    for slot in ("model", "expander", "rewriter"):
+        rows = [m for m in models if m.get("model") == f"e2e/enhance-{request}-{slot}"]
+        held[slot] = {"bytes": sum(m.get("bytes") or 0 for m in rows), "complete": bool(rows) and all(m.get("complete") for m in rows)}
+    by_class, guessed, landed = {}, {}, set()
+    for t, kind, size, name, sha in moved:
+        if not began <= t <= ended:
+            continue
+        # A weight started as a guess: one never landed was dropped when its call ended ("nothing wants it").
+        if kind == "fetching" and name == "guess" and size >= 1 << 20:
+            guessed[sha] = size
+        if kind == "landed":
+            landed.add(sha)
+        each = by_class.setdefault(name, {"objects": 0, "bytes": 0, "first_fetching_ms": None, "last_landed_ms": None})
+        if kind == "fetching":
+            each["first_fetching_ms"] = t - accepted if each["first_fetching_ms"] is None else each["first_fetching_ms"]
+        else:
+            each["objects"], each["bytes"], each["last_landed_ms"] = each["objects"] + 1, each["bytes"] + size, t - accepted
+    stands = emergencies(began, ended)
+    dropped = {sha: size for sha, size in guessed.items() if sha not in landed}
+    # Its progress, in the order said. A first-use wait shows as "downloading <model> weights", before or after its stage's own
+    # name: the emergencies above say it was one.
+    stages = []
+    for line in (out / f"enhance-{request}.ndjson").read_text(errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "run.progress":
+            stage = (event.get("progress") or {}).get("stage") or ""
+            if stage and (not stages or stages[-1] != stage):
+                stages.append(stage)
+    made = inside(record, "read_ms") or {}
+    times = {k: (record[k] - accepted if record.get(k) else None) for k in ("started_at_ms", "settled_at_ms")}
+    report[request] = {
+        "run": {"number": record.get("number"), "status": record.get("status"), **times},
+        "read": made.get("enhancer"), "function_entered_ms": (made["entered_ms"] - accepted) if made.get("entered_ms") else None,
+        "first_read_took_ms": made.get("read_ms"), "held_after": held, "landed_by_order": by_class,
+        "guessed_weights": {"objects": len(guessed), "bytes": sum(guessed.values())},
+        "dropped_at_its_end": {"objects": len(dropped), "bytes": sum(dropped.values())},
+        "emergencies": [{"from_ms": s - accepted, "to_ms": e - accepted, "bytes": b, "seconds": sec} for s, e, b, sec in stands],
+        "stages": stages,
+    }
+    if record.get("status") != "completed":
+        fail(f"{request}: its run {record.get('status')}")
+        continue
+    for slot in ("expander", "rewriter"):
+        name, has = f"e2e/enhance-{request}-{slot}", held[slot]
+        if slot != read and has["bytes"] >= 1 << 20:
+            fail(f"{request}: {has['bytes']} bytes of {name} landed, and this request never reads it")
+        if slot == read and not has["complete"]:
+            fail(f"{request}: {name}, which it read, isn't all here: {has}")
+    if dropped:
+        fail(f"{request}: {len(dropped)} objects ({sum(dropped.values())} bytes) of on-demand models it never read were started as guesses and dropped when it ended")
+    if read and (stands or by_class.get("emergency", {}).get("bytes")):
+        came = sum(b for _, _, b, _ in stands) or by_class.get("emergency", {}).get("bytes")
+        fail(f"{request}: its {read} came as an emergency once its function read it ({came} bytes), not with its other weights before it started")
+print(json.dumps(report, indent=1))
+JUDGE
+cat "$OUT/ondemand-enhancers.json"
+jq -c 'del(.events?)' "$OUT/enhance-words.json" 2> /dev/null | head -c 6000 || true
+while read -r why; do check "ondemand-enhancers: $why"; done < "$OUT/ondemand-enhancers.failed"
 }
 
 # tfs-300, LAB2-47829 (Paul, 11-16): "we don't need all components of a model to be on the critical path; that's just creating

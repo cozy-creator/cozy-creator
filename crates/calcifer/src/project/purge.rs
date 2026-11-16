@@ -16,7 +16,7 @@ use tracing::warn;
 
 use super::{
     Doc, cut_name,
-    folder::{Folder, Lock, TOMBSTONE},
+    folder::{Folder, Lock, RunFile, TOMBSTONE},
     history, now_ms, vault,
 };
 use crate::api::Api;
@@ -28,9 +28,74 @@ const AGAIN: Duration = Duration::from_secs(10 * 60);
 
 static WINDOW: OnceLock<Duration> = OnceLock::new();
 static WAKE: Notify = Notify::const_new();
-/// When each project's deleted boxes are next due, by id. In memory only: the global index keeps just the project reference, and a
-/// start looks at every project it knows once.
+/// When each project's deleted boxes are next due, by id. A plaintext project's, from a deletion or a purge, is kept in state.db
+/// (`purge_due`), and a start takes up only those: it opens no project with nothing due (cl-1010: a start opened every known project
+/// and loaded its document, 5 s on Paul's laptop, each request for a project waiting on its load). An encrypted project's is held only
+/// while it's unlocked: of a locked one Calcifer keeps only its folder (Paul's no-traces rule), a start finds every one locked, and
+/// its unlock's open reads it again from its own project.db. An open looks again, in memory only.
 static DUE: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
+/// Calcifer, whose store keeps the due times.
+static KEPT: OnceLock<std::sync::Weak<crate::Calcifer>> = OnceLock::new();
+/// What state.db holds of them: a keep of what's there already writes nothing (a purge of a project with nothing deleted keeps none).
+static PERSISTED: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
+
+/// `id`'s next due time as `DUE` now holds it, kept for the next start if it's a plaintext project's, and none kept of any other; a
+/// store that can't keep it is said, and an open looks again.
+fn keep(id: &str) {
+    let due = DUE.lock().expect("purge due lock").get(id).copied();
+    let mut persisted = PERSISTED.lock().expect("purge persisted lock");
+    if persisted.get(id).copied() == due {
+        return;
+    }
+    let Some(calcifer) = KEPT.get().and_then(std::sync::Weak::upgrade) else { return };
+    let store = calcifer.store();
+    let at = match store.known_project(id) {
+        Ok(Some(project)) if !vault::encrypted(&project.path) => due,
+        Ok(_) => None,
+        Err(e) => return warn!("a project's next purge isn't kept: {e}"),
+    };
+    if persisted.get(id).copied() == at {
+        return;
+    }
+    match store.keep_purge_due(id, at) {
+        Ok(()) => {
+            let _ = match at {
+                Some(at) => persisted.insert(id.to_owned(), at),
+                None => persisted.remove(id),
+            };
+        }
+        Err(e) => warn!("a project's next purge isn't kept: {e}"),
+    }
+}
+
+/// Project `id` let go (locked, its folder away, its storage converted): nothing of its deleted boxes is held for it here, and its next
+/// open reads them again. Its kept due time stays, unless it's an encrypted project's now (an encrypt conversion): a plaintext one whose
+/// folder is away (moved, its drive unmounted) is purged at the next start once it's back, opened or not.
+pub(crate) fn forget(store: &crate::store::Store, id: &str) {
+    DUE.lock().expect("purge due lock").remove(id);
+    let mut persisted = PERSISTED.lock().expect("purge persisted lock");
+    let encrypted = || matches!(store.known_project(id), Ok(Some(project)) if vault::encrypted(&project.path));
+    if persisted.contains_key(id) && encrypted() {
+        match store.keep_purge_due(id, None) {
+            Ok(()) => {
+                persisted.remove(id);
+            }
+            Err(e) => warn!("a project let go keeps its next purge: {e}"),
+        }
+    }
+}
+
+/// Project `id` opened, its document read: looked at now if a box of it is set aside (one set aside before cl-919 counts from now), else
+/// not. An open of a project with nothing deleted asks for no purge (cl-1010: each open asked for one, and a project a run list opens
+/// closes again after it, so each ask loaded it again for a purge).
+pub(crate) fn opened(id: &str, folder: &Folder) {
+    let legacy = |row: &super::folder::RunFile| row.run == 0 && row.output == "deleted";
+    let set_aside = folder.reading_lock(|lock| lock.assets.keys().any(|key| key.contains(TOMBSTONE)) || lock.runs.iter().any(legacy));
+    // Its loose rows of a take's run not swept yet (cl-1093): one pass, once.
+    if !matches!(set_aside, Ok(false)) || !folder.late_rows_swept().unwrap_or(true) {
+        due(id, now_ms());
+    }
+}
 
 /// The window this Calcifer keeps: `calcifer.undo_seconds` (tests only), else `UNDO_WINDOW`.
 pub(crate) fn set_window(seconds: Option<u32>) {
@@ -50,6 +115,12 @@ pub(crate) fn window_said() -> String {
         s => (s, "second"),
     };
     format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// Project `id` has a box deleted now, whose files may go at `at_ms`: Calcifer looks then, this Calcifer or the next.
+pub(crate) fn deleted(id: &str, at_ms: i64) {
+    due(id, at_ms);
+    keep(id);
 }
 
 /// Project `id` has deleted boxes whose files may go at `at_ms`: Calcifer looks then.
@@ -72,14 +143,20 @@ fn settled(id: &str, was_ms: i64, next: Option<i64>) {
         Some(at) => due.insert(id.to_owned(), at),
         None => due.remove(id),
     };
+    drop(due);
+    keep(id);
 }
 
 /// Calcifer's purger: each project whose deleted boxes' windows have ended, purged, in the background, then asleep until the next is due.
 /// A Calcifer that was stopped catches up as it starts.
 pub(crate) fn start(api: Arc<Api>) {
-    let now = now_ms();
-    for project in api.calcifer.store().known_projects().unwrap_or_default() {
-        due(&project.id, now);
+    let _ = KEPT.set(Arc::downgrade(&api.calcifer));
+    match api.calcifer.store().purge_due() {
+        Ok(kept) => {
+            PERSISTED.lock().expect("purge persisted lock").extend(kept.iter().cloned());
+            kept.into_iter().for_each(|(id, at)| due(&id, at));
+        }
+        Err(e) => warn!("the projects' next purges: {e}"),
     }
     tokio::spawn(async move {
         loop {
@@ -87,13 +164,36 @@ pub(crate) fn start(api: Arc<Api>) {
             let ready: Vec<(String, i64)> = DUE.lock().expect("purge due lock").iter().filter(|(_, at)| **at <= now).map(|(id, at)| (id.clone(), *at)).collect();
             let took = crate::took::Took::new("purge");
             for (id, was) in ready {
+                let again = Some(now + AGAIN.as_millis() as i64);
                 let next = match api.calcifer.store().known_project(&id) {
-                    Ok(Some(project)) => {
-                        let (held, path) = (api.clone(), project.path);
-                        tokio::task::spawn_blocking(move || purged(&held, &path)).await.unwrap_or(Some(now + AGAIN.as_millis() as i64))
+                    // Its folder away (moved, its drive unmounted): not looked at again here until it opens, and its kept due time
+                    // stays for the next start, so what it deleted is purged once it's back, opened or not.
+                    Ok(Some(project)) if !vault::logical(&project.path).exists() => {
+                        DUE.lock().expect("purge due lock").remove(&id);
+                        continue;
                     }
+                    // Locked: nothing can read it, and nothing of it is held until its unlock's open looks again.
+                    Ok(Some(project)) if vault::locked_now(&project.path) => None,
+                    // Held as any reader's: a lock or a move of the project waits for it.
+                    Ok(Some(project)) => match vault::try_admit_root(&project.path) {
+                        Ok(access) => {
+                            let (held, path) = (api.clone(), project.path);
+                            tokio::task::spawn_blocking(move || purged(&held, &path, access)).await.unwrap_or(again)
+                        }
+                        // Its storage changing now (an unlock's own open asks for this purge, cl-1010): looked at again once it's done.
+                        Err(error) if error.code == "project_busy" => {
+                            let (path, id) = (project.path, id.clone());
+                            tokio::spawn(async move {
+                                if vault::admit_root(&path).await.is_ok() {
+                                    due(&id, now_ms());
+                                }
+                            });
+                            again
+                        }
+                        Err(_) => again,
+                    },
                     Ok(None) => None,
-                    Err(_) => Some(now + AGAIN.as_millis() as i64),
+                    Err(_) => again,
                 };
                 settled(&id, was, next);
             }
@@ -105,14 +205,9 @@ pub(crate) fn start(api: Arc<Api>) {
     });
 }
 
-/// The project at `path` purged: when its next deleted box is due, if any is. Its folder gone, none; unreadable now, a try later.
-fn purged(api: &Api, path: &Path) -> Option<i64> {
-    if !vault::logical(path).exists() {
-        return None;
-    }
+/// The project at `path`, admitted (`_access`), purged: when its next deleted box is due, if any is; unreadable now, a try later.
+fn purged(api: &Api, path: &Path, _access: tokio::sync::OwnedRwLockReadGuard<()>) -> Option<i64> {
     let again = || Some(now_ms() + AGAIN.as_millis() as i64);
-    // Held as any reader's: a lock or a move of the project waits for it, and one going now means later.
-    let Ok(_access) = vault::try_admit_root(path) else { return again() };
     let Ok(dir) = vault::resolve_path(path) else { return again() };
     let home = api.machines.hubs.home();
     let caches = [home.root().join("cache").join("clips")];
@@ -147,12 +242,26 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
     };
     let forgotten = |held: &super::folder::Asset| emptied(held) && held.deleted_ms.is_some_and(|at| at < oldest);
     let stubs = lock.assets.iter().any(|(key, held)| set_aside(key) && forgotten(held));
-    if gone.is_empty() && !stubs {
+    // Run rows that keep nothing (cl-1093): a file of a take's run landed after its run arrived was listed as a loose row, which kept
+    // it past its take's purge. Such a row of a purged version's run goes with it; and once a project, every loose row of a take's run
+    // goes (one a version still lists stays that version's), as the takes purged before the fix left them with nothing else to.
+    let gone_versions: Vec<&super::folder::Version> = gone.iter().flat_map(|key| lock.assets[key].on_record()).collect();
+    let late = |row: &RunFile| gone_versions.iter().any(|version| row.of(version) && version.files.values().any(|file| *file == row.sha256));
+    // Not while a run is being sent: the walk can't say yet whose a row of it is.
+    let sweep = !folder.late_rows_swept()? && !lock.pending.values().any(|pending| pending.run == 0);
+    let take_rows = |row: &RunFile| sweep && row.run_id.as_ref().is_some_and(|id| folder.take_run(id));
+    let on_its_way = |row: &RunFile| lock.walk.runs.contains_key(&row.run) || lock.pending.values().any(|pending| pending.run == row.run);
+    let stray: BTreeSet<RowKey> = lock.runs.iter().filter(|row| !on_its_way(row) && (late(row) || take_rows(row))).map(row_key).collect();
+    if gone.is_empty() && !stubs && stray.is_empty() {
+        if sweep {
+            folder.late_rows_swept_now()?;
+        }
         return Ok(next_due(&lock, window));
     }
     let doc = Doc::load(folder)?;
-    let kept = kept(&doc, &lock, &gone, now);
-    let freed: BTreeSet<String> = gone.iter().flat_map(|key| lock.assets[key].files().cloned()).filter(|sha256| !kept.contains(sha256)).collect();
+    let kept = kept(&doc, &lock, &gone, &stray, now);
+    let strays = lock.runs.iter().filter(|row| stray.contains(&row_key(row))).map(|row| row.sha256.clone());
+    let freed: BTreeSet<String> = gone.iter().flat_map(|key| lock.assets[key].files().cloned()).chain(strays).filter(|sha256| !kept.contains(sha256)).collect();
     let paths: Vec<PathBuf> = freed.iter().filter_map(|sha256| lock.files.get(sha256)).map(|file| folder.path(&file.path)).collect();
     let films: Vec<String> = gone.iter().map(|key| &lock.assets[key]).filter(|held| held.versions.iter().any(|version| !version.clips.is_empty())).map(|held| cut_name(&held.name)).collect();
     folder.update_lock(|lock| {
@@ -165,8 +274,12 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
             }
         }
         lock.assets.retain(|key, held| !(set_aside(key) && forgotten(held)));
+        lock.runs.retain(|row| !stray.contains(&row_key(row)));
         lock.files.retain(|sha256, _| !freed.contains(sha256));
     })?;
+    if sweep {
+        folder.late_rows_swept_now()?;
+    }
     // What's made of them first, so once a file is gone, all of it is.
     forget_derived(&folder.dir, &freed, caches);
     for path in &paths {
@@ -210,7 +323,14 @@ fn dated(folder: &Folder, now: i64) -> Result<(), Error> {
 
 /// Every file something still in the project holds: its boxes' versions, discarded too, their pins and a cut's clips, what's on its way,
 /// a run's outputs, and what a box Undo can still bring back holds.
-fn kept(doc: &Doc, lock: &Lock, gone: &[String], now: i64) -> BTreeSet<String> {
+/// A run row, by its run (id and number) and its file.
+type RowKey = (Option<String>, u64, String);
+
+fn row_key(row: &RunFile) -> RowKey {
+    (row.run_id.as_ref().map(|id| id.as_str().to_owned()), row.run, row.sha256.clone())
+}
+
+fn kept(doc: &Doc, lock: &Lock, gone: &[String], stray: &BTreeSet<RowKey>, now: i64) -> BTreeSet<String> {
     let live = |key: &str| doc.find(key).is_some();
     let mut kept: BTreeSet<String> = lock.named(live).into_iter().map(str::to_owned).collect();
     kept.extend(doc.assets.iter().filter_map(|asset| asset.pin.clone()));
@@ -221,7 +341,9 @@ fn kept(doc: &Doc, lock: &Lock, gone: &[String], now: i64) -> BTreeSet<String> {
             kept.extend(held.on_record().flat_map(|version| &version.clips).filter_map(|clip| clip.sha256.clone()));
         }
     }
-    kept.extend(lock.runs.iter().map(|row| row.sha256.clone()));
+    kept.extend(lock.runs.iter().filter(|row| !stray.contains(&row_key(row))).map(|row| row.sha256.clone()));
+    // What a run on its way landed already.
+    kept.extend(lock.walk.landing.iter().map(|row| row.sha256.clone()));
     kept
 }
 

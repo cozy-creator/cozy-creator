@@ -58,6 +58,7 @@ fn main() {
     v.visit::<calcifer::Play>();
     v.visit::<calcifer::MachineList>();
     v.visit::<calcifer::MachineLog>();
+    v.visit::<calcifer::GpuUse>();
     v.visit::<calcifer::MachinePackages>();
     v.visit::<calcifer::MachineModels>();
     v.visit::<calcifer::MachineUpdate>();

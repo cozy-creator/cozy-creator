@@ -20,7 +20,7 @@ use crate::ids::{Digest, RunId};
 
 pub mod hub;
 pub mod project;
-pub use crate::machine::{HeldAnswer, HeldObject, HeldRequest, RemoveModel, RemovedModel};
+pub use crate::machine::{GpuReading, GpuUse, HeldAnswer, HeldObject, HeldRequest, RemoveModel, RemovedModel};
 pub mod report;
 pub mod node;
 pub mod tool;

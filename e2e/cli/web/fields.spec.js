@@ -8,7 +8,7 @@
 // (project/rounded.py sizes as H3: 16:9 at 1344x768, 1.37:1 at 1024x768, which is 4:3 in pixels), still once its box's shape is cleared;
 // a file its pixels' nearest standard ratio within about 2%, else the simplest whole one; a corner pulled near 4:3 sets 4:3, and far from
 // any sets the ratio as pulled and says it. Dark says the same.
-const { test, expect, canvasIdle, focus, middle, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox } = require('./fixtures');
+const { test, expect, canvasCard, canvasIdle, cornerPoint, focus, liveRatio, middle, newCanvas, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox, zoomOf } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave } = require('./hands');
 
@@ -49,7 +49,10 @@ const undeclared = (region, tool) => region.locator('.focus-card').evaluate((car
   return [...new Set(odd)];
 }, { names: tool.fields.map((field) => field.field), labels: tool.fields.map((field) => field.label) });
 
-test('fields', async ({ page, project, api, cli }) => {
+test('fields', async ({ page, project, api, cli, guards }) => {
+  // The tiny Qwen fixture's slots default to models the fixture Hub doesn't publish (e2e/cpu/tiny/qwen_image_2.py): a slot's picker asks for
+  // its default's card and is told there is none, and the browser logs each 404 itself.
+  guards.allow(/status of 404\b.*\/v1\/models\//);
   const listed = async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools;
   const qwen = (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}&q=qwen`)).tools.find((tool) => tool.package === 'qwen-image-2' && tool.makes === 'image' && (tool.models?.length || tool.model));
   expect(qwen, 'the Hub lists Qwen Image 2 with its models').toBeTruthy();
@@ -309,18 +312,24 @@ test('fields', async ({ page, project, api, cli }) => {
 
     /** `pulled`'s corner pulled until its picture is `ratio` wide to 1 tall: what it said as it was held, and what it saved. */
     const pull = async (ratio) => {
-      const node = await hoverBox(page, 'pulled');
-      const corner = await node.locator('.corner').first().boundingBox();
-      const media = await node.locator('.media').first().boundingBox();
+      // Its corner and picture: the old canvas's hover card's, the new canvas's drawn ones.
+      let from, media;
+      if (await newCanvas(page)) {
+        from = await cornerPoint(page, 'pulled');
+        media = (await canvasCard(page, 'pulled')).body;
+      } else {
+        const node = await hoverBox(page, 'pulled');
+        const corner = await node.locator('.corner').first().boundingBox();
+        media = await node.locator('.media').first().boundingBox();
+        from = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
+      }
       const before = (await fieldsOf('pulled')).aspect_ratio;
-      const from = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
       const by = 80;
       await page.mouse.move(from.x, from.y);
       await page.mouse.down();
       await page.mouse.move(from.x + by, from.y + ((media.width + by) / ratio - media.height), { steps: 20 });
-      const said = page.locator('.ratio-live');
-      await expect.soft(said, `its shape said as it's pulled to ${ratio}`).toHaveCount(1);
-      const live = (await said.count()) ? (await said.first().innerText()).trim() : null;
+      await expect.configure({ soft: true }).poll(() => liveRatio(page), { message: `its shape said as it's pulled to ${ratio}` }).not.toBeNull();
+      const live = await liveRatio(page);
       await page.mouse.up();
       let saved;
       await expect.poll(async () => (saved = (await fieldsOf('pulled')).aspect_ratio) !== before, { message: `its shape saved, pulled to ${ratio}` }).toBe(true);
@@ -341,6 +350,11 @@ test('fields', async ({ page, project, api, cli }) => {
     await page.reload();
     await expect.poll(() => canvasVisible(page, 'pulled')).toBe(true);
     await fit(page);
+    // Under 45% a box is drawn with its name only, by design: its tool and shape are read once the canvas is at 45% or more.
+    for (let i = 0; i < 4 && (await zoomOf(page)) < 0.45; i++) {
+      await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+      await canvasIdle(page);
+    }
     const wanted = { wide: '16:9', tall: '9:16', square: '1:1', odd: '3:1', widescreen: '16:9', academy: '1.37:1', pulled: String(as) };
     for (const [name, want] of Object.entries(wanted)) await expect.configure({ soft: true }).poll(() => says(name), { message: `dark: ${name} says ${want}` }).toBe(want);
   });

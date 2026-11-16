@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { type FormEvent, useRef, useState } from "react"
-import { Link, useNavigate, useParams } from "react-router-dom"
+import { useNavigate, useParams } from "react-router-dom"
 import { machineQuery, machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
@@ -8,13 +8,16 @@ import type { Machine, MachineUpdate } from "../../api/calcifer"
 import { Copyable } from "../../ui/Copyable"
 import { Failure, KV, Section, useAsk, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
-import { bytes, shown, span } from "../format"
+import { span } from "../format"
+import { Disk } from "./Disk"
 import { End } from "./End"
-import { Installed } from "./Installed"
+import { Gpus } from "./Gpus"
+import { Models, Packages } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
+import { Queue } from "./Queue"
 import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
-import { runName } from "../runs/words"
-import { brokenWords, called, endsWords, kindWords, named, slowWords, spentWords } from "./words"
+import { brokenWords, called, endsWords, kindWords, kernelsWords, named, spentWords } from "./words"
+import "./MachineDrawer.css"
 
 /** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
 function KeepRunning({ machine }: { machine: Machine }) {
@@ -90,33 +93,17 @@ function Update({ machine }: { machine: Machine }) {
   )
 }
 
-/** Under a tenth of its disk free, said before a render finds out: what Cozy does about it, and what holds more. */
-function DiskShort({ machine }: { machine: Machine }) {
-  const status = machine.status
-  if (machine.state === "ended" || !status?.disk_total_bytes || (status.disk_free_bytes ?? 0) >= status.disk_total_bytes / 10) return null
-  const models = status.disk_models_bytes ? `; models use ${bytes(status.disk_models_bytes)}` : ""
-  return (
-    <p className="warn">
-      This machine is almost out of disk space ({bytes(status.disk_free_bytes ?? 0)} free of {bytes(status.disk_total_bytes)}{models}). Before a render, Cozy clears out models
-      nothing is using. If a render still won't fit, it won't start: rent a machine with a bigger disk.
-    </p>
-  )
-}
-
-/** All the rest it knows, shown when its Details is: versions, disk, addresses and keys, its runs one by one, updating it, what it holds,
- *  its logs (Paul 11-12: its face is its spec, what it's doing, when it ends, and what to do with it). */
+/** All the rest it knows, shown when its Details is: versions, addresses and keys, updating it, its logs (Paul 11-12: its face is its
+ *  spec, what it's doing, when it ends, and what to do with it; 11-16: then its GPUs, disk, queue, packages and models). */
 function Details({ machine, now }: { machine: Machine; now: number }) {
-  const to = useTo()
   const ended = machine.state === "ended"
   const status = machine.status
   const rental = machine.rental
-  const disk = status?.disk_total_bytes ? `${bytes(status.disk_free_bytes ?? 0)} free of ${bytes(status.disk_total_bytes)}` : rental?.disk_gb ? `${rental.disk_gb}GB` : ""
   return (
     <div className="sect machine-details">
       <KV
       rows={[
         ["Type", kindWords(machine)],
-        ...(status?.gpus ?? []).map((gpu): [string, string] => [`GPU ${gpu.index}`, `${gpu.name} · ${bytes(gpu.memory_bytes)}${gpu.driver ? ` · driver ${gpu.driver}` : ""}`]),
         ["Running for", rental ? span((now - rental.rented_at_ms) / 1000) : status && span((now - status.started_at_ms) / 1000)],
         ["Cozy", status && `${status.version}${status.dev ? " (dev)" : ""}`],
         ["Runtime", status?.runtime],
@@ -124,7 +111,7 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
         ["RC", machine.rc && `${machine.rc.rc} ${machine.rc.state}: ${machine.rc.detail}`],
         ["PyTorch", status?.torch],
         ["Update", status?.update],
-        ["Disk", disk],
+        ["Disk", !status?.disk_total_bytes && rental?.disk_gb ? `${rental.disk_gb}GB` : ""],
         ["Address", machine.address],
         ["Fingerprint", machine.fingerprint],
         ["Public key", machine.controller_key],
@@ -140,41 +127,19 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
           <Copyable text={machine.ssh.line} />
         </Section>
       )}
-      {Boolean(machine.status?.runs?.length) && (
-        <Section title="Running now">
-          <ul className="rows">
-            {machine.status?.runs?.map((held) => (
-              <li className="heldrow" key={held.id}>
-                {held.run ? (
-                  <Link className="more" to={to(`runs/${held.run.number}`)}>
-                    {runName(held.run)} {shown(held.run.target)}
-                  </Link>
-                ) : (
-                  <span className="nm">A run this computer has no record of</span>
-                )}
-                <small>{[held.state, held.waiting].filter(Boolean).join(" · ")}</small>
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
-      {!ended && (
-        <p>
-          <Link className="more" to={`${to("runs")}?all&machine=${encodeURIComponent(machine.name)}`}>
-            All runs on this machine
-          </Link>
-        </p>
-      )}
       {machine.state === "ready" && <Update machine={machine} />}
-      {!ended && <Installed machine={machine} />}
       {!ended && <MachineLogs machine={machine} />}
     </div>
   )
 }
 
-/** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. */
+/** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. Calcifer counts a job it sent as running;
+ *  the machine says which of those it runs now and which wait there, as its queue does. */
 function Doing({ machine, now }: { machine: Machine; now: number }) {
-  const jobs = machine.running || machine.queued ? `${machine.running} running, ${machine.queued} queued` : "Nothing running"
+  const runs = machine.status?.runs
+  const total = machine.running + machine.queued
+  const running = runs ? Math.min(total, runs.filter((held) => held.state === "running" && (!held.run || held.run.kind === "call")).length) : machine.running
+  const jobs = total ? `${running} running, ${total - running} queued` : "Nothing running"
   const ends = endsWords(machine, now)
   const spent = spentWords(machine)
   return (
@@ -235,30 +200,23 @@ export function MachineDrawer() {
         <KeepRunning machine={machine} />
         <End machine={machine} />
       </div>
-      <DiskShort machine={machine} />
-      {slowWords(machine).map((line) => (
-        <p className="warn slow" key={line}>
-          {line}
-        </p>
-      ))}
-      {machine.status?.gpu_problems?.map((problem) => (
-        <p className="warn" key={problem}>
-          {problem}
-        </p>
-      ))}
-      {machine.status?.gpus
-        .filter((gpu) => gpu.out_of_service)
-        .map((gpu) => (
-          <p className="warn" key={`out-${gpu.index}`}>
-            GPU {gpu.index} isn't working ({gpu.out_of_service}). Runs go to its other GPUs or to other machines.
-          </p>
-        ))}
+      {machine.status && kernelsWords(machine.status) && !ended && <p className="warn slow">{kernelsWords(machine.status)}</p>}
       {machine.status?.stuck?.map((stuck) => (
         <p className="warn" key={stuck.pid}>
           Process {stuck.pid} ({stuck.command}) was stopped but is stuck in the kernel{stuck.wchan ? ` (${stuck.wchan})` : ""}. What it's using stays in use until it exits.
         </p>
       ))}
       {details && <Details machine={machine} now={now} />}
+      {!ended && machine.status && (
+        <>
+          <Gpus machine={machine} status={machine.status} />
+          <Disk machine={machine} status={machine.status} />
+          <Queue machine={machine} status={machine.status} />
+          <Packages status={machine.status} />
+          <Models status={machine.status} />
+        </>
+      )}
+      {!ended && !machine.status && <p className="muted">Its GPUs, disk, queue, packages and models show here once it reports in.</p>}
     </DrawerFrame>
   )
 }

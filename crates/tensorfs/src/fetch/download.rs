@@ -19,6 +19,9 @@
 //!   While an object at order 0 is under way (an emergency: what a running call reads now), every other request gives
 //!   way at its next bytes and nothing else starts, in every downloader of the process (`LINK`), so it has the whole
 //!   link; then the rest go on (cl-966). Software (order 1: an install's or an update's files) never waits for it.
+//!   While a need is under way (a weight before `BACKGROUND`: what a run reads before it starts), no background weight
+//!   starts and one in flight gives way at its next bytes, in every downloader of the process too: a guess never takes
+//!   the link from what a run waits on (cl-1101).
 //! - **Sharing (cl-1007).** Orders 0 and 1 are never paced. Weights (every later order) take the whole link, except while an
 //!   install downloads beside them ([`installing`]): its process group's own sockets, read once a second
 //!   ([`install_received`]), tell when it does and at what rate. Then the weights yield at once to a sixteenth of the most
@@ -99,9 +102,18 @@ pub const EMERGENCY: u64 = 0;
 /// Software: an install's or a machine update's files. Never held or paced; weights yield to it (cl-1007).
 pub const SOFTWARE: u64 = 1;
 
+/// Background weights: every order from here on (TensorD's: fetched ahead, guesses, prepared, warm sets). They wait for
+/// every need (cl-1101).
+pub const BACKGROUND: u64 = 2 + (1 << 62);
+
 /// Weights: every order after software's, the ones that wait for an emergency and share the link with an install.
 fn weights(order: u64) -> bool {
     order > SOFTWARE
+}
+
+/// A need: a weight a run waits on before it starts, which every background weight waits for.
+fn need(order: u64) -> bool {
+    weights(order) && order < BACKGROUND
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -214,14 +226,16 @@ pub struct Fetching {
 static DOWNLOADERS: AtomicU64 = AtomicU64::new(0);
 
 /// The one link every downloader of this process shares, whichever store each fills (TensorD's: one per project's
-/// store): how many have an emergency under way, and each of them, woken when the last one ends. While any has
-/// one, every other downloader's requests wait as its own do.
+/// store): how many have an emergency under way, how many a need, and each of them, woken when the last one ends.
+/// While any has an emergency, every other downloader's requests wait as its own do; while any has a need, every
+/// other's background weights do.
 struct Link {
     urgent: AtomicUsize,
+    needing: AtomicUsize,
     sharers: Mutex<Vec<std::sync::Weak<Shared>>>,
 }
 
-static LINK: Link = Link { urgent: AtomicUsize::new(0), sharers: Mutex::new(Vec::new()) };
+static LINK: Link = Link { urgent: AtomicUsize::new(0), needing: AtomicUsize::new(0), sharers: Mutex::new(Vec::new()) };
 
 impl Link {
     /// A downloader's emergencies ended; the last on the link, what waits in every downloader asks again.
@@ -229,6 +243,19 @@ impl Link {
         if self.urgent.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.calmed();
         }
+    }
+
+    /// A downloader's needs ended; the last on the link, the background weights of every downloader ask again.
+    fn met(&self) {
+        if self.needing.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.calmed();
+        }
+    }
+
+    /// Whether a weight at `order` waits for another downloader's work: any weight for an emergency, a background
+    /// one for a need.
+    fn holds(&self, order: u64) -> bool {
+        self.urgent.load(Ordering::Acquire) > 0 || order >= BACKGROUND && self.needing.load(Ordering::Acquire) > 0
     }
 
     fn calmed(&self) {
@@ -620,10 +647,13 @@ impl Waiter {
 }
 
 impl Drop for Shared {
-    /// Gone with an emergency still counted, it leaves the link.
+    /// Gone with an emergency or a need still counted, it leaves the link.
     fn drop(&mut self) {
         if self.on_link.swap(false, Ordering::AcqRel) {
             LINK.left();
+        }
+        if self.needing.swap(false, Ordering::AcqRel) {
+            LINK.met();
         }
     }
 }
@@ -643,14 +673,27 @@ struct Queue {
     seq: u64,
     /// Its tasks at order 0 (emergencies).
     urgent: usize,
+    /// Its tasks at a need's order (`need`), started or not.
+    needed: usize,
 }
 
 impl Queue {
-    /// The order past which every weight waits: 0 during an emergency, else none.
+    /// The order past which every weight waits: 0 during an emergency, the last need's order while a need is under
+    /// way, else none.
     fn floor(&self) -> u64 {
-        match self.urgent {
-            0 => u64::MAX,
+        match (self.urgent, self.needed) {
+            (0, 0) => u64::MAX,
+            (0, _) => BACKGROUND - 1,
             _ => EMERGENCY,
+        }
+    }
+
+    /// A task at `order` joins its count (`by` 1) or leaves it (-1): an emergency's, or a need's.
+    fn count(&mut self, order: u64, by: isize) {
+        if order == EMERGENCY {
+            self.urgent = self.urgent.saturating_add_signed(by);
+        } else if need(order) {
+            self.needed = self.needed.saturating_add_signed(by);
         }
     }
 
@@ -658,9 +701,7 @@ impl Queue {
     fn remove(&mut self, task: &Arc<Task>) {
         if self.tasks.get(&task.object.sha256).is_some_and(|t| Arc::ptr_eq(t, task)) {
             self.tasks.remove(&task.object.sha256);
-            if task.priority.load(Ordering::Acquire) == EMERGENCY {
-                self.urgent -= 1;
-            }
+            self.count(task.priority.load(Ordering::Acquire), -1);
         }
     }
 
@@ -694,6 +735,8 @@ pub(crate) struct Shared {
     id: u64,
     /// Whether it counts in `LINK.urgent`: an emergency of its own is under way.
     on_link: AtomicBool,
+    /// Whether it counts in `LINK.needing`: a need of its own is under way.
+    needing: AtomicBool,
     closed: AtomicBool,
     closing: Notify,
     /// Requests in flight, across every object, as many as the ramp allows (`Pace`).
@@ -1103,6 +1146,7 @@ impl Shared {
             runtime: tokio::runtime::Handle::current(),
             id: DOWNLOADERS.fetch_add(1, Ordering::Relaxed),
             on_link: AtomicBool::new(false),
+            needing: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             closing: Notify::new(),
             slots: Slots::new(START.min(requests.max(1))),
@@ -1368,12 +1412,12 @@ impl Shared {
         let task = match queue.tasks.get(&object.sha256).cloned() {
             Some(task) => {
                 task.waiters.fetch_add(1, Ordering::AcqRel);
-                if priority < task.priority.load(Ordering::Acquire) {
+                let was = task.priority.load(Ordering::Acquire);
+                if priority < was {
                     task.priority.store(priority, Ordering::Release);
-                    if priority == EMERGENCY {
-                        queue.urgent += 1;
-                        self.calmed(&queue);
-                    }
+                    queue.count(was, -1);
+                    queue.count(priority, 1);
+                    self.calmed(&queue);
                     if !task.started.load(Ordering::Acquire) {
                         queue.seq += 1;
                         let seq = queue.seq;
@@ -1410,10 +1454,8 @@ impl Shared {
                 let seq = queue.seq;
                 queue.heap.push(Reverse((priority, seq, object.sha256.clone())));
                 queue.tasks.insert(object.sha256.clone(), Arc::clone(&task));
-                if priority == EMERGENCY {
-                    queue.urgent += 1;
-                    self.calmed(&queue);
-                }
+                queue.count(priority, 1);
+                self.calmed(&queue);
                 self.busy_one();
                 self.queued.notify_one();
                 task
@@ -1455,6 +1497,14 @@ impl Shared {
                 LINK.left();
             }
         }
+        let needing = queue.needed > 0;
+        if needing != self.needing.swap(needing, Ordering::AcqRel) {
+            if needing {
+                LINK.needing.fetch_add(1, Ordering::AcqRel);
+            } else {
+                LINK.met();
+            }
+        }
         if was != floor {
             self.floor_moved(was, floor);
         }
@@ -1482,10 +1532,10 @@ impl Shared {
         });
     }
 
-    /// Whether a weight in flight at `order` gives way at its next bytes: an emergency is under way, this downloader's or
-    /// another's on the link.
+    /// Whether a weight in flight at `order` gives way at its next bytes: an emergency is under way, or it is a background
+    /// weight and a need is, this downloader's or another's on the link.
     fn held(&self, order: u64) -> bool {
-        weights(order) && (order > self.floor.load(Ordering::Acquire) || LINK.urgent.load(Ordering::Acquire) > 0)
+        weights(order) && (order > self.floor.load(Ordering::Acquire) || LINK.holds(order))
     }
 
     /// Whether nothing at `order` starts: it is held, or it is a weight and the weights' share has every request it may.
@@ -1493,7 +1543,7 @@ impl Shared {
         self.held(order) || weights(order) && SHARE.full()
     }
 
-    /// It shares the process's link (`LINK`): another downloader's last emergency ending wakes what waits here.
+    /// It shares the process's link (`LINK`): another downloader's last emergency or need ending wakes what waits here.
     pub(crate) fn join_link(self: &Arc<Self>) {
         lock(&LINK.sharers).push(Arc::downgrade(self));
     }
@@ -1517,7 +1567,7 @@ impl Shared {
                 queue.heap.pop();
                 continue;
             }
-            if weights(priority) && (priority > queue.floor() || LINK.urgent.load(Ordering::Acquire) > 0 || SHARE.full()) {
+            if weights(priority) && (priority > queue.floor() || LINK.holds(priority) || SHARE.full()) {
                 break;
             }
             queue.heap.pop();

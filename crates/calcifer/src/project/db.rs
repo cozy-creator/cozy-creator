@@ -213,6 +213,8 @@ pub(crate) fn connect(path: &Path, read_only: bool) -> Result<Connection, Error>
 /// does (`query_only`): one opened read-only would rebuild the WAL's index from the WAL itself, a slower read each time.
 pub(crate) fn reader(path: &Path) -> Result<Connection, Error> {
     let conn = connect(path, false)?;
+    // Only a current one: a project.db not yet migrated is opened as the project's reader opens it, which migrates it.
+    require_current(&conn, path)?;
     conn.pragma_update(None, "query_only", "ON").map_err(|error| sql(path, error))?;
     conn.pragma_update(None, "temp_store", "MEMORY").map_err(|error| sql(path, error))?;
     crate::store::register_owner(&conn, path.parent().map(Path::to_owned)).map_err(|error| sql(path, error))?;

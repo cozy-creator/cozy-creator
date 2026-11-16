@@ -3,7 +3,29 @@
 // and approval, Redo takes it again. Backspace in a prompt edits only its words. A deleted box that another reads is named as gone there and
 // resolves nowhere, until Undo (cl-919); an API client's delete undoes from the page; and an undo a later edit would clobber is refused, saying
 // which.
-const { test, expect, canvasIdle, focus, middle, png, fixtureTool, canvasNames, canvasPoint, canvasVisible, selectedNames, hoverBox } = require('./fixtures');
+const { test, expect, canvasCard, canvasIdle, focus, middle, openPoint, png, fixtureTool, canvasNames, canvasPoint, canvasVisible, selectedNames, hoverBox } = require('./fixtures');
+
+/** A box's own control (`delete`, `cancel`) where the canvas draws it, read with nothing under the pointer. */
+async function controlPoint(page, name, part) {
+  const away = await openPoint(page);
+  await page.mouse.move(away.x, away.y);
+  let point = null;
+  await expect.poll(async () => {
+    const control = (await canvasCard(page, name))?.rendered?.controls?.find((one) => one.part === part);
+    point = control ? { x: control.x + control.width / 2, y: control.y + control.height / 2 } : null;
+    return Boolean(point);
+  }, { message: `${name}'s ${part} drawn` }).toBe(true);
+  return point;
+}
+/** Its trash pressed where it's drawn: the old canvas mounts a DOM card there under the pointer, the new draws it (cl-939: a trash can). */
+async function pressTrash(page, name) {
+  const at = await controlPoint(page, name, 'delete');
+  await page.mouse.move(at.x, at.y);
+  const trash = page.locator(`.canvas-node .card[data-asset=${JSON.stringify(name)}] .head button[aria-label="Delete"]`);
+  const icon = (await trash.count()) ? await trash.locator('svg').getAttribute('data-icon') : (await canvasCard(page, name))?.rendered?.parts?.delete?.icon ?? null;
+  expect.soft(icon, "a box's Delete is a trash can").toBe('trash');
+  await page.mouse.click(at.x, at.y);
+}
 const { rowsOf } = require('./geometry');
 
 // Four pictures to delete four ways, each with two takes and the first approved; then F, G reading it, H for an API client, K to clobber.
@@ -69,12 +91,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
     await page.getByRole('menu', { name: "d3's menu" }).getByRole('menuitem', { name: 'Delete', exact: true }).click();
     await gone('d3', 'menu › Delete');
 
-    const trash = (await hoverBox(page, 'd4')).locator('.head button[aria-label="Delete"]');
-    await page.mouse.move(...Object.values(await on('d4')));
-    await expect(trash).toBeVisible();
-    expect.soft(await trash.locator('svg').getAttribute('data-icon'), "a box's Delete is a trash can").toBe('trash');
-    at = await middle(trash);
-    await page.mouse.click(at.x, at.y);
+    await pressTrash(page, 'd4');
     await gone('d4', 'the trash icon');
   });
 
@@ -146,10 +163,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
   });
 
   await test.step('undo an entry that a later edit would clobber, then reload', async () => {
-    const trash = (await hoverBox(page, 'K')).locator('.head button[aria-label="Delete"]');
-    await page.mouse.move(...Object.values(await on('K')));
-    const at = await middle(trash);
-    await page.mouse.click(at.x, at.y);
+    await pressTrash(page, 'K');
     await gone('K', 'K');
     // Another writer's K, in its place.
     const theirs = await project.import(png(250), { name: 'K' });

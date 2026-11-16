@@ -26,6 +26,10 @@ pub(crate) const TABLES: &str = "
         current INTEGER NOT NULL DEFAULT 0
     ) STRICT;
     CREATE UNIQUE INDEX IF NOT EXISTS project_keys_current ON project_keys (id) WHERE current = 1;
+    CREATE TABLE IF NOT EXISTS project_handles (
+        handle TEXT PRIMARY KEY,
+        path TEXT NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS projects_gone (
         id TEXT PRIMARY KEY,
         code TEXT NOT NULL,
@@ -33,6 +37,11 @@ pub(crate) const TABLES: &str = "
     ) STRICT;
     DROP TABLE IF EXISTS sessions;
     DROP TABLE IF EXISTS session_codes;
+    CREATE TABLE IF NOT EXISTS purge_due (
+        project TEXT PRIMARY KEY,
+        at_ms INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS steps_done (step TEXT PRIMARY KEY) STRICT;
     CREATE TABLE IF NOT EXISTS tool_list (
         ord INTEGER PRIMARY KEY,
         package TEXT NOT NULL UNIQUE
@@ -189,9 +198,36 @@ fn digest(key: &str) -> String {
     hex::encode(Sha256::digest(key))
 }
 
+
+/// A folder as the index keys it: its components, so `/a/b/` and `/a/b` are one folder to its string compares (cl-1090: a project
+/// registered with a trailing slash kept its locked handle's row beside it, and its handle named nothing).
+fn folder(path: &Path) -> String {
+    path.components().collect::<PathBuf>().to_string_lossy().into_owned()
+}
+
 impl Store {
     pub(crate) fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
         self.read(|conn| Ok(conn.query_row(&format!("{KNOWN} WHERE id = ?1"), [id], known).optional()?))
+    }
+
+    /// When each project's deleted boxes are next due (`project::purge`), kept so a start opens only those: a project with none has
+    /// nothing to purge until a box of it is deleted, or it opens (cl-1010).
+    pub(crate) fn purge_due(&self) -> Result<Vec<(String, i64)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT project, at_ms FROM purge_due")?;
+            Ok(statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// `project`'s next due time as the purger keeps it: the time, or none to take it out.
+    pub(crate) fn keep_purge_due(&self, project: &str, at_ms: Option<i64>) -> Result<()> {
+        self.write(|tx| {
+            match at_ms {
+                Some(at) => tx.execute("INSERT INTO purge_due (project, at_ms) VALUES (?1, ?2) ON CONFLICT (project) DO UPDATE SET at_ms = ?2", params![project, at])?,
+                None => tx.execute("DELETE FROM purge_due WHERE project = ?1", [project])?,
+            };
+            Ok(())
+        })
     }
 
     /// Every project opened here, last used first.
@@ -217,6 +253,8 @@ impl Store {
                 tx.execute("INSERT INTO projects_gone (id, code, path) VALUES (?1, '', ?2)", params![format!("gone-{}", hex::encode(bytes)), path])?;
                 tx.execute("DELETE FROM projects WHERE id = ?1", [id])?;
                 tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
+                tx.execute("DELETE FROM purge_due WHERE project = ?1", [id])?;
+                tx.execute("DELETE FROM project_handles WHERE path = ?1", [&path])?;
             }
             Ok(())
         })?;
@@ -227,11 +265,32 @@ impl Store {
 
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
     pub(crate) fn project_opened(&self, id: &str, _name: &str, path: &Path, _used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
+        let path = folder(path);
+        // Already so, as at nearly every open: read, the writer untouched (cl-1010: each open wrote it, and waited on whatever held the writer).
+        let kept = self.read(|conn| {
+            let kept = conn.query_row(
+                "SELECT code FROM projects WHERE id = ?1 AND path = ?2 AND code <> ''
+                   AND NOT EXISTS (SELECT 1 FROM projects WHERE path = ?2 AND id <> ?1)
+                   AND NOT EXISTS (SELECT 1 FROM projects_gone WHERE id = ?1 OR path = ?2)",
+                params![id, path],
+                |row| row.get::<_, String>(0),
+            );
+            Ok(kept.optional()?)
+        })?;
+        if let Some(code) = kept.filter(|code| preferred.is_none_or(|preferred| preferred == code)) {
+            return Ok(code);
+        }
         self.write(|tx| {
-            tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
-            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
+            // What it retires leaves no page behind (cl-984): a locked project's handle row among them.
+            tx.pragma_update(None, "secure_delete", "ON")?;
+            // The handle it had while locked names it still, until its next lock (cl-1090): a page that opened it from the list goes on.
+            tx.execute("INSERT OR IGNORE INTO project_handles (handle, path) SELECT id, path FROM projects WHERE path = ?1 AND id LIKE 'locked-%'", [&path])?;
+            tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path])?;
+            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path])?;
             let code = project_code(tx, id, preferred, crate::project::code::generate)?;
-            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code", params![id, path.to_string_lossy(), code])?;
+            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code", params![id, path, code])?;
+            // A handle whose folder no longer holds a project here (it moved, its folder went, it never locked again) goes.
+            tx.execute("DELETE FROM project_handles WHERE path NOT IN (SELECT path FROM projects)", [])?;
             Ok(code)
         })
     }
@@ -242,6 +301,23 @@ impl Store {
     /// `review`: a key it holds that another folder's name proposes first, and none of `own` (its own name's and folder's), goes, with
     /// every key it had: true. Each other held key free here names it too.
     pub(crate) fn project_keyed(&self, id: &str, path: &Path, held: &[String], own: &[String], review: bool, mut proposed: impl Iterator<Item = String>) -> Result<(String, bool)> {
+        // Already so, as at nearly every open (one not under review): its key now is its project.db's, and each other key it keeps names
+        // it or another project here. Read, the writer untouched (cl-1010).
+        let kept = if review { None } else {
+            self.read(|conn| {
+                let Some(last) = held.last() else { return Ok(None) };
+                let ours = |key: &str, current: bool| {
+                    conn.query_row("SELECT EXISTS (SELECT 1 FROM project_keys WHERE key = ?1 AND id = ?2 AND current >= ?3)", params![key, id, current], |row| row.get::<_, bool>(0))
+                };
+                for key in held.iter().filter(|key| api::calcifer::project::key(key).as_ref() == Some(*key)) {
+                    if !ours(key, false)? && key_free(conn, id, key)? { return Ok(None); }
+                }
+                Ok(ours(last, true)?.then(|| last.clone()))
+            })?
+        };
+        if let Some(key) = kept {
+            return Ok((key, false));
+        }
         self.write(|tx| {
             let mut statement = tx.prepare("SELECT path FROM projects WHERE id <> ?1")?;
             let paths = statement.query_map([id], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -288,6 +364,11 @@ impl Store {
         })
     }
 
+    /// The folder a locked project's `handle` named before it was opened (cl-1090), until its next lock.
+    pub(crate) fn handle_path(&self, handle: &str) -> Result<Option<PathBuf>> {
+        self.read(|conn| Ok(conn.query_row("SELECT path FROM project_handles WHERE handle = ?1", [handle], |row| row.get::<_, String>(0)).optional()?.map(PathBuf::from)))
+    }
+
     /// The project `key` names here, now or before (cl-987).
     pub(crate) fn key_owner(&self, key: &str) -> Result<Option<String>> {
         self.read(|conn| Ok(conn.query_row("SELECT project_keys.id FROM project_keys JOIN projects ON projects.id = project_keys.id WHERE key = ?1",
@@ -309,13 +390,16 @@ impl Store {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes).expect("the OS gives random bytes");
         let handle = format!("locked-{}", hex::encode(bytes));
+        let path = folder(path);
         self.write(|tx| {
             tx.pragma_update(None, "secure_delete", "ON")?;
-            tx.execute("DELETE FROM projects WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
-            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
+            tx.execute("DELETE FROM projects WHERE id = ?1 OR path = ?2", params![id, path])?;
+            tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path])?;
             // Its keys too (cl-987): its project.db keeps them, its next open registers them again, and its KEY-N is unknown here meanwhile.
             tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
-            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, '')", params![handle, path.to_string_lossy()])?;
+            // The handles of its last lock go: each lock's is new.
+            tx.execute("DELETE FROM project_handles WHERE path = ?1", [&path])?;
+            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, '')", params![handle, path])?;
             Ok(())
         })?;
         self.empty_wal()

@@ -60,7 +60,7 @@ pub(crate) struct Kept {
 const PREFIX: usize = 12;
 
 /// Each kind of file a project keeps by what it is: its extension, its media type, and the field that names one.
-const MEDIA: [(&str, &str, &str); 40] = [
+const MEDIA: [(&str, &str, &str); 41] = [
     ("png", "image/png", "image"),
     ("jpg", "image/jpeg", "image"),
     ("jpeg", "image/jpeg", "image"),
@@ -101,8 +101,10 @@ const MEDIA: [(&str, &str, &str); 40] = [
     ("amr", "audio/amr", "audio"),
     ("dsf", "audio/x-dsf", "audio"),
     ("ape", "audio/x-ape", "audio"),
+    // A text tool's answer (xs-204).
+    ("txt", "text/plain; charset=utf-8", "text"),
 ];
-/// The media type and field of an extension, in any case, if it is a picture, video or sound.
+/// The media type and field of an extension, in any case, if it is a picture, video, sound or words.
 pub(crate) fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
     let extension = extension.to_ascii_lowercase();
     MEDIA.iter().find(|(known, ..)| *known == extension).map(|(_, media, field)| (*media, *field))
@@ -221,6 +223,7 @@ impl File {
     pub(crate) fn unmeasured(&self) -> bool {
         match media_of(&self.extension()) {
             Some((_, "audio")) => self.duration_ms == 0,
+            Some((_, "text")) => false,
             Some(_) => self.width == 0 || self.shape_only,
             None => false,
         }
@@ -351,6 +354,9 @@ pub(crate) struct Pending {
     /// Its pin, by the field holding it, goes when it lands (`--outdated`): if it never does, the pin stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpin: Option<String>,
+    /// A box of words: the field of its result they're in, which it lands as its version's file (xs-204).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<String>,
     /// Where it goes.
     pub target: Target,
 }
@@ -535,6 +541,20 @@ pub(crate) struct RunFile {
     pub output: String,
     pub sha256: String,
 }
+
+impl RunFile {
+    /// Whether `version` is this row's run's: by the run's id when both say one (its number is only a label), else by its number.
+    pub(crate) fn of(&self, version: &Version) -> bool {
+        match (&self.run_id, &version.run_id) {
+            (Some(row), Some(version)) => row == version,
+            (None, None) => version.run == Some(self.run),
+            _ => false,
+        }
+    }
+}
+
+/// project.db's `meta` key saying a purge swept the loose rows a take's run left before cl-1093.
+const LATE_ROWS_SWEPT: &str = "late_rows_swept";
 
 impl Default for Lock {
     fn default() -> Self {
@@ -811,19 +831,23 @@ impl Lock {
             .chain(self.walk.asks.iter().flat_map(|ask| ask.takes.iter().map(|take| name_key(&take.asset))))
             .collect();
         let lost: Vec<String> = self.assets.keys().filter(|key| !key.contains(TOMBSTONE) && !named(key) && !going.contains(*key)).cloned().collect();
-        lost.iter().for_each(|key| self.bury(key));
+        lost.iter().for_each(|key| {
+            self.bury(key);
+        });
         !lost.is_empty()
     }
 
     /// The row under `key` set aside, deleted now: what it holds stays, for Undo, until its window ends (`purge`), and that name starts with none.
-    pub(crate) fn bury(&mut self, key: &str) {
-        let Some(mut held) = self.assets.remove(key).filter(|held| held.files().next().is_some()) else { return };
+    /// Whether it held a file, set aside so: its project's purge is due once the window ends.
+    pub(crate) fn bury(&mut self, key: &str) -> bool {
+        let Some(mut held) = self.assets.remove(key).filter(|held| held.files().next().is_some()) else { return false };
         if held.name.is_empty() {
             held.name = key.to_owned();
         }
         held.deleted_ms = Some(super::now_ms());
         let free = (1..).map(|n| format!("{key}{TOMBSTONE}{n}")).find(|at| !self.assets.contains_key(at)).expect("a free key");
         self.assets.insert(free, held);
+        true
     }
 
     /// Every sha256 a version or a run has on record here, of any asset, discarded too: all `reclaim` may delete, once nothing uses it.
@@ -947,8 +971,6 @@ struct Shared {
 struct JournalReaders {
     idle: Vec<rusqlite::Connection>,
     reading: usize,
-    /// project.db was opened here (and migrated) once: a reader needs no more.
-    opened: bool,
 }
 
 /// A journal read's turn: counted from its start until it's dropped, on unwind too (a read that panicked left `reading` up, so the
@@ -1570,6 +1592,24 @@ impl Folder {
         done
     }
 
+    /// Whether a purge swept the loose rows a take's run left before cl-1093 (`purge::sweep_late`).
+    pub(super) fn late_rows_swept(&self) -> Result<bool, Error> {
+        self.reading_db(|conn| db::meta(conn, LATE_ROWS_SWEPT).is_some())
+    }
+
+    /// A purge swept them.
+    pub(super) fn late_rows_swept_now(&self) -> Result<(), Error> {
+        self.write_past(|conn| db::set_meta(conn, &self.db(), LATE_ROWS_SWEPT, Some("1")))
+    }
+
+    /// Whether run `id` is a take's: sent by the project's walk, under its key (`walker::owed_key`). Not one when its journal can't say.
+    pub(crate) fn take_run(&self, id: &api::ids::RunId) -> bool {
+        use rusqlite::OptionalExtension as _;
+        let key: crate::store::Result<Option<String>> =
+            self.journal_read(|conn| Ok(conn.query_row("SELECT idempotency_key FROM runs WHERE id = ?1", [id.as_str()], |row| row.get(0)).optional()?));
+        key.ok().flatten().is_some_and(|key| super::walker::is_owed_key(&key))
+    }
+
     /// Every history row, oldest first.
     pub(super) fn ops(&self) -> Result<Vec<db::OpRow>, Error> {
         self.loaded()?.ops()
@@ -1640,17 +1680,21 @@ impl Folder {
     pub(crate) fn journal_read<T>(&self, read: impl FnOnce(&rusqlite::Connection) -> crate::store::Result<T>) -> crate::store::Result<T> {
         let protected = |error: Error| crate::store::StoreError::Protected(error.code.to_string());
         if !self.db().is_file() { return Err(protected(Self::not_a_project(&self.dir))); }
-        // Opened once as its reader opens it, migrated: a journal reader after that is a read-only file open (`db::reader`).
-        if !self.shared.journal.lock().unwrap_or_else(|e| e.into_inner()).opened {
-            drop(self.held().map_err(protected)?);
-            self.shared.journal.lock().unwrap_or_else(|e| e.into_inner()).opened = true;
-        }
         let mut reader = JournalReader::take(&self.shared);
-        let conn = match reader.conn.take().map_or_else(|| db::reader(&self.db()), Ok) {
-            Ok(conn) => reader.conn.insert(conn),
-            Err(error) => return Err(protected(error)),
+        let conn = match reader.conn.take() {
+            Some(conn) => conn,
+            // A journal reader is a file open of a current project.db, never a wait on the document's load (a start's purge loads
+            // every project's: a run list waited on it, 1.1 s on Paul's laptop, cl-1010). One not yet current is opened as its
+            // reader opens it, migrating it, first.
+            None => match db::reader(&self.db()) {
+                Ok(conn) => conn,
+                Err(_) => {
+                    drop(self.held().map_err(protected)?);
+                    db::reader(&self.db()).map_err(protected)?
+                }
+            },
         };
-        read(conn)
+        read(reader.conn.insert(conn))
     }
 
     /// Whether this thread is inside one of this project's acts: its writer is this thread's until the act commits.
@@ -1930,6 +1974,14 @@ impl Folder {
         Ok(sha256)
     }
 
+    /// Words a tool answered, kept as `keep` keeps a file it saved: a box of words' version (xs-204).
+    pub(crate) fn keep_words(&self, words: &str) -> Result<String, Error> {
+        use std::io::Write as _;
+        let mut part = tempfile::Builder::new().suffix(".txt").tempfile_in(&self.dir).map_err(|e| io_at(&self.dir, e))?;
+        part.write_all(words.as_bytes()).map_err(|e| io_at(part.path(), e))?;
+        self.keep(part.path())
+    }
+
     /// A file a run is given, of `sha256`, kept in `files/` unless it's here, and in the lock's table, under what its bytes say it is
     /// else its own extension: a hard link with `link`, else a copy.
     pub(crate) fn keep_given(&self, source: &Path, sha256: &str, link: bool) -> Result<(), Error> {
@@ -1965,8 +2017,17 @@ impl Folder {
     /// of that output was, which goes if nothing else names it. So a file here is a file measured.
     /// Unsupported folders are refused before their files are changed; a current project's write
     /// contention can still leave a measured file awaiting its listing.
-    pub(crate) fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>) -> Result<(PathBuf, Option<Error>), Error> {
+    pub(crate) fn adopt(&self, dest: &Path, digest: &str, made: RunFile, measured: Option<&File>, take: bool) -> Result<(PathBuf, Option<Error>), Error> {
         drop(self.held()?);
+        // A take's run that no version on record is of, and none the walk has on its way: its take was deleted and purged before this
+        // landed (an export that resumed late, cl-1093), so nothing of the project is its and nothing keeps it here. While a run is being
+        // sent (a pending one with no number yet) the walk can't say whose it is: it lands as before.
+        let unclaimed = |walk: &WalkFile| !walk.walk.runs.contains_key(&made.run) && !walk.pending.values().any(|pending| pending.run == 0 || pending.run == made.run);
+        if take && self.reading_walk(unclaimed)?
+            && !self.reading_lock(|lock| lock.assets.values().flat_map(Asset::on_record).any(|version| made.of(version)))?
+        {
+            return Ok((dest.to_owned(), None));
+        }
         let (path, old, unlisted) = {
             let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
             let path = file_of(digest, dest);
@@ -2023,7 +2084,14 @@ impl Folder {
                     }
                     _ => self.update_lock(|lock| {
                         here(lock);
-                        listed(&mut lock.runs);
+                        // Its run arrived already and its version lists this file: that version's, as `arrived` makes what landed before
+                        // it, never a loose row (cl-1093: a local run's latents land after the rest, and such a row kept them past their
+                        // take's purge).
+                        let versioned = lock.assets.values().flat_map(Asset::on_record)
+                            .any(|version| made.of(version) && version.files.values().any(|file| file.as_str() == digest));
+                        if !versioned {
+                            listed(&mut lock.runs);
+                        }
                     }),
                 }),
             };
