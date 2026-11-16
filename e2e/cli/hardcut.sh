@@ -1,38 +1,39 @@
 # e2e/cli/hardcut.sh: the legacy hard cut (cl-1003) on a home cozy 0.25.0 made and used.
 
 # hard_cut: cozy 0.25.0 runs as another user of this runner in its own default home, with its own Calcifer and local machine
-# (old_takes' way). It makes four projects, each with a drawn still, a shot whose latents stay on its local machine (in that
-# machine's TensorFS store, nowhere in the project; one object all four share, by its seed) and an uploaded picture (0.25.0
-# refuses runs outside a project). The two plain ones also share a shot of their own seed, and the last one has a shot of its own.
-# It encrypts and locks the third and fourth, then stops, and ages every use and those bytes past the store's TTL and grace. Before
+# (old_takes' way). It makes five projects, each with a drawn still, a shot whose latents stay on its local machine (in that
+# machine's TensorFS store, nowhere in the project; one object all five share, by its seed) and an uploaded picture (0.25.0
+# refuses runs outside a project). The three plain ones also share a shot of their own seed, and the last one has a shot of its own.
+# It encrypts and locks the last two, then stops, and ages every use and those bytes past the store's TTL and grace. Before
 # this cozy starts on that home, a booting rental with its open order (tied to a project run) and an unsettled run outside any
 # project are added to its store, as a laptop updated mid-work has them. Checks:
 #   - killed at each step of the cut (`cut_windows`), the store is the old one whole or the new one whole, and the next start
 #     finishes the cut with every plain project's files as before;
-#   - the store is written again: version 9, no legacy table, no old settled run, no ended machine, small;
+#   - the store is written again: version 9, no legacy table, no old settled run, no ended machine, no machine held, small;
 #   - the booting rental and its order, and the unsettled run, are still there; the rental is still listed;
 #   - nothing is written into a locked project's folder;
-#   - both plain projects have every file, the one only they share too, which the store then lets go;
+#   - both plain projects have every file, the one only the plain ones share too; a third that shares it, away from its folder
+#     at the cut, is held as a locked one, so the store keeps it until that one opens there again and copies it in;
 #   - the machine keeps the shared latents for the locked ones: each is held in the machine's store (a TensorFS header root beside
 #     Calcifer's store), still there after every use and the bytes are 8 days old, TensorD is stopped and a collection ran; the
 #     first unlock copies them in and lets go of its hold, the store keeps them for the other; the second does the same, and the
 #     store lets them go; at the next start no copy is left to let go of;
 #   - the last project's shot of its own seed: once its unlock copied its latents in, the machine's record of that run (the use
 #     naming them and its manifest) is gone too, and nothing in the machine's store names the file's digest or its path;
-#   - every box of the four (the locked ones once unlocked) lists the files it did and answers each, and its preview, with the
+#   - every box of the five (the locked ones once unlocked) lists the files it did and answers each, and its preview, with the
 #     same bytes;
 #   - the `state.db.pre-*` copies beside the store are gone.
 # With CUT_FROM=8 (--shard hardcut-v8) the store is first fenced as a 0.26 RC left one (Paul's laptop's): its project runs in
-# legacy tables beside the live ones, and cl-1012's machine lines.
+# legacy tables beside the live ones, cl-1012's machine lines, and the hold an RC read from local's update by hand.
 CUT_RELEASE=0.25.0 CUT_RUNTIME=0.46.0 CUT_TENSORFS=0.25.1
 CUT_USER=cozy-cut CUT_FROM=${CUT_FROM:-7}
 hard_cut() {
 step "legacy hard cut (cl-1003): a $CUT_RELEASE home's old runs go, every project file stays (a locked one's from its unlock)"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "hard cut: $CUT_RELEASE runs as another user of a fresh GitHub runner"; return; }
-local home P Q E F pass before facts latents solo twin twinblob record manifests paths pin pinf blob
+local home P Q R E F pass before facts latents solo twin twinblob record manifests paths pin pinf blob
 id "$CUT_USER" > /dev/null 2>&1 || sudo useradd -m "$CUT_USER" || { check "hard cut: no user"; return; }
 home=$(getent passwd "$CUT_USER" | cut -d: -f6)
-P=$home/plain Q=$home/plain2 E=$home/sealed F=$home/sealed2 pass=$home/pass
+P=$home/plain Q=$home/plain2 R=$home/plain3 E=$home/sealed F=$home/sealed2 pass=$home/pass
 mkdir -p "$OUT/cozy-cut"
 curl -fsSL --retry 3 -o "$OUT/cozy-cut.tgz" "https://github.com/cozy-creator/cozy-creator/releases/download/v$CUT_RELEASE/cozy-x86_64-unknown-linux-gnu.tar.gz" \
   && tar -xzf "$OUT/cozy-cut.tgz" -C "$OUT/cozy-cut" || { check "hard cut: no cozy $CUT_RELEASE"; return; }
@@ -48,10 +49,10 @@ sudo install -D -m 755 "$OUT/cozy-cut/cozy-x86_64-unknown-linux-gnu/cozy" /opt/c
 cut_cozy old --json machine update local --runtime "$CUT_RUNTIME" --tensorfs "$CUT_TENSORFS" -y > "$OUT/cut-update.json" \
   || { check "hard cut: its machine: $(tail -c 400 "$OUT/cut-update.json") $(tail -c 300 "$OUT/cozy-cut.err")"; return; }
 printf '%s\n' 'synthetic hard cut passphrase' | sudo -u "$CUT_USER" tee "$pass" > /dev/null && sudo chmod 600 "$pass"
-for folder in "$P" "$Q" "$E" "$F"; do
+for folder in "$P" "$Q" "$R" "$E" "$F"; do
   cut_cozy old --json new --unencrypted "$folder" > "$OUT/cut-new.json" || { check "hard cut: new $folder: $(tail -c 300 "$OUT/cozy-cut.err")"; return; }
 done
-cut_fill old "$P" plain twin:9 && cut_fill old "$Q" plain2 twin:9 && cut_fill old "$E" sealed && cut_fill old "$F" sealed2 solo:8 || return
+cut_fill old "$P" plain twin:9 && cut_fill old "$Q" plain2 twin:9 && cut_fill old "$R" plain3 twin:9 && cut_fill old "$E" sealed && cut_fill old "$F" sealed2 solo:8 || return
 # The second and third encrypted after their runs, as Paul's were: what they left on local is only in the machine's store.
 for folder in "$E" "$F"; do
   cut_in "$folder" old --json vault encrypt --passphrase-file "$pass" --recovery-out "$folder.recovery" > "$OUT/cut-encrypt.json" \
@@ -71,7 +72,7 @@ solo=$(jq -r '.solo.latents.sha256 | sub("^sha256:"; "")' "$OUT/cut-sealed2-befo
 # What the two plain projects alone share (another seed): no locked project's hold keeps it, so one project's copy letting go of it
 # before the other's is made would lose it.
 twin=$(jq -r '.twin.latents.sha256 | sub("^sha256:"; "")' "$OUT/cut-plain-before.json")
-[ "sha256:$twin" = "$(jq -r .twin.latents.sha256 "$OUT/cut-plain2-before.json")" ] && [ "$twin" != "$latents" ] \
+[ "$(jq -r .twin.latents.sha256 "$OUT/cut-plain2-before.json" "$OUT/cut-plain3-before.json" | sort -u)" = "sha256:$twin" ] && [ "$twin" != "$latents" ] \
   || { check "hard cut: the plain projects' own latents aren't shared: $(jq -r .twin.latents.sha256 "$OUT"/cut-plain*-before.json | tr '\n' ' ')"; return; }
 twinblob=$home/.cache/tensorfs/blobs/${twin:0:2}/${twin:2:2}/$twin
 # As old as a laptop's: every use and these bytes past the store's TTL and its grace, before the cut.
@@ -84,6 +85,8 @@ cut_live || { check "hard cut: the booting rental and the run going"; return; }
 [ "$CUT_FROM" = 7 ] || cut_fence || { check "hard cut: its store not fenced as a 0.26 RC's"; return; }
 sudo -u "$CUT_USER" sh -c 'f=$1; cp "$f" "$f.pre-hand-copy" && touch "$f.pre-0.11-20261021T194950Z-wal"' sh "$home/.cozy/calcifer/state.db" \
   || check "hard cut: copies beside the store"
+# The third plain project away from the folder the index names (moved; back after the cut).
+sudo mv "$R" "$R.away" || { check "hard cut: the third plain project not moved"; return; }
 echo "hard cut: before: $(cut_store_facts)"
 sudo install -m 644 -o "$(id -u)" "$home/.cozy/calcifer/state.db" "$OUT/cut-store-before.db" || true
 before=$(sudo find "$E" "$F" -mindepth 1 -maxdepth 1 -type f -printf '%p %s\n' | sort)
@@ -104,6 +107,8 @@ facts=$(cut_store_facts)
 echo "hard cut: after: $facts"
 J '.version == 9 and .legacy_tables == 0 and .settled_runs == 0 and .ended_machines == 0 and .bytes < 1048576' <<< "$facts" \
   || check "hard cut: its store after the cut: $facts"
+[ "$(cut_sql "SELECT count(*) FROM machines WHERE held IS NOT NULL")" = 0 ] \
+  || check "hard cut: a machine starts held: $(cut_sql "SELECT name, held FROM machines WHERE held IS NOT NULL")"
 J '.machines | any(.name == "cut-rental")' "$OUT/cut-machines.json" \
   || check "hard cut: the booting rental isn't listed: $(jq -c '[.machines[] | {name, state}]' "$OUT/cut-machines.json")"
 # Still ends by its name (its Hub may know nothing of it; it isn't a machine this cozy lost).
@@ -125,7 +130,12 @@ fi
 cut_check "$P" plain
 cut_check "$Q" plain2
 # Both plain projects copied what they alone shared before either let go of it: then the store let it go.
-sudo test ! -e "$twinblob" || check "hard cut: the store still has what the plain projects alone share, both copied in"
+# The third plain project, away from its folder at the cut, is held as a locked one: its two neighbours' copies let go of nothing
+# it shares, and it copies them in when it opens there again.
+sudo test -f "$twinblob" || check "hard cut: the plain projects' copies let go of latents a project away from its folder still needs"
+sudo mv "$R.away" "$R" || check "hard cut: the third plain project not put back"
+cut_check "$R" plain3
+sudo test ! -e "$twinblob" || check "hard cut: the store still has what the plain projects alone share, all three copied in"
 
 # The latents the three share: held for each locked project past the store's 7 days, through a collection, until its own unlock
 # copies them in; the plain project's copy at the cut let go of nothing a locked project still needs, nor the first unlock.
@@ -431,6 +441,10 @@ db.execute("ALTER TABLE projects RENAME TO legacy_project_projects")
 db.execute("CREATE TABLE projects (id TEXT PRIMARY KEY, path TEXT NOT NULL, code TEXT NOT NULL DEFAULT '') STRICT")
 db.execute("INSERT INTO projects SELECT id, path, code FROM legacy_project_projects")
 db.execute("ALTER TABLE unseen RENAME TO legacy_project_unseen")
+# The hold an RC read from local's last update by hand (`held_column`): the cut keeps none.
+db.execute("ALTER TABLE machines ADD COLUMN held TEXT")
+db.execute("UPDATE machines SET held = (SELECT target FROM runs WHERE kind = 'update' AND machine = 'local' AND status = 'completed' ORDER BY number DESC LIMIT 1) WHERE name = 'local'")
+assert db.execute("SELECT held FROM machines WHERE name = 'local'").fetchone()[0], "no hold read from local's update"
 # cl-1012's kept machine lines, as an RC with it has them: the live local machine's and an ended rental's.
 db.execute("CREATE TABLE IF NOT EXISTS machine_logs (machine TEXT PRIMARY KEY REFERENCES machines (name) ON DELETE CASCADE, text TEXT NOT NULL) STRICT")
 db.execute("INSERT OR IGNORE INTO machines (name, kind, key, state, created_at) VALUES ('gone-rental', 'rental', '', 'ended', 1700000000000)")

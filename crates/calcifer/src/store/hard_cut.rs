@@ -1,6 +1,6 @@
 //! The legacy hard cut (cl-1003; Paul 11-15: "you can delete all previous run history", "please just hardcut we don't need these
 //! anymore"). A store a 0.24/0.25 cozy made (version 7), or a 0.26 RC's with its old project history fenced (8), is written again
-//! as version 9 before Calcifer opens it: a new file holding only what is live (machines not ended and any a live run names, runs
+//! as version 9 before Calcifer opens it: a new file holding only what is live (machines not ended and any a live run names, none held, runs
 //! outside a project not settled with their rows, open rental asks, the project index, settings and admissions) takes the old
 //! one's place. Every old run of a project, every settled run outside one and every ended machine stay behind in the old file,
 //! which goes whole. Only what is live is read, so the start it happens on is slower by at most about a second on a cold disk, and
@@ -120,6 +120,8 @@ pub(super) fn rebuild(path: &Path, from: i64) -> Result<()> {
         copy(&conn, "machines", &format!("state <> 'ended'{ran}{asked}"))?;
         // An ended one kept for what names it is kept 90 days from now (`prune_machines`), as one that ended before its end was kept.
         conn.execute("UPDATE main.machines SET ended_at = ?1 WHERE state = 'ended' AND ended_at IS NULL", [now_ms()])?;
+        // No hold (cl-1055): a 0.26 RC read one from its old updates' words, which can't tell one named by hand from its Hub's.
+        conn.execute("UPDATE main.machines SET held = NULL", [])?;
         for (_, runs, outputs, logs) in &sources {
             copy_from(&conn, runs, "runs", "id IN (SELECT id FROM temp.live)")?;
             copy_from(&conn, outputs, "outputs", "run IN (SELECT id FROM temp.live)")?;
@@ -193,8 +195,8 @@ pub(super) fn rebuild(path: &Path, from: i64) -> Result<()> {
 
 /// Before anything of the old store is left behind, every project's files left on `local` that only this computer's TensorFS store
 /// holds are held there (`kept_path`), whatever their uses' ages: a readable project's as its lock names them, a locked one's (an
-/// encrypted project's lock can't be read while it is locked, nor an older plain project's before its first open migrates it) as
-/// the old store says its runs left them, never exported. Then every readable project's are copied into it, each checked and noted
+/// encrypted project's lock can't be read while it is locked, nor an older plain project's before its first open migrates it, nor
+/// one whose folder isn't where the index says) as the old store says its runs left them, never exported. Then every readable project's are copied into it, each checked and noted
 /// (a copy that fails stops the cut), and only once all are in, each readable project's hold and copies are let go of: the store
 /// lets an object go only when no project's hold still names it. A locked project's are copied in as it opens. A file of a locked
 /// project's runs this store no longer names (one imported already) can't be known before then. Answers how many locked projects
@@ -210,8 +212,8 @@ fn keep_project_files(path: &Path, from: i64) -> Result<(usize, Vec<(PathBuf, u6
     let (mut locked, mut readable): (Vec<PathBuf>, Vec<(PathBuf, Vec<tensorfs::format::ObjectRef>)>) = (vec![], vec![]);
     for indexed in paths {
         let root = vault::logical(Path::new(&indexed));
-        if !root.is_dir() { continue; }
-        match (!vault::encrypted(&root)).then(|| crate::project::left_on_local(&root)).flatten() {
+        // A folder not where the index says can't be read either: held as a locked one's, so no copy lets go of what it shares.
+        match (root.is_dir() && !vault::encrypted(&root)).then(|| crate::project::left_on_local(&root)).flatten() {
             Some(left) => readable.push((root, left)),
             None => locked.push(root),
         }

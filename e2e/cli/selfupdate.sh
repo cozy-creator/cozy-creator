@@ -117,7 +117,6 @@ jq -e --arg v "${candidate%%+*}" '.status.version | startswith($v)' "$OUT/machin
 RUN_PROJECT=$P cell fw-after "$E2E_NEXT/echo" text=after || true
 }
 
-
 # fw_timed <name> <command...>: Calcifer's first start on the Latest's home, inside the command: its time and the store's version said
 # every 15 s, a failure past 300 s (a 0.26.0 build once hung there 28 min). What it said in $OUT/fw-<name>.out and .err; FW_TOOK its
 # seconds.
