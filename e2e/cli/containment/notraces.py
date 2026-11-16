@@ -12,6 +12,7 @@ scans, for macOS and Windows runners: the installed CLI and Calcifer's own API, 
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from http.client import HTTPConnection
 import io
 import json
@@ -26,7 +27,7 @@ from typing import cast
 from urllib.parse import quote, urlsplit
 
 from common import Failure, sha
-from scan import WINDOWS_UNREADABLE, Scanner, places, unexplained
+from scan import Scanner, explained, places
 
 PROGRAM = '''# /// script
 # requires-python = ">=3.12"
@@ -197,11 +198,11 @@ def main() -> int:
         print("unreadable: " + path, file=sys.stderr)
     require(counts.get("files", 0) > 0, "notraces_scanned_nothing")
     require(counts.get("matches", 0) == 0, "outside_project_canary: " + json.dumps({key: value for key, value in counts.items() if key.startswith("match")}))
-    unknown = unexplained(unreadable) if sys.platform == "win32" else []
+    cases = Counter(explained(path) for path in unreadable) if sys.platform == "win32" else Counter[str | None]()
+    unknown = [path for path in unreadable if explained(path) is None] if sys.platform == "win32" else []
     require(not unknown, "unreadable_unexplained: " + json.dumps(unknown))
-    allowed = sorted(WINDOWS_UNREADABLE.values()) if sys.platform == "win32" else []
     print(json.dumps({"no_traces": True, "os": sys.platform, "ran": local, "files": counts.get("files"), "matches": 0,
-                      "unreadable": len(unreadable), "unreadable_allowed": allowed}))
+                      "unreadable": len(unreadable), "unreadable_cases": {str(name): count for name, count in sorted(cases.items(), key=str)}}))
     return 0
 
 

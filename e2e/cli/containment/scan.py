@@ -23,17 +23,23 @@ import zlib
 from common import Failure, require, sha
 
 
-# Windows files and folders no process of the user's can read, each with why. no-traces lists every unreadable path and, on
-# Windows, fails on one these don't explain: an unreadable place is never where a trace may hide unnoticed (cl-984).
-WINDOWS_UNREADABLE: dict[str, str] = {
-    r"\\AppData\\Local\\Microsoft\\WindowsApps\\(?:[^\\]+\\)?[^\\]+\.exe$":
-        "app execution aliases: reparse points Windows resolves only to launch a Store app, never opens as files",
+# Windows files no process of the user's can read, each case named, with its pattern and why. no-traces lists every unreadable
+# path and, on Windows, fails on one these don't explain: an unreadable place is never where a trace may hide unnoticed (cl-984).
+WINDOWS_UNREADABLE: dict[str, tuple[str, str]] = {
+    "app execution aliases": (r"\\AppData\\Local\\Microsoft\\WindowsApps\\(?:[^\\]+\\)?[^\\]+\.exe$",
+        "reparse points Windows resolves only to launch a Store app; they hold no file data"),
+    "registry hives": (r"\\AppData\\Local\\(?:Microsoft\\Windows\\UsrClass|Packages\\[^\\]+\\(?:Settings\\settings|SystemAppData\\Helium\\User(?:Classes)?))\.dat(?:\.LOG[12])?$",
+        "hives the registry keeps loaded while the user is signed in; cozy writes no registry value but its Run key, in NTUSER.DAT"),
+    "WinINet cache": (r"\\AppData\\Local\\Microsoft\\Windows\\(?:WebCache\\[^\\]+|WebCacheLock\.dat)$",
+        "WinINet's cache database, held open by Windows' WebCache task; cozy's HTTP never goes through WinINet"),
+    "push notifications": (r"\\AppData\\Local\\Microsoft\\Windows\\Notifications\\wpnprmry\.tmp$",
+        "the Windows Push Notification service's database, held open by WpnUserService; cozy raises no notification"),
 }
 
 
-def unexplained(paths: list[str]) -> list[str]:
-    """`paths` no `WINDOWS_UNREADABLE` pattern explains."""
-    return [path for path in paths if not any(re.search(pattern, path, re.IGNORECASE) for pattern in WINDOWS_UNREADABLE)]
+def explained(path: str) -> str | None:
+    """The WINDOWS_UNREADABLE case that explains `path`, if one does."""
+    return next((name for name, (pattern, _) in WINDOWS_UNREADABLE.items() if re.search(pattern, path, re.IGNORECASE)), None)
 
 
 def places(home: Path, temp: Path, **extra: Path) -> dict[str, Path]:
@@ -238,6 +244,7 @@ class Scanner:
                     label = sha(os.fsencode(path))
                     labels.setdefault(label, place(path) if places else "other")
                     self.found(os.fsencode(path), label, patterns)
+                    metadata: os.stat_result | None = None
                     try:
                         metadata = path.lstat()
                         if stat.S_ISLNK(metadata.st_mode) or os.path.isjunction(path):
@@ -264,15 +271,15 @@ class Scanner:
                             self.counts["large_raw_only"] += 1
                     except FileNotFoundError:
                         self.counts["vanished"] += 1
-                    except PermissionError:
-                        self.counts["unreadable"] += 1
-                        self.unreadable.append(str(path))
-                        if places:
-                            self.counts["unreadable_" + labels[label]] += 1
-                    # Windows won't open some system files for anyone (its app execution aliases): listed, and judged by no-traces.
-                    except OSError:
-                        if sys.platform != "win32":
+                    # Denied, or (Windows) a file the system won't open for anyone, such as its app execution aliases: listed, and
+                    # judged by no-traces. Elsewhere only a denial is counted, as before.
+                    except OSError as error:
+                        if not isinstance(error, PermissionError) and sys.platform != "win32":
                             raise
+                        # Windows: an empty file another process holds locked (Calcifer's own lock file) has nothing to read.
+                        if sys.platform == "win32" and metadata is not None and metadata.st_size == 0:
+                            self.counts["empty_unopened"] += 1
+                            continue
                         self.counts["unreadable"] += 1
                         self.unreadable.append(str(path))
                         if places:
