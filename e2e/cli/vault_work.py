@@ -46,6 +46,7 @@ class Output(TypedDict, total=False):
     name: str
     status: str
     sha256: str
+    path: str
 
 
 class Run(TypedDict, total=False):
@@ -152,6 +153,21 @@ def settled(args: argparse.Namespace, number: object, seconds: float) -> tuple[s
     return status, record
 
 
+def items(args: argparse.Namespace, number: object) -> list[dict[str, object]]:
+    """Run `number`'s outputs as `cozy run show --json` says them: status, landed path or not, export error."""
+    done = subprocess.run([str(args.cli), "--json", "run", "show", str(number)], cwd=args.project, capture_output=True)
+    lines = [line for line in done.stdout.splitlines() if line.strip()]
+    try:
+        shown: object = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        return []
+    if isinstance(shown, dict) and isinstance(shown.get("run"), dict):
+        shown = shown["run"]
+    output = shown.get("output", []) if isinstance(shown, dict) else []
+    return [{"name": item.get("name"), "status": item.get("status"), "landed": bool(item.get("path")), "error": item.get("export_error")}
+            for item in output if isinstance(item, dict)] if isinstance(output, list) else []
+
+
 def whole(args: argparse.Namespace, number: object, mark: str, name: str) -> tuple[int, str]:
     """Run `number`'s file as a person fetches it from the project: its size and digest, the mark at its start, read as a stream;
     (0, "") when it doesn't come back. The copy isn't kept."""
@@ -163,7 +179,8 @@ def whole(args: argparse.Namespace, number: object, mark: str, name: str) -> tup
             continue
         with path.open("rb") as file:
             head = file.read(200)
-            if mark.encode() in head and not digest:
+            # The run's file, not its small note, which starts with the mark too.
+            if mark.encode() in head and path.stat().st_size > size:
                 hasher = hashlib.sha256(head)
                 for chunk in iter(lambda: file.read(1 << 20), b""):
                     hasher.update(chunk)
@@ -258,6 +275,7 @@ class Request(msgspec.Struct, forbid_unknown_fields=True):
 class Answer(msgspec.Struct):
     slept: int
     file: File
+    note: File
 @app.entrypoint(accelerator=False)
 def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     time.sleep(payload.seconds)
@@ -266,7 +284,9 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
         file.write(f"{payload.mark} slept {payload.seconds}\\n".encode())
         for _ in range(payload.size):
             file.write(os.urandom(1 << 20))
-    return Answer(payload.seconds, out.save_file(target, media_type="text/plain"))
+    note = out.temporary_file(".txt")
+    note.write_text(f"{payload.mark} note")
+    return Answer(payload.seconds, out.save_file(target, media_type="text/plain"), out.save_file(note, media_type="text/plain"))
 ''')
     # Its environment installed first, so the timed run below is the sleep, not an install.
     cli(args, "warm", "run", str(script), "seconds:=0", "--on", "local")
@@ -384,8 +404,11 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     saved = run_of(stdout).get("number")
     resumed = time.monotonic()
     view = unlock(args, "unlock-after-save-lock", 0)
+    print(f"vault work: lock while saving: items at the unlock: {items(args, saved)}", flush=True)
     status, record = settled(args, saved, 600)
     save_s = round(time.monotonic() - resumed, 1)
+    print(f"vault work: lock while saving: items after the save: {items(args, saved)}", flush=True)
+    landed = [item for item in record.get("output", []) if item.get("path")]
     partial = [str(path) for path in view.rglob("*") if path.name.endswith((".part", ".part.held", ".manifest.part"))]
     size, digest = whole(args, saved, mark, "save-lock.out")
     made = [item.get("sha256") for item in record.get("output", [])]
@@ -393,7 +416,7 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
                 "lock_error": error.get("code") if isinstance(error, dict) else None, "unsaved": answer.get("unsaved", []),
                 "lock_answered_s": lock_s, "locked_s": locked_s, "views_left": len(left), "saved_before_lock": done_before,
                 "next_unlock": status, "save_after_unlock_s": save_s, "half_written": partial, "file_bytes": size,
-                "digest_is_runs": digest in made}
+                "digest_is_runs": digest in made, "items_landed": len(landed), "items": len(record.get("output", []))}
     print(f"vault work: lock while saving: {json.dumps(observed)}", flush=True)
     receipt["lock_while_saving"] = observed
     # Its large files aren't artifacts.
@@ -404,6 +427,7 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     assert not left, f"the lock left a view mounted: {observed}"
     assert status == "completed" and not partial, f"after a lock stopped run {saved}'s save, the next unlock: {observed}"
     assert size >= SAVE_MB << 20 and digest in made, f"run {saved}'s file after the next unlock: {observed}"
+    assert len(landed) == len(record.get("output", [])) == 2, f"run {saved}'s outputs after the next unlock, the one behind the big one too: {observed}"
     cli(args, "lock-after-save", "vault", "lock")
 
     receipt["synthetic_only"] = True
