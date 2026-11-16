@@ -163,9 +163,17 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 async fn folders(ctx: &Context) -> Vec<Check> {
     let Ok(client) = ctx.calcifer().await else { return vec![] };
     let Ok(listed) = client.get::<api::calcifer::project::Projects>("/v1/projects?limit=1000").await else { return vec![] };
-    // Files a project left on a machine that were gone before the legacy cut could copy them in (cl-1003): said, nothing to fix.
-    let lost: Vec<Check> = client.get::<Vec<api::calcifer::LostFiles>>("/v1/lost").await.unwrap_or_default()
-        .into_iter().map(|lost| Check::ok("project files", format!("warning: {} files of {} were lost before this upgrade", lost.files, lost.path.display()))).collect();
+    // What the legacy cut keeps for projects (cl-1003): files gone before it could copy them in (said, nothing to fix), and the files
+    // it holds for projects not opened since, with how to let them go.
+    let cut = client.get::<api::calcifer::CutFiles>("/v1/cut").await.unwrap_or_default();
+    let mut lost: Vec<Check> = cut.lost.into_iter()
+        .map(|lost| Check::ok("project files", format!("warning: {} files of {} were lost before this upgrade", lost.files, lost.path.display()))).collect();
+    if cut.held_projects > 0 {
+        lost.push(Check::ok("project files", format!(
+            "{} of old files are held on this computer for {} projects not opened since the upgrade (moved, deleted or still locked): \
+             open or unlock each at the folder it had then to copy them in, or delete {} to let them go",
+            crate::output::bytes(cut.held_bytes), cut.held_projects, cut.kept.display())));
+    }
     let loosened = listed.projects.into_iter().filter(|project| platform::durable::others_may_open(&project.path).unwrap_or(false));
     loosened.map(|project| {
         let path = project.path.display();

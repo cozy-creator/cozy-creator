@@ -1,7 +1,8 @@
-//! The legacy hard cut's files (cl-1003): what older Calcifers kept beside the store and nothing reads now. Copies of the old
-//! store (`state.db.pre-*`), old JSON state and project index files, raw service captures, old browser redirects, the old digest
-//! memo, copies of code no current source admitted, and clips and cuts of projects' files kept outside them. Each is deleted by its known name; anything else found
-//! there stays, untouched. One-time code: it goes in the release after.
+//! The legacy hard cut's files (cl-1003): what older Calcifers kept beside the store and nothing reads now (copies of the old store,
+//! `state.db.pre-*`; old JSON state and project index files; raw service captures; old browser redirects; copies of code no current
+//! source admitted), deleted at every start until none is left; and, once in the cut, the caches they made of projects' files
+//! outside them. Each is deleted by its known name; anything else found there stays, untouched. One-time code: it goes in the
+//! release after.
 use std::{collections::HashSet, fs, path::Path};
 
 fn remove(path: &Path) {
@@ -43,12 +44,17 @@ pub(crate) fn retire(calcifer: &Path, admitted: &HashSet<String>) {
         .all(|entry| entry.file_name().to_str().is_some_and(|name| name.starts_with("project-") && name.ends_with(".json")));
     if old_index { remove(&index); }
     let Some(home) = calcifer.parent() else { return };
-    remove(&home.join("cache").join("digests"));
-    // Clips and cuts of projects' files made before each project kept its own (`.vault-calcifer`): made again as asked.
-    for dir in [Some(home.join("cache").join("clips")), platform::paths::cache().map(|cache| cache.join("cuts"))].into_iter().flatten() {
-        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() { remove(&entry.path()); }
-    }
     for entry in fs::read_dir(home.join("cache")).into_iter().flatten().flatten() {
         if entry.file_name().to_str().is_some_and(redirect) { remove(&entry.path()); }
+    }
+}
+
+/// Once, in the cut: the digest memo, clips and cuts older Calcifers made of projects' files outside them, before each project kept
+/// its own (`.vault-calcifer`). Runs outside a project and dev checkouts use these caches still, so a later start never clears them.
+pub(crate) fn cut_caches(calcifer: &Path) {
+    let Some(home) = calcifer.parent() else { return };
+    for dir in [Some(home.join("cache").join("digests")), Some(home.join("cache").join("clips")), platform::paths::cache().map(|cache| cache.join("cuts"))]
+        .into_iter().flatten() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() { remove(&entry.path()); }
     }
 }

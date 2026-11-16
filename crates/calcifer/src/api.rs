@@ -247,7 +247,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/play", get(crate::play::play))
         .route("/v1/down", post(down))
         .route("/v1/status", get(status))
-        .route("/v1/lost", get(lost))
+        .route("/v1/cut", get(cut))
         .route("/v1/settings", get(crate::reports::show).put(crate::reports::change))
         .route("/v1/activity", get(activity))
         .route("/v1/machines", get(machines::list).post(machines::create))
@@ -773,10 +773,15 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
     }))
 }
 
-/// `GET /v1/lost`: projects' files gone before the legacy cut could copy them in (cl-1003), for `cozy doctor`.
-async fn lost(State(api): State<Arc<Api>>) -> Result<Json<Vec<::api::calcifer::LostFiles>>, Refusal> {
-    let lost = tokio::task::block_in_place(|| api.calcifer.store().lost_before_upgrade())?;
-    Ok(Json(lost.into_iter().map(|(path, files)| ::api::calcifer::LostFiles { path, files }).collect()))
+/// `GET /v1/cut`: what the legacy cut (cl-1003) still keeps for projects here, for `cozy doctor`: files gone before it could copy them
+/// in, and the files it holds for projects not opened since.
+async fn cut(State(api): State<Arc<Api>>) -> Result<Json<::api::calcifer::CutFiles>, Refusal> {
+    let calcifer = api.machines.hubs.home().calcifer();
+    let (lost, (held_projects, held_bytes)) = tokio::task::block_in_place(|| {
+        Ok::<_, crate::store::StoreError>((api.calcifer.store().lost_before_upgrade()?, crate::project::held(&calcifer)))
+    })?;
+    let lost = lost.into_iter().map(|(path, files)| ::api::calcifer::LostFiles { path, files }).collect();
+    Ok(Json(::api::calcifer::CutFiles { lost, held_projects, held_bytes, kept: calcifer.join("kept") }))
 }
 
 /// Who uses this Calcifer now (cl-962): a `cozy` of another version restarts it only when no page, run or other client does.

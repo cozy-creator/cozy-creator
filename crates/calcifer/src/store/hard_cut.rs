@@ -5,7 +5,8 @@
 //! one's place. Every old run of a project, every settled run outside one and every ended machine stay behind in the old file,
 //! which goes whole. Only what is live is read, so the start it happens on is slower by at most about a second on a cold disk, and
 //! nothing is vacuumed. A project's own files are untouched; what one left on `local` that only this computer's TensorFS store
-//! holds is held, then copied into it, first (`keep_project_files`). One-time code: it goes in the release after.
+//! holds is held there first (`hold_project_files`), and copied into it at its next open. One-time code: it goes in the release
+//! after.
 use super::*;
 
 /// What is filtered here, or left behind: the run tables, machines, retry answers, the index, an old store's caches, and the
@@ -42,21 +43,21 @@ fn cut(why: impl std::fmt::Display) -> StoreError { StoreError::Cut(why.to_strin
 /// A path as one key, whatever its separators: `/a/b/` and `/a/b` are one.
 fn path_key(path: &Path) -> String { path.components().collect::<PathBuf>().to_string_lossy().into_owned() }
 
-/// Where a locked project's files left on `local` are held in this computer's TensorFS store until its next unlock copies them
-/// in (`project::keep_left_on_local`): a header of just those objects, beside the store in `kept/`, which TensorFS roots while
-/// the file is there, whatever its uses' ages. Named by the project's folder, so nothing else records which project it is.
+/// Where a project's files left on `local` are held in this computer's TensorFS store until its next open copies them in
+/// (`project::keep_left_on_local`): a header of just those objects, beside the store in `kept/`, which TensorFS roots while the
+/// file is there, whatever its uses' ages. Named by the project's folder, so nothing else records which project it is.
 pub(crate) fn kept_path(calcifer: &Path, root: &Path) -> PathBuf {
     calcifer.join("kept").join(format!("{}.cozytensors", key_digest(&format!("cozy: files a locked project left on local\n{}", path_key(root)))))
 }
 
-/// `objects` held by TensorFS under `at` (`kept_path`) until that file is removed.
-fn hold(store: &tensorfs::store::Store, at: &Path, objects: Vec<tensorfs::format::ObjectRef>) -> std::result::Result<(), String> {
-    let header = tensorfs::format::Header::new(objects, None, vec![], Default::default()).map_err(|error| error.to_string())?;
-    let bytes = header.to_cbor().map_err(|error| error.to_string())?;
+/// `objects` held by TensorFS under `at` (`kept_path`) until that file is removed. Err: why it couldn't be, in a person's words.
+fn hold(store: &tensorfs::store::Store, at: &Path, objects: Vec<tensorfs::format::ObjectRef>) -> std::result::Result<(), &'static str> {
+    let header = tensorfs::format::Header::new(objects, None, vec![], Default::default()).map_err(|_| "its record couldn't be made")?;
+    let bytes = header.to_cbor().map_err(|_| "its record couldn't be made")?;
     let dir = at.parent().expect("kept/");
-    platform::durable::private_dir(dir).map_err(|error| error.to_string())?;
-    platform::durable::replace(at, &bytes, 0o600).map_err(|error| error.to_string())?;
-    store.root_file(at, &tensorfs::format::ObjectRef::of(&bytes)).map_err(|error| error.to_string())
+    platform::durable::private_dir(dir).map_err(|error| crate::project::write_cause(&error))?;
+    platform::durable::replace(at, &bytes, 0o600).map_err(|error| crate::project::write_cause(&error))?;
+    store.root_file(at, &tensorfs::format::ObjectRef::of(&bytes)).map_err(|error| crate::project::write_cause(&error))
 }
 
 /// `main.<to>`'s rows from `old.<from>`'s that `which` keeps, by the columns both have.
@@ -71,7 +72,7 @@ fn copy_from(conn: &Connection, from: &str, to: &str, which: &str) -> Result<()>
 /// The store at `path`, at version `from` (7 or 8), written again as this version's (`VERSION`) and put in its place. Anything
 /// that fails before the new file is named leaves the old one as it was, and the next start goes again.
 pub(super) fn rebuild(path: &Path, from: i64) -> Result<()> {
-    let (locked, lost) = keep_project_files(path, from)?;
+    let held = hold_project_files(path, from)?;
     let next = path.with_extension("db.cut");
     let _ = std::fs::remove_file(&next);
     {
@@ -164,10 +165,6 @@ pub(super) fn rebuild(path: &Path, from: i64) -> Result<()> {
             };
             copy(&conn, &table, which)?;
         }
-        conn.execute_batch(LOST)?;
-        for (root, files) in &lost {
-            conn.execute("INSERT OR REPLACE INTO main.lost_before_upgrade (path, files) VALUES (?1, ?2)", params![root.to_string_lossy(), *files as i64])?;
-        }
         conn.pragma_update(None, "user_version", VERSION)?;
         conn.execute_batch("COMMIT; DETACH old;")?;
     }
@@ -184,86 +181,76 @@ pub(super) fn rebuild(path: &Path, from: i64) -> Result<()> {
         side.push(suffix);
         let _ = std::fs::remove_file(side);
     }
+    // Caches of projects' files kept outside them, before the store that made them goes (a later start never clears them).
+    if let Some(calcifer) = path.parent() { crate::legacy_cleanup::cut_caches(calcifer); }
     std::fs::rename(&next, path).map_err(|error| cut(format!("the new store couldn't take the old one's place ({error})")))?;
     if let Some(home) = path.parent() {
         let _ = platform::durable::sync_dir(home);
         if DELETE_OLD_OUTPUTS && let Some(cozy) = home.parent() { let _ = std::fs::remove_dir_all(cozy.join("outputs")); }
     }
-    tracing::info!(target: "cozy.service_health", from, locked, "the legacy cut left every old run behind; locked projects' files left on local are kept until their next unlock");
+    tracing::info!(target: "cozy.service_health", from, held, "the legacy cut left every old run behind; projects' files left on local are held until each opens");
     Ok(())
 }
 
 /// Before anything of the old store is left behind, every project's files left on `local` that only this computer's TensorFS store
-/// holds are held there (`kept_path`), whatever their uses' ages: a readable project's as its lock names them, a locked one's (an
-/// encrypted project's lock can't be read while it is locked, nor an older plain project's before its first open migrates it, nor
-/// one whose folder isn't where the index says) as the old store says its runs left them, never exported. Then every readable
-/// project's are copied into it, each checked and noted (a copy that fails stops the cut), and only once all are in, each readable
-/// project's hold and copies are let go of: the store
-/// lets an object go only when no project's hold still names it. A locked project's are copied in as it opens. A file of a locked
-/// project's runs this store no longer names (one imported already) can't be known before then. Answers how many locked projects
-/// wait for an open, and each plain project that had lost files before, how many (`cozy doctor` and its page say so).
-fn keep_project_files(path: &Path, from: i64) -> Result<(usize, Vec<(PathBuf, u64)>)> {
+/// holds are held there (`kept_path`), whatever their uses' ages, until its next open copies them in (`project::keep_left_on_local`):
+/// a readable project's as its lock names them; one whose lock can't be read here (an encrypted project locked, an older plain
+/// project before its first open migrates it, a folder not where the index says) as the old store says its runs left them, never
+/// exported. Nothing is copied here, so a project folder that can't be written (read-only, no permission, a full disk) never stops a
+/// start. Answers how many projects are held.
+fn hold_project_files(path: &Path, from: i64) -> Result<usize> {
     let calcifer = path.parent().unwrap_or(Path::new("."));
     let conn = Connection::open(path)?;
-    if !has(&conn, "main", "projects")? { return Ok((0, vec![])); }
+    if !has(&conn, "main", "projects")? { return Ok(0); }
     let paths: Vec<String> = {
         let mut stmt = conn.prepare("SELECT path FROM projects")?;
         stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
     };
-    let (mut locked, mut readable): (Vec<PathBuf>, Vec<(PathBuf, Vec<tensorfs::format::ObjectRef>)>) = (vec![], vec![]);
+    let (mut unread, mut readable): (Vec<PathBuf>, Vec<(PathBuf, Vec<tensorfs::format::ObjectRef>)>) = (vec![], vec![]);
     for indexed in paths {
         let root = vault::logical(Path::new(&indexed));
-        // A folder not where the index says can't be read either: held as a locked one's, so no copy lets go of what it shares.
         match (root.is_dir() && !vault::encrypted(&root)).then(|| crate::project::left_on_local(&root)).flatten() {
             Some(left) => readable.push((root, left)),
-            None => locked.push(root),
+            None => unread.push(root),
         }
     }
-    hold_locked(&conn, calcifer, from, &locked)?;
+    let mut held = hold_unread(&conn, calcifer, from, &unread)?;
     if readable.iter().any(|(_, left)| !left.is_empty()) {
         let store = crate::runs::files::store().map_err(|error| cut(format!("this computer's TensorFS store: {}", error.message)))?;
         for (root, left) in &readable {
             let present: Vec<_> = left.iter().filter(|object| store.path(object).is_ok_and(|at| at.is_file())).cloned().collect();
             if present.is_empty() { continue; }
-            hold(store, &kept_path(calcifer, root), present).map_err(|why| cut(format!("a project's files left on local couldn't be held ({why}): free space on that disk, then start cozy again")))?;
+            hold(store, &kept_path(calcifer, root), present).map_err(held_failed)?;
+            held += 1;
         }
     }
-    let (mut lost, mut copied) = (vec![], vec![]);
-    for (root, _) in readable {
-        match crate::project::copy_left_on_local(&root, calcifer) {
-            Ok(Some((_, 0))) => copied.push(root),
-            Ok(Some((_, gone))) => {
-                tracing::warn!(target: "cozy.service_health", code = "legacy_files_lost", gone, "files a project left on local were gone from this computer's store already");
-                lost.push((root.clone(), gone as u64));
-                copied.push(root);
-            }
-            // Unreadable since it was looked at: held as a locked one's are, and copied in as it opens.
-            Ok(None) => { hold_locked(&conn, calcifer, from, std::slice::from_ref(&root))?; locked.push(root); }
-            Err(why) => return Err(cut(format!("{}: {why}", root.display()))),
-        }
-    }
-    for root in copied { crate::project::release_left(&root, calcifer); }
-    Ok((locked.len(), lost))
+    Ok(held)
 }
 
-/// What the old store's runs left on `local`, never exported, held for each of `locked` by the project its run names.
-fn hold_locked(conn: &Connection, calcifer: &Path, from: i64, locked: &[PathBuf]) -> Result<()> {
+fn held_failed(why: &str) -> StoreError {
+    cut(format!("a project's files left on local couldn't be held in ~/.cozy/calcifer/kept ({why}), so the old store stays: start cozy again once it can be written"))
+}
+
+/// What the old store's runs left on `local`, never exported, held for each of `unread` by the project its run names. How many held.
+fn hold_unread(conn: &Connection, calcifer: &Path, from: i64, unread: &[PathBuf]) -> Result<usize> {
     let (runs, outputs) = if from == 8 && has(conn, "main", "legacy_project_runs")? { ("legacy_project_runs", "legacy_project_outputs") } else { ("runs", "outputs") };
-    if locked.is_empty() || !has(conn, "main", outputs)? { return Ok(()); }
+    if unread.is_empty() || !has(conn, "main", outputs)? { return Ok(0); }
     let left: Vec<(String, i64, Vec<u8>, String)> = {
         let mut stmt = conn.prepare(&format!("SELECT o.digest, o.length, substr(r.spec, 1, 4096), r.out_dir FROM {outputs} o JOIN {runs} r ON r.id = o.run
             WHERE r.machine = 'local' AND o.path IS NULL"))?;
         stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, Option<Vec<u8>>>(2)?.unwrap_or_default(), row.get(3)?)))?.collect::<rusqlite::Result<_>>()?
     };
     let store = crate::runs::files::store().map_err(|error| cut(format!("this computer's TensorFS store: {}", error.message)))?;
-    for root in locked {
+    let mut held = 0;
+    for root in unread {
         let key = path_key(root);
         let kept: Vec<tensorfs::format::ObjectRef> = left.iter().filter(|(_, _, spec, out_dir)| {
             let owner = vault::payload_root(spec).ok().flatten().or_else(|| crate::project::of_landing(Path::new(out_dir)).map(Path::to_path_buf));
             owner.is_some_and(|owner| path_key(&vault::logical(&owner)) == key)
         }).map(|(digest, length, _, _)| tensorfs::format::ObjectRef { sha256: digest.trim_start_matches("sha256:").to_owned(), length: (*length).max(0) as u64 }).collect();
         if kept.is_empty() { continue; }
-        hold(store, &kept_path(calcifer, root), kept).map_err(|why| cut(format!("a locked project's files left on local couldn't be held ({why}): free space on that disk, then start cozy again")))?;
+        hold(store, &kept_path(calcifer, root), kept).map_err(held_failed)?;
+        held += 1;
     }
-    Ok(())
+    Ok(held)
 }

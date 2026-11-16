@@ -2308,8 +2308,20 @@ pub struct CalciferStatus {
     pub home: PathBuf,
 }
 
-/// `GET /v1/lost`: a project's files left on a machine that were gone from it before the legacy cut could copy them in (cl-1003):
-/// its folder, and how many.
+/// `GET /v1/cut`: what the legacy cut (cl-1003) still keeps for projects on this computer, for `cozy doctor`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CutFiles {
+    /// Each project whose files left on a machine were gone from it before the cut could copy them in.
+    pub lost: Vec<LostFiles>,
+    /// How many projects' old files are held on this computer until each opens again at the folder it had at the cut (moved,
+    /// deleted, or still locked), and their bytes.
+    pub held_projects: u64,
+    pub held_bytes: u64,
+    /// Where the holds are: deleting it lets those files go.
+    pub kept: PathBuf,
+}
+
+/// A project's files left on a machine that were gone from it before the legacy cut could copy them in: its folder, and how many.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LostFiles {
     pub path: PathBuf,

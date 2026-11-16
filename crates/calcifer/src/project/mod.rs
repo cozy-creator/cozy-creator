@@ -411,8 +411,11 @@ impl Projects {
             match keep_left_on_local(&project.root, &api.machines.hubs.home().calcifer()) {
                 Ok(Some(0)) | Ok(None) => {}
                 Ok(Some(gone)) => { let _ = api.calcifer.store().note_lost(&project.root, gone as u64); }
-                // No file name or digest: an encrypted project's leave no trace outside it.
-                Err(_) => tracing::warn!(target: "cozy.service_health", code = "legacy_copy_failed", "a project's files the legacy cut held stay held until its next open"),
+                // Its cause and nothing of the project outside it (an encrypted project's leave no trace there); said on its page too.
+                Err(cause) => {
+                    tracing::warn!(target: "cozy.service_health", code = "legacy_copy_failed", cause, "a project's old files couldn't be copied into it; they stay held until its next open");
+                    project.said.lock().expect("said lock").push(format!("this project's old files kept on this computer couldn't be copied into it ({cause}): they stay kept, and its next open copies them"));
+                }
             }
         }
         // Told until a reader hears it: a project closes when nothing holds it, so this open may not be the one read.
@@ -774,71 +777,106 @@ pub(crate) fn left_on_local(root: &FsPath) -> Option<Vec<tensorfs::format::Objec
         .collect())
 }
 
-/// Each file the lock of the project at `root` says stays on `local` that only this computer's TensorFS store holds, made before
-/// projects kept their own machine objects: copied into its `files/`, synced, read back and checked against its hash (cl-1003).
-/// Each one copied is noted for letting go (`release_left`) before the next. Nothing is let go of here. Answers what it copied, and how
-/// many that store no longer holds whole (gone before now; nothing can bring them back); None when its lock can't be read here.
-/// Err: one that should be copied couldn't be (a full disk), with what to do.
-pub(crate) fn copy_left_on_local(root: &FsPath, calcifer: &FsPath) -> Result<Option<(Vec<tensorfs::format::ObjectRef>, usize)>, String> {
+/// Projects an open is copying the legacy cut's held files into now: a second open of one leaves it to the first.
+static COPYING: std::sync::LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = std::sync::LazyLock::new(Mutex::default);
+
+/// Why a write failed, in a person's words (cl-1003): the disk read-only, no permission there, the disk full, or else.
+pub(crate) fn write_cause(error: &(dyn std::error::Error + 'static)) -> &'static str {
+    let mut at = Some(error);
+    while let Some(error) = at {
+        if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            return match io.kind() {
+                std::io::ErrorKind::ReadOnlyFilesystem => "the disk is read-only",
+                std::io::ErrorKind::PermissionDenied => "cozy may not write there",
+                std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => "the disk is full",
+                _ => "it couldn't be written",
+            };
+        }
+        at = error.source();
+    }
+    "it couldn't be written"
+}
+
+/// The legacy cut's hold of the project at `root`, at its open (cl-1003). Each file its lock says stays on `local` and only this
+/// computer's TensorFS store holds (made before projects kept their own machine objects) is copied into its `files/`: written under a
+/// hidden name of this open's own, synced, read back and checked against its hash, then put in place. One a local run made since
+/// containment is in the project's own `.vault-machine/objects` already. Then its hold goes, and what the copies brought in is let go
+/// of in the store; what another project's hold still names stays there for a later start (`release_kept`). Answers how many files
+/// the store no longer held whole (gone before now: nothing brings them back); None when its lock can't be read here or another open
+/// is copying it. Err: why one couldn't be copied (`write_cause`); its hold stays for its next open.
+pub(crate) fn keep_left_on_local(root: &FsPath, calcifer: &FsPath) -> Result<Option<usize>, &'static str> {
     use std::io::Read as _;
+    struct Copying(PathBuf);
+    impl Drop for Copying { fn drop(&mut self) { COPYING.lock().expect("copying lock").remove(&self.0); } }
+    let logical = vault::logical(root);
+    if !COPYING.lock().expect("copying lock").insert(logical.clone()) { return Ok(None); }
+    let _copying = Copying(logical);
     let Ok(physical) = vault::resolve_path(root) else { return Ok(None) };
     let folder = Folder::at(&physical);
     let Ok(lock) = folder.lock() else { return Ok(None) };
-    let store = crate::runs::files::store().map_err(|error| error.message)?;
+    let store = crate::runs::files::store().map_err(|_| "this computer's file store can't be opened")?;
+    let own = physical.join(".vault-machine").join("objects");
+    let own = own.is_dir().then(|| tensorfs::store::Store::open(&own).ok()).flatten();
     let record = crate::store::kept_path(calcifer, root).with_extension("release");
-    let (mut copied, mut gone) = (vec![], 0);
+    let mut nonce = [0u8; 8];
+    getrandom::fill(&mut nonce).map_err(|_| "it couldn't be written")?;
+    let nonce = hex::encode(nonce);
+    // What a stopped copy left: one open copies at a time, so none of these is being written.
+    for entry in std::fs::read_dir(physical.join("files")).into_iter().flatten().flatten() {
+        if entry.file_name().to_str().is_some_and(|name| name.starts_with('.') && name.ends_with(".cut-part")) { let _ = std::fs::remove_file(entry.path()); }
+    }
+    let mut gone = 0;
     for file in lock.files.values().filter(|file| file.machine == "local") {
         let at = folder.path(&file.path);
         let Some(hex) = file.sha256.strip_prefix("sha256:") else { continue };
-        // Hidden while it's written: a name that starts with its hash would be taken for the file itself (`Folder::lock`).
-        let part = at.with_file_name(format!(".{}.part", at.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()));
-        if at.is_file() { let _ = std::fs::remove_file(&part); continue; }
+        if at.is_file() { continue; }
         let object = tensorfs::format::ObjectRef { sha256: hex.to_owned(), length: file.length };
-        let Some(from) = store.path(&object).ok().filter(|from| from.is_file()) else { let _ = std::fs::remove_file(&part); gone += 1; continue };
-        let done = (|| -> std::io::Result<bool> {
-            if let Some(dir) = part.parent() { std::fs::create_dir_all(dir)?; }
+        if own.as_ref().is_some_and(|own| own.path(&object).is_ok_and(|held| held.is_file())) { continue; }
+        let Some(from) = store.path(&object).ok().filter(|from| from.is_file()) else { gone += 1; continue };
+        // Hidden while it's written: a name that starts with its hash would be taken for the file itself (`Folder::lock`).
+        let part = at.with_file_name(format!(".{}.{nonce}.cut-part", at.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()));
+        let done = (|| -> Result<bool, &'static str> {
+            let failed = |error: std::io::Error| write_cause(&error);
+            if let Some(dir) = part.parent() { std::fs::create_dir_all(dir).map_err(failed)?; }
             // A file of its own (the store's are read-only), synced, then read back and checked against its hash.
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create(true).truncate(true);
             #[cfg(unix)]
             std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-            let mut written = options.open(&part)?;
-            std::io::copy(&mut std::fs::File::open(&from)?, &mut written)?;
-            written.sync_all()?;
+            let mut written = options.open(&part).map_err(failed)?;
+            std::io::copy(&mut std::fs::File::open(&from).map_err(failed)?, &mut written).map_err(failed)?;
+            written.sync_all().map_err(failed)?;
             drop(written);
-            let (mut read, mut hash, mut buffer) = (std::fs::File::open(&part)?, Sha256::new(), vec![0; 1 << 20]);
+            let (mut read, mut hash, mut buffer) = (std::fs::File::open(&part).map_err(failed)?, Sha256::new(), vec![0; 1 << 20]);
             loop {
-                let n = read.read(&mut buffer)?;
+                let n = read.read(&mut buffer).map_err(failed)?;
                 if n == 0 { break; }
                 hash.update(&buffer[..n]);
             }
             if hex::encode(hash.finalize()) != object.sha256 { return Ok(false); }
-            std::fs::rename(&part, &at)?;
-            if let Some(dir) = at.parent() { platform::durable::sync_dir(dir).map_err(|error| std::io::Error::other(error.to_string()))?; }
+            std::fs::rename(&part, &at).map_err(failed)?;
+            if let Some(dir) = at.parent() { platform::durable::sync_dir(dir).map_err(|error| write_cause(&error))?; }
             Ok(true)
         })();
         match done {
             Ok(true) => {
                 let mut noted = released(&record);
-                noted.push(object.clone());
+                noted.push(object);
                 note(&record, &noted);
-                copied.push(object);
             }
             // The store's copy isn't what the lock names: as lost as one gone, and never let go of here.
             Ok(false) => { let _ = std::fs::remove_file(&part); gone += 1; }
-            Err(error) => {
-                let _ = std::fs::remove_file(&part);
-                return Err(format!("{} couldn't be copied into it ({error}): free space on that disk, then start cozy again", file.path));
-            }
+            Err(cause) => { let _ = std::fs::remove_file(&part); return Err(cause); }
         }
     }
-    Ok(Some((copied, gone)))
+    release_left(root, calcifer);
+    Ok(Some(gone))
 }
 
 /// What the legacy cut held for the project at `root` in this computer's TensorFS store let go of, and what its copies brought in
-/// (noted by `copy_left_on_local`) let go of there too; what the store keeps yet (another project's hold, a reader) is let go of at
+/// (noted by `keep_left_on_local`) let go of there too; what the store keeps yet (another project's hold, a reader) is let go of at
 /// a later start (`release_kept`).
-pub(crate) fn release_left(root: &FsPath, calcifer: &FsPath) {
+fn release_left(root: &FsPath, calcifer: &FsPath) {
     let kept = crate::store::kept_path(calcifer, root);
     if kept.exists() && std::fs::remove_file(&kept).is_err() {
         tracing::warn!(target: "cozy.service_health", code = "legacy_hold_kept", "a hold of the legacy cut stays until the next open");
@@ -849,11 +887,18 @@ pub(crate) fn release_left(root: &FsPath, calcifer: &FsPath) {
     release(store, &record, released(&record));
 }
 
-/// The legacy cut's copy for the project at `root`, at its open: copied in, then let go of. How many files were gone already.
-pub(crate) fn keep_left_on_local(root: &FsPath, calcifer: &FsPath) -> Result<Option<usize>, String> {
-    let Some((_, gone)) = copy_left_on_local(root, calcifer)? else { return Ok(None) };
-    release_left(root, calcifer);
-    Ok(Some(gone))
+/// The legacy cut's holds not let go of yet (each a project not opened since at the folder it had then), and the bytes they keep in
+/// this computer's TensorFS store.
+pub(crate) fn held(calcifer: &FsPath) -> (u64, u64) {
+    let Ok(entries) = std::fs::read_dir(calcifer.join("kept")) else { return (0, 0) };
+    let store = crate::runs::files::store().ok();
+    let (mut projects, mut bytes) = (0, 0);
+    for entry in entries.flatten().filter(|entry| entry.path().extension().is_some_and(|e| e == "cozytensors")) {
+        projects += 1;
+        let Some(header) = std::fs::read(entry.path()).ok().and_then(|read| tensorfs::format::Header::from_cbor(&read).ok()) else { continue };
+        bytes += header.objects().filter(|object| store.is_some_and(|store| store.path(object).is_ok_and(|at| at.is_file()))).map(|object| object.length).sum::<u64>();
+    }
+    (projects, bytes)
 }
 
 /// What a project's copies left in this computer's TensorFS store and couldn't let go of yet (`release`).

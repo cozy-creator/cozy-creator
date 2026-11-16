@@ -7,13 +7,16 @@
 # It encrypts and locks the last two, then stops, and ages every use and those bytes past the store's TTL and grace. Before
 # this cozy starts on that home, a booting rental with its open order (tied to a project run) and an unsettled run outside any
 # project are added to its store, as a laptop updated mid-work has them. Checks:
-#   - killed at each step of the cut (`cut_windows`), the store is the old one whole or the new one whole, and the next start
-#     finishes the cut with every plain project's files as before;
+#   - killed at each step of the cut and of a project's copy at its open (`cut_windows`), the store is the old one whole or the new
+#     one whole, and the next start and open finish with every plain project's files as before;
 #   - the store is written again: version 9, no legacy table, no old settled run, no ended machine, no machine held, small;
 #   - the booting rental and its order, and the unsettled run, are still there; the rental is still listed;
 #   - nothing is written into a locked project's folder;
+#   - the cut holds every project's files left on local and copies none; cozy doctor says how many projects' files it holds and how
+#     to let them go, and no project lost a file; each plain project copies its files in at its open, then its hold goes;
 #   - both plain projects have every file, the one only the plain ones share too; a third that shares it, away from its folder
-#     at the cut, is held as a locked one, so the store keeps it until that one opens there again and copies it in;
+#     at the cut, is held as a locked one, so the store keeps it until that one opens there again and copies it in; once every
+#     project has opened, cozy doctor says nothing is held;
 #   - the machine keeps the shared latents for the locked ones: each is held in the machine's store (a TensorFS header root beside
 #     Calcifer's store), still there after every use and the bytes are 8 days old, TensorD is stopped and a collection ran; the
 #     first unlock copies them in and lets go of its hold, the store keeps them for the other; the second does the same, and the
@@ -127,11 +130,16 @@ if [ "$CUT_FROM" = 8 ]; then
   [ "$(cut_sql "SELECT group_concat(machine) FROM machine_logs")" = local ] || check "hard cut: machine lines kept: $(cut_sql "SELECT group_concat(machine) FROM machine_logs")"
   cut_sql "SELECT sql FROM sqlite_schema WHERE name = 'machine_logs'" | grep -q 'REFERENCES machines' || check "hard cut: machine_logs no longer names machines"
 fi
+# Every project held, none copied yet: the cut writes nothing into a project folder, and cozy doctor says what it holds and how to let
+# it go; no project's files were lost.
+cut_doctor "for 5 projects not opened since the upgrade" "were lost before this upgrade"
+for folder in "$P" "$Q"; do sudo test -f "$(cut_kept "$folder")" || check "hard cut: no hold of $folder at the cut"; done
+# Each plain project copies its files at its open, then its hold goes.
 cut_check "$P" plain
 cut_check "$Q" plain2
-# Both plain projects copied what they alone shared before either let go of it: then the store let it go.
-# The third plain project, away from its folder at the cut, is held as a locked one: its two neighbours' copies let go of nothing
-# it shares, and it copies them in when it opens there again.
+for folder in "$P" "$Q"; do sudo test ! -e "$(cut_kept "$folder")" || check "hard cut: $folder's hold stays after its open copied its files in"; done
+# Both plain projects copied what the plain ones share; the third, away from its folder at the cut, is held as a locked one: its
+# two neighbours' copies let go of nothing it shares, and it copies them in when it opens there again.
 sudo test -f "$twinblob" || check "hard cut: the plain projects' copies let go of latents a project away from its folder still needs"
 sudo mv "$R.away" "$R" || check "hard cut: the third plain project not put back"
 # Its TensorD stopped, as at an unlock: only the cut's holds keep what it shares.
@@ -141,8 +149,7 @@ sudo test ! -e "$twinblob" || check "hard cut: the store still has what the plai
 
 # The latents the three share: held for each locked project past the store's 7 days, through a collection, until its own unlock
 # copies them in; the plain project's copy at the cut let go of nothing a locked project still needs, nor the first unlock.
-pin=$home/.cozy/calcifer/kept/$(printf 'cozy: files a locked project left on local\n%s' "$E" | sha256sum | cut -d' ' -f1).cozytensors
-pinf=$home/.cozy/calcifer/kept/$(printf 'cozy: files a locked project left on local\n%s' "$F" | sha256sum | cut -d' ' -f1).cozytensors
+pin=$(cut_kept "$E") pinf=$(cut_kept "$F")
 sudo test -f "$pin" && sudo test -f "$pinf" || check "hard cut: nothing holds a locked project's latents"
 sudo test -f "$blob" || check "hard cut: the plain project's copy let go of latents the locked projects still need"
 # The latents as old as a laptop's: their uses and their bytes 8 days old, past the store's TTL and its grace for new objects.
@@ -188,29 +195,38 @@ while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
 cut_cozy new --json machine ls > /dev/null || check "hard cut: this cozy after the unlocks"
 for _ in $(seq 50); do [ -z "$(sudo find "$home/.cozy/calcifer/kept" -name '*.release')" ] && break; sleep 0.2; done
 [ -z "$(sudo find "$home/.cozy/calcifer/kept" -name '*.release')" ] || check "hard cut: copies noted as not let go of: $(sudo find "$home/.cozy/calcifer/kept" -name '*.release' -exec cat {} + | head -c 300)"
+# Every project opened since: cozy doctor says nothing is held for one.
+cut_doctor "" "not opened since the upgrade|were lost before this upgrade"
 for folder in "$E" "$F"; do cut_in "$folder" new --json vault lock > "$OUT/cut-relock.json" || check "hard cut: lock again: $(tail -c 300 "$OUT/cut-relock.json")"; done
 sudo pkill -KILL -u "$CUT_USER" || true
 }
 
-# cut_windows <facts>: the cut killed at each of its steps, as a process killed there would be: its Calcifer runs under strace, which
-# kills it on entry to one system call on one file (no hook in cozy). After each kill the store is the old one whole (as <facts>
-# say) or the new one whole, and the next start finishes the cut with every plain project's files as before; then the home is put
-# back as it was. A kill can't land between the swap's rename and the folder's sync: that window is the file system's.
+# cut_windows <facts>: the cut killed at each of its steps, and a project's copy at its first open after it, as a process killed there
+# would be: its Calcifer runs under strace, which kills it on entry to one system call on one file (no hook in cozy). After each kill
+# the store is the old one whole (as <facts> say) or the new one whole, and the next start and open finish with every plain project's
+# files as before and no stopped copy's file left; then the home is put back as it was. A kill can't land between the swap's rename
+# and the folder's sync: that window is the file system's.
 cut_windows() {
-  local old=$1 calc=$home/.cozy/calcifer window path calls when want state key
+  local old=$1 calc=$home/.cozy/calcifer window path calls when want by state key
   command -v strace > /dev/null || sudo apt-get install -y -qq strace > /dev/null || { check "hard cut: no strace for the kills"; return; }
   # What a start makes (an update of its machine) is no old run.
   CUT_STARTED_MS=$(($(date +%s%N) / 1000000))
-  key=$(printf 'cozy: files a locked project left on local\n%s' "$P" | sha256sum | cut -d' ' -f1)
+  key=$(basename "$(cut_kept "$P")" .cozytensors)
   sudo rm -rf /opt/cozy-cut/home && sudo cp -a "$home" /opt/cozy-cut/home || { check "hard cut: the home not kept for the kills"; return; }
-  while IFS='|' read -r window path calls when want; do
+  while IFS='|' read -r window path calls when want by; do
     sudo tee /opt/cozy-cut/cozy-killed > /dev/null <<WRAP
 #!/bin/sh
 exec strace -f -qq -o /dev/null -P '$path' -e trace=$calls -e inject=$calls:signal=KILL:when=$when /opt/cozy-cut/cozy-new "\$@"
 WRAP
     sudo chmod 755 /opt/cozy-cut/cozy-killed
     sudo -u "$CUT_USER" -H sh -c 'printf %s /opt/cozy-cut/cozy-killed > "$HOME/.cozy/installed"'
-    cut_cozy new --json machine ls > "$OUT/cut-killed.json" 2>&1 && check "hard cut: not killed $window"
+    if [ "$by" = open ]; then
+      # A project's copy is its open's, after the start that cut the store.
+      cut_cozy new --json machine ls > "$OUT/cut-killed.json" 2>&1 || check "hard cut: the start before the kill $window: $(tail -c 300 "$OUT/cut-killed.json")"
+      cut_api "$P" "" > /dev/null 2>&1 && check "hard cut: not killed $window"
+    else
+      cut_cozy new --json machine ls > "$OUT/cut-killed.json" 2>&1 && check "hard cut: not killed $window"
+    fi
     sudo pkill -KILL -u "$CUT_USER" || true
     while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
     state=$(cut_whole "$old")
@@ -221,18 +237,31 @@ WRAP
     [ "$(cut_whole "$old")" = "new whole" ] || check "hard cut: the start after the kill $window left the store $(cut_whole "$old")"
     cut_check "$P" plain
     cut_check "$Q" plain2
+    [ -z "$(sudo find "$P/files" "$Q/files" -name '*.cut-part')" ] || check "hard cut: a stopped copy's file left after the next open, killed $window"
     sudo pkill -KILL -u "$CUT_USER" || true
     while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
     sudo rsync -a --delete /opt/cozy-cut/home/ "$home/" || { check "hard cut: the home not put back after the kill $window"; return; }
-  # <what> | <file> | <system calls> | <which call> | <the store after>. SQLite's own fchmod as it makes the new file is `fchmod`.
+  # <what> | <file> | <system calls> | <which call> | <the store after> | <start, or the project's open>. SQLite's own fchmod as it makes
+  # the new file is `fchmod`.
   done <<WINDOWS
-writing the new store|$calc/state.db.cut|pwrite64,write|1|old
-the new store synced, before the swap|$calc/state.db.cut|chmod,fchmodat,fchmodat2|1|old
-the swap|$calc/state.db.cut|rename,renameat,renameat2|1|old
-a project's copy|$P/files/.$latents.part|write,pwrite64,copy_file_range,sendfile,splice|1|old
-copies verified, before letting go|$calc/kept/$key.cozytensors|unlink,unlinkat|1|old
-deleting the backups|$calc/state.db.pre-hand-copy|unlink,unlinkat|1|new
+holding a project's files|$calc/kept/$key.cozytensors|rename,renameat,renameat2|1|old|start
+writing the new store|$calc/state.db.cut|pwrite64,write|1|old|start
+the new store synced, before the swap|$calc/state.db.cut|chmod,fchmodat,fchmodat2|1|old|start
+the swap|$calc/state.db.cut|rename,renameat,renameat2|1|old|start
+deleting the backups|$calc/state.db.pre-hand-copy|unlink,unlinkat|1|new|start
+a project's copy at its open, before it takes its place|$P/files/$latents|rename,renameat,renameat2|1|new|open
+a project's copies in, before its hold goes|$calc/kept/$key.cozytensors|unlink,unlinkat|1|new|open
 WINDOWS
+}
+# cut_kept <folder>: where the cut holds that project's files left on local (`kept_path`).
+cut_kept() {
+  echo "$home/.cozy/calcifer/kept/$(printf 'cozy: files a locked project left on local\n%s' "$1" | sha256sum | cut -d' ' -f1).cozytensors"
+}
+# cut_doctor <said> <never said>: cozy doctor, as the cut's user, says the first (when given) and nothing the second (an ERE) matches.
+cut_doctor() {
+  cut_cozy new doctor > "$OUT/cut-doctor.txt" 2>&1 || true
+  [ -z "$1" ] || grep -qF "$1" "$OUT/cut-doctor.txt" || check "hard cut: cozy doctor doesn't say \"$1\": $(grep -i 'project files' "$OUT/cut-doctor.txt" | head -c 400)"
+  ! grep -qE "$2" "$OUT/cut-doctor.txt" || check "hard cut: cozy doctor says $(grep -E "$2" "$OUT/cut-doctor.txt" | head -c 400)"
 }
 # cut_whole <old facts>: "old whole" when the store is as <old facts> say, "new whole" when it is cut, else what it is.
 cut_whole() {
