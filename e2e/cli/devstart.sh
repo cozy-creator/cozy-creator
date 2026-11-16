@@ -10,9 +10,11 @@ dev_start() {
 [ -n "$LOCAL" ] || return 0
 step "a dev build's Calcifer resumes a render walk at its start and answers a /fit estimate, and stays up (cl-1069)"
 [ -x "${E2E_DEV_COZY:-}" ] || { check "dev start: no dev-profile cozy was built (E2E_DEV_COZY)"; return; }
-local t0 back=$OUT/devstart-candidate restarts n
+local t0 back=$OUT/devstart-candidate restarts n drop=$HOME/.config/systemd/user/cozy-calcifer.service.d/devstart-stderr.conf
 t0=$(date +%s)
 cp "$COZY" "$back"
+# Calcifer's stderr, where an overflow says so, goes nowhere by default: here, to its journal.
+mkdir -p "${drop%/*}" && printf '[Service]\nStandardError=journal\n' > "$drop" && systemctl --user daemon-reload
 CAND_COZY=$E2E_DEV_COZY install_candidate_binary
 cozy restart > "$OUT/devstart-restart.txt" 2>&1 || check "dev start: Calcifer didn't start on the dev build: $(tail -c 300 "$OUT/devstart-restart.txt")"
 echo "dev start: Calcifer on the dev build, $(cozy --version)"
@@ -44,6 +46,7 @@ journalctl --user -u cozy-calcifer.service --since "@$t0" --no-pager > "$OUT/dev
 ! grep -q "overflowed its stack" "$OUT/devstart-journal.log" ||
   check "dev start: Calcifer overflowed its stack $(grep -c 'overflowed its stack' "$OUT/devstart-journal.log") times: $(grep -m1 'overflowed its stack' "$OUT/devstart-journal.log")"
 # The candidate again, for what follows.
+rm -f "$drop"; systemctl --user daemon-reload
 CAND_COZY=$back install_candidate_binary
 cozy restart > /dev/null 2>&1 || true
 }
