@@ -20,8 +20,9 @@ export interface InteractionOptions {
   root: HTMLElement
   /** `eventMode: "static"`, its hit area the screen: every card part's events bubble to it. */
   stage: Container
-  /** Background pan, pinch and wheel. Its drag is paused while a card, a marquee or a corner owns the press. */
+  /** Background pan, pinch and wheel: the camera's. */
   viewport: PixiViewport
+  /** `hold`s the viewport's drag while a press is this module's. */
   camera: Camera
   board: Board
   store: CanvasStore
@@ -58,7 +59,7 @@ type Press =
   | { kind: "pan"; id: number; at: Point; camera: { x: number; y: number; zoom: number } }
 
 export function createInteraction(o: InteractionOptions): Interaction {
-  const { root, stage, viewport, camera, board, store, scene } = o
+  const { root, stage, camera, board, store, scene } = o
   let press: Press | null = null
   let hover: Hit | null = null
   /** What is under the pointer now, heard even while a press holds the hover still. */
@@ -66,29 +67,17 @@ export function createInteraction(o: InteractionOptions): Interaction {
   let space = false
   let lastTap: { name: string; at: number; x: number; y: number } | null = null
   const touches = new Set<number>()
-  let paused: Record<string, boolean> = {}
 
   const native = (e: FederatedPointerEvent) => e.nativeEvent as PointerEvent
-  const client = (e: FederatedPointerEvent): Point => ({ x: e.clientX, y: e.clientY })
+  const client = (e: { clientX: number; clientY: number }): Point => ({ x: e.clientX, y: e.clientY })
   const moved = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y)
   const modified = (e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => e.shiftKey || e.ctrlKey || e.metaKey
   const locked = () => Boolean(o.props().locked)
   const selectedIds = () => new Set(board.getNodes().filter((node) => node.selected).map((node) => node.id))
 
-  /** The viewport's own gestures: off while locked or disabled, and its drag also while this owns the press. */
-  const sync = () => {
-    const off = locked() || Boolean(o.props().disabled)
-    // A finger on a card not selected pans the canvas, as one on the background does; any other press on a card is this module's.
-    const owned = press !== null && press.kind !== "background" && !(press.kind === "card" && press.pans)
-    const want: Record<string, boolean> = { drag: off || owned, pinch: off || (owned && touches.size < 2), wheel: off, decelerate: off || owned }
-    for (const [name, pause] of Object.entries(want)) {
-      // Resuming drag clears its anchor: only a change touches it, so a hand still on the canvas isn't interrupted.
-      if (paused[name] === pause || !viewport.plugins.get(name)) continue
-      paused[name] = pause
-      if (pause) viewport.plugins.pause(name)
-      else viewport.plugins.resume(name)
-    }
-  }
+  /** The viewport's drag sits out a press this module owns. A finger on a card not selected pans, as one on the background does.
+   *  Locked (returning from Focus) is disabled too: the Stage turns the camera's gestures off for both. */
+  const sync = () => camera.hold(press !== null && press.kind !== "background" && !(press.kind === "card" && press.pans))
 
   const setHover = (hit: Hit | null) => {
     if (hover?.name === hit?.name && hover?.part === hit?.part) return
@@ -146,6 +135,7 @@ export function createInteraction(o: InteractionOptions): Interaction {
       press = { kind: "background", id: e.pointerId, at }
     }
     sync()
+    if (press) window.addEventListener("pointermove", move)
     if (press && press.kind !== "background") e.preventDefault()
     o.invalidate()
   }
@@ -161,7 +151,9 @@ export function createInteraction(o: InteractionOptions): Interaction {
     return { kind: "resize", id: e.pointerId, name, at, zoom: camera.getViewport().zoom, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), control }
   }
 
-  const move = (e: FederatedPointerEvent) => {
+  // Moves are the window's own, heard only while a press is held: past the canvas and the window edge too, and nothing walks the
+  // scene on every move (Pixi's globalpointermove visits every interactive object).
+  const move = (e: PointerEvent) => {
     if (!press || e.pointerId !== press.id) return
     const at = client(e)
     if (press.kind === "card" && moved(at, press.at) >= TAP) lastTap = null
@@ -187,10 +179,10 @@ export function createInteraction(o: InteractionOptions): Interaction {
         const to = camera.screenToWorld(at), dx = to.x - press.from.x, dy = to.y - press.from.y
         if (!press.begun && moved(at, press.at) < DRAG) return
         const props = o.props()
-        if (!press.begun) { press.begun = true; props.onDragStart(native(e), press.nodes[0], press.nodes) }
+        if (!press.begun) { press.begun = true; props.onDragStart(e, press.nodes[0], press.nodes) }
         board.upsertNodes(press.nodes.map((node) => ({ ...node, position: { x: node.position.x + dx, y: node.position.y + dy }, bounds: { ...node.bounds, x: node.bounds.x + dx, y: node.bounds.y + dy } })))
         const now = press.nodes.map((node) => board.getNode(node.id)).filter((node): node is ElementNode => Boolean(node))
-        props.onDrag(native(e), now[0], now)
+        props.onDrag(e, now[0], now)
         o.invalidate()
         return
       }
@@ -225,6 +217,7 @@ export function createInteraction(o: InteractionOptions): Interaction {
     const held = press
     if (!held || e.pointerId !== held.id) { sync(); return }
     press = null
+    window.removeEventListener("pointermove", move)
     release(e)
     const at = client(e)
     const props = o.props()
@@ -290,6 +283,7 @@ export function createInteraction(o: InteractionOptions): Interaction {
   const abandon = () => {
     const held = press
     press = null
+    window.removeEventListener("pointermove", move)
     if (!held) return
     if (held.kind === "card" && held.begun) o.props().onDragCancel(held.nodes)
     if (held.kind === "resize") {
@@ -372,7 +366,6 @@ export function createInteraction(o: InteractionOptions): Interaction {
   }
 
   stage.on("pointerdowncapture", down)
-  stage.on("globalpointermove", move)
   stage.on("pointerup", up)
   stage.on("pointerupoutside", up)
   stage.on("pointercancel", cancelled)
@@ -389,7 +382,7 @@ export function createInteraction(o: InteractionOptions): Interaction {
     destroy() {
       cancel()
       stage.off("pointerdowncapture", down)
-      stage.off("globalpointermove", move)
+      window.removeEventListener("pointermove", move)
       stage.off("pointerup", up)
       stage.off("pointerupoutside", up)
       stage.off("pointercancel", cancelled)
