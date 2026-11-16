@@ -398,33 +398,25 @@ code {
   width: 100%;
   height: 100%;
 }
-.canvas-pane {
-  touch-action: none;
-  cursor: grab;
-}
-.canvas-pane:active {
-  cursor: grabbing;
-}
 .canvas-world {
   position: absolute;
   inset: 0;
   transform-origin: 0 0;
   pointer-events: none;
 }
-.canvas-node {
+/* What's typed over a box (its name) and what it asks under it (Asking): the box stays drawn beneath. */
+.canvas-over {
   position: absolute;
   top: 0;
   left: 0;
-  transform-origin: 0 0;
   pointer-events: none;
 }
-.canvas-selection {
-  position: absolute;
-  z-index: 1;
-  background: color-mix(in srgb, var(--select) 12%, transparent);
-  /* Whole pixels: Chrome draws a 1.5px border as 1. */
-  border: 2px solid var(--select);
-  pointer-events: none;
+.canvas-over > * {
+  pointer-events: auto;
+}
+.canvas-name.card {
+  background: none;
+  border: 0;
 }
 .dropveil {
   position: absolute;
@@ -491,9 +483,6 @@ code {
 /* Where a box draws nothing, the pointer finds the canvas and a drag there pans it: its name row between its name and its ×, its takes column
    past its takes, its add-ons' row past them (Paul, 11-06). Only native controls and drawn surfaces receive the pointer. Of no weight, so
    what sets its own (.ratio-rest at rest) keeps it. */
-:where(.canvas-node > .card.entity),
-:where(.canvas-node > .card) > :where(:not(.head, .here-side)),
-:where(.canvas-node > .card > .head) > :where(:not(.sp)),
 :where(.here-side .takes, .add-ons) > * {
   pointer-events: auto;
 }
@@ -501,30 +490,6 @@ code {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--round2);
-}
-.canvas-node:focus,
-.canvas-node:focus-visible {
-  outline: none;
-}
-/* What's more opens under it, over its neighbours. */
-.canvas-node:hover,
-.canvas-node:focus-within,
-.canvas-node.selected {
-  z-index: 1000;
-}
-.canvas-node:has(.card.here) {
-  z-index: 1001;
-}
-.canvas-node:has(.rest-asking) {
-  z-index: 1000;
-}
-/* Picked up, it's only the picture. */
-.canvas-node.dragging .card {
-  transform: scale(1.015);
-  opacity: 0.94;
-}
-.canvas-node.dragging .here-under {
-  display: none;
 }
 .head {
   display: flex;
@@ -559,8 +524,7 @@ code {
   color: var(--mute);
   font: calc(var(--t-body) * var(--ui)) / 1.25 var(--sans);
 }
-.card.here .nm,
-.canvas-node.selected .nm {
+.card.here .nm {
   color: var(--ink);
 }
 .nm-field {
@@ -586,24 +550,6 @@ code {
   outline-offset: 2px;
   box-shadow: 0 0 0 6px color-mix(in srgb, var(--ember) 22%, transparent);
   transition: box-shadow 90ms ease-out;
-}
-/* What's held over a box that takes it is going in: it draws back, so the box is what you see. */
-.stage[data-offering] .canvas-node.dragging .card {
-  transform: scale(0.7);
-  opacity: 0.55;
-  transition: transform 90ms ease-out, opacity 90ms ease-out;
-}
-/* Carried with Alt or Option held: a copy of it lands where it's let go. */
-.stage[data-copying] .canvas-node.dragging {
-  cursor: copy;
-}
-/* Let go, it slides: back from a box that took its name, or off one it can't lie on. */
-.canvas-node.glide {
-  transition:
-    left 180ms cubic-bezier(0.2, 0.9, 0.3, 1),
-    top 180ms cubic-bezier(0.2, 0.9, 0.3, 1),
-    width 180ms cubic-bezier(0.2, 0.9, 0.3, 1),
-    height 180ms cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 .dot {
   width: 7px;
@@ -727,35 +673,6 @@ code {
   outline: 1px solid var(--line2);
   outline-offset: 2px;
 }
-/* Selected: a thick ring outside the box, a light or dark gap between it and the picture, and a glow. --unzoom keeps it 3 to 6px on
-   screen at any zoom (cl-926). */
-.canvas-node.selected .media,
-.canvas-node.selected .tl {
-  outline: calc(6px * var(--unzoom, 1)) solid var(--select);
-  outline-offset: calc(3px * var(--unzoom, 1));
-  box-shadow:
-    0 0 0 calc(3px * var(--unzoom, 1)) var(--select-gap),
-    0 0 calc(24px * var(--unzoom, 1)) calc(10px * var(--unzoom, 1)) var(--select-glow);
-}
-/* At 45-50% the ring outgrows the 12px under its name: the name row rises clear of it, never under it. */
-.stage[data-lod="0"] .canvas-node.selected .card:not(.entity) > .head {
-  translate: 0 min(0px, calc(9px - 9px * var(--unzoom, 1)));
-}
-/* Further out it would outgrow the room above a box, where its name is (cl-885): it's drawn just inside the picture's edge, as wide on
-   screen, and its name stays where it is. */
-.stage:is([data-lod="1"], [data-lod="2"]) .canvas-node.selected :is(.media, .tl) {
-  outline-offset: calc(-6px * var(--unzoom, 1));
-  box-shadow: 0 0 calc(24px * var(--unzoom, 1)) calc(10px * var(--unzoom, 1)) var(--select-glow);
-}
-/* A picture's pixels are drawn over its outline: the ring is drawn again over them. */
-.stage:is([data-lod="1"], [data-lod="2"]) .canvas-node.selected .media::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 6;
-  border: calc(6px * var(--unzoom, 1)) solid var(--select);
-  pointer-events: none;
-}
 .media.alpha {
   background-color: var(--check);
   background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
@@ -781,9 +698,6 @@ code {
 .card:hover > .media.blank {
   --box-mark: var(--mark2);
   outline: none;
-}
-.canvas-node.selected .media.blank {
-  --box-mark: var(--mark2);
 }
 .stage[data-carrying] .media.blank {
   --mark: var(--ember);
@@ -2414,21 +2328,6 @@ video.preview.on {
 .stage[data-lod="2"] .dot {
   width: 18px;
   height: 18px;
-}
-/* A box's name and its dot: at the title step on the canvas, and as the canvas zooms out at the body step on screen, held there by
-   --name-zoom up to what fits the room above a box (shown.ts nameZoomOf), then smaller with the canvas. One line, cut with an ellipsis
-   where its box ends, its whole name on hover (Paul, 11-13: "rather than just truncating"). */
-.canvas-node .card:not(.here) > .head :is(.nm, .state-dot) {
-  font-size: max(calc(var(--t-title) * var(--ui)), calc(var(--t-body) * var(--ui) * var(--name-zoom, 1)));
-}
-/* Far out a box is its picture and its name (web-ui.md §2): its version and trash can, too small there to read or hit, go (cl-958). */
-.stage:is([data-lod="1"], [data-lod="2"]) .canvas-node .card > .head :is(.node-version-label, .iconb, .count) {
-  display: none;
-}
-/* And what hangs under it, its tool, shape and a render's lines, drawn at the canvas's scale (7px on screen at 33%), set lower as a selected
-   ring grows: its dot says it renders. Its name rises into the room they keep. */
-.stage:is([data-lod="1"], [data-lod="2"]) .canvas-node .card:not(.here) > .tile-under {
-  display: none;
 }
 
 /* Drawers, and what floats over the canvas keeps clear of the rest by: the tools' width, the zoom's height, an open drawer's width as drawn,

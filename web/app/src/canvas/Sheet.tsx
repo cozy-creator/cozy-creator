@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { useSignal } from "../ui/signal"
 import { landscape, theme } from "../ui/theme"
 import { useCanvasStore } from "./context"
-import { useCanvasViewport } from "./viewportContext"
+import { useBoard } from "./board/context"
 // The landscape's pictures, as paper.css has them (its package exports only that, so by path): decoded here before they're put on.
 import hills from "../../node_modules/@cozy-creator/paper/landscape-hills.webp"
 import hillsFill from "../../node_modules/@cozy-creator/paper/landscape-hills-fill.webp"
@@ -46,7 +46,7 @@ const UNWASHED = 0.3
  * layer of its own, so it repaints nothing. On paper, a plain sheet is under it, the same paper without its sky: a zoom out fades the sky away by its layer's opacity.
  */
 function World({ washed }: { washed: boolean }) {
-  const viewport = useCanvasViewport()
+  const viewport = useBoard()
   const plain = useRef<HTMLDivElement>(null)
   const sheet = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -92,7 +92,7 @@ function World({ washed }: { washed: boolean }) {
  * leaves a gap. With reduced motion they hold still. A pan sets four transforms and draws nothing.
  */
 function Landscape() {
-  const viewport = useCanvasViewport()
+  const viewport = useBoard()
   const store = useCanvasStore()
   const land = useRef<HTMLDivElement>(null)
   const art = useArtAfterBoxes(viewport, store)
@@ -170,7 +170,7 @@ function Landscape() {
  * that frame's way, and only then put on, fading in over the cream (paper.css). Decoded and rastered with the boxes, they held the boxes' first
  * frame back some 90 ms (e2e 43691308549: ~150 ms of decoding and ~150 ms of raster on the raster threads).
  */
-function useArtAfterBoxes(viewport: ReturnType<typeof useCanvasViewport>, store: ReturnType<typeof useCanvasStore>): boolean {
+function useArtAfterBoxes(viewport: ReturnType<typeof useBoard>, store: ReturnType<typeof useCanvasStore>): boolean {
   const [shown, setShown] = useState(false)
   useEffect(() => {
     let [over, frame, waiting] = [false, 0, true]
@@ -221,7 +221,7 @@ const ROW = 3
  * (e2e 43177889306: 370 → 210 ms of raster a second). The layer is a step at the most zoom (4) wider and taller than the window: `.canvas-dots`.
  */
 export function Dots() {
-  const viewport = useCanvasViewport()
+  const viewport = useBoard()
   const layer = useRef<SVGSVGElement>(null)
   const cell = useRef<SVGPatternElement>(null)
   const dot = useRef<SVGCircleElement>(null)

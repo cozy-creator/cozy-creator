@@ -1,4 +1,4 @@
-import type { Viewport } from "../canvas/viewport"
+import type { Viewport } from "../canvas/board/Camera"
 import type { Client } from "../api/client"
 import type { ProjectView, ProjectViewPatch } from "../api/calcifer"
 import { forgetLastWords } from "../api/outbox"
