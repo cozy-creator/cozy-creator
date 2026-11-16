@@ -218,7 +218,8 @@ fn linux(wanted: &[&'static Tool], path: &[PathBuf], listed: &str, say: &(dyn Fn
 #[cfg(not(windows))]
 async fn windows(_: &[&'static Tool], _: &[PathBuf], _: &str, _: &(dyn Fn(&str) + Sync)) {}
 
-/// Through winget, else WinFsp's own pinned installer; as an administrator without asking, else asked once on the console.
+/// Through winget, but WinFsp through its own pinned installer with every feature, as the vault provider's proof installs it
+/// (dev-build.yaml); as an administrator without asking, else asked once on the console.
 #[cfg(windows)]
 async fn windows(wanted: &[&'static Tool], path: &[PathBuf], listed: &str, say: &(dyn Fn(&str) + Sync)) {
     use std::{io::IsTerminal as _, process::Command};
@@ -230,8 +231,8 @@ async fn windows(wanted: &[&'static Tool], path: &[PathBuf], listed: &str, say: 
     let said = wanted
         .iter()
         .map(|tool| match (winget, package(tool)) {
+            (_, "winfsp") => format!("download {} and run msiexec /i winfsp-2.1.25156.msi /qn ADDLOCAL=ALL", tools::WINFSP_MSI.0),
             (true, name) => format!("winget install --exact --id {} --silent --accept-package-agreements --accept-source-agreements", tools::package_name("winget", name)),
-            (false, "winfsp") => format!("download and run {}", tools::WINFSP_MSI.0),
             (false, "vcruntime") => "download and run https://aka.ms/vs/17/release/vc_redist.x64.exe".into(),
             (false, "git") => "download and run Git for Windows from https://git-scm.com/download/win".into(),
             (false, name) => format!("install {name}"),
@@ -259,12 +260,12 @@ async fn windows(wanted: &[&'static Tool], path: &[PathBuf], listed: &str, say: 
     }
     for (tool, said) in wanted.iter().zip(&said) {
         let done = match (winget, package(tool)) {
+            (_, "winfsp") => winfsp(admin).await,
             (true, name) => Command::new("winget")
                 .args(["install", "--exact", "--id", tools::package_name("winget", name), "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"])
                 .status()
                 .map(|status| status.success() || matches!(status.code(), Some(-1978335189 | -1978335135)))
                 .unwrap_or(false),
-            (false, "winfsp") => winfsp(admin).await,
             _ => false,
         };
         if !done {
@@ -273,7 +274,8 @@ async fn windows(wanted: &[&'static Tool], path: &[PathBuf], listed: &str, say: 
     }
 }
 
-/// WinFsp's pinned installer, held to its digest, run quietly: elevated through Windows' own prompt where this isn't an administrator.
+/// WinFsp's pinned installer, held to its digest, run quietly with every feature: elevated through Windows' own prompt where this isn't
+/// an administrator.
 #[cfg(windows)]
 async fn winfsp(admin: bool) -> bool {
     use std::process::Command;
@@ -286,10 +288,10 @@ async fn winfsp(admin: bool) -> bool {
     }
     let quiet = |status: std::process::ExitStatus| matches!(status.code(), Some(0 | 3010));
     match admin {
-        true => Command::new("msiexec").arg("/i").arg(&msi).args(["/qn", "/norestart"]).status().is_ok_and(quiet),
+        true => Command::new("msiexec").arg("/i").arg(&msi).args(["/qn", "/norestart", "ADDLOCAL=ALL"]).status().is_ok_and(quiet),
         false => Command::new("powershell")
             .args(["-NoProfile", "-Command"])
-            .arg(format!("exit (Start-Process msiexec -ArgumentList '/i','\"{}\"','/qn','/norestart' -Verb RunAs -Wait -PassThru).ExitCode", msi.display()))
+            .arg(format!("exit (Start-Process msiexec -ArgumentList '/i','\"{}\"','/qn','/norestart','ADDLOCAL=ALL' -Verb RunAs -Wait -PassThru).ExitCode", msi.display()))
             .status()
             .is_ok_and(quiet),
     }

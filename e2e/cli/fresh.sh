@@ -104,8 +104,17 @@ fresh_windows() {
   [ -f "$dll" ] || { check "fresh: Windows: no WinFsp after the install: $(tail -c 400 "$OUT/fresh-windows.txt")"; return 0; }
   dir=$OUT/fresh-vaulted
   printf 'a long enough passphrase' > "$OUT/fresh-pass"
-  cozy new "$dir" --passphrase-file "$OUT/fresh-pass" --recovery-out "$OUT/fresh-recovery" > "$OUT/fresh-new.txt" 2>&1 \
-    || { check "fresh: Windows: cozy new made no encrypted project: $(tail -c 400 "$OUT/fresh-new.txt")"; return 0; }
+  if ! cozy new "$dir" --passphrase-file "$OUT/fresh-pass" --recovery-out "$OUT/fresh-recovery" > "$OUT/fresh-new.txt" 2>&1; then
+    check "fresh: Windows: cozy new made no encrypted project: $(tail -c 400 "$OUT/fresh-new.txt")"
+    # What the provider said, for the next look: once more with Calcifer's diagnostics on and securefs's own stderr kept
+    # (COZY_VAULT_PROVIDER_DIAGNOSTICS, which project-mount hands the provider), with the job's logs.
+    export COZY_VAULT_PROVIDER_DIAGNOSTICS=$OUT/fresh-provider.log
+    calcifer_diagnostics || true
+    cozy new "$OUT/fresh-vaulted-again" --passphrase-file "$OUT/fresh-pass" --recovery-out "$OUT/fresh-recovery-again" > "$OUT/fresh-new-again.txt" 2>&1 || true
+    cp "$HOME/.cozy/calcifer/diagnostics.log" "$HOME/.cozy/calcifer/calcifer.log" "$OUT/" 2> /dev/null || true
+    find "$OUT/fresh-vaulted-again" -name walk.log -exec cp {} "$OUT/fresh-walk.log" \; 2> /dev/null || true
+    return 0
+  fi
   (cd "$dir" && cozy --json vault status) > "$OUT/fresh-vault.json" 2>&1 || true
   grep -q '"encrypted": *true' "$OUT/fresh-vault.json" || check "fresh: Windows: the project is not encrypted: $(tail -c 300 "$OUT/fresh-vault.json")"
 }
