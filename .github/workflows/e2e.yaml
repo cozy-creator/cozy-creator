@@ -389,8 +389,6 @@ jobs:
           - { what: cozy, repo: cozy-creator, take: "${{ inputs.tensord || inputs.publish_run }}" }
           - { what: tensorfs, repo: cozy-creator, take: "${{ inputs.tensorfs }}" }
           - { what: runtime, repo: cozy-runtime, take: "${{ inputs.runtime }}" }
-          # selfupdate's cozy of the line before (cl-978), built beside the candidate, not on its shard's path.
-          - { what: cozy-before, repo: cozy-creator, take: "${{ !(contains(fromJSON(needs.affected.outputs.selection).suites, 'cli') && contains(inputs.shards || 'selfupdate', 'selfupdate')) && 'none' || '' }}" }
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 60
@@ -421,10 +419,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: .build -> target
-          # cozy-before is the candidate's own source at another version: cozy's cache, which it never saves over.
-          key: ${{ matrix.what == 'cozy-before' && 'cozy' || matrix.what }}
+          key: ${{ matrix.what }}
           # A merge group's cache is its own ref's, which nothing restores.
-          save-if: ${{ github.ref == 'refs/heads/master' && matrix.what != 'cozy-before' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       # The page cozy embeds; build.sh builds it. A ref from before web/app has none.
       - if: matrix.what == 'cozy' && matrix.take == '' && steps.reuse.outputs.name == '' && hashFiles('.build/web/app/package.json') != ''
         uses: actions/setup-node@v4
@@ -712,8 +709,10 @@ jobs:
         # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
         # web-1, web-2, web-3, web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once. Manual shard selections
         # remain available.
-        # ondemand, plan, coming, lines, disk and selfupdate guard features Paul asked for (xs-199): each on every RC run, as any cell.
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","plan","coming","lines","disk","selfupdate"]') }}
+        # ondemand (ondemand-share its install's share of the link), coming, lines, disk and selfupdate guard features Paul asked for
+        # (xs-199): each on every RC run, as any cell. plan joins them once its plan_picks is green (cl-1047's Measured for a project's
+        # own history).
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","coming","lines","disk","selfupdate"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
@@ -777,16 +776,25 @@ jobs:
         with:
           name: fixture-hub
           path: ${{ runner.temp }}/fixture-hub
-      # selfupdate (cl-978): the change built as a release of the line before the Latest, the cozy that updates itself (the
-      # `candidate cozy-before` job's).
+      # selfupdate (cl-978): the change built as a release of the line before the Latest, the cozy that updates itself. Built in
+      # its own shard, so no other waits on it or fails with it; on a Rust cache of its own, saved by master's runs and restored
+      # read-only elsewhere, so it builds what changed.
       - if: (matrix.shard == 'selfupdate' || startsWith(matrix.shard, 'selfupdate@'))
-        uses: actions/download-artifact@v4
+        uses: actions/checkout@v5
         with:
-          pattern: cozy-before-*
-          path: ${{ runner.temp }}/before
-          merge-multiple: true
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
+          path: .before
       - if: (matrix.shard == 'selfupdate' || startsWith(matrix.shard, 'selfupdate@'))
-        run: chmod +x "$RUNNER_TEMP/before/cozy" && echo "E2E_COZY_BEFORE=$RUNNER_TEMP/before/cozy" >> "$GITHUB_ENV"
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .before -> target
+          shared-key: cozy-before
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - if: (matrix.shard == 'selfupdate' || startsWith(matrix.shard, 'selfupdate@'))
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: echo "E2E_COZY_BEFORE=$(bash .creator/e2e/candidates/build.sh cozy-before .before "$RUNNER_TEMP/before")" >> "$GITHUB_ENV"
       - name: cli suite
         env:
           GH_TOKEN: ${{ github.token }}
@@ -814,12 +822,15 @@ jobs:
           fi
       # cozy's logs (Calcifer's too) however the suite ended: one the job's timeout ends never reaches its `logs` part (cl-837).
       - if: always() && !startsWith(matrix.shard, 'containment')
+        # The repository is public and GitHub masks no secret inside an artifact: no secret may ever be given to this job.
         run: |
           mkdir -p "$RUNNER_TEMP/e2e/cozy-logs" && cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | tar -xf - -C "$RUNNER_TEMP/e2e/cozy-logs" || true
-          # Calcifer's own log is its user unit's journal; each project's walk keeps its placements in its own storage.
-          XDG_RUNTIME_DIR=/run/user/$(id -u) journalctl --user -u cozy-calcifer.service --no-pager > "$RUNNER_TEMP/e2e/cozy-logs/calcifer-journal.log" 2>&1 || true
-          find "$RUNNER_TEMP/e2e" -path '*/.vault-calcifer/diagnostics/walk.log' -size -20M 2> /dev/null | while read -r walk; do
-            cp "$walk" "$RUNNER_TEMP/e2e/cozy-logs/walk-$(basename "$(dirname "$(dirname "$(dirname "$walk")")")").log"
+          # Calcifer's own log is its user unit's journal; each project's walk keeps its placements in its own storage, named here
+          # by its folder under the run's out dir. Each read is bounded: a wedged FUSE view can't hold the step and lose every log.
+          XDG_RUNTIME_DIR=/run/user/$(id -u) timeout 60 journalctl --user -u cozy-calcifer.service --no-pager > "$RUNNER_TEMP/e2e/cozy-logs/calcifer-journal.log" 2>&1 || true
+          timeout 60 find "$RUNNER_TEMP/e2e" -path '*/.vault-calcifer/diagnostics/walk.log' -size -20M 2> /dev/null | while read -r walk; do
+            project=${walk%/.vault-calcifer/diagnostics/walk.log}; project=${project#"$RUNNER_TEMP/e2e/"}
+            timeout 10 cp "$walk" "$RUNNER_TEMP/e2e/cozy-logs/walk-${project//\//-}.log" || true
           done || true
       - if: always() && !startsWith(matrix.shard, 'containment')
         uses: ./.creator/e2e/publish
