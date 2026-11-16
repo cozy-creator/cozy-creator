@@ -85,10 +85,11 @@ export function Stage(props: StageProps) {
     const media = new Media({ client, project: store.projectId ?? "", changed: () => invalidate() })
     const visible = () => latest.current.active && tabShown.get() && !lost
     const invalidate = () => { dirty = true; if (!stopped && renderer && visible() && !ticker.started) ticker.start() }
-    // Interaction owns the viewport's gesture switches; a change of active/disabled/locked has it settle them again.
     const enable = () => {
-      media.setVisible(visible())
-      interaction?.cancel()
+      const on = visible()
+      media.setVisible(on)
+      board.camera.setInteractionEnabled(on && !latest.current.disabled)
+      if (!on) interaction?.cancel()
     }
     live.current = { invalidate, enable }
     const software = { value: false }
