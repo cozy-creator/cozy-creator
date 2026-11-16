@@ -613,6 +613,11 @@ impl Calcifer {
             .filter_map(|(id, _)| RunId::try_from(id.clone()).ok()).collect()
     }
 
+    /// Whether `project` has runs routed to it now (cl-1064): a lock reads its journal for runs on a machine only then.
+    pub(crate) fn has_runs(&self, project: &str) -> bool {
+        !self.routed(project).is_empty()
+    }
+
     /// The runs of `project` whose drivers' tasks are going (cl-1060): sending, settling, handing on.
     pub(crate) fn driven_into(&self, project: &str) -> Vec<RunId> {
         self.routed(project).into_iter().filter(|id| lock(&self.driving).contains(id)).collect()

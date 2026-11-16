@@ -822,17 +822,35 @@ fn unanswered_seal() -> Error {
         .next("cozy machine show local")
 }
 
-/// A lock's runs of the project on a `local` that doesn't answer (cl-1064): settled here as canceled, asked only when it has some
-/// there. Whether it didn't answer.
+/// A lock's runs of the project on a `local` that doesn't answer (cl-1064): settled here as canceled. Whether it didn't answer.
+/// Its journal is read only for a project with runs going whose local doesn't answer: a lock whose local answers reads nothing more
+/// than it did, so it never meets a journal busy a moment (43969581564).
 fn settle_unanswered(api: &Arc<Api>, root: &FsPath) -> Result<bool, Error> {
     let Some(id) = project_id(root).filter(|_| encrypted(root)) else { return Ok(false) };
-    if !api.calcifer.unsettled_on(&id, "local").map_err(refused(root, "run_cancel", "the project's work could not be read"))?
-        || tokio::runtime::Handle::current().block_on(api.machines.answers("local"))
-    {
+    if !api.calcifer.has_runs(&id) || tokio::runtime::Handle::current().block_on(api.machines.answers("local")) {
         return Ok(false);
     }
-    api.calcifer.cancel_unanswered_for_lock(&id, "local").map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?;
+    if !journal(|| api.calcifer.unsettled_on(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be read"))? {
+        return Ok(false);
+    }
+    journal(|| api.calcifer.cancel_unanswered_for_lock(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?;
     Ok(true)
+}
+
+/// How long a lock's look at its project's journal waits out a moment's `project_busy` (a transition queued on the project).
+const JOURNAL_BUSY: Duration = Duration::from_secs(5);
+
+/// `read` of a project's journal, asked again every 100 ms for `JOURNAL_BUSY` while it's busy. Only from a blocking thread.
+fn journal<T>(mut read: impl FnMut() -> Result<T, crate::Error>) -> Result<T, crate::Error> {
+    let began = Instant::now();
+    loop {
+        match read() {
+            Err(crate::Error::Store(crate::store::StoreError::Locked(code))) if code == "project_busy" && began.elapsed() < JOURNAL_BUSY => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            done => return done,
+        }
+    }
 }
 
 /// What `root`'s last lock says of a machine that didn't answer it, once.
@@ -1001,12 +1019,13 @@ static DUE: LazyLock<Mutex<BTreeMap<PathBuf, std::time::Instant>>> = LazyLock::n
 static ASKED: LazyLock<Mutex<BTreeMap<PathBuf, Instant>>> = LazyLock::new(Mutex::default);
 const ASKED_AGAIN: Duration = Duration::from_secs(10);
 
-/// Whether `root`'s runs on `local` hold it while local doesn't answer (cl-1064).
+/// Whether `root`'s runs on `local` hold it while local doesn't answer (cl-1064): local asked first, the journal read only then.
 fn unanswered(api: &Arc<Api>, root: &FsPath) -> bool {
     let Some(id) = project_id(root).or_else(|| plain_project_id(root)) else { return false };
     encrypted(root)
-        && api.calcifer.unsettled_on(&id, "local").unwrap_or(false)
+        && api.calcifer.has_runs(&id)
         && !tokio::runtime::Handle::current().block_on(api.machines.answers("local"))
+        && journal(|| api.calcifer.unsettled_on(&id, "local")).map_err(refused(root, "run_cancel", "the project's work could not be read")).unwrap_or(false)
 }
 
 /// Vaults whose lock is going on a thread of its own.
