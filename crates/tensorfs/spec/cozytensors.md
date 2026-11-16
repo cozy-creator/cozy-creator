@@ -216,6 +216,11 @@ read them.
   `lora_A`'s rows already, and both are left empty in the config. Kohya's `<module>.alpha` stays as it is, and
   `ss_sd_model_name` is the base model. Training metadata never sets the scale: kohya's and ComfyUI's loaders read
   only `.alpha` tensors, so a file without them is `α = r` whatever its `ss_network_alpha` says.
+- A whole module a LoRA carries beside its factors (one it adds, such as LiconStudio's LTX reference-slot embeddings) is
+  stored as PEFT saves `modules_to_save`: its own keys under its module name (`reference_slot_embedding.net.0.weight`),
+  as the source holds them, and the config lists the module in `modules_to_save`. A converter table names such modules.
+- A reference-conditioned adapter's `reference_*` metadata (an IC-LoRA's `reference_downscale_factor`, MSR's slot
+  layout) is in its config too, typed: `True`/`False` and `true`/`false` booleans, JSON numbers numbers, else strings.
 - A writer MUST NOT deviate from these names unless the deviation is listed below with its written, measured reason.
 
 | Model | Upstream name | Stored name | Measured reason |

@@ -226,7 +226,11 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot')).sort()), 'its slots').toEqual(['expander', 'model', 'text_encoder', 'turbo_lora', 'vae']);
     for (const slot of ['expander', 'model', 'text_encoder', 'turbo_lora']) {
       await picker.locator(`button[data-model-slot="${slot}"]`).click();
-      await expect(picker.locator(`section.model-picker-slot[data-model-slot="${slot}"]`), `${slot} opens`).toBeVisible();
+      const opened = picker.locator(`section.model-picker-slot[data-model-slot="${slot}"]`);
+      await expect(opened, `${slot} opens`).toBeVisible();
+      // Every slot lists what fits it, Turbo's LoRA too (cl-1066: no "only the default is verified").
+      await expect.soft(opened.getByRole('searchbox', { name: `Search models for ${slot}`, exact: true }), `${slot}: its choices, searchable`).toBeVisible();
+      await expect.soft(opened.getByText('Only the default Turbo LoRA is verified.'), `${slot}: no default-only notice`).toHaveCount(0);
       await picker.getByRole('button', { name: 'Back to model slots', exact: true }).click();
     }
     await picker.locator('button[data-model-slot]', { hasText: /^VAE$/ }).click();
@@ -257,6 +261,22 @@ test('fields', async ({ page, project, api, cli, guards }) => {
     const input = (await cli.json('--full', 'run', 'watch', String(run), '--once')).request?.input ?? {};
     expect.soft(input, "the run's request").toMatchObject({ steps: 9, resolution: '1080p', turbo: false, megapixels: saved.megapixels, negative: 'blurry', aspect_ratio: '16:9' });
     expect.soft(input.quality ?? 'standard', 'the field reset goes as its default').toBe('standard');
+  });
+
+  await test.step('a picture mentioned in words its tool reads as text only: said once as Render is pressed (cl-1066)', async () => {
+    // Paul, 11-16, of a character in LTX-2.5's words-only prompt: "it did not do anything with the character … complete fail". Not
+    // only struck through: a note when Render is pressed, once.
+    await project.add({ name: 'plain', tool: EVERY, kind: 'video', fields: { negative: 'soft <coast>' }, at: { x: 1080, y: 0 } });
+    await expect.poll(async () => (await project.asset('plain'))?.unused?.length ?? 0, { message: 'Calcifer finds <coast> unused there' }).toBe(1);
+    await fit(page);
+    const region = await focus(page, 'plain');
+    // As Calcifer words it (cl-1084), on the box's name: `plain: <Tool> doesn't support reference images here`.
+    const note = page.locator('.notes .note .line', { hasText: /^plain: .+ doesn't support reference images( here)?$/ });
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.soft(note, 'said as Render is pressed').toHaveCount(1);
+    await page.waitForTimeout(2000);
+    await expect.soft(note, 'and once').toHaveCount(1);
+    await leave(page);
   });
 
   await test.step('a box says its shape as film and media say it: a take what it asked, a file its pixels\' nearest, a corner what it set', async () => {

@@ -54,6 +54,7 @@ parse "$@"
 . "$(dirname "$0")/typedcalls.sh"
 . "$(dirname "$0")/harness.sh"
 . "$(dirname "$0")/devstart.sh"
+. "$(dirname "$0")/standing.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -513,6 +514,7 @@ WEB_3=(
   instant
   select
   move
+  dblclick-text
   svg
   density
   keyboard
@@ -598,6 +600,7 @@ case $SHARD in
     component_models
     lora_reads
     ltx_lora
+    ltx_msr
     second_project
     lock_platforms
     yaml_requests
@@ -715,6 +718,7 @@ case $SHARD in
     component_models
     lora_reads
     ltx_lora
+    ltx_msr
     second_project
     lock_platforms
     yaml_requests
@@ -771,6 +775,9 @@ case $SHARD in
   web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
   # Pictures imported into a plain project get their thumbnails stored (cl-1054: none on macOS).
   thumbs) parts="thumbs_stored logs" ;;
+  # What Paul's standing rules decide (cl-1066): a loose project folder made private, a project route with no protocol header, a run
+  # whose named machines can't take it placed where one naming none goes.
+  standing) parts="folder_private protocol_free machine_set logs" ;;
   # cl-982's opens on a busy computer: 3,000 other loopback connections open (web/busy.js), as the gate's lookups meet them (cl-985).
   web-opens-busy) export BUSY_SOCKETS=3000 WEB_RENDERER=2d; web_cells=(opens); parts="web_lane logs" ;;
   # The page as Calcifer's own and what the access rule refuses (cl-985), alone.
@@ -845,12 +852,15 @@ case $SHARD in
     hard_cut
     vault_leftovers
     kept_latents
+    vault_purge_due
     vault_swapped
     ended_logs
     logs
   " ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
+  # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.
+  projectvault-purge-due) parts="vault_purge_due logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   # A keyed write cut off mid-request, sent again (cl-885).
   projectdb-keyed) parts="db_keyed logs" ;;

@@ -538,11 +538,6 @@ export class Client {
     return this.write("POST", `${project(id)}/fit`, { names })
   }
 
-  /** The same, each tool kept as rendered here, so nothing asks again. */
-  renderHere(id: string, names: string[]): Promise<Fit> {
-    return this.write("POST", `${project(id)}/fit/here`, { names })
-  }
-
   /** A tool dropped on the canvas. */
   newAsset(id: string, key: string, body: NewAsset, write: Write = {}): Promise<AssetMade> {
     return this.write("POST", `${project(id)}/assets`, body, key, write)

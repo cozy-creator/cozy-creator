@@ -4,11 +4,14 @@
 #                  browser session (cl-985)
 #   state_import   OLD=<dir>, an earlier Calcifer's files as its build wrote them: imported at the next start, then gone; its sessions
 #                  deleted unread
-#   state_restart  Calcifer restarted on 40,000 runs and 3,000 ended rentals, the first read of each page of state.db slow as on a busy
-#                  disk's cold cache (busy-disk.c), PyPI and the Hub 3 s late (slow_proxy.py): every route a client asks answers in
-#                  200 ms while it takes up what it left, and
-#                  none is said slow in health.log (cl-1010)
-# Uses project.sh's `api` and projectdb.sh's `kill9`, `db_calcifer` and `calcifer_halt`.
+#   state_restart  Calcifer restarted on 40,000 runs, 3,000 ended rentals and four 3,000-box projects (opened by nothing at the start),
+#                  the first read of each page of state.db slow as on a busy disk's cold cache (busy-disk.c), PyPI and the Hub 3 s
+#                  late (slow_proxy.py): every route a client asks answers in 200 ms while it takes up what it left, and none is
+#                  said slow in health.log, nor the start's purge (cl-1010)
+#   vault_purge_due a deleted box's next purge is in state.db for a plaintext project only, kept while its folder is away and taken up
+#                  at the next start once it's back, and made by a copy that sets aside a row holding files; an encrypted
+#                  one's never, unlocked or locked, and it's still purged once its window ended and it's unlocked again (cl-1010)
+# Uses project.sh's `api` and projectdb.sh's `kill9`, `db_calcifer`, `calcifer_halt` and `undo_window`.
 
 # state <query>: what state.db holds, read only, one JSON row a line.
 state() {
@@ -87,7 +90,7 @@ stores=$(cd "$dir" && find . -maxdepth 1 -name '*.json' ! -name refused.json | s
 [ -z "$stores" ] || check "state: JSON stores in $dir: $stores"
 [ ! -e "$dir/after" ] || check "state: $dir/after is still there: $(ls -A "$dir/after" | head -5 | paste -sd' ')"
 [ "$(stat -c %a "$dir/state.db")" = 600 ] || check "state: state.db is $(stat -c %a "$dir/state.db"), not 600"
-for table in projects tool_list tools_off rendered_here headers after_steps; do
+for table in projects tool_list tools_off headers after_steps; do
   [ "$(state1 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '$table'")" = 1 ] || check "state: state.db has no $table"
 done
 # Nothing signs a page in (cl-985): a Calcifer that kept sessions has them dropped at its next start.
@@ -147,12 +150,6 @@ if [ -f "$OLD/sessions.json" ]; then
   done < "$OLD/tokens"
   echo "state import: sessions.json's $(jq length "$OLD/sessions.json") sessions deleted, none kept"
 fi
-if [ -f "$OLD/here.json" ]; then
-  want=$(jq -c '[.here[] | [.tool, .machine, (.bytes // 0)]] | sort' "$OLD/here.json")
-  got=$(state 'SELECT tool, machine, bytes FROM rendered_here' | jq -sc sort)
-  [ "$want" = "$got" ] || check "state import: Render here $got, not $want"
-  echo "state import: Render here $got"
-fi
 if [ -f "$OLD/checkpoints.json" ]; then
   want=$(jq -c '[.facts | to_entries[] | [(.key | split(" ") | .[0]), (.key | split(" ") | .[1]), .value.lora, .value.family]] | sort' "$OLD/checkpoints.json")
   got=$(state 'SELECT hub, sha256, lora = 1, family FROM headers' | jq -sc 'map(.[2] |= (. == 1)) | sort')
@@ -177,6 +174,21 @@ local dropin=$HOME/.config/systemd/user/cozy-calcifer.service.d/cl1010-busy-disk
 mkdir -p "$S"
 cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC -o "$S/busy-disk.so" "$here/busy-disk.c" -ldl || { check "restart: busy-disk.c didn't build"; return; }
 cozy --json machine ls > /dev/null && db_calcifer && id=$(id_of "$RUN_PROJECT") && [ -n "$id" ] || { check "restart: no project to ask about"; return; }
+# Four projects of a real size (3,000 boxes each; Paul's largest project.db is 27 MB), with nothing deleted: a start opens none of them
+# (a start's purge opened every known project and loaded its document, 5 s on Paul's laptop, and their requests waited on it).
+local large=() big i
+for i in 1 2 3 4; do
+  big=$S/large-$i
+  cozy --json new --unencrypted "$big" > "$S/large-$i-new.json" 2>&1 || { check "restart: project $i: $(tail -c 300 "$S/large-$i-new.json")"; continue; }
+  python3 - "$big/nodes.yaml" 3000 "$i" <<'PY'
+import sys
+with open(sys.argv[1], "w") as out:
+    for n in range(int(sys.argv[2])):
+        out.write(f"note_{n}:\n  kind: text\n  text: Note {n} of project {sys.argv[3]}. The colossal blue whale rises through a storm, lit from below.\n")
+PY
+  in_project "$big" apply -f nodes.yaml > "$S/large-$i-apply.txt" 2>&1 || { check "restart: project $i's 3,000 boxes: $(tail -c 300 "$S/large-$i-apply.txt")"; continue; }
+  large+=("$(id_of "$big")")
+done
 # Its tools listed once, as a computer's page has: the list a restart answers from is kept.
 api -fsS -o /dev/null "http://$ADDR/v1/tools" || check "restart: GET /v1/tools before the restart failed"
 # A dev home, as Paul's laptop is: a packages checkout (`dev = true`, `[calcifer] packages`) whose first-party package a list reads
@@ -210,7 +222,7 @@ mkdir -p "${dropin%/*}" && printf '[Service]\nEnvironment=LD_PRELOAD=%s\nEnviron
   "$S/busy-disk.so" "$S/busy-disk.log" "$proxied" "$proxied" "$proxied" "$proxied" > "$dropin"
 systemctl --user daemon-reload && systemctl --user start cozy-calcifer || check "restart: systemctl --user start cozy-calcifer failed"
 python3 "$here/restart_store.py" measure --holder "$holder" --old-pid "$pid" --project "$id" --log "$HOME/.cozy/calcifer/health.log" \
-  --run "$(jq -r '.unsettled[0]' "$S/fill.json")" \
+  --run "$(jq -r '.unsettled[0]' "$S/fill.json")" --large "$(IFS=,; echo "${large[*]}")" \
   --timed "$S/timed.json" --seconds 6 --budget-ms 200 > "$S/latency.ndjson" 2>&1 \
   || check "restart: routes over 200 ms, or said slow, as Calcifer restarted on 40,000 runs: $(tail -n 1 "$S/latency.ndjson" | jq -c '{over, slow: (.slow_requests // [] | .[:3]), steps}' 2> /dev/null || tail -c 600 "$S/latency.ndjson")"
 cat "$S/latency.ndjson"
@@ -240,3 +252,127 @@ calcifer_halt || return
 python3 "$here/restart_store.py" empty "$db" || check "restart: the store's rows weren't taken out"
 cozy --json machine ls > /dev/null || check "restart: Calcifer didn't start again"
 }
+
+# cl-1010: a start opens only the projects whose deleted boxes are due, by the times state.db keeps (`purge_due`), so a due time once kept
+# is never lost while its files stay: a plaintext project's folder away when its window ends keeps it, and once back the next start purges
+# it, no request naming it; a copy that sets aside a row holding files keeps one too. (A project whose folder is away when the index is
+# listed, by a page or a `cozy new`, leaves the index as cl-1031 says, and is purged once it's opened again.) Of a locked encrypted
+# project Calcifer keeps only its folder (Paul's no-traces rule): a row saying something was deleted in it, and when, is kept for none.
+# An encrypted project's due time is held only while it's unlocked, and its unlock's open reads it again from its own project.db.
+vault_purge_due() (
+  step "a deleted box's next purge: kept for a plaintext project while its folder is away, never for an encrypted one; purged after (cl-1010)"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault purge due: Linux runners only"; exit 0; }
+  local work secrets P plain copies view id plain_id copies_id pic plain_pic deleted_at plain_at made rows lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  work=$(mktemp -d "$OUT/vault-purge-due.XXXXXX") secrets=$(mktemp -d "$OUT/vault-purge-due-credentials.XXXXXX")
+  P=$work/encrypted plain=$work/plain copies=$work/copies
+  trap 'in_project "$P" --json vault lock > /dev/null 2>&1 || true; [ ! -d "$plain.away" ] || mv "$plain.away" "$plain"; undo_window "$lock" ""; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic purge-due passphrase' > "$secrets/pass" && chmod 600 "$secrets/pass"
+  # due_rows <id>: how many purge_due rows state.db holds of that project.
+  due_rows() { state "SELECT count(*) FROM purge_due WHERE project = '$1'" | jq -r '.[0]'; }
+  # locked <name>: the project locked, its admitted work (a thumbnail, a measure) drained first if a lock found it busy.
+  locked() {
+    in_project "$P" --json vault lock > "$work/$1.json" && return 0
+    jq -e '.error.code == "project_busy"' "$work/$1.json" > /dev/null || return 1
+    for _ in $(seq 80); do
+      in_project "$P" --json vault status | jq -e '.state == "locked"' > /dev/null && return 0
+      sleep 0.25
+    done
+    return 1
+  }
+  python3 -c '
+import struct, sys, zlib
+def chunk(kind: bytes, data: bytes) -> bytes:
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
+    raw = b"".join(b"\x00" + bytes(rgb) * 64 for _ in range(48))
+    head = struct.pack(">IIBBBBB", 64, 48, 8, 2, 0, 0, 0)
+    open(path, "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", head) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+' "$work/red.png" "$work/blue.png" || fail "vault purge due: no pictures"
+  # A short undo window before any project opens: Calcifer restarts for it, which would lock an open encrypted project.
+  undo_window "$lock" 20
+  # Every project made first: a `cozy new` lists the index, which a folder away would leave (cl-1031).
+  cozy --json new --unencrypted "$copies" > "$work/copies-new.json" 2>&1 || fail "vault purge due: new copies project: $(tail -c 300 "$work/copies-new.json")"
+  project_import "$copies" "$work/red.png" pic > /dev/null || fail "vault purge due: the copies project's picture wasn't imported"
+  copies_id=$(id_of "$copies")
+  [ -n "$copies_id" ] || fail "vault purge due: the copies project has no id"
+  cozy --json new --unencrypted "$plain" > "$work/plain-new.json" 2>&1 || fail "vault purge due: new plaintext project: $(tail -c 300 "$work/plain-new.json")"
+  project_import "$plain" "$work/blue.png" pic > /dev/null || fail "vault purge due: the plaintext project's picture wasn't imported"
+  plain_id=$(id_of "$plain") plain_pic=$(asset_of "$plain" pic | jq -r '.sha256 // empty')
+  [ -n "$plain_id" ] && [ -n "$plain_pic" ] && in_files "$plain" "$plain_pic" || fail "vault purge due: the plaintext project's picture isn't in its files/"
+
+  step "vault purge due: an encrypted project's deleted box is due nowhere outside it, unlocked or locked"
+  cozy --json new "$P" --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" > "$work/new.json" 2> "$work/new.err" \
+    || fail "vault purge due: new encrypted project: $(tail -c 300 "$work/new.err")"
+  view=$(jq -r '.view // empty' "$work/new.json")
+  [ -n "$view" ] && [ -d "$view" ] || fail "vault purge due: the encrypted project has no unlocked view: $(head -c 300 "$work/new.json")"
+  project_import "$P" "$work/red.png" pic > /dev/null || fail "vault purge due: the encrypted project's picture wasn't imported"
+  id=$(id_of "$P") pic=$(asset_of "$P" pic | jq -r '.sha256 // empty')
+  [ -n "$id" ] && [ -n "$pic" ] && in_files "$view" "$pic" || fail "vault purge due: the encrypted project's picture isn't in its files/"
+  project_api "$P" /assets/pic -X DELETE > /dev/null || fail "vault purge due: the encrypted project's box wasn't deleted"
+  deleted_at=$(date +%s)
+  rows=$(due_rows "$id")
+  [ "$rows" = 0 ] || check "vault purge due: state.db holds the unlocked encrypted project's next purge ($rows rows)"
+  locked lock || fail "vault purge due: lock: $(head -c 300 "$work/lock.json")"
+  rows=$(due_rows "$id")
+  [ "$rows" = 0 ] || check "vault purge due: state.db holds the locked encrypted project's next purge ($rows rows)"
+
+  step "vault purge due: a plaintext project's deleted box is due in state.db, and stays due while its folder is away"
+  project_api "$plain" /assets/pic -X DELETE > /dev/null || fail "vault purge due: the plaintext project's box wasn't deleted"
+  plain_at=$(date +%s)
+  rows=$(due_rows "$plain_id")
+  [ "$rows" = 1 ] || check "vault purge due: the plaintext project's deleted box isn't due in state.db ($rows rows)"
+  # Its folder away (a drive unplugged) while it's still open after the request, a machine-wide read meanwhile, and as its window ends.
+  mv "$plain" "$plain.away" || fail "vault purge due: the plaintext project's folder couldn't be moved away"
+  cozy --json machine ls > /dev/null 2>&1 || true
+  # Both windows end, the encrypted one's while it's locked: nothing can read it then.
+  while [ $(($(date +%s) - plain_at)) -le 22 ] || [ $(($(date +%s) - deleted_at)) -le 22 ]; do sleep 1; done
+  rows=$(due_rows "$id")
+  [ "$rows" = 0 ] || check "vault purge due: past its window, state.db holds the locked encrypted project's next purge ($rows rows)"
+  rows=$(due_rows "$plain_id")
+  [ "$rows" = 1 ] || check "vault purge due: its folder away as its window ended, the plaintext project's next purge wasn't kept ($rows rows)"
+  mv "$plain.away" "$plain" || fail "vault purge due: the plaintext project's folder couldn't be moved back"
+
+  step "vault purge due: unlocked past its window, the deleted box's file goes"
+  in_project "$P" --json vault unlock --passphrase-file "$secrets/pass" --idle 0 > "$work/unlock.json" 2> "$work/unlock.err" \
+    || fail "vault purge due: unlock: $(head -c 300 "$work/unlock.json") $(tail -c 200 "$work/unlock.err")"
+  view=$(jq -r '.vault.view // empty' "$work/unlock.json")
+  [ -n "$view" ] && [ -d "$view" ] || fail "vault purge due: unlocked with no view: $(head -c 300 "$work/unlock.json")"
+  for _ in $(seq 150); do in_files "$view" "$pic" || break; sleep 0.2; done
+  ! in_files "$view" "$pic" || check "vault purge due: unlocked past its window, the encrypted project's deleted box kept its file"
+  rows=$(due_rows "$id")
+  [ "$rows" = 0 ] || check "vault purge due: after its purge, state.db holds the encrypted project's next purge ($rows rows)"
+  locked relock || check "vault purge due: lock after the purge: $(head -c 300 "$work/relock.json")"
+
+  step "vault purge due: the plaintext project's folder back, the next start purges it, no request naming it"
+  calcifer_halt || fail "vault purge due: Calcifer didn't stop"
+  # The copies project's row for pic_2 set aside, as a name a box lost leaves it until a rename or `reclaim`: no versions of its own,
+  # its file discarded. Rows are keyed by `name_key`: `pic 2`.
+  db_sql "$copies" "INSERT INTO lock_assets (key, record) SELECT 'pic 2', json_remove(json_set(record, '\$.name', 'pic_2'), '\$.id') FROM lock_assets WHERE key = 'pic';
+    INSERT INTO versions (key, number, discarded, record) SELECT 'pic 2', number, 1, json_remove(record, '\$.id') FROM versions WHERE key = 'pic';" \
+    || fail "vault purge due: the copies project's set-aside row wasn't made"
+  cozy --json machine ls > /dev/null || fail "vault purge due: Calcifer didn't start again"
+  for _ in $(seq 150); do in_files "$plain" "$plain_pic" || break; sleep 0.2; done
+  ! in_files "$plain" "$plain_pic" || check "vault purge due: back after its window, the plaintext project's deleted box kept its file past a start"
+  # Its row goes as the purge settles, a moment after its files.
+  for _ in $(seq 50); do [ "$(due_rows "$plain_id")" != 1 ] && break; sleep 0.2; done
+  rows=$(due_rows "$plain_id")
+  [ "$rows" = 0 ] || check "vault purge due: after its purge, state.db holds the plaintext project's next purge ($rows rows)"
+
+  step "vault purge due: a copy named as a set-aside row holding a file makes its project due"
+  rows=$(due_rows "$copies_id")
+  [ "$rows" = 0 ] || check "vault purge due: the copies project was due before its copy ($rows rows)"
+  # Asked as project_api asks, with no read after it: a later request that opens the project looks at its set-aside rows itself.
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$copies")
+  made=$(curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' -X POST -H 'Content-Type: application/json' \
+    -d '{"boxes": [{"from": "pic"}]}' "http://$(jq -r .address "$holder")/v1/projects/$encoded/copies" | jq -r '.made[0].name // empty') \
+    || fail "vault purge due: the copy was refused"
+  [ "$made" = pic_2 ] || fail "vault purge due: the copy is $made, not pic_2 over the set-aside row"
+  rows=$(due_rows "$copies_id")
+  [ "$rows" = 1 ] || check "vault purge due: a copy set aside a row holding a file and its project isn't due ($rows rows)"
+  trap - EXIT
+  undo_window "$lock" ""
+  rm -rf -- "$secrets" "$P"
+  drop_folder "$plain"
+  drop_folder "$copies"
+)

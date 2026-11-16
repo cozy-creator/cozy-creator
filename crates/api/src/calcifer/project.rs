@@ -1107,7 +1107,7 @@ fn one() -> u32 {
     1
 }
 
-/// `POST /v1/projects/{id}/fit` and `…/fit/here`: what a render of `names` on this computer (`local`) asks of it, `all` and `outdated` as
+/// `POST /v1/projects/{id}/fit`: what a render of `names` on this computer (`local`) would do poorly, `all` and `outdated` as
 /// a render reads them; and how long each box named takes where a render of it would go now.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1189,9 +1189,6 @@ pub struct ToolFit {
     /// Its weights' bytes, as its machine would load them; 0: unknown.
     #[serde(default)]
     pub bytes: u64,
-    /// Render here was said of it on this computer, for weights as big: nothing asks again.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub here: bool,
 }
 
 /// A GPU to rent for it, as `POST /v1/machines` `{kind: rent}` names one.

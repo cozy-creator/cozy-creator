@@ -33,6 +33,11 @@ pub(crate) const TABLES: &str = "
     ) STRICT;
     DROP TABLE IF EXISTS sessions;
     DROP TABLE IF EXISTS session_codes;
+    CREATE TABLE IF NOT EXISTS purge_due (
+        project TEXT PRIMARY KEY,
+        at_ms INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS steps_done (step TEXT PRIMARY KEY) STRICT;
     CREATE TABLE IF NOT EXISTS tool_list (
         ord INTEGER PRIMARY KEY,
         package TEXT NOT NULL UNIQUE
@@ -41,12 +46,6 @@ pub(crate) const TABLES: &str = "
         ord INTEGER PRIMARY KEY,
         tool TEXT NOT NULL UNIQUE
     ) STRICT;
-    CREATE TABLE IF NOT EXISTS rendered_here (
-        tool TEXT NOT NULL,
-        machine TEXT NOT NULL,
-        bytes INTEGER NOT NULL,
-        PRIMARY KEY (tool, machine)
-    ) STRICT, WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS headers (
         hub TEXT NOT NULL,
         sha256 TEXT NOT NULL,
@@ -200,6 +199,26 @@ impl Store {
         self.read(|conn| Ok(conn.query_row(&format!("{KNOWN} WHERE id = ?1"), [id], known).optional()?))
     }
 
+    /// When each project's deleted boxes are next due (`project::purge`), kept so a start opens only those: a project with none has
+    /// nothing to purge until a box of it is deleted, or it opens (cl-1010).
+    pub(crate) fn purge_due(&self) -> Result<Vec<(String, i64)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT project, at_ms FROM purge_due")?;
+            Ok(statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// `project`'s next due time as the purger keeps it: the time, or none to take it out.
+    pub(crate) fn keep_purge_due(&self, project: &str, at_ms: Option<i64>) -> Result<()> {
+        self.write(|tx| {
+            match at_ms {
+                Some(at) => tx.execute("INSERT INTO purge_due (project, at_ms) VALUES (?1, ?2) ON CONFLICT (project) DO UPDATE SET at_ms = ?2", params![project, at])?,
+                None => tx.execute("DELETE FROM purge_due WHERE project = ?1", [project])?,
+            };
+            Ok(())
+        })
+    }
+
     /// Every project opened here, last used first.
     pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
@@ -223,6 +242,7 @@ impl Store {
                 tx.execute("INSERT INTO projects_gone (id, code, path) VALUES (?1, '', ?2)", params![format!("gone-{}", hex::encode(bytes)), path])?;
                 tx.execute("DELETE FROM projects WHERE id = ?1", [id])?;
                 tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
+                tx.execute("DELETE FROM purge_due WHERE project = ?1", [id])?;
             }
             Ok(())
         })?;
@@ -233,6 +253,20 @@ impl Store {
 
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
     pub(crate) fn project_opened(&self, id: &str, _name: &str, path: &Path, _used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
+        // Already so, as at nearly every open: read, the writer untouched (cl-1010: each open wrote it, and waited on whatever held the writer).
+        let kept = self.read(|conn| {
+            let kept = conn.query_row(
+                "SELECT code FROM projects WHERE id = ?1 AND path = ?2 AND code <> ''
+                   AND NOT EXISTS (SELECT 1 FROM projects WHERE path = ?2 AND id <> ?1)
+                   AND NOT EXISTS (SELECT 1 FROM projects_gone WHERE id = ?1 OR path = ?2)",
+                params![id, path.to_string_lossy()],
+                |row| row.get::<_, String>(0),
+            );
+            Ok(kept.optional()?)
+        })?;
+        if let Some(code) = kept.filter(|code| preferred.is_none_or(|preferred| preferred == code)) {
+            return Ok(code);
+        }
         self.write(|tx| {
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
             tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
@@ -248,6 +282,23 @@ impl Store {
     /// `review`: a key it holds that another folder's name proposes first, and none of `own` (its own name's and folder's), goes, with
     /// every key it had: true. Each other held key free here names it too.
     pub(crate) fn project_keyed(&self, id: &str, path: &Path, held: &[String], own: &[String], review: bool, mut proposed: impl Iterator<Item = String>) -> Result<(String, bool)> {
+        // Already so, as at nearly every open (one not under review): its key now is its project.db's, and each other key it keeps names
+        // it or another project here. Read, the writer untouched (cl-1010).
+        let kept = if review { None } else {
+            self.read(|conn| {
+                let Some(last) = held.last() else { return Ok(None) };
+                let ours = |key: &str, current: bool| {
+                    conn.query_row("SELECT EXISTS (SELECT 1 FROM project_keys WHERE key = ?1 AND id = ?2 AND current >= ?3)", params![key, id, current], |row| row.get::<_, bool>(0))
+                };
+                for key in held.iter().filter(|key| api::calcifer::project::key(key).as_ref() == Some(*key)) {
+                    if !ours(key, false)? && key_free(conn, id, key)? { return Ok(None); }
+                }
+                Ok(ours(last, true)?.then(|| last.clone()))
+            })?
+        };
+        if let Some(key) = kept {
+            return Ok((key, false));
+        }
         self.write(|tx| {
             let mut statement = tx.prepare("SELECT path FROM projects WHERE id <> ?1")?;
             let paths = statement.query_map([id], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -356,26 +407,6 @@ impl Store {
                 tx.execute("INSERT OR IGNORE INTO tools_off (tool) VALUES (?1)", [tool])?;
             }
             tool_list_in(tx)
-        })
-    }
-
-    /// Each tool kept as rendered on `machine`, by the weights it was said for.
-    pub(crate) fn rendered_here(&self, machine: &str) -> Result<HashMap<String, u64>> {
-        self.read(|conn| {
-            let mut statement = conn.prepare("SELECT tool, bytes FROM rendered_here WHERE machine = ?1")?;
-            let rows = statement.query_map([machine], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64)))?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
-    /// Each of `tools` kept as rendered on `machine`, for the weights it has now.
-    pub(crate) fn keep_rendered_here(&self, machine: &str, tools: &[(String, u64)]) -> Result<()> {
-        self.write(|tx| {
-            let mut statement = tx.prepare("INSERT OR REPLACE INTO rendered_here (tool, machine, bytes) VALUES (?1, ?2, ?3)")?;
-            for (tool, bytes) in tools {
-                statement.execute(params![tool, machine, *bytes as i64])?;
-            }
-            Ok(())
         })
     }
 

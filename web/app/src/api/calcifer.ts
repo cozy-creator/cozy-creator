@@ -825,7 +825,7 @@ rent?: RentFor | null,
 estimates?: Array<BoxEstimate>, };
 
 /**
- * `POST /v1/projects/{id}/fit` and `…/fit/here`: what a render of `names` on this computer (`local`) asks of it, `all` and `outdated` as
+ * `POST /v1/projects/{id}/fit`: what a render of `names` on this computer (`local`) would do poorly, `all` and `outdated` as
  * a render reads them; and how long each box named takes where a render of it would go now.
  */
 export type FitAsk = { names: Array<string>, outdated?: boolean, };
@@ -3478,11 +3478,7 @@ line: string,
 /**
  * Its weights' bytes, as its machine would load them; 0: unknown.
  */
-bytes: number,
-/**
- * Render here was said of it on this computer, for weights as big: nothing asks again.
- */
-here?: boolean, };
+bytes: number, };
 
 /**
  * Your changes to the tools, the same in every project: these packages beside what the Hub lists, and `without`, tools taken off, by a tool's `id`. Installing has nothing to do with it.

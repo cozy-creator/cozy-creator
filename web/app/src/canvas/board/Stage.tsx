@@ -9,7 +9,6 @@ import { machinesQuery, runFullQuery } from "../../api/queries"
 import { ownActivity, waitsOnOf } from "../../panels/machines/activity"
 import { useSignal, tabShown } from "../../ui/signal"
 import { theme } from "../../ui/theme"
-import { Asking } from "../Asking"
 import type { CanvasStore, ElementNode } from "../CanvasStore"
 import { carried } from "../checkpoints"
 import { NameField } from "../NameField"
@@ -42,6 +41,8 @@ export interface StageProps {
   onNodeClick(event: MouseEvent, node: ElementNode): void
   onNodeDoubleClick(event: MouseEvent, node: ElementNode): void
   onPaneClick(): void
+  /** A double click on open canvas, at `at` on the canvas. */
+  onPaneDoubleClick(event: MouseEvent, at: { x: number; y: number }): void
   onNodeContextMenu(event: MouseEvent, node: ElementNode): void
   onDragStart(event: Pointer, node: ElementNode, nodes: ElementNode[]): void
   onDrag(event: Pointer, node: ElementNode, nodes: ElementNode[]): void
@@ -70,7 +71,7 @@ export function Stage(props: StageProps) {
   const [failed, setFailed] = useState<string | null>(null)
   const [lostGraphics, setLostGraphics] = useState(false)
   const [said, setSaid] = useState("")
-  const [overlays, setOverlays] = useState<{ name: string; draft?: string; asking?: NonNullable<ReturnType<CanvasStore["get"]>>["asking"]; box: { x: number; y: number; w: number; under: number } }[]>([])
+  const [overlays, setOverlays] = useState<{ name: string; draft?: string; box: { x: number; y: number; w: number; under: number } }[]>([])
   const [cards, setCards] = useState<{ name: string; label: string; selected: boolean; cancel: boolean }[]>([])
   const focused = useSignal(store.focusedName)
   const entering = useSignal(store.focusEntering)
@@ -273,7 +274,7 @@ export function Stage(props: StageProps) {
     }
     void ready().catch((error) => { refused = error instanceof Error ? error.message : String(error); if (!stopped) setFailed(refused) })
 
-    // What the page shows outside the GPU: the name field and Asking over their boxes, and the accessible list of every card.
+    // What the page shows outside the GPU: the name field over its box, and the accessible list of every card.
     let listKey = ""
     const publishDom = () => {
       const next: typeof overlays = []
@@ -284,7 +285,7 @@ export function Stage(props: StageProps) {
         if (!view || node.data.name === focused) continue
         const body = pictureBox({ id: node.id, name: node.data.name, box: node.bounds, view, selected: Boolean(node.selected) })
         const box = { x: node.bounds.x, y: node.bounds.y, w: node.bounds.w, under: body.y + body.h - node.bounds.y }
-        if (view.draft !== undefined || (view.asking && !view.here)) next.push({ name: node.data.name, draft: view.draft, asking: view.here ? undefined : view.asking, box })
+        if (view.draft !== undefined) next.push({ name: node.data.name, draft: view.draft, box })
       }
       setOverlays((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
       const list = board.getNodes().map((node) => {
@@ -379,11 +380,10 @@ export function Stage(props: StageProps) {
   return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby={helpId}>
     {props.children}
     <div ref={world} className="canvas-world">
-      {overlays.map(({ name, draft, asking, box }) => <div key={name} className="canvas-over" style={{ left: box.x, top: box.y, width: box.w }}>
+      {overlays.map(({ name, draft, box }) => <div key={name} className="canvas-over" style={{ left: box.x, top: box.y, width: box.w }}>
         {draft !== undefined && <div className="canvas-name card"><div className="head" style={{ height: HEAD }}>
           <NameField name={name} draft={draft} onCancel={() => { if (store.get(name)?.placing) store.cancel(store.resolveName(name)); else store.patch(name, { draft: undefined }) }} />
         </div></div>}
-        {asking && <div className="rest-asking canvas-control" style={{ top: box.under + 4 }}><Asking name={name} fit={asking.fit} /></div>}
       </div>)}
     </div>
     <ul className="canvas-cards sr-only" role="listbox" aria-label="Boxes on the canvas" aria-multiselectable="true">

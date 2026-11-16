@@ -7,11 +7,14 @@
 // the Hub was seeded with is listed under what it makes. A reload finds all five where they were. Any image tool goes on any picture (Paul,
 // 11-16): SDXL, which reads none, goes on a picture with no tool and offers no reference, and the picture its words start from is struck
 // through in red, its reason on hover and in one line under them; Qwen Image 2, which reads pictures, goes on in its place and uses it. The X
-// on the tool line takes the tool off, Undo puts it back. The sidebar and SDXL's struck picture are kept at 1440×900, on paper and dark.
+// on the tool line takes the tool off, Undo puts it back. The sidebar and SDXL's struck picture are kept at 1440×900, on paper and dark; the
+// sidebar at 1920×1080 too.
 // cl-1084's Tools follow-ups (Paul, 11-16: "reference inputs are offered only by tools that can use them (a text-to-image-only tool like SDXL
 // shows none)"; "One name per model, cased right"): `<` offers only what the box's tool can use, so SDXL's list has no pictures and Qwen Image
 // 2's has; each tool is named once, as its package writes its model (MiniMax H3 Edit beside MiniMax H3, never "Minimax H3 · MiniMax H3
 // Edit"), in the Video group and on a box's tool line, kept on paper and dark; a group lists what makes something new before what edits.
+// cl-1094 (Paul, 11-16: "We also don't need the text 'tools' in the top left box. I don't think it is useful for much unfortunately, since
+// everything is a tool on this panel"): the sidebar has no heading and no "Tools" text; its name for a screen reader stays.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, observeStill, canvasCard, canvasIdle, canvasNames, canvasPoint, canvasVisible, focus, png, MP4, wav } = require('./fixtures');
@@ -45,20 +48,20 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
   };
   const shots = join(process.env.OUT, 'web', 'create');
   mkdirSync(shots, { recursive: true });
-  /** The page at 1440×900 on paper and dark, each a reload as the page's own switch keeps it, `again` putting back what's looked at, and `part`
-   *  of it cropped: kept for a person to look at (Paul, 11-12: look at your own UI). Then as it was. */
-  const look = async (what, again, part) => {
+  /** The page at each of `sizes` on paper and dark, each a reload as the page's own switch keeps it, `again` putting back what's looked at,
+   *  and `part` of it cropped: kept for a person to look at (Paul, 11-12: look at your own UI). Then as it was. */
+  const look = async (what, again, part, sizes = [[1440, 900]]) => {
     const [was, size] = [await page.evaluate(() => localStorage.getItem('cozy.theme')), page.viewportSize()];
     const theme = (chosen) => page.evaluate((one) => (one === null ? localStorage.removeItem('cozy.theme') : localStorage.setItem('cozy.theme', one)), chosen);
-    for (const one of ['paper', 'dark']) {
+    for (const one of ['paper', 'dark']) for (const [width, height] of sizes) {
       await theme(one);
-      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.setViewportSize({ width, height });
       await page.reload();
       await expect(page.locator('.stage')).toBeVisible();
       await again();
       await canvasIdle(page);
-      await page.screenshot({ path: join(shots, `${what}-1440x900-${one}.png`) });
-      await part().screenshot({ path: join(shots, `${what}-part-1440x900-${one}.png`) });
+      await page.screenshot({ path: join(shots, `${what}-${width}x${height}-${one}.png`) });
+      await part().screenshot({ path: join(shots, `${what}-part-${width}x${height}-${one}.png`) });
     }
     await theme(was);
     await page.setViewportSize(size);
@@ -102,7 +105,10 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
       await expect(category('image')).toBeEnabled();
     };
     await listedAll();
-    await look('tools', listedAll, () => palette);
+    // cl-1094: "everything is a tool on this panel", so it isn't titled Tools.
+    await expect.soft(palette.getByRole('heading'), 'no heading in the sidebar (cl-1094)').toHaveCount(0);
+    await expect.soft(palette.getByText(/^\s*tools\s*$/i), 'no "Tools" text in the sidebar (cl-1094)').toHaveCount(0);
+    await look('tools', listedAll, () => palette, [[1440, 900], [1920, 1080]]);
     // Paul, 11-16: "why do I have a video timeline tool, section, for just one node, that is a video timeline? doesn't make much sense"
     await expect.soft(palette.locator('[data-palette="nodes"]'), 'no Nodes (Paul, 11-16)').toHaveCount(0);
     const timeline = palette.locator('[data-palette="tools"] li[data-entry="timeline"]');

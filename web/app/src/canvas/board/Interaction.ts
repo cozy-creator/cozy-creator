@@ -53,7 +53,7 @@ const LOWEST = 90
 type Point = { x: number; y: number }
 type Press =
   | { kind: "card"; id: number; hit: Hit; node: ElementNode; at: Point; from: Point; nodes: ElementNode[]; drags: boolean; pans: boolean; begun: boolean }
-  | { kind: "background"; id: number; at: Point }
+  | { kind: "background"; id: number; at: Point; writing: boolean }
   | { kind: "marquee"; id: number; at: Point; from: Point; additive: Set<string> }
   | { kind: "resize"; id: number; name: string; at: Point; zoom: number; w: number; h: number; control?: ToolField; pulled?: { w: number; h: number; shape?: string } }
   | { kind: "pan"; id: number; at: Point; camera: { x: number; y: number; zoom: number } }
@@ -68,6 +68,7 @@ export function createInteraction(o: InteractionOptions): Interaction {
   /** The press under way is a finger's. */
   let finger = false
   let lastTap: { name: string; at: number; x: number; y: number } | null = null
+  let lastPaneTap: { at: number; x: number; y: number } | null = null
   const touches = new Set<number>()
 
   const native = (e: FederatedPointerEvent) => e.nativeEvent as PointerEvent
@@ -102,12 +103,13 @@ export function createInteraction(o: InteractionOptions): Interaction {
 
   const down = (e: FederatedPointerEvent) => {
     if (e.button > 1) return
+    const wasWriting = writing(document.activeElement)
     root.focus({ preventScroll: true })
     if (!press) finger = e.pointerType === "touch"
     if (e.pointerType === "touch") {
       touches.add(e.pointerId)
       // A second finger is the viewport's pinch: whatever the first began is let go.
-      if (touches.size > 1) { abandon(); lastTap = null; sync(); return }
+      if (touches.size > 1) { abandon(); lastTap = lastPaneTap = null; sync(); return }
     }
     if (press) return
     const at = client(e)
@@ -137,8 +139,9 @@ export function createInteraction(o: InteractionOptions): Interaction {
       press = { kind: "marquee", id: e.pointerId, at, from: camera.screenToWorld(at), additive: e.ctrlKey || e.metaKey ? selectedIds() : new Set() }
       capture(e)
     } else {
-      press = { kind: "background", id: e.pointerId, at }
+      press = { kind: "background", id: e.pointerId, at, writing: wasWriting }
     }
+    if (press?.kind !== "background") lastPaneTap = null
     sync()
     if (press) window.addEventListener("pointermove", move)
     if (press && press.kind !== "background") e.preventDefault()
@@ -239,7 +242,8 @@ export function createInteraction(o: InteractionOptions): Interaction {
         scene.setMarquee(null)
         break
       case "background":
-        if (moved(at, held.at) < TAP && !modified(e)) { board.select([]); props.onPaneClick() }
+        if (moved(at, held.at) < TAP && !modified(e)) { board.select([]); props.onPaneClick(); paneTap(e, at, held.writing) }
+        else lastPaneTap = null
         break
       case "card": {
         const node = board.getNode(held.node.id)
@@ -277,6 +281,23 @@ export function createInteraction(o: InteractionOptions): Interaction {
     } else lastTap = { name, at: now, x: e.clientX, y: e.clientY }
   }
 
+  /** A second tap on open canvas soon after and near the first: a double click there (Paul, 11-16: "you double-click, and it'll create a text
+   *  node"). Not where a box keeps its room (its name, its lines under it), nor the tap that leaves a field being typed in. */
+  const paneTap = (e: FederatedPointerEvent, at: Point, leftField: boolean) => {
+    const now = performance.now(), last = lastPaneTap
+    lastPaneTap = leftField ? null : { at: now, x: at.x, y: at.y }
+    if (leftField || !last || now - last.at >= DOUBLE_MS || moved(at, last) >= DOUBLE_PX) return
+    lastPaneTap = null
+    const props = o.props()
+    if (!props.active || props.disabled || locked()) return
+    const point = camera.screenToWorld(at)
+    const onBox = board.getNodes().some((node) => {
+      const box = store.boxOf(node.data.name)
+      return box && point.x >= box.x && point.x <= box.x + box.w && point.y >= box.y && point.y <= box.y + box.h
+    })
+    if (!onBox) props.onPaneDoubleClick(native(e), point)
+  }
+
   /** A box opened in place on the canvas fits itself again once its corner is let go, as the card's own corner did. */
   const refit = () => {
     const owner = store.inPlace
@@ -312,7 +333,7 @@ export function createInteraction(o: InteractionOptions): Interaction {
 
   const cancel = () => {
     abandon()
-    touches.clear(); lastTap = null; space = false
+    touches.clear(); lastTap = lastPaneTap = null; space = false
     root.style.cursor = ""
     sync()
     setHover(null)

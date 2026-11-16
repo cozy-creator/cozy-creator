@@ -40,13 +40,13 @@ step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "up
 
 # probe <i>: the probe's target run until its model's header lands; prints the lane it resolved to.
 probe() {
-  local p t m dir follower lane='' t0 run
+  local p t m follower lane='' t0 run
   p=$(jq -c --argjson i "$1" '.[$i]' <<<"$PROBES"); t=$(jq -r .target <<<"$p"); m=$(jq -r .model <<<"$p")
   local args=()
   mapfile -t args < <(jq -r '.args // [] | .[]' <<<"$p" | sed "s|{ref}|$REF|g")
-  dir=$PWD
-  if [ -n "$(jq -r '.tree // ""' <<<"$p")" ]; then dir=$PACKAGES/$(jq -r .tree <<<"$p"); t=./$t; fi
-  (cd "$dir" && cozy run -p "$RUN_PROJECT" "$t" "${args[@]}" --gpus=1 --on "$NAME") > "$OUT/run-$1.txt" 2>&1 & follower=$!
+  # A run belongs to the session's project (its working directory); local code is named by its absolute path, as `step` does.
+  if [ -n "$(jq -r '.tree // ""' <<<"$p")" ]; then t=$PACKAGES/$(jq -r .tree <<<"$p")/$t; fi
+  (cd "$RUN_PROJECT" && cozy run "$t" "${args[@]}" --gpus=1 --on "$NAME") > "$OUT/run-$1.txt" 2>&1 & follower=$!
   t0=$(date +%s)
   while [ -z "$lane" ] && [ $(($(date +%s) - t0)) -lt 1200 ]; do
     sleep 5

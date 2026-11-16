@@ -167,6 +167,7 @@ pub(super) async fn copy(
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
     let folder = &project.folder;
+    let buried = std::cell::Cell::new(false);
     let copied = folder.act(|| {
         let written = folder.written()?;
         let mut taken = written.names();
@@ -190,8 +191,10 @@ pub(super) async fn copy(
             for (from, name, _) in &pairs {
                 let Some(held) = lock.asset(from).cloned() else { continue };
                 let key = name_key(name);
-                // What waits under its name for a rename or `reclaim` stays an orphan's.
-                lock.bury(&key);
+                // What waits under its name for a rename or `reclaim` stays an orphan's, its files purged when its window ends.
+                if lock.bury(&key) {
+                    buried.set(true);
+                }
                 let versions = held.versions.into_iter().map(|version| folder::Version { id: String::new(), ..version }).collect();
                 lock.assets.insert(key, folder::Asset { id: String::new(), name: name.clone(), versions, discarded: vec![], tried: None, failed: None, ..held });
             }
@@ -206,6 +209,9 @@ pub(super) async fn copy(
         Ok(copied)
     });
     let copied = copied.map_err(Refusal)?;
+    if buried.get() {
+        super::purge::deleted(&id, super::now_ms() + super::purge::window_ms());
+    }
     for reading in project.walker.lock().expect("walker lock").readings.values_mut() {
         copied.made.iter().for_each(|made| reading.moved(&made.name));
     }
@@ -572,7 +578,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
     let gone = gone.map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&gone.name));
     project.asked.notify_one();
-    super::purge::due(&project.id, super::now_ms() + super::purge::window_ms());
+    super::purge::deleted(&project.id, super::now_ms() + super::purge::window_ms());
     Ok(gone)
 }
 

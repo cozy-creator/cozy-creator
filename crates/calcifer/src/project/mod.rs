@@ -100,10 +100,13 @@ pub(crate) use thumbs::previews;
 
 /// The projects this Calcifer knows: those open now, by id, which each keeps in its `project.db` (cl-819). Every one it opened is
 /// in `state.db`'s `projects`, by id, with its name and where it last was. A project is open while anything reads it: a call, a
-/// stream, its walk (which goes until nothing is owed), a page showing it. The last of them to let go closes it (cl-823).
+/// stream, its walk (which goes until nothing is owed), a page showing it, and a plaintext one `LINGER` after a request. The last of them
+/// to let go closes it (cl-823).
 #[derive(Default)]
 pub(crate) struct Projects {
     open: Mutex<HashMap<String, Weak<Project>>>,
+    /// Plaintext projects a request used, held until `LINGER` after the last, by id, with their project.db's file as it was then.
+    lingering: Mutex<HashMap<String, Lingering>>,
     /// What was last heard of each published package projects name, by `with`.
     heard: Mutex<HashMap<String, Heard>>,
     /// How many times that changed: what a read said of them is good until then.
@@ -150,6 +153,8 @@ pub(crate) struct Project {
     /// Cache ownership follows the physical mount, not a replaceable viewer authorization.
     mount_id: Option<vault::MountIdentity>,
     folder: Folder,
+    /// Which file its project.db was as it opened (`db_file`): another there is another project's, or a restored copy, never this one.
+    db_file: Option<(u64, u64)>,
     /// What its files say, as last read.
     model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
     /// What streams were last told of it.
@@ -227,7 +232,6 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/runs/{run}/play", get(crate::play::play))
         .route("/v1/projects/{id}/runs/{run}/preview", get(crate::previews::serve))
         .route("/v1/projects/{id}/fit", post(fit::fit))
-        .route("/v1/projects/{id}/fit/here", post(fit::here))
         .route("/v1/projects/{id}/benchmarks", get(benchmarks::benchmarks))
         .route("/v1/projects/{id}/cancel", post(cancel))
         .route("/v1/projects/{id}/approve", post(approve))
@@ -310,8 +314,14 @@ impl Projects {
     }
 
     /// The project a route's `{id}` names (`api::calcifer::project::NAMED_BY`): its id, public code or name, or its folder on this computer. Open,
-    /// else opened from the index. It stays open while the answer is held.
+    /// else opened from the index. It stays open while the answer is held, and a plaintext one `LINGER` after.
     fn get(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
+        let project = self.found(api, named)?;
+        self.linger(api, &project);
+        Ok(project)
+    }
+
+    fn found(&self, api: &Arc<Api>, named: &str) -> Result<Arc<Project>, Refusal> {
         if let Some(project) = self.open_now(named) {
             return Ok(project);
         }
@@ -329,6 +339,54 @@ impl Projects {
         Ok(project)
     }
 
+    /// A project lingering in `dir` whose project.db isn't the file it was (its folder deleted and made again), let go: what opens there
+    /// now reads the new file, never the old one's connections and document a lingering project would keep shared.
+    fn let_go_replaced(&self, dir: &FsPath) {
+        let now = db_file(dir);
+        let mut lingering = self.lingering.lock().expect("lingering lock");
+        let stale: Vec<String> = lingering.iter().filter(|(_, held)| held.project.folder.dir == dir && held.project.db_file != now).map(|(id, _)| id.clone()).collect();
+        let gone: Vec<Lingering> = stale.iter().filter_map(|id| lingering.remove(id)).collect();
+        drop(lingering);
+        drop(gone);
+    }
+
+    /// Every project held after its last request let go, its connections closed and its WAL emptied first: Calcifer stops.
+    pub(crate) fn close_lingering(&self) {
+        let lingering: Vec<Lingering> = self.lingering.lock().expect("lingering lock").drain().map(|(_, held)| held).collect();
+        for held in lingering {
+            if let Err(error) = held.project.folder.close_connections(true) {
+                warn!(code = %error.code, "a project held after its request didn't close as Calcifer stopped");
+            }
+        }
+    }
+
+    /// `project`, a plaintext one a request used, held open until `LINGER` after this, its last use: one task a project lets it go.
+    fn linger(&self, api: &Arc<Api>, project: &Arc<Project>) {
+        if vault::encrypted(&project.root) {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let held = Lingering { project: project.clone(), until: Instant::now() + LINGER };
+        let fresh = self.lingering.lock().expect("lingering lock").insert(project.id.clone(), held).is_none();
+        if !fresh {
+            return;
+        }
+        let (api, id) = (api.clone(), project.id.clone());
+        runtime.spawn(async move {
+            loop {
+                let Some(until) = api.projects.lingering.lock().expect("lingering lock").get(&id).map(|held| held.until) else { return };
+                tokio::time::sleep_until(until.into()).await;
+                let mut lingering = api.projects.lingering.lock().expect("lingering lock");
+                if lingering.get(&id).is_some_and(|held| held.until <= Instant::now()) {
+                    let gone = lingering.remove(&id);
+                    drop(lingering);
+                    drop(gone);
+                    return;
+                }
+            }
+        });
+    }
+
     /// Project `id` held open by a stream that shows it, until the stream lets it go.
     pub(crate) fn reader(&self, api: &Arc<Api>, id: &str) -> Result<Reader, Refusal> {
         self.get(api, id).map(Reader)
@@ -341,6 +399,7 @@ impl Projects {
         let mount_id = vault::mount_identity(&root);
         let physical = current_view(&root)?;
         let dir = physical.as_path();
+        self.let_go_replaced(dir);
         let (folder, Identified { id, name, code, key }) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
             let identified = identify_loaded(api, dir, folder)?;
             let id = &identified.id;
@@ -360,8 +419,9 @@ impl Projects {
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
+        let file = db_file(dir);
         let project = match open.get(&id).and_then(Weak::upgrade)
-            .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir) {
+            .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir && project.db_file == file) {
             Some(project) => {
                 *project.key.lock().expect("key lock") = key;
                 project
@@ -376,6 +436,7 @@ impl Projects {
                     root,
                     mount_id,
                     folder,
+                    db_file: file,
                     jobs: Jobs::new(id.clone()),
                     model: tokio::sync::Mutex::default(),
                     told: Mutex::default(),
@@ -404,8 +465,8 @@ impl Projects {
         drop(open);
         // Calcifer finds its journal while anything holds it open.
         api.calcifer.note_open(RunOwner::of(&project, &api.calcifer));
-        // Its deleted boxes looked at as it opens: one set aside before cl-919 counts from now.
-        purge::due(&project.id, now_ms());
+        // Its deleted boxes looked at as it opens, if it has any.
+        purge::opened(&project.id, &project.folder);
         // What the legacy cut held for it in this computer's TensorFS store, copied in now it can be read (cl-1003).
         if crate::store::kept_path(&api.machines.hubs.home().calcifer(), &project.root).exists() {
             match keep_left_on_local(&project.root, &api.machines.hubs.home().calcifer()) {
@@ -433,6 +494,31 @@ impl Projects {
 const CANCELED: &str = "version_canceled";
 /// How long what was heard of a package stands before a read asks again, in the background.
 const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// How long a plaintext project a request opened stays open after it: asked again meanwhile (a page's next read, a client's next
+/// call), it isn't loaded again (cl-1010: each run list of a 3,000-box project loaded its whole document, 50–60 ms, 200 four at once).
+/// An encrypted one closes with its request, as every project did.
+const LINGER: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A project held open after a request (`Projects::linger`).
+struct Lingering {
+    project: Arc<Project>,
+    until: Instant,
+}
+
+/// Which file `dir`'s project.db is: its device and inode. Elsewhere none: Windows can't delete a database a process has open.
+fn db_file(dir: &FsPath) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(dir.join("project.db")).ok().map(|meta| (meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
+}
 
 /// Where a run of the project in `dir` lands its outputs.
 pub(crate) fn landing(dir: &FsPath) -> PathBuf {
@@ -1493,7 +1579,7 @@ fn current_view(root: &FsPath) -> Result<PathBuf, Error> {
 impl Project {
     /// Old references are bound to their original physical view, never a recycled drive.
     fn require_view(&self) -> Result<(), Error> {
-        if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir {
+        if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir || db_file(&self.folder.dir) != self.db_file {
             return Err(Error::new(Kind::Conflict, "project_view_changed", "This project's folder changed while it was open. Open the project again."));
         }
         Ok(())
@@ -1649,11 +1735,40 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     Ok(if open.unencrypted { response } else { vault::private(response) })
 }
 
-/// What's said of a project folder other accounts on this computer may open: one line, and what to do.
+/// A project folder other accounts on this computer may open, shut to them (fix, don't warn; cl-1066): what's said only when that
+/// fails, in one line. On Windows, where an access list reaches into all the folder holds, it's done once per folder on a thread of its
+/// own, off this read's path; a failure is said at the next read.
 pub(crate) fn loosened(dir: &FsPath) -> Option<String> {
-    platform::durable::others_may_open(dir).ok()?.then(|| {
-        format!("Other accounts on this computer can open {}. To keep it private, give only your account access to it.", dir.display())
-    })
+    if !platform::durable::open_to_others(dir).ok()? {
+        return None;
+    }
+    let said = |e: &dyn std::fmt::Display| format!("Other accounts on this computer can open {}, and Cozy couldn't shut them out: {e}", dir.display());
+    if !cfg!(windows) {
+        return platform::durable::shut_to_others(dir).err().map(|e| said(&e));
+    }
+    // A folder being shut: None; one that couldn't be: why, said once, then tried again. One shut leaves, so it's shut again if reopened.
+    static SHUTTING: std::sync::LazyLock<Mutex<HashMap<PathBuf, Option<String>>>> = std::sync::LazyLock::new(Mutex::default);
+    let mut shutting = SHUTTING.lock().expect("shutting lock");
+    match shutting.get(dir) {
+        Some(None) => return None,
+        Some(Some(e)) => {
+            let line = said(e);
+            shutting.remove(dir);
+            return Some(line);
+        }
+        None => {}
+    }
+    shutting.insert(dir.to_owned(), None);
+    let dir = dir.to_owned();
+    std::thread::spawn(move || {
+        let done = platform::durable::shut_to_others(&dir).err().map(|e| e.to_string());
+        let mut shutting = SHUTTING.lock().expect("shutting lock");
+        match done {
+            Some(e) => shutting.insert(dir, Some(e)),
+            None => shutting.remove(&dir),
+        };
+    });
+    None
 }
 
 /// A folder that can't be made, in a person's words: no permission there, or why not.
@@ -2944,7 +3059,7 @@ async fn render(api: &Arc<Api>, id: &str, mut asked: Runs) -> Result<Asked, Refu
     }))
     .map_err(Refusal)?;
     if lost.get() {
-        purge::due(&project.id, now_ms() + purge::window_ms());
+        purge::deleted(&project.id, now_ms() + purge::window_ms());
     }
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);
@@ -3900,7 +4015,7 @@ impl Walk {
             return on.iter().filter(|on| !matches!(on, On::Machine(name) if api.machines.gone(name).is_some())).cloned().collect();
         }
         // The set a render naming none takes, under this project's storage policy. `any` alone is a rental, which never comes uninvited.
-        let automatic = crate::private_io::check_project_placement(&self.project.id, &self.project.root, &api.machines.automatic()).unwrap_or_default();
+        let automatic = crate::private_io::check_project_placement(&self.project.id, &self.project.root, &api.machines.fallback()).unwrap_or_default();
         if self.fell_back.lock().expect("fell back lock").insert(ask.to_owned()) {
             let set = automatic.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
             let gone: Vec<&str> = gone.iter().map(|said| inner(said)).collect();
@@ -4673,7 +4788,11 @@ impl Walk {
         let placed = self.project.walker.lock().expect("walker lock").placed.get(job).cloned();
         let planned = placed.as_ref().map(|placed| placed.soonest.clone()).filter(|offer| on.contains(&offer.machine));
         let offers: Vec<Offer> = placed.map(|placed| placed.offers).unwrap_or_default().into_iter().filter(|offer| on.contains(&offer.machine)).collect();
-        pick(&self.host.api(), on, &offers, planned.as_ref(), hub, Some(package), &renderer.function, &asset.made).await
+        let (chosen, offer, said) = pick(&self.host.api(), on, &offers, planned.as_ref(), hub, Some(package), &renderer.function, &asset.made).await?;
+        if let Some(message) = said {
+            self.say(Told::Warning { message, name: Some(asset.name.clone()) });
+        }
+        Ok((chosen, offer))
     }
 
     /// Takes in what was asked since: said once, and what can't be read ends there.
@@ -5620,10 +5739,9 @@ impl Walk {
             }
             _ => soonest,
         };
-        // Sent here alone, as `cozy render --on local`, which asks nothing: said as a box asks it, unless Render here was said (cl-897).
+        // Sent here alone, which asks nothing (cl-1066): said once, as the box's render goes (cl-897).
         if placed.is_local() && on.len() == 1 {
-            let tool = asset.tool.clone().unwrap_or_else(|| asset.target.clone());
-            if let Some(line) = fit::told_here(&self.host.api(), &hub, package, &renderer.function, &asset.made, &tool) {
+            if let Some(line) = fit::told_here(&self.host.api(), &hub, package, &renderer.function, &asset.made) {
                 self.say(Told::Said { message: format!("{name}: {line}"), name: Some(name.clone()) });
             }
         }
@@ -6527,12 +6645,13 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
 /// Of `on`, where a job goes (cl-816): the soonest finish its machines quoted (`offers`), a rental before this computer on a tie, and not
 /// this computer when it would run `function` poorly (`fit`) and no quote of its own runs says it ends it first (Paul, 11-05: a rented
 /// GPU is for using), nor when its GPU draws the screen, which a render makes lag (cl-897). With no quote that fits, the first of `on`
-/// that can take it (`placement::takes`).
+/// that can take it, else where a job naming none goes, said (`placement::takes`).
 #[allow(clippy::too_many_arguments)]
-async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offer>, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>), Error> {
+async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offer>, hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>, Option<String>), Error> {
     let now = now_ms();
     let Some(soonest) = planned.filter(|offer| offer.fits).or_else(|| placement::soonest(offers, now)) else {
-        return Ok((placement::takes(api, on, offers).await?, None));
+        let (taken, said) = placement::takes(api, on, offers).await?;
+        return Ok((taken, None, said));
     };
     let poorly = soonest.machine.is_local()
         && (fit::draws_screen(api) || (soonest.basis != v1::Basis::Measured && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made))));
@@ -6541,13 +6660,13 @@ async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], planned: Option<&Offe
         true => placement::soonest(&others, now).unwrap_or(soonest),
         false => soonest,
     };
-    Ok((chosen.machine.clone(), Some(chosen.clone())))
+    Ok((chosen.machine.clone(), Some(chosen.clone()), None))
 }
 
 /// Where `cozy run` of `function` goes among `set` (Paul, 11-06): as a render's job does (`pick`), each machine asked once, for `count`
 /// copies of it as if sent at once. Also each copy's offers, and a line for each machine that didn't answer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<On, Error>, Vec<Vec<Offer>>, Vec<String>) {
+pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str, release: &str, function: &str, size: v1::JobSize, gpus: u32, gpu: bool, count: u32, update: bool) -> (Result<(On, Option<String>), Error>, Vec<Vec<Offer>>, Vec<String>) {
     let host = Host::new(api);
     let read = host.published(hub, &format!("{package}@{release}"), set.first()).await.ok();
     let fetched = match &read {
@@ -6560,16 +6679,18 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
     let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, hub, read.as_ref(), function, &Map::new()).await;
-    (chosen.map(|(chosen, _)| chosen), offers, said)
+    (chosen.map(|(chosen, _, fell_back)| (chosen, fell_back)), offers, said)
 }
 
 /// The machines the project `named` pins its runs to (cl-873), those that ended left out (cl-920); none: wherever they finish soonest.
-/// With every one of them gone now (ending, or offline by its Hub's word), wherever they finish soonest too.
+/// With every one of them gone now (ending, or offline by its Hub's word), this computer and this account's rentals: never an added
+/// machine the project didn't name (cl-1066).
 pub(crate) fn machines_of(api: &Arc<Api>, named: &str) -> Result<Vec<On>, Error> {
     let project = api.projects.get(api, named).map_err(|Refusal(e)| e)?;
     let pinned = chosen(api, &project.folder);
     match pinned.iter().all(|name| api.machines.gone(name).is_some()) {
-        true => Ok(vec![]),
+        true if pinned.is_empty() => Ok(vec![]),
+        true => Ok(api.machines.fallback()),
         false => Ok(pinned.into_iter().map(On::Machine).collect()),
     }
 }

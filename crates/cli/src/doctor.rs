@@ -159,7 +159,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     Ok(code)
 }
 
-/// Each project folder other accounts on this computer may open, a line each: Calcifer makes them its account's alone.
+/// Each project folder accounts outside its owner's (and their group) may open, shut to them; a line only for one that couldn't be.
 async fn folders(ctx: &Context) -> Vec<Check> {
     let Ok(client) = ctx.calcifer().await else { return vec![] };
     let Ok(listed) = client.get::<api::calcifer::project::Projects>("/v1/projects?limit=1000").await else { return vec![] };
@@ -175,12 +175,11 @@ async fn folders(ctx: &Context) -> Vec<Check> {
              unlocked since loses its old files kept on this computer too)",
             crate::output::bytes(cut.held_bytes), cut.held_projects, cut.kept.display())));
     }
-    let loosened = listed.projects.into_iter().filter(|project| platform::durable::others_may_open(&project.path).unwrap_or(false));
-    loosened.map(|project| {
-        let path = project.path.display();
-        let fix = if cfg!(windows) { "give only your account access to it".to_owned() } else { format!("chmod 700 {path}") };
+    let loosened = listed.projects.into_iter().filter(|project| platform::durable::open_to_others(&project.path).unwrap_or(false));
+    loosened.filter_map(|project| {
+        let e = platform::durable::shut_to_others(&project.path).err()?;
         // A warning: the project still opens, as it did.
-        Check::ok("project folder", format!("warning: other accounts on this computer can open {path}: {fix}"))
+        Some(Check::ok("project folder", format!("warning: other accounts on this computer can open {}, and it couldn't be shut to them: {e}", project.path.display())))
     }).chain(lost).collect()
 }
 

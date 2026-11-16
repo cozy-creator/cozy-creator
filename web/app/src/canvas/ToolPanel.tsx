@@ -78,7 +78,6 @@ export function ToolPanel({ project, machine, waiting, shut, setShut }: { projec
       <div className="tool-shelf">
         <div ref={list} className={`tool-groups ${isPlaceholderData ? "stale" : ""}`}>
           <section data-palette="tools">
-            <h4>Tools</h4>
             {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
             <ul>{entries.map((entry) => <ToolGroup key={entry.key} entry={entry} open={open === entry.key} toggle={() => setOpen(open === entry.key ? null : entry.key)} />)}</ul>
             {data?.note && <p className="muted">{data.note}</p>}

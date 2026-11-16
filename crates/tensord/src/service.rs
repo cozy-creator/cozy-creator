@@ -494,9 +494,24 @@ impl Service {
                 0 => format!("{} free", size(now)),
                 below => format!("the disk is {} short of the space Cozy keeps free", size(below)),
             };
+            // What keeps the rest, largest first: the models in use and who holds them.
+            let me = std::process::id();
+            let who = |pid: u32| match pid {
+                0 => "a local model or a model file saved on this machine".to_owned(),
+                pid if pid == me => "this machine's queued or running renders".to_owned(),
+                pid => format!("process {pid}"),
+            };
+            let mut held: Vec<(u64, String)> = (room.lanes.iter().filter(|lane| !lane.holders.iter().all(|pid| idle.contains(pid))))
+                .map(|lane| (room.freed(|l| std::ptr::eq(l, lane)).saturating_sub(room.spare), lane))
+                .filter(|(bytes, _)| *bytes > 0)
+                .map(|(bytes, lane)| (bytes, format!("{} ({}, held by {})", lane.name, size(bytes), lane.holders.iter().map(|&pid| who(pid)).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", "))))
+                .collect();
+            held.sort_by(|a, b| b.0.cmp(&a.0));
+            let held: Vec<String> = held.into_iter().take(3).map(|(_, said)| said).collect();
+            let in_use = if held.is_empty() { String::new() } else { format!(" Still in use: {}.", held.join("; ")) };
             return Err(format!(
                 "machine_disk_full: This machine's disk doesn't have room for this render's models. They need {} more, and Cozy can free only {} \
-                 ({past}, plus {} in models nothing queued or running needs).{}",
+                 ({past}, plus {} in models nothing queued or running needs).{in_use}{}",
                 size(missing), size((now + evictable).saturating_sub(below)), size(evictable), crate::reclaim::advice(store.root(), missing)
             ));
         }

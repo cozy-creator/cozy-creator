@@ -1340,10 +1340,10 @@ impl Machines {
         }
     }
 
-    /// Releases the rental at its Hub, then reads it until the Hub says it ended. Only a Hub that
-    /// does not answer is asked again: a Hub that does not know the rental proves nothing
-    /// (`release_unconfirmed`), and one that refuses the release or this computer's sign-in ended
-    /// nothing. Either fails the ask, and the machine stays, showing why (`end_failed`).
+    /// Releases the rental at its Hub, then reads it until the Hub says it ended. A Hub that does not answer is asked again. One
+    /// that does not know the rental and doesn't list it among the account's live rentals either: it's forgotten here. Else that
+    /// proves nothing (`release_unconfirmed`), and one that refuses the release or this computer's sign-in ended nothing: either fails
+    /// the ask, and the machine stays, showing why (`end_failed`), asked again on its backoff.
     async fn finish_end(self: Arc<Self>, ask: Ask) {
         if let Some(name) = &ask.machine {
             self.outputs_landed(&ask.key, name).await;
@@ -1415,11 +1415,18 @@ impl Machines {
                     // Released, or released already (a conflict): its end is read below.
                     Ok(()) => released = Some(tokio::time::Instant::now()),
                     Err(e) if e.kind == Kind::Conflict => released = Some(tokio::time::Instant::now()),
+                    // A Hub that doesn't know it: forgotten here, said once on its machine (cl-1066), only when the account's own live
+                    // rentals, read now, don't list it either. A 404 alone (a deploy, another account signed in) may yet bill: the end
+                    // fails as before and is asked again on its long backoff.
                     Err(e) if e.kind == Kind::NotFound => {
-                        return settle(Err(format!(
-                            "the Hub at {} has no rental {id}, so nothing was ended",
-                            ask.hub
-                        )));
+                        let listed = client.list_rentals("live").await.map(|listing| listing.rentals.iter().any(|rental| rental.rental_id == id));
+                        if let Ok(false) = listed {
+                            if let Some(name) = &ask.machine {
+                                self.ended(name, &format!("The Hub at {} has no rental {id}, so it is forgotten here.", ask.hub));
+                            }
+                            return settle(Ok(()));
+                        }
+                        return settle(Err(format!("the Hub at {} has no rental {id}, so nothing was ended", ask.hub)));
                     }
                     Err(e) if e.kind == Kind::Unavailable => {
                         warn!(rental = id, "releasing it: {e}");

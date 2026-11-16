@@ -122,6 +122,7 @@ class Component[R](TypedDict, total=False):
     folders: dict[str, str]
     rows: Required[list[R]]
     keep: list[R]
+    modules_to_save: list[str]
 
 
 class Lora(TypedDict):
@@ -1126,7 +1127,7 @@ def native_rows(census: dict[str, tuple[int, int]], rules: list[Rule], reference
 
 
 def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow], vectors: dict[str, bool],
-             extra: list[Component[LoraRow]] | None = None) -> Table[LoraRow]:
+             extra: list[Component[LoraRow]] | None = None, saved: tuple[str, ...] = ()) -> Table[LoraRow]:
     """LoRA factors onto every linear of a Diffusers DiT, in each spelling a published loader reads: Diffusers'
     names under `transformer.` (Diffusers' `save_lora_weights`, SimpleTuner), `diffusion_model.` or bare
     (ComfyUI, DiffSynth-Studio), `base_model.model.` (PEFT), and kohya's flattened `lora_unet_` and `lycoris_`,
@@ -1134,7 +1135,9 @@ def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow],
     AI-Toolkit) and flattened under `lora_unet_` (kohya), a fused module's B rows split among its targets. Each
     banked LoRA `vectors[path]` is one this table claims, every factor at its row's shape, or (False) one it
     leaves unclaimed: more than half its keys are no module's. A DoRA's magnitudes are read as its B's rows are.
-    `extra` adapt another component of the family (Anima's LLM adapter), each row one of its linears."""
+    `extra` adapt another component of the family (Anima's LLM adapter), each row one of its linears. `saved` are whole
+    modules an adapter may carry beside its factors (PEFT's `modules_to_save`), their keys as they are, in every spelling
+    but kohya's flattened ones."""
     census = family_linears(family)
 
     def spelled(d: str) -> list[str]:
@@ -1153,6 +1156,9 @@ def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow],
     components: list[Component[LoraRow]] = [{"name": "transformer", "prefix": prefix, "rows": rows} for prefix, rows in spellings.items()]
     if keep:
         components[-1]["keep"] = keep
+    for c in components:
+        if saved and c["prefix"] not in ("lora_unet_", "lycoris_"):
+            c["modules_to_save"] = list(saved)
     components += extra or []
     stem: str | None
     for c in components:
@@ -1170,6 +1176,9 @@ def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow],
             c = max((c for c in components if key.startswith(c["prefix"])), key=lambda c: len(c["prefix"]))
             local = key[len(c["prefix"]):]
             if any(local == r[1] and ("io" not in r[2] or tuple(shape[1:]) == tuple(r[2]["io"][::-1])) for r in c.get("keep", [])):
+                known += 1
+                continue
+            if any(local.startswith(f"{m}.") for m in c.get("modules_to_save", [])):
                 known += 1
                 continue
             spelling = (("a", DIT_A), ("b", DIT_B), ("m", MAGNITUDE), ("alpha", (".alpha",)))
@@ -1288,6 +1297,10 @@ LTX25 = VECTORS / "ltx-2.5-headers" / "lightricks-ltx-2.5-0.1.0-bf16.inspect.jso
 LTX23_LORAS = VECTORS / "ltx-2.3-lora-headers"
 #: Lightricks' distilled LoRA adapts every linear of the DiT: its keys are each one's native name.
 LTX23_DISTILLED = "ltx-2.3-22b-distilled-lora-384-1.1"
+#: Modules an LTX adapter adds and carries whole: LiconStudio's Multiple-Subject Reference's slot embedding per modality
+#: (a Fourier MLP from a reference's slot number to a token offset; liconstudio/ComfyUI-LTX2.5-MSR nodes.py
+#: `_slot_embedding`).
+LTX2_SAVED = ("reference_slot_embedding", "reference_audio_slot_embedding")
 
 
 class InspectedTensor(TypedDict):
@@ -1308,7 +1321,8 @@ def ltx2_lora() -> Table[LoraRow]:
     (`patchify_proj` to `proj_in`, `adaln_single.` to `time_embed.`, the `av_ca_*` and `prompt_adaln_single` modulations), each
     native name read from Lightricks' distilled LoRA, which adapts every linear. LTX-2.3's linears are 2.5's, so its LoRAs
     (Lightricks' IC-LoRAs, the community's) are read too; Diffusers' names as `dit_lora` spells them. No published LoRA adapts
-    the text connectors (`text_embedding_projection.`), which `connectors` would take."""
+    the text connectors (`text_embedding_projection.`), which `connectors` would take. LiconStudio's MSR carries its
+    reference-slot embeddings whole (`LTX2_SAVED`), modules the DiT has not."""
     census = family_linears("ltx-2-5")
     components: list[InspectedComponent] = json.loads(LTX25.read_text())["components"]
     (held,) = [c for c in components if c["name"] == "transformer"]
@@ -1336,7 +1350,9 @@ def ltx2_lora() -> Table[LoraRow]:
     vectors = {f"ltx-2.3-lora-headers/{v}.safetensors.header": True for v in (
         "ltx-2.3-22b-ic-lora-union-control-ref0.5", "ltx-2.3-22b-ic-lora-motion-track-control-ref0.5", LTX23_DISTILLED,
         "Claymation", "ltx2.3_audio_reactive_lora_v2")}
-    return dit_lora("ltx2.lora", "ltx-2-5", native, [], vectors)
+    vectors["ltx-2.5-lora-headers/LTX-2.5-Licon-MSR-V2.safetensors.header"] = True
+    assert not any(k.startswith(f"{m}.") for m in LTX2_SAVED for k in model.state_dict()), "the DiT has a slot embedding"
+    return dit_lora("ltx2.lora", "ltx-2-5", native, [], vectors, saved=LTX2_SAVED)
 
 
 # ------------------------------------------------------------------ SeedVR2
