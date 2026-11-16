@@ -160,6 +160,9 @@ pub mod path {
     pub const STATUS: &str = "/v1/status";
     /// `POST`: renews a rental's idle deadline; answers the frame.
     pub const KEEPALIVE: &str = "/v1/keepalive";
+    /// `POST` by this computer's controller: a project whose folder is gone (cl-1031). Every record of it here goes, as a lock's
+    /// does: 204 once nothing of it is here, 409 while a folder it ran in still holds it or its runs are active.
+    pub const PROJECT_GONE: &str = "/v1/project-gone/{project_id}";
     /// `POST` a [`super::RunRequest`] of [`super::RunKind::Update`], the one request a controller of
     /// another release sends; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";

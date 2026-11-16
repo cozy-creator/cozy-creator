@@ -760,6 +760,7 @@ case $SHARD in
     vault_times
     vault_queue
     shared_scratch
+    project_traces
     open_unlocks
     projectvault
     vault_leftovers

@@ -89,6 +89,13 @@ paths:
         '409':
           description: This machine has no idle deadline
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+  /v1/project-gone/{project_id}:
+    post:
+      summary: A project whose folder is gone (cl-1031). Every record of it here goes, as a lock's does; its active runs are canceled, and it goes as the last settles.
+      description: This computer's controller only (the machine capability), on the local machine. Refused while a folder it ran in still holds it.
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {type: string}}
+      responses: {'204': {description: Nothing of it is here, or its last runs take it with them}, '403': {description: Not this computer's controller}, '409': {description: A folder it ran in still holds it}}
   /v1/logs/{name}:
     get:
       summary: >-

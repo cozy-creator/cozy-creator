@@ -871,6 +871,20 @@ impl Journal {
             let rows = statement.query_map([project_id], |row| row.get(0)).map_err(db_error)?;
             rows.collect::<Result<_, _>>().map_err(db_error)?
         };
+        // The digests its runs and signers named: their uses go too (cl-1031), where nothing else names them.
+        let mut digests = std::collections::BTreeSet::new();
+        for id in &ids {
+            let (invocation, record): (String, String) = tx.query_row("SELECT invocation,record FROM executions WHERE id=?1", [id], |row| Ok((row.get(0)?, row.get(1)?))).map_err(db_error)?;
+            for text in [invocation, record] {
+                if let Ok(value) = serde_json::from_str::<Value>(&text) { named_digests(&value, &mut digests); }
+            }
+            let mut statement = tx.prepare("SELECT sha256 FROM run_objects WHERE execution=?1").map_err(db_error)?;
+            for row in statement.query_map([id], |row| row.get::<_, String>(0)).map_err(db_error)? { digests.insert(row.map_err(db_error)?); }
+        }
+        {
+            let mut statement = tx.prepare("SELECT sha256 FROM objects WHERE substr(actor,1,length(?1))=?1").map_err(db_error)?;
+            for row in statement.query_map([&prefix], |row| row.get::<_, String>(0)).map_err(db_error)? { digests.insert(row.map_err(db_error)?); }
+        }
         for id in ids {
             delete_execution(&tx, id)?;
         }
@@ -878,10 +892,27 @@ impl Journal {
             ("held_names", "name"), ("objects", "actor"), ("held_memos", "actor"), ("held_memo_objects", "actor"), ("update_run_ids", "actor")] {
             tx.execute(&format!("DELETE FROM {table} WHERE substr({column},1,length(?1))=?1"), [&prefix]).map_err(db_error)?;
         }
+        for sha256 in &digests {
+            tx.execute("DELETE FROM object_uses WHERE sha256=?1 AND NOT EXISTS(SELECT 1 FROM run_objects WHERE sha256=?1)
+                AND NOT EXISTS(SELECT 1 FROM objects WHERE sha256=?1) AND NOT EXISTS(SELECT 1 FROM held_memo_objects WHERE sha256=?1)", [sha256]).map_err(db_error)?;
+        }
         tx.commit().map_err(db_error)?;
         let secure: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM machine_metadata WHERE key='secure_delete')", [], |row| row.get(0)).map_err(db_error)?;
         if secure { self.truncate_wal() } else { self.compact() }
         Ok(())
+    }
+
+    /// Every project with runs journaled here, and the folders it ran in (its views' roots).
+    pub(crate) fn project_roots(&self) -> io::Result<std::collections::BTreeMap<String, std::collections::BTreeSet<std::path::PathBuf>>> {
+        let mut statement = self.connection.prepare("SELECT DISTINCT json_extract(invocation,'$.local_private.project_id'), json_extract(invocation,'$.local_private.view_root')
+            FROM executions WHERE json_extract(invocation,'$.local_private.project_id') IS NOT NULL").map_err(db_error)?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))).map_err(db_error)?;
+        let mut projects: std::collections::BTreeMap<String, std::collections::BTreeSet<std::path::PathBuf>> = Default::default();
+        for row in rows {
+            let (project, root) = row.map_err(db_error)?;
+            projects.entry(project).or_default().extend(root.map(std::path::PathBuf::from));
+        }
+        Ok(projects)
     }
 
     /// Whether execution `id` is still journaled here.
@@ -907,18 +938,11 @@ impl Journal {
                 for input in &execution.invocation.inputs {
                     named.insert(input.digest.strip_prefix("sha256:").unwrap_or(&input.digest).to_owned(), input.length);
                 }
-                fn digests(value: &Value, found: &mut std::collections::BTreeMap<String, u64>) {
-                    match value {
-                        Value::String(text) => {
-                            let hex = text.strip_prefix("sha256:").unwrap_or(text);
-                            if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) { found.entry(hex.to_ascii_lowercase()).or_insert(0); }
-                        }
-                        Value::Array(items) => items.iter().for_each(|item| digests(item, found)),
-                        Value::Object(fields) => fields.values().for_each(|item| digests(item, found)),
-                        _ => {}
-                    }
+                if let Ok(value) = serde_json::to_value(&execution) {
+                    let mut found = std::collections::BTreeSet::new();
+                    named_digests(&value, &mut found);
+                    for digest in found { named.entry(digest).or_insert(0); }
                 }
-                if let Ok(value) = serde_json::to_value(&execution) { digests(&value, &mut named); }
                 for (sha256, length) in named {
                     let others: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM run_objects WHERE sha256=?1 AND execution<>?2)", params![sha256, id], |row| row.get(0)).map_err(db_error)?;
                     if !others && sha256.len() == 64 && !objects.iter().any(|held| held.sha256 == sha256) {
@@ -971,6 +995,13 @@ impl Journal {
     /// Public scheduler metadata only: locking does not need to deserialize private requests.
     pub(crate) fn private_descriptor(&self, id: &str) -> io::Result<Option<api::machine::LocalPrivateStorage>> {
         private_scope(&self.connection, id)
+    }
+
+    /// Project `project_id`'s runs not settled.
+    pub(crate) fn private_active_ids(&self, project_id: &str) -> io::Result<Vec<String>> {
+        let mut statement = self.connection.prepare("SELECT id FROM executions WHERE state IN ('queued','starting','running') AND json_extract(invocation,'$.local_private.project_id')=?1").map_err(db_error)?;
+        let rows = statement.query_map([project_id], |row| row.get::<_, i64>(0)).map_err(db_error)?;
+        rows.map(|row| row.map(|id| id.to_string()).map_err(db_error)).collect()
     }
 
     pub(crate) fn private_active(&self, project_id: &str) -> io::Result<bool> {
@@ -1596,6 +1627,19 @@ pub(crate) struct HeldMemo {
     pub objects: Vec<String>,
 }
 /// Execution `id` and every row keyed by it.
+/// Every sha256 digest `value` names, bare or `sha256:`, lowercased.
+fn named_digests(value: &Value, found: &mut std::collections::BTreeSet<String>) {
+    match value {
+        Value::String(text) => {
+            let hex = text.strip_prefix("sha256:").unwrap_or(text);
+            if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) { found.insert(hex.to_ascii_lowercase()); }
+        }
+        Value::Array(items) => items.iter().for_each(|item| named_digests(item, found)),
+        Value::Object(fields) => fields.values().for_each(|item| named_digests(item, found)),
+        _ => {}
+    }
+}
+
 fn delete_execution(tx: &rusqlite::Transaction<'_>, id: i64) -> io::Result<()> {
     for table in ["public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied", "run_log_lengths",
         "package_log_dropped", "run_calls", "triage", "run_objects", "run_specs", "root_times", "cold_times"] {

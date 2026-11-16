@@ -138,6 +138,10 @@ impl Link {
 
     pub(crate) async fn migration_receipt(&self) -> Result<api::machine::ProjectExecutionMigrationReceipt, LinkError> { self.machine.migration_receipt().await.map_err(LinkError::from) }
 
+    pub(crate) async fn project_gone(&self, id: &str) -> Result<(), LinkError> {
+        self.machine.project_gone(id).await.map_err(LinkError::from)
+    }
+
     pub(crate) async fn close_private(&self) -> Result<(), LinkError> {
         self.machine.close_private().await.map_err(LinkError::from)
     }
