@@ -33,10 +33,13 @@ log() { echo "$(date -u +%H:%M:%SZ) isolated Hub: $*"; }
 cozy() { "$cozy_bin" "$@"; }
 J() { jq -e "$@" > /dev/null; }
 
-# publish <dir>: a package's own directory published at the root, from a copy (publication writes its lock).
+# publish <dir>: a package's own directory published at the root, from a copy (publication writes its lock), with its benchmarks.json
+# (cl-1024): its own, else release-gate's seed's rows when it has any, as a promotion carries the gate's.
 publish() {
   local copy=$seed/packages/${1##*/}
   rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$1" "$copy"
+  [ -f "$copy/benchmarks.json" ] \
+    || jq -e --arg p "${1##*/}" '.[$p] // empty' "$here/../release-gate/benchmarks-seed.json" > "$copy/benchmarks.json" 2> /dev/null || rm -f "$copy/benchmarks.json"
   (cd "$copy" && cozy --json package publish --root -y) > "$seed/publish-${1##*/}.json" 2>&1 \
     || { echo "publishing ${1##*/} at the isolated Hub's root failed: $(tail -c 600 "$seed/publish-${1##*/}.json")" >&2; return 1; }
   log "published ${1##*/} $(sed -n 's/^version = "\(.*\)"$/\1/p' "$copy/pyproject.toml" | head -1) at the root"
@@ -300,6 +303,8 @@ if [ "$suite" = imports ]; then
   packages=$staged
   log "imports locks verified against the owned Hub; authoritative checkout unchanged"
 fi
+# The packages checkout, for a cell that runs one from source (account-rent's render time from source, cl-1024).
+[ -z "$packages" ] || export E2E_PACKAGES=$packages
 
 if [ "$needs" = next ]; then
   next

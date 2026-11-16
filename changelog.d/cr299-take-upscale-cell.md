@@ -1,0 +1,1 @@
+The release gate's `h3` suite makes a 15 s take and upscales it with no prompt, at 1080p in the executor that made it and at 1440p in a fresh one (`take-upscale-15s`, `take-upscale-15s-fresh`): the flow that ran out of memory on a 24 GB card in the 0.26.0 RC (cr-299).

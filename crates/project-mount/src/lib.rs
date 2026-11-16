@@ -571,10 +571,12 @@ impl Provider {
             Ok(Some(owner)) => owner,
             other => {
                 drop(input);
-                let _ = child.wait();
-                return Err(match other {
-                    Err(error) => Error::Platform(error),
-                    _ => {
+                let status = child.wait();
+                return Err(match (other, status) {
+                    (Err(error), _) => Error::Platform(error),
+                    // Exited at once: said with its exit status, as when it exits before it's ready.
+                    (_, Ok(status)) => self.failure("mount", status),
+                    (_, Err(_)) => {
                         Error::Invalid("the filesystem supervisor exited before it could be owned")
                     }
                 });

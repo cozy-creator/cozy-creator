@@ -45,6 +45,12 @@ impl Card {
         Some(self.document.get("requirements")?.as_array()?.iter().filter_map(Value::as_str).collect())
     }
 
+    /// Its publisher's benchmarks (cl-1024). None for a release published before the Hub kept them: a card read from a Hub without
+    /// them is of such a release, so it is never read again for them.
+    pub fn benchmarks(&self) -> Vec<crate::estimate::Benchmark> {
+        serde_json::from_value(self.document["benchmarks"].clone()).unwrap_or_default()
+    }
+
 }
 
 /// Where `hub`'s cards live under `root`, the cozy home.

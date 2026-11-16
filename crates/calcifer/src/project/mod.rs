@@ -11,6 +11,7 @@ mod canvas;
 pub(crate) mod code;
 mod db;
 mod crdt;
+mod benchmarks;
 pub(crate) mod fit;
 mod folder;
 mod format;
@@ -224,6 +225,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/runs/{run}/preview", get(crate::previews::serve))
         .route("/v1/projects/{id}/fit", post(fit::fit))
         .route("/v1/projects/{id}/fit/here", post(fit::here))
+        .route("/v1/projects/{id}/benchmarks", get(benchmarks::benchmarks))
         .route("/v1/projects/{id}/cancel", post(cancel))
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/unpin", post(unpin))
@@ -660,8 +662,9 @@ impl Holding {
                 return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("{}: its rate isn't measured, so no range of it can be cut", folder::prefix_of(&range.source))).next("cozy status"));
             }
             let mut notes = vec![];
+            let ffmpeg = clips.ffmpeg().await?;
             let access = vault::admit_root(&self.dir).await?;
-            let made = clips.cut(&range.range.to_string(), &path, range.range, fps, &mut notes, access).await?;
+            let made = clips.cut(&range.range.to_string(), &path, range.range, fps, &mut notes, ffmpeg, access).await?;
             bound.warnings.extend(notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).map(|note| note.message));
             let clip = made.clip.clone();
             let access = vault::admit_root(&self.dir).await?;
@@ -3006,15 +3009,25 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::
 fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
     let (host, project) = (Host::new(api), project.clone());
     tokio::spawn(async move {
-        let Ok(access) = vault::admit_root(&project.root).await else { return; };
-        if project.require_view().is_err() { return; }
-        if project.folder.lock().map_or(true, |lock| !lock.files.values().any(folder::File::unmeasured)) {
-            return;
+        let unmeasured = || project.require_view().is_ok() && project.folder.lock().is_ok_and(|lock| lock.files.values().any(folder::File::unmeasured));
+        {
+            let Ok(_access) = vault::admit_root(&project.root).await else { return; };
+            if !unmeasured() { return; }
         }
-        let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
-        if let Err(error) = host.ffmpeg().await {
-            return warn!("measuring a project's files: {}", error.message);
-        }
+        // Its turn and ffmpeg first, holding nothing of the project, then the project, holding no turn: a lock queued on it waits for
+        // neither, and while it waits no other project's thumbnails or measures wait for it (cl-1025).
+        let (access, permit) = loop {
+            let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
+            if let Err(error) = host.ffmpeg().await {
+                return warn!("measuring a project's files: {}", error.message);
+            }
+            if let Ok(access) = vault::try_admit_root(&project.root) {
+                break (access, permit);
+            }
+            drop(permit);
+            let Ok(_access) = vault::admit_root(&project.root).await else { return; };
+        };
+        if !unmeasured() { return; }
         let dir = project.folder.dir.clone();
         let measuring = tokio::task::spawn_blocking(move || {
             // This task can outlive its importer and must drain before storage is replaced.
@@ -3379,7 +3392,8 @@ async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str
         interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
     });
     let scope = crate::private_io::of_path(dir).ok().flatten();
-    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope }))
+    let source = package.local.clone().filter(|dir| dir.is_dir());
+    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source }))
 }
 
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
@@ -4172,6 +4186,8 @@ impl Walk {
                 pictures[m].ahead.push(placement::asked(job, prior));
             }
         }
+        // What each function never ran on a machine is timed by its release's benchmarks there (cl-1024).
+        placement::benched(&api, jobs.iter().map(|(_, job)| job).chain(ahead.iter().map(|(_, job)| job)), pictures.iter_mut());
         let position: HashMap<usize, usize> = jobs.iter().enumerate().map(|(at, (unsent_at, _))| (unsent[*unsent_at].id, at)).collect();
         let mut planned = vec![];
         for (at, job) in &jobs {
@@ -4182,7 +4198,7 @@ impl Walk {
                 priors.push(placement::prior(&api, &pictures[m], job).await);
             }
             planned.push(plan::Job {
-                ask: placement::asked(job, 0),
+                ask: placement::asked(job, placement::Prior::default()),
                 priors,
                 machines,
                 needs: unsent.needs.iter().filter_map(|need| position.get(need).copied()).collect(),
@@ -5144,8 +5160,9 @@ impl Walk {
                 return Err(format!("{} must be on this computer, and measured, to cut a range of it; download it in the browser opened by cozy open", folder::prefix_of(&range.source)));
             }
             let mut notes = vec![];
+            let ffmpeg = clips.ffmpeg().await.map_err(|e| e.message)?;
             let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
-            let made = clips.cut(&range.range.to_string(), &path, range.range, file.fps, &mut notes, access).await.map_err(|e| e.message)?;
+            let made = clips.cut(&range.range.to_string(), &path, range.range, file.fps, &mut notes, ffmpeg, access).await.map_err(|e| e.message)?;
             notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).for_each(|note| self.say(Told::Warning { message: note.message, name: None }));
             let clip = made.clip.clone();
             let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
@@ -6193,7 +6210,7 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
     };
     let named = format!("{package}/{function}@{release}");
     let jobs: Vec<placement::Job> = (0..count.max(1))
-        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None })
+        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None, source: None })
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
     let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, hub, read.as_ref(), function, &Map::new()).await;

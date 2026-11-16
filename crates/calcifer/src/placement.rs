@@ -11,6 +11,8 @@ use std::sync::Arc;
 use api::{
     calcifer::{MachineEstimate, On},
     error::{Error, Kind},
+    estimate::References,
+    hub::cards,
     machine::{self as v1, Basis, JobSize},
 };
 
@@ -42,6 +44,8 @@ pub(crate) struct Job {
     /// Its project's scope: its history (`prior`) and what `local` holds of it (`scoped_picture`) are read in its project alone. None:
     /// no project, or a locked one, read machine-wide only.
     pub scope: Option<crate::private_io::Scope>,
+    /// Local code's folder (a packages checkout's, or a project's `./dir`): its `benchmarks.json` is its benchmarks until it's published.
+    pub source: Option<std::path::PathBuf>,
 }
 
 /// When one machine would run one job, on this computer's clock.
@@ -126,6 +130,72 @@ pub(crate) struct Picture {
     pub ready_at_ms: Option<i64>,
     /// What waits there that its frame doesn't list yet, as jobs ahead of any asked: every run sent to one on its way.
     pub ahead: Vec<v1::EstimateJob>,
+    /// The benchmarks its quotes stand on where a function's runs don't (cl-1024): those of every job quoted with it (`benched`).
+    pub references: Arc<References>,
+}
+
+/// The benchmarks a quote of `named` functions stands on (cl-1024): each one's release's (`org/pkg/fn@release`), as its kept card has
+/// them, else its package's newest kept release's (a root queued on a machine names no release); and, for each, the Hub's per-card
+/// speeds as its placement answer last said them. Read here, never asked: a card is kept when its release is first read.
+pub(crate) fn references(hubs: &crate::rentals::Hubs, named: &[String]) -> References {
+    let (root, hub) = (hubs.home().root(), hubs.default_origin());
+    let mut references = References::default();
+    for target in named.iter().filter(|target| !target.starts_with("sha256:")) {
+        let (path, release) = target.split_once('@').map_or((target.as_str(), None), |(path, release)| (path, Some(release)));
+        let Some((package, _)) = path.rsplit_once('/').filter(|(package, _)| package.contains('/')) else { continue };
+        let release = release.map(str::to_owned).or_else(|| tensorfs::format::newest_by(cards::kept_releases(root, &hub, package), |r| r));
+        if let Some(card) = release.and_then(|release| cards::kept(root, &hub, package, &release)) {
+            references.add(package, &card.benchmarks());
+        }
+        if let Some(speeds) = crate::project::fit::speeds_now(&hub, target) {
+            references.add_speeds(target, speeds);
+        }
+    }
+    references
+}
+
+/// The benchmarks a package's source holds, its `benchmarks.json` (what `cozy package publish` attaches): a release's rows before it is
+/// one. None there, or one that doesn't read (said): none.
+pub(crate) fn source_benchmarks(dir: &std::path::Path) -> Vec<api::estimate::Benchmark> {
+    let Ok(text) = std::fs::read(dir.join(crate::hub::author::BENCHMARKS)) else { return vec![] };
+    serde_json::from_slice(&text)
+        .inspect_err(|e| tracing::warn!("{}: its {} doesn't read, so its source has no benchmarks: {e}", dir.display(), crate::hub::author::BENCHMARKS))
+        .unwrap_or_default()
+}
+
+/// The benchmarks `jobs` are timed by where no run of theirs is (cl-1024): a published release's from the Hub (`references`), local code's
+/// from its source (`source_benchmarks`), by the function a machine's estimate names (`sha256:<manifest>/fn`): rows travel with the
+/// package, in its source before it is published, on the Hub after. And those of `named`, functions queued or ahead elsewhere.
+pub(crate) fn references_for<'j>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>, mut named: Vec<String>) -> References {
+    let mut sourced = vec![];
+    for job in jobs {
+        named.push(job.target.clone());
+        if let Some(dir) = &job.source {
+            sourced.push((job.function.clone(), source_benchmarks(dir)));
+        }
+    }
+    named.sort();
+    named.dedup();
+    let mut references = references(&api.machines.hubs, &named);
+    for (function, rows) in sourced {
+        if let Some((code, _)) = function.split('@').next().and_then(|path| path.rsplit_once('/')) {
+            references.add(code, &rows);
+        }
+    }
+    references
+}
+
+/// Each of `pictures` with the benchmarks its quotes stand on (`references_for`): those of `jobs` and of each function queued or ahead
+/// on any of them.
+pub(crate) fn benched<'j, 'p>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>, pictures: impl IntoIterator<Item = &'p mut Picture>) {
+    let mut pictures: Vec<&mut Picture> = pictures.into_iter().collect();
+    let mut named: Vec<String> = vec![];
+    for picture in &pictures {
+        named.extend(picture.frame.queue.iter().flatten().map(|root| root.function.clone()));
+        named.extend(picture.ahead.iter().map(|job| job.function.clone()));
+    }
+    let references = Arc::new(references_for(api, jobs, named));
+    pictures.iter_mut().for_each(|picture| picture.references = references.clone());
 }
 
 /// The machines of `jobs`, each named once, in the order they name them.
@@ -155,16 +225,28 @@ pub(crate) async fn pictures(api: &Arc<Api>, machines: &[On], update: bool, now:
     .await
 }
 
-/// What a run of `job` takes on one GPU of `picture`'s kind, as runs like it took elsewhere: what it is timed by where none of it ran.
+/// A job's time on one GPU of a machine's kind where that machine's frame times none of it (`prior`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Prior {
+    pub ms: u64,
+    /// How many of that machine's own runs it is (a project's, which its frame never times, cl-1047): its quote is Measured. 0: runs
+    /// elsewhere.
+    pub runs: u32,
+}
+
+/// What a run of `job` takes on one GPU of `picture`'s kind, as runs like it took: what it is timed by where its frame times none of it.
 /// In its project's scope (`Job::scope`), whose runs here only it keeps (cl-1047).
-pub(crate) async fn prior(api: &Arc<Api>, picture: &Picture, job: &Job) -> u64 {
+pub(crate) async fn prior(api: &Arc<Api>, picture: &Picture, job: &Job) -> Prior {
     let timed = async {
         match &picture.ready_at_ms {
             Some(_) => match api.machines.coming(&picture.name, now_ms()) {
-                Some(coming) => crate::coming::card_time(api, &coming.way, &job.target, &job.size).0 as u64,
-                None => 0,
+                Some(coming) => Prior { ms: crate::coming::card_time(api, &coming.way, &job.target, &job.size).0 as u64, runs: 0 },
+                None => Prior::default(),
             },
-            None => api.calcifer.prior_ms(&job.target, &picture.name, &job.size),
+            None => {
+                let (ms, runs) = api.calcifer.prior_ms(&job.target, &picture.name, &job.size);
+                Prior { ms, runs }
+            }
         }
     };
     crate::private_io::context(job.scope.clone().or_else(crate::private_io::current), timed).await
@@ -184,8 +266,8 @@ pub(crate) async fn scoped_picture(api: &Arc<Api>, picture: &Picture, scope: Opt
     scoped
 }
 
-/// `job` as the estimator asks it, with its `prior_ms` there.
-pub(crate) fn asked(job: &Job, prior_ms: u64) -> v1::EstimateJob {
+/// `job` as the estimator asks it, with its `prior` there.
+pub(crate) fn asked(job: &Job, prior: Prior) -> v1::EstimateJob {
     v1::EstimateJob {
         key: job.key.clone(),
         function: job.function.clone(),
@@ -193,7 +275,8 @@ pub(crate) fn asked(job: &Job, prior_ms: u64) -> v1::EstimateJob {
         size: job.size,
         gpus: job.gpus,
         gpu: job.gpu,
-        prior_ms,
+        prior_ms: prior.ms,
+        prior_runs: prior.runs,
         after_ms: 0,
     }
 }
@@ -205,7 +288,7 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
     let asks: Vec<v1::EstimateJob> = (picture.ahead.iter().chain(jobs))
         .map(|job| v1::EstimateJob { after_ms: job.after_ms.max(ready), ..job.clone() })
         .collect();
-    let quotes = api::estimate::quote(&picture.frame, now, &asks);
+    let quotes = api::estimate::quote(&picture.frame, now, &asks, &picture.references);
     let at = |ms: u64| now + ms as i64;
     (quotes.into_iter().skip(picture.ahead.len()))
         .map(|quote| Offer {
@@ -231,7 +314,8 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
 pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<Vec<Offer>>, Vec<String>) {
     let now = now_ms();
     let machines = machines_of(jobs);
-    let pictured = pictures(api, &machines, update, now).await;
+    let mut pictured = pictures(api, &machines, update, now).await;
+    benched(api, jobs, pictured.iter_mut().flatten());
     offered(api, jobs, &machines, &pictured, now).await
 }
 
@@ -255,6 +339,7 @@ pub(crate) async fn offers_now(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>
             _ => Err("it isn't rented yet".into()),
         });
     }
+    benched(api, jobs, pictured.iter_mut().flatten());
     let (offers, _) = offered(api, jobs, &machines, &pictured, now).await;
     (offers, pictured)
 }
@@ -268,7 +353,7 @@ fn last_picture(api: &Arc<Api>, on: &On, name: &str) -> Result<Picture, String> 
     if !same_minor(&frame.version, this_release()) && !rc_version() {
         return Err(format!("it runs cozy {}, another minor than this cozy's", frame.version));
     }
-    Ok(Picture { on: on.clone(), name: name.to_owned(), frame, ready_at_ms: None, ahead: vec![] })
+    Ok(Picture { on: on.clone(), name: name.to_owned(), frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }
 
 /// Each job quoted on each of `machines` as `pictured`.
@@ -375,7 +460,7 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
             Some(run) => return Err(format!("updating it to cozy {own} first (run {})", run.name)),
         }
     }
-    Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![] })
+    Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }
 
 /// An offer in a line of the log: `stand-c finishes in 480 s (Measured, warm)`, `pluto finishes in 390 s (None; 120 s preparing,

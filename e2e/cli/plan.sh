@@ -110,7 +110,6 @@ for at in 1 2 3; do
   esac
 done
 cp "$log" "$OUT/plan-published.log"
-# Each job its walk didn't plan, said: none is what passes, and grep finding none mustn't end the suite (set -o pipefail).
 { grep -E "isn't planned: " "$OUT/plan-published.log" || true; } | sed 's/^/plan: /'
 for at in 1 2 3; do
   key=${keys[$((at - 1))]}

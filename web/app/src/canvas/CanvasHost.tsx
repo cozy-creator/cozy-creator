@@ -784,6 +784,8 @@ function Canvas({
       const view = store.get(name)
       const asset = view?.asset
       if (!view || !asset || view.hereWords || event.target instanceof HTMLSelectElement || !["ArrowLeft", "ArrowRight", "Enter"].includes(event.key)) return false
+      // Enter on a focused control presses it (Rename, Render, a menu's item): it never steps or edits a take (cl-1053).
+      if (event.key === "Enter" && event.target instanceof Element && event.target.closest("button, a[href], [role=button], [role=menuitem], [role=option], [role=tab]")) return false
       const row = asset.kind === "image" ? [...(asset.prefixes ?? [])] : [...(asset.prefixes ?? [])].reverse()
       const at = row.findIndex((version) => version.number === shownOf(view)?.number)
       if (at < 0) return false

@@ -1122,6 +1122,21 @@ pub struct Fit {
     pub estimates: Vec<BoxEstimate>,
 }
 
+/// `GET /v1/projects/{id}/benchmarks?package=`: a package's benchmarks from this project's runs of it (cl-1024).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BenchmarksAsk {
+    /// `[org/]name`: its functions' runs in this project, whichever release or local copy ran.
+    pub package: String,
+}
+
+/// What `GET /v1/projects/{id}/benchmarks` answers: each function, GPU, count and request this project ran warm, as a release declares
+/// it (`benchmarks.json`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Benchmarks {
+    pub benchmarks: Vec<crate::estimate::Benchmark>,
+}
+
 /// A box's typical inference time where a render of it would go now (cl-1004): the machine placement would choose, quoted from what each
 /// machine last said, nothing started, updated or rented.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
