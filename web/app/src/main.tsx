@@ -11,7 +11,6 @@ import { RouterProvider } from "react-router-dom"
 import { type Boot, type Connection, ConnectionProvider, connect } from "./app/Connection"
 import { theRouter } from "./app/routes"
 import { takeHashRoute } from "./app/session"
-import { Copyable } from "./ui/Copyable"
 import { tabShown, useSignal } from "./ui/signal"
 
 /** Asks Calcifer who it is. Runs once, outside React. */
@@ -28,7 +27,7 @@ function NoSession() {
   return (
     <main className="gate">
       <h1>No project open here</h1>
-      <p>Open Cozy at its own address, as the user it runs as: in a terminal, run <code>cozy open</code> in a project folder, or <code>cozy new &lt;folder&gt;</code> to start one.</p>
+      <p>Cozy only opens its own page, and only for the user account on this computer that it runs under. Open Cozy again from that account.</p>
     </main>
   )
 }
@@ -37,9 +36,8 @@ function NoSession() {
 function Unreachable() {
   return (
     <main className="gate">
-      <h1>Calcifer isn't answering</h1>
-      <p>This opens as soon as it does. If it doesn't come back, run this in a terminal:</p>
-      <Copyable text="cozy open" />
+      <h1>Cozy isn't responding</h1>
+      <p>This page opens by itself as soon as Cozy is back. If it doesn't come back, start Cozy again on this computer.</p>
     </main>
   )
 }

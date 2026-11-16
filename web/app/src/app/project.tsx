@@ -4,7 +4,6 @@ import { useLocation, useMatch, useNavigate } from "react-router-dom"
 import { ApiError, type Client } from "../api/client"
 import type { ProjectAddress } from "../api/calcifer"
 import { noHash } from "../canvas/text"
-import { Copyable } from "../ui/Copyable"
 import { useConnection } from "./Connection"
 import { privateProject } from "./view"
 
@@ -100,7 +99,6 @@ export function Unopened({ error, gone }: { error?: unknown; gone?: string }) {
     <div>
       <h2>This project's folder is gone: {gone}</h2>
       <p>Move the folder back, or open another project.</p>
-      <Copyable text="cozy new <folder>" />
     </div>
   )
   const body = error instanceof ApiError ? error.body : undefined
@@ -109,10 +107,9 @@ export function Unopened({ error, gone }: { error?: unknown; gone?: string }) {
   const folderGone = body?.code === "project_folder_gone"
   return (
     <div>
-      <h2>{folderGone ? sentence(message) : "This project can't be opened yet"}</h2>
+      <h2>{folderGone ? sentence(message) : "Couldn't open this project"}</h2>
       {!folderGone && <p>{noHash(sentence(message))}</p>}
       {body?.remedy && <p>{noHash(sentence(body.remedy))}</p>}
-      {body?.next?.map((line) => <Copyable key={line} text={line} />)}
     </div>
   )
 }
