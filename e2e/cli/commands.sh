@@ -926,7 +926,19 @@ in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=held-again --on loc
   || check "runtime floor: after a Calcifer restart, local held on 0.45.0 wasn't refused runtime_held: exit $code $(tail -c 300 "$OUT/floor-held-again.ndjson")"
 jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null \
   || check "runtime floor: after a Calcifer restart, held local runs $(jq -r .status.runtime "$OUT/machine.json"), not 0.45.0"
-cell floor-held-older "$E2E_FLOOR/relay@0.1.0" "text=asked 0.1.0" || true
+# A project's run on this computer needs this cozy's Runtime minor (cl-1055): held below it, even a release its own floor admits
+# (e2e-floor 0.1.0) is refused naming the update, and e2e-scratch's probe runs nowhere: no file of it outside its project.
+code=0
+in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay@0.1.0" "text=asked 0.1.0" --on local > "$OUT/floor-held-older.ndjson" 2> "$OUT/floor-held-older.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-held-older.ndjson" "$OUT/floor-held-older.err" && grep -q 'cozy machine update local' "$OUT/floor-held-older.ndjson" "$OUT/floor-held-older.err" \
+  || check "runtime floor: held on 0.45.0, e2e-floor 0.1.0 in a project wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 300 "$OUT/floor-held-older.ndjson") $(tail -c 300 "$OUT/floor-held-older.err")"
+local marker=CL1055_HELD_$RANDOM$RANDOM
+code=0
+in_project "$RUN_PROJECT" --json run e2e-scratch/probe "marker=$marker" --on local > "$OUT/floor-held-probe.ndjson" 2> "$OUT/floor-held-probe.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-held-probe.ndjson" "$OUT/floor-held-probe.err" \
+  || check "runtime floor: held on 0.45.0, e2e-scratch's probe in a project wasn't refused runtime_held: exit $code $(tail -c 300 "$OUT/floor-held-probe.ndjson")"
+! grep -rqs "$marker" "$HOME/.cozy/machine" "$RUN_PROJECT/.vault-machine" \
+  || check "runtime floor: the refused probe wrote its marker: $(grep -rls "$marker" "$HOME/.cozy/machine" "$RUN_PROJECT/.vault-machine" | head -3)"
 cozy --json machine update local -y > "$OUT/floor-unhold.json" 2>&1 \
   || { check "runtime floor: cozy machine update local (its Hub's pin) failed: $(tail -c 300 "$OUT/floor-unhold.json")"; return; }
 machine_ready
@@ -964,13 +976,23 @@ if [ -n "$td" ]; then
 else
   echo "runtime floor: rc-$rc holds no cozy for linux x86_64: an RC pin isn't asked here"
 fi
-in_project "$RUN_PROJECT" run "$E2E_FLOOR/relay" text=upgrade --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
-  || check "runtime floor: the unversioned e2e-floor run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
-grep -q "upgrading local.s Runtime 0.45.0 → 0.45.[1-9][0-9]* for .*e2e-floor 0.2.0" "$OUT/floor-upgrade.err" \
-  || check "runtime floor: the run didn't say it upgrades local's Runtime for e2e-floor 0.2.0: $(tail -c 400 "$OUT/floor-upgrade.err")"
+# Not held, on the Hub's 0.45.0: a project's run moves local up to this cozy's Runtime minor first, saying so (cl-1055), and its
+# call's temporary file is in its project's scratch.
+in_project "$RUN_PROJECT" run e2e-scratch/probe "marker=CL1055_MOVED_$RANDOM" --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
+  || check "runtime floor: a project's probe run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
+grep -q "upgrading local.s Runtime 0.45.0 → 0.4[7-9][^ ]* for this project" "$OUT/floor-upgrade.err" \
+  || check "runtime floor: the run didn't say it upgrades local's Runtime for this project: $(tail -c 400 "$OUT/floor-upgrade.err")"
+local temporary
+temporary=$(grep -o '"temporary": *"[^"]*"' "$OUT/floor-upgrade.out" | tail -1 | sed 's/.*: *"//; s/"$//')
+case $temporary in
+  "$(realpath "$RUN_PROJECT")"/.vault-machine/scratch/*) ;;
+  *) check "runtime floor: the moved run's temporary file was ${temporary:-nowhere said}, not in its project's scratch" ;;
+esac
 machine_ready
-jq -e '.status.runtime | test("^0\\.45\\.([1-9]|[1-9][0-9])$")' "$OUT/machine.json" > /dev/null \
-  || check "runtime floor: after its upgrade local runs $(jq -r .status.runtime "$OUT/machine.json"), not a 0.45 release from 0.45.1"
+jq -e '.status.runtime | test("^0\\.4[7-9]\\.")' "$OUT/machine.json" > /dev/null \
+  || check "runtime floor: after its upgrade local runs $(jq -r .status.runtime "$OUT/machine.json"), not this cozy's Runtime minor"
+# On the minor, e2e-floor 0.2.0 (cozy-runtime>=0.45.1) runs as it is.
+cell floor-on-minor "$E2E_FLOOR/relay" "text=on the minor" || true
 # e2e-capped 0.2.0 needs cozy-runtime<0.45.1: local never moves down, so it runs 0.1.0 and says why.
 in_project "$RUN_PROJECT" run "$E2E_CAPPED/relay" text=capped --on local > "$OUT/floor-capped.out" 2> "$OUT/floor-capped.err" \
   || check "runtime floor: the unversioned e2e-capped run failed: $(tail -c 400 "$OUT/floor-capped.err")"
