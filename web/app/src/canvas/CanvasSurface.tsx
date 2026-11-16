@@ -21,6 +21,17 @@ import { nameZoomOf, HEAD, watched } from "./shown"
 import { ZOOMS } from "./ZoomControl"
 
 type Pointer = MouseEvent | PointerEvent
+
+function startRenderer(width: number, height: number): Promise<WebGLRenderer> {
+  // Pixi 8.23 applies the major-caveat gate in this probe, not in WebGLRenderer's context attributes.
+  if (!isWebGLSupported(true)) return Promise.reject(new Error("Accelerated WebGL is not available in this browser."))
+  const created = new WebGLRenderer()
+  return created.init({ width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias: true, gcActive: false }).then(() => created)
+}
+/** A renderer begun as the page loads, before any project is read: the first canvas takes it rather than start its own once the project's
+ *  state is already here. It holds nothing of any project until then. */
+let early: Promise<WebGLRenderer> | null = startRenderer(1, 1)
+early.catch(() => {})
 interface Props {
   store: CanvasStore
   active: boolean
@@ -459,11 +470,11 @@ export function CanvasSurface(props: Props) {
     }))
 
     void (async () => {
-      // Pixi 8.23 applies the major-caveat gate in this probe, not in WebGLRenderer's context attributes.
-      if (!isWebGLSupported(true)) throw new Error("Accelerated WebGL is not available in this browser.")
-      const created = new WebGLRenderer()
-      await created.init({ width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias: true, gcActive: false })
+      const taken = early
+      early = null
+      const created = await (taken ?? startRenderer(width, height)).catch((error) => { if (!taken) throw error; return startRenderer(width, height) })
       if (stopped) { created.destroy({ removeView: true, releaseGlobalResources: true }); return }
+      if (taken) created.resize(Math.max(1, width), Math.max(1, height), devicePixelRatio || 1)
       renderer = created
       stage = new Container()
       const gl = created.gl, info = gl.getExtension("WEBGL_debug_renderer_info")
@@ -489,7 +500,7 @@ export function CanvasSurface(props: Props) {
       stage.addChild(viewport)
       const world = new Container({ eventMode: "none", interactiveChildren: false })
       viewport.addChild(world)
-      scene = createPixiScene({ world, store, client, invalidate })
+      scene = createPixiScene({ world, store, client, invalidate, software: graphics.software })
       scene.setVisible(visible())
       unbind = controller.bindCamera(element, viewport)
       callbacks.current.onReady?.()
