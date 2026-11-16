@@ -313,6 +313,12 @@ export function Stage(props: StageProps) {
       board.subscribeNodes(() => { announce(); publishDom(); invalidate() }),
       // A move of the camera ends a hover: what was under the pointer has moved; a new one comes with the pointer's next move.
       board.camera.subscribeCamera(() => { placeWorld(); if (scene?.hovered) scene.setHover(null); latest.current.onMoveStart?.() }),
+      // ...and the pointer's next move over a still canvas brings back what it rests on.
+      (() => {
+        const rehover = () => { const hit = interaction?.state().hover; if (hit && !scene?.hovered && !board.camera.isMoving) scene?.setHover(hit) }
+        element.addEventListener("pointermove", rehover, { passive: true })
+        return () => element.removeEventListener("pointermove", rehover)
+      })(),
       board.camera.subscribeCameraEnd((view) => { latest.current.onMoveEnd(null, view); invalidate() }),
       store.sceneRevision.subscribe(() => { publishDom(); invalidate() }),
       store.tools.subscribe(invalidate), store.names.subscribe(invalidate), theme.subscribe(invalidate), carried.subscribe(invalidate),
