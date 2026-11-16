@@ -165,8 +165,8 @@ mirror() {
   log "published $2@$4 ($3, $commit)"
 }
 
-# standin_lora <file> <org/name> <page> <family> [--trigger <words>]...: a LoRA uploaded, published at 0.1.0, its family and
-# triggers named, as an admin mirrors an author's LoRA. $FORMAT: its --source-format, else detected.
+# standin_lora <file> <org/name> <page> <family> [--trigger <words>]...: a LoRA uploaded, published at 0.1.0, its family (none
+# when empty) and triggers named, as an admin mirrors an author's LoRA. $FORMAT: its --source-format, else detected.
 standin_lora() {
   local file=$1 lora=$2 page=$3 family=$4 commit
   shift 4
@@ -177,6 +177,7 @@ standin_lora() {
   [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; return 1; }
   cozy --json lora publish "$lora" 0.1.0 "$commit" -y > "$seed/publish-${lora##*/}.json" 2>&1 \
     || { echo "publishing $lora failed: $(tail -c 600 "$seed/publish-${lora##*/}.json")" >&2; return 1; }
+  [ -n "$family" ] || return 0
   cozy --json lora edit "$lora" --family "$family" "$@" > "$seed/edit-${lora##*/}.json" 2>&1 \
     || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; return 1; }
 }
@@ -238,7 +239,7 @@ case $key in
   cli:local-code) needs='packages birefnet scratch' ;;
   # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a
   # model of one component with another's (xs-190).
-  cli:commands) needs='packages birefnet loras fits parts' ;;
+  cli:commands) needs='packages birefnet loras fits parts lorabase' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
@@ -250,8 +251,9 @@ case $key in
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
   cli:env-cost) needs='packages birefnet' ;;
-  cli:plan) needs='packages birefnet downloads' ;;
-  cli:) needs='packages birefnet downloads spare loras vaes fits parts calls' ;;
+  # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
+  cli:plan) needs='packages birefnet downloads composed' ;;
+  cli:) needs='packages birefnet downloads spare loras vaes fits parts composed lorabase calls' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
@@ -406,7 +408,7 @@ if [ -n "$needs" ]; then
       held
       rc_floor ;;
   esac
-  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* || " $needs " == *" disk "* ]]; then
+  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* || " $needs " == *" disk "* || " $needs " == *" lorabase "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -568,6 +570,26 @@ PYH3
     log "published e2e/parts@0.1.0 (transformer, vae), its part 0.2.0 (vae) and e2e/parts-vae@0.1.0 (vae)"
     rm -f "$seed"/*.safetensors
   fi
+  if [[ " $needs " == *" composed "* ]]; then
+    # What plan_fetch (cli/plan.sh, cl-1071) quotes and fetches: e2e/composed-base, a 48 MiB transformer and a 16 MiB VAE;
+    # e2e/composed-tune, its own 48 MiB transformer on the base's VAE (the base's parts shared, as noctaluna/noct-q is composed of
+    # Qwen-Image-2.1's); and e2e/composed-extra, 32 MiB a slot fetches only on demand. One family, so the tune takes the base's slot.
+    page=https://github.com/cozy-creator/cozy-creator/tree/master/e2e
+    random_weights "$seed/composed-dit.safetensors" 48 composed-dit
+    random_weights "$seed/composed-vae.safetensors" 16 composed-vae
+    random_weights "$seed/composed-tune.safetensors" 48 composed-tune
+    random_weights "$seed/composed-extra.safetensors" 32 composed-extra
+    mirror "$seed/composed-dit.safetensors:transformer" e2e/composed-dit bf16 0.1.0 "$page" --source-format as-is
+    mirror "$seed/composed-vae.safetensors" e2e/composed-base bf16 0.1.0 "$page" --source-format as-is --base e2e/composed-dit@0.1.0:vae
+    mirror "$seed/composed-tune.safetensors" e2e/composed-tune bf16 0.1.0 "$page" --source-format as-is --base e2e/composed-base@0.1.0:transformer
+    mirror "$seed/composed-extra.safetensors" e2e/composed-extra bf16 0.1.0 "$page" --source-format as-is
+    for model in e2e/composed-base e2e/composed-tune; do
+      cozy --json model edit "$model" --family e2e-composed > "$seed/edit-${model#e2e/}.json" 2>&1 \
+        || { echo "naming $model's family failed: $(tail -c 600 "$seed/edit-${model#e2e/}.json")" >&2; exit 1; }
+    done
+    log "published e2e/composed-base@0.1.0 (transformer, vae), e2e/composed-tune@0.1.0 (its transformer, the base's vae), e2e/composed-extra@0.1.0"
+    rm -f "$seed"/composed-*.safetensors
+  fi
   if [[ " $needs " == *" fits "* ]]; then
     # lane_fit (xs-191): fitting/vae is fitting/whole (an 8 MiB `model`) with a 1 MiB `vae` added, as
     # madebyollin/texture-fix-vae is Qwen-Image-2.1 with its VAE replaced.
@@ -577,6 +599,32 @@ PYH3
     mirror "$seed/fit-vae.safetensors" fitting/vae bf16 0.1.0 https://huggingface.co/fitting/vae --source-format as-is \
       --base fitting/whole@0.1.0:vae
     export E2E_FIT=fitting/vae
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" lorabase "* ]]; then
+    # lora_reads (cli/commands.sh, tfs-300): e2e/lora-base, a 16 MiB text encoder (e2e/lora-te's) with a 256 KiB transformer put on
+    # it, one linear `proj`; and e2e/lora-proj, a rank-4 LoRA of `proj` in PEFT's names.
+    page=https://github.com/cozy-creator/cozy-creator/tree/master/e2e
+    part_weights "$seed/te.safetensors" text_encoder 4 4194304
+    python3 -I - "$seed" <<'PY'
+import json, random, struct, sys
+def write(path, tensors):
+    header, data = {}, b""
+    for key, (dtype, shape, seed) in tensors.items():
+        values, n = random.Random(seed), shape[0] * shape[1]
+        raw = struct.pack(f"<{n}{'f' if dtype == 'F32' else 'e'}", *(values.uniform(-0.1, 0.1) for _ in range(n)))
+        header[key] = {"dtype": dtype, "shape": shape, "data_offsets": [len(data), len(data) + len(raw)]}
+        data += raw
+    text = json.dumps(header).encode()
+    text += b" " * (-len(text) % 8)
+    open(path, "wb").write(struct.pack("<Q", len(text)) + text + data)
+write(f"{sys.argv[1]}/proj.safetensors", {"proj.weight": ("F32", [256, 256], 5)})
+write(f"{sys.argv[1]}/proj-lora.safetensors", {"proj.lora_A.weight": ("F16", [4, 256], 6), "proj.lora_B.weight": ("F16", [256, 4], 7)})
+PY
+    mirror "$seed/te.safetensors:text_encoder" e2e/lora-te f32 0.1.0 "$page" --source-format as-is
+    mirror "$seed/proj.safetensors" e2e/lora-base f32 0.1.0 "$page" --source-format as-is --base e2e/lora-te@0.1.0:transformer
+    standin_lora "$seed/proj-lora.safetensors:transformer" e2e/lora-proj "$page" '' || exit 1
+    log "published e2e/lora-base@0.1.0 (text_encoder, transformer) and e2e/lora-proj@0.1.0 (a LoRA of its proj)"
     rm -f "$seed"/*.safetensors
   fi
   cd "$start"

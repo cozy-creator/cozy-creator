@@ -77,7 +77,6 @@ import type {
   Unpinned,
   Updating,
   VersionMoved,
-  VersionPatched,
   VaultAsk,
   VaultStatus,
   VaultChanged,
@@ -574,11 +573,6 @@ export class Client {
   /** One take or version off its box. Its number is kept, and its file until `reclaim`. */
   discardVersion(id: string, name: string, number: number, write: Write = {}): Promise<VersionMoved> {
     return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, {}, undefined, write)
-  }
-
-  /** What a version's main file says of itself, whole: `orbit` turns a video. `{}` clears it. */
-  patchVersion(id: string, name: string, number: number, metadata: Record<string, unknown>, write: Write = {}): Promise<VersionPatched> {
-    return this.write("PATCH", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { metadata }, undefined, write)
   }
 
   /** This version was looked at: it leaves the box's `unseen` in its project-owned activity journal (cl-928). No key: saying it twice is saying it once. */

@@ -556,6 +556,7 @@ case $SHARD in
     catalog
     basics
     component_models
+    lora_reads
     second_project
     lock_platforms
     yaml_requests
@@ -652,7 +653,7 @@ case $SHARD in
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
-  plan) parts="estimate_line plan_picks plan_published prepare_ahead logs" ;;
+  plan) parts="estimate_line plan_picks plan_published plan_fetch prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints
@@ -661,6 +662,7 @@ case $SHARD in
     catalog
     basics
     component_models
+    lora_reads
     second_project
     lock_platforms
     yaml_requests

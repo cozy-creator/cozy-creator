@@ -614,10 +614,12 @@ fn held<'f>(frame: &'f StatusFrame, model: &v1::ModelRef) -> Option<&'f v1::Chec
     named.or_else(pulled).map(|(_, c)| c)
 }
 
-/// The bytes of `model` `frame`'s store lacks: what its held checkpoint lacks of its closure, else all the catalog lists.
+/// The bytes of `model` `frame`'s store lacks: what its held checkpoint lacks of its closure, no more than the call fetches of it; else all
+/// the call fetches of it (`ModelRef::bytes`).
 fn absent(frame: &StatusFrame, model: &v1::ModelRef) -> u64 {
     match held(frame, model) {
-        Some(checkpoint) if checkpoint.bytes > 0 => checkpoint.bytes.saturating_sub(checkpoint.held_bytes),
+        // What the checkpoint lacks here, no more than the call fetches of it (cl-1071: its components, its objects no other slot reads).
+        Some(checkpoint) if checkpoint.bytes > 0 => checkpoint.bytes.saturating_sub(checkpoint.held_bytes).min(model.bytes),
         _ => model.bytes,
     }
 }

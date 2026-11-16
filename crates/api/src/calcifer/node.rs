@@ -17,7 +17,7 @@ pub const KEYS: [&str; 6] = ["kind", "description", "text", "approved", "takes",
 /// A tool block's LoRAs, beside its fields and model slots.
 pub const LORAS: &str = "loras";
 /// What a take can be.
-pub const STATES: [&str; 4] = ["done", "queued", "running", "failed"];
+pub const STATES: [&str; 3] = ["done", "queued", "running"];
 
 /// A node key that names a tool: `pkg/fn`, `org/pkg/fn@release`, or local code's `./dir/fn`.
 pub fn is_tool(key: &str) -> bool {
