@@ -141,6 +141,7 @@ class ReceiptValue(TypedDict, total=False):
     diagnostic_rejected: bool
     cleanup_incomplete: bool
     development_restore_failed: bool
+    web_commit: str
 
 
 class RawOptions(TypedDict, total=False):
@@ -161,7 +162,7 @@ _FAILURE_CODES = frozenset({
     'cold_page_ready', 'composed_candidate_not_ready', 'controller_update_not_refused', 'core_control_not_authorized',
     'core_pattern_invalid', 'crash_page_ready', 'crashed_browser_tree_not_retired',
     'crashed_profile_not_retired', 'csrf_no_store_refusal', 'development_config_changed',
-    'development_config_shape', 'development_hosted_only', 'development_native_bearer_bridge_present',
+    'development_config_shape', 'development_hosted_only', 'development_web_commit_unread', 'development_web_not_candidate', 'development_native_bearer_bridge_present',
     'development_owned_paths', 'development_pnpm_missing', 'development_private_path_forwarded',
     'development_probe_replaced', 'development_process_replaced', 'development_server_exited',
     'development_server_readiness', 'encrypted_create_identity', 'exact_unlocked_project_root',
@@ -259,6 +260,12 @@ class Receipt:
     def __init__(self, path: Path, candidate: str):
         self.path = path
         self.value: ReceiptValue = {"candidate_sha256": candidate, "cases": {}, "complete": False}
+
+    def web(self, commit: str) -> None:
+        """The commit whose web the development page served: a full git commit id only."""
+        require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None, "development_web_commit_unread")
+        self.value["web_commit"] = commit
+        self.save()
 
     def add(self, case: str, **facts: object) -> None:
         def safe(value: object) -> bool:
