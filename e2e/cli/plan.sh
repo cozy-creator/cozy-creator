@@ -142,6 +142,14 @@ done
 # and the on-demand one (160 MiB), and that is what lands in stand-c's store, within 5%. Then one that reads it: a quote can't know which
 # on-demand slot a run reads, so it is quoted besides, "plus up to" its 32 MiB (`on_demand_bytes`), and what lands is that, within 5%:
 # the gap measured, never silent.
+# plan_fetch_held: what stand-c holds of e2e/composed-* (its own listing: each checkpoint's bytes and those held), and its walk's lines.
+plan_fetch_held() {
+  stand_as stand-c --json machine show local > "$OUT/plan-fetch-held.json" 2>> "$OUT/stand-c.err" || true
+  echo "plan fetch: stand-c holds $(jq -c '[.status.models[]? | select(.model | startswith("e2e/composed")) | {model, total_bytes, unique_bytes,
+    held: [.checkpoints[]? | {release, bytes, held_bytes, complete}]}]' "$OUT/plan-fetch-held.json" 2> /dev/null)"
+  grep -h 'fetched' "$P"/.vault-calcifer/diagnostics/walk.log 2> /dev/null | tail -4 | sed 's/^/plan fetch: /' || true
+}
+
 plan_fetch() {
 step "plan (cl-1071): a run's quoted download is what it fetches"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
@@ -164,6 +172,7 @@ placed=$(jq -c '.placed // empty' "$OUT/plan-fetch.json" 2> /dev/null)
 quoted=$(jq -r '.fetch_bytes // 0' <<< "${placed:-null}")
 landed=$(( ${after:-0} - ${before:-0} ))
 echo "plan fetch: run $run on stand-c quoted $((quoted >> 20)) MiB to fetch ($placed); $((landed >> 20)) MiB landed in its store"
+plan_fetch_held
 [ "$quoted" -gt 0 ] && [ "$landed" -gt 0 ] || { check "plan fetch: nothing quoted ($quoted) or landed ($landed)"; return; }
 [ $(( (quoted > landed ? quoted - landed : landed - quoted) * 20 )) -le "$landed" ] \
   || check "plan fetch: quoted $((quoted >> 20)) MiB to fetch, but $((landed >> 20)) MiB landed"
@@ -182,6 +191,7 @@ run_show "$OUT" plan-fetch-read "$run"
 placed=$(jq -c '.placed // empty' "$OUT/plan-fetch-read.json" 2> /dev/null)
 quoted=$(jq -r '(.fetch_bytes // 0) + (.on_demand_bytes // 0)' <<< "${placed:-null}")
 landed=$(( ${after:-0} - ${before:-0} ))
+plan_fetch_held
 echo "plan fetch: run $run reading its on-demand slot was quoted $(jq -r '(.fetch_bytes // 0) / 1048576 | floor' <<< "${placed:-null}") MiB to fetch, plus up to $(jq -r '(.on_demand_bytes // 0) / 1048576 | floor' <<< "${placed:-null}") MiB on demand; $((landed >> 20)) MiB landed"
 [ "$landed" -gt 0 ] && [ $(( (quoted > landed ? quoted - landed : landed - quoted) * 20 )) -le "$landed" ] \
   || check "plan fetch: reading its on-demand slot, quoted $((quoted >> 20)) MiB with it, but $((landed >> 20)) MiB landed"
