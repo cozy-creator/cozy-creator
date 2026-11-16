@@ -921,10 +921,10 @@ impl Journal {
     }
 
     /// Each of `ids` (a kept legacy run, `legacy_runs`) without its words (Paul 11-15: an encrypted project made from a plain one leaves
-    /// no plaintext): its record and index as `wordless` makes them; its spec, log lines, calls, products, made outcome and triage
-    /// rows deleted, and the memos of what it computed. Its identity, family, scope, objects, artifacts and asset bindings stay: what
-    /// its retained outputs are kept, read and released by. A reader of it after this (a client collecting it) gets its outcome made
-    /// again from that record (`Runs::terminal`): its files as before, its words blank.
+    /// no plaintext): its record and index as `wordless` makes them, and its made outcome (`public_terminals`) as `wordless_terminal`
+    /// does; its spec, log lines, calls, products and triage rows deleted, and the memos of what it computed. Its identity, family, scope,
+    /// objects, artifacts, asset bindings and outcome's references stay: what its retained outputs are kept, read and released by. A
+    /// client collecting it after this reads its files as before, its words blank, and the note saying so (`cleared_note`).
     pub(crate) fn scrub_legacy(&mut self, ids: &[i64]) -> io::Result<()> {
         let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
         for id in ids {
@@ -936,10 +936,19 @@ impl Journal {
                     tx.execute(&format!("DELETE FROM {table} WHERE computation=?1"), [&record.memo.computation]).map_err(db_error)?;
                 }
             }
+            let references: std::collections::HashSet<String> = record.result.iter().flat_map(|result| &result.asset_bindings).map(|binding| binding.asset_ref.clone()).collect();
             let record = wordless(record);
             tx.execute("UPDATE executions SET invocation=?2, record=?3 WHERE id=?1", params![id, invocation_index(&record.invocation)?, encoded_execution(&record)?])
                 .map_err(db_error)?;
-            for table in ["run_specs", "run_logs", "run_log_lengths", "package_log_dropped", "run_calls", "run_products", "public_terminals", "triage"] {
+            // Its made outcome stays, wordless: once its result copies are swept, it is all a late collection reads its files by.
+            let terminal: Option<Vec<u8>> = tx.query_row("SELECT events FROM public_terminals WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+            if let Some(events) = terminal {
+                match crate::runs::wordless_terminal(&events, &references) {
+                    Ok(events) => { tx.execute("UPDATE public_terminals SET events=?2 WHERE execution=?1", params![id, events]).map_err(db_error)?; }
+                    Err(error) => tracing::warn!(run = id, "a kept old run's outcome couldn't be read; it stays as it was: {}", error.message),
+                }
+            }
+            for table in ["run_specs", "run_logs", "run_log_lengths", "package_log_dropped", "run_calls", "run_products", "triage"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
             }
         }
@@ -1658,26 +1667,47 @@ pub(crate) struct LegacyRuns {
 /// A kept legacy run's record without the words its client sent or it said: its input and its inputs' field names, every string of
 /// its result's value but its assets' references and digests, its adjustments, and its waiting, progress and failure words.
 fn wordless(mut record: Execution) -> Execution {
-    fn blank(value: &mut Value, keep: &std::collections::HashSet<String>) {
-        match value {
-            Value::String(text) if !keep.contains(text.as_str()) && !text.starts_with("sha256:") => text.clear(),
-            Value::Array(items) => items.iter_mut().for_each(|item| blank(item, keep)),
-            Value::Object(fields) => fields.values_mut().for_each(|item| blank(item, keep)),
-            _ => {}
-        }
-    }
     record.invocation.input = Value::Object(Default::default());
     for input in &mut record.invocation.inputs { input.input_id.clear(); }
     record.waiting = None;
     record.progress = None;
-    if let Some(failure) = &mut record.failure { failure.clear(); }
+    if let Some(failure) = &mut record.failure {
+        *failure = match Failure::decode(failure) {
+            Ok(decoded) => Failure { message: String::new(), ..decoded }.encode(),
+            Err(_) => String::new(),
+        };
+    }
     record.memo.unmemoized.clear();
     if let Some(result) = &mut record.result {
         let references = result.asset_bindings.iter().map(|binding| binding.asset_ref.clone()).collect();
-        blank(&mut result.value, &references);
-        result.adjustments.clear();
+        blank_words(&mut result.value, &references);
+        result.adjustments = vec![cleared_note()];
     }
     record
+}
+
+/// Every string of `value` cleared but digests (`sha256:…`) and its assets, each an object naming one of `keep` (a run's assets'
+/// references) as its `asset_ref`, kept whole: a kept legacy run's words.
+pub(crate) fn blank_words(value: &mut Value, keep: &std::collections::HashSet<String>) {
+    match value {
+        Value::String(text) if !keep.contains(text.as_str()) && !text.starts_with("sha256:") => text.clear(),
+        Value::Array(items) => items.iter_mut().for_each(|item| blank_words(item, keep)),
+        Value::Object(fields) if fields.get("asset_ref").and_then(Value::as_str).is_some_and(|reference| keep.contains(reference)) => {}
+        Value::Object(fields) => fields.values_mut().for_each(|item| blank_words(item, keep)),
+        _ => {}
+    }
+}
+
+/// What a late collection of a kept legacy run reads beside its blank words (cl-1035): one adjustment saying so.
+pub(crate) fn cleared_note() -> Adjustment {
+    Adjustment {
+        field: "result".into(),
+        kind: AdjustmentKind::Warn,
+        requested: String::new(),
+        applied: String::new(),
+        reason: "this run's words were cleared when its machine moved to cozy 0.26: its text reads empty; its files are whole".into(),
+        source: "machine".into(),
+    }
 }
 
 fn delete_execution(tx: &rusqlite::Transaction<'_>, id: i64) -> io::Result<()> {

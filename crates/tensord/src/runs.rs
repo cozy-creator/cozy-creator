@@ -31,7 +31,7 @@ use std::{
 mod model_folder;
 mod read;
 mod sent;
-pub(crate) use read::{actor_id, retention_owner, Log, OutputSnapshot};
+pub(crate) use read::{actor_id, retention_owner, wordless_terminal, Log, OutputSnapshot};
 pub(crate) use sent::{choices, resume, resume_private};
 
 pub(crate) enum Source {

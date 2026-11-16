@@ -853,6 +853,47 @@ fn canonical(value: &Value) -> Result<Vec<u8>, Error> {
     serde_json_canonicalizer::to_vec(value)
         .map_err(|_| Error::validation("invalid_request", "JSON value is outside canonical profile"))
 }
+/// A kept legacy run's made outcome without its words (cl-1035), as `journal::wordless` leaves its record: each product's label, every
+/// string of its inline result but its assets' references and digests, a failure's words and detail, and its adjustments, which become
+/// the one note saying so (`journal::cleared_note`); its outcome's digest and id made again as `terminal` makes them. Its products'
+/// references and retained outputs stay, so a late collection still reads its files.
+pub(crate) fn wordless_terminal(page: &[u8], references: &std::collections::HashSet<String>) -> Result<Vec<u8>, Error> {
+    let corrupt = || Error::internal("custody_corrupt", "durable event projection is corrupt");
+    let mut page: stored::LogPage = stored::decode(page).map_err(|_| corrupt())?;
+    for event in &mut page.events {
+        if let Some(product) = &mut event.product {
+            product.label.clear();
+            event.body_canonical_bytes = product_document(product)?;
+        }
+        let Some(outcome) = &mut event.outcome else { continue };
+        let mut body: Value = serde_json::from_slice(&outcome.outcome_canonical_bytes).map_err(|_| corrupt())?;
+        if let Some(inline) = body.pointer("/result/inline_result").and_then(Value::as_str) {
+            let bytes = STANDARD.decode(inline).map_err(|_| corrupt())?;
+            let mut value: Value = serde_json::from_slice(&bytes).map_err(|_| corrupt())?;
+            crate::journal::blank_words(&mut value, references);
+            body["result"]["inline_result"] = json!(STANDARD.encode(crate::boundary_json::exact(&value)));
+        }
+        if body["status"] != json!(1) {
+            body["safe_message"] = json!("");
+            if let Some(cause) = body.get_mut("cause").and_then(Value::as_object_mut) { cause.remove("detail"); }
+        }
+        if let Some(fields) = body.as_object_mut() { fields.remove("failure_detail"); }
+        body["adjustments"] = json!([crate::journal::cleared_note()]);
+        let bytes = canonical(&body)?;
+        let digest = sha256::digest(&bytes);
+        outcome.outcome_id = format!("out-{}", sha256::hex(&digest));
+        outcome.outcome_digest = digest.to_vec();
+        outcome.outcome_canonical_bytes = bytes;
+        let state = serde_json::from_slice::<Value>(&event.body_canonical_bytes).ok().and_then(|said| said.get("state").cloned()).unwrap_or(json!("completed"));
+        event.body_canonical_bytes = canonical(&json!({
+            "state": state,
+            "outcome_id": outcome.outcome_id,
+            "outcome_digest": format!("sha256:{}", sha256::hex(&outcome.outcome_digest))
+        }))?;
+    }
+    Ok(stored::encode(&page))
+}
+
 /// What a run's retained asset is kept by (`products::retain`): its `native_outputs` row's owner.
 pub(crate) fn retention_owner(workspace: &str, actor: &str, request: &str, asset: &str) -> Result<String, Error> {
     identity(&json!({"workspace":workspace,"actor":actor,"request":request,"asset":asset}))

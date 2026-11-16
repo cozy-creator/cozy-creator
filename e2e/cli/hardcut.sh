@@ -28,7 +28,9 @@
 #   - the `state.db.pre-*` copies beside the store are gone;
 #   - once local runs this cozy's TensorD (cl-1035), before any unlock, its journal keeps no old run that retains nothing (one failed
 #     there), nor its words, nor a copy an earlier format kept; every old run whose output is retained stays, with its objects and
-#     every retained output, but none of its prompts; the unlocks after it still let go of what those runs retained.
+#     every retained output, but none of its prompts; one of them whose result copies were swept, collected after it as a run
+#     outside a project is resumed, completes with its files, no word of its prompt and the note saying so; the unlocks after it
+#     still let go of what those runs retained.
 # With CUT_FROM=8 (--shard hardcut-v8) the store is first fenced as a 0.26 RC left one (Paul's laptop's): its project runs in
 # legacy tables beside the live ones, cl-1012's machine lines, and the hold an RC read from local's update by hand.
 CUT_RELEASE=0.25.0 CUT_RUNTIME=0.46.0 CUT_TENSORFS=0.25.1
@@ -266,10 +268,97 @@ cut_machine_journal() {
     and ($before.outputs - .outputs | length) == 0' <<< "$after" > /dev/null \
     || check "hard cut: the machine journal's cut: legacy left $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '[.ids[] | select(IN($before.legacy[]))]' <<< "$after"), kept lost $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '$before.kept - .ids' <<< "$after"), outputs lost $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '($before.outputs - .outputs) | length' <<< "$after"), $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '{format, copies, mark, prompt, objects, objects_before: $before.objects}' <<< "$after")"
   cut_cozy new --json machine ls > /dev/null || check "hard cut: this cozy after its TensorD moved"
+  cut_collect_late
   for folder in P:plain Q:plain2 R:plain3; do
     tag=${folder#*:} folder=${folder%%:*}
     cut_check "${!folder}" "$tag"
   done
+}
+# cut_wal_sql <query>: the cut's user's state.db as its Calcifer writes it now, through its WAL, as that user (nothing is written).
+cut_wal_sql() {
+  sudo -u "$CUT_USER" python3 -I - "$home/.cozy/calcifer/state.db" "$1" <<'PY'
+import sqlite3, sys
+for row in sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True).execute(sys.argv[2]):
+    print(*row)
+PY
+}
+# cut_collect_late: a kept old run collected after the machine journal's cut (cl-1035), as a run outside a project #3410 keeps to
+# resume is: plain's still, its result copies swept as an idle machine sweeps them, recorded again in Calcifer's store as going and
+# landing outside any project. Calcifer collects it from the machine: it completes with the still's bytes, with no word of its prompt
+# and the one note saying its words were cleared.
+cut_collect_late() {
+  local run exec want state i out=$home/collected engine=$home/.cozy/machine/var/lib/cozy/tensord/execution
+  run=$(sudo python3 -I - "$OUT/cut-store-before.db" "$P/.runs" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(f"file:{sys.argv[1]}?immutable=1", uri=True)
+tables = {name for (name,) in db.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")}
+for table in ("runs", "legacy_project_runs"):
+    if table not in tables: continue
+    row = db.execute(f"SELECT id FROM {table} WHERE out_dir = ? AND target LIKE '%/draw/draw' AND status = 'completed' ORDER BY number LIMIT 1", (sys.argv[2],)).fetchone()
+    if row:
+        print(row[0])
+        break
+PY
+)
+  [ -n "$run" ] || { check "hard cut: no old run of plain's still to collect late"; return; }
+  exec=$(sudo -u "$CUT_USER" python3 -I - "$engine/executions.sqlite3" "$run" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+row = db.execute("SELECT id FROM executions WHERE request_id = ?", (sys.argv[2],)).fetchone()
+print(row[0] if row else "")
+PY
+)
+  [ -n "$exec" ] || { check "hard cut: the machine kept no run $run of plain's still"; return; }
+  want=$(jq -r '.card.image.sha256 | sub("^sha256:"; "")' "$OUT/cut-plain-before.json")
+  sudo pkill -KILL -u "$CUT_USER" || true
+  while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
+  # Swept as an idle machine sweeps a settled run's result copies: only its made outcome and its retained outputs name its files now.
+  sudo rm -rf "$engine/results/$exec"
+  sudo install -m 600 -o "$CUT_USER" "$OUT/cut-store-before.db" "$home/cut-store-before.db" || { check "hard cut: the old store not kept for its user"; return; }
+  sudo -u "$CUT_USER" python3 -I - "$home/.cozy/calcifer/state.db" "$home/cut-store-before.db" "$run" "$out" <<'PY' || { check "hard cut: the old run not put back in Calcifer's store"; return; }
+import sqlite3, sys
+path, before, run, out = sys.argv[1:5]
+db = sqlite3.connect(path, isolation_level=None)
+db.execute("ATTACH ? AS old", (before,))
+table = "runs" if db.execute("SELECT count(*) FROM old.runs WHERE id = ?", (run,)).fetchone()[0] else "legacy_project_runs"
+have = {row[1] for row in db.execute(f"PRAGMA old.table_info({table})")}
+both = [row[1] for row in db.execute("PRAGMA main.table_info(runs)") if row[1] in have]
+db.execute(f"INSERT INTO main.runs ({','.join(both)}) SELECT {','.join(both)} FROM old.{table} WHERE id = ?", (run,))
+db.execute("""UPDATE main.runs SET state = 'accepted', status = NULL, outcome = NULL, reason = NULL, reason_code = NULL, settled_at = NULL,
+    cursor = 0, out_dir = ?, owner = '' WHERE id = ?""", (out, run))
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PY
+  sudo -u "$CUT_USER" mkdir -p "$out"
+  cut_cozy new --json machine ls > /dev/null || { check "hard cut: this cozy with the old run going"; return; }
+  cut_cozy new --json machine show local > /dev/null 2>&1 || true
+  for i in $(seq 120); do
+    state=$(cut_wal_sql "SELECT state || ' ' || coalesce(status, '') FROM runs WHERE id = '$run'")
+    [ "$state" = "settled completed" ] && break
+    [ "${state% *}" = settled ] && break
+    sleep 1
+  done
+  echo "hard cut: the old run $run collected after the cut: $state"
+  [ "$state" = "settled completed" ] || { check "hard cut: a kept old run whose result copies were swept, collected after the cut, is $state: $(cut_wal_sql "SELECT coalesce(reason_code, '') || ': ' || coalesce(reason, '') FROM runs WHERE id = '$run'")"; return; }
+  [ -n "$(sudo find "$out" -type f -exec sha256sum {} + | awk -v want="$want" '$1 == want')" ] \
+    || check "hard cut: the late collection's files aren't the still's bytes: $(sudo find "$out" -type f -exec sha256sum {} + | tr '\n' ' ')"
+  sudo -u "$CUT_USER" python3 -I - "$home/.cozy/calcifer/state.db" "$run" "$CUT_PROMPT_MARK" <<'PY' || check "hard cut: the late collection's words"
+import sqlite3, sys
+db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+import base64, json
+outcome = bytes(db.execute("SELECT coalesce(outcome, X'') FROM runs WHERE id = ?", (sys.argv[2],)).fetchone()[0])
+said = [outcome]
+def walk(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "inline_result" and isinstance(item, str): said.append(base64.b64decode(item))
+            else: walk(item)
+    elif isinstance(value, list):
+        for item in value: walk(item)
+try: walk(json.loads(outcome))
+except ValueError: pass
+assert not any(sys.argv[3].encode() in text for text in said), "the late collection holds the prompt"
+assert b"words were cleared" in outcome, f"the late collection carries no note: {outcome[:400]!r}"
+PY
 }
 # cut_journal_facts <journal>: the machine journal, as JSON, by TensorD's own rule (`Journal::legacy_runs`): `legacy`, the ended runs no
 # project owns whose family retains nothing (no asset's `native_outputs` row); `kept`, the other ended runs no project owns; `ids`, every
