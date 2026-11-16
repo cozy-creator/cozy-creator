@@ -230,7 +230,7 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     const versions = (await project.asset(PHOTO)).versions;
     await off.click();
     await expect.poll(async () => (await project.asset(PHOTO)).tool || null, { message: 'the tool is off' }).toBeNull();
-    const note = page.locator('.notes .note').filter({ hasText: `${named(reader)} is off ${PHOTO}. Its pictures stay.` });
+    const note = page.locator('.notes .note').filter({ hasText: `Took ${named(reader)} off ${PHOTO}. Its images stay.` });
     await expect(note, 'a note says so, with Undo').toHaveCount(1);
     expect.soft((await project.asset(PHOTO)).versions, 'its picture stays').toBe(versions);
     await note.getByRole('button', { name: 'Undo', exact: true }).click();

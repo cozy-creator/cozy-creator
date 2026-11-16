@@ -332,7 +332,7 @@ test('render', async ({ page, project, api, cli }) => {
     await softly.poll(() => renderState(page, 'latent')).toBeNull();
 
     // Landed at rest: its note names it and its take, and View opens it on that take.
-    const note = page.locator('[data-note]').filter({ hasText: 'latent finished: version 1' });
+    const note = page.locator('[data-note]').filter({ hasText: 'Version 1 of latent is ready' });
     await expect.soft(note).toBeVisible();
     await note.getByRole('button', { name: 'View', exact: true }).click();
     region = focused(page);

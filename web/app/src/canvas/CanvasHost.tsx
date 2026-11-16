@@ -119,7 +119,7 @@ function ProjectSync({ id }: { id: string }) {
     if (stateError instanceof ApiError && stateError.status === 404) void queries.invalidateQueries({ queryKey: ["projects"] })
   }, [stateError, queries])
   useEffect(() => {
-    if (canvasError && !lost(canvasError)) say("Couldn't read where things sit", canvasError)
+    if (canvasError && !lost(canvasError)) say("Couldn't load where the boxes are", canvasError)
   }, [canvasError])
   useEffect(() => {
     const controller = new AbortController()
@@ -229,7 +229,7 @@ function Empty({ choose }: { choose: () => void }) {
   const home = useMatch({ path: "/", end: true })
   const making = useSignal(asked)
   if (!empty || (store.projectId && !store.hasRead) || !store.empty) return null
-  if (home && !store.projectId) return making ? null : <div className="empty-canvas"><p className="home-line">No project open. Pick one above, or press +.</p></div>
+  if (home && !store.projectId) return making ? null : <div className="empty-canvas"><p className="home-line">No project is open. Pick one above, or press + to start one.</p></div>
   return (
     <div className="empty-canvas">
       <button type="button" onClick={choose}>
@@ -1054,7 +1054,7 @@ export function CanvasHost(props: { projectId: string | null; active: boolean; s
   const view = useQuery({ ...projectViewQuery(client, stream, props.projectId ?? ""), enabled: Boolean(openedProject && props.projectId) })
   // A project Calcifer refuses to read (a newer schema, say) still opens its canvas: it says why there, and the tools stay.
   if (openedProject && !view.data && !(view.error instanceof ApiError)) {
-    return <div className="empty-canvas"><p>{view.error ? "Couldn't read this project's canvas view." : "Opening project…"}</p>{view.error && <button className="tb" onClick={() => void view.refetch()}>Retry</button>}</div>
+    return <div className="empty-canvas"><p>{view.error ? "Couldn't load this project's canvas." : "Opening project…"}</p>{view.error && <button className="tb" onClick={() => void view.refetch()}>Retry</button>}</div>
   }
   return <ReadyCanvas {...props} />
 }

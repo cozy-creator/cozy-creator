@@ -81,15 +81,15 @@ export const wordOf = (ref: string) => (ref.split("://").pop() ?? ref).split("@"
 export function whyNot(found: FoundModel, name: string, view: ElementView | undefined, tools: Map<string, Tool>): string | null {
   const word = wordOf(found.model)
   const made = view?.asset?.tool
-  if (!made || madeHere(made)) return `No model makes ${name}, so ${word} has nothing to go on`
+  if (!made || madeHere(made)) return `No model makes ${name}, so ${word} can't go on it`
   const tool = tools.get(made)
-  if (!tool) return `Can't tell which model ${name} runs, so ${word} stays off it`
+  if (!tool) return `Cozy can't tell which model ${name} uses, so ${word} can't go on it`
   const models = modelsOf(tool)
-  if (!models.length) return `${name} runs no one model, so ${word} has nothing to go on`
-  if (!found.kind || !found.family) return `Can't tell what ${word} is for, so it stays off ${name}`
+  if (!models.length) return `${name} doesn't use a single model, so ${word} can't go on it`
+  if (!found.kind || !found.family) return `Cozy can't tell which model ${word} is for, so it can't go on ${name}`
   const families = models.flatMap((model) => model.family ?? [])
-  if (!families.length) return `Can't tell which model ${name} runs, so ${word} stays off it`
-  return families.includes(found.family) ? null : `${word} is for ${found.family}, and ${name} runs ${families.join(", ")}`
+  if (!families.length) return `Cozy can't tell which model ${name} uses, so ${word} can't go on it`
+  return families.includes(found.family) ? null : `${word} is for ${found.family}, but ${name} uses ${families.join(", ")}`
 }
 
 /** The box under a point, its add-ons being part of it. */
@@ -147,7 +147,7 @@ export function runnerOf(found: FoundModel, tools: Map<string, Tool>): Tool | un
 /** A checkpoint carried: a LoRA joins those on a box, and a fine-tune takes the place of any there. A checkpoint runs on its own, so on open canvas it's
  *  a new box of the tool that runs it; a LoRA there goes nowhere. */
 export const carrying = (found: FoundModel, tools: Map<string, Tool>): Carried => ({
-  canvas: found.kind !== "weights" ? undefined : runnerOf(found, tools) ? true : `No tool runs ${found.family ? familyName(found.family, tools) : wordOf(found.model)} yet`,
+  canvas: found.kind !== "weights" ? undefined : runnerOf(found, tools) ? true : `No tool uses ${found.family ? familyName(found.family, tools) : wordOf(found.model)} yet`,
   whyNot: (name, view, tools) => whyNot(found, name, view, tools),
   put(store, name) {
     const lora = store.valueOf(name, "lora")

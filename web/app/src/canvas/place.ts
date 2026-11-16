@@ -110,7 +110,7 @@ export class Placer {
   addNode(kind: BasicNodeKind, point: { x: number; y: number }) {
     if (kind === "text") return this.addTool(TEXT_TOOL, point)
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
-    this.box(kind, { kind, fields: { node_kind: kind } }, at, `Couldn't create ${kind}`)
+    this.box(kind, { kind, fields: { node_kind: kind } }, at, `Couldn't add ${an(kind)} ${kind} box`)
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */
@@ -198,7 +198,7 @@ export class Placer {
   }
 
   private pasted(names: string[], edit: string, verb = "Pasted") {
-    say(`${verb} ${names.length === 1 ? names[0] : `${names.length} assets`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) }, ms: UNDO_MS })
+    say(`${verb} ${names.length === 1 ? names[0] : `${names.length} boxes`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) }, ms: UNDO_MS })
   }
 
   /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. Each takes its step and its turn
@@ -207,7 +207,7 @@ export class Placer {
     const kind = this.store.get(name)?.asset?.kind
     for (const file of files) {
       if (kind && file.type && file.type.split("/")[0] !== kind) {
-        say(`${name} is a ${kind} node and cannot take ${file.name}`)
+        say(`${name} is ${an(kind)} ${kind} box, so it can't take ${file.name}`)
         continue
       }
       const signal = new AbortController().signal
@@ -235,7 +235,7 @@ export class Placer {
       { landed: { sha256: file.sha256, field: file.field } },
       at,
       async (clear, write, pushes) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description, moves: pushes.moves, placed: pushes.placed }, write),
-      (error) => say(`Couldn't take out ${file.name}`, error),
+      (error) => say(`Couldn't move ${file.name} out onto the canvas`, error),
       (name, _, made) => !file.copy && from !== undefined && number !== undefined && this.store.movedOut(from, number, name, made),
       edit,
     )
@@ -370,4 +370,9 @@ export class Placer {
     )
     return this.made
   }
+}
+
+/** `a` or `an`, as `kind` is said. */
+function an(kind: string): string {
+  return /^[aeiou]/i.test(kind) ? "an" : "a"
 }

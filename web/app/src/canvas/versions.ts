@@ -13,7 +13,7 @@ export function versionOf(mention: string): { name: string; number: number } | n
 }
 
 /** What `<self>` is told. */
-export const NO_BARE_SELF = "<self> alone would change with every render: write <self.1>, the version to start from"
+export const NO_BARE_SELF = "<self> on its own would change with every render. Write <self.1> to start from version 1."
 
 export const isSelf = (mention: string) => nameKey(mention) === SELF
 
