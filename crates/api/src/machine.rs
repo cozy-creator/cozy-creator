@@ -1179,6 +1179,12 @@ pub struct StatusFrame {
     pub phase: String,
     /// os/arch
     pub platform: String,
+    /// Its distribution and kernel major.minor (`Ubuntu 24.04 (6.8)`); empty: unread.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub os_release: String,
+    /// Its host's memory; 0: unread.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub memory_bytes: u64,
     pub started_at_unix_ms: i64,
     /// Measured at boot.
     pub gpus: Vec<Gpu>,
@@ -1259,6 +1265,36 @@ pub struct StatusFrame {
     /// The caller's lists' items (`PUT /v1/upcoming`, `/v1/prepare`), each as its run stands: ready once it succeeded.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ahead: Vec<RunState>,
+    /// The newest lines of its `machine.log` (at most [`MACHINE_LOG_LINES`] and [`MACHINE_LOG_BYTES`]): its boot, software,
+    /// service, GPUs, disk, Hub lease and end, never a run or a project's content. Calcifer keeps them after the machine is
+    /// gone (cl-1012). On a stream, absent: as its last frame said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_log: Option<String>,
+}
+
+/// What `cozy machine logs` prints by default: what Calcifer keeps of a machine's own lines (`StatusFrame::machine_log`).
+pub const MACHINE_LOG_LINES: u64 = 200;
+/// Its kernel-boot lines are about 2 KB.
+pub const MACHINE_LOG_BYTES: usize = 64 << 10;
+
+/// The newest `lines` whole lines of `text` (0: all), within `bytes`.
+pub fn log_tail(text: &str, lines: u64, bytes: usize) -> &str {
+    let mut start = text.len().saturating_sub(bytes);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    if start > 0 {
+        start = text[start..].find('\n').map_or(text.len(), |i| start + i + 1);
+    }
+    let kept = &text[start..];
+    if lines == 0 {
+        return kept;
+    }
+    let body = kept.strip_suffix('\n').unwrap_or(kept);
+    match body.rmatch_indices('\n').nth(lines as usize - 1) {
+        Some((i, _)) => &kept[i + 1..],
+        None => kept,
+    }
 }
 
 /// A root not ended (`StatusFrame::queue`).

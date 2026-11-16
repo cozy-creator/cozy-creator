@@ -3,7 +3,8 @@
 //! that does not start, answers nothing while its process makes no progress, or runs another cozy
 //! than the installed one is restarted, which never stops work (machines run what they accepted).
 //! Then project folders other accounts may open, this computer's tools, and a machine's driver, GPUs,
-//! toolchain and kernels as its Status reports them. Exit 1 while a problem remains.
+//! toolchain and kernels as its Status reports them. Exit 1 while a problem remains. `--fix` first installs what this computer
+//! lacks of what cozy needs, as the installers do (cl-1030): `tools::fix`.
 use std::{
     path::Path,
     process::{Command, ExitCode, Stdio},
@@ -39,6 +40,10 @@ pub(crate) struct Args {
     /// Machine to check. Defaults to this computer.
     #[arg(long)]
     on: Option<String>,
+    /// Install what this computer lacks first: system packages (asking once before sudo) and the tools cozy
+    /// otherwise fetches when a feature first needs them. The installers run it.
+    #[arg(long)]
+    fix: bool,
 }
 
 /// One finding: what was looked at, what it is, and what doctor did about it.
@@ -64,6 +69,9 @@ impl Check {
 }
 
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+    if args.fix {
+        crate::tools::fix(ctx).await;
+    }
     let mut checks = calcifer(ctx).await;
     let up = checks.iter().all(|c| c.ok);
     checks.push(service(ctx));

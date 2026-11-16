@@ -1686,7 +1686,7 @@ impl Pool {
             let left = foreign.len();
             drop(foreign);
             for d in &back {
-                tracing::info!("GPU {}: the memory held at start is back; in service", pool.index(*d));
+                tracing::info!(target: crate::config::MACHINE, "GPU {}: the memory held at start is back; in service", pool.index(*d));
             }
             if !back.is_empty() || settled {
                 pool.refresh_out();
@@ -3079,7 +3079,7 @@ impl Pool {
                 }
             });
         if let Err(error) = started {
-            tracing::warn!("kernel boot: {error}");
+            tracing::warn!(target: crate::config::MACHINE, "kernel boot: {error}");
         }
     }
 
@@ -3162,7 +3162,7 @@ impl Pool {
             }
             Err(error) => line["failed"] = error.to_string().into(),
         }
-        tracing::info!("kernel boot: {line}");
+        tracing::info!(target: crate::config::MACHINE, "kernel boot: {line}");
         let written = fs::OpenOptions::new()
             .create(true)
             .append(true)

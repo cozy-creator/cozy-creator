@@ -130,7 +130,21 @@ pub(crate) struct Seen {
     stopped: bool,
     /// The boot this computer last vouched for to the rental's Hub, and when (cl-977).
     vouched: Option<(String, tokio::time::Instant)>,
+    /// Connected, it didn't answer its frame (xs-199): asked again in the background, and meanwhile no job is placed on it.
+    unanswered: Option<Unanswered>,
 }
+
+/// A machine connected that didn't answer its frame: the attempts so far, and whether every one went unanswered.
+#[derive(Clone, Copy)]
+struct Unanswered {
+    attempt: u32,
+    dropped: bool,
+}
+
+/// How many times a machine that doesn't answer its frame is asked, backing off between (1, 2, 4, 8 s), before no job waits for it.
+const STATUS_ATTEMPTS: u32 = 5;
+/// How often one that answered none of them is asked again: it's a candidate once it answers.
+const STATUS_AGAIN: Duration = Duration::from_secs(60);
 
 /// How often this computer vouches for a rental to its Hub while a run of its is live there (cl-977): a third of the Hub's 15-minute
 /// window, so two can be lost.
@@ -164,6 +178,7 @@ impl Machines {
             civitai: token(&config.civitai_token),
         };
         let local = crate::local::Local::new(&home, user_home, config);
+        let reports = crate::reports::Reports::new(config, &home);
         let me = Arc::new(Self {
             hubs: Hubs::new(&home, config.hub_url.clone()),
             providers: (providers != v1::ProviderAccess::default()).then_some(providers),
@@ -186,7 +201,7 @@ impl Machines {
             rc_ready: Notify::new(),
             lists: crate::ahead::Lists::default(),
             arrivals: tokio::sync::watch::channel(0).0,
-            reports: crate::reports::Reports::new(config),
+            reports,
             calcifer,
         });
         me.calcifer.serve_with(&me);
@@ -204,7 +219,6 @@ impl Machines {
             }
             Err(e) => warn!("reading the machines: {e}"),
         }
-        me.prune_kept();
         me.resume_asks();
         me.spawn(me.clone().local_tasks());
         me.spawn(me.clone().place_runs());
@@ -350,6 +364,7 @@ impl Machines {
         };
         if row.state != MachineState::Ended
             && self.offline(&row.name).is_none()
+            && self.not_answering(&row.name).is_none()
             && let Ok(Some(link)) = self.calcifer.link(&row.name)
         {
             match link.status().await {
@@ -364,8 +379,8 @@ impl Machines {
                     self.observe(&row.name, frame);
                 }
                 Err(LinkError::Unreachable(e)) => self.unreachable(&row.name, e),
-                // Connected but slow to answer: its last picture stands.
-                Err(_) => {}
+                // Connected but not answering: said so and asked again; its last picture stands for what's shown, never to place a job.
+                Err(e) => self.not_answered(&row.name, &e.to_string()),
             }
         }
         self.picture(&row)
@@ -704,7 +719,7 @@ impl Machines {
     }
 
     /// The newest `lines` whole lines (0: all) of a log the machine keeps.
-    /// A machine that cannot answer (ended, lost, unreachable) answers the copy Calcifer kept.
+    /// A machine that cannot answer (ended, lost, unreachable) answers its own lines Calcifer kept of its TensorD log.
     pub(crate) async fn logs(&self, text: &str, log: MachineLog, lines: u64) -> Result<Vec<u8>, Error> {
         let read = match self.linked(text) {
             Ok((row, link)) => link.read_log(log_name(log), lines).await.map_err(|e| log_refusal(&row.name, log, e)),
@@ -714,11 +729,21 @@ impl Machines {
             Err(error)
                 if matches!(
                     error.code.as_str(),
-                    "machine_ended" | "machine_unreachable" | "machine_unanswered"
+                    "machine_ended" | "machine_unreachable" | "machine_unanswered" | "machine_name_ended"
                 ) =>
             {
-                let row = self.named(text)?;
-                row.and_then(|row| self.kept_log(&row.name, log, lines)).ok_or(error)
+                let Some(row) = self.kept_named(text)? else { return Err(error) };
+                if log != MachineLog::Tensord {
+                    return Err(Error::new(
+                        Kind::NotFound,
+                        "machine_log_not_kept",
+                        format!("{} can't answer, and Calcifer keeps only its own lines of its TensorD log", row.name),
+                    )
+                    .next(format!("cozy machine logs {}", row.name)));
+                }
+                self.kept_log(&row.name, lines)
+                    .map(String::into_bytes)
+                    .ok_or_else(|| error.remedy("Calcifer kept none of its lines"))
             }
             read => read,
         }
@@ -733,13 +758,29 @@ impl Machines {
         lines: u64,
         after: Option<&str>,
     ) -> Result<crate::link::Live<v1::LogLines>, Error> {
-        let (row, link) = self.linked(text).map_err(|error| match self.named(text) {
-            Ok(Some(row)) if self.kept_log(&row.name, log, 1).is_some() => error
-                .remedy("without --follow, it prints the copy of the log Calcifer kept"),
+        let (row, link) = self.linked(text).map_err(|error| match self.kept_named(text) {
+            Ok(Some(row)) if log == MachineLog::Tensord && self.kept_log(&row.name, 1).is_some() => error
+                .remedy("without --follow, it prints its own lines Calcifer kept"),
             _ => error,
         })?;
         let lines = link.follow_log(log_name(log), lines, after).await;
         lines.map_err(|e| log_refusal(&row.name, log, e))
+    }
+
+    /// The machine whose kept lines `text` reads: as `named`, or by its name the one ended machine that had it when no live
+    /// one has (a rental id names it too; an added machine has none).
+    fn kept_named(&self, text: &str) -> Result<Option<MachineRow>, Error> {
+        match self.named(text) {
+            Err(error) if error.code == "machine_name_ended" => {
+                let mut ended = self.store().machines_named(text).map_err(internal)?;
+                ended.retain(|row| row.state == MachineState::Ended);
+                match ended.len() {
+                    1 => Ok(ended.pop()),
+                    _ => Err(error),
+                }
+            }
+            named => named,
+        }
     }
 
     pub(crate) fn row(&self, name: &str) -> Result<MachineRow, Error> {
@@ -812,7 +853,7 @@ impl Machines {
         }
         let (mut held, mut activity) = (vec![], vec![]);
         // Copied under the lock and worked out after it: a picture never holds up what a machine's Status says.
-        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), unreachable: seen.unreachable.clone(), silent: seen.silent.clone(), vouched: seen.vouched.clone(), ..*seen });
+        let seen = lock(&self.seen).get(&row.name).map(|seen| Seen { frame: seen.frame.clone(), boot: seen.boot.clone(), attempt: seen.attempt.clone(), unreachable: seen.unreachable.clone(), silent: seen.silent.clone(), vouched: seen.vouched.clone(), unanswered: seen.unanswered, ..*seen });
         if let Some(seen) = seen {
             if seen.stopped {
                 machine.state = MachineState::Stopped;
@@ -846,6 +887,7 @@ impl Machines {
             status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
         }
         machine.rc = self.rc_follow(&row.name, self.frame(&row.name).as_ref());
+        machine.held = self.held_by_hand(&row.name);
         let asked = match row.kind {
             MachineKind::Rental => store.rent_ask(&row.name).map_err(internal)?,
             _ => None,
@@ -987,15 +1029,7 @@ impl Machines {
             task.abort();
         }
         if let Some(endpoint) = endpoint {
-            let status = self.clone().follow_status(row.name.clone(), row.kind);
-            // Another client's rental is read live: its logs are its client's to keep.
-            let logs = self.ordered(row).then(|| self.clone().keep_logs(row.name.clone(), row.kind));
-            let task = self.spawn(async move {
-                match logs {
-                    Some(logs) => drop(tokio::join!(status, logs)),
-                    None => status.await,
-                }
-            });
+            let task = self.spawn(self.clone().follow_status(row.name.clone(), row.kind));
             watching.insert(row.name.clone(), (endpoint, task));
         }
     }
@@ -1118,6 +1152,9 @@ impl Machines {
     }
 
     fn observe(&self, name: &str, mut frame: v1::StatusFrame) {
+        if let Some(text) = frame.machine_log.take() {
+            self.keep_log(name, &text);
+        }
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
         self.lists.observe(name, &frame);
@@ -1147,6 +1184,7 @@ impl Machines {
             seen.heard = Some(crate::store::now_ms());
             seen.since = None;
             seen.silent = None;
+            seen.unanswered = None;
             seen.unreachable.take().is_some()
         };
         // Its runs and exports that wait on it try again now.
@@ -1193,6 +1231,114 @@ impl Machines {
                     tracing::debug!(machine = name, "its Hub takes no vouch now: {}", e.message)
                 }
                 Err(e) => warn!(machine = name, "telling its Hub this computer's runs are live there: {}", e.message),
+            }
+        });
+    }
+
+    /// Its frame as it answers now, each ask at most the machine client's bound (xs-199). One connected that doesn't answer is said not
+    /// to (its reason on the board) and asked again in the background (`unanswered`); meanwhile this answers at once, never waiting on it.
+    pub(crate) async fn status_read(self: &Arc<Self>, name: &str, link: &Link) -> Result<v1::StatusFrame, String> {
+        if let Some((why, _)) = self.not_answering(name) {
+            return Err(why);
+        }
+        match link.status().await {
+            Ok(frame) => {
+                self.answered(name);
+                Ok(frame)
+            }
+            Err(LinkError::Unreachable(e)) => {
+                self.unreachable(name, e.clone());
+                Err(e)
+            }
+            Err(e) => {
+                self.not_answered(name, &e.to_string());
+                Err(self.not_answering(name).map_or_else(|| e.to_string(), |(why, _)| why))
+            }
+        }
+    }
+
+    /// Why `name` isn't answering its frame, and whether it answered none of its attempts (no job waits for it); none while it answers.
+    pub(crate) fn not_answering(&self, name: &str) -> Option<(String, bool)> {
+        let seen = lock(&self.seen);
+        let seen = seen.get(name)?;
+        let unanswered = seen.unanswered?;
+        Some((seen.unreachable.clone().unwrap_or_else(|| "it isn't answering".into()), unanswered.dropped))
+    }
+
+    /// `name` answered: a candidate again, on what it says.
+    fn answered(&self, name: &str) {
+        let back = {
+            let mut seen = lock(&self.seen);
+            let Some(seen) = seen.get_mut(name) else { return };
+            match seen.unanswered.take() {
+                Some(_) => {
+                    seen.unreachable = None;
+                    seen.since = None;
+                    true
+                }
+                None => false,
+            }
+        };
+        if back {
+            tracing::info!(machine = name, "it answers again");
+            self.calcifer.touch(name);
+            self.calcifer.machine_changed();
+        }
+    }
+
+    /// `name`, connected, didn't answer its frame (`error`): said so, and asked again in the background, backing off 1, 2, 4, 8 s, each
+    /// attempt said; after `STATUS_ATTEMPTS` no job waits for it, and it is asked every `STATUS_AGAIN` until it answers.
+    fn not_answered(self: &Arc<Self>, name: &str, error: &str) {
+        let first = {
+            let mut seen = lock(&self.seen);
+            let seen = seen.entry(name.to_owned()).or_default();
+            let first = seen.unanswered.is_none();
+            seen.unanswered.get_or_insert(Unanswered { attempt: 1, dropped: false });
+            first
+        };
+        if !first {
+            return;
+        }
+        warn!(machine = name, "it doesn't answer: {error} (attempt 1 of {STATUS_ATTEMPTS})");
+        self.unreachable(name, format!("it doesn't answer: {error} (attempt 1 of {STATUS_ATTEMPTS})"));
+        let me = self.clone();
+        let name = name.to_owned();
+        self.spawn(async move {
+            loop {
+                let Some(unanswered) = lock(&me.seen).get(&name).and_then(|seen| seen.unanswered) else { return };
+                let wait = match unanswered.dropped {
+                    true => STATUS_AGAIN,
+                    false => Duration::from_secs(1 << (unanswered.attempt - 1)),
+                };
+                tokio::time::sleep(wait).await;
+                if lock(&me.seen).get(&name).is_none_or(|seen| seen.unanswered.is_none()) {
+                    return;
+                }
+                let Ok(Some(link)) = me.calcifer.link(&name) else {
+                    me.answered(&name);
+                    return;
+                };
+                let error = match link.status().await {
+                    Ok(_) => {
+                        me.answered(&name);
+                        return;
+                    }
+                    Err(e) => e.to_string(),
+                };
+                let reason = {
+                    let mut seen = lock(&me.seen);
+                    let Some(held) = seen.get_mut(&name).and_then(|seen| seen.unanswered.as_mut()) else { return };
+                    match held.dropped {
+                        true => format!("it hasn't answered after {STATUS_ATTEMPTS} attempts: {error}; asked again every {} s", STATUS_AGAIN.as_secs()),
+                        false => {
+                            held.attempt += 1;
+                            held.dropped = held.attempt >= STATUS_ATTEMPTS;
+                            format!("it doesn't answer: {error} (attempt {} of {STATUS_ATTEMPTS})", held.attempt)
+                        }
+                    }
+                };
+                warn!(machine = name, "{reason}");
+                me.unreachable(&name, reason);
             }
         });
     }

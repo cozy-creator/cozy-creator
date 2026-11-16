@@ -41,8 +41,6 @@ pub(crate) struct Hubs {
     listings: Mutex<HashMap<String, Listing>>,
     /// This computer's account at each Hub and where machines read it, for runs' access.
     pub(crate) facts: Mutex<HashMap<config::Origin, crate::access::Facts>>,
-    /// What each Hub said a function took on the cards it rents, by origin and function, and when it said it.
-    run_times: Mutex<HashMap<(String, String), (std::time::Instant, Option<types::RunTimes>)>>,
 }
 
 /// A boot its Hub keeps no history for: about this long from its attempt's start to serving (cl-915).
@@ -51,23 +49,18 @@ pub(crate) const BOOT_MS: i64 = 240_000;
 const OVERDUE_MS: i64 = 30_000;
 /// An order its Hub has had no pod for this long waits for capacity: it isn't coming by any time known.
 const NO_STOCK_MS: i64 = 60_000;
-/// How long what a Hub said of a function's times is kept, and how long it may take to say it.
-const RUN_TIMES_KEPT: Duration = Duration::from_secs(600);
-const RUN_TIMES_LATE: Duration = Duration::from_secs(2);
 
 /// A rental on its way, by its Hub's last word.
 pub(crate) struct OnItsWay {
     /// When it should serve, on this computer's clock.
     pub ready_at_ms: i64,
-    /// Its product as its Hub sells it (`rtx-4090`), and its card (`RTX 4090`); empty where its Hub didn't say.
-    pub sku: String,
+    /// Its card (`RTX 4090`); empty where its Hub didn't say.
     pub card: String,
     pub gpus: u32,
 }
 
 /// What a `new` run would rent (`Machines::new_rental`).
 pub(crate) struct NewRental {
-    pub sku: String,
     pub card: String,
     pub gpus: u32,
     /// From its order to serving: its Hub's recent boots of it, else a typical boot.
@@ -92,7 +85,6 @@ impl Hubs {
             hub,
             listings: Mutex::default(),
             facts: Mutex::default(),
-            run_times: Mutex::default(),
         }
     }
 
@@ -176,24 +168,8 @@ impl Hubs {
     pub(crate) fn on_its_way(&self, row: &MachineRow, now: i64) -> Option<OnItsWay> {
         let rental = self.rental(&row.hub, row.rental_id.as_deref()?)?;
         let ready_at_ms = ready_at(&rental, now)?;
-        let sku = rental.sku.clone().filter(|sku| !sku.is_empty()).unwrap_or_default();
         let gpus = u32::try_from(rental.accelerator_count).unwrap_or_default();
-        Some(OnItsWay { ready_at_ms, sku, card: rental.requested_accelerator_model.clone(), gpus })
-    }
-
-    /// What `function` (`org/package/function`) took on each GPU, as `origin` said within the last minutes from every cozy's
-    /// anonymous reports; none from a Hub that keeps none or didn't answer in time. Asked with no credential.
-    pub(crate) async fn run_times(&self, origin: &str, function: &str) -> Option<types::RunTimes> {
-        let key = (origin.to_owned(), function.to_owned());
-        if let Some((at, said)) = lock(&self.run_times).get(&key)
-            && at.elapsed() < RUN_TIMES_KEPT
-        {
-            return said.clone();
-        }
-        let asked = async { self.anonymous(origin).ok()?.run_times(function).await.ok() };
-        let said = tokio::time::timeout(RUN_TIMES_LATE, asked).await.ok().flatten();
-        lock(&self.run_times).insert(key, (std::time::Instant::now(), said.clone()));
-        said
+        Some(OnItsWay { ready_at_ms, card: rental.requested_accelerator_model.clone(), gpus })
     }
 
     /// Adds the Hub's word to a recorded rental: its prices and times, whether its Hub answered
@@ -936,7 +912,6 @@ impl Machines {
     pub(crate) async fn new_rental(&self, hub: &str, spec: &v1::RunSpec) -> Result<NewRental, Error> {
         let placed = self.placement(hub, spec, None).await?;
         Ok(NewRental {
-            sku: placed.sku,
             card: placed.card,
             gpus: placed.gpus.unwrap_or(1).max(1),
             boot_ms: placed.boot_ms.unwrap_or(BOOT_MS),

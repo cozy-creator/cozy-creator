@@ -269,6 +269,13 @@ pub(crate) async fn admit_project(api: &Api, named: &str) -> Result<tokio::sync:
     admit_root(&root).await
 }
 
+/// [`admit_project`], with the project's root: an upload that lets go of the gate while a lock waits asks for it again by it.
+pub(crate) async fn admit_project_root(api: &Api, named: &str) -> Result<(PathBuf, tokio::sync::OwnedRwLockReadGuard<()>), Error> {
+    let root = location(api, named)?;
+    let held = admit_root(&root).await?;
+    Ok((root, held))
+}
+
 pub(crate) async fn admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
     let guard = access(root).read_owned().await;
     view(root)?;
@@ -281,6 +288,11 @@ pub(crate) fn try_admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLockRe
     let guard = access(root).try_read_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "the project's storage is changing; retry after it finishes"))?;
     view(root)?;
     Ok(guard)
+}
+
+/// Whether a lock waits for this project, or holds it: what holds a read of it for long (an upload's body) lets go then, and asks again.
+pub(crate) fn lock_waiting(root: &FsPath) -> bool {
+    access(root).try_read_owned().is_err()
 }
 
 /// An already accepted walker may finish while viewing is closing, but only on its own mount.

@@ -108,17 +108,23 @@ pub(crate) enum Supervised {
 /// linked file counts no byte), and its group is killed when `stop` is canceled. The second is
 /// resolution, never a verdict.
 pub(crate) fn supervise(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> io::Result<Supervised> {
-    watch(child, stop, wrote, None)
+    watch(child, stop, wrote, None, false)
+}
+
+/// `supervise` for an install's step (uv): each second, what its group's own sockets received goes to TensorFS
+/// (`tensorfs::fetch::install_received`), whose weights leave the link to it while it downloads (cl-1007).
+pub(crate) fn supervise_install(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> io::Result<Supervised> {
+    watch(child, stop, wrote, None, true)
 }
 
 /// `supervise` for work no run waits on, an update's staging (cl-977): its group is also killed once it shows no progress at
 /// all (no CPU used or owed, no byte read or written: `platform::process::meter`) for `platform::contain::STALL`, answered as a
 /// `TimedOut` error saying so. An update never hangs on a resolver or an install that stopped moving.
 pub(crate) fn supervise_progressing(child: &mut Child, stop: Option<&crate::stop::Stop>) -> io::Result<Supervised> {
-    watch(child, stop, &|_| (), Some(platform::contain::STALL))
+    watch(child, stop, &|_| (), Some(platform::contain::STALL), false)
 }
 
-fn watch(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64), stall: Option<Duration>) -> io::Result<Supervised> {
+fn watch(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64), stall: Option<Duration>, install: bool) -> io::Result<Supervised> {
     let exact = match Birth::of(child.id()).map_err(io::Error::from) {
         Ok(birth) => Exact::open(&birth)?,
         Err(error) if gone(&error) => None,
@@ -132,6 +138,7 @@ fn watch(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64
     let mut writes = std::collections::HashMap::new();
     // What the group showed of progress, and since when it showed nothing new (`stall` only).
     let (mut shown, mut still) = (std::collections::HashMap::new(), std::time::Instant::now());
+    let mut received = platform::net::Received::default();
     while !exact.wait_for(Duration::from_secs(1))? {
         if canceled {
             continue;
@@ -142,6 +149,9 @@ fn watch(child: &mut Child, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64
             *held = (*held).max(bytes);
         }
         wrote(writes.values().sum());
+        if install {
+            tensorfs::fetch::install_received(received.read(&group));
+        }
         if let Some(stall) = stall {
             // A member whose meter can't be read decides nothing: it counts as moving.
             let mut moved = false;
@@ -215,7 +225,7 @@ pub(crate) fn keep_cores() {
                     let prefix = name.to_string_lossy().split('%').next().unwrap_or_default().to_string();
                     let _ = CORES.set((dir.to_path_buf(), prefix));
                 }
-                Err(error) => tracing::info!("executor cores: {} not made: {error}", dir.display()),
+                Err(error) => tracing::info!(target: crate::config::MACHINE, "executor cores: {} not made: {error}", dir.display()),
             }
         }
         let cap: u64 = free.map_or(32 << 30, |free| (free / 2).min(32 << 30));
@@ -224,7 +234,7 @@ pub(crate) fn keep_cores() {
             limit.current = Some(cap);
             let _ = setrlimit(Resource::Core, limit);
         }
-        tracing::info!(
+        tracing::info!(target: crate::config::MACHINE,
             "executor cores: core_pattern {}, at most {} MiB each",
             pattern.trim(),
             getrlimit(Resource::Core).current.map_or(u64::MAX, |bytes| bytes >> 20)
@@ -242,7 +252,7 @@ pub(crate) fn kept_core(status: &ExitStatus) {
             return;
         }
         let Some((dir, prefix)) = CORES.get().filter(|(_, prefix)| !prefix.is_empty()) else {
-            return tracing::warn!("an executor left a core where core_pattern sends it");
+            return tracing::warn!(target: crate::config::MACHINE, "an executor left a core where core_pattern sends it");
         };
         let mut cores: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
             .into_iter()

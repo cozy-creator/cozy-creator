@@ -193,7 +193,7 @@ case $shard in
   web-*) [ ! -f "$here/cli/web/${shard#web-}.spec.js" ] || key=cli:web-suite ;;
 esac
 case $key in
-  cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web) needs='' ;;
+  cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web | cli:projectvault-static | cli:projectvault-static-distros) needs='' ;;
   cli:selfupdate) needs='next' ;;
   cli:runs | cli:local-code) needs='packages birefnet' ;;
   # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a
@@ -384,7 +384,8 @@ if [ -n "$needs" ]; then
     rm -f "$seed/disk.safetensors"
   fi
   if [[ " $needs " == *" spare "* ]]; then
-    random_weights "$seed/pagebox.safetensors" 900
+    # ondemand_share's weights (cl-1007): more than the 60 Mbit link moves while its install runs.
+    random_weights "$seed/pagebox.safetensors" 1600
     mirror "$seed/pagebox.safetensors" lilylilith/pagebox bf16 0.1.0 https://huggingface.co/lilylilith/pagebox --source-format as-is
     rm -f "$seed"/*.safetensors
   fi

@@ -125,7 +125,7 @@ impl Service {
         // executors' own scopes; every such scope of this machine is ended now.
         match platform::contain::Scope::sweep(&platform::contain::namespace(root)) {
             Ok(0) => (),
-            Ok(held) => tracing::info!("ended {held} process(es) left in earlier executor scopes"),
+            Ok(held) => tracing::info!(target: crate::config::MACHINE, "ended {held} process(es) left in earlier executor scopes"),
             Err(error) if error.is_unsupported() => (),
             Err(error) => return Err(io::Error::other(error)),
         }

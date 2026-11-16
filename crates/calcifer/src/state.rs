@@ -73,15 +73,13 @@ pub(crate) struct KnownProject {
     pub name: String,
     pub path: PathBuf,
     pub used_at_ms: i64,
-    /// Its walk was going: the next start walks it again.
-    pub walking: bool,
 }
 
 fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
     let path = PathBuf::from(row.get::<_, String>(1)?);
     let name = Some(row.get::<_, String>(4)?).filter(|name| !name.is_empty());
     let name = name.unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
-    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, key: row.get::<_, Option<String>>(6)?.unwrap_or_default(), name, path, used_at_ms: row.get(2)?, walking: row.get(3)? })
+    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, key: row.get::<_, Option<String>>(6)?.unwrap_or_default(), name, path, used_at_ms: row.get(2)? })
 }
 
 /// `known`'s columns, from `projects`.
@@ -331,7 +329,6 @@ impl Store {
     }
 
     /// Whether each project is being walked, which the next start walks again.
-    pub(crate) fn projects_walking(&self, _walking: &[(String, bool)]) -> Result<()> { Ok(()) }
 
     /// Your tool list.
     pub(crate) fn tool_list(&self) -> Result<ToolList> {

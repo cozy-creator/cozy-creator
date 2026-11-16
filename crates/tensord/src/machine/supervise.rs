@@ -145,7 +145,7 @@ pub(crate) fn supervise(
             std::process::exit(0);
         }
         if code == super::update::REPLACE_EXIT || code == super::binary::EXEC_EXIT {
-            tracing::info!("starting the service on its updated software");
+            tracing::info!(target: crate::config::MACHINE, "starting the service on its updated software");
             failures_before_ready = 0;
             continue;
         }
@@ -154,14 +154,14 @@ pub(crate) fn supervise(
             let said = super::update::service_error(paths).map(|line| format!(": {line}")).unwrap_or_default();
             let cause = format!("the service exited twice before readiness ({code}){said}");
             if let Recovered::Nothing = super::update::rollback_pending(paths, &cause)? {
-                tracing::error!("{cause}; stopping");
+                tracing::error!(target: crate::config::MACHINE, "{cause}; stopping");
                 std::process::exit(code);
             }
-            tracing::warn!("{cause}; update rolled back");
+            tracing::warn!(target: crate::config::MACHINE, "{cause}; update rolled back");
             failures_before_ready = 0;
             continue;
         }
-        tracing::warn!("the service exited ({code}); starting it again");
+        tracing::warn!(target: crate::config::MACHINE, "the service exited ({code}); starting it again");
     }
 }
 
@@ -233,7 +233,7 @@ pub(crate) fn supervise(paths: &super::update::Paths, provider: Option<ProviderS
         }
         // An activated binary is exec'd as the loop recovers its published activation.
         if code == super::update::REPLACE_EXIT || code == super::binary::EXEC_EXIT {
-            tracing::info!("starting the service on its updated software");
+            tracing::info!(target: crate::config::MACHINE, "starting the service on its updated software");
             failures_before_ready = 0;
             continue;
         }
@@ -243,13 +243,13 @@ pub(crate) fn supervise(paths: &super::update::Paths, provider: Option<ProviderS
             let cause = format!("the service exited twice before readiness ({code}){said}");
             match super::update::rollback_pending(paths, &cause)? {
                 Recovered::Nothing => {
-                    tracing::error!("{cause}; stopping");
+                    tracing::error!(target: crate::config::MACHINE, "{cause}; stopping");
                     end_rental(provider.as_ref());
                     end(code, listeners);
                 }
-                Recovered::Restored => tracing::warn!("{cause}; update rolled back"),
+                Recovered::Restored => tracing::warn!(target: crate::config::MACHINE, "{cause}; update rolled back"),
                 Recovered::Exec(launch) => {
-                    tracing::warn!("{cause}; update rolled back to the previous binary");
+                    tracing::warn!(target: crate::config::MACHINE, "{cause}; update rolled back to the previous binary");
                     exec(paths, &launch, provider.as_ref(), listeners, &signals)?;
                 }
             }

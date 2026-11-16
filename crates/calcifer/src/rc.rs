@@ -267,11 +267,17 @@ impl Machines {
             None => self.rc.now().await.inspect_err(|e| warn!(machine = name, "the open RC's builds: {}", e.message)).ok()?,
         };
         let behind = sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()], local);
-        if behind.is_empty() {
+        // `local` runs the cozy installed here (xs-195, cl-1029): once an install replaced it, its TensorD moves to it at rest, whether or not
+        // the RC's Runtime and TensorFS moved too (the update carries it: `cozy X (installed)`).
+        let installed = match local {
+            true => crate::update::installed(self).await.filter(|installed| *installed != frame.version),
+            false => None,
+        };
+        if behind.is_empty() && installed.is_none() {
             return None;
         }
         let rental = row.rental_id.as_deref().unwrap_or(name);
-        let wanted: Vec<&str> = behind.iter().map(|(_, version)| version.as_str()).collect();
+        let wanted: Vec<&str> = behind.iter().map(|(_, version)| version.as_str()).chain(installed.as_deref()).collect();
         let key = format!("rc-{rental}-{}-{}", frame.boot_id, wanted.join("-"));
         match self.update(&key, name, MachineUpdate::default()).await {
             Ok((updating, fresh)) => {
@@ -335,10 +341,18 @@ impl Machines {
         if said.is_empty() {
             return follow("none", format!("rc-{} holds no build for {}", sums.rc, frame.platform));
         }
-        match sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()], local).is_empty() {
-            true => follow("current", said),
-            false if local => follow("behind", format!("moves to {said} once this computer has been at rest for {} s", AT_REST.as_secs())),
-            false => follow("behind", format!("moves to {said} once it has no work")),
+        // `local`'s cozy is the one installed here, as the follower last read it.
+        let installed = local.then(|| crate::update::installed_known(self)).flatten().filter(|installed| *installed != frame.version);
+        let behind = sums.behind(&frame.platform, [frame.runtime.as_str(), frame.tensorfs.as_str(), frame.version.as_str()], local);
+        match (behind.is_empty(), installed) {
+            (true, None) => follow("current", said),
+            (current, Some(installed)) => {
+                let cozy = format!("cozy {} (installed)", prerelease::shown(&installed));
+                let to = if current { cozy } else { format!("{said} · {cozy}") };
+                follow("behind", format!("moves to {to} once this computer has been at rest for {} s", AT_REST.as_secs()))
+            }
+            (false, None) if local => follow("behind", format!("moves to {said} once this computer has been at rest for {} s", AT_REST.as_secs())),
+            (false, None) => follow("behind", format!("moves to {said} once it has no work")),
         }
     }
 

@@ -1,0 +1,1 @@
+- A project's plan times its local code by that project's own runs, and can quote `local` with the installs the project made there (cl-1047).

@@ -31,6 +31,7 @@ parse "$@"
 . "$(dirname "$0")/fallback.sh"
 . "$(dirname "$0")/previews.sh"
 . "$(dirname "$0")/released.sh"
+. "$(dirname "$0")/installed.sh"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
@@ -40,10 +41,13 @@ parse "$@"
 . "$(dirname "$0")/render.sh"
 . "$(dirname "$0")/source.sh"
 . "$(dirname "$0")/envcost.sh"
+. "$(dirname "$0")/notraces.sh"
 . "$(dirname "$0")/egress.sh"
 . "$(dirname "$0")/stuck.sh"
 . "$(dirname "$0")/rentalself.sh"
 . "$(dirname "$0")/reports.sh"
+. "$(dirname "$0")/endedlogs.sh"
+. "$(dirname "$0")/fresh.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -77,7 +81,7 @@ step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
-case $SHARD in projectvault | plan | stuck | coming) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | plan | stuck | coming) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -354,6 +358,34 @@ code=0; wait "$lister" || code=$?
 wait "$submitter" || true
 }
 
+# cl-1028: a plaintext project's run going when Calcifer restarts, its client gone and nothing opening the project, is taken up by the
+# next Calcifer at start and settles in its project.db. One that took up only its own runs left it `accepted` until something opened the
+# project (containment dropped the global walking flag, 2969bb2ca). The project is read from its file alone: any cozy command would open it.
+restart_resumes() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a project's run going across a Calcifer restart, its client gone, settles with nothing opening the project (cl-1028)"
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder db=$RUN_PROJECT/project.db n client pid state=
+(cd "$RUN_PROJECT" && exec cozy --json run "$here/weightless/wait" seconds:=30 --on local) > "$OUT/resume-run.ndjson" 2> "$OUT/resume-run.err" & client=$!
+for _ in $(seq 240); do grep -q '"run.in_progress"' "$OUT/resume-run.ndjson" 2> /dev/null && break; sleep 0.5; done
+n=$(grep -m1 -oE '"number": *[0-9]+' "$OUT/resume-run.ndjson" | grep -oE '[0-9]+$') || n=
+grep -q '"run.in_progress"' "$OUT/resume-run.ndjson" && [ -n "$n" ] \
+  || { check "restart resumes: the run never went: $(tail -c 300 "$OUT/resume-run.err")"; kill -9 "$client" 2> /dev/null; return; }
+sleep 2
+kill -9 "$client" 2> /dev/null; wait "$client" 2> /dev/null || true
+pid=$(jq -r .pid "$holder")
+systemctl --user restart cozy-calcifer || check "restart resumes: systemctl --user restart cozy-calcifer failed"
+for _ in $(seq 120); do [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] && [ -s "$holder" ] && break; sleep 0.5; done
+for _ in $(seq 150); do
+  state=$(python3 -c 'import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=5)
+print("/".join(map(str, c.execute("SELECT state, status FROM runs WHERE number = ?", (int(sys.argv[2]),)).fetchone() or ())))' "$db" "$n" 2> /dev/null) || state=
+  [ "${state%%/*}" = settled ] && break
+  sleep 1
+done
+[ "$state" = settled/completed ] \
+  || check "restart resumes: run $n is ${state:-unread} 150 s after Calcifer restarted, with nothing opening its project: $(grep -a 'resum' "$HOME/.cozy/calcifer/health.log" 2> /dev/null | tail -3)"
+}
+
 # cl-716 B: a run followed while Calcifer restarts goes on being followed to its end; a burst of restarts past
 # systemd's start limit (five in 10 s) leaves Calcifer startable by the next command. Last, as these stop Calcifer.
 calcifer_restarts() {
@@ -520,6 +552,7 @@ case $SHARD in
     basics
     component_models
     second_project
+    lock_platforms
     yaml_requests
     run_flags
     run_follow
@@ -568,6 +601,7 @@ case $SHARD in
     calcifer_restarts
     stuck_exit
     update
+    installed_follow
     remove
   " ;;
   runs) parts="
@@ -588,9 +622,12 @@ case $SHARD in
     kept_preparing
     released_project
     update
+    installed_follow
     remove
   " ;;
   # A project the newest release made, read by the candidate (cl-930); then the release refuses the candidate's store.
+  # Paul's no-traces invariant on this runner's OS (macOS, Windows): containment's lock scans without its browser or root (cl-984).
+  notraces) parts="no_traces logs" ;;
   released) parts="released_project update logs" ;;
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
@@ -600,7 +637,7 @@ case $SHARD in
   # A second project's first install and run against the first's (cl-984): by dispatch, as it builds seven environments.
   env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
-  ondemand) parts="ondemand_ahead ondemand_need ondemand_install logs" ;;
+  ondemand) parts="ondemand_ahead ondemand_need ondemand_share logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
@@ -612,6 +649,7 @@ case $SHARD in
     basics
     component_models
     second_project
+    lock_platforms
     yaml_requests
     run_filters
     project_keys
@@ -645,6 +683,8 @@ case $SHARD in
   " ;;
   # Calcifer restarted on a large store, its disk slow (cl-1010).
   restart) parts="state_restart logs" ;;
+  # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
+  fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
   web-2) web_cells=(${WEB_2[@]+"${WEB_2[@]}"}); parts="web_lane logs" ;;
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
@@ -670,6 +710,7 @@ case $SHARD in
     completions
     calcifer_faults
     watch_restart
+    restart_resumes
     calcifer_restarts
     logs
   " ;;
@@ -702,17 +743,26 @@ case $SHARD in
   projectdb-closes) parts="db_closes logs" ;;
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
+  # cl-1000: the static provider timed beside the glibc build, then on FUSE 3 alone through cozy, then on fresh Ubuntu and Fedora
+  # (e2e.yaml builds the probe and installs fuse3 and libfuse2t64 for it).
+  projectvault-static) parts="vault_throughput vault_fuse3 vault_distros logs" ;;
+  # Its containers alone (dispatch only).
+  projectvault-static-distros) parts="vault_distros logs" ;;
   projectvault) parts="
     idle_vault
     vault_times
+    vault_queue
     shared_scratch
     project_traces
     open_unlocks
     projectvault
     vault_leftovers
     vault_swapped
+    ended_logs
     logs
   " ;;
+  # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
+  projectvault-ended-logs) parts="ended_logs logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   # Dispatch-only: a large 0.24 home's first start here, and 100 project reads after it (containmentscale.sh).
   containment-scale) parts="containment_scale logs" ;;
@@ -724,6 +774,8 @@ case $SHARD in
   projectdb-migrate) parts="db_migrate logs" ;;
   # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984).
   projectdb-legacy) parts="db_legacy logs" ;;
+  # A lock passing over a release no rental can install (cl-1011).
+  lock-platforms) parts="lock_platforms logs" ;;
   # Old runs an ended rental made import as the project's own, and the project takes new work (cl-1003).
   projectdb-remote-custody) parts="db_remote_custody logs" ;;
   # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
@@ -734,6 +786,8 @@ case $SHARD in
   projectdb-opens) parts="db_opens logs" ;;
   # A run watched across Calcifer restarts, one whose lock record lands late (cl-885).
   follow-watch) parts="watch_restart logs" ;;
+  # A project's run going across a Calcifer restart, its client gone, settles with nothing opening the project (cl-1028).
+  follow-resume) parts="restart_resumes logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-cancel) parts="db_cancel_undo logs" ;;
   projectdb-cancelrace) parts="db_cancel_race logs" ;;
@@ -794,7 +848,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | web-serves) ;;
+    entrypoints | projectvault | web-serves | notraces | fresh) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints
