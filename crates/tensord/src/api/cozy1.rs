@@ -611,6 +611,10 @@ impl Cozy {
             .keys
             .check(|keys| capability::verify(token, &authority.worker_id, keys, unix_now(), &binding));
         match verified {
+            // A workspace is granted with its run alone (cl-1066).
+            Ok((grant, _)) if !grant.scope.is_empty() && grant.run.is_empty() => {
+                self.bye("auth", "a capability grants a project's workspace only with its run")
+            }
             Ok((grant, signer)) => {
                 let mut welcome = json!({"t": "welcome", "v": 1, "machine": grant.machine,
                     "run": grant.run, "expires": grant.expires});
@@ -720,7 +724,7 @@ impl Cozy {
         };
         let (runs, work) = (self.media.runs.clone(), self.work.clone());
         // Off the session: opening an output may wait on the journal.
-        let task = tokio::spawn(serve_in(get, runs, actor, grant.scope, target, work));
+        let task = tokio::spawn(serve_in(get, runs, actor, (grant.scope, grant.generation), target, work));
         self.streams.push(Stream {
             id,
             number: self.number,
@@ -919,12 +923,13 @@ fn end(target: &Target, status: Option<&str>, snapshot: Option<&OutputSnapshot>)
 }
 
 /// One byte range of an output's current bytes; a stale etag answers `changed`.
-/// A project's run is read in the project's workspace (cl-1066), open on this computer by the grant's signer.
+/// A project's run is read in the project's workspace (cl-1066), open on this computer by the grant's signer, unencrypted, at the
+/// generation the grant names.
 async fn serve_in(
     get: bool,
     runs: Arc<Runs>,
     actor: VerifiedActor,
-    project: String,
+    (project, generation): (String, u64),
     target: Target,
     work: mpsc::UnboundedSender<Work>,
 ) {
@@ -932,9 +937,9 @@ async fn serve_in(
         true => None,
         false => {
             let signer = actor_id(actor);
-            let open = tokio::task::spawn_blocking(move || crate::private_io::opened(&project, &signer)).await;
+            let open = tokio::task::spawn_blocking(move || crate::private_io::opened(&project, generation, &signer)).await;
             let Ok(Some(scope)) = open else {
-                let shut = Error::unavailable("project_not_open", "the run's project isn't open on this computer");
+                let shut = Error::unavailable("project_not_open", "the link's project isn't open on this computer as it was when the link was made");
                 let _ = work.send(Work::Stop { number: target.number, message: source_error(&target.id, &shut) });
                 return;
             };

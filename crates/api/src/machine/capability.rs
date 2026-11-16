@@ -40,9 +40,12 @@ pub struct Grant {
     #[serde(rename = "p", default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<String>,
     /// The project workspace `run` was made in on this computer's machine (its private storage's project id), whose outputs the
-    /// machine opens there, as long as the signer has it open; empty: the machine's own runs.
+    /// machine opens there, as long as the signer has it open, unencrypted; empty: the machine's own runs. Only with a `run`.
     #[serde(rename = "s", default, skip_serializing_if = "String::is_empty")]
     pub scope: String,
+    /// `scope`'s generation as the link was made: an encryption or a rekey since ends the link.
+    #[serde(rename = "g", default, skip_serializing_if = "is_zero")]
+    pub generation: u64,
     /// Unix seconds.
     #[serde(rename = "e")]
     pub expires: i64,
@@ -52,6 +55,10 @@ pub struct Grant {
     /// The client's DTLS certificate (`sha-256 AB:…`), WebRTC only.
     #[serde(rename = "x", default, skip_serializing_if = "String::is_empty")]
     pub binding: String,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Why [`verify`] refused a token.

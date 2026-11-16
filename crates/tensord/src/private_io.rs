@@ -149,10 +149,12 @@ pub(crate) fn resolve(descriptor: &LocalPrivateStorage) -> io::Result<LocalPriva
     Ok(verified_scope(descriptor)?.descriptor.clone())
 }
 
-/// `project_id`'s workspace as `actor` opened it, still unlocked: where a capability `actor` signed for that project's run reads.
-pub(crate) fn opened(project_id: &str, actor: &str) -> Option<LocalPrivateStorage> {
+/// `project_id`'s workspace as `actor` opened it, unencrypted and still at `generation`: where a capability `actor` signed for that
+/// project's run reads (cl-1066). An encrypted one, or one encrypted or rekeyed since, is never one.
+pub(crate) fn opened(project_id: &str, generation: u64, actor: &str) -> Option<LocalPrivateStorage> {
     let held = VERIFIED.lock().unwrap().get(project_id).cloned()?;
-    (held.actor == actor).then(|| verified_scope(&held.descriptor).ok()).flatten().map(|scope| scope.descriptor.clone())
+    let same = held.actor == actor && held.descriptor.ordinary && held.descriptor.generation == generation;
+    same.then(|| verified_scope(&held.descriptor).ok()).flatten().map(|scope| scope.descriptor.clone())
 }
 
 /// Conservative metadata classification for generation/import/JIT probes. It grants
