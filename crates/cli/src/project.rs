@@ -17,18 +17,24 @@ pub(crate) fn directory() -> Result<String, Error> {
         .map_err(|_| Error::new(Kind::Usage, "project_path", "the current directory is not a UTF-8 path"))
 }
 
-/// Identify the current project without evaluating its canvas or checking its files.
+/// Identify the current project without evaluating its canvas or checking its files, unlocking it first at a terminal when it is locked.
 pub(crate) async fn identity(ctx: &Context) -> Result<api::calcifer::project::Address, Error> {
+    unlocking(ctx, || address(ctx)).await
+}
+
+/// The current project's address as it stands, asking nothing: for what reads a project only when one is open.
+pub(crate) async fn address(ctx: &Context) -> Result<api::calcifer::project::Address, Error> {
     let directory = directory()?;
     let path = crate::calcifer_client::path(&["v1", "projects", &directory, "address"]);
-    unlocking(ctx, || async { ctx.calcifer().await?.get(&path).await }).await.map_err(|error| match error.code.as_str() {
+    ctx.calcifer().await?.get(&path).await.map_err(|error: Error| match error.code.as_str() {
         "project_not_found" => not_in_a_project(&directory),
         _ => error,
     })
 }
 
 /// `read`, with a locked project unlocked first at a terminal, as `cozy open` does (cl-1002): every verb goes on. `--json` and pipes never
-/// ask for a credential: they get `project_locked`, which names `cozy vault unlock`.
+/// ask for a credential: they get `project_locked`, which names `cozy vault unlock`. A project busy locking or converting is not locked:
+/// its refusal stands, and nothing is asked.
 async fn unlocking<T, F, Fut>(ctx: &Context, read: F) -> Result<T, Error>
 where
     F: Fn() -> Fut,
@@ -36,6 +42,9 @@ where
 {
     match read().await {
         Err(error) if error.code == "project_locked" && !ctx.json && std::io::stdin().is_terminal() && ctx.term.stderr => {
+            if !vault::locked(ctx).await {
+                return Err(error);
+            }
             vault::unlock_for_open(ctx).await?;
             read().await
         }

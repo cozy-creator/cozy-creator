@@ -451,11 +451,7 @@ impl Calcifer {
         let owner=self.row_owner(run).map_err(|_|Failure::Again("project storage owner is unavailable".into()))?;
         if let Some(owner)=owner {
             if run.owner!=owner.project_id() { return Err(Failure::Refused("copied execution history is inert".into())); }
-            // A worker that didn't answer is asked again: only its refusal loses a settled run's outputs.
-            return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error| match error.kind {
-                Kind::Unavailable => Failure::Again(error.message),
-                _ => Failure::Refused(error.message),
-            });
+            return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Refused(error.code));
         }
         Ok(link)
     }
