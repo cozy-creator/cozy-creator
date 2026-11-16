@@ -551,6 +551,7 @@ case $SHARD in
     basics
     component_models
     second_project
+    lock_platforms
     yaml_requests
     run_flags
     run_follow
@@ -647,6 +648,7 @@ case $SHARD in
     basics
     component_models
     second_project
+    lock_platforms
     yaml_requests
     run_filters
     project_keys
@@ -762,6 +764,8 @@ case $SHARD in
   projectdb-migrate) parts="db_migrate logs" ;;
   # cozy status's legacy history and cozy doctor's old runs by folder, over a 0.24.0 store fenced here (cl-984).
   projectdb-legacy) parts="db_legacy logs" ;;
+  # A lock passing over a release no rental can install (cl-1011).
+  lock-platforms) parts="lock_platforms logs" ;;
   # Old runs an ended rental made import as the project's own, and the project takes new work (cl-1003).
   projectdb-remote-custody) parts="db_remote_custody logs" ;;
   # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
