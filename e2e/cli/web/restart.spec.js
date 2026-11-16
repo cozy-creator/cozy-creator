@@ -17,7 +17,14 @@ const PLAIN = 'Typed after the restart.';
 /** The top bar's word on Calcifer: none once the page is back with it. */
 const bar = (page) => page.locator('header.top .pill');
 
-/** `words` typed over `name`'s words in Focus, the textbox left open. */
+/** Every box in view. */
+async function fit(page) {
+  await page.getByRole('button', { name: /more zoom options$/ }).click();
+  await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
+  await canvasIdle(page);
+}
+
+/** `name`'s words in Focus, all selected, to be typed over. */
 async function typeInto(page, name) {
   const region = await focus(page, name);
   const text = region.getByRole('textbox', { name: 'Text' });
@@ -29,12 +36,14 @@ async function typeInto(page, name) {
 test('restart', { tag: '@solo' }, async ({ context, page, project, api, cli, signIn, guards, calciferControl, removeAfter }) => {
   const plain = await api.post('/v1/projects', { path: join(dirname(project.path), `web-restart-plain-${randomBytes(4).toString('hex')}`), unencrypted: true });
   removeAfter(plain.path);
-  await project.add({ name: 'words', fields: { text: WAS }, at: { x: 0, y: 0 } });
-  await api.post(`/v1/projects/${encodeURIComponent(plain.id)}/assets`, { tool: '', exact: true, name: 'note', fields: { text: 'Plain before.' }, at: { x: 0, y: 0 } });
+  await project.add({ name: 'words', kind: 'text', fields: { text: WAS }, at: { x: 0, y: 0 } });
+  await api.post(`/v1/projects/${encodeURIComponent(plain.id)}/assets`, { tool: '', exact: true, name: 'note', kind: 'text', fields: { text: 'Plain before.' }, at: { x: 0, y: 0 } });
   await expect.poll(() => canvasVisible(page, 'words'), { timeout: 60_000 }).toBe(true);
+  await fit(page);
   const second = await context.newPage();
   await signIn(second, `${api.origin}/p/${plain.code}`);
   await expect.poll(() => canvasVisible(second, 'note'), { timeout: 60_000 }).toBe(true);
+  await fit(second);
   for (const tab of [page, second]) await tab.evaluate(() => { window.unreloaded = true; });
 
   // Refused on purpose: what the encrypted tab still asks of its project as it locks, and everything while Calcifer is away.
