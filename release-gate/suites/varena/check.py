@@ -234,6 +234,9 @@ def lora(recs: dict[str, Run]) -> Verdict:
     fails: list[str] = []
     notes: list[str] = []
     one, two, again = recs.get('lora-1'), recs.get('lora-2'), recs.get('lora-3')
+    for name, run in (('lora-1', one), ('lora-2', two), ('lora-3', again)):
+        if run is not None and run.memoized:
+            fails.append(f'{name}: run {run.number} was answered from the memo: it baked and read nothing')
     if one is not None:
         baked, _, tier = flows(one)
         notes.append(f"lora-1: baked {baked} blocks; kept {tier.get('pages', 0)} pages, wrote {tier.get('persisted', 0)} "
