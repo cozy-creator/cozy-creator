@@ -1054,8 +1054,8 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         let id = project_id(root).or_else(|| plain_project_id(root)).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.admit_receipt(&store)?;
-        api.calcifer.maintenance_store().migrate_project_sealing(&store, &api.calcifer.inputs)
-            .map_err(|_| error("project_migration_pending", "legacy project history must be verified before changing its storage"))?;
+        // Legacy history that can't be imported stays where it is, for the hard cut (cl-1003); it never holds the change up.
+        if let Err(failed) = api.calcifer.maintenance_store().migrate_project_sealing(&store, &api.calcifer.inputs) { crate::store::legacy_not_imported("storage_change", &failed); }
         progress.prepared = true;
     }
     let mut recovery_secret = None;
@@ -1113,18 +1113,15 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             let store = api.projects.transition_store(api, &id, transition)?;
             drop(opened);
             progress.admit_receipt(&store)?;
-            if api.calcifer.maintenance_store().migration_required().map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))? {
+            if api.calcifer.maintenance_store().migration_required().unwrap_or(true) {
                 progress.phase("updating_project_storage");
-                api.calcifer.maintenance_store().migrate_project_sealing(&store, &api.calcifer.inputs)
-                    .map_err(|_| error("project_migration_pending", "the project is open, but its legacy history still needs a verified storage update"))?;
+                // One that can't be imported stays where it is, for the hard cut (cl-1003): the project opens all the same.
+                if let Err(failed) = api.calcifer.maintenance_store().migrate_project_sealing(&store, &api.calcifer.inputs) { crate::store::legacy_not_imported("unlock", &failed); }
             }
             let completing = receipt_path(root).is_file();
             if completing || journal_cleanup_pending(root)? {
-                if own_migration_pending(api, root)? {
-                    return Err(error("project_migration_pending", "the project is open; verified legacy ownership is still required before storage cleanup"));
-                }
-                // Compaction copies the whole store: it waits while any project's history is still pending there.
-                if !api.calcifer.maintenance_store().migration_required().map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))? {
+                // Compaction copies the whole store: it waits while any project's history, this one's too, is still pending there.
+                if !own_migration_pending(api, root).unwrap_or(true) && !api.calcifer.maintenance_store().migration_required().unwrap_or(true) {
                     progress.phase("compacting_history");
                     api.calcifer.maintenance_store().cleanup_private_journal().map_err(|_| error("project_migration_pending", "the project is open, but legacy journal cleanup is still pending"))?;
                     progress.phase("cleaning_up");

@@ -12,6 +12,7 @@ use std::{
 
 use crate::project::vault;
 mod migration;
+pub(crate) use migration::legacy_not_imported;
 use api::{
     calcifer::{Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem, Reason, Run, Status, Warning},
     config::Origin,
