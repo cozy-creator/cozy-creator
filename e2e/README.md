@@ -68,6 +68,9 @@ sleep. A new verb or flag also needs its line in `coverage.toml`.
 
 - **Earn its place.** It covers a real user path or a bug that escaped, and no other cell covers the same path; one that
   shares another's setup joins it. When you add one, look for one to remove.
+- **A requested feature is done when a cell fails without it (xs-199).** The cell's header names the issue and the asker's
+  words (as `cli/ondemand.sh` does), it judges, not just measures, and its shard runs on every RC push (e2e.yaml's default
+  shards), not only by dispatch. Its issue's last box links two runs: red with the feature reverted, green with it.
 - **Budget.** A typical cli/calcifer PR's `e2e` is at most 7 min and 11 jobs. Put a cell in the shard with room (its
   step times are in the run's log); a new shard needs a job the budget gives back elsewhere.
 - **Prove it before the queue:** dispatch e2e on the PR's head,

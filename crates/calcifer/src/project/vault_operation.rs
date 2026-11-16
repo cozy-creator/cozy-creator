@@ -230,13 +230,15 @@ pub(super) struct Progress {
     last: Instant,
     skipped: Vec<PathBuf>,
     pub(super) readable: Option<Arc<AtomicBool>>,
+    /// Its receipt is admitted and its legacy history checked: a change it retries (a decrypt's drain) does neither again.
+    pub(super) prepared: bool,
 }
 
 impl Progress {
     #[cfg(test)]
     fn new(events: watch::Sender<VaultEvent>) -> Self { Self { events: Some(events), ..Self::quiet() } }
     fn with_operation(events: watch::Sender<VaultEvent>, id: String, binding: String) -> Self { Self { operation: Some((id, binding)), events: Some(events), ..Self::quiet() } }
-    pub(super) fn quiet() -> Self { Self { operation: None, events: None, phase: "preparing", files: 0, bytes: 0, files_total: 0, bytes_total: 0, last: Instant::now(), skipped: vec![], readable: None } }
+    pub(super) fn quiet() -> Self { Self { operation: None, events: None, phase: "preparing", files: 0, bytes: 0, files_total: 0, bytes_total: 0, last: Instant::now(), skipped: vec![], readable: None, prepared: false } }
     pub(super) fn admit_receipt(&self, store: &super::journal::SealingStore<'_>) -> Result<(), Error> {
         let Some((id, binding)) = &self.operation else { return Ok(()) };
         store.write(|tx| {

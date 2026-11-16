@@ -1,3 +1,5 @@
+// pixi.js types every math extra (Rectangle.equals here) unconditionally; only this import installs them.
+import "pixi.js/math-extras"
 import { CanvasTextMetrics, Color, Container, Graphics, Rectangle, Sprite, Text, Texture, TilingSprite } from "pixi.js"
 import type { Client } from "../../api/client"
 import type { CanvasStore } from "../CanvasStore"

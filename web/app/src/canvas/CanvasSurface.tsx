@@ -174,6 +174,8 @@ export function CanvasSurface(props: Props) {
     const draw = (now: number) => {
       frame = 0
       if (stopped || !renderer || !stage || !viewport || !scene || !visible()) return
+      // A glide steps here, before this frame is drawn: from its own animation frame it would land after this draw, a frame ahead of it.
+      controller.advance(now)
       const was = controller.getViewport()
       viewport.update(16.667)
       const camera = controller.getViewport()
