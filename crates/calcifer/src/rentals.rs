@@ -25,6 +25,7 @@ use api::{
 use ed25519_dalek::SigningKey;
 use ::api::hub::{Client, types};
 use sha2::{Digest as _, Sha256};
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::{
@@ -38,7 +39,11 @@ pub(crate) struct Hubs {
     home: Home,
     /// The configured Hub, as Calcifer loaded it.
     pub(crate) hub: config::Origin,
+    /// Each Hub's last word, kept across a restart (`kept-hub-listings.json`): a machine list answers it at once, and the Hubs are listed
+    /// again beside the answers (cl-1010: `cozy machine ls` waited on every Hub's listing, 1 to 15 s on Paul's laptop).
     listings: Mutex<HashMap<String, Listing>>,
+    /// Whether a listing of the Hubs is going: one at a time.
+    listing_now: std::sync::atomic::AtomicBool,
     /// This computer's account at each Hub and where machines read it, for runs' access.
     pub(crate) facts: Mutex<HashMap<config::Origin, crate::access::Facts>>,
 }
@@ -69,7 +74,8 @@ pub(crate) struct NewRental {
 }
 
 /// A Hub's last word: its listing, and every rental read since by id.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Listing {
     listed_at_ms: Option<i64>,
     rentals: HashMap<String, types::Rental>,
@@ -79,12 +85,22 @@ struct Listing {
 
 impl Hubs {
     pub(crate) fn new(home: &Home, hub: config::Origin) -> Self {
+        let kept = std::fs::read(kept_listings(home)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         Self {
             http: ::api::hub::http(None).expect("the webpki roots alone"),
             home: home.clone(),
             hub,
-            listings: Mutex::default(),
+            listings: Mutex::new(kept),
+            listing_now: std::sync::atomic::AtomicBool::new(false),
             facts: Mutex::default(),
+        }
+    }
+
+    /// Each Hub's last word, kept for the next start.
+    fn keep_listings(&self) {
+        let kept = serde_json::to_vec(&*lock(&self.listings)).expect("a listing serializes");
+        if let Err(e) = platform::durable::replace(&kept_listings(&self.home), &kept, 0o600) {
+            warn!("keeping the Hubs' last listing: {e}");
         }
     }
 
@@ -1114,8 +1130,25 @@ impl Machines {
             lists.spawn(async move { me.list_hub(&origin).await });
         }
         lists.join_all().await;
+        self.hubs.keep_listings();
         self.hubs.learn().await;
         self.calcifer.machine_changed();
+    }
+
+    /// The Hubs listed again beside the answers, one listing at a time: what asks for it answers the last one now, and hears the new
+    /// one as a machine change.
+    pub(crate) fn refresh_hubs(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.hubs.listing_now.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let me = self.clone();
+        self.spawn(async move {
+            let took = crate::took::Took::new("list_hubs");
+            me.list_hubs().await;
+            drop(took);
+            me.hubs.listing_now.store(false, Ordering::Release);
+        });
     }
 
     async fn list_hub(self: &Arc<Self>, origin: &str) {
@@ -2043,4 +2076,9 @@ mod retired_image_tests {
         assert_eq!(serde_json::to_value(request).unwrap()["image"], "sha256:old-image");
         assert!(serde_json::to_value(types::RentalRequest::default()).unwrap().get("image").is_none());
     }
+}
+
+/// Where the Hubs' last listing is kept between starts, in Calcifer's home.
+fn kept_listings(home: &Home) -> std::path::PathBuf {
+    home.calcifer().join("kept-hub-listings.json")
 }

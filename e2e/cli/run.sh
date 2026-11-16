@@ -777,10 +777,15 @@ case $SHARD in
   slow) parts="
     slow_runs
     state_restart
+    hub_listing_restart
     logs
   " ;;
   # Calcifer restarted on a large store, its disk slow (cl-1010).
-  restart) parts="state_restart logs" ;;
+  restart) parts="
+    state_restart
+    hub_listing_restart
+    logs
+  " ;;
   # A project's run and its chosen machine, a rental chosen by its handle, follow its Hub's name for the host (cl-1089, cl-1106).
   rental-rename) parts="rental_rename logs" ;;
   # A take's thumbnail asked for while its file is on its way here answers no error (cl-1108).

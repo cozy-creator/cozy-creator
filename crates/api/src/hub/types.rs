@@ -792,7 +792,7 @@ pub struct RentalListing {
 }
 
 /// One rental as its Hub answers it.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Rental {
     pub rental_id: String,
@@ -838,14 +838,14 @@ pub struct Rental {
 }
 
 /// What went wrong with the rental, by the Hub's code (`readiness.provider_stopped`, …).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RentalFailure {
     pub code: String,
 }
 
 /// The current attempt's boot, while its pod is created and booted.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RentalBoot {
     pub attempt: u32,
@@ -1043,7 +1043,7 @@ pub struct RunReportsKept {
 }
 
 /// The image pull as the provider's boot log measured it: the layers in flight, not the image.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RentalPull {
     pub observable: bool,
@@ -1060,7 +1060,7 @@ pub struct RentalPull {
 }
 
 /// The failed attempt a rental's current one replaced.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReplannedBoot {
     pub attempt: u32,
