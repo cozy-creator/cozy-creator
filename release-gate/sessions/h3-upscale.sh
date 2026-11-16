@@ -10,6 +10,7 @@
 #   prompt    the overriding prompt
 #   runtime   the Runtime's manylinux wheel, https://…#sha256=<hex> (a pure wheel has none of its kernels)
 #   tensorfs  optional: TensorFS's wheel, the same way
+#   fresh     false: the upscales share the executor that rendered the take (default true: TensorD restarts first)
 . "$(dirname "$0")/lib.sh"
 TO=$(param to 1080p)
 OVERRIDE=$(param prompt "A grandmother in a bright red tracksuit and round sunglasses rides a skateboard in a concrete skate park at night, in heavy falling snow under orange floodlights.")
@@ -93,6 +94,10 @@ render take
 cp "$(file_of take)" "$OUT/take.mp4" || fail "the take made no video"
 J '.versions[-1].files.latents.sha256' <<< "$(run_page asset take)" || fail "the take kept no latents"
 say "take: $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,nb_frames -of csv=p=0 "$OUT/take.mp4")"
+# The upscales start in fresh executors: on 0.26.0's candidates a 1080p upscale in the executor that just rendered the take ran
+# out of memory on a 4090 (session 43777750768: 19.2 GiB live, every evictable byte offered). A settings-only update drains
+# and restarts TensorD (`--gpu-memory-limit off`, the default). `fresh: false` keeps them in it.
+[ "$(param fresh true)" = false ] || step fresh machine update "$NAME" --gpu-memory-limit off -y || fail "the restart"
 
 say "no prompt, was then now: the take's own text, the same request"
 up was "$WAS" "{\"video\": \"<take>\", \"to\": \"$TO\"}"
