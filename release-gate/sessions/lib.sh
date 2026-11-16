@@ -46,7 +46,8 @@ made() { awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} END{s
 runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
 finish() {
   local status=$?; [ "$RC" != 0 ] || RC=$status
-  for p in $WD $BG $DL; do pkill -P "$p"; kill "$p"; done 2>/dev/null
+  # The watcher first, then its sleep: a killed sleep let the deadline watcher go on to TERM this trap (43971316155).
+  for p in $WD $BG $DL; do kill "$p"; pkill -P "$p"; done 2>/dev/null
   local r
   for r in "${RIDS[@]}"; do
     local tries=0
