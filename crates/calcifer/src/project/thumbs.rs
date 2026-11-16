@@ -108,6 +108,9 @@ struct Queue {
     held: HashMap<String, bool>,
     /// What ffmpeg couldn't draw, for as long as this Calcifer runs: asked again, it's refused, not drawn again.
     failed: HashSet<String>,
+    /// By project: what waits for a lock queued on it, or holding it, to let go. Drawn then, or forgotten if it locked: no drawer waits
+    /// on one project's lock, so the others' thumbnails go on (cl-1025).
+    waiting: HashMap<PathBuf, Vec<Drawing>>,
 }
 
 pub(super) async fn thumb(
@@ -227,7 +230,14 @@ pub(crate) fn previews(api: Arc<Api>) {
                     continue;
                 };
                 let (key, root, sha256) = (drawing.key(), drawing.root.clone(), drawing.sha256.clone());
-                let made = make(Host::new(&api), drawing).await;
+                let made = match make(Host::new(&api), drawing.clone()).await {
+                    Ok(Some(made)) => Ok(made),
+                    Ok(None) => {
+                        wait_for_project(drawing);
+                        continue;
+                    }
+                    Err(error) => Err(error),
+                };
                 {
                     let mut queue = QUEUE.0.lock().expect("thumbnail queue");
                     queue.held.remove(&key);
@@ -242,26 +252,70 @@ pub(crate) fn previews(api: Arc<Api>) {
     }
 }
 
+/// `drawing`, set aside until its project's lock lets go: then queued first again, or forgotten if the project locked, as a lock or an
+/// unlock forgets what it cut short (a page asks for it again). One waiter a project.
+fn wait_for_project(drawing: Drawing) {
+    let root = drawing.root.clone();
+    let mut queue = QUEUE.0.lock().expect("thumbnail queue");
+    let waiting = queue.waiting.entry(root.clone()).or_default();
+    let first = waiting.is_empty();
+    waiting.push(drawing);
+    drop(queue);
+    if !first {
+        return;
+    }
+    tokio::spawn(async move {
+        let open = super::vault::admit_root(&root).await.is_ok();
+        let mut queue = QUEUE.0.lock().expect("thumbnail queue");
+        for drawing in queue.waiting.remove(&root).unwrap_or_default() {
+            let key = drawing.key();
+            match open {
+                true => {
+                    queue.held.insert(key, false);
+                    queue.jobs.push_front(drawing);
+                }
+                false => drop(queue.held.remove(&key)),
+            }
+        }
+        drop(queue);
+        QUEUE.1.notify_waiters();
+    });
+}
+
+/// A moment's admission to `drawing`'s project, never waiting: `None` while a lock waits for it or holds it. A plain project has no gate.
+fn admitted(drawing: &Drawing) -> Result<Option<Option<tokio::sync::OwnedRwLockReadGuard<()>>>, Error> {
+    if !drawing.private {
+        return Ok(Some(None));
+    }
+    match super::vault::try_admit_root(&drawing.root) {
+        Ok(access) => Ok(Some(Some(access))),
+        Err(error) if error.code == "project_busy" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// The thumbnail called `name` in `dir`, if it is there.
 fn kept(dir: &FsPath, name: &str) -> Option<PathBuf> {
     ["png", "jpg", "mp4"].iter().map(|ext| dir.join(format!("{name}.{ext}"))).find(|at| at.is_file())
 }
 
-/// `drawing` drawn into its project's store, unless it's there already.
-async fn make(host: Host, mut drawing: Drawing) -> Result<PathBuf, Error> {
-    let access = match drawing.private {
-        true => Some(super::vault::admit_root(&drawing.root).await?),
-        false => None,
-    };
-    let dir = super::vault::resolve_path(&drawing.root)?.join(STORE);
-    drawing.source = super::vault::resolve_path(&drawing.source)?;
+/// `drawing` drawn into its project's store, unless it's there already. `None`: a lock waits for its project, or holds it.
+async fn make(host: Host, mut drawing: Drawing) -> Result<Option<PathBuf>, Error> {
     let name = drawing.name();
-    if let Some(at) = kept(&dir, &name) {
-        return Ok(at);
+    {
+        let Some(_access) = admitted(&drawing)? else { return Ok(None) };
+        let dir = super::vault::resolve_path(&drawing.root)?.join(STORE);
+        if let Some(at) = kept(&dir, &name) {
+            return Ok(Some(at));
+        }
     }
-    // Its turn first: finding ffmpeg runs it, and blocks, so that too is a few at a time.
+    // Its turn and ffmpeg first, holding nothing of the project: finding ffmpeg runs it, and blocks, so that too is a few at a time,
+    // and a lock queued on the project waits for neither (cl-1025).
     let permit = FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
     let (ffmpeg, ffprobe) = host.ffmpeg().await?;
+    let Some(access) = admitted(&drawing)? else { return Ok(None) };
+    let dir = super::vault::resolve_path(&drawing.root)?.join(STORE);
+    drawing.source = super::vault::resolve_path(&drawing.source)?;
     tokio::task::spawn_blocking(move || {
         let _access = access;
         let _permit = permit;
@@ -273,6 +327,7 @@ async fn make(host: Host, mut drawing: Drawing) -> Result<PathBuf, Error> {
     })
     .await
     .map_err(|e| Error::new(Kind::Internal, "thumb_failed", e.to_string()))?
+    .map(Some)
 }
 
 /// Runs ffmpeg writing its one picture over `out`. Err: what it said.

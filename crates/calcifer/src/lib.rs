@@ -536,7 +536,23 @@ impl Calcifer {
     pub(crate) fn release_run(&self, id: &RunId) {
         if lock(&self.drivers).contains_key(id) || self.exporting(id) { return; }
         let Some(Some(owner)) = lock(&self.run_owners).get(id.as_str()).cloned() else { return };
-        let Ok(store) = owner.store() else { return };
+        let store = match owner.store() {
+            Ok(store) => store,
+            // A lock queued on the project holds every new read until it has the project or gives up: this waits its turn, then looks
+            // again. Dropped, the route would hold its project open, which can hold the very lock (cl-1025). Locked, the project's routes
+            // went with it.
+            Err(StoreError::Locked(code)) if code == "project_busy" => {
+                let Some(calcifer) = self.api.get().and_then(Weak::upgrade).map(|api| api.calcifer.clone()) else { return };
+                let id = id.clone();
+                self.spawn_task(async move {
+                    if owner.when_admitted().await.is_ok() {
+                        calcifer.release_run(&id);
+                    }
+                });
+                return;
+            }
+            Err(_) => return,
+        };
         let ended = store.run(id.as_str()).ok().flatten().is_some_and(|row| row.state == State::Settled)
             && store.outputs_to_export(id.as_str()).is_ok_and(|owed| owed.is_empty());
         drop(store);

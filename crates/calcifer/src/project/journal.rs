@@ -50,6 +50,10 @@ impl RunOwner {
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn key(&self) -> String { self.project.key() }
     pub(crate) fn root(&self) -> &std::path::Path { &self.project.root }
+    /// Once the project takes reads again: at once, else when a lock queued on it has it, or gives up. Err: it's locked or gone.
+    pub(crate) async fn when_admitted(&self) -> Result<(), Error> {
+        vault::admit_work(&self.project).await.map(drop)
+    }
     pub(crate) fn store(&self) -> store::Result<ProjectStore> {
         let view = vault::try_admit_work(&self.project).map_err(project_error)?;
         Ok(ProjectStore { project: self.project.clone(), controller: self.controller.clone(), _view: view, access:Access::Work })

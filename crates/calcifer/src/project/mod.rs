@@ -660,8 +660,9 @@ impl Holding {
                 return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("{}: its rate isn't measured, so no range of it can be cut", folder::prefix_of(&range.source))).next("cozy status"));
             }
             let mut notes = vec![];
+            let ffmpeg = clips.ffmpeg().await?;
             let access = vault::admit_root(&self.dir).await?;
-            let made = clips.cut(&range.range.to_string(), &path, range.range, fps, &mut notes, access).await?;
+            let made = clips.cut(&range.range.to_string(), &path, range.range, fps, &mut notes, ffmpeg, access).await?;
             bound.warnings.extend(notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).map(|note| note.message));
             let clip = made.clip.clone();
             let access = vault::admit_root(&self.dir).await?;
@@ -3006,15 +3007,25 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::
 fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
     let (host, project) = (Host::new(api), project.clone());
     tokio::spawn(async move {
-        let Ok(access) = vault::admit_root(&project.root).await else { return; };
-        if project.require_view().is_err() { return; }
-        if project.folder.lock().map_or(true, |lock| !lock.files.values().any(folder::File::unmeasured)) {
-            return;
+        let unmeasured = || project.require_view().is_ok() && project.folder.lock().is_ok_and(|lock| lock.files.values().any(folder::File::unmeasured));
+        {
+            let Ok(_access) = vault::admit_root(&project.root).await else { return; };
+            if !unmeasured() { return; }
         }
-        let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
-        if let Err(error) = host.ffmpeg().await {
-            return warn!("measuring a project's files: {}", error.message);
-        }
+        // Its turn and ffmpeg first, holding nothing of the project, then the project, holding no turn: a lock queued on it waits for
+        // neither, and while it waits no other project's thumbnails or measures wait for it (cl-1025).
+        let (access, permit) = loop {
+            let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
+            if let Err(error) = host.ffmpeg().await {
+                return warn!("measuring a project's files: {}", error.message);
+            }
+            if let Ok(access) = vault::try_admit_root(&project.root) {
+                break (access, permit);
+            }
+            drop(permit);
+            let Ok(_access) = vault::admit_root(&project.root).await else { return; };
+        };
+        if !unmeasured() { return; }
         let dir = project.folder.dir.clone();
         let measuring = tokio::task::spawn_blocking(move || {
             // This task can outlive its importer and must drain before storage is replaced.
@@ -5144,8 +5155,9 @@ impl Walk {
                 return Err(format!("{} must be on this computer, and measured, to cut a range of it; download it in the browser opened by cozy open", folder::prefix_of(&range.source)));
             }
             let mut notes = vec![];
+            let ffmpeg = clips.ffmpeg().await.map_err(|e| e.message)?;
             let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
-            let made = clips.cut(&range.range.to_string(), &path, range.range, file.fps, &mut notes, access).await.map_err(|e| e.message)?;
+            let made = clips.cut(&range.range.to_string(), &path, range.range, file.fps, &mut notes, ffmpeg, access).await.map_err(|e| e.message)?;
             notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).for_each(|note| self.say(Told::Warning { message: note.message, name: None }));
             let clip = made.clip.clone();
             let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
