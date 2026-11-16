@@ -745,10 +745,10 @@ jobs:
         # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
         # web-1, web-2, web-3, web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once. Manual shard selections
         # remain available.
-        # ondemand (ondemand-share its install's share of the link), plan, coming, lines, disk and selfupdate guard features Paul asked
-        # for (xs-199): each on every RC run, as any cell.
+        # ondemand (ondemand-share its install's share of the link), plan, prefetch, coming, lines, disk and selfupdate guard features
+        # Paul asked for (xs-199): each on every RC run, as any cell.
         # dev-start builds the change's cozy as a dev home does and starts it on a render walk (cl-1069: a dev build overflowed 2 MiB).
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","plan","coming","lines","disk","selfupdate","typed-calls","dev-start"]') }}
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code","ondemand","ondemand-share","plan","prefetch","coming","lines","disk","selfupdate","typed-calls","dev-start"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.

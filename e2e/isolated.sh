@@ -255,7 +255,9 @@ case $key in
   cli:env-cost) needs='packages birefnet' ;;
   # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
   cli:plan) needs='packages birefnet downloads composed' ;;
-  cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora' ;;
+  # A published tool of two models that share a VAE, which a box's machine fetches before any render (cl-1104).
+  cli:prefetch) needs='packages pre' ;;
+  cli:) needs='packages birefnet qwen downloads spare loras vaes fits parts composed lorabase calls uninstall ltxlora pre' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
@@ -615,6 +617,28 @@ PYH3
     done
     log "published e2e/composed-base@0.1.0 (transformer, vae), e2e/composed-tune@0.1.0 (its transformer, the base's vae), e2e/composed-extra@0.1.0"
     rm -f "$seed"/composed-*.safetensors
+  fi
+  if [[ " $needs " == *" pre "* ]]; then
+    # What the prefetch cells' boxes read (cli/prefetch.sh, cl-1104): e2e/pre-a, a 384 MiB transformer and a 320 MiB VAE; e2e/pre-b,
+    # its own 384 MiB transformer on e2e/pre-a's VAE, as two fine-tunes of one base share its parts (one family, so either takes
+    # the tool's slot); e2e/pre-ask, 256 MiB a request asks for while a prefetch goes; and their tool, published, so its machine
+    # installs it with no run. Each a few seconds through the cells' 30 MB/s link.
+    page=https://github.com/cozy-creator/cozy-creator/tree/master/e2e
+    random_weights "$seed/pre-dit.safetensors" 384 pre-dit
+    random_weights "$seed/pre-vae.safetensors" 320 pre-vae
+    random_weights "$seed/pre-b.safetensors" 384 pre-b
+    random_weights "$seed/pre-ask.safetensors" 256 pre-ask
+    mirror "$seed/pre-dit.safetensors:transformer" e2e/pre-dit bf16 0.1.0 "$page" --source-format as-is
+    mirror "$seed/pre-vae.safetensors" e2e/pre-a bf16 0.1.0 "$page" --source-format as-is --base e2e/pre-dit@0.1.0:vae
+    mirror "$seed/pre-b.safetensors" e2e/pre-b bf16 0.1.0 "$page" --source-format as-is --base e2e/pre-a@0.1.0:transformer
+    mirror "$seed/pre-ask.safetensors" e2e/pre-ask bf16 0.1.0 "$page" --source-format as-is
+    for model in e2e/pre-a e2e/pre-b; do
+      cozy --json model edit "$model" --family e2e-pre > "$seed/edit-${model#e2e/}.json" 2>&1 \
+        || { echo "naming $model's family failed: $(tail -c 600 "$seed/edit-${model#e2e/}.json")" >&2; exit 1; }
+    done
+    publish "$here/cli/project/prefetched"
+    log "published e2e/pre-a@0.1.0 (transformer, vae), e2e/pre-b@0.1.0 (its transformer, e2e/pre-a's vae), e2e/pre-ask@0.1.0 and e2e-prefetched"
+    rm -f "$seed"/pre-*.safetensors
   fi
   if [[ " $needs " == *" fits "* ]]; then
     # lane_fit (xs-191): fitting/vae is fitting/whole (an 8 MiB `model`) with a 1 MiB `vae` added, as
