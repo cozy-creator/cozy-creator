@@ -302,13 +302,13 @@ fn index_legacy_owners(writer: &mut Connection) -> Result<()> {
 }
 
 /// The fenced runs that may be the project's at `root` (`id`): those of its root, its sealed records' (a move this Calcifer
-/// saw included) and every unreadable one, as `(id, out_dir, spec)`. The caller decides each as a full read did.
+/// saw included) and every unreadable one, as `(id, out_dir, spec)`, in the order made. The caller decides each as a full read did.
 pub(crate) fn legacy_run_candidates(conn: &Connection, root: &Path, id: &str) -> Result<Vec<(String, String, Vec<u8>)>> {
     let mut projects = vault::projects_moved_under(root);
     projects.push(id.to_owned());
     let projects = serde_json::to_string(&projects).map_err(|error| StoreError::Corrupt(error.to_string()))?;
     let mut stmt = conn.prepare("SELECT r.id, r.out_dir, r.spec FROM legacy_run_owners o JOIN legacy_project_runs r ON r.id = o.id
-        WHERE o.owner_root IN (?1, ?2) OR o.owner_project IN (SELECT value FROM json_each(?3))")?;
+        WHERE o.owner_root IN (?1, ?2) OR o.owner_project IN (SELECT value FROM json_each(?3)) ORDER BY r.created_at, r.number")?;
     let rows = stmt.query_map(params![path_key(root), UNREADABLE_OWNER, projects], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -3768,7 +3768,7 @@ fn run_name(conn: &Connection, row: &RunRow) -> String {
         Some(_) => conn.query_row("SELECT key FROM project_keys ORDER BY ord DESC LIMIT 1", [], |r| r.get::<_, String>(0)).ok(),
         None => Some(api::calcifer::project::MACHINE_KEY.to_owned()),
     };
-    key.map_or_else(|| row.number.to_string(), |key| format!("{key}-{}", row.number))
+    key.map_or_else(|| row.number.to_string(), |key| api::calcifer::project::run_label(&key, row.number))
 }
 
 fn record(conn: &Connection, row: &RunRow) -> Result<Run> {

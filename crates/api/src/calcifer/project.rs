@@ -105,6 +105,11 @@ pub fn key(text: &str) -> Option<String> {
     ((2..=10).contains(&key.len()) && spelled && key.starts_with(|c: char| c.is_ascii_uppercase())).then_some(key)
 }
 
+/// What names run `number` of the project keyed `key` (cl-987, cl-1075): `KEY-N`, N its number there, counted from 1.
+pub fn run_label(key: &str, number: u64) -> String {
+    format!("{key}-{number}")
+}
+
 /// A run's name, `KEY-N` in any case: its project's key and its number there.
 pub fn run_name(text: &str) -> Option<(String, u64)> {
     let (key, number) = text.trim().rsplit_once('-')?;
