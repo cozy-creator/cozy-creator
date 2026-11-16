@@ -603,7 +603,7 @@ const previewState = (page, name) => page.evaluate((name) => {
   const inspection = document.querySelector('.canvas-root')?.canvasInspection;
   if (typeof inspection?.cards === 'function') {
     const preview = inspection.card(name)?.rendered?.preview;
-    return { canvas: 'new', mounted: Boolean(preview?.active), playing: Boolean(preview?.active && preview?.ready), at: null, muted: null, loop: null };
+    return { canvas: 'new', mounted: Boolean(preview?.active), playing: Boolean(preview?.active && preview?.ready), at: null, muted: preview?.muted ?? null, loop: preview?.loop ?? null };
   }
   const video = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] video.preview.on`);
   return { canvas: 'old', mounted: Boolean(video), playing: Boolean(video && video.currentTime > 0.3), at: video?.currentTime ?? null, muted: video?.muted ?? null, loop: video?.loop ?? null };
@@ -628,9 +628,11 @@ async function nameUnderPointer(page, name) {
   return page.evaluate(({ name, point, rest }) => {
     const inspection = document.querySelector('.canvas-root').canvasInspection, labels = inspection.card(name)?.rendered?.labels ?? {};
     const title = labels.title, full = title?.fullText ?? rest?.fullText ?? name;
-    const said = title?.text === full || Object.entries(labels).some(([key, label]) => key !== 'title' && label?.text === full);
+    // The whole name, said where the pointer is: the canvas's own tooltip (its root's title) or a label drawn whole.
+    const tooltip = document.querySelector('.canvas-root').getAttribute('title') ?? '';
+    const said = tooltip === full || title?.text === full || Object.entries(labels).some(([key, label]) => key !== 'title' && label?.text === full);
     const hit = inspection.hitTest(point);
-    return { name, cut: Boolean(rest) && rest.text !== rest.fullText, title: said ? full : title?.text ?? '', whole: title?.text === full, text: title?.text ?? '', under_pointer: hit?.name === name && hit?.part === 'title' };
+    return { name, cut: Boolean(rest) && rest.text !== rest.fullText, title: said ? full : tooltip || title?.text || '', whole: title?.text === full, text: title?.text ?? '', under_pointer: hit?.name === name && hit?.part === 'title' };
   }, { name, point, rest });
 }
 

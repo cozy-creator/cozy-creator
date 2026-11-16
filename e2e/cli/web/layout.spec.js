@@ -291,7 +291,8 @@ test('layout', async ({ page, project, api }) => {
       // The sparse native control still has its accessible role when the person physically hovers the box (the old canvas's hover card;
       // the new canvas draws Cancel, judged above by hitTest and its pixels, and names no DOM button for it).
       await hoverBox(page, 'making');
-      if (await newCanvas(page)) test.info().annotations.push({ type: 'no DOM control', description: `the new canvas draws making's Cancel at ${zoom}: its role needs an accessible action on its .canvas-cards option` });
+      // The new canvas names it for a screen reader among the canvas's hidden actions (visually hidden, so present, not shown).
+      if (await newCanvas(page)) await expect.soft(page.locator('.canvas-actions[role=group]').getByRole('button', { name: "Cancel making's render", exact: true }), `Cancel named for a screen reader at ${zoom}`).toHaveCount(1);
       else {
         const cancel = face.getByRole('button', { name: "Cancel making's render" });
         await expect.soft(cancel, `Cancel shows on the rendering face at ${zoom}`).toBeVisible();

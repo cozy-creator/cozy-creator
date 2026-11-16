@@ -22,8 +22,8 @@ async function pressTrash(page, name) {
   const at = await controlPoint(page, name, 'delete');
   await page.mouse.move(at.x, at.y);
   const trash = page.locator(`.canvas-node .card[data-asset=${JSON.stringify(name)}] .head button[aria-label="Delete"]`);
-  if (await trash.count()) expect.soft(await trash.locator('svg').getAttribute('data-icon'), "a box's Delete is a trash can").toBe('trash');
-  else test.info().annotations.push({ type: 'drawn', description: `${name}'s trash is drawn by the canvas: its icon is the scene's` });
+  const icon = (await trash.count()) ? await trash.locator('svg').getAttribute('data-icon') : (await canvasCard(page, name))?.rendered?.parts?.delete?.icon ?? null;
+  expect.soft(icon, "a box's Delete is a trash can").toBe('trash');
   await page.mouse.click(at.x, at.y);
 }
 const { rowsOf } = require('./geometry');

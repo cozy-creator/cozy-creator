@@ -50,8 +50,7 @@ test('video', async ({ page, project, api, guards }) => {
       await rest(page, (await newCanvas(page)) ? (await canvasCard(page, name)).body : box(page, name).locator('.media'));
       await expect.poll(async () => (await previewState(page, name)).playing, { message: `${name}'s preview plays`, timeout: 45_000 }).toBe(true);
       const state = await previewState(page, name);
-      if (state.canvas === 'old') expect.soft(state, `${name}'s preview: muted and looping`).toMatchObject({ muted: true, loop: true });
-      else test.info().annotations.push({ type: 'no DOM video', description: `${name}'s preview is the new canvas's texture: muted and looping are the scene's, with no <video> to read` });
+      expect.soft(state, `${name}'s preview: muted and looping`).toMatchObject({ muted: true, loop: true });
       await page.mouse.move(4, 600);
       await expect.poll(() => previewsPlaying(page), { message: 'no preview left playing' }).toBe(0);
     }
