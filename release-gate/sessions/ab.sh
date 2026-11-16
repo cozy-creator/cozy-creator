@@ -221,7 +221,7 @@ for k in "${names[@]}"; do
   ui=$(jq -c '.until_idle // empty' <<<"$c")
   if [ -n "$ui" ]; then
     reg=$(jq -r .region <<<"$ui") stp=$(jq -r '.step_s // 30' <<<"$ui") most=$(jq -r '.max // 4' <<<"$ui") i=0 kk=$k waited=$(jq -r '.wait_s // 0' <<<"$c")
-    while q=$(jq -r --arg r "$reg" '.measurements.residency.graphs[$r].idle.queued // "none"' "$OUT/$kk.json" 2>/dev/null); [ "$q" != 0 ] && [ "$i" -lt "$most" ]; do
+    while q=$(jq -r --arg r "$reg" '.measurements.residency.graphs[$r].idle.queued // "none"' "$OUT/$kk.json" 2>/dev/null); [ "$q" != 0 ] && [ "$q" != none ] && [ "$i" -lt "$most" ]; do
       i=$((i + 1)); kk=$k-w$i; waited=$((waited + stp))
       say "$k: $reg's idle queue held $q before it; the machine left idle ${stp}s more (${waited}s in all), then $kk"
       sleep "$stp"; mapfile -t again < <(printf '%s\n' "${args[@]}" | awk -v i="$i" '/^seed:=[0-9]+$/ {split($0, a, "="); print "seed:=" a[2] + i; next} {print}')
@@ -232,6 +232,7 @@ for k in "${names[@]}"; do
       cd "$OUT" || fail "no $OUT"
       say "$kk run ${NN:-none} $(jq -r '.status // "none"' "$OUT/$kk.json" 2>/dev/null): $(summary "$kk")"
     done
+    [ "$q" != none ] || say "$k: the record has no region $reg (graphs: $(jq -r '.measurements.residency.graphs // {} | keys | join(", ")' "$OUT/$kk.json" 2>/dev/null))"
     say "$k: $reg's idle queue before the last request: $q (after ${waited}s idle; the last request is $kk)"
   fi
   say "$k weights: $(weights "$k")"
