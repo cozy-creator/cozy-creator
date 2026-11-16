@@ -779,8 +779,11 @@ case $SHARD in
     kept_latents
     vault_swapped
     ended_logs
+    lock_hung
     logs
   " ;;
+  # An encrypted project locks while its local machine is stopped (cl-1064), alone. Named projectvault-* for its driver.
+  projectvault-lock-hung) parts="lock_hung logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
   projectdb-latency) parts="db_latency logs" ;;

@@ -706,3 +706,23 @@ vault_native() (
   "$py" "$E2E/cli/vault_native.py" --cli "$COZY" --root "$root" > "$OUT/vault-native.json" 2>&1 || fail "vault native: $(tail -c 1200 "$OUT/vault-native.json")"
   echo "vault native: $(tail -1 "$OUT/vault-native.json")"
 )
+
+# An encrypted project locks while its local machine doesn't answer (cl-1064; Paul: "lock must succeed when asked"): the machine
+# stopped (SIGSTOP) mid-run, its lock and its maximum's deadline each lock within their bound, the view goes, nothing of the project
+# stays outside its folder but the machine's own journal; once it goes on, its clean-up runs before anything else
+# (e2e/cli/lock_hung.py). The machine always goes on at the end.
+lock_hung() (
+  step "an encrypted project locks while its local machine doesn't answer; the machine's clean-up runs when it does (cl-1064)"
+  [ -n "$LOCAL" ] || exit 0
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "lock hung: Linux runners only"; exit 0; }
+  local work secrets project
+  work=$(mktemp -d "$OUT/lock-hung.XXXXXX") secrets=$(mktemp -d "$OUT/lock-hung-credentials.XXXXXX")
+  trap 'pid=$(jq -r ".pid // empty" "$(find "$HOME/.cozy/machine" -name agent.lock.holder -print -quit 2> /dev/null)" 2> /dev/null) || pid=; [ -z "$pid" ] || kill -CONT "$pid" 2> /dev/null; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic lock hung passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  project=$work/lock-hung-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
+  cozy --json new "$project" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" \
+    || { check "lock hung: cozy new: $(tail -c 300 "$work/new.json")"; exit 0; }
+  python3 "$E2E/cli/lock_hung.py" --project "$project" --project-id "$(jq -r .id "$work/new.json")" --passphrase-file "$secrets/passphrase" --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" \
+    || { cat "$work/proof.err"; check "lock hung: $(tail -n 1 "$work/proof.err" | cut -c1-600)"; }
+  cat "$work/proof/lock-hung.json" 2> /dev/null || true
+)
