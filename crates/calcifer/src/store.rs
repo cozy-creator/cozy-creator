@@ -515,12 +515,15 @@ fn job_column(writer: &mut Connection) -> Result<()> {
 }
 
 /// A store made before a hold by hand was kept (cl-952) gains that column: no machine held.
-/// When a machine ended, which its row is kept 90 days from (`prune`). One that ended before has none: its creation stands in.
+/// When a machine ended, which its row is kept 90 days from (`prune_machines`). One that ended before has the first start since.
 fn ended_at_column(writer: &Connection) -> Result<()> {
     let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('machines') WHERE name = 'ended_at')", [], |r| r.get(0))?;
     if !has {
         writer.execute_batch("ALTER TABLE machines ADD COLUMN ended_at INTEGER")?;
     }
+    // One that ended before its end was kept says so now: its 90 days count from here, never from when it was made (a long rental
+    // went early).
+    writer.execute("UPDATE machines SET ended_at = ?1 WHERE state = 'ended' AND ended_at IS NULL", [now_ms()])?;
     Ok(())
 }
 
@@ -2171,6 +2174,11 @@ impl Store {
         ended
     }
 
+    /// Returns once no write is going: what `Calcifer::close` waits out (a prune's batch).
+    pub(crate) fn settled_writes(&self) {
+        drop(self.writer.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+
     /// Takes out ended machines older than [`KEPT_FOR_MS`] that no kept run names, at most `limit`, with their logs, and gives the pages
     /// back (a new store vacuums incrementally): the store keeps 90 days of them, with no timer (Paul 11-15). Not while the legacy
     /// history's rows can still name them (cl-1003). Its own check stands for the foreign key's, which with no index on runs(machine) (one
@@ -2185,7 +2193,7 @@ impl Store {
                 let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS pruned_machines (name TEXT PRIMARY KEY); DELETE FROM temp.pruned_machines;")?;
                 tx.execute(
-                    "INSERT INTO temp.pruned_machines SELECT name FROM machines WHERE state = 'ended' AND coalesce(ended_at, created_at) < ?1
+                    "INSERT INTO temp.pruned_machines SELECT name FROM machines WHERE state = 'ended' AND ended_at < ?1
                          AND name NOT IN (SELECT machine FROM runs WHERE machine IS NOT NULL) LIMIT ?2",
                     params![before, limit],
                 )?;

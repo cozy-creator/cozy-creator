@@ -206,11 +206,15 @@ echo "restart: reads slowed $(tail -1 "$S/busy-disk.log" 2> /dev/null); network 
 # Ended machines are kept 90 days (Paul 11-15): those older went as Calcifer took up what it left; the rest stayed.
 local cut gone kept
 cut="(CAST(strftime('%s', 'now') AS INTEGER) - 90 * 86400) * 1000"
-gone=$(state1 "SELECT count(*) FROM machines WHERE name LIKE 'cl1010-gone-%' AND coalesce(ended_at, created_at) < $cut")
+local unended
+gone=$(state1 "SELECT count(*) FROM machines WHERE name LIKE 'cl1010-gone-%' AND ended_at < $cut")
 kept=$(state1 "SELECT count(*) FROM machines WHERE name LIKE 'cl1010-gone-%'")
-echo "restart: ended machines past 90 days left $gone, of $kept kept"
+unended=$(state1 "SELECT count(*) FROM machines WHERE name LIKE 'cl1010-unended-%'")
+echo "restart: ended machines past 90 days left $gone, of $kept kept; $unended of 20 with no end time kept"
 [ "$gone" = 0 ] || check "restart: $gone ended machines past 90 days are still kept"
 [ "$kept" -ge 1400 ] || check "restart: only $kept of the ended machines within 90 days are kept"
+# Ended before their end was kept, made 101 days ago: their 90 days count from this start (cl-1010, #3424's review).
+[ "$unended" = 20 ] || check "restart: $((20 - unended)) machines that ended before their end was kept went at once, counted from when they were made"
 # The store as it was for what follows: its rows out, and Calcifer on its own disk again.
 rm -f "$dropin" && systemctl --user daemon-reload
 kill "$proxy" 2> /dev/null || true

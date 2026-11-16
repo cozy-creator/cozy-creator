@@ -128,6 +128,8 @@ pub(crate) struct Calcifer {
     granting: OnceLock<Weak<machines::Machines>>,
     /// The API that opens a closed project again when its journal is asked for.
     api: OnceLock<Weak<api::Api>>,
+    /// Closed: work in a blocking thread (resume, the start's prune) stops at its next step, and nothing more is spawned.
+    closed: std::sync::atomic::AtomicBool,
     /// When this Calcifer opened its store (Unix ms).
     /// Since when it can have heard from a machine: its start, or this computer's waking.
     opened_ms: std::sync::atomic::AtomicI64,
@@ -309,6 +311,7 @@ impl Calcifer {
             behind: Mutex::default(),
             granting: OnceLock::new(),
             api: OnceLock::new(),
+            closed: std::sync::atomic::AtomicBool::new(false),
             opened_ms: std::sync::atomic::AtomicI64::new(store::now_ms()),
         });
         let runs = std::time::Instant::now();
@@ -327,7 +330,7 @@ impl Calcifer {
     pub(crate) fn resume(self: &Arc<Self>) -> Result<usize, Error> {
         let unsettled = self.store.unsettled()?;
         let resumed = unsettled.len();
-        for id in unsettled {
+        for id in unsettled.into_iter().take_while(|_| !self.closed()) {
             self.drive(id);
         }
         // Its own work, which stopped with the Calcifer that was doing it, is carried out again by `hub::jobs::resume`.
@@ -338,7 +341,7 @@ impl Calcifer {
     /// Ended machines past 90 days that went while no machine ended here go, beside the answers (`Store::prune_machines`), a few at a
     /// time, each write followed by a pause as long as it took: the writer is never held more than half the time.
     pub(crate) fn prune_ended_machines(&self) {
-        loop {
+        while !self.closed() {
             let began = Instant::now();
             if !self.store.prune_machines(64).is_ok_and(|pruned| pruned > 0) { break; }
             std::thread::sleep(began.elapsed());
@@ -454,7 +457,16 @@ impl Calcifer {
 
     /// Stops every driver where it stands, as if the process ended. Machines keep their runs.
     pub(crate) fn close(&self) {
+        self.closed.store(true, std::sync::atomic::Ordering::Release);
         lock(&self.tasks).abort_all();
+        // resume and the prune go on in blocking threads the abort doesn't reach: they stop at their next step, and a write going
+        // ends before this returns.
+        self.store.settled_writes();
+    }
+
+    /// Whether Calcifer closed: work in a blocking thread stops at its next step.
+    pub(crate) fn closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// What a run waits for when the machine names the runs (`waiting_for`, by id): those runs by
@@ -1630,6 +1642,7 @@ impl Calcifer {
         };
         let me = self.clone();
         let mut tasks = lock(&self.tasks);
+        if self.closed() { return; }
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
             let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); me.driver_done(&id); return; } };

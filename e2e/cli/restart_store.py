@@ -3,7 +3,8 @@
   fill <state.db> <outputs dir> --runs N --machines M   N settled project-less runs over 120 days (calls, warms, updates on
                                                          `local`, an outcome of ~14 KB on average with its measurements, one in
                                                          10,000 ~2 MB, six log lines each, a call's output exported) and M ended
-                                                         rentals, half of them 100 days old; --unsettled K runs left going on `local`
+                                                         rentals made 101 days ago, half of them ended 100 days ago, and 20 more
+                                                         with no end time; --unsettled K runs left going on `local`
   empty <state.db>                                      those rows out again
   measure ...                                           each route asked every quarter second from the new Calcifer's record on:
                                                          one JSON line per route, then the verdict
@@ -62,10 +63,17 @@ def fill(args: argparse.Namespace) -> None:
         {"count": args.unsettled, "first": unsettled, "out": args.outputs, "now": now})
     db.execute(
         "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < :count) "
-        "INSERT INTO machines (name, kind, hub, rental_id, key, state, served, reason, created_at) "
+        "INSERT INTO machines (name, kind, hub, rental_id, key, state, served, reason, created_at, ended_at) "
         "SELECT printf('cl1010-gone-%05d', i), 'rental', 'http://127.0.0.1:1', printf('cl1010-rental-%05d', i), "
-        "(SELECT key FROM machines WHERE name = 'local'), 'ended', 0, 'ended', :now - (CASE WHEN i % 2 = 0 THEN 100 ELSE 1 END) * 86400000 - i * 1000 FROM n",
+        "(SELECT key FROM machines WHERE name = 'local'), 'ended', 0, 'ended', :now - 101 * 86400000 - i * 1000, "
+        ":now - (CASE WHEN i % 2 = 0 THEN 100 ELSE 1 END) * 86400000 - i * 1000 FROM n",
         {"count": args.machines, "now": now})
+    # Made 101 days ago and ended before `ended_at` was kept: their 90 days count from this start, not from when they were made.
+    db.execute(
+        "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < 20) "
+        "INSERT INTO machines (name, kind, hub, rental_id, key, state, served, reason, created_at) "
+        "SELECT printf('cl1010-unended-%05d', i), 'rental', 'http://127.0.0.1:1', printf('cl1010-unended-rental-%05d', i), "
+        "(SELECT key FROM machines WHERE name = 'local'), 'ended', 0, 'ended', :now - 101 * 86400000 FROM n", {"now": now})
     db.execute("COMMIT")
     db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     pages, size = (db.execute(f"PRAGMA {p}").fetchone()[0] for p in ("page_count", "page_size"))
@@ -78,7 +86,7 @@ def empty(args: argparse.Namespace) -> None:
     db.execute("BEGIN")
     for table, column in (("outputs", "run"), ("run_logs", "run"), ("runs", "id")):
         db.execute(f"DELETE FROM {table} WHERE {column} LIKE '{PREFIX}%'")
-    db.execute("DELETE FROM machines WHERE name LIKE 'cl1010-gone-%'")
+    db.execute("DELETE FROM machines WHERE name LIKE 'cl1010-gone-%' OR name LIKE 'cl1010-unended-%'")
     db.execute("COMMIT")
     db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
