@@ -122,8 +122,8 @@ impl Rc {
     }
 }
 
-/// How long a read of the RC's newest Runtime build stands for a lock or a floor check: each Runtime merge replaces the RC's
-/// prerelease, its older wheels gone with it.
+/// How long a read of the RC's newest Runtime build stands for a lock or a floor check: each Runtime merge makes a newer one
+/// (the prerelease keeps the newest 20, so a lock on one read before stays good).
 const RUNTIME_FRESH: Duration = Duration::from_secs(20);
 
 /// The open RC's newest Runtime build: its pure wheel and that wheel's URL (cl-952), read at most once a [`RUNTIME_FRESH`]. What
