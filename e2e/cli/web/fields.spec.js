@@ -208,6 +208,15 @@ test('fields', async ({ page, project, api, cli }) => {
       return top && row.contains(top) ? [] : [row.getAttribute('data-model-slot')];
     }));
     expect.soft(covered, 'no slot row is covered by the frame').toEqual([]);
+    // Every slot the tool declares is a row (Qwen shows one prompt helper: the expander, as nothing here edits a picture), and each opens.
+    const rows = picker.locator('button[data-model-slot]');
+    await expect(rows, 'one row per slot').toHaveCount(5);
+    expect.soft(await rows.evaluateAll((all) => all.map((row) => row.getAttribute('data-model-slot')).sort()), 'its slots').toEqual(['expander', 'model', 'text_encoder', 'turbo_lora', 'vae']);
+    for (const slot of ['expander', 'model', 'text_encoder', 'turbo_lora']) {
+      await picker.locator(`button[data-model-slot="${slot}"]`).click();
+      await expect(picker.locator(`section.model-picker-slot[data-model-slot="${slot}"]`), `${slot} opens`).toBeVisible();
+      await picker.getByRole('button', { name: 'Back to model slots', exact: true }).click();
+    }
     await picker.locator('button[data-model-slot]', { hasText: /^VAE$/ }).click();
     await expect(picker.locator('.model-picker-choices [role="radio"]').filter({ hasText: 'madebyollin / Texture Fix VAE' })).toHaveCount(1);
     await page.keyboard.press('Escape');
@@ -223,6 +232,7 @@ test('fields', async ({ page, project, api, cli }) => {
     await expect.soft(picker, 'a press from inside let go outside keeps it').toBeVisible();
     await page.mouse.click(after.x + 8, after.y + after.height - 8);
     await expect(picker, 'a press outside closes it').toHaveCount(0);
+    await expect(region, 'and only it: Focus stays').toBeVisible();
     await leave(page);
   });
 
