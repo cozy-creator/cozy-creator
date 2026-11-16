@@ -1,9 +1,12 @@
 //! Anonymous performance data (cl-1006, Paul 11-15): each published function's run on any machine, local, added or rented, goes to
-//! the Hub as its function, package, versions, GPU, size, times, kernels and outcome. Never its inputs, outputs, names or keys, and
-//! sent with no credential over connections of its own, so nothing ties it to who ran it. Off (`calcifer.send_performance_data =
-//! false`, the page's Settings, `cozy config set`): nothing is queued or sent. Sending is off every run's path: reports wait in
-//! memory and go together, 64 at once or 10 minutes after the first, and a batch the Hub doesn't take is dropped.
+//! the Hub for troubleshooting and usage: its function, package, versions, models, GPU, host, size, times, memory pressure, kernels,
+//! outcome and how it failed, as codes. Never its inputs, outputs, names, paths, keys or messages. It goes with no credential, over
+//! connections of its own, under a random install ID this computer made (`calcifer/report-id`), never the account's or machine's.
+//! Off (`calcifer.send_performance_data = false`, the page's Settings, `cozy config set`): nothing is queued or sent and the ID is
+//! deleted, so turning it on again makes a new one. Sending is off every run's path: reports wait in memory and go together, 64 at
+//! once or 10 minutes after the first, and a batch the Hub doesn't take is dropped.
 use std::{
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -19,13 +22,18 @@ use api::{
 };
 use ::api::hub::{
     Client, Credential,
-    types::{ReportedGpu, ReportedModel, ReportedSize, ReportedSoftware, ReportedTiming, RunReport, RunReports},
+    types::{
+        ReportedFailure, ReportedGpu, ReportedMemory, ReportedModel, ReportedSize, ReportedSoftware, ReportedTiming, RunReport,
+        RunReports,
+    },
 };
+use platform::paths::Home;
 use serde_json::Value;
 
 use crate::{
     eta::Took,
     machines::{Machines, lock},
+    slow::SLOW_RUN,
     store::RunRow,
 };
 
@@ -36,13 +44,16 @@ const HELD: usize = 256;
 /// From a batch's first report to its sending.
 const WAIT: Duration = Duration::from_secs(600);
 
-/// Whether reports are sent, and those waiting.
+/// Whether reports are sent, the install ID they go under, and those waiting.
 pub(crate) struct Reports {
     send: AtomicBool,
     hub: config::Origin,
     /// Its own connections: none a signed-in call used.
     http: reqwest::Client,
     wait: Duration,
+    /// `calcifer/report-id`: 32 random hex digits, made with the first report sent.
+    id_path: PathBuf,
+    id: Mutex<Option<String>>,
     waiting: Mutex<Waiting>,
 }
 
@@ -54,12 +65,19 @@ struct Waiting {
 }
 
 impl Reports {
-    pub(crate) fn new(config: &config::Config) -> Self {
+    pub(crate) fn new(config: &config::Config, home: &Home) -> Self {
+        let send = config.calcifer.send_performance_data.unwrap_or(true);
+        let id_path = home.calcifer().join("report-id");
+        if !send {
+            let _ = std::fs::remove_file(&id_path);
+        }
         Self {
-            send: AtomicBool::new(config.calcifer.send_performance_data.unwrap_or(true)),
+            send: AtomicBool::new(send),
             hub: config.hub_url.clone(),
             http: ::api::hub::http(None).expect("the webpki roots alone"),
             wait: config.calcifer.report_seconds.map_or(WAIT, |s| Duration::from_secs(s.into())),
+            id_path,
+            id: Mutex::default(),
             waiting: Mutex::default(),
         }
     }
@@ -67,16 +85,39 @@ impl Reports {
     pub(crate) fn settings(&self) -> Settings {
         Settings { send_performance_data: self.send.load(Ordering::Relaxed) }
     }
+
+    /// The install ID, made and kept the first time; None when it can't be kept (the report goes without one).
+    fn install(&self) -> Option<String> {
+        let mut id = lock(&self.id);
+        if id.is_none() {
+            let kept = std::fs::read_to_string(&self.id_path).ok().map(|text| text.trim().to_owned()).filter(|text| install_id(text));
+            *id = kept.or_else(|| {
+                let mut bytes = [0u8; 16];
+                getrandom::fill(&mut bytes).ok()?;
+                let made = hex::encode(bytes);
+                platform::durable::replace(&self.id_path, made.as_bytes(), 0o600).ok()?;
+                Some(made)
+            });
+        }
+        id.clone()
+    }
+
+    /// Forgets the install ID: the next report, once it's on again, goes under a new one.
+    fn forget(&self) {
+        *lock(&self.id) = None;
+        let _ = std::fs::remove_file(&self.id_path);
+    }
 }
 
 impl Machines {
     /// Changes this computer's settings: written to config.toml first, so a Calcifer started next keeps them. Turned off, what
-    /// waits is dropped.
+    /// waits is dropped and the install ID deleted.
     pub(crate) fn change_settings(&self, settings: &Settings) -> Result<Settings, Error> {
         config::set_send_performance_data(&self.home, settings.send_performance_data)?;
         self.reports.send.store(settings.send_performance_data, Ordering::Relaxed);
         if !settings.send_performance_data {
             *lock(&self.reports.waiting) = Waiting::default();
+            self.reports.forget();
         }
         Ok(self.reports.settings())
     }
@@ -111,7 +152,7 @@ impl Machines {
         }
     }
 
-    async fn send_reports(&self) {
+    async fn send_reports(self: Arc<Self>) {
         let runs = {
             let mut waiting = lock(&self.reports.waiting);
             waiting.timed = false;
@@ -120,9 +161,11 @@ impl Machines {
         if runs.is_empty() || !self.reports.send.load(Ordering::Relaxed) {
             return;
         }
+        let me = self.clone();
+        let install = tokio::task::spawn_blocking(move || me.reports.install()).await.ok().flatten().unwrap_or_default();
         let client = Client::connect(&self.reports.hub, self.reports.http.clone(), Credential::Anonymous);
         for batch in runs.chunks(BATCH) {
-            if let Err(e) = client.report_runs(&RunReports { runs: batch.to_vec() }).await {
+            if let Err(e) = client.report_runs(&RunReports { install: install.clone(), runs: batch.to_vec() }).await {
                 tracing::debug!(runs = runs.len(), "run reports dropped: {e}");
                 return;
             }
@@ -144,7 +187,7 @@ fn report(row: &RunRow, outcome: &v1::Outcome, frame: Option<&v1::StatusFrame>) 
         "" => row.target.rsplit_once('@').map(|(_, at)| at.to_owned()).unwrap_or_default(),
         named => named.to_owned(),
     };
-    if version.is_empty() || !version.chars().all(|c| c.is_ascii_alphanumeric() || ".+_-".contains(c)) {
+    if version.is_empty() || !word(&version) {
         return None;
     }
     let measured: Value = outcome.measurements.as_ref().and_then(|m| serde_json::from_str(m.get()).ok()).unwrap_or_default();
@@ -152,23 +195,29 @@ fn report(row: &RunRow, outcome: &v1::Outcome, frame: Option<&v1::StatusFrame>) 
     let job = JobSize::of(&payload);
     let pixels = |key: &str| payload.get(key).and_then(Value::as_u64).filter(|n| *n > 0);
     let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+    let gib = |bytes: u64| (bytes > 0).then(|| (bytes as f64 / GIB).round() as u32);
     let software = &measured["software"];
     let construction = &measured["execution"]["construction"];
     let prepared = construction["prepared_unix_ms"].as_f64().filter(|at| *at > 0.0);
     let warm = prepared.zip(row.started_at_ms).map(|(at, started)| at <= started as f64);
-    let steps = row.started_at_ms.and_then(|started| {
-        let took = Took::of("", "", started, outcome.execution_ms, outcome.measurements.as_ref()?.get(), None)?;
+    let took = row.started_at_ms.and_then(|started| Took::of("", "", started, outcome.execution_ms, outcome.measurements.as_ref()?.get(), None));
+    let steps = took.as_ref().and_then(|took| {
         let main = took.stages.iter().filter_map(|stage| stage.steps.map(|steps| (stage.ms, steps))).max_by(|a, b| a.0.total_cmp(&b.0));
         main.map(|(_, steps)| steps)
     });
     let peak = measured["memory"]["driver"].as_array().into_iter().flatten().filter_map(|gpu| gpu["peak_bytes"].as_u64()).max();
+    let stats = &measured["memory"]["stats"];
+    let count = |value: &Value| value.as_u64();
+    let ooms = [count(&stats["working_allocator"]["ooms"]), count(&stats["swallowed_ooms"])];
+    let paged: u64 = stats["moved"].as_object().into_iter().flatten().filter(|(origin, _)| *origin != "bake").filter_map(|(_, moved)| moved["bytes"].as_u64()).sum();
     let gpu = frame.and_then(|frame| {
         let first = frame.gpus.first()?;
         let name = if outcome.gpu.is_empty() { first.name.clone() } else { outcome.gpu.clone() };
         Some(ReportedGpu {
             name,
             count: u32::try_from(frame.gpus.len()).unwrap_or(u32::MAX),
-            memory_gib: (first.memory_bytes > 0).then(|| (first.memory_bytes as f64 / GIB).round() as u32),
+            memory_gib: gib(first.memory_bytes),
+            limit_gib: gib(first.memory_limit_bytes),
             driver: first.driver.clone(),
             family: first.family.clone(),
         })
@@ -181,17 +230,38 @@ fn report(row: &RunRow, outcome: &v1::Outcome, frame: Option<&v1::StatusFrame>) 
     kernels.sort();
     kernels.dedup();
     kernels.truncate(64);
+    let mut warnings: Vec<String> = row.warnings.iter().map(|warning| warning.code.clone()).filter(|code| self::code(code)).collect();
+    warnings.sort();
+    warnings.dedup();
+    warnings.truncate(16);
+    let error_code = outcome.reason.as_ref().map(|reason| reason.code.clone()).filter(|code| self::code(code)).unwrap_or_default();
+    let failure = match outcome_name.as_str() {
+        "succeeded" => ReportedFailure::default(),
+        _ => ReportedFailure {
+            oom: match error_code.as_str() {
+                "device_out_of_memory" => "device",
+                "host_out_of_memory" => "host",
+                _ => "",
+            }
+            .to_owned(),
+            stage: took.as_ref().and_then(|took| took.stages.last()).map(|stage| stage.name.clone()).filter(|name| stage(name)).unwrap_or_default(),
+        },
+    };
     Some(RunReport {
         function: format!("{}/{}", release.package, row.spec.entrypoint),
         release: version,
+        lane: Some(row.spec.lane.clone()).filter(|lane| word(lane)).unwrap_or_default(),
         models: measured["models"].as_array().into_iter().flatten().filter_map(model).take(16).collect(),
         software: ReportedSoftware {
             cozy: ::api::VERSION.to_owned(),
             tensord: frame.map(|frame| frame.version.clone()).filter(|v| !v.is_empty()).unwrap_or_else(|| text(&software["tensord"])),
             runtime: text(&software["runtime"]),
             tensorfs: text(&software["tensorfs"]),
+            torch: frame.map(|frame| frame.torch.clone()).filter(|torch| word(torch)).unwrap_or_default(),
         },
         os: frame.map(|frame| frame.platform.clone()).unwrap_or_default(),
+        os_release: frame.map(|frame| frame.os_release.clone()).unwrap_or_default(),
+        host_memory_gib: frame.and_then(|frame| gib(frame.memory_bytes)),
         width: measured["execution"]["degree"].as_u64().and_then(|d| u32::try_from(d).ok()).unwrap_or(1).max(1),
         gpu,
         size: ReportedSize {
@@ -201,9 +271,12 @@ fn report(row: &RunRow, outcome: &v1::Outcome, frame: Option<&v1::StatusFrame>) 
             frames: job.frames,
             steps: job.steps,
             tokens: job.tokens,
+            seconds: job.seconds,
+            refs: job.refs.map(u64::from),
         },
         timing: ReportedTiming {
             total_ms: outcome.execution_ms,
+            lead_ms: took.as_ref().map(|took| took.lead_ms.round() as u64),
             load_ms: construction["prepare_ms"].as_f64().filter(|_| warm == Some(false)).map(|ms| ms.round() as u64),
             steps: steps.map(|s| s.count),
             step1_ms: steps.map(|s| s.first_ms),
@@ -211,9 +284,17 @@ fn report(row: &RunRow, outcome: &v1::Outcome, frame: Option<&v1::StatusFrame>) 
             warm,
             peak_vram_gib: peak.map(|bytes| (bytes as f64 / GIB * 10.0).round() / 10.0),
         },
+        memory: ReportedMemory {
+            retries: count(&stats["retries"]),
+            ooms: ooms.iter().any(Option::is_some).then(|| ooms.iter().flatten().sum()),
+            paged_gib: (paged > 0).then(|| (paged as f64 / GIB * 10.0).round() / 10.0),
+        },
         kernels,
+        slow: warnings.iter().any(|code| code == SLOW_RUN),
+        warnings,
         outcome: outcome_name,
-        error_code: outcome.reason.as_ref().map(|reason| reason.code.clone()).filter(|code| self::code(code)).unwrap_or_default(),
+        error_code,
+        failure,
     })
 }
 
@@ -257,6 +338,20 @@ fn kernel(name: &str) -> bool {
     ["attention", "gemm", "kernel", "request_path"].contains(&family)
         && (1..=96).contains(&rest.len())
         && rest.chars().all(|c| c.is_ascii_alphanumeric() || "_.:-".contains(c))
+}
+
+/// A version, lane or release: letters, digits and `.+_-`.
+fn word(text: &str) -> bool {
+    (1..=64).contains(&text.len()) && text.chars().all(|c| c.is_ascii_alphanumeric() || ".+_-".contains(c))
+}
+
+/// A stage as its package names it, never a `host ·` span.
+fn stage(name: &str) -> bool {
+    (1..=64).contains(&name.len()) && name.chars().all(|c| c.is_ascii_alphanumeric() || " _.:-".contains(c))
+}
+
+fn install_id(text: &str) -> bool {
+    text.len() == 32 && text.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 fn code(code: &str) -> bool {

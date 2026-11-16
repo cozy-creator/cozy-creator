@@ -184,9 +184,12 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 - `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, encrypted_project_creation, home}`. `home` is this person's home folder, where the page suggests a first project's folder. Clients must require `encrypted_project_creation: true` before sending encrypted-creation credentials or requests; older controllers omit it. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
 - `GET /v1/settings`: `{send_performance_data}`, this computer's settings Calcifer holds (config.toml's `[calcifer]`); `PUT` sends them
   whole, written to config.toml first. `send_performance_data` (default true, cl-1006): each published function's run on any
-  machine is reported to the Hub (`POST /v1/run-reports`) with no credential: its function, release, models, versions, OS, GPU,
-  size, times, kernels and outcome, never its inputs, outputs, names or keys. Reports wait in memory and go 64 at once or 10 min after
-  the first; a batch the Hub doesn't take is dropped. Off: nothing waits or goes.
+  machine is reported to the Hub (`POST /v1/run-reports`) with no credential, for troubleshooting and usage, never estimates: its
+  function, release, lane, models, versions, OS and its release, host memory, GPU, size, times, memory pressure, kernels, outcome,
+  error and warning codes, the stage a failed run was in and whether it was slow, under a random install ID this computer made
+  (`calcifer/report-id`); never its inputs, outputs, names, paths, keys or messages. Reports wait in memory and go 64 at once or 10 min
+  after the first; a batch the Hub doesn't take is dropped. Off: nothing waits or goes, and the install ID is deleted, so on again
+  makes a new one.
 - `GET /v1/legacy`: `{existing, gone, unreadable}`, the old project runs (from before projects kept their own) Calcifer's store still holds: `existing` and `gone` list `{path, runs}` by the project folder each names, here or gone; `unreadable` counts records it can't read. `cozy doctor` says it (cl-984).
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
   without asking the Hub (`GET /v1/account` does).
@@ -326,9 +329,8 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
   `boot.expected_ready_at`, from its provider and card's recent boots and the phase it's in; else 4 min from its attempt's start; not before
   its image's pull can end; once overdue, as long again as it's late, at least 30 s; an order its Hub has had no pod for a minute isn't
   quoted), then quoted as a machine that holds nothing (`placement::Picture`), the runs already sent to it ahead of the jobs asked, each
-  timed by this computer's runs on its card, else our measurement of that card, else its Hub's from every cozy's anonymous run reports
-  (`GET /v1/run-times`, asked with no credential), else another card's scaled by the Hub's speeds, else a minute. Its quote's
-  `ready_ms` says when.
+  timed by this computer's runs on its card, else our measurement of that card, else another card's scaled by the Hub's speeds, else a
+  minute; run reports never time anything (cl-1006). Its quote's `ready_ms` says when.
   A job held for one says so on the board: `why` `waits for pluto, ready in about 2 min`, `machine` pluto.
 - A machine that can't run it at all (`fits: false`: its weights too big for the disk, its GPUs out of service) has no finish
   and is never chosen. Of the rest the soonest finish wins; within 2% (or 1 s), a machine that serves before one on its way, one whose

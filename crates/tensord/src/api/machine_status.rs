@@ -239,6 +239,28 @@ fn drives_display(uuid: &str) -> bool {
     display
 }
 
+/// This host's distribution and kernel major.minor (`Ubuntu 24.04 (6.8)`), never a build string, and its memory: read once.
+fn host() -> &'static (String, u64) {
+    static HOST: std::sync::OnceLock<(String, u64)> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+        let field = |key: &str| {
+            release.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix('=')).map(|v| v.trim_matches('"').to_owned()).unwrap_or_default()
+        };
+        let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+        let kernel: Vec<&str> = kernel.trim().split(['.', '-']).take(2).collect();
+        let distribution = format!("{} {}", field("NAME"), field("VERSION_ID")).trim().to_owned();
+        let os = match (distribution.is_empty(), kernel.len() == 2) {
+            (false, true) => format!("{distribution} ({}.{})", kernel[0], kernel[1]),
+            (false, false) => distribution,
+            (true, true) => format!("{} {}.{}", std::env::consts::OS, kernel[0], kernel[1]),
+            (true, false) => String::new(),
+        };
+        let os: String = os.chars().filter(|c| c.is_ascii_alphanumeric() || " ._()+/-".contains(*c)).take(64).collect();
+        (os, u64::try_from(platform::contain::host_memory::total()).unwrap_or(0))
+    })
+}
+
 fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) -> v1::StatusFrame {
     let Held { runs, environments, warm, models, mut memory, lost, mut out, queue, times, link, serving, nvlink, ahead } = held;
     let (updates, lifecycle) = (&identity.updates, &identity.lifecycle);
@@ -256,6 +278,8 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
         }
         .into(),
         platform: format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
+        os_release: host().0.clone(),
+        memory_bytes: host().1,
         started_at_unix_ms: identity.started_at_ms as i64,
         gpus: identity
             .gpus

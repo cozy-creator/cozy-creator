@@ -1316,6 +1316,8 @@ components:
           minimum: 0
         phase: {type: string, description: 'booting, ready, releasing'}
         platform: {type: string, description: os/arch}
+        os_release: {type: string, description: 'Its distribution and kernel major.minor (Ubuntu 24.04 (6.8)); absent when unread.'}
+        memory_bytes: {type: integer, format: int64, minimum: 0, description: Its host's memory; absent when unread.}
         receipt:
           type: string
           format: byte

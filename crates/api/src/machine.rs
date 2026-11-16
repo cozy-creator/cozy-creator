@@ -1176,6 +1176,12 @@ pub struct StatusFrame {
     pub phase: String,
     /// os/arch
     pub platform: String,
+    /// Its distribution and kernel major.minor (`Ubuntu 24.04 (6.8)`); empty: unread.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub os_release: String,
+    /// Its host's memory; 0: unread.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub memory_bytes: u64,
     pub started_at_unix_ms: i64,
     /// Measured at boot.
     pub gpus: Vec<Gpu>,
