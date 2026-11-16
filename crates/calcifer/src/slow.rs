@@ -1,6 +1,6 @@
 //! A run far slower than its function is known to take on its card and lane says so, naming the likely cause (cl-913). What it's
-//! known to take, its bar: this machine's runs of it, else runs on other machines of its card, else runs on another card scaled by
-//! the Hub's per-SKU speeds; at its lane and size (megapixels and steps as its time left reads them, and frames, tokens and media
+//! known to take, its bar: this machine's runs of it, else runs on other machines of its card, else its release's benchmarks (cl-1024:
+//! of its card, else another's scaled by the Hub's per-SKU speeds); at its lane and size (megapixels and steps as its time left reads them, and frames, tokens and media
 //! duration asked), never from a run itself slow or slowed (a hot GPU, a Runtime without its kernels). A run whose bar has stages is
 //! timed from its first one, so a cold start's load is no slowness, and what a run spends downloading weights is never counted. Far is 1.4× the bar and 20 s more: said once, as soon as its
 //! time so far is and a cause is known (`tick`), else at its end with what its record measured.
@@ -162,26 +162,21 @@ impl Calcifer {
             };
             return Some(Self::barred(prior.with_steps(steps), steps, &of, basis, 1.0, extent));
         }
-        // Another card's, scaled by the Hub's per-SKU speeds.
-        let machines = self.machines()?;
+        // Its release's benchmark (cl-1024): of its card, else another's scaled by the Hub's speeds; at what it asks.
         let hub = row.hub.as_ref()?.to_string();
         let (package, release, function) = parts(&row.target)?;
-        let speeds = tokio::time::timeout(crate::toolbox::HUB_LATE, fit::speeds(&machines.hubs, &hub, package, release, function)).await.ok()?;
-        let to = *speeds.get(&card).filter(|speed| **speed > 0.0)?;
-        let mut cards: Vec<&str> = like.iter().map(|took| took.gpu.as_str()).filter(|other| !other.is_empty()).collect();
-        cards.sort_unstable();
-        cards.dedup();
-        (cards.into_iter())
-            .filter_map(|other| {
-                let speed = *speeds.get(&fit::card(other))?;
-                let prior = eta::Prior::of(&like, "", other, megapixels)?;
-                let of: Vec<&eta::Took> = like.iter().filter(|took| took.gpu == other).collect();
-                let basis = format!("{} runs on an {} scaled by the Hub's speeds", prior.runs, fit::card(other));
-                let extent = extent_of(&|took| took.gpu == other);
-                Some((prior.runs, Self::barred(prior.with_steps(steps), steps, &of, basis, speed / to, extent)))
-            })
-            .max_by_key(|(runs, _)| *runs)
-            .map(|(_, bar)| bar)
+        let machines = self.machines()?;
+        // The Hub's speeds for it, read as its placement is, so a speed-scaled benchmark has them.
+        let _ = tokio::time::timeout(crate::toolbox::HUB_LATE, fit::speeds(&machines.hubs, &hub, package, release, function)).await;
+        let references = crate::placement::references(&machines.hubs, std::slice::from_ref(&row.target));
+        let size = v1::JobSize::of(&Value::Object(asked.clone()));
+        let warm_ms = references.time(&row.target, &gpu, &size)?;
+        // Timed from its start, load and all: a cold run is held to the cold time where the benchmark has one.
+        let (total_ms, basis) = match references.measured(&row.target, &gpu, &size) {
+            Some((_, bench)) => (warm_ms * bench.cold_ms.map_or(1.0, |cold| cold as f64 / bench.warm_ms.max(1) as f64).max(1.0), format!("its release's benchmark of an {card}")),
+            None => (warm_ms, format!("its release's benchmarks scaled to an {card} by the Hub's speeds")),
+        };
+        Some(Bar { total_ms, lead_ms: None, stages: vec![], width: 1, basis, extent: Extent::of(&asked) })
     }
 
     fn barred(prior: eta::Prior, steps: Option<u64>, of: &[&eta::Took], basis: String, scale: f64, extent: Extent) -> Bar {

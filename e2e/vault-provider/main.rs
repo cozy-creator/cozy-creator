@@ -1,4 +1,7 @@
 //! Real provider fixture: FUSE/WinFsp and ordinary file/media I/O, without a mock filesystem.
+//!   vault-provider normal|crash-host <securefs> <artifacts>
+//!   vault-provider throughput <securefs> <artifacts> <bytes>   write, lock, unlock, read back: {write_MBps, read_MBps}
+//!   vault-provider controls <securefs> <artifacts>   an exited child's birth, then a mounted view's status read many times at once
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use project_mount::{MountOptions, Provider};
 use serde_json::json;
@@ -6,9 +9,9 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Seek, SeekFrom, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use zeroize::Zeroizing;
 
@@ -22,36 +25,44 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+type Failure = Box<dyn std::error::Error>;
+
+fn run() -> Result<(), Failure> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if arguments.len() != 3 {
-        return Err("usage: vault-provider normal|crash-host <securefs> <artifacts>".into());
+    let mode = arguments.first().map(|mode| mode.to_string_lossy().into_owned()).unwrap_or_default();
+    // `controls`' child: exits at once.
+    if mode == "exit" {
+        return Ok(());
     }
-    let mode = arguments[0].to_string_lossy();
+    let bytes = match (mode.as_str(), arguments.len()) {
+        ("normal" | "crash-host" | "mount" | "controls", 3) => None,
+        ("throughput", 4) => Some(
+            arguments[3]
+                .to_str()
+                .and_then(|bytes| bytes.parse::<u64>().ok())
+                .filter(|bytes| *bytes > 0)
+                .ok_or("throughput takes a positive byte count")?,
+        ),
+        _ => {
+            return Err("usage: vault-provider normal|crash-host|mount|controls <securefs> <artifacts> | throughput <securefs> <artifacts> <bytes>".into());
+        }
+    };
     let expected_helper = PathBuf::from(&arguments[1]);
     let artifacts = PathBuf::from(&arguments[2]);
     fs::create_dir_all(&artifacts)?;
-    let provider = if project_mount::is_bundled() {
-        let installed = Provider::discover(&artifacts.join("tools"))?;
-        assert_eq!(
-            Sha256::digest(fs::read(installed.executable())?),
-            Sha256::digest(fs::read(&expected_helper)?),
-            "the embedded provider must match its pinned executable"
-        );
-        assert!(
-            artifacts
-                .join("tools/securefs/2.0.0/LICENSE.securefs.md")
-                .is_file()
-        );
-        installed
-    } else {
-        Provider::from_path(expected_helper)?
-    };
+    let provider = provider(&expected_helper, &artifacts)?;
+    if let Some(bytes) = bytes {
+        return throughput(&provider, &artifacts, bytes);
+    }
+    if mode == "mount" {
+        return mount_only(&provider, &artifacts);
+    }
+    if mode == "controls" {
+        return controls(&provider, &artifacts);
+    }
     let backing = artifacts.join("encrypted");
     let view = project_mount::view_path(&artifacts.join("runtime"))?;
-    let mut randomness = Zeroizing::new([0u8; 32]);
-    getrandom::fill(&mut *randomness).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let secret = Zeroizing::new(URL_SAFE_NO_PAD.encode(*randomness));
+    let secret = new_secret()?;
     eprintln!("provider fixture: create and mount");
     provider.create(&backing, secret.as_bytes())?;
     #[cfg(target_os = "macos")]
@@ -520,6 +531,196 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         json!({"result":"pass","provider":provider.storage_format(),"bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":read_only,"idle_lock":idle,"sqlite_durable_commit":true,"backing_marker_absent":true,"view":view})
+    );
+    Ok(())
+}
+
+/// The provider every mode runs: the embedded one, installed as a release installs it; else, on Linux, the given helper where a
+/// release installs its own, which `discover` finds as it does that one (with any `fusermount` link); elsewhere the given executable.
+fn provider(helper: &Path, artifacts: &Path) -> Result<Provider, Failure> {
+    let tools = artifacts.join("tools");
+    if project_mount::is_bundled() {
+        let installed = Provider::discover(&tools)?;
+        assert_eq!(
+            Sha256::digest(fs::read(installed.executable())?),
+            Sha256::digest(fs::read(helper)?),
+            "the embedded provider must match its pinned executable"
+        );
+        assert!(tools.join("securefs/2.0.0/LICENSE.securefs.md").is_file());
+        return Ok(installed);
+    }
+    if cfg!(target_os = "linux") {
+        let installed = tools.join("securefs").join(project_mount::PROVIDER_VERSION);
+        fs::create_dir_all(&installed)?;
+        fs::copy(helper, installed.join("securefs"))?;
+        return Ok(Provider::discover(&tools)?);
+    }
+    Ok(Provider::from_path(helper)?)
+}
+
+fn new_secret() -> Result<Zeroizing<String>, Failure> {
+    let mut randomness = Zeroizing::new([0u8; 32]);
+    getrandom::fill(&mut *randomness).map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(*randomness)))
+}
+
+/// Writes `bytes` through a new encrypted view in 4 MiB chunks of a deterministic pattern, fsyncs, locks, unlocks and reads them
+/// back, checking every byte. Prints MB/s (10^6 bytes) of the I/O alone: making and checking the pattern is off the clock.
+/// Create, mount, write a file and fsync it, and lock: what a Docker container proves, where its FUSE sandbox refuses the read back
+/// that a computer's passes (cl-1000, runs 43785258153 and 43789239440).
+fn mount_only(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
+    let backing = artifacts.join("encrypted");
+    let view = project_mount::view_path(&artifacts.join("runtime"))?;
+    let secret = new_secret()?;
+    eprintln!("provider fixture: create and mount");
+    provider.create(&backing, secret.as_bytes())?;
+    let mut mounted = provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+    let content = b"COZY_CL1000_MOUNTED".repeat(4096);
+    eprintln!("provider fixture: write and fsync");
+    let mut output = fs::File::create(view.join("mounted.bin"))?;
+    output.write_all(&content)?;
+    output.sync_all()?;
+    drop(output);
+    eprintln!("provider fixture: lock");
+    mounted.try_unmount()?;
+    println!("{}", json!({"result":"mounted","wrote":content.len(),"provider":provider.storage_format()}));
+    Ok(())
+}
+
+/// A child that exited before its waiter read its birth, as a control command that finishes at once (cl-1050): macOS answered
+/// `read a process's birth: No such process`, e2e 43789546310's 503 on an encrypted import. First one such child, made exited on
+/// purpose: its birth must read and its exact handle say it ended. Then the real path under load: a mounted view's status (on
+/// macOS `/sbin/mount` and `hdiutil info`, each a control command) read by 4 threads per core 250 times each, a spinner per core
+/// keeping every core busy. Every read must say mounted; the view then locks.
+fn controls(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const READS: usize = 250;
+    eprintln!("provider fixture: an exited child's birth");
+    let mut child = Command::new(std::env::current_exe()?)
+        .arg("exit")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .spawn()?;
+    // Its output ends as it exits; it's then exited, unreaped, well before the read.
+    child.stdout.take().ok_or("no child output")?.read_to_end(&mut Vec::new())?;
+    std::thread::sleep(Duration::from_millis(200));
+    let birth = platform::process::Birth::of(child.id())
+        .map_err(|error| format!("an exited child's birth: {error}"))?;
+    let exact = platform::process::Exact::open(&birth)?;
+    if exact.as_ref().is_some_and(|exact| !exact.ended()) {
+        return Err("an exited child's handle says it's running".into());
+    }
+    if !child.wait()?.success() {
+        return Err("the exited child failed".into());
+    }
+    let backing = artifacts.join("encrypted");
+    let view = project_mount::view_path(&artifacts.join("runtime"))?;
+    let secret = new_secret()?;
+    eprintln!("provider fixture: create and mount");
+    provider.create(&backing, secret.as_bytes())?;
+    let mut mounted = provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+    let cores = std::thread::available_parallelism().map_or(2, |cores| cores.get());
+    let calls = 4 * cores * READS;
+    eprintln!("provider fixture: {calls} status reads on {} threads", 4 * cores);
+    let busy = AtomicBool::new(true);
+    let started = Instant::now();
+    let failures: Vec<String> = std::thread::scope(|scope| {
+        for _ in 0..cores {
+            scope.spawn(|| {
+                while busy.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+        }
+        let readers: Vec<_> = (0..4 * cores)
+            .map(|_| {
+                scope.spawn(|| {
+                    (0..READS)
+                        .filter_map(|_| match mounted.is_mounted() {
+                            Ok(true) => None,
+                            Ok(false) => Some("a mounted view read as unmounted".to_owned()),
+                            Err(error) => Some(error.to_string()),
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let joined: Vec<_> = readers.into_iter().map(|reader| reader.join()).collect();
+        busy.store(false, Ordering::Relaxed);
+        joined.into_iter().flat_map(|reader| reader.unwrap_or_else(|_| vec!["a reader panicked".to_owned()])).collect()
+    });
+    let seconds = started.elapsed().as_secs_f64();
+    println!(
+        "{}",
+        json!({"result": if failures.is_empty() {"pass"} else {"failed"}, "exited_child": "birth read", "calls": calls, "seconds": seconds, "failures": failures.len(), "first": failures.first()})
+    );
+    eprintln!("provider fixture: lock");
+    mounted.try_unmount()?;
+    match failures.first() {
+        None => Ok(()),
+        Some(first) => Err(format!("{} of {calls} status reads failed; first: {first}", failures.len()).into()),
+    }
+}
+
+fn throughput(provider: &Provider, artifacts: &Path, bytes: u64) -> Result<(), Failure> {
+    const CHUNK: u64 = 4 << 20;
+    // splitmix64 of each 8-byte word's index in the file: no two chunks alike.
+    fn pattern(chunk: u64, buffer: &mut [u8]) {
+        for (word, out) in buffer.chunks_mut(8).enumerate() {
+            let mut z = (chunk * (CHUNK / 8) + word as u64).wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            out.copy_from_slice(&z.to_le_bytes()[..out.len()]);
+        }
+    }
+    let backing = artifacts.join("encrypted");
+    let view = project_mount::view_path(&artifacts.join("runtime"))?;
+    let secret = new_secret()?;
+    let file = view.join("throughput.bin");
+    let chunks = bytes.div_ceil(CHUNK);
+    let length = |index: u64| (bytes - index * CHUNK).min(CHUNK) as usize;
+    let mut buffer = vec![0u8; CHUNK as usize];
+    let mut expected = vec![0u8; CHUNK as usize];
+    eprintln!("provider fixture: throughput: create, mount, write {bytes} bytes");
+    provider.create(&backing, secret.as_bytes())?;
+    let mut mounted = provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+    let mut output = fs::File::create(&file)?;
+    let mut writing = Duration::ZERO;
+    for index in 0..chunks {
+        let part = &mut buffer[..length(index)];
+        pattern(index, part);
+        let started = Instant::now();
+        output.write_all(part)?;
+        writing += started.elapsed();
+    }
+    let started = Instant::now();
+    output.sync_all()?;
+    drop(output);
+    writing += started.elapsed();
+    eprintln!("provider fixture: throughput: lock, unlock, read back");
+    mounted.try_unmount()?;
+    let mut mounted = provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+    let mut input = fs::File::open(&file)?;
+    let mut reading = Duration::ZERO;
+    for index in 0..chunks {
+        let part = &mut buffer[..length(index)];
+        let started = Instant::now();
+        input.read_exact(part)?;
+        reading += started.elapsed();
+        let want = &mut expected[..part.len()];
+        pattern(index, want);
+        if part != want {
+            return Err(format!("throughput: chunk {index} read back differs from what was written").into());
+        }
+    }
+    assert_eq!(input.read(&mut [0])?, 0, "the file must end where the writes did");
+    drop(input);
+    mounted.try_unmount()?;
+    let rate = |time: Duration| (bytes as f64 / 1e6 / time.as_secs_f64() * 10.0).round() / 10.0;
+    println!(
+        "{}",
+        json!({"bytes":bytes,"chunk_bytes":CHUNK,"write_MBps":rate(writing),"read_MBps":rate(reading),"provider":provider.storage_format(),"verified":true})
     );
     Ok(())
 }

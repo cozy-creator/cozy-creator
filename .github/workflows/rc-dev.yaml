@@ -2,8 +2,10 @@ name: rc-dev
 # The open RC's machine software for dev homes (cl-922): each push to rc/<x.y.z> builds what it changed of the
 # Linux x86_64 `cozy` a machine runs (TensorD: the tensord crate and what it builds on) and the TensorFS wheel,
 # dev-build.yaml's builds (cozy <x.y.z>-dev+g<sha8>, TensorFS <version>+dev.g<sha8>), and puts them on the rolling GitHub prerelease `rc-<x.y.z>`,
-# never latest, in place of the last ones. Its SHA256SUMS names them; a dev home's Calcifer reads it and brings its
-# rentals to it. A push that changes neither builds nothing, so a machine restarts only for its own software.
+# never latest, beside the newest earlier builds of each kind (KEEP of each), so what a lock or a machine took minutes
+# before still resolves. Its SHA256SUMS names every file there, the newest build of each kind first: each reader (Calcifer,
+# the e2e, `changed` below) takes the first line that fits. A push that changes neither builds nothing, so a machine
+# restarts only for its own software.
 # By hand: gh workflow run rc-dev.yaml -R cozy-creator/cozy-creator --ref rc/<x.y.z>
 on:
   push:
@@ -83,47 +85,64 @@ jobs:
         with:
           pattern: '*-${{ github.sha }}'
           path: artifacts
-      # New files first, SHA256SUMS next (a reader sees the last build or this one, whole), files an hour stale last. A kind
-      # not built this time keeps its file and line.
-      - name: The RC's prerelease holds this build
+      # New files first, SHA256SUMS next (a reader sees the last builds or these, whole), builds past the newest KEEP of
+      # their kind last. A kind not built this time keeps its files and lines.
+      - name: The RC's prerelease holds this build and the newest earlier ones
         env:
           BUILD: ${{ needs.changed.outputs.build }}
+          KEEP: 20
         run: |
           set -euo pipefail
           tag="rc-${BRANCH#rc/}"
-          old=$(gh release download "$tag" -R "$REPO" -p SHA256SUMS -O - 2>/dev/null || true)
           mkdir up
-          kept=$old
           if [[ $BUILD == *cozy* ]]; then
             bin=artifacts/cozy-$SHA/cozy-linux-x86_64
             chmod +x "$bin"
             version=$("$bin" --version | awk '{print $2}')
             case $version in *"+dev.g${SHA:0:8}" | *"-dev+g${SHA:0:8}") ;; *) echo "::error::the dev cozy says $version"; exit 1 ;; esac
             cp "$bin" "up/cozy-$version-linux-x86_64"
-            kept=$(grep -v ' [ *]*cozy-' <<< "$kept" || true)
           fi
           if [[ $BUILD == *tensorfs* ]]; then
             cp artifacts/tensorfs-wheel-$SHA/*.whl up/
-            kept=$(grep -v ' [ *]*tensorfs-' <<< "$kept" || true)
           fi
-          cd up
-          files=(*)
-          { sha256sum "${files[@]}"; [ -z "$kept" ] || echo "$kept"; } > SHA256SUMS
-          cat SHA256SUMS
           if ! gh release view "$tag" -R "$REPO" >/dev/null 2>&1; then
             gh release create "$tag" -R "$REPO" --target "$SHA" --prerelease --latest=false \
-              --title "$BRANCH dev builds" --notes "The newest machine builds of $BRANCH, for dev homes (cl-922). Replaced by each push."
+              --title "$BRANCH dev builds" --notes "The newest machine builds of $BRANCH, for dev homes (cl-922)."
           fi
           gh api -X PATCH "repos/$REPO/git/refs/tags/$tag" -f sha="$SHA" -F force=true >/dev/null
-          # A file goes an hour after the push that replaced it, as cozy-runtime's rc-dev keeps its wheels: a SHA256SUMS a
-          # reader holds (GitHub's CDN serves the old one for minutes; Calcifer keeps a read for a minute) still names files
-          # that are there (e2e 43402947916's runtime_floor fetched a cozy replaced moments before: 404).
-          stale=$(gh release view "$tag" -R "$REPO" --json assets --jq '.assets[] | select(.updatedAt < (now - 3600 | todate)) | .name')
+          held=$(gh release view "$tag" -R "$REPO" --json assets --jq '.assets[].name')
+          old=$(gh release download "$tag" -R "$REPO" -p SHA256SUMS -O - 2>/dev/null || true)
+          cd up
+          files=(*)
+          # This push's files, then each earlier one the last SHA256SUMS names (newest first, as it wrote them) and the
+          # release holds, then any it holds unnamed (the builds an older rc-dev kept an hour), hashed here: of the newest
+          # KEEP builds of each kind (a build: its kind and +g<sha8>). Every kept file has its sum.
+          named=$(awk '{print $2}' <<< "$old" | tr -d '*')
+          {
+            sha256sum "${files[@]}"
+            while read -r sum file; do
+              file=${file#\*}
+              if [ -n "$file" ] && grep -qxF "$file" <<< "$held" && ! printf '%s\n' "${files[@]}" | grep -qxF "$file"; then
+                echo "$sum  $file"
+              fi
+            done <<< "$old"
+            for name in $held; do
+              if [ "$name" != SHA256SUMS ] && ! grep -qxF "$name" <<< "$named" && ! printf '%s\n' "${files[@]}" | grep -qxF "$name"; then
+                gh release download "$tag" -R "$REPO" -p "$name" -D ../unnamed --clobber
+                (cd ../unnamed && sha256sum "$name")
+              fi
+            done
+          } | awk -v keep="$KEEP" '{
+                kind = $2; sub(/-.*/, "", kind); match($2, /[+](dev[.])?g[0-9a-f]+/); build = kind substr($2, RSTART, RLENGTH)
+                if (!(build in seen)) { seen[build] = 1; count[kind]++ }
+                if (count[kind] <= keep) print $1 "  " $2
+              }' > SHA256SUMS
+          cat SHA256SUMS
           gh release upload "$tag" -R "$REPO" --clobber "${files[@]}"
           gh release upload "$tag" -R "$REPO" --clobber SHA256SUMS
-          listed=" $(awk '{print $2}' SHA256SUMS | tr -d '*' | tr '\n' ' ') SHA256SUMS "
-          for name in $stale; do
+          listed=" $(awk '{print $2}' SHA256SUMS | tr '\n' ' ') SHA256SUMS "
+          for name in $held; do
             case $listed in *" $name "*) ;; *) gh release delete-asset "$tag" "$name" -R "$REPO" -y ;; esac
           done
-          gh release edit "$tag" -R "$REPO" --notes "$BRANCH at $SHA (built: $BUILD), for dev homes (cl-922). Replaced by each push."
+          gh release edit "$tag" -R "$REPO" --notes "$BRANCH at $SHA (built: $BUILD) and the newest earlier builds (up to $KEEP of each), for dev homes (cl-922)."
           echo "$tag: $BRANCH at $SHA, built $BUILD" >> "$GITHUB_STEP_SUMMARY"

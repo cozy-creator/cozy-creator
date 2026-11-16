@@ -11,6 +11,7 @@ mod canvas;
 pub(crate) mod code;
 mod db;
 mod crdt;
+mod benchmarks;
 pub(crate) mod fit;
 mod folder;
 mod format;
@@ -224,6 +225,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/runs/{run}/preview", get(crate::previews::serve))
         .route("/v1/projects/{id}/fit", post(fit::fit))
         .route("/v1/projects/{id}/fit/here", post(fit::here))
+        .route("/v1/projects/{id}/benchmarks", get(benchmarks::benchmarks))
         .route("/v1/projects/{id}/cancel", post(cancel))
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/unpin", post(unpin))
@@ -660,8 +662,9 @@ impl Holding {
                 return Err(Error::new(Kind::Unavailable, "range_unmeasured", format!("{}: its rate isn't measured, so no range of it can be cut", folder::prefix_of(&range.source))).next("cozy status"));
             }
             let mut notes = vec![];
+            let ffmpeg = clips.ffmpeg().await?;
             let access = vault::admit_root(&self.dir).await?;
-            let made = clips.cut(&range.range.to_string(), &path, range.range, fps, &mut notes, access).await?;
+            let made = clips.cut(&range.range.to_string(), &path, range.range, fps, &mut notes, ffmpeg, access).await?;
             bound.warnings.extend(notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).map(|note| note.message));
             let clip = made.clip.clone();
             let access = vault::admit_root(&self.dir).await?;
@@ -1133,8 +1136,17 @@ struct Walker {
     unplanned: HashMap<String, String>,
     /// What each job not sent asks of a machine, by its key, once its package and its models' cards said.
     quotables: HashMap<String, placement::Job>,
-    /// Ready jobs whose quote waits for their package's install, off their turn (`Done::Quoted`), by key.
+    /// Ready jobs whose quote is being read off the walk's turn (`Done::Quoted`), by key: the walk never waits on one (xs-199).
     quoting: HashSet<String>,
+    /// Jobs whose quote couldn't be had, by key: why, and whether its reads gave up (the job fails at its turn) or it goes unplanned
+    /// to the first of its machines that takes it, as one its package can't say.
+    unquoted: HashMap<String, Unquoted>,
+    /// Ready jobs every machine of which doesn't answer its frame while each is asked again, by key: they wait for one to.
+    waiting: HashSet<String>,
+    /// What the walk log last said of each machine not answering, by name: said again only when it changes.
+    silent: HashMap<String, String>,
+    /// The runs whose version's files were on their way that have arrived, by number: each arrives once, by whichever looks first.
+    arrived: HashSet<u64>,
     /// Jobs waiting for another's output whose quote reads their package statically, off the plan (`Done::Foreseen`), by key: asked
     /// once while they wait, however long that takes; one that failed is asked again at its turn.
     foreseeing: HashSet<String>,
@@ -2997,15 +3009,25 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::
 fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
     let (host, project) = (Host::new(api), project.clone());
     tokio::spawn(async move {
-        let Ok(access) = vault::admit_root(&project.root).await else { return; };
-        if project.require_view().is_err() { return; }
-        if project.folder.lock().map_or(true, |lock| !lock.files.values().any(folder::File::unmeasured)) {
-            return;
+        let unmeasured = || project.require_view().is_ok() && project.folder.lock().is_ok_and(|lock| lock.files.values().any(folder::File::unmeasured));
+        {
+            let Ok(_access) = vault::admit_root(&project.root).await else { return; };
+            if !unmeasured() { return; }
         }
-        let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
-        if let Err(error) = host.ffmpeg().await {
-            return warn!("measuring a project's files: {}", error.message);
-        }
+        // Its turn and ffmpeg first, holding nothing of the project, then the project, holding no turn: a lock queued on it waits for
+        // neither, and while it waits no other project's thumbnails or measures wait for it (cl-1025).
+        let (access, permit) = loop {
+            let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
+            if let Err(error) = host.ffmpeg().await {
+                return warn!("measuring a project's files: {}", error.message);
+            }
+            if let Ok(access) = vault::try_admit_root(&project.root) {
+                break (access, permit);
+            }
+            drop(permit);
+            let Ok(_access) = vault::admit_root(&project.root).await else { return; };
+        };
+        if !unmeasured() { return; }
         let dir = project.folder.dir.clone();
         let measuring = tokio::task::spawn_blocking(move || {
             // This task can outlive its importer and must drain before storage is replaced.
@@ -3331,28 +3353,47 @@ pub(super) enum PackageRead {
 /// why not. None: its install is going, and `read` doesn't wait for it. The walk's quote and `fit`'s estimate alike (cl-1004).
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn job_of(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, String> {
+    job_read(host, dir, key, on, hub, with, made, read).await.map_err(|unread| match unread {
+        Unquotable::Again(why) | Unquotable::Not(why) => why,
+    })
+}
+
+/// Why a job has no quote: `Again`, a read that may answer if asked again (a Hub, PyPI or machine that didn't answer in time); `Not`,
+/// one that won't.
+enum Unquotable {
+    Again(String),
+    Not(String),
+}
+
+/// `job_of`, its reads timed as stages of the quote (`crate::stages`), and why not said as whether asking again may help.
+#[allow(clippy::too_many_arguments)]
+async fn job_read(host: &Host, dir: &FsPath, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, Unquotable> {
     let api = host.api();
     let package = match read {
-        PackageRead::Now => host.package(hub, with, dir, &on, host::Wait::Quote(&key)).await,
-        PackageRead::Installed => host.package(hub, with, dir, &on, host::Wait::Job(&key, None)).await,
-        PackageRead::Foreseen => host.foreseen(hub, with, dir, &on).await,
+        PackageRead::Now => crate::stages::stage("package", host.package(hub, with, dir, &on, host::Wait::Quote(&key))).await,
+        PackageRead::Installed => crate::stages::stage("package", host.package(hub, with, dir, &on, host::Wait::Job(&key, None))).await,
+        PackageRead::Foreseen => crate::stages::stage("package", host.foreseen(hub, with, dir, &on)).await,
     };
     let package = match package {
         Err(e) if e.code == host::INSTALLING => return Ok(None),
-        Err(e) => return Err(format!("{with}: {}", e.message)),
+        // Not described yet is no read that failed: its first render installs it.
+        Err(e) if e.kind == Kind::Unavailable && e.code != "renderer_not_described" => return Err(Unquotable::Again(format!("{with}: {}", e.message))),
+        Err(e) => return Err(Unquotable::Not(format!("{with}: {}", e.message))),
         Ok(package) => package,
     };
     let renderer = match package.maker() {
         Ok(Some(renderer)) => renderer,
-        Ok(None) => return Err(format!("{with} names no function")),
-        Err(e) => return Err(format!("{with}: {}", e.message)),
+        Ok(None) => return Err(Unquotable::Not(format!("{with} names no function"))),
+        Err(e) => return Err(Unquotable::Not(format!("{with}: {}", e.message))),
     };
-    let models = fit::checkpoints(&api, hub, &package, &renderer.function, &made).await;
+    let models = crate::stages::stage("models", fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await;
     let size = v1::JobSize::of(&Value::Object(made));
     let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
         interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
     });
-    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on }))
+    let scope = crate::private_io::of_path(dir).ok().flatten();
+    let source = package.local.clone().filter(|dir| dir.is_dir());
+    Ok(Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on, scope, source }))
 }
 
 /// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
@@ -3364,6 +3405,20 @@ fn unplanned(walker: &mut Walker, dir: &str, key: &str, why: String) {
     }
 }
 
+/// How many times a quote's read that may answer if asked again is asked, backing off between (1, 2, 4, 8 s).
+const QUOTE_ATTEMPTS: u32 = 5;
+/// A quote going longer than this says so, and what it's waiting on, in the project's walk log.
+const LONG_QUOTE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Why a job has no quote; `gave_up`: its reads didn't answer after every attempt, so the job fails at its turn, never waits on.
+/// `silent`: the machines of its that didn't answer, which its failure names.
+#[derive(Clone)]
+struct Unquoted {
+    why: String,
+    gave_up: bool,
+    silent: Vec<String>,
+}
+
 /// Something a walker started came to its end.
 enum Done {
     Sent { id: usize, key: String, ask: Arc<Ask>, name: String, kind: String, inputs: Option<String>, result: Result<(), Error> },
@@ -3372,10 +3427,10 @@ enum Done {
     /// All that was on its way here from a run came, or won't.
     Arrived { name: Option<String>, result: Result<(), Error> },
     Ahead,
-    /// A ready job's quote, once its package's install was done (`Walker::quoting`).
-    Quoted { key: String, quotable: Result<Option<placement::Job>, String> },
+    /// A ready job's quote, read off the walk's turn (`Walker::quoting`).
+    Quoted { key: String, quotable: Result<Option<placement::Job>, Unquoted> },
     /// A waiting job's quote, its package read statically (`Walker::foreseeing`).
-    Foreseen { key: String, quotable: Result<Option<placement::Job>, String> },
+    Foreseen { key: String, quotable: Result<Option<placement::Job>, Unquoted> },
 }
 
 /// What a queued job's machine can fetch before its turn: a function as its text names it, on the machine the plan placed it on.
@@ -3415,6 +3470,8 @@ enum Act {
     Held { id: usize },
     /// Its package is being installed: it has its turn once its quote is in (`Done::Quoted`).
     Installing { id: usize },
+    /// Its quote's reads didn't answer after every attempt: it fails, in one line, and never waits on them (xs-199).
+    Unquoted { id: usize, ask: String, on: Vec<On>, key: String, asset: String, kind: String, inputs: Option<String>, message: String, silent: Vec<String> },
     Tool { id: usize, ask: Arc<Ask>, doc: Arc<Doc>, stand: Arc<Vec<Standing>>, lock: Arc<Lock>, i: usize },
 }
 
@@ -3779,6 +3836,7 @@ impl Walk {
         loop {
             self.deletions()?;
             self.joined(&mut first).await?;
+            self.arrivals(&mut first)?;
             while self.turns(&mut work, &mut first).await? {}
             for (key, pending) in self.folder().walk_now()?.pending {
                 if !self.on_the_way.lock().expect("on the way lock").contains(&key) && followed.insert(key.clone()) {
@@ -3972,16 +4030,51 @@ impl Walk {
 
     /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices, its package read as `read` says; else why
     /// not. None: its install is going, and `read` doesn't wait for it.
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, String> {
-        let (began, job) = (std::time::Instant::now(), key.clone());
-        let quoted = job_of(&self.host, &self.folder().dir, key, on, hub, with, made, read).await;
-        crate::private_io::diagnose(&self.folder().dir, || {
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, read: PackageRead) -> Result<Option<placement::Job>, Unquoted> {
+        let (began, job, dir) = (std::time::Instant::now(), key.clone(), self.folder().dir.clone());
+        let stages = Arc::new(Mutex::new(crate::stages::Stages::default()));
+        // A read that may answer if asked again is, as any call (retry-standard-api-practice): backing off, each attempt said.
+        let attempts = async {
+            let mut attempt = 1;
+            loop {
+                match job_read(&self.host, &dir, key.clone(), on.clone(), hub, with, made.clone(), read).await {
+                    Err(Unquotable::Again(why)) if attempt < QUOTE_ATTEMPTS => {
+                        let wait = std::time::Duration::from_secs(1 << (attempt - 1));
+                        warn!("{}: quote of {job}, attempt {attempt}/{QUOTE_ATTEMPTS}: {why}; again in {} s", dir.display(), wait.as_secs());
+                        crate::private_io::diagnose(&dir, || format!("quote {job} ({read:?}, {with}) attempt {attempt}/{QUOTE_ATTEMPTS}: {why}; again in {} s", wait.as_secs()));
+                        attempt += 1;
+                        tokio::time::sleep(wait).await;
+                    }
+                    Err(Unquotable::Again(why)) => break Err(Unquoted { why: format!("no quote after {QUOTE_ATTEMPTS} attempts: {why}"), gave_up: true, silent: vec![] }),
+                    Err(Unquotable::Not(why)) => break Err(Unquoted { why, gave_up: false, silent: vec![] }),
+                    Ok(job) => break Ok(job),
+                }
+            }
+        };
+        let quoting = crate::stages::recorded(stages.clone(), attempts);
+        tokio::pin!(quoting);
+        let long = tokio::time::sleep(LONG_QUOTE);
+        tokio::pin!(long);
+        let mut said_long = false;
+        let quoted = loop {
+            tokio::select! {
+                quoted = &mut quoting => break quoted,
+                () = &mut long, if !said_long => {
+                    said_long = true;
+                    let going = stages.lock().expect("stages lock").said();
+                    warn!("{}: quote of {job} still going after {} s: {going}", dir.display(), LONG_QUOTE.as_secs());
+                    crate::private_io::diagnose(&dir, || format!("quote {job} ({read:?}, {with}) still going after {} s: {going}", LONG_QUOTE.as_secs()));
+                }
+            }
+        };
+        crate::private_io::diagnose(&dir, || {
             let said = match &quoted {
                 Ok(Some(quoted)) => quoted.function.clone(),
                 Ok(None) => "none: its install is going".into(),
-                Err(why) => format!("none: {why}"),
+                Err(unquoted) => format!("none: {}", unquoted.why),
             };
-            format!("quote {job} ({read:?}, {with}) in {} ms: {said}", began.elapsed().as_millis())
+            let stages = stages.lock().expect("stages lock").said();
+            format!("quote {job} ({read:?}, {with}) in {} ms: {said} ({stages})", began.elapsed().as_millis())
         });
         quoted
     }
@@ -4026,31 +4119,20 @@ impl Walk {
         if unsent.is_empty() {
             return vec![];
         }
-        // What each asks of a machine, read once: a ready job's here, a waiting one's in the walk's work.
+        // What each asks of a machine, read once, in the walk's work: a ready job's from its package now, a waiting one's statically.
+        // None is read on this turn, which would hold every job, landing and arrival of the walk while one read waits (xs-199).
         let (known, foresee): (HashSet<String>, HashSet<String>) = {
             let walker = self.project.walker.lock().expect("walker lock");
-            let known = walker.quotables.keys().chain(&walker.quoting).cloned().collect();
+            let known = walker.quotables.keys().chain(&walker.quoting).chain(walker.unquoted.keys()).cloned().collect();
             let foresee = (unsent.iter().filter(|unsent| !unsent.ready))
                 .filter(|unsent| !walker.quotables.contains_key(&unsent.key) && !walker.foreseeing.contains(&unsent.key))
                 .map(|unsent| unsent.key.clone())
                 .collect();
             (known, foresee)
         };
-        let read = unsent.iter().filter(|unsent| unsent.ready && !known.contains(&unsent.key)).map(|unsent| async move {
-            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), PackageRead::Now).await)
-        });
-        let mut unread: HashMap<String, String> = HashMap::new();
-        let mut installing: HashSet<String> = HashSet::new();
+        let quoting: HashSet<String> = unsent.iter().filter(|unsent| unsent.ready && !known.contains(&unsent.key)).map(|unsent| unsent.key.clone()).collect();
         let quotables = {
-            let read = futures_util::future::join_all(read).await;
             let mut walker = self.project.walker.lock().expect("walker lock");
-            for (key, quotable) in read {
-                match quotable {
-                    Ok(Some(job)) => drop(walker.quotables.insert(key, job)),
-                    Ok(None) => drop(installing.insert(key)),
-                    Err(why) => drop(unread.insert(key, why)),
-                }
-            }
             let pending: HashSet<&str> = walk.pending.iter().map(|(key, pending)| pending.job_of(key)).collect();
             walker.quotables.retain(|key, _| pending.contains(key.as_str()) || unsent.iter().any(|unsent| unsent.key == *key));
             walker.quotables.clone()
@@ -4082,10 +4164,20 @@ impl Walk {
             }
         }
         let mut pictures = vec![];
+        // `local` as this project sees it: what its own runs installed there, read in its scope, as the Render estimate does (cl-1047).
+        let scope = only.iter().find_map(|job| job.scope.clone());
         for (on, pictured) in machines.iter().zip(placement::pictures(&api, &machines, update, now).await) {
             match pictured {
-                Ok(picture) => pictures.push(picture),
-                Err(why) => warn!("{dir}: {on} isn't planned on: {why}"),
+                Ok(picture) => pictures.push(placement::scoped_picture(&api, &picture, scope.as_ref()).await),
+                Err(why) => {
+                    warn!("{dir}: {on} isn't planned on: {why}");
+                    let name = on.to_string();
+                    let mut walker = self.project.walker.lock().expect("walker lock");
+                    if walker.silent.get(&name) != Some(&why) {
+                        crate::private_io::diagnose(&self.folder().dir, || format!("{name} isn't planned on: {why}"));
+                        walker.silent.insert(name, why);
+                    }
+                }
             }
         }
         for (on, job) in &ahead {
@@ -4094,6 +4186,8 @@ impl Walk {
                 pictures[m].ahead.push(placement::asked(job, prior));
             }
         }
+        // What each function never ran on a machine is timed by its release's benchmarks there (cl-1024).
+        placement::benched(&api, jobs.iter().map(|(_, job)| job).chain(ahead.iter().map(|(_, job)| job)), pictures.iter_mut());
         let position: HashMap<usize, usize> = jobs.iter().enumerate().map(|(at, (unsent_at, _))| (unsent[*unsent_at].id, at)).collect();
         let mut planned = vec![];
         for (at, job) in &jobs {
@@ -4104,7 +4198,7 @@ impl Walk {
                 priors.push(placement::prior(&api, &pictures[m], job).await);
             }
             planned.push(plan::Job {
-                ask: placement::asked(job, 0),
+                ask: placement::asked(job, placement::Prior::default()),
                 priors,
                 machines,
                 needs: unsent.needs.iter().filter_map(|need| position.get(need).copied()).collect(),
@@ -4139,6 +4233,28 @@ impl Walk {
                     None => drop(walker.foreseen.remove(&unsent.key)),
                 }
                 if unsent.ready {
+                    // Every one of its machines connected and not answering its frame: it waits while they're asked again, placed once one
+                    // answers, and fails, naming them, once none has after every attempt (xs-199). Never sent to one that doesn't answer.
+                    let silent: Vec<(String, String, bool)> = (job.on.iter())
+                        .filter_map(|on| match on {
+                            On::Machine(name) => api.machines.not_answering(name).map(|(why, dropped)| (name.clone(), why, dropped)),
+                            _ => None,
+                        })
+                        .collect();
+                    if !silent.is_empty() && silent.len() == job.on.len() {
+                        let said = silent.iter().map(|(name, why, _)| format!("{name}: {why}")).collect::<Vec<_>>().join("; ");
+                        match silent.iter().all(|(_, _, dropped)| *dropped) {
+                            true => {
+                                walker.waiting.remove(&unsent.key);
+                                let silent = silent.into_iter().map(|(name, ..)| name).collect();
+                                walker.unquoted.insert(unsent.key.clone(), Unquoted { why: format!("none of its machines answers ({said})"), gave_up: true, silent });
+                            }
+                            false => drop(walker.waiting.insert(unsent.key.clone())),
+                        }
+                        unplanned(&mut walker, &dir, &unsent.key, format!("none of its machines answers: {said}"));
+                        continue;
+                    }
+                    walker.waiting.remove(&unsent.key);
                     let why = match placement.offers.is_empty() {
                         true => "none of its machines answered".to_owned(),
                         false => said(&placement.offers),
@@ -4147,6 +4263,7 @@ impl Walk {
                 }
                 continue;
             };
+            walker.waiting.remove(&unsent.key);
             let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
             walker.starts.insert(unsent.key.clone(), (chosen.start_at_ms, fits));
             if !unsent.ready {
@@ -4163,7 +4280,7 @@ impl Walk {
             walker.placed.insert(unsent.key.clone(), Placed { offers: placement.offers, soonest: chosen });
         }
         for unsent in unsent.iter().filter(|unsent| unsent.ready) {
-            if let Some(why) = unread.remove(&unsent.key) {
+            if let Some(Unquoted { why, gave_up: false, .. }) = walker.unquoted.get(&unsent.key).cloned() {
                 walker.placed.remove(&unsent.key);
                 unplanned(&mut walker, &dir, &unsent.key, why);
             }
@@ -4174,12 +4291,14 @@ impl Walk {
         walker.starts.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.items.retain(|(_, key), _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.foreseeing.retain(|key| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.unquoted.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.waiting.retain(|key| unsent.iter().any(|unsent| unsent.key == *key));
         drop(walker);
-        unsent.into_iter().filter(|unsent| if unsent.ready { installing.contains(&unsent.key) } else { foresee.contains(&unsent.key) }).collect()
+        unsent.into_iter().filter(|unsent| if unsent.ready { quoting.contains(&unsent.key) } else { foresee.contains(&unsent.key) }).collect()
     }
 
-    /// Quotes `unquoted` in the walk's work, each once (`plan`): a ready job's once its package's install is done (`Walker::quoting`),
-    /// a waiting job's from its package read statically (`Walker::foreseeing`). The plan after each places it.
+    /// Quotes `unquoted` in the walk's work, each once (`plan`): a ready job's from its package, and once its install is done if that's
+    /// going (`Walker::quoting`), a waiting job's from its package read statically (`Walker::foreseeing`). The plan after each places it.
     fn quote_later<'a>(&'a self, unquoted: Vec<Unsent>, work: &mut FuturesUnordered<BoxFuture<'a, Done>>) {
         for unsent in unquoted {
             {
@@ -4188,8 +4307,15 @@ impl Walk {
                 going.insert(unsent.key.clone());
             }
             work.push(async move {
-                let read = if unsent.ready { PackageRead::Installed } else { PackageRead::Foreseen };
-                let quotable = self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made, read).await;
+                let (key, hub, with) = (&unsent.key, &unsent.target.hub, &unsent.with);
+                let quotable = match unsent.ready {
+                    // As its turn reads it, not waiting for its install; that going, once it's done.
+                    true => match self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Now).await {
+                        Ok(None) => self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Installed).await,
+                        quoted => quoted,
+                    },
+                    false => self.quotable(key.clone(), vec![], hub, with, unsent.made.clone(), PackageRead::Foreseen).await,
+                };
                 match unsent.ready {
                     true => Done::Quoted { key: unsent.key, quotable },
                     false => Done::Foreseen { key: unsent.key, quotable },
@@ -4436,7 +4562,7 @@ impl Walk {
             }
         }
         // What can start now goes without a job whose package is being installed: that one goes once it's done, with what's ready then
-        // (owner, cl-973).
+        // (owner, cl-973). One whose quote couldn't be had after every attempt fails now.
         {
             let walker = self.project.walker.lock().expect("walker lock");
             for act in &mut acts {
@@ -4445,6 +4571,27 @@ impl Walk {
                 {
                     let id = *id;
                     *act = Act::Installing { id };
+                } else if let Act::Send { id, key, .. } = act
+                    && walker.waiting.contains(key.as_str())
+                {
+                    let id = *id;
+                    *act = Act::Held { id };
+                } else if let Act::Send { id, key, ask, doc, stand, next, .. } = act
+                    && let Some(Unquoted { why, gave_up: true, silent }) = walker.unquoted.get(key.as_str())
+                {
+                    let asset = doc.assets[next.i].name.clone();
+                    let message = format!("{asset} cannot render: {why}");
+                    *act = Act::Unquoted {
+                        id: *id,
+                        ask: ask.id.clone(),
+                        on: ask.target.on.clone(),
+                        key: key.clone(),
+                        kind: doc.assets[next.i].kind.clone(),
+                        inputs: stand[next.i].inputs.clone(),
+                        asset,
+                        message,
+                        silent: silent.clone(),
+                    };
                 }
             }
         }
@@ -4496,6 +4643,18 @@ impl Walk {
                 }
                 end(id, End::Failed);
             }
+            Act::Unquoted { id, ask, on, key, asset, kind, inputs, message, silent } => {
+                self.settled(&ask, &asset, &key)?;
+                let mut error = Error::new(Kind::Unavailable, "quote_unavailable", message);
+                if let Some(first) = silent.first() {
+                    error = error.remedy("see what it's doing, end it and rent another, or name other machines with --on").next(format!("cozy machine show {first}"));
+                }
+                match self.sending(&ask, &on).is_empty() {
+                    true => self.not_sent(&asset),
+                    false => self.failed_of(&asset, &kind, inputs, None, None, error, first),
+                }
+                end(id, End::Failed);
+            }
             Act::Held { id } | Act::Installing { id } => self.project.walker.lock().expect("walker lock").graph.put_back(id),
             Act::Send { id, key, ask, doc, stand, lock, next } => {
                 let (name, kind, inputs) = (doc.assets[next.i].name.clone(), doc.assets[next.i].kind.clone(), stand[next.i].inputs.clone());
@@ -4536,8 +4695,10 @@ impl Walk {
             Done::Quoted { key, quotable } => {
                 let mut walker = self.project.walker.lock().expect("walker lock");
                 walker.quoting.remove(&key);
-                if let Ok(Some(job)) = quotable {
-                    walker.quotables.insert(key, job);
+                match quotable {
+                    Ok(Some(job)) => drop(walker.quotables.insert(key, job)),
+                    Ok(None) => {}
+                    Err(unquoted) => drop(walker.unquoted.insert(key, unquoted)),
                 }
             }
             // Read: the next plan places it, and its machine fetches ahead; one its turn read already stands. Not: it isn't asked again
@@ -4547,7 +4708,7 @@ impl Walk {
                     self.project.walker.lock().expect("walker lock").quotables.entry(key).or_insert(job);
                 }
                 Ok(None) => {}
-                Err(why) => crate::private_io::diagnose(&self.folder().dir, || format!("{key} isn't fetched ahead: {why}")),
+                Err(Unquoted { why, .. }) => crate::private_io::diagnose(&self.folder().dir, || format!("{key} isn't fetched ahead: {why}")),
             },
             Done::Sent { id, key, ask, name, kind, inputs, result } => match result {
                 Ok(()) => {
@@ -4999,8 +5160,9 @@ impl Walk {
                 return Err(format!("{} must be on this computer, and measured, to cut a range of it; download it in the browser opened by cozy open", folder::prefix_of(&range.source)));
             }
             let mut notes = vec![];
+            let ffmpeg = clips.ffmpeg().await.map_err(|e| e.message)?;
             let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
-            let made = clips.cut(&range.range.to_string(), &path, range.range, file.fps, &mut notes, access).await.map_err(|e| e.message)?;
+            let made = clips.cut(&range.range.to_string(), &path, range.range, file.fps, &mut notes, ffmpeg, access).await.map_err(|e| e.message)?;
             notes.into_iter().filter(|note| note.level == api::calcifer::NoteLevel::Warning).for_each(|note| self.say(Told::Warning { message: note.message, name: None }));
             let clip = made.clip.clone();
             let access = vault::admit_work(&self.project).await.map_err(|e| e.message)?;
@@ -5281,6 +5443,33 @@ impl Walk {
         }
     }
 
+    /// What has arrived already, from the walk's own record each turn (xs-199): a run whose version's files were on their way, once its
+    /// record says each landed or failed, arrives now, however the follow-up waiting on it fares. A project that won't take the write now
+    /// is asked again next turn.
+    fn arrivals(&self, first: &mut Option<Error>) -> Result<(), Error> {
+        let walk = self.folder().walk_now()?;
+        for (number, coming) in &walk.walk.runs {
+            let Some(coming) = coming else { continue };
+            if walk.pending.values().any(|pending| pending.run == *number) || self.project.walker.lock().expect("walker lock").arrived.contains(number) {
+                continue;
+            }
+            let Some(run) = self.host.numbered(*number) else { continue };
+            if !matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) || run.output.iter().any(|output| output.owed()) {
+                continue;
+            }
+            match tokio::task::block_in_place(|| self.arrived(&run, Some(coming.clone()))) {
+                Err(error) if self.held_up(&error) => {}
+                Err(error) => {
+                    self.taken();
+                    self.project.walker.lock().expect("walker lock").moved(&coming.name);
+                    self.failed_of(&coming.name, "", None, None, None, error, first);
+                }
+                Ok(()) => self.taken(),
+            }
+        }
+        Ok(())
+    }
+
     /// Back once project.db takes a write again: asked each `HELD_UP` with no wait on its lock, so no try sits in SQLite's wait
     /// with the project's turn while another program holds it, and a write of anyone's goes first.
     async fn until_free(&self) {
@@ -5319,6 +5508,10 @@ impl Walk {
     /// Run `run` has nothing more on its way here. What landed after its version was listed is that version's, no loose file of the
     /// project's. One of its files that never came means no version: there's nothing of it to see, and a render makes it again.
     fn arrived(&self, run: &Run, version: Option<Coming>) -> Result<(), Error> {
+        // Once: the walk's own look (`arrivals`) and the follow-up that waited for it both get here.
+        if version.is_some() && self.project.walker.lock().expect("walker lock").arrived.contains(&run.number) {
+            return Ok(());
+        }
         let folder = self.folder();
         let lost = run.output.iter().find(|output| !output.stays && output.export_error.is_some());
         // One write, the project first: killed between, what never came is gone and a restart hears of this run again, which changes nothing.
@@ -5333,6 +5526,7 @@ impl Walk {
             }
         })?;
         let Some(Coming { name, number, take }) = version else { return Ok(()) };
+        self.project.walker.lock().expect("walker lock").arrived.insert(run.number);
         self.project.jobs.arrived(&name, number, lost.is_none());
         let Some(output) = lost else { return Ok(()) };
         let mut tally = self.tally.lock().expect("tally lock");
@@ -6016,7 +6210,7 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
     };
     let named = format!("{package}/{function}@{release}");
     let jobs: Vec<placement::Job> = (0..count.max(1))
-        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec() })
+        .map(|copy| placement::Job { key: copy.to_string(), target: named.clone(), function: named.clone(), models: models.clone(), size, gpus, gpu, on: set.to_vec(), scope: None, source: None })
         .collect();
     let (offers, said) = placement::offers(api, &jobs, update).await;
     let chosen = pick(api, set, offers.first().map_or(&[][..], Vec::as_slice), None, hub, read.as_ref(), function, &Map::new()).await;

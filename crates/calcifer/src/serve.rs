@@ -391,13 +391,15 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     // What an earlier Calcifer left is taken up beside the answers, never ahead of them: a big store's reads take what they
     // take on a cold, busy disk (cl-1010).
     let resuming = calcifer.clone();
-    tokio::spawn(async move {
+    calcifer.spawn_task(async move {
         let began = Instant::now();
+        let pruning = resuming.clone();
         match tokio::task::spawn_blocking(move || resuming.resume()).await {
             Ok(Ok(_)) => info!(target: "cozy.service_health", step = "resume", ms = began.elapsed().as_millis() as u64, "started"),
             Ok(Err(e)) => warn!("resuming what an earlier Calcifer left: {e}"),
             Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
         }
+        let _ = tokio::task::spawn_blocking(move || pruning.prune_ended_machines()).await;
     });
     tokio::spawn(crate::hub::jobs::resume(api.clone()));
     crate::events::tell(api.clone());

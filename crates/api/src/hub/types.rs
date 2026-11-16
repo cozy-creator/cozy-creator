@@ -545,7 +545,13 @@ pub struct PackageRelease {
     /// What its wheel requires (`Requires-Dist`): the Runtime it runs on among them.
     #[serde(default)]
     pub requirements: Vec<String>,
+    /// Its publisher's benchmarks (cl-1024); absent from a Hub before them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub benchmarks: Option<Vec<PackageBenchmark>>,
 }
+
+/// One of a release's benchmarks (cl-1024), as the Hub serves it and a publication declares it.
+pub use crate::estimate::{Benchmark as PackageBenchmark, BenchmarkRanOn};
 
 /// The release a card is of, by name.
 #[derive(Debug, Default, Deserialize, Serialize)]

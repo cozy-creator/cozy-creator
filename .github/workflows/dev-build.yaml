@@ -29,7 +29,7 @@ on:
       runner:
         description: A standard runner, free on this public repo
         type: choice
-        options: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest, macos-26, macos-26-intel]
+        options: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest, macos-15, macos-26, macos-26-intel]
         default: ubuntu-latest
       billed_runner:
         description: "A larger runner, named on purpose in place of runner. Never free (linux-x64-16core: $0.042/min, $2.52 a 60-min job) and the budget is about $10/day per org"
@@ -359,7 +359,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y fuse libfuse2t64 ffmpeg
+          sudo apt-get install -y fuse3 ffmpeg
           sudo modprobe fuse || test -e /dev/fuse
       - name: Install macOS media tool (native encrypted APFS needs no driver)
         if: runner.os == 'macOS'
@@ -409,7 +409,7 @@ jobs:
           import shutil
           source, target = Path('provider-proof'), Path('provider-evidence')
           target.mkdir(exist_ok=True)
-          for name in ['results.json', 'normal.log', 'crash.log', 'provider.log', 'crash/ready.json', 'macos-mounts.log', 'macos-images.plist', 'macos-diskimages.log', 'hdiutil-create.log', 'macos-filesystems.log']:
+          for name in ['results.json', 'controls.log', 'normal.log', 'crash.log', 'provider.log', 'crash/ready.json', 'macos-mounts.log', 'macos-images.plist', 'macos-diskimages.log', 'hdiutil-create.log', 'macos-filesystems.log']:
               item = source / name
               if item.is_file():
                   shutil.copy2(item, target / name.replace('/', '-'))
@@ -469,7 +469,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y fuse libfuse2t64 ffmpeg
+          sudo apt-get install -y fuse3 ffmpeg
           sudo modprobe fuse || test -e /dev/fuse
       - name: Install macOS media tool (system encrypted APFS needs no driver)
         if: runner.os == 'macOS'

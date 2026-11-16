@@ -15,7 +15,15 @@ use platform::{
 };
 
 /// What a fetch says as it goes ("fetching ffmpeg: <url>"): the CLI prints it, Calcifer logs it.
-pub(crate) type Say<'a> = &'a (dyn Fn(&str) + Sync);
+pub type Say<'a> = &'a (dyn Fn(&str) + Sync);
+
+/// What cozy otherwise fetches at its first need, fetched now (`cozy doctor --fix`, which the installers run, cl-1030): each tool and
+/// what it came to, its build or why not. One that fails is fetched again at its first need, as before.
+pub async fn prefetch(home: &Home, say: Say<'_>) -> Vec<(&'static str, Result<String, String>)> {
+    let ffmpeg = ffmpeg(home, say).await.map(|found| found.build).map_err(|error| error.message);
+    let uv = uv(home, say).await.map(|path| path.display().to_string()).map_err(|error| error.message);
+    vec![("ffmpeg", ffmpeg), ("uv", uv)]
+}
 
 /// ffmpeg and ffprobe, with the build that answers (`ffmpeg -version`'s first line).
 #[derive(Clone, Debug)]
