@@ -1,7 +1,7 @@
 //! Real provider fixture: FUSE/WinFsp and ordinary file/media I/O, without a mock filesystem.
 //!   vault-provider normal|crash-host <securefs> <artifacts>
 //!   vault-provider throughput <securefs> <artifacts> <bytes>   write, lock, unlock, read back: {write_MBps, read_MBps}
-//!   vault-provider controls <securefs> <artifacts>   a mounted view's status, read many times at once: {calls, failures}
+//!   vault-provider controls <securefs> <artifacts>   an exited child's birth, then a mounted view's status read many times at once
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use project_mount::{MountOptions, Provider};
 use serde_json::json;
@@ -30,6 +30,10 @@ type Failure = Box<dyn std::error::Error>;
 fn run() -> Result<(), Failure> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     let mode = arguments.first().map(|mode| mode.to_string_lossy().into_owned()).unwrap_or_default();
+    // `controls`' child: exits at once.
+    if mode == "exit" {
+        return Ok(());
+    }
     let bytes = match (mode.as_str(), arguments.len()) {
         ("normal" | "crash-host" | "mount" | "controls", 3) => None,
         ("throughput", 4) => Some(
@@ -583,12 +587,32 @@ fn mount_only(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
     Ok(())
 }
 
-/// A mounted view's status, read by 4 threads per core 250 times each while a spinner per core keeps every core busy. On macOS each
-/// read runs `/sbin/mount`, a control command that often exits before its waiter reads its birth: e2e 43789546310's 503 `read a
-/// process's birth` on an encrypted import (cl-1050). Every read must say mounted; the view then locks.
+/// A child that exited before its waiter read its birth, as a control command that finishes at once (cl-1050): macOS answered
+/// `read a process's birth: No such process`, e2e 43789546310's 503 on an encrypted import. First one such child, made exited on
+/// purpose: its birth must read and its exact handle say it ended. Then the real path under load: a mounted view's status (on
+/// macOS `/sbin/mount` and `hdiutil info`, each a control command) read by 4 threads per core 250 times each, a spinner per core
+/// keeping every core busy. Every read must say mounted; the view then locks.
 fn controls(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
     use std::sync::atomic::{AtomicBool, Ordering};
     const READS: usize = 250;
+    eprintln!("provider fixture: an exited child's birth");
+    let mut child = Command::new(std::env::current_exe()?)
+        .arg("exit")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .spawn()?;
+    // Its output ends as it exits; it's then exited, unreaped, well before the read.
+    child.stdout.take().ok_or("no child output")?.read_to_end(&mut Vec::new())?;
+    std::thread::sleep(Duration::from_millis(200));
+    let birth = platform::process::Birth::of(child.id())
+        .map_err(|error| format!("an exited child's birth: {error}"))?;
+    let exact = platform::process::Exact::open(&birth)?;
+    if exact.as_ref().is_some_and(|exact| !exact.ended()) {
+        return Err("an exited child's handle says it's running".into());
+    }
+    if !child.wait()?.success() {
+        return Err("the exited child failed".into());
+    }
     let backing = artifacts.join("encrypted");
     let view = project_mount::view_path(&artifacts.join("runtime"))?;
     let secret = new_secret()?;
@@ -596,8 +620,10 @@ fn controls(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
     provider.create(&backing, secret.as_bytes())?;
     let mut mounted = provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
     let cores = std::thread::available_parallelism().map_or(2, |cores| cores.get());
-    eprintln!("provider fixture: {} status reads on {} threads", 4 * cores * READS, 4 * cores);
+    let calls = 4 * cores * READS;
+    eprintln!("provider fixture: {calls} status reads on {} threads", 4 * cores);
     let busy = AtomicBool::new(true);
+    let started = Instant::now();
     let failures: Vec<String> = std::thread::scope(|scope| {
         for _ in 0..cores {
             scope.spawn(|| {
@@ -610,7 +636,7 @@ fn controls(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
             .map(|_| {
                 scope.spawn(|| {
                     (0..READS)
-                        .filter_map(|_| match provider.is_mounted(&view) {
+                        .filter_map(|_| match mounted.is_mounted() {
                             Ok(true) => None,
                             Ok(false) => Some("a mounted view read as unmounted".to_owned()),
                             Err(error) => Some(error.to_string()),
@@ -623,15 +649,16 @@ fn controls(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
         busy.store(false, Ordering::Relaxed);
         joined.into_iter().flat_map(|reader| reader.unwrap_or_else(|_| vec!["a reader panicked".to_owned()])).collect()
     });
+    let seconds = started.elapsed().as_secs_f64();
     println!(
         "{}",
-        json!({"result": if failures.is_empty() {"pass"} else {"failed"}, "calls": 4 * cores * READS, "failures": failures.len(), "first": failures.first()})
+        json!({"result": if failures.is_empty() {"pass"} else {"failed"}, "exited_child": "birth read", "calls": calls, "seconds": seconds, "failures": failures.len(), "first": failures.first()})
     );
     eprintln!("provider fixture: lock");
     mounted.try_unmount()?;
     match failures.first() {
         None => Ok(()),
-        Some(first) => Err(format!("{} of {} status reads failed; first: {first}", failures.len(), 4 * cores * READS).into()),
+        Some(first) => Err(format!("{} of {calls} status reads failed; first: {first}", failures.len()).into()),
     }
 }
 
