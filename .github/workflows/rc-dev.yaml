@@ -115,8 +115,9 @@ jobs:
           cd up
           files=(*)
           # This push's files, then each earlier one the last SHA256SUMS names (newest first, as it wrote them) and the
-          # release holds, of the newest KEEP builds of each kind (a build: its kind and +g<sha8>). A file no SHA256SUMS
-          # named goes: every kept one has its sum.
+          # release holds, then any it holds unnamed (the builds an older rc-dev kept an hour), hashed here: of the newest
+          # KEEP builds of each kind (a build: its kind and +g<sha8>). Every kept file has its sum.
+          named=$(awk '{print $2}' <<< "$old" | tr -d '*')
           {
             sha256sum "${files[@]}"
             while read -r sum file; do
@@ -125,6 +126,12 @@ jobs:
                 echo "$sum  $file"
               fi
             done <<< "$old"
+            for name in $held; do
+              if [ "$name" != SHA256SUMS ] && ! grep -qxF "$name" <<< "$named" && ! printf '%s\n' "${files[@]}" | grep -qxF "$name"; then
+                gh release download "$tag" -R "$REPO" -p "$name" -D ../unnamed --clobber
+                (cd ../unnamed && sha256sum "$name")
+              fi
+            done
           } | awk -v keep="$KEEP" '{
                 kind = $2; sub(/-.*/, "", kind); match($2, /[+](dev[.])?g[0-9a-f]+/); build = kind substr($2, RSTART, RLENGTH)
                 if (!(build in seen)) { seen[build] = 1; count[kind]++ }
