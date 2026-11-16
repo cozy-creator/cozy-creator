@@ -93,6 +93,9 @@ test('input', { tag: '@engines' }, async ({ page, project, browserName }) => {
       expect.soft(near({ x: now.x - before.x, y: now.y - before.y }, { x: -120, y: -60 }, 12), `the canvas follows the finger: ${now.x - before.x}, ${now.y - before.y}`).toBe(true);
       expect.soft(now.zoom, 'a finger pan changes no zoom').toBeCloseTo(before.zoom, 6);
 
+      // Every box in view again before a finger goes to one.
+      await page.keyboard.press('Shift+Digit1');
+      await canvasIdle(page);
       const body = await canvasPoint(page, 'b');
       await touch(cdp, [[[body.x, body.y]], []]);
       await expect.poll(() => selectedNames(page), { message: 'a tap selects it' }).toEqual(['b']);
