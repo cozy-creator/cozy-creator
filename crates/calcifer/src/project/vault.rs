@@ -691,26 +691,51 @@ fn saving(api: &Arc<Api>, root: &FsPath) -> Option<Error> {
     Some(Error::new(Kind::Conflict, "project_busy", "a run is still writing into the project; it locks once that's done"))
 }
 
-/// A lock asked for ends the saves going into the project (cl-1060): each exporter stops at a write-batch boundary (this holds
-/// the project's turn, which each batch reads), its half-written files go, and its outputs stay owed for the next unlock to save
-/// whole. A driver still handing on (settling, noting what stays) takes a moment: `project_busy`, which the lock's drain retries.
-fn end_saves(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Result<Vec<String>, Error> {
+/// Before a lock closes the machine's side of the project (cl-1060), which forgets what the machine still holds for it: every
+/// output its runs still owe lands first, judged by progress, never a timer. The lock waits while those saves move bytes; a save
+/// silent for `EXPORT_SILENCE` (its machine not answering, its exporter unable to go on) is cut: its exporter ends, its half-written
+/// files go, its outputs are recorded not saved and its run reads failed, saying why. The runs it cut, by name, for the lock's
+/// answer to its own client and nothing else (no log). One rule for every lock: one asked for, a deadline's, a stop's.
+fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Result<Vec<String>, Error> {
+    let journal = |_: crate::store::StoreError| error("project_journal", "the project journal could not be checked");
     let projects = api.projects.now_open();
-    let Some(project) = projects.iter().find(|project| project.root == root) else { return Ok(vec![]) };
-    if api.calcifer.driving_into(&project.id).is_some() {
-        return Err(Error::new(Kind::Conflict, "project_busy", "a run is still settling into the project; lock again in a moment").next("cozy vault lock"));
+    let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok(vec![]) };
+    let owner = super::RunOwner::of(&project, &api.calcifer);
+    let mut said = false;
+    loop {
+        let owed = match owner.store() {
+            Ok(store) => store.exports_owed().map_err(journal)?,
+            // A request a moment ahead of it on the project: looked at again shortly.
+            Err(crate::store::StoreError::Locked(code)) if code == "project_busy" => { std::thread::sleep(Duration::from_millis(200)); continue; }
+            Err(e) => return Err(journal(e)),
+        };
+        if owed.is_empty() { return Ok(vec![]); }
+        for (id, _) in &owed { api.calcifer.export(id); }
+        if !said { saving(); said = true; }
+        if owed.iter().any(|(id, _)| api.calcifer.export_moving(id)) {
+            std::thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        // Silent past `EXPORT_SILENCE`: cut, said so on the run and its items.
+        let ids: Vec<crate::RunId> = owed.iter().map(|(id, _)| id.clone()).collect();
+        api.calcifer.end_exports_of(&ids);
+        let store = owner.store().map_err(journal)?;
+        let mut cut = vec![];
+        for (id, number) in owed {
+            let Ok(Some(row)) = store.run(id.as_str()) else { continue };
+            let items = store.outputs_to_export(id.as_str()).unwrap_or_default();
+            crate::outputs::drop_partials(&row, &items);
+            let why = "not saved: its save stopped moving before the project locked";
+            for item in &items {
+                if let Ok(events) = store.export_failed(id.as_str(), &item.name, item.index, item.rev, why) { api.calcifer.publish(&id, events); }
+            }
+            let reason = ::api::calcifer::Reason { code: "output_not_saved".into(), message: "the project locked while its outputs' save had stopped moving: they were not saved".into(), ..Default::default() };
+            if let Ok(events) = store.outputs_not_saved(id.as_str(), &reason) { api.calcifer.publish(&id, events); }
+            cut.push(format!("{}-{number}", project.key()));
+        }
+        return Ok(cut);
     }
-    let store = api.projects.transition_store(api, &project.id, transition)?;
-    let mut unsaved = vec![];
-    for id in api.calcifer.end_exports(&project.id) {
-        let Ok(Some(row)) = store.run(id.as_str()) else { continue };
-        crate::outputs::drop_partials(&row, &store.outputs_to_export(id.as_str()).unwrap_or_default());
-        unsaved.push(format!("{}-{}", project.key(), row.number));
-    }
-    Ok(unsaved)
 }
-
-
 
 fn retire_browser(api: &Arc<Api>, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
     if let Some(prepared) = browser.take() {
@@ -719,22 +744,10 @@ fn retire_browser(api: &Arc<Api>, browser: &mut Option<crate::browser::PreparedB
     Ok(())
 }
 
-/// What a lock does to a save going into the project (cl-1060), decided under the project's turn before anything is revoked.
-#[derive(Clone, Copy)]
-enum Saves {
-    /// A deadline's lock, or a stop's: it waits while a run observably writes into the project, and goes on once it's silent.
-    Wait,
-    /// One asked for (a lock, a storage change): it ends a save at a write-batch boundary, and the next unlock saves it whole.
-    End,
-}
-
-/// Locks the project; with `Saves::End`, the runs whose saves it ended, by name.
-fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser: &mut Option<crate::browser::PreparedBrowserClose>, saves: Saves) -> Result<Vec<String>, Error> {
-    // Under the project's turn and before anything is revoked (cl-1060).
-    let unsaved = match saves {
-        Saves::Wait => match saving(api, root) { Some(error) => return Err(error), None => vec![] },
-        Saves::End => end_saves(api, root, transition)?,
-    };
+fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
+    // Under the project's turn and before anything is revoked: a run that still writes into it (one `drain_saves` didn't see
+    // start) holds it (cl-1060).
+    if let Some(error) = saving(api, root) { return Err(error); }
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         mark_closing(&mut session);
@@ -779,7 +792,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
         }
     }
     retire_browser(api, browser)?;
-    Ok(unsaved)
+    Ok(())
 }
 
 pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
@@ -793,8 +806,9 @@ pub(crate) fn close_all_prepared(api: &Arc<Api>, browser: &mut Option<crate::bro
         let op = operation(&root);
         let _operation = op.lock().expect("vault operation");
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
+        drain_saves(api, &root, || {})?;
         let transition = exclusive(&root)?;
-        close(api, &root, &transition, browser, Saves::Wait)?;
+        close(api, &root, &transition, browser)?;
     }
     retire_browser(api, browser)?;
     Ok(())
@@ -914,12 +928,14 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, due: Instant, forced: bool) {
         lapsed(&session)
     });
     if !still_needs { return; }
-    // The project's turn first, then `close` looks whether a run still writes into it before it revokes anything (cl-1060).
+    // What its runs still owe lands first, judged by progress (cl-1060); then the project's turn, and `close` revokes nothing while
+    // a writer is still active.
+    if let Err(failure) = drain_saves(api, root, || {}) { idle_lock_failed(root, &failure); return; }
     let Ok(transition) = exclusive(root) else {
         say(root, "gate", || "locking waits for a request still holding the project".into());
         return;
     };
-    match close(api, root, &transition, &mut browser, Saves::Wait) {
+    match close(api, root, &transition, &mut browser) {
         Ok(_) => { DUE.lock().expect("vault deadlines").remove(root); }
         Err(failure) => idle_lock_failed(root, &failure),
     }
@@ -957,7 +973,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     progress.phase("waiting");
     let mut browser = if matches!(ask.action.as_str(), "lock" | "encrypt" | "decrypt" | "rotate") { prepare_browser(api)? } else { None };
     let op = operation(&root); let _guard = op.lock().expect("vault operation");
-    let mut ended = vec![];
+    let (mut ended, mut cut) = (vec![], vec![]);
     if ask.action == "lock" {
         // A lock that found the project busy already revoked its view: this one finishes it, and admits no receipt into
         // a view that can no longer be opened.
@@ -976,6 +992,8 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
         // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
         ended = end_work(&api, &root)?;
+        // What the project's runs still owe lands before the machine's side closes, judged by progress (cl-1060).
+        cut = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
         // A request still holds the project: its view is revoked, and the sweeper locks once it ends.
         if let Some(busy) = busy {
             if ended.is_empty() { return Err(busy); }
@@ -1023,6 +1041,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     // Capture this exact mount's revocation token while the operation still
     // holds the transition guard, so a later lock cannot revive its reply.
     progress.readable = readable_token(root);
+    changed.unsaved = cut;
     Ok(changed)
 }
 
@@ -1081,7 +1100,6 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
 }
 
 fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress, transition: &ProjectTransition, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<VaultChanged, Error> {
-    let mut unsaved = vec![];
     recover_under_guards(root)?;
     require_transition_ready(root, &ask.action)?;
     if ask.action == "encrypt" && encrypted(root) {
@@ -1180,7 +1198,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         "lock" => {
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked")); }
             // Locking a locked project is a no-op, after retiring what a dead Calcifer's views left.
-            if held(root).is_some() { unsaved = close(api, root, transition, browser, Saves::End)?; } else { retire_orphaned_views(root)?; }
+            if held(root).is_some() { close(api, root, transition, browser)?; } else { retire_orphaned_views(root)?; }
         }
         "passphrase" | "recovery" => {
             let session = held(root).ok_or_else(|| locked(root))?;
@@ -1209,7 +1227,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.finish_receipt(&store, "completed")?;
     }
-    Ok(VaultChanged { vault: status(root), recovery_secret, ended: vec![], skipped_files: progress.skipped(), unsaved })
+    Ok(VaultChanged { vault: status(root), recovery_secret, ended: vec![], skipped_files: progress.skipped(), unsaved: vec![] })
 }
 
 /// What holds an unlocked vault open: why, and whether its end stirs the vault clock. One that doesn't is looked at again shortly.
@@ -1735,7 +1753,7 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
     if !CONVERTING.lock().expect("vault conversions").insert(root.to_owned()) { return Err(error("vault_busy", "the project is already being converted")); }
     let converting = Converting(root.to_owned());
-    close(api, root, transition, browser, Saves::End)?;
+    close(api, root, transition, browser)?;
     root.parent().ok_or_else(|| error("vault_root", "cannot decrypt a filesystem root"))?;
     let suffix = fresh();
     let staged = root.join(format!(".cozy-vault-stage-{suffix}"));
@@ -1863,7 +1881,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     let mut source_mount = None;
     let mut source_runtime = None;
     let source = if let Some(old) = &old_secret {
-        close(api, root, transition, browser, Saves::End)?;
+        close(api, root, transition, browser)?;
         let runtime = project_runtime(root)?;
         let view = project_mount::view_path(&runtime).map_err(provider)?;
         let mounted = old.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(mounting)?;

@@ -202,6 +202,12 @@ impl Calcifer {
         tasks.spawn(task);
     }
 
+    /// Ends these runs' exporters (cl-1060), for a lock that cuts a save gone silent: each stops at its next write batch, which the
+    /// lock's turn holds off.
+    pub(crate) fn end_exports_of(&self, ids: &[RunId]) {
+        self.retire_exports(&ids.iter().map(|id| id.to_string()).collect());
+    }
+
     /// Whether the run's exporter goes on.
     pub(super) fn exporting(&self, id: &RunId) -> bool {
         lock(&self.exports.runs).contains_key(id)
@@ -418,6 +424,9 @@ impl Calcifer {
                                 again = true;
                             }
                         }
+                        // Its run never reads completed with an output that isn't saved (cl-1060).
+                        let lost = ::api::calcifer::Reason { code: "output_not_saved".into(), message: format!("output {name} wasn't saved: {reason}"), ..Default::default() };
+                        if let Ok(events) = self.with_run_store(id.as_str(), |store| store.outputs_not_saved(id.as_str(), &lost)) { self.publish(id, events); }
                     }
                     Err(Failure::Again(message) | Failure::Refused(message) | Failure::Wrong(message)) => {
                         export_warning(&run, format_args!("output {name} revision {rev} waits: {message}"));
@@ -489,7 +498,9 @@ impl Calcifer {
         let owner=self.row_owner(run).map_err(|_|Failure::Again("project storage owner is unavailable".into()))?;
         if let Some(owner)=owner {
             if run.owner!=owner.project_id() { return Err(Failure::Refused("copied execution history is inert".into())); }
-            return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Refused(error.code));
+            // Not proven yet (a new view after an unlock, a machine restarting, its namespace sealed by a lock): asked again,
+            // proven afresh, never a loss (cl-1060).
+            return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Again(error.code));
         }
         Ok(link)
     }
@@ -1401,15 +1412,15 @@ async fn read_range(
 /// A machine's refusal of a read, as the read acts on it.
 fn refused(e: machine_client::Error) -> Ranged<Failure> {
     match e {
-        machine_client::Error::Refused { status: 404, error } => Ranged::Stop(Failure::Lost(format!(
-            "the machine no longer holds it ({}: {})",
-            error.code, error.message
-        ))),
-        // Definitive: the machine will not serve this read (403, 400, 416, 501) or holds the
-        // output at another revision (412). While the run goes on, its events bring the newer
-        // one; once it ended, none comes.
+        // Gone, said so: the machine holds no such run, output or object any more. The only loss (cl-1060).
+        machine_client::Error::Refused { status: 404, error } if matches!(error.code.as_str(), "run_not_found" | "output_not_found" | "object_not_found") => {
+            Ranged::Stop(Failure::Lost(format!("the machine no longer holds it ({}: {})", error.code, error.message)))
+        }
+        // Definitive for this read: the machine will not serve it (400, 416, 501) or holds the output at another revision
+        // (412). While the run goes on, its events bring the newer one; once it ended, none comes. A refusal of its scope
+        // (403: a private namespace a lock sealed, a view or proof not yet renewed) is asked again, re-proved (cl-1060).
         machine_client::Error::Refused {
-            status: 400 | 403 | 412 | 416 | 501,
+            status: 400 | 412 | 416 | 501,
             error,
         } => Ranged::Stop(Failure::Refused(format!(
             "{}: {}",
