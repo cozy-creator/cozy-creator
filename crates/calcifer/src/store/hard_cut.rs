@@ -35,9 +35,6 @@ fn copy(conn: &Connection, table: &str, which: &str) -> Result<()> {
     Ok(())
 }
 
-/// Paul's answer on the old landing folder of runs outside a project (`~/.cozy/outputs`, cl-1036): true deletes it with the cut.
-const DELETE_OLD_OUTPUTS: bool = false;
-
 /// Why the cut stopped: a fixed sentence naming no project, so it goes to `refused.json` and health.log (serve.rs `refuse`).
 fn cut(why: impl std::fmt::Display) -> StoreError { StoreError::Cut(why.to_string()) }
 
@@ -52,7 +49,7 @@ pub(crate) fn kept_path(calcifer: &Path, root: &Path) -> PathBuf {
 }
 
 /// `objects` held by TensorFS under `at` (`kept_path`) until that file is removed. Err: why it couldn't be, in a person's words.
-fn hold(store: &tensorfs::store::Store, at: &Path, objects: Vec<tensorfs::format::ObjectRef>) -> std::result::Result<(), &'static str> {
+pub(crate) fn hold(store: &tensorfs::store::Store, at: &Path, objects: Vec<tensorfs::format::ObjectRef>) -> std::result::Result<(), &'static str> {
     let header = tensorfs::format::Header::new(objects, None, vec![], Default::default()).map_err(|_| "its record couldn't be made")?;
     let bytes = header.to_cbor().map_err(|_| "its record couldn't be made")?;
     let dir = at.parent().expect("kept/");
@@ -187,7 +184,6 @@ pub(super) fn rebuild(path: &Path, from: i64) -> Result<()> {
     std::fs::rename(&next, path).map_err(|error| cut(format!("the new store couldn't take the old one's place ({}): start cozy again once it can", crate::project::write_cause(&error))))?;
     if let Some(home) = path.parent() {
         let _ = platform::durable::sync_dir(home);
-        if DELETE_OLD_OUTPUTS && let Some(cozy) = home.parent() { let _ = std::fs::remove_dir_all(cozy.join("outputs")); }
     }
     tracing::info!(target: "cozy.service_health", from, held, "the legacy cut left every old run behind; projects' files left on local are held until each opens");
     Ok(())

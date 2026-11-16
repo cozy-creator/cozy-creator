@@ -26,9 +26,17 @@
 #   - every box of the five (the locked ones once unlocked) lists the files it did and answers each, and its preview, with the
 #     same bytes;
 #   - the `state.db.pre-*` copies beside the store are gone;
-#   - once local runs this cozy's TensorD (cl-1035), before any unlock, its journal keeps no old run that retains nothing (one failed
-#     there), nor its words, nor a copy an earlier format kept; every old run whose output is retained stays, with its objects and
-#     every retained output, but none of its prompts; one of them whose result copies were swept, collected after it as a run
+#   - the old landing folder `~/.cozy/outputs` (cl-1036; Paul 11-16, "Delete both"), holding plain's still (its `files/` entry a link
+#     there, as an older cozy left it) and a file no box shows, is set aside at the first start, what the plain projects show of it
+#     held, waiting for the two locked ones (the one away from its folder shows nothing; cozy doctor says so); killed before its move, the next start does it again;
+#     the still is plain's own file after its open, answering the same bytes; the folder is gone once every project was read, and
+#     the other file is nowhere;
+#   - the same from Paul's laptop's state (`cut_already`): the home cut by the RC build before this change, folder and kept old runs
+#     still there;
+#   - once local runs this cozy's TensorD (cl-1035), before any unlock, its journal keeps no old run but one whose retained output a
+#     header file TensorFS roots names as it starts (a project's hold, or a project's own latents; cl-1036), with its objects and
+#     retained outputs and none of its prompts; every other old run goes with its retained outputs, and nothing of a copy an earlier
+#     format kept; one of them whose result copies were swept, collected after it as a run
 #     outside a project is resumed, completes with its files, no word of its prompt and the note saying so; the unlocks after it
 #     still let go of what those runs retained.
 # With CUT_FROM=8 (--shard hardcut-v8) the store is first fenced as a 0.26 RC left one (Paul's laptop's): its project runs in
@@ -75,6 +83,7 @@ for folder in "$E" "$F"; do
 done
 sudo pkill -KILL -u "$CUT_USER" || true
 while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
+cut_old_outputs || return
 latents=$(jq -r '.shot.latents.sha256 | sub("^sha256:"; "")' "$OUT/cut-sealed-before.json")
 # One object the three projects' shots share (the same seed): the store keeps it once.
 [ "$(jq -r .shot.latents.sha256 "$OUT/cut-plain-before.json" "$OUT/cut-sealed2-before.json" | sort -u)" = "sha256:$latents" ] \
@@ -104,7 +113,12 @@ sudo mv "$R" "$R.away" || { check "hard cut: the third plain project not moved";
 echo "hard cut: before: $(cut_store_facts)"
 sudo install -m 644 -o "$(id -u)" "$home/.cozy/calcifer/state.db" "$OUT/cut-store-before.db" || true
 before=$(sudo find "$E" "$F" -mindepth 1 -maxdepth 1 -type f -printf '%p %s\n' | sort)
-CUT_JOURNAL_BEFORE=$(cut_journal_facts "$home/.cozy/machine/var/lib/cozy/tensord/execution/executions.sqlite3")
+# The machine journal as 0.25.0 left it, read once the holds its cut reads are made (`cut_machine_journal`).
+sudo -u "$CUT_USER" python3 -I - "$home/.cozy/machine/var/lib/cozy/tensord/execution/executions.sqlite3" /tmp/cut-journal-before.sqlite3 <<'PY' \
+  || check "hard cut: the 0.25 machine journal not copied"
+import sqlite3, sys
+sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True).backup(sqlite3.connect(sys.argv[2]))
+PY
 cut_windows "$(cut_store_facts)"
 
 # This cozy on that home, installed in the release's place as an update leaves it (the Calcifer it starts is the installed one).
@@ -118,6 +132,9 @@ cut_cozy new --json machine ls > "$OUT/cut-machines.json" || {
   sudo find "$home/.cozy/calcifer" "$home/.cozy/services" -maxdepth 2 -name '*.log' -exec sh -c 'echo "== $1"; tail -n 30 "$1"' sh {} \; 2> /dev/null
   return
 }
+# What the header files TensorFS roots name as this cozy's TensorD first starts with it, every project's hold of the cut still there (no
+# project opened yet): what its journal's cut keeps by (cl-1036; `cut_machine_journal`).
+cut_roots_now > /tmp/cut-roots.bin || check "hard cut: the store's file roots not read after the cut"
 facts=$(cut_store_facts)
 echo "hard cut: after: $facts"
 J '.version == 9 and .legacy_tables == 0 and .settled_runs == 0 and .ended_machines == 0 and .bytes < 1048576' <<< "$facts" \
@@ -145,9 +162,17 @@ fi
 # Every project held, none copied yet: the cut writes nothing into a project folder, and cozy doctor says what it holds and how to let
 # it go; no project's files were lost.
 cut_doctor "for 5 projects not opened since the upgrade" "were lost before this upgrade"
+# The old landing folder set aside (cl-1036): what the plain projects there show of it held, the two locked ones waited for (the third
+# plain one, away from its folder, shows nothing), as cozy doctor says; nothing no project shows is put in the store.
+cut_set_aside 2
+# Before any open copies a held file in and lets the store's copy go: a late collection reads the machine's (cl-1035).
+cut_collect_late
+cut_tensord_stopped
 for folder in "$P" "$Q"; do sudo test -f "$(cut_kept "$folder")" || check "hard cut: no hold of $folder at the cut"; done
 # Each plain project copies its files at its open, then its hold goes.
 cut_check "$P" plain
+# What it showed of the old landing folder is its own file now, no longer a link; the store let its held copy go.
+sudo test -f "$CUT_SHOWN" && sudo test ! -L "$CUT_SHOWN" || check "hard cut: plain's still from the old landing folder isn't its own file: $(sudo ls -l "$CUT_SHOWN" 2> /dev/null)"
 cut_check "$Q" plain2
 for folder in "$P" "$Q"; do sudo test ! -e "$(cut_kept "$folder")" || check "hard cut: $folder's hold stays after its open copied its files in"; done
 # Both plain projects copied what the plain ones share; the third, away from its folder at the cut, is held as a locked one: its
@@ -209,12 +234,104 @@ while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
 cut_cozy new --json machine ls > /dev/null || check "hard cut: this cozy after the unlocks"
 for _ in $(seq 50); do [ -z "$(sudo find "$home/.cozy/calcifer/kept" -name '*.release')" ] && break; sleep 0.2; done
 [ -z "$(sudo find "$home/.cozy/calcifer/kept" -name '*.release')" ] || check "hard cut: copies noted as not let go of: $(sudo find "$home/.cozy/calcifer/kept" -name '*.release' -exec cat {} + | head -c 300)"
+# Every project read: the old landing folder is gone, and with it what no project shows (cl-1036).
+cut_outputs_gone
 # Every project opened since: cozy doctor says nothing is held for one.
 cut_doctor "" "not opened since the upgrade|were lost before this upgrade"
 for folder in "$E" "$F"; do cut_in "$folder" new --json vault lock > "$OUT/cut-relock.json" || check "hard cut: lock again: $(tail -c 300 "$OUT/cut-relock.json")"; done
+cut_already
 sudo pkill -KILL -u "$CUT_USER" || true
 }
 
+# cut_old_outputs: the old landing folder `~/.cozy/outputs` as an older cozy left it (cl-1036): plain's still, which its box shows, there
+# with its `files/` entry a link to it (an older cozy's media link), and a file no box shows.
+cut_old_outputs() {
+  CUT_SHOWN=$P/$(jq -r '.card.image.path' "$OUT/cut-plain-before.json")
+  sudo -u "$CUT_USER" sh -c 'set -e; mkdir -p "$1/legacy"; mv "$2" "$1/legacy/card.png"; ln -s "$1/legacy/card.png" "$2"
+    head -c 65536 /dev/urandom > "$1/legacy/unshown.bin"' sh "$home/.cozy/outputs" "$CUT_SHOWN" || { check "hard cut: the old landing folder not made"; return 1; }
+  CUT_UNSHOWN=$(sudo sha256sum "$home/.cozy/outputs/legacy/unshown.bin" | cut -d' ' -f1)
+  [ "sha256:$(sudo sha256sum "$CUT_SHOWN" | cut -d' ' -f1)" = "$(jq -r '.card.image.sha256' "$OUT/cut-plain-before.json")" ] \
+    || { check "hard cut: plain's still doesn't read through its link: $(sudo ls -l "$CUT_SHOWN")"; return 1; }
+}
+# cut_set_aside <waiting> [tag]: the old landing folder set aside after a start, waiting for that many projects, as cozy doctor says,
+# with nothing no project shows put in the store.
+cut_set_aside() {
+  sudo test ! -e "$home/.cozy/outputs" && sudo test -d "$home/.cozy/outputs.cut" \
+    || check "hard cut${2:-}: the old landing folder not set aside: $(sudo ls -d "$home/.cozy/outputs" "$home/.cozy/outputs.cut" 2> /dev/null | tr '\n' ' ')"
+  [ "$(sudo cat "$home/.cozy/calcifer/kept/outputs.waiting" 2> /dev/null | grep -c .)" = "$1" ] \
+    || check "hard cut${2:-}: the set-aside folder waits for $(sudo cat "$home/.cozy/calcifer/kept/outputs.waiting" 2> /dev/null | tr '\n' ' '), not $1 projects"
+  cut_doctor "stays for $1 projects not opened since the upgrade" "were lost before this upgrade"
+  sudo test ! -e "$home/.cache/tensorfs/blobs/${CUT_UNSHOWN:0:2}/${CUT_UNSHOWN:2:2}/$CUT_UNSHOWN" || check "hard cut${2:-}: the old output no project shows is in the store"
+}
+# cut_outputs_gone [tag]: once every project was read, the set-aside folder is gone, and the file no project shows is nowhere.
+cut_outputs_gone() {
+  for _ in $(seq 120); do sudo test -e "$home/.cozy/outputs" || sudo test -e "$home/.cozy/outputs.cut" || break; sleep 0.5; done
+  sudo test ! -e "$home/.cozy/outputs" && sudo test ! -e "$home/.cozy/outputs.cut" \
+    || check "hard cut${1:-}: the old landing folder is still there: $(sudo ls -d "$home/.cozy/outputs" "$home/.cozy/outputs.cut" 2> /dev/null | tr '\n' ' '), waiting for $(sudo cat "$home/.cozy/calcifer/kept/outputs.waiting" 2> /dev/null | tr '\n' ' ')"
+  [ -z "$(sudo find "$home" -type f -size 64k -exec sha256sum {} + 2> /dev/null | awk -v gone="$CUT_UNSHOWN" '$1 == gone')" ] \
+    || check "hard cut${1:-}: the old output no project shows is still on this computer"
+}
+# cut_already: Paul's laptop as it is (cl-1036): the same 0.25 home, cut by the RC build before this change that his laptop runs
+# (store and machine journal both cut), with the old landing folder and the kept old runs still there. This cozy's next start holds
+# what the projects show of the folder and sets it aside, waiting for the two locked ones; its TensorD leaves no kept old run whose
+# objects no header file names, nor their retained outputs, and keeps the others; plain's still is its own file and displays; the
+# folder goes once both locked projects are unlocked.
+CUT_RC_BUILD=0.26.0-dev+g64439105
+cut_already() {
+  local journal=$home/.cozy/machine/var/lib/cozy/tensord/execution/executions.sqlite3 url sums before after
+  url=https://github.com/cozy-creator/cozy-creator/releases/download/rc-0.26.0
+  sums=$(curl -fsSL --retry 3 "$url/SHA256SUMS") && curl -fsSL --retry 3 -o "$OUT/cozy-rc" "$url/cozy-${CUT_RC_BUILD/+/%2B}-linux-x86_64" \
+    && grep -q "^$(sha256sum "$OUT/cozy-rc" | cut -d' ' -f1) " <<< "$sums" \
+    || { echo "hard cut (already cut): the RC build $CUT_RC_BUILD is no longer on rc-0.26.0; not checked"; return; }
+  sudo install -D -m 755 "$OUT/cozy-rc" /opt/cozy-cut/cozy-rc || { check "hard cut (already cut): the RC build not installed"; return; }
+  sudo pkill -KILL -u "$CUT_USER" || true
+  while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
+  sudo rsync -a --delete /opt/cozy-cut/home/ "$home/" && sudo mv "$R.away" "$R" || { check "hard cut (already cut): the 0.25 home not put back"; return; }
+  sudo -u "$CUT_USER" -H sh -c 'printf %s /opt/cozy-cut/cozy-rc > "$HOME/.cozy/installed"'
+  cut_cozy rc --json machine ls > "$OUT/cut-rc.json" || { check "hard cut (already cut): the RC's first start: $(tail -c 300 "$OUT/cut-rc.json")"; return; }
+  cut_local_on rc || return
+  for _ in $(seq 120); do [ "$(cut_journal_format)" = 3 ] && break; sleep 0.5; done
+  sudo pkill -KILL -u "$CUT_USER" || true
+  while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
+  [ "$(cut_sql "SELECT user_version FROM pragma_user_version")" = 9 ] && [ "$(cut_journal_format)" = 3 ] \
+    && sudo test -L "$CUT_SHOWN" && sudo test -f "$home/.cozy/outputs/legacy/unshown.bin" \
+    || { check "hard cut (already cut): not as the RC leaves it: store $(cut_sql "SELECT user_version FROM pragma_user_version"), journal $(cut_journal_format), $(sudo ls -R "$home/.cozy/outputs" 2>&1 | tr '\n' ' ')"; return; }
+  sudo -u "$CUT_USER" python3 -I - "$journal" /tmp/cut-journal-rc.sqlite3 <<'PY' || { check "hard cut (already cut): its journal not copied"; return; }
+import sqlite3, sys
+sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True).backup(sqlite3.connect(sys.argv[2]))
+PY
+  # This cozy on it, as his laptop's next update.
+  sudo -u "$CUT_USER" -H sh -c 'printf %s /opt/cozy-cut/cozy-new > "$HOME/.cozy/installed"'
+  cut_cozy new --json machine ls > "$OUT/cut-again.json" || { check "hard cut (already cut): this cozy's start: $(tail -c 300 "$OUT/cut-again.json")"; return; }
+  cut_roots_now > /tmp/cut-roots-rc.bin || check "hard cut (already cut): the store's file roots not read"
+  cut_set_aside 2 " (already cut)"
+  before=$(cut_journal_facts /tmp/cut-journal-rc.sqlite3 /tmp/cut-roots-rc.bin)
+  echo "hard cut (already cut): the machine journal the RC left: $(jq -c '{legacy: (.legacy | length), kept: (.kept | length), objects, outputs: (.outputs | length), kept_outputs: (.kept_owners | length), gone_outputs: (.gone_owners | length), held, format, prompt}' <<< "$before")"
+  J '(.legacy | length) > 0 and (.kept | length) > 0 and (.gone_owners | length) > 0 and .format == 3 and .prompt == 0' <<< "$before" \
+    || check "hard cut (already cut): the RC's journal keeps no old run for this cut to take, or none to keep: $(head -c 400 <<< "$before")"
+  cut_local_on new || return
+  for _ in $(seq 120); do [ "$(cut_journal_format)" = 4 ] && break; sleep 0.5; done
+  cut_tensord_stopped
+  after=$(cut_journal_facts "$journal" /tmp/cut-roots-rc.bin)
+  echo "hard cut (already cut): the machine journal on this cozy's TensorD: $(jq -c '{legacy: (.legacy | length), kept: (.kept | length), objects, outputs: (.outputs | length), held, format, prompt}' <<< "$after")"
+  jq -e --argjson before "$before" '
+    .format == 4 and .prompt == 0
+    and ([.ids[] | select(IN($before.legacy[]))] | length) == 0
+    and ($before.kept - .ids | length) == 0
+    and .objects == $before.objects
+    and ($before.kept_owners - .outputs | length) == 0
+    and ([.outputs[] | select(IN($before.gone_owners[]))] | length) == 0' <<< "$after" > /dev/null \
+    || check "hard cut (already cut): the machine journal's cut: legacy left $(jq -c --argjson before "$before" '[.ids[] | select(IN($before.legacy[]))]' <<< "$after"), kept lost $(jq -c --argjson before "$before" '$before.kept - .ids' <<< "$after"), gone outputs left $(jq -c --argjson before "$before" '[.outputs[] | select(IN($before.gone_owners[]))] | length' <<< "$after"), $(jq -c '{format, objects}' <<< "$after")"
+  cut_check "$P" plain
+  sudo test -f "$CUT_SHOWN" && sudo test ! -L "$CUT_SHOWN" || check "hard cut (already cut): plain's still from the old landing folder isn't its own file: $(sudo ls -l "$CUT_SHOWN" 2> /dev/null)"
+  cut_check "$Q" plain2
+  cut_check "$R" plain3
+  sudo test -d "$home/.cozy/outputs.cut" || check "hard cut (already cut): the set-aside folder went before the locked projects were read"
+  cut_unlock "$E" sealed "$(cut_kept "$E")"
+  cut_unlock "$F" sealed2 "$(cut_kept "$F")"
+  cut_outputs_gone " (already cut)"
+  cut_doctor "" "not opened since the upgrade|were lost before this upgrade"
+}
 # cut_failed <folder>: a still there whose run fails on local (`fail.py`), its words a mark only that run's record holds.
 CUT_FAILED_MARK="a run that fails on purpose $RANDOM$RANDOM"
 # The words every project's still is asked for (`cut_fill`): a kept old run's prompt, which the cut leaves nowhere in the machine journal.
@@ -239,36 +356,25 @@ cut_failed() {
 # $CUT_JOURNAL_BEFORE. Before any unlock, so the unlocks after it let go of what those runs retained.
 cut_machine_journal() {
   local journal=$home/.cozy/machine/var/lib/cozy/tensord/execution/executions.sqlite3 after running folder tag
-  echo "hard cut: the machine journal 0.25.0 left: $(jq -c '{legacy: (.legacy | length), kept: (.kept | length), objects, outputs: (.outputs | length), format, mark, prompt}' <<< "$CUT_JOURNAL_BEFORE")"
-  J '(.legacy | length) > 0 and (.kept | length) > 0 and .format < 3 and .mark > 0 and .prompt > 0' <<< "$CUT_JOURNAL_BEFORE" \
+  CUT_JOURNAL_BEFORE=$(cut_journal_facts /tmp/cut-journal-before.sqlite3)
+  echo "hard cut: the machine journal 0.25.0 left: $(jq -c '{legacy: (.legacy | length), kept: (.kept | length), objects, outputs: (.outputs | length), kept_outputs: (.kept_owners | length), gone_outputs: (.gone_owners | length), held, format, mark, prompt}' <<< "$CUT_JOURNAL_BEFORE")"
+  J '(.legacy | length) > 0 and (.kept | length) > 0 and (.gone_owners | length) > 0 and .format < 3 and .mark > 0 and .prompt > 0' <<< "$CUT_JOURNAL_BEFORE" \
     || check "hard cut: the 0.25 machine journal kept no old run to cut and none to keep: $(head -c 400 <<< "$CUT_JOURNAL_BEFORE")"
-  # Started as `machine show` starts it (lib.sh's machine_ready), then what it runs.
-  for _ in $(seq 60); do
-    cut_cozy new --json machine show local > "$OUT/cut-local.json" 2>&1 && grep -q '"state": *"ready"' "$OUT/cut-local.json" && break
-    sleep 2
-  done
-  running=$(jq -r '.status.version // empty' "$OUT/cut-local.json" 2> /dev/null)
-  echo "hard cut: local runs TensorD ${running:-unknown}"
-  if [ "$running" != "$(cut_cozy new --version | awk '{print $2}')" ]; then
-    # Its own copy, as `cozy update` leaves a person's.
-    sudo install -m 755 -o "$CUT_USER" /opt/cozy-cut/cozy-new "$home/cozy-candidate" || { check "hard cut: no copy of this cozy for its user"; return; }
-    cut_cozy new --json machine update local --tensord "$home/cozy-candidate" -y > "$OUT/cut-tensord.json" \
-      || { check "hard cut: local onto this cozy's TensorD: $(tail -c 300 "$OUT/cut-tensord.json") $(tail -c 300 "$OUT/cozy-cut.err")"; return; }
-  fi
+  cut_local_on new || return
   cut_tensord_stopped
   after=$(cut_journal_facts "$journal")
-  echo "hard cut: the machine journal on this cozy's TensorD: $(jq -c '{legacy: (.legacy | length), kept: (.kept | length), objects, outputs: (.outputs | length), format, copies, mark, prompt}' <<< "$after")"
+  echo "hard cut: the machine journal on this cozy's TensorD: $(jq -c '{legacy: (.legacy | length), kept: (.kept | length), objects, outputs: (.outputs | length), held, format, copies, mark, prompt}' <<< "$after")"
   # Every old run that retained nothing is gone, its words too; every one whose output is retained stays, with its objects and every
   # retained output, and no prompt of theirs.
   jq -e --argjson before "$CUT_JOURNAL_BEFORE" '
-    .format == 3 and .copies == 0 and .mark == 0 and .prompt == 0
+    .format == 4 and .copies == 0 and .mark == 0 and .prompt == 0
     and ([.ids[] | select(IN($before.legacy[]))] | length) == 0
     and ($before.kept - .ids | length) == 0
     and .objects == $before.objects
-    and ($before.outputs - .outputs | length) == 0' <<< "$after" > /dev/null \
-    || check "hard cut: the machine journal's cut: legacy left $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '[.ids[] | select(IN($before.legacy[]))]' <<< "$after"), kept lost $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '$before.kept - .ids' <<< "$after"), outputs lost $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '($before.outputs - .outputs) | length' <<< "$after"), $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '{format, copies, mark, prompt, objects, objects_before: $before.objects}' <<< "$after")"
+    and ($before.kept_owners - .outputs | length) == 0
+    and ([.outputs[] | select(IN($before.gone_owners[]))] | length) == 0' <<< "$after" > /dev/null \
+    || check "hard cut: the machine journal's cut: legacy left $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '[.ids[] | select(IN($before.legacy[]))]' <<< "$after"), kept lost $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '$before.kept - .ids' <<< "$after"), kept outputs lost $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '($before.kept_owners - .outputs) | length' <<< "$after"), gone outputs left $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '[.outputs[] | select(IN($before.gone_owners[]))] | length' <<< "$after"), $(jq -c --argjson before "$CUT_JOURNAL_BEFORE" '{format, copies, mark, prompt, objects, objects_before: $before.objects}' <<< "$after")"
   cut_cozy new --json machine ls > /dev/null || check "hard cut: this cozy after its TensorD moved"
-  cut_collect_late
   for folder in P:plain Q:plain2 R:plain3; do
     tag=${folder#*:} folder=${folder%%:*}
     cut_check "${!folder}" "$tag"
@@ -283,7 +389,8 @@ for row in sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True).execute(sys.
 PY
 }
 # cut_collect_late: a kept old run collected after the machine journal's cut (cl-1035), as a run outside a project #3410 keeps to
-# resume is: plain's still, its result copies swept as an idle machine sweeps them, recorded again in Calcifer's store as going and
+# resume is: plain's still (held by its hold of the old landing folder, so its run is kept; cl-1036), before plain's open copies it
+# in and the store lets its copy go, its result copies swept as an idle machine sweeps them, recorded again in Calcifer's store as going and
 # landing outside any project. Calcifer collects it from the machine: it completes with the still's bytes, with no word of its prompt
 # and the one note saying its words were cleared.
 cut_collect_late() {
@@ -360,15 +467,55 @@ assert not any(sys.argv[3].encode() in text for text in said), "the late collect
 assert b"words were cleared" in outcome, f"the late collection carries no note: {outcome[:400]!r}"
 PY
 }
+# cut_local_on <new|rc>: local started as `machine show` starts it (lib.sh's machine_ready), on that cozy's TensorD: moved onto it, as
+# `cozy update` leaves a person's, if it runs another.
+cut_local_on() {
+  local running
+  for _ in $(seq 60); do
+    cut_cozy "$1" --json machine show local > "$OUT/cut-local.json" 2>&1 && grep -q '"state": *"ready"' "$OUT/cut-local.json" && break
+    sleep 2
+  done
+  running=$(jq -r '.status.version // empty' "$OUT/cut-local.json" 2> /dev/null)
+  echo "hard cut: local runs TensorD ${running:-unknown} (cozy $1)"
+  [ "$running" != "$(cut_cozy "$1" --version | awk '{print $2}')" ] || return 0
+  sudo install -m 755 -o "$CUT_USER" "/opt/cozy-cut/cozy-$1" "$home/cozy-candidate" || { check "hard cut: no copy of cozy $1 for its user"; return 1; }
+  cut_cozy "$1" --json machine update local --tensord "$home/cozy-candidate" -y > "$OUT/cut-tensord.json" \
+    || { check "hard cut: local onto cozy $1's TensorD: $(tail -c 300 "$OUT/cut-tensord.json") $(tail -c 300 "$OUT/cozy-cut.err")"; return 1; }
+}
+# cut_journal_format: the machine journal's format, read as its user through its WAL.
+cut_journal_format() {
+  sudo -u "$CUT_USER" python3 -I - "$home/.cozy/machine/var/lib/cozy/tensord/execution/executions.sqlite3" <<'PY' 2> /dev/null
+import sqlite3, sys
+db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+print(db.execute("SELECT value FROM machine_metadata WHERE key = 'journal_format'").fetchone()[0])
+PY
+}
+# cut_roots_now: the bytes of every header file TensorFS roots (`root_file`), each as it was rooted.
+cut_roots_now() {
+  sudo -u "$CUT_USER" python3 -I - "$home/.cache/tensorfs/files" <<'PY'
+import glob, hashlib, json, os, sys
+for record in glob.glob(os.path.join(sys.argv[1], "*")):
+    try:
+        root = json.load(open(record))
+        data = open(root["path"], "rb").read()
+    except (OSError, ValueError, KeyError):
+        continue
+    if hashlib.sha256(data).hexdigest() == root["header"]["sha256"].removeprefix("sha256:"):
+        sys.stdout.buffer.write(data)
+PY
+}
 # cut_journal_facts <journal>: the machine journal, as JSON, by TensorD's own rule (`Journal::legacy_runs`): `legacy`, the ended runs no
 # project owns whose family retains nothing (no asset's `native_outputs` row); `kept`, the other ended runs no project owns; `ids`, every
 # run; `outputs`, every retained output's owner; its format; the copies an earlier format kept beside it; and how often its file and
 # WAL hold the failing run's words (`mark`) and the projects' prompts (`prompt`); `objects`, the kept runs' object rows.
 cut_journal_facts() {
   # As its user, through its WAL (what a stopped TensorD last wrote may be only there).
-  sudo -u "$CUT_USER" python3 -I - "$1" "$CUT_FAILED_MARK" "$CUT_PROMPT_MARK" <<'PY'
+  sudo -u "$CUT_USER" python3 -I - "$1" "$CUT_FAILED_MARK" "$CUT_PROMPT_MARK" "${2:-/tmp/cut-roots.bin}" <<'PY'
 import glob, hashlib, json, os, sqlite3, sys
-path, mark, prompt = sys.argv[1], sys.argv[2], sys.argv[3]
+path, mark, prompt, roots = sys.argv[1:5]
+# What the header files TensorFS rooted as TensorD's cut ran (`cut_roots_now`; cl-1036): the holds of Calcifer's cut, and the header
+# files projects show (their latents). A header names each object by its digest.
+headers = open(roots, "rb").read()
 db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 one = lambda sql: db.execute(sql).fetchone()[0]
 raw = b"".join(open(f, "rb").read() for f in (path, path + "-wal") if os.path.exists(f))
@@ -387,10 +534,29 @@ def retains(record):
     return any(owner(context.get("actor", ""), context.get("request_id", ""), binding.get("asset_ref", "")) in held for binding in result.get("asset_bindings") or [])
 rows = db.execute("""SELECT id, COALESCE(NULLIF(json_extract(invocation,'$.root'),''), CAST(id AS TEXT)),
     json_extract(invocation,'$.local_private.project_id') IS NULL AND state IN ('completed','failed','canceled'), record FROM executions""").fetchall()
-kept_families = {family for (_, family, ended, record) in rows if not ended or retains(record)}
+# A family stays going, or retained and held by a project (cl-1036).
+named = lambda id: {sha for (sha,) in db.execute("SELECT sha256 FROM run_objects WHERE execution = ?", (id,))}
+rooted = lambda shas: {sha for sha in shas if sha.encode() in headers or (len(sha) == 64 and bytes.fromhex(sha) in headers)}
+live = {family for (_, family, ended, _) in rows if not ended}
+retained = {family for (_, family, ended, record) in rows if ended and retains(record)}
+held_families = {family for (id, family, ended, _) in rows if ended and rooted(named(id))}
+kept_families = live | (retained & held_families)
 kept = [id for (id, family, ended, _) in rows if ended and family in kept_families]
+def owners_of(ids):
+    found = set()
+    for (id, record) in db.execute("SELECT id, record FROM executions"):
+        if id not in ids: continue
+        try: record = json.loads(record)
+        except ValueError: continue
+        context, result = record.get("submission") or {}, record.get("result") or {}
+        found |= {owner(context.get("actor", ""), context.get("request_id", ""), b.get("asset_ref", "")) for b in result.get("asset_bindings") or []}
+    return sorted(found & held)
+legacy = [id for (id, family, _, _) in rows if family not in kept_families]
 print(json.dumps({
-    "legacy": [id for (id, family, _, _) in rows if family not in kept_families],
+    "held": len(rooted({sha for (sha,) in db.execute("SELECT sha256 FROM run_objects")})),
+    "kept_owners": owners_of(set(kept)),
+    "gone_owners": owners_of(set(legacy)),
+    "legacy": legacy,
     "kept": kept,
     "objects": sum(one(f"SELECT count(*) FROM run_objects WHERE execution = {id}") for id in kept),
     "ids": [id for (id, _, _, _) in rows],
@@ -451,6 +617,7 @@ writing the new store|$calc/state.db.cut|pwrite64,write|1|old|start
 the new store synced, before the swap|$calc/state.db.cut|chmod,fchmodat,fchmodat2|1|old|start
 the swap|$calc/state.db.cut|rename,renameat,renameat2|1|old|start
 deleting the backups|$calc/state.db.pre-hand-copy|unlink,unlinkat|1|new|start
+the old landing folder's set-aside, its holds written, before its move|$home/.cozy/outputs|rename,renameat,renameat2|1|new|start
 a project's copy at its open in its place, before its folder is synced|$P/files|fsync,fdatasync|1|new|open
 a project's copies in, before its hold goes|$calc/kept/$key.cozytensors|unlink,unlinkat|1|new|open
 WINDOWS
@@ -640,8 +807,8 @@ cut_check() {
   cmp -s <(jq -S . "$OUT/cut-$tag-before.json") <(jq -S . "$OUT/cut-$tag-after.json") \
     || check "hard cut ($tag): its boxes list $(cat "$OUT/cut-$tag-after.json"), before $(cat "$OUT/cut-$tag-before.json")"
   while read -r sha path; do
-    got=$(cut_api "$P" "/files/${path##*/}" | sha256sum | cut -d' ' -f1)
-    [ "sha256:$got" = "$sha" ] || { check "hard cut ($tag): $path answers bytes of $got, not $sha"; continue; }
+    got=$({ cut_api "$P" "/files/${path##*/}" 2> /dev/null || true; } | sha256sum | cut -d' ' -f1)
+    [ "sha256:$got" = "$sha" ] || { check "hard cut ($tag): $path answers bytes of $got, not $sha ($(sudo ls -l "$P/$path" 2>&1 | tr '\n' ' '); $(sudo tail -n 3 "$home/.cozy/calcifer/health.log" 2> /dev/null | tr '\n' ' '))"; continue; }
     case $path in *.png|*.mp4) ;; *) continue ;; esac
     for _ in $(seq 120); do
       code=$(cut_api "$P" "/thumbs/$sha?w=256" -o /dev/null -w '%{http_code}' 2> /dev/null || true)

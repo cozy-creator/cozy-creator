@@ -263,6 +263,19 @@ impl Store {
         Ok(self.holders()?.into_keys().collect())
     }
 
+    /// Every object a header file root keeps (`root_file`): the files a project's client holds for it, a header file a project shows.
+    /// No `local/` ref's or live hold's. A record that no longer reads is skipped (`holders` reaps it).
+    pub fn file_rooted(&self) -> Result<std::collections::HashSet<String>> {
+        let mut rooted = std::collections::HashSet::new();
+        for record in list(&self.root.join("files"))? {
+            let Some(file) = fs::read(&record).ok().and_then(|bytes| serde_json::from_slice::<FileRoot>(&bytes).ok()) else { continue };
+            if let Some(header) = file_header(&file) {
+                header.iter().flat_map(Header::objects).for_each(|object| { rooted.insert(object.sha256.clone()); });
+            }
+        }
+        Ok(rooted)
+    }
+
     /// What the roots keep, with the processes whose live holds keep each: 0 for a header file
     /// or a `local/` ref, which no process ending lets go. Reaps dead holds and files that let go.
     pub(super) fn holders(&self) -> Result<HashMap<String, BTreeSet<u32>>> {

@@ -744,7 +744,8 @@ async fn cut(State(api): State<Arc<Api>>) -> Result<Json<::api::calcifer::CutFil
         Ok::<_, crate::store::StoreError>((api.calcifer.store().lost_before_upgrade()?, crate::project::held(&calcifer)))
     })?;
     let lost = lost.into_iter().map(|(path, files)| ::api::calcifer::LostFiles { path, files }).collect();
-    Ok(Json(::api::calcifer::CutFiles { lost, held_projects, held_bytes, kept: calcifer.join("kept") }))
+    let (old_outputs_waiting, old_outputs) = crate::old_outputs::waiting(&calcifer);
+    Ok(Json(::api::calcifer::CutFiles { lost, held_projects, held_bytes, kept: calcifer.join("kept"), old_outputs_waiting, old_outputs }))
 }
 
 /// Who uses this Calcifer now (cl-962): a `cozy` of another version restarts it only when no page, run or other client does.

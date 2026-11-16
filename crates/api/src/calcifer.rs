@@ -2319,6 +2319,11 @@ pub struct CutFiles {
     pub held_bytes: u64,
     /// Where the holds are: deleting it lets those files go.
     pub kept: PathBuf,
+    /// How many projects the old landing folder, set aside, waits for (cl-1036), and where it is: deleting it lets it go.
+    #[serde(default)]
+    pub old_outputs_waiting: u64,
+    #[serde(default)]
+    pub old_outputs: PathBuf,
 }
 
 /// A project's files left on a machine that were gone from it before the legacy cut could copy them in: its folder, and how many.

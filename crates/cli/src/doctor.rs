@@ -175,6 +175,12 @@ async fn folders(ctx: &Context) -> Vec<Check> {
              unlocked since loses its old files kept on this computer too)",
             crate::output::bytes(cut.held_bytes), cut.held_projects, cut.kept.display())));
     }
+    if cut.old_outputs_waiting > 0 {
+        lost.push(Check::ok("project files", format!(
+            "the old landing folder {} stays for {} projects not opened since the upgrade (still locked, or unreadable), which may show \
+             files in it: open or unlock each, or delete {} to let it go",
+            cut.old_outputs.display(), cut.old_outputs_waiting, cut.old_outputs.display())));
+    }
     let loosened = listed.projects.into_iter().filter(|project| platform::durable::open_to_others(&project.path).unwrap_or(false));
     loosened.filter_map(|project| {
         let e = platform::durable::shut_to_others(&project.path).err()?;
