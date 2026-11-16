@@ -1,0 +1,1 @@
+A local run's latents land in its project's files/ like any output (cl-1046): an ordinary file of its take, there as long as the take is, across restarts and a low disk, and purged with it. Run listings still leave them out; a rental's latents stay on its pod until something needs them.

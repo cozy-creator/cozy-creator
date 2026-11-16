@@ -3032,9 +3032,12 @@ fn export_settled(tx: &Transaction, run: &str, name: &str, index: u32, rev: u64,
 }
 
 
-/// An output owed to this computer: its newest revision neither landed nor given up, no checkpoint, and none that stays.
+/// An output owed to this computer: its newest revision neither landed nor given up, no checkpoint, and none that stays on another
+/// machine. A local run's latents land in its project like any output (cl-1046): an ordinary file of its take, there as long as the
+/// take is, which purge takes with it; still unlisted to a person (`STAYS`).
 pub(super) const OWED: &str = "outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
-    AND NOT EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
+    AND NOT EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name
+        AND held.machine IS NOT 'local')";
 
 const OUTPUT_COLUMNS: &str = "name, idx, rev, length, digest, media_type, done, path, exported_rev,
     CASE WHEN failed_rev = rev THEN export_error END, checkpoint, run, cozy_project_root()";

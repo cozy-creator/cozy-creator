@@ -764,6 +764,7 @@ case $SHARD in
     open_unlocks
     projectvault
     vault_leftovers
+    kept_latents
     vault_swapped
     ended_logs
     logs
