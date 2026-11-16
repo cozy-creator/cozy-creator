@@ -409,7 +409,7 @@ jobs:
           import shutil
           source, target = Path('provider-proof'), Path('provider-evidence')
           target.mkdir(exist_ok=True)
-          for name in ['results.json', 'normal.log', 'crash.log', 'provider.log', 'crash/ready.json', 'macos-mounts.log', 'macos-images.plist', 'macos-diskimages.log', 'hdiutil-create.log', 'macos-filesystems.log']:
+          for name in ['results.json', 'controls.log', 'normal.log', 'crash.log', 'provider.log', 'crash/ready.json', 'macos-mounts.log', 'macos-images.plist', 'macos-diskimages.log', 'hdiutil-create.log', 'macos-filesystems.log']:
               item = source / name
               if item.is_file():
                   shutil.copy2(item, target / name.replace('/', '-'))

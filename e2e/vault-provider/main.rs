@@ -1,6 +1,7 @@
 //! Real provider fixture: FUSE/WinFsp and ordinary file/media I/O, without a mock filesystem.
 //!   vault-provider normal|crash-host <securefs> <artifacts>
 //!   vault-provider throughput <securefs> <artifacts> <bytes>   write, lock, unlock, read back: {write_MBps, read_MBps}
+//!   vault-provider controls <securefs> <artifacts>   a mounted view's status, read many times at once: {calls, failures}
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use project_mount::{MountOptions, Provider};
 use serde_json::json;
@@ -30,7 +31,7 @@ fn run() -> Result<(), Failure> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     let mode = arguments.first().map(|mode| mode.to_string_lossy().into_owned()).unwrap_or_default();
     let bytes = match (mode.as_str(), arguments.len()) {
-        ("normal" | "crash-host" | "mount", 3) => None,
+        ("normal" | "crash-host" | "mount" | "controls", 3) => None,
         ("throughput", 4) => Some(
             arguments[3]
                 .to_str()
@@ -39,7 +40,7 @@ fn run() -> Result<(), Failure> {
                 .ok_or("throughput takes a positive byte count")?,
         ),
         _ => {
-            return Err("usage: vault-provider normal|crash-host|mount <securefs> <artifacts> | throughput <securefs> <artifacts> <bytes>".into());
+            return Err("usage: vault-provider normal|crash-host|mount|controls <securefs> <artifacts> | throughput <securefs> <artifacts> <bytes>".into());
         }
     };
     let expected_helper = PathBuf::from(&arguments[1]);
@@ -51,6 +52,9 @@ fn run() -> Result<(), Failure> {
     }
     if mode == "mount" {
         return mount_only(&provider, &artifacts);
+    }
+    if mode == "controls" {
+        return controls(&provider, &artifacts);
     }
     let backing = artifacts.join("encrypted");
     let view = project_mount::view_path(&artifacts.join("runtime"))?;
@@ -577,6 +581,58 @@ fn mount_only(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
     mounted.try_unmount()?;
     println!("{}", json!({"result":"mounted","wrote":content.len(),"provider":provider.storage_format()}));
     Ok(())
+}
+
+/// A mounted view's status, read by 4 threads per core 250 times each while a spinner per core keeps every core busy. On macOS each
+/// read runs `/sbin/mount`, a control command that often exits before its waiter reads its birth: e2e 43789546310's 503 `read a
+/// process's birth` on an encrypted import (cl-1050). Every read must say mounted; the view then locks.
+fn controls(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const READS: usize = 250;
+    let backing = artifacts.join("encrypted");
+    let view = project_mount::view_path(&artifacts.join("runtime"))?;
+    let secret = new_secret()?;
+    eprintln!("provider fixture: create and mount");
+    provider.create(&backing, secret.as_bytes())?;
+    let mut mounted = provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+    let cores = std::thread::available_parallelism().map_or(2, |cores| cores.get());
+    eprintln!("provider fixture: {} status reads on {} threads", 4 * cores * READS, 4 * cores);
+    let busy = AtomicBool::new(true);
+    let failures: Vec<String> = std::thread::scope(|scope| {
+        for _ in 0..cores {
+            scope.spawn(|| {
+                while busy.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+        }
+        let readers: Vec<_> = (0..4 * cores)
+            .map(|_| {
+                scope.spawn(|| {
+                    (0..READS)
+                        .filter_map(|_| match provider.is_mounted(&view) {
+                            Ok(true) => None,
+                            Ok(false) => Some("a mounted view read as unmounted".to_owned()),
+                            Err(error) => Some(error.to_string()),
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let joined: Vec<_> = readers.into_iter().map(|reader| reader.join()).collect();
+        busy.store(false, Ordering::Relaxed);
+        joined.into_iter().flat_map(|reader| reader.unwrap_or_else(|_| vec!["a reader panicked".to_owned()])).collect()
+    });
+    println!(
+        "{}",
+        json!({"result": if failures.is_empty() {"pass"} else {"failed"}, "calls": 4 * cores * READS, "failures": failures.len(), "first": failures.first()})
+    );
+    eprintln!("provider fixture: lock");
+    mounted.try_unmount()?;
+    match failures.first() {
+        None => Ok(()),
+        Some(first) => Err(format!("{} of {} status reads failed; first: {first}", failures.len(), 4 * cores * READS).into()),
+    }
 }
 
 fn throughput(provider: &Provider, artifacts: &Path, bytes: u64) -> Result<(), Failure> {
