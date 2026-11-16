@@ -556,6 +556,7 @@ case $SHARD in
     catalog
     basics
     component_models
+    lora_reads
     second_project
     lock_platforms
     yaml_requests
@@ -661,6 +662,7 @@ case $SHARD in
     catalog
     basics
     component_models
+    lora_reads
     second_project
     lock_platforms
     yaml_requests
