@@ -190,7 +190,7 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     expect.soft(frames.length > 0 && blank.length === 0, `never blank: ${frames.length} frames, ${JSON.stringify(blank.slice(0, 5))}`).toBe(true);
   });
 
-  await test.step("+ and the Projects drawer suggest the first project's parent's next untitled-N", async () => {
+  await test.step("+ suggests the first project's parent's next untitled-N; the Projects drawer makes none", async () => {
     await plus(page).click();
     await expect(folderField(page)).toBeVisible();
     const [first] = await index(api);
@@ -198,10 +198,9 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     expect.soft(suggested, `beside ${first.path}`).toMatch(new RegExp(`^${escape(dirname(first.path))}[\\\\/]untitled-\\d+$`));
     expect.soft(new URL(page.url()).pathname, 'at /').toBe('/');
     await page.goto(`${api.origin}/projects`);
-    const drawer = page.locator(`.drawer input[aria-label="New project's folder"]`);
-    let offered;
-    await expect.poll(async () => (offered = await drawer.inputValue()), { message: 'the drawer suggests a folder' }).not.toBe('');
-    expect.soft(offered, 'the drawer, the same').toBe(suggested);
+    await expect(page.locator('.drawer ul.list a').first(), 'the drawer lists projects').toBeVisible();
+    // + is how a project is made (Paul, 11-16): the list has no form.
+    await expect.soft(page.locator('.drawer input[aria-label="New project\'s folder"], .drawer form'), 'and no creation form').toHaveCount(0);
   });
 
   // Calcifer away: what the page asks of it fails as the browser says in its console, from each kill until the page is back with it.

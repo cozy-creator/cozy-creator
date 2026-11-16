@@ -2042,6 +2042,7 @@ impl Store {
         let rest = std::time::Instant::now();
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;
+        crate::state::project_used(&writer)?;
         // What older Calcifers kept beside the store, at every start until none is left (cl-1003): a cut stopped after its rename
         // still loses them.
         if let Some(home) = path.parent() {

@@ -349,6 +349,7 @@ impl Projects {
         }
         // Opened for a call: used now, which the index lists by.
         api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.root, Some(now_ms()), Some(&project.code))?;
+        used_now(api, &project.id);
         Ok(project)
     }
 
@@ -1819,6 +1820,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     };
     let opened = opened(id, code, key, &dir);
     api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()), Some(&opened.code))?;
+    used_now(&api, &opened.id);
     let next = vec!["cozy open".into()];
     let response = Json(Opened { next, said, recovery_secret, ..opened }).into_response();
     Ok(if open.unencrypted { response } else { vault::private(response) })
@@ -1960,6 +1962,17 @@ fn owning(path: &FsPath, source: bool) -> Result<PathBuf, Error> {
     Err(Error::new(Kind::NotFound, "project_not_found", format!("{} isn't in a project: there's no {} in it or in any folder above it.", path.display(), db::DB))
         .remedy("Run this from a project's folder, or make a new project.")
         .next("cozy new"))
+}
+
+/// Project `id` used now, which the index lists by (cl-1096): written off the caller's path, as a write waits on whatever holds the
+/// writer (cl-1010).
+pub(crate) fn used_now(api: &Arc<Api>, id: &str) {
+    let (api, id, at) = (api.clone(), id.to_owned(), now_ms());
+    let write = move || if let Err(e) = api.calcifer.store().project_used(&id, at) { warn!("state.db: {e}"); };
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => drop(runtime.spawn_blocking(write)),
+        Err(_) => write(),
+    }
 }
 
 fn now_ms() -> i64 {

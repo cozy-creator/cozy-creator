@@ -187,7 +187,8 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
   const kept = () => page.evaluate(() => window.__vaultDocument);
 
   await test.step('an encrypted project, made from the page', async () => {
-    await page.getByRole('navigation', { name: 'Projects' }).getByRole('link', { name: project.name, exact: true }).click();
+    // The bar's + makes one; the Projects list makes none (Paul, 11-16).
+    await page.getByRole('button', { name: 'New project', exact: true }).click();
     const field = page.getByLabel("New project's folder");
     // Its name is asked first, then its folder (#3412, Paul: name before folder).
     await expect(page.getByLabel("New project's name", { exact: true })).toBeFocused();
