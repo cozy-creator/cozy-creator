@@ -366,13 +366,13 @@ test('render', async ({ page, project, api, cli }) => {
       return meter.length > 1 && meter.every((value, i) => i === 0 || value >= meter[i - 1]) && meter.at(-1) > meter[0] ? 'rising' : `not rising: ${meter.join(' ') || 'no meter'}`;
     };
     await softly.poll(rising, { message: "slow's whole job's meter", timeout: 15_000 }).toBe('rising');
-    // Its first step timed as it ran (3 s), not from its own ctx.progress (~0 ms): once it's done ("Drawing 1 / 10": a stage no model's
+    // Its first step timed as it ran (3 s), not from its own ctx.progress (~0 ms): once it's done ("Drawing, 1 of 10": a stage no model's
     // steps), the time left is its 9 steps to go,
-    // not none (43405964751: "4s / 4s" after it, "7s / 21s" only after the second).
+    // not none (43405964751: "4s of 4s" after it, "7s of 21s" only after the second).
     const span = (said) => said.split(' ').reduce((all, part) => all + Number(part.slice(0, -1)) * { s: 1, m: 60, h: 3600 }[part.at(-1)], 0);
     const firstStep = async () => {
-      const look = (await said(page, 'slow')).filter((one) => /(?:^|\s)1 \/ 10$/.test(one.face ?? '') && one.time).at(-1);
-      const [since, whole] = look ? look.time.replace(/^ - /, '').split(' / ').map(span) : [];
+      const look = (await said(page, 'slow')).filter((one) => /(?:^|\s)1 of 10$/.test(one.face ?? '') && one.time).at(-1);
+      const [since, whole] = look ? look.time.replace(/^ [-·] /, '').split(' of ').map(span) : [];
       return look ? whole - since : null;
     };
     await softly.poll(firstStep, { message: "slow's time left once its first step is done, s", timeout: 15_000 }).toBeGreaterThanOrEqual(10);
