@@ -3366,6 +3366,7 @@ impl Pool {
                     shared: false,
                     display_limit: vec![],
                     display_pace: None,
+                    vigil: false,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3891,6 +3892,7 @@ impl Pool {
                     shared: self.config.host.mode == HostMode::Shared,
                     display_limit: self.display_limit(&lane),
                     display_pace: self.display_pace(gpus),
+                    vigil: session.executor.hello.vigil > 0,
                 }),
                 &mut callbacks,
             )?)?;

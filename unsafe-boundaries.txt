@@ -42,6 +42,7 @@ crates/tensorfs-py/src/varena/source.rs
 crates/tensorfs-py/src/varena/staging.rs
 crates/tensorfs-py/src/varena/tensor_export.rs
 crates/tensorfs-py/src/varena/working.rs
+crates/tensorfs-py/src/vigil.rs
 crates/tensorfs/src/fetch/mod.rs
 crates/tensorfs/src/io/cuda.rs
 crates/tensorfs/src/io/decode.rs

@@ -145,7 +145,8 @@ pub(crate) fn supervise(child: &mut Child, stop: Option<&crate::stop::Stop>, wro
                 Some(now) => moved |= shown.insert(*pid, now) != Some(now),
                 None => moved = true,
             }
-            moved |= platform::process::waits_on_time(*pid) != Some(false);
+            // Where the host lets it read the wait (a sleep, uv's backoff): the G7.2 rule otherwise.
+            moved |= platform::process::waits_on_time(*pid) == Some(true);
         }
         let now = crate::machine::lifecycle::now_ms();
         if moved {

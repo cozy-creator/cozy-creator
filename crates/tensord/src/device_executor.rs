@@ -242,6 +242,8 @@ pub(crate) struct DeviceExecutor {
     lookahead: Arc<Mutex<LookaheadState>>,
     /// TensorD is answering one of its requests: it waits on TensorD, not on itself.
     answering: Arc<std::sync::atomic::AtomicBool>,
+    /// Its vigil's line, from its device Start's reply (cl-977).
+    vigil: Option<Arc<crate::vigil::Line>>,
 }
 
 /// A cancel ends the call at once: its executor is killed (its exact process and scope), never
@@ -522,7 +524,7 @@ impl Codec {
         let current = helper.as_mut().expect("spawned codec helper");
         // Watched while it encodes: one that shows no life for the window is killed (`vigil`).
         let vigil = Birth::of(current.child.id()).ok().and_then(|birth| Exact::open(&birth).ok().flatten())
-            .map(|exact| crate::vigil::Vigil::keep(&exact, Arc::default(), Default::default())).transpose()?;
+            .map(|exact| crate::vigil::Vigil::keep(&exact, Arc::default(), Default::default(), None)).transpose()?;
         let exchanged = (|| {
             current.input.write_all(&line)?;
             current.input.flush()?;
@@ -931,7 +933,7 @@ impl DeviceExecutor {
         };
         on_birth(&birth, &cancellation)?;
         // Wait for connection OR observed process death, or its hang (`vigil`): no elapsed-time startup kill.
-        let vigil = crate::vigil::Vigil::keep(&exact, Arc::default(), Default::default())?;
+        let vigil = crate::vigil::Vigil::keep(&exact, Arc::default(), Default::default(), None)?;
         let accepted = listener.accept_unless(&exact);
         let hung = vigil.end();
         let Some(stream) = accepted? else {
@@ -974,6 +976,7 @@ impl DeviceExecutor {
             memo: None,
             lookahead: Arc::default(),
             answering: Arc::default(),
+            vigil: None,
         };
         end_channel_at_exit(executor.exact.try_clone()?, executor.stream.try_clone()?)?;
         let hello = executor.command(&Command::Hello, &mut Baseline)?;
@@ -1091,7 +1094,7 @@ impl DeviceExecutor {
         command: &Command,
         services: &mut impl Services,
     ) -> io::Result<Frame> {
-        let vigil = crate::vigil::Vigil::keep(&self.exact, self.answering.clone(), services.elsewhere())?;
+        let vigil = crate::vigil::Vigil::keep(&self.exact, self.answering.clone(), services.elsewhere(), self.vigil.clone())?;
         let result = self.converse(command, services);
         vigil.judged(result)
     }
@@ -1166,6 +1169,17 @@ impl DeviceExecutor {
                 None if frame.reply == command.name() && request.is_none_or(|id|
                     frame.request_id == id
                 ) => {
+                    // A device Start's reply hands over its vigil's line (cl-977).
+                    if frame.descriptor && matches!(command, Command::Start(_)) {
+                        let line = platform::handles::recv_fd(&self.stream)?;
+                        #[cfg(unix)]
+                        {
+                            self.vigil = Some(Arc::new(crate::vigil::Line::new(std::os::unix::net::UnixStream::from(line))));
+                            tracing::info!("executor {}: its vigil's line is up", self.birth.pid);
+                        }
+                        #[cfg(not(unix))]
+                        drop(line);
+                    }
                     if sent {
                         self.lookahead.lock().unwrap().queued = None;
                         tracing::info!(request = %frame.request_id, "request lookahead reused");

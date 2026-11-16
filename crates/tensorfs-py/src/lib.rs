@@ -11,6 +11,9 @@ mod varena;
 mod cleanup;
 mod errors;
 mod executor;
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod vigil;
 #[cfg(feature = "store")]
 mod classref;
 #[cfg(feature = "store")]

@@ -90,6 +90,8 @@ pub(crate) fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("Malformed", py.get_type::<Malformed>())?;
     m.add_function(wrap_pyfunction!(decode_command, &m)?)?;
     m.add_function(wrap_pyfunction!(decode_answer, &m)?)?;
+    #[cfg(target_os = "linux")]
+    m.add_function(wrap_pyfunction!(crate::vigil::vigil, &m)?)?;
     parent.add_submodule(&m)?;
     py.import("sys")?.getattr("modules")?.set_item("tensorfs._ext.executor", &m)
 }

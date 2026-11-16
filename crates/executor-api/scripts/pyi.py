@@ -177,6 +177,8 @@ def render(source: str) -> str:
         "",
         "def decode_command(data: bytes) -> Command: ...",
         "def decode_answer(data: bytes) -> Answer: ...",
+        "# Linux only (cl-977): a native thread answering TensorD's hang watch on `fd`, which it takes.",
+        "def vigil(fd: int) -> None: ...",
         "",
     ]
     missing = built - classes

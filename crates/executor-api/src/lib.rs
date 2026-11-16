@@ -124,6 +124,9 @@ pub struct Start {
     /// for the desktop to draw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_pace: Option<DisplayPace>,
+    /// Hand TensorD the vigil's line after this device Start's reply (`Hello::vigil`, cl-977).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub vigil: bool,
 }
 
 /// How a call shares a GPU with the display it drives (`machine.display_pace`): it pauses
@@ -441,6 +444,8 @@ pub struct Hello {
     pub sealed: BTreeMap<String, String>,
     /// It takes `preview` (cr-282): 1; 0 for an executor that makes none.
     pub previews: u32,
+    /// A device Start may ask for its vigil (`tensorfs.executor.vigil`, cl-977): 1; 0 for an executor without one.
+    pub vigil: u32,
 }
 
 /// One preview of a call's latents (`author.preview`): the step it shows, and its picture.

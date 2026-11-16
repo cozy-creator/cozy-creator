@@ -348,7 +348,7 @@ pub fn meter(pid: u32) -> Option<(u64, u64)> {
 }
 
 /// What one thread shows of life (cl-977): the CPU it used or is owed and the bytes it moved (`meter`'s), and what it waits on.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Life {
     pub tid: u32,
     pub name: String,
@@ -357,22 +357,32 @@ pub struct Life {
 }
 
 /// What a thread waits on, read from the syscall it is blocked in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Wait {
     /// It runs, or its wait can't be read.
     Unknown,
     /// A sleep, or a wait with a deadline: it wakes by itself.
     Time,
-    /// An untimed read, poll, epoll or select on these descriptors.
-    On(Vec<i32>),
-    /// Any other untimed wait: a lock, a child, the kernel.
+    /// An untimed read, poll, epoll or select on these established TCP connections.
+    Peers { peers: Vec<crate::net::TcpWait> },
+    /// Any other untimed wait: a lock, a child, a pipe, the kernel.
     Still,
 }
 
-/// Each live thread of a process (Linux, read as its ancestor: Yama lets only an ancestor read a thread's syscall). `None`:
+/// Each live thread of a process (Linux). Another process's syscall and descriptors are read only where the host lets this
+/// one ptrace it (Yama lets an ancestor, unless `ptrace_scope` is 2 or more); its own always (the executor's vigil). `None`:
 /// unreadable, or a system that doesn't say.
 pub fn lives(pid: u32) -> Option<Vec<Life>> {
     sys::lives(pid)
+}
+
+/// One answer of a process's vigil (cl-977): its own threads (`lives` of itself, which a host that denies its parent ptrace
+/// leaves readable to it alone), for the numbered ask it answers. TensorD asks with a line holding the number.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reading {
+    pub ask: u64,
+    pub threads: Vec<Life>,
 }
 
 /// Whether a thread of the process waits on time (`Wait::Time`). `None`: unreadable, or a system that doesn't say.

@@ -214,10 +214,14 @@ fn wait_of(pid: u32, line: &str) -> super::Wait {
     let at = |i: usize| arg.get(i).copied().unwrap_or(0);
     let given = |i: usize| at(i) != 0;
     let millis = |i: usize| at(i) as i32 >= 0;
-    let fd = |i: usize| Wait::On(vec![at(i) as i32]);
-    let polled = |timed: bool| if timed { Wait::Time } else { Wait::On(poll_fds(pid, at(0), at(1))) };
-    let selected = |timed: bool| if timed { Wait::Time } else { Wait::On(select_fds(pid, at(0), at(1))) };
-    let epolled = |timed: bool| if timed { Wait::Time } else { Wait::On(epoll_fds(pid, at(0) as i32)) };
+    let on = |fds: Vec<i32>| match crate::net::tcp_waits(pid, &fds) {
+        peers if peers.is_empty() => Wait::Still,
+        peers => Wait::Peers { peers },
+    };
+    let fd = |i: usize| on(vec![at(i) as i32]);
+    let polled = |timed: bool| if timed { Wait::Time } else { on(poll_fds(pid, at(0), at(1))) };
+    let selected = |timed: bool| if timed { Wait::Time } else { on(select_fds(pid, at(0), at(1))) };
+    let epolled = |timed: bool| if timed { Wait::Time } else { on(epoll_fds(pid, at(0) as i32)) };
     // FUTEX_WAIT, LOCK_PI, WAIT_BITSET, WAIT_REQUEUE_PI, LOCK_PI2, past the private and clock flags.
     let futex = || if matches!(at(1) & 0x7f, 0 | 6 | 9 | 11 | 13) && given(3) { Wait::Time } else { Wait::Still };
     let timed = |yes: bool| if yes { Wait::Time } else { Wait::Still };
@@ -250,7 +254,7 @@ fn wait_of(pid: u32, line: &str) -> super::Wait {
     };
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
-        let _ = (nr, fd, polled, selected, epolled, futex, timed, millis);
+        let _ = (nr, on, fd, polled, selected, epolled, futex, timed, millis);
         Wait::Unknown
     }
 }

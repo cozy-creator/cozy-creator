@@ -1,13 +1,17 @@
 //! Whether a process TensorD waits on is alive (cl-977 G9). Nothing judges how fast it goes: it is hung only when, for
 //! `platform::contain::STALL`, none of its threads used CPU or moved a byte, none waits on time or on a TCP peer that answers,
 //! its GPUs did nothing, and TensorD did no work for it. Then it is killed, and what waited on it says so ([`Hung`]).
-use platform::process::{Exact, Wait};
+//! A thread's wait is read from its syscall, which a host that denies TensorD ptrace (Yama `ptrace_scope` 2, no CAP_SYS_PTRACE)
+//! keeps from it: an executor's own vigil ([`Line`]) reads itself and answers. One whose line never answered can't report, and
+//! what can't be read counts as alive; once it has answered, a wait it doesn't say is no sign of life. A report can only make an
+//! executor look alive, which its code can do anyway by spinning.
+use platform::process::{Exact, Life, Wait};
 use std::{
     collections::{HashMap, HashSet},
     io,
     net::{SocketAddr, TcpStream},
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -47,6 +51,62 @@ pub(crate) fn hung(error: &io::Error) -> bool {
     error.get_ref().is_some_and(|inner| inner.is::<Hung>())
 }
 
+/// An executor's vigil line (cl-977): its own `~vigil` thread (`tensorfs.executor.vigil`) answers each numbered ask with its
+/// threads (`platform::process::Reading`).
+pub(crate) struct Line {
+    #[cfg(unix)]
+    stream: Mutex<(std::os::unix::net::UnixStream, Vec<u8>)>,
+    asked: AtomicU64,
+    answered: AtomicBool,
+}
+
+impl Line {
+    #[cfg(unix)]
+    pub(crate) fn new(stream: std::os::unix::net::UnixStream) -> Self {
+        Self { stream: Mutex::new((stream, vec![])), asked: AtomicU64::new(0), answered: AtomicBool::new(false) }
+    }
+
+    /// Its threads now, if it answers within `SAMPLE`; an answer to an earlier ask is passed over.
+    #[cfg(unix)]
+    fn ask(&self) -> Option<Vec<Life>> {
+        use std::io::{Read, Write};
+        let mut held = self.stream.lock().ok()?;
+        let (stream, pending) = &mut *held;
+        let ask = self.asked.fetch_add(1, Ordering::Relaxed) + 1;
+        stream.write_all(format!("{ask}\n").as_bytes()).ok()?;
+        let until = Instant::now() + SAMPLE;
+        loop {
+            while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                let answer: Vec<u8> = pending.drain(..=end).collect();
+                match serde_json::from_slice::<platform::process::Reading>(&answer) {
+                    Ok(reading) if reading.ask == ask => {
+                        self.answered.store(true, Ordering::Release);
+                        return Some(reading.threads);
+                    }
+                    _ => {}
+                }
+            }
+            let left = until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero())?;
+            stream.set_read_timeout(Some(left)).ok()?;
+            let mut chunk = [0; 1 << 16];
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => return None,
+                Ok(read) if pending.len() < 16 << 20 => pending.extend_from_slice(&chunk[..read]),
+                Ok(_) => pending.clear(),
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    fn ask(&self) -> Option<Vec<Life>> {
+        None
+    }
+
+    /// It has answered once: it reports.
+    fn reports(&self) -> bool {
+        self.answered.load(Ordering::Acquire)
+    }
+}
+
 /// Watches a process group while TensorD waits on it; dropped, it stops, and never kills after.
 pub(crate) struct Vigil {
     stop: Option<mpsc::Sender<()>>,
@@ -55,14 +115,14 @@ pub(crate) struct Vigil {
 }
 
 impl Vigil {
-    /// `leader` and its process group; `answering` is set while TensorD answers one of its requests.
-    pub(crate) fn keep(leader: &Exact, answering: Arc<AtomicBool>, elsewhere: Elsewhere) -> io::Result<Self> {
+    /// `leader` and its process group; `answering` is set while TensorD answers one of its requests; `line`, its vigil's.
+    pub(crate) fn keep(leader: &Exact, answering: Arc<AtomicBool>, elsewhere: Elsewhere, line: Option<Arc<Line>>) -> io::Result<Self> {
         let leader = leader.try_clone()?;
         let (stop, stopped) = mpsc::channel::<()>();
         let verdict = Arc::new(OnceLock::new());
         let found = verdict.clone();
         let thread = std::thread::Builder::new().name(format!("vigil-{}", leader.birth().pid)).spawn(move || {
-            let mut watch = Watch::new(answering, elsewhere);
+            let mut watch = Watch::new(answering, elsewhere, line);
             while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(SAMPLE) {
                 if watch.hung(&leader) {
                     tracing::warn!("pid {}: no CPU, GPU or I/O for {} s, and nothing it waits on is alive: killed",
@@ -109,11 +169,17 @@ struct Peer {
     unanswered: u32,
 }
 
+/// A thread as read: its process, itself, and whether its process's vigil read it (a meter is compared only with one read the
+/// same way).
+type Seen = (u32, u32, bool);
+
 struct Watch {
     answering: Arc<AtomicBool>,
     elsewhere: Elsewhere,
-    /// Each thread's meter by (pid, tid), and the GPUs' busy readings.
-    seen: HashMap<(u32, u32), (u64, u64)>,
+    line: Option<Arc<Line>>,
+    /// Each thread's meter, the processes read and how, and the GPUs' busy readings.
+    seen: HashMap<Seen, (u64, u64)>,
+    read: HashSet<(u32, bool)>,
     gpu: u64,
     /// When something last moved (CPU, bytes, GPU, a thread came or went), and when it last showed any life.
     moved: Instant,
@@ -123,36 +189,50 @@ struct Watch {
 }
 
 impl Watch {
-    fn new(answering: Arc<AtomicBool>, elsewhere: Elsewhere) -> Self {
+    fn new(answering: Arc<AtomicBool>, elsewhere: Elsewhere, line: Option<Arc<Line>>) -> Self {
         let now = Instant::now();
-        Self { answering, elsewhere, seen: HashMap::new(), gpu: 0, moved: now, alive: now, peers: HashMap::new(), said: false }
+        Self {
+            answering, elsewhere, line, seen: HashMap::new(), read: HashSet::new(), gpu: 0, moved: now, alive: now,
+            peers: HashMap::new(), said: false,
+        }
     }
 
     fn hung(&mut self, leader: &Exact) -> bool {
         let now = Instant::now();
-        let pids = std::iter::once(leader.birth().pid).chain(platform::process::group_members(leader.birth()).into_iter().map(|m| m.pid));
-        let (mut moved, mut why, mut waits) = (false, vec![], vec![]);
-        let mut present = HashSet::new();
+        let first = leader.birth().pid;
+        let pids = std::iter::once(first).chain(platform::process::group_members(leader.birth()).into_iter().map(|m| m.pid));
+        let mut own = self.line.as_ref().and_then(|line| line.ask());
+        let reports = self.line.as_ref().is_some_and(|line| line.reports());
+        let (mut moved, mut why, mut peers) = (false, vec![], vec![]);
+        let (mut seen, mut read) = (HashMap::new(), HashSet::new());
         for pid in pids {
+            let (lives, vigil) = match own.take().filter(|_| pid == first) {
+                Some(threads) => (Some(threads), true),
+                None => (platform::process::lives(pid), false),
+            };
             // A process it can't read decides nothing.
-            let Some(lives) = platform::process::lives(pid) else {
+            let Some(lives) = lives else {
                 moved = true;
                 continue;
             };
+            read.insert((pid, vigil));
             for life in lives.into_iter().filter(|life| !life.name.starts_with(WATCHER)) {
-                present.insert((pid, life.tid));
-                moved |= self.seen.insert((pid, life.tid), life.meter) != Some(life.meter);
+                seen.insert((pid, life.tid, vigil), life.meter);
                 match life.wait {
-                    Wait::Unknown => moved = true,
+                    // Unreadable (or running, which its meter shows): alive, from an executor that can't report.
+                    Wait::Unknown => moved |= !reports,
                     Wait::Time => why.push(format!("thread {} ({}) waits on time", life.tid, life.name)),
-                    Wait::On(fds) => waits.push((pid, fds)),
+                    Wait::Peers { peers: waits } => peers.extend(waits),
                     Wait::Still => {}
                 }
             }
         }
-        let threads = self.seen.len();
-        self.seen.retain(|key, _| present.contains(key));
-        moved |= self.seen.len() != threads;
+        // A thread that moved, or came or went in a process read the same way both times.
+        let both = |(pid, _, vigil): &Seen| read.contains(&(*pid, *vigil)) && self.read.contains(&(*pid, *vigil));
+        moved |= seen.iter().any(|(key, meter)| self.seen.get(key).is_some_and(|before| before != meter));
+        moved |= seen.keys().any(|key| !self.seen.contains_key(key) && both(key));
+        moved |= self.seen.keys().any(|key| !seen.contains_key(key) && both(key));
+        (self.seen, self.read) = (seen, read);
         if let Some(gpu) = &self.elsewhere.gpu {
             let busy = gpu.load(Ordering::Relaxed);
             moved |= busy != self.gpu;
@@ -169,7 +249,7 @@ impl Watch {
             why.push("a call it made goes on".into());
         }
         if why.is_empty() {
-            why.extend(self.peer(&waits));
+            why.extend(self.peer(&peers));
         }
         if why.is_empty() {
             return now.duration_since(self.alive) >= platform::contain::STALL;
@@ -185,27 +265,25 @@ impl Watch {
 
     /// A TCP peer it waits on that is there: one acknowledging what it sent, or, with nothing unacknowledged, one that answers a
     /// connect of TensorD's own (a SYN-ACK). A refusal, or `UNANSWERED` probes in a row, and it is gone.
-    fn peer(&mut self, waits: &[(u32, Vec<i32>)]) -> Option<String> {
-        for (pid, fds) in waits {
-            for wait in platform::net::tcp_waits(*pid, fds) {
-                if wait.unacked {
-                    match wait.backoff {
-                        false => return Some(format!("{} acknowledges what it sent", wait.remote)),
-                        true => continue,
-                    }
+    fn peer(&mut self, waits: &[platform::net::TcpWait]) -> Option<String> {
+        for wait in waits {
+            if wait.unacked {
+                match wait.backoff {
+                    false => return Some(format!("{} acknowledges what it sent", wait.remote)),
+                    true => continue,
                 }
-                let peer = self.peers.entry(wait.remote).or_insert(Peer { asked: Instant::now() - PROBE_EVERY, unanswered: 0 });
-                if peer.asked.elapsed() >= PROBE_EVERY {
-                    peer.asked = Instant::now();
-                    match TcpStream::connect_timeout(&wait.remote, PROBE_WAIT) {
-                        Ok(_) => peer.unanswered = 0,
-                        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => peer.unanswered = UNANSWERED,
-                        Err(_) => peer.unanswered += 1,
-                    }
+            }
+            let peer = self.peers.entry(wait.remote).or_insert(Peer { asked: Instant::now() - PROBE_EVERY, unanswered: 0 });
+            if peer.asked.elapsed() >= PROBE_EVERY {
+                peer.asked = Instant::now();
+                match TcpStream::connect_timeout(&wait.remote, PROBE_WAIT) {
+                    Ok(_) => peer.unanswered = 0,
+                    Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => peer.unanswered = UNANSWERED,
+                    Err(_) => peer.unanswered += 1,
                 }
-                if peer.unanswered < UNANSWERED {
-                    return Some(format!("it waits on {}, which answers", wait.remote));
-                }
+            }
+            if peer.unanswered < UNANSWERED {
+                return Some(format!("it waits on {}, which answers", wait.remote));
             }
         }
         None

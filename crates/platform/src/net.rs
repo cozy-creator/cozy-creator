@@ -80,7 +80,7 @@ pub fn tcp_peer_user_quick(peer: SocketAddr, local: SocketAddr, accepted: System
 
 /// An established TCP connection a process waits on (cl-977): its far end, whether bytes it sent are unacknowledged, and whether
 /// the kernel is backing off resending them (the peer stopped answering).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TcpWait {
     pub remote: SocketAddr,
     pub unacked: bool,
