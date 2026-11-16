@@ -49,7 +49,10 @@ const undeclared = (region, tool) => region.locator('.focus-card').evaluate((car
   return [...new Set(odd)];
 }, { names: tool.fields.map((field) => field.field), labels: tool.fields.map((field) => field.label) });
 
-test('fields', async ({ page, project, api, cli }) => {
+test('fields', async ({ page, project, api, cli, guards }) => {
+  // The tiny Qwen fixture's slots default to models the fixture Hub doesn't publish (e2e/cpu/tiny/qwen_image_2.py): a slot's picker asks for
+  // its default's card and is told there is none, and the browser logs each 404 itself.
+  guards.allow(/status of 404\b.*\/v1\/models\//);
   const listed = async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools;
   const qwen = (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}&q=qwen`)).tools.find((tool) => tool.package === 'qwen-image-2' && tool.makes === 'image' && (tool.models?.length || tool.model));
   expect(qwen, 'the Hub lists Qwen Image 2 with its models').toBeTruthy();
