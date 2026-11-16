@@ -51,6 +51,8 @@ export interface StageProps {
 
 /** A frame slower than this on average, from frame to frame, is a slow machine's: decorative animation stands still. */
 const SLOW_FRAME_MS = 40
+/** A wheel event this soon after the last is the same gesture: a trackpad's stream, its glide after the hand has gone. */
+const WHEEL_GAP_MS = 200
 
 /** The canvas: one renderer, frames drawn on demand, the scene, the camera, input, and DOM only where text is typed. */
 export function Stage(props: StageProps) {
@@ -241,6 +243,17 @@ export function Stage(props: StageProps) {
       scene = new Scene({ world: layer, overlay, board, store, client, media, software: taken.backend === "canvas", invalidate, contextOf })
       board.camera.wake = invalidate
       stops.push(board.camera.bind(element, viewport), () => { board.camera.wake = () => {} })
+      // A trackpad's wheel goes on after the hand has gone (cl-955): a stream that began while the canvas was held (Focus, its way back from
+      // Focus) is one gesture, all of it held, until it pauses. Not left to the glide back outlasting it: a glide runs in real time.
+      let wheelLast = -Infinity, wheelHeld = false
+      const wheel = (event: WheelEvent) => {
+        const now = performance.now()
+        if (now - wheelLast > WHEEL_GAP_MS) wheelHeld = latest.current.disabled
+        wheelLast = now
+        if (wheelHeld) { event.stopImmediatePropagation(); event.preventDefault() }
+      }
+      element.addEventListener("wheel", wheel, { capture: true, passive: false })
+      stops.push(() => element.removeEventListener("wheel", wheel, { capture: true }))
       interaction = createInteraction({
         root: element, stage, viewport, camera: board.camera, board, store, hitOf,
         scene: {
