@@ -1046,7 +1046,7 @@ macro_rules! journal_methods {
     pub(crate) fn unsettled_unstarted(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
             // A retried attempt (re-queued with `started_at` cleared) counts as begun: its earlier attempt may have.
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND started_at IS NULL AND attempt <= 1 AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY +number")?;
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND started_at IS NULL AND attempt <= 1 AND (?1 IS NULL OR owner=?1) ORDER BY +number")?;
             let ids = statement
                 .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
