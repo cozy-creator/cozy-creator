@@ -1,10 +1,11 @@
 # cl-1054: pictures imported into plain projects get their thumbnails stored in them (cl-982: "all thumbnails should be generated
 # ahead of time, and stored in the project", Paul 11-13). On macOS the canvas's opens cell, two projects of the same 50 pictures
 # (1200x1200 PNGs of ~4 MB), found none stored in 60 s (e2e 43791131996). As it set up: each project's thumbnails in its `.thumbs/`
-# within 60 s of the last import; else what Calcifer, its ffmpeg and the thumbnail route said, in $OUT/thumbs/.
+# within 60 s of the last import; else what Calcifer, its ffmpeg and the thumbnail route said, in $OUT/thumbs/. Meanwhile, each
+# second: how many are stored, and which ffmpeg and ffprobe run (thumbs/progress.txt).
 thumbs_stored() {
 step "pictures imported into two plain projects get their thumbnails stored (cl-1054)"
-local out=$OUT/thumbs n=${THUMBS_PICTURES:-50} i p made began short=
+local out=$OUT/thumbs n=${THUMBS_PICTURES:-50} i p made began short= watcher
 mkdir -p "$out/pictures"
 python3 - "$out/pictures" "$n" <<'PY' || { check "thumbs: no pictures made"; return; }
 import os, struct, sys, zlib
@@ -19,36 +20,45 @@ for i in range(n):
     with open(os.path.join(out, f"pic_{i}.png"), "wb") as f:
         f.write(png)
 PY
+stored() { find "$out/$1/.thumbs" -type f ! -name '.making*' 2> /dev/null | wc -l | tr -d ' ' || true; }
+( while :; do
+    echo "$(date -u +%T) one:$(stored one) two:$(stored two) $(ps -axo pid=,etime=,command= 2> /dev/null | grep -E '[f]fmpeg|[f]fprobe' | awk '{print $1"/"$2"/"$3}' | tr '\n' ' ')"
+    sleep 1
+  done ) > "$out/progress.txt" 2>&1 & watcher=$!
 for p in one two; do
-  cozy --json new --unencrypted "$out/$p" > "$out/new-$p.json" 2>&1 || { check "thumbs: cozy new $p: $(tail -c 300 "$out/new-$p.json")"; return; }
+  cozy --json new --unencrypted "$out/$p" > "$out/new-$p.json" 2>&1 || { check "thumbs: cozy new $p: $(tail -c 300 "$out/new-$p.json")"; kill "$watcher"; return; }
   for i in $(seq 0 $((n - 1))); do
     project_import "$out/$p" "$out/pictures/pic_$i.png" "pic_$i" > "$out/import-$p-$i.json" 2>&1 \
-      || { check "thumbs: import pic_$i into $p: $(tail -c 300 "$out/import-$p-$i.json")"; return; }
+      || { check "thumbs: import pic_$i into $p: $(tail -c 300 "$out/import-$p-$i.json")"; kill "$watcher"; return; }
   done
 done
 began=$SECONDS
 while [ $((SECONDS - began)) -lt 60 ]; do
   short=
   for p in one two; do
-    made=$(find "$out/$p/.thumbs" -type f ! -name '.making*' 2> /dev/null | wc -l | tr -d ' ')
-    [ "$made" -ge "$n" ] || short="$short $p:$made"
+    made=$(stored "$p")
+    [ "${made:-0}" -ge "$n" ] || short="$short $p:${made:-0}"
   done
   [ -z "$short" ] && break
   sleep 1
 done
+kill "$watcher" 2> /dev/null || true
 echo "thumbs: $((SECONDS - began)) s after the last import, short of $n:${short:- none}"
 [ -n "$short" ] || return 0
 check "thumbs: thumbnails stored 60 s after the last import, short of $n:$short"
-# What says why: the folders, the doctor's tools, cozy's ffmpeg and what it encodes, the thumbnail route, Calcifer's warnings.
-local P=$out/one ffmpeg hex
+# What says why: Calcifer's threads, the folders, cozy's ffmpeg and what it encodes, the thumbnail route, Calcifer's warnings.
+local P=$out/one ffmpeg hex pid
+pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null) || pid=
+[ -z "$pid" ] || ! command -v sample > /dev/null || sample "$pid" 3 -file "$out/calcifer.sample" > /dev/null 2>&1 || true
 { ls -la "$P" "$P/files" "$P/.thumbs" 2>&1; ls -laR "$HOME/.cozy/tools" 2>&1 | head -60; } > "$out/folders.txt"
 cozy --json doctor > "$out/doctor.json" 2>&1 || true
 ffmpeg=$(find "$HOME/.cozy/tools" -name ffmpeg -type f 2> /dev/null | head -1)
 { echo "ffmpeg: ${ffmpeg:-none}"; [ -z "$ffmpeg" ] || { "$ffmpeg" -hide_banner -version 2>&1 | head -3; "$ffmpeg" -hide_banner -encoders 2>&1 | grep -c libx264;
-  "$ffmpeg" -y -v error -i "$out/pictures/pic_0.png" -vf "scale='min(iw,512)':-2" -q:v 3 -frames:v 1 "$out/by-hand.jpg" 2>&1; ls -la "$out/by-hand.jpg" 2>&1; }; } > "$out/ffmpeg.txt"
+  time "$ffmpeg" -y -v error -i "$out/pictures/pic_0.png" -vf "scale='min(iw,512)':-2" -q:v 3 -frames:v 1 "$out/by-hand.jpg" 2>&1; ls -la "$out/by-hand.jpg" 2>&1; }; } > "$out/ffmpeg.txt" 2>&1
 hex=$(shasum -a 256 "$out/pictures/pic_0.png" 2> /dev/null | cut -c1-64) || hex=
 [ -z "$hex" ] || project_api "$P" "/thumbs/sha256:$hex" -o "$out/thumb-0.bin" -D "$out/thumb-0.headers" -w '%{http_code}\n' > "$out/thumb-0.code" 2>&1 || true
 cp "$HOME/.cozy/calcifer/diagnostics.log" "$out/diagnostics.log" 2> /dev/null || true
+echo "thumbs: progress: $(head -3 "$out/progress.txt" | tr '\n' '|') … $(tail -3 "$out/progress.txt" | tr '\n' '|')"
 echo "thumbs: ffmpeg: $(head -2 "$out/ffmpeg.txt" | tr '\n' ' ') route: $(cat "$out/thumb-0.code" 2> /dev/null) $(head -c 300 "$out/thumb-0.bin" 2> /dev/null)"
 echo "thumbs: Calcifer's warnings: $(grep -i 'thumb\|ffmpeg\|measur' "$out/diagnostics.log" 2> /dev/null | tail -5)"
 }
