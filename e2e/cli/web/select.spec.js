@@ -15,8 +15,10 @@ const near = (a, b, tolerance = 28) => a.every((value, i) => Math.abs(value - b[
  * At 25%, the outline, paper border and picture can share one device pixel; adjacent pixels do not contain that underpaint.
  * Require visible paint toward the hover colour, not alpha equal to ideal rectangle area: transformed rasterization mixes underpaint.
  * The restored stroke must change a channel by at least 3 and stay within 8 RGB residual levels; selection has its separate 3 px/glow bar. */
-function hoverCoverage(read, body, color, dpr, zoom = 1, withoutOutline = null) {
-  const noise=8,width=zoom,offset=2*zoom;
+// The hover outline's stroke: the old canvas's DOM outline is 1 canvas px (a quarter pixel at 25%); the new layer (cl-1048) draws it 1.5
+// screen px at every zoom so it never washes out. Both sit 2 canvas px off the picture. The cell judges whichever the canvas draws.
+function hoverCoverage(read, body, color, dpr, zoom = 1, withoutOutline = null, screenStroke = null) {
+  const noise=8,width=screenStroke ?? zoom,offset=2*zoom;
   const sides=[['left',body.x,body.y+body.height/2,1,true],['right',body.x+body.width,body.y+body.height/2,-1,true],
     ['top',body.y,body.x+body.width/2,1,false],['bottom',body.y+body.height,body.x+body.width/2,-1,false]];
   return sides.map(([side,edge,across,inward,horizontal])=>{
@@ -77,7 +79,7 @@ async function rings(page) {
       const css = getComputedStyle(probe).color, values = css.match(/[\d.]+/g).map(Number).slice(0, 3);
       return css.startsWith('color(') ? values.map(value => value * 255) : values;
     };
-    const result = { select: color('--select'), hover: color('--line2'), dpr: devicePixelRatio, zoom: inspection.camera().zoom,
+    const result = { select: color('--select'), hover: color('--line2'), dpr: devicePixelRatio, zoom: inspection.camera().zoom, fresh: typeof inspection.cards === 'function',
       bodies: Object.fromEntries(names.map(name => [name, inspection.card(name)?.body])) };
     const native = [...document.querySelectorAll('.canvas-node .card')].find(card => card.matches(':hover'));
     const media = native?.querySelector(':scope > .media');
@@ -123,7 +125,7 @@ async function rings(page) {
     if (!body) return [name, null];
     const sides = edge(read, body, state.select, state.dpr);
     const native = state.native?.name === name ? state.native : null;
-    const hovered = hoverCoverage(read, native?.body ?? body, state.hover, state.dpr, state.zoom, native ? withoutOutline : null);
+    const hovered = hoverCoverage(read, native?.body ?? body, state.hover, state.dpr, state.zoom, native ? withoutOutline : null, state.fresh ? 1.5 : null);
     const px = Math.min(...sides.map(side => side.width));
     return [name, { solid: sides.every(side => side.width >= 3), look: px >= 3 ? 'selection' : hovered.every(side => side.valid) ? 'hover' : 'neither',
       glow: sides.filter(side => side.glow).length >= 2, px, sides, hovered, ...(native ? { native, artifacts, zoom: state.zoom, dpr: state.dpr } : {}) }];

@@ -625,6 +625,8 @@ async function nameUnderPointer(page, name) {
   const rest = await page.evaluate((name) => document.querySelector('.canvas-root').canvasInspection.card(name)?.rendered?.labels?.title ?? null, name);
   await page.mouse.move(point.x, point.y);
   await hoverBox(page, name);
+  // The canvas redraws a hovered title whole on its next frame: read it after two.
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   return page.evaluate(({ name, point, rest }) => {
     const inspection = document.querySelector('.canvas-root').canvasInspection, labels = inspection.card(name)?.rendered?.labels ?? {};
     const title = labels.title, full = title?.fullText ?? rest?.fullText ?? name;

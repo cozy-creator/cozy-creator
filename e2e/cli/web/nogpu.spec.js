@@ -1,8 +1,9 @@
 // nogpu (Paul, 11-15: "make sure the new pixijs canvas is robust"): a browser with no WebGL at all, as in a VM, over remote desktop, on a
-// blocklisted driver or with WebGL turned off. The page is never blank: its bar, its tools and the canvas's region stand; in the region, in
-// place and over nothing, it says why the boxes can't be drawn and what to do about it (a refusal names the next step); and the project's
-// boxes can still be seen some way, its pictures on the screen. A picture of what such a person sees is kept with the cell's results.
-const { test, expect, png, screenshotPixels } = require('./fixtures');
+// blocklisted driver or with WebGL turned off. The page is never blank: its bar, its tools and the canvas's region stand. The canvas falls
+// back and draws (coordinator's ruling for cl-1041: software WebGL, then Pixi's canvas renderer; a message, with its next step, only if
+// nothing can draw): each box's picture is on the screen and every box is reachable by pointer and keyboard. A picture of what such a person
+// sees is kept with the cell's results.
+const { test, expect, canvasPoint, png, screenshotPixels, selectedNames } = require('./fixtures');
 
 // No WebGL1 or WebGL2 context for any page: getContext('webgl'/'webgl2') answers null, so Pixi's isWebGLSupported() is false.
 test.use({ launchOptions: { executablePath: process.env.CHROME, args: ['--disable-3d-apis'] } });
@@ -30,26 +31,37 @@ test('nogpu', async ({ page, project }, testInfo) => {
     await expect.soft(region, "the canvas's region").toBeVisible();
   });
 
-  await test.step('in place, it says why and what to do', async () => {
-    const notice = region.getByRole('alert');
-    await expect(notice, 'a notice in the canvas region').toBeVisible();
+  await test.step('drawn without WebGL: every picture on the screen, and nothing in front of it', async () => {
+    await page.mouse.move(4, 600);
+    for (const [name, colour] of Object.entries(PICTURES)) {
+      await expect.configure({ soft: true }).poll(() => shown(page, colour), { message: `${name}'s picture on the screen (cl-1041: the canvas falls back and draws)`, timeout: 30_000 }).toBeGreaterThan(400);
+    }
     await page.screenshot({ path: testInfo.outputPath('nogpu.png') });
     await testInfo.attach('nogpu', { path: testInfo.outputPath('nogpu.png'), contentType: 'image/png' });
-    const words = await notice.innerText();
-    expect.soft(words, 'why: the graphics').toMatch(/WebGL|graphics|GPU/i);
-    expect.soft(words, 'what to do: a next step a person can take').toMatch(/hardware acceleration|turn on|enable|another browser|update|settings/i);
     await expect.soft(page.getByRole('dialog'), 'nothing over the page').toHaveCount(0);
     await expect.soft(page.getByRole('alertdialog')).toHaveCount(0);
+    // Only when nothing can draw does it say so in place, and then with a next step.
+    const notice = region.getByRole('alert');
+    if (await notice.count()) {
+      const words = await notice.innerText();
+      expect.soft(words, 'why: the graphics').toMatch(/WebGL|graphics|GPU/i);
+      expect.soft(words, 'what to do: a next step a person can take').toMatch(/hardware acceleration|turn on|enable|another browser|update|settings/i);
+    }
   });
 
-  await test.step("the project's pictures can still be seen", async () => {
-    for (const [name, colour] of Object.entries(PICTURES)) {
-      expect.soft(await shown(page, colour), `${name}'s picture on the screen`).toBeGreaterThan(400);
-    }
-    // And a way in by keyboard: the region's own help says arrows select and Enter opens.
+  await test.step('reachable: a click selects a box, a double click opens it, and the keys walk and open them', async () => {
+    const point = await canvasPoint(page, 'green');
+    await page.mouse.click(point.x, point.y);
+    await expect.configure({ soft: true }).poll(() => selectedNames(page), { message: 'a click selects green' }).toEqual(['green']);
+    await page.mouse.dblclick(point.x, point.y);
+    const focused = page.getByRole('region', { name: 'Focused asset' });
+    await expect.soft(focused, 'a double click opens green in Focus').toHaveAttribute('data-focused-asset', 'green');
+    await page.keyboard.press('Escape');
+    await expect(focused).toHaveCount(0);
+    // And by keyboard: the region's own help says arrows select and Enter opens.
     await region.focus();
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('Enter');
-    await expect.soft(page.getByRole('region', { name: 'Focused asset' }), 'Enter opens a box in Focus').toBeVisible();
+    await expect.soft(focused, 'Enter opens a box in Focus').toBeVisible();
   });
 });
