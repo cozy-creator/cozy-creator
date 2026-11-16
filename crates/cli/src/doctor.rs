@@ -171,7 +171,8 @@ async fn folders(ctx: &Context) -> Vec<Check> {
     if cut.held_projects > 0 {
         lost.push(Check::ok("project files", format!(
             "{} of old files are held on this computer for {} projects not opened since the upgrade (moved, deleted or still locked): \
-             open or unlock each at the folder it had then to copy them in, or delete {} to let them go",
+             open or unlock each at the folder it had then to copy them in, or delete {} to let them go (an encrypted project not \
+             unlocked since loses its old files kept on this computer too)",
             crate::output::bytes(cut.held_bytes), cut.held_projects, cut.kept.display())));
     }
     let loosened = listed.projects.into_iter().filter(|project| platform::durable::others_may_open(&project.path).unwrap_or(false));

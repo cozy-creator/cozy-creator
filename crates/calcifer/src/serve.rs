@@ -191,10 +191,15 @@ fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
 /// `<home>/calcifer/refused.json` for the CLI: the failed step's code as its cause, never its message.
 fn refuse(home: &Home, error: Error) -> Error {
     crate::health::service_health(crate::health::HealthEvent::StartRefused);
-    // Its code only: a message may name a project (health.rs: never project detail).
-    error!(target: "cozy.service_health", code = %error.code, "Calcifer cannot start");
+    // Its code only (a message may name a project: health.rs, never project detail), and the legacy cut's reason, a fixed sentence
+    // that names none (cl-1003).
+    let said = match error.code.as_str() {
+        "legacy_cut" => format!("Calcifer could not start: {}", error.message),
+        _ => "Calcifer could not start".to_owned(),
+    };
+    error!(target: "cozy.service_health", code = %error.code, "{said}");
     let envelope = serde_json::to_vec(&Envelope {
-        error: Error::new(Kind::Unavailable, "calcifer_start_failed", "Calcifer could not start")
+        error: Error::new(Kind::Unavailable, "calcifer_start_failed", said)
             .cause(error.code.clone())
             .next("cozy doctor"),
     })

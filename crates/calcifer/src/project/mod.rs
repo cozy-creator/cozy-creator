@@ -815,8 +815,8 @@ pub(crate) fn keep_left_on_local(root: &FsPath, calcifer: &FsPath) -> Result<Opt
     let folder = Folder::at(&physical);
     let Ok(lock) = folder.lock() else { return Ok(None) };
     let store = crate::runs::files::store().map_err(|_| "this computer's file store can't be opened")?;
-    let own = physical.join(".vault-machine").join("objects");
-    let own = own.is_dir().then(|| tensorfs::store::Store::open(&own).ok()).flatten();
+    // The project's own machine store, looked at by path only: opening it could write its layout under a running TensorD.
+    let own = physical.join(".vault-machine").join("objects").join("blobs");
     let record = crate::store::kept_path(calcifer, root).with_extension("release");
     let mut nonce = [0u8; 8];
     getrandom::fill(&mut nonce).map_err(|_| "it couldn't be written")?;
@@ -831,7 +831,8 @@ pub(crate) fn keep_left_on_local(root: &FsPath, calcifer: &FsPath) -> Result<Opt
         let Some(hex) = file.sha256.strip_prefix("sha256:") else { continue };
         if at.is_file() { continue; }
         let object = tensorfs::format::ObjectRef { sha256: hex.to_owned(), length: file.length };
-        if own.as_ref().is_some_and(|own| own.path(&object).is_ok_and(|held| held.is_file())) { continue; }
+        let ours = hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) && own.join(&hex[..2]).join(&hex[2..4]).join(hex).is_file();
+        if ours { continue; }
         let Some(from) = store.path(&object).ok().filter(|from| from.is_file()) else { gone += 1; continue };
         // Hidden while it's written: a name that starts with its hash would be taken for the file itself (`Folder::lock`).
         let part = at.with_file_name(format!(".{}.{nonce}.cut-part", at.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()));
