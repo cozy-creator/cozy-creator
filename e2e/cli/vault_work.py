@@ -419,7 +419,6 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     assert status == "completed" and not partial, f"after a lock stopped run {saved}'s save, the next unlock: {observed}"
     assert size >= SAVE_MB << 20 and digest in made, f"run {saved}'s file after the next unlock: {observed}"
     assert marked == len(record.get("output", [])) == 2, f"run {saved}'s outputs after the next unlock, the one behind the big one too: {observed}"
-    cli(args, "lock-after-save", "vault", "lock")
 
     receipt["synthetic_only"] = True
     (args.out / "receipt.json").write_text(json.dumps(receipt, indent=2))
