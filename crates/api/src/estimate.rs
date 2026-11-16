@@ -246,6 +246,8 @@ pub struct References {
     /// By function, as `rows`: each card the Hub sells for it, as the Hub names it, and its speed at its lane. A time on one card
     /// times its speed over another's is the other's.
     pub speeds: HashMap<String, BTreeMap<String, f64>>,
+    /// By function, as `rows`: every kept package's newest rows (th-377), which say how cards compare (`ratio`).
+    pub fleet: HashMap<String, Vec<Benchmark>>,
 }
 
 /// `[org/]package/function[@release]` as `References` keys it: `package/function`.
@@ -270,6 +272,14 @@ impl References {
         }
     }
 
+    /// A package's rows (`package` as `[org/]name`) for comparing cards only (`fleet`).
+    pub fn add_fleet(&mut self, package: &str, rows: &[Benchmark]) {
+        let name = package.rsplit('/').next().unwrap_or(package);
+        for row in rows {
+            self.fleet.entry(format!("{name}/{}", row.function)).or_default().push(row.clone());
+        }
+    }
+
     /// `function`'s per-card speeds as its Hub sells cards for it.
     pub fn add_speeds(&mut self, function: &str, speeds: BTreeMap<String, f64>) {
         self.speeds.entry(reference_key(function)).or_default().extend(speeds);
@@ -285,32 +295,55 @@ impl References {
         nearest(self.of(function).iter().filter(|row| row.gpus == 1 && is_card(gpu, &row.gpu)), size).map(|(row, ms)| (ms, row))
     }
 
-    /// `function`'s time on one GPU of `gpu` at `size`: `measured`, else `scaled`.
-    pub fn time(&self, function: &str, gpu: &str, size: &JobSize) -> Option<f64> {
-        self.measured(function, gpu, size).map(|(ms, _)| ms).or_else(|| self.scaled(function, gpu, size))
+    /// `function`'s time on one GPU of `gpu` at `size`: `measured` (`Basis::Reference`), else `scaled` (`Basis::Scaled`).
+    pub fn time(&self, function: &str, gpu: &str, size: &JobSize) -> Option<(f64, Basis)> {
+        match self.measured(function, gpu, size) {
+            Some((ms, _)) => Some((ms, Basis::Reference)),
+            None => self.scaled(function, gpu, size).map(|ms| (ms, Basis::Scaled)),
+        }
     }
 
-    /// `function`'s time on one GPU of `gpu` at `size` where no row measured that card: a row of another card times its speed over this
-    /// card's, of the cards with a row the one nearest this in speed. A guess: never what a rental is recommended by. None: no row, or no
-    /// speed for this card or any measured one.
+    /// `function`'s time on one GPU of `gpu` at `size` where no row measured that card (Paul 11-15: "a rough guess"): its rows of
+    /// other cards, each scaled by `ratio`, their median; with no card related so, the row of the card nearest this in the Hub's
+    /// spec speeds, scaled by them. A guess: never what a rental is recommended by. None: no row, or nothing relates this card to one.
     pub fn scaled(&self, function: &str, gpu: &str, size: &JobSize) -> Option<f64> {
         if gpu.is_empty() {
             return None;
         }
-        let speeds = self.speeds.get(&reference_key(function))?;
-        let speed = |card: &str| speeds.iter().find(|(sold, _)| is_card(card, sold)).map(|(_, speed)| *speed).filter(|speed| *speed > 0.0);
-        let to = speed(gpu)?;
         let mut cards: Vec<&str> = self.of(function).iter().filter(|row| row.gpus == 1).map(|row| row.gpu.as_str()).collect();
         cards.sort_unstable();
         cards.dedup();
+        let at = |card: &str| self.measured(function, card, size).map(|(ms, _)| ms);
+        let related: Vec<f64> = cards.iter().filter_map(|card| Some(at(card)? * self.ratio(card, gpu)?.0)).collect();
+        if !related.is_empty() {
+            return Some(median(&related));
+        }
+        let speeds = self.speeds.get(&reference_key(function))?;
+        let speed = |card: &str| speeds.iter().find(|(sold, _)| is_card(card, sold)).map(|(_, speed)| *speed).filter(|speed| *speed > 0.0);
+        let to = speed(gpu)?;
         (cards.into_iter())
             .filter_map(|card| {
                 let from = speed(card)?;
-                let (ms, _) = self.measured(function, card, size)?;
-                Some(((from / to).ln().abs(), ms * from / to))
+                Some(((from / to).ln().abs(), at(card)? * from / to))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, ms)| ms)
+    }
+
+    /// How much longer a run takes on `to` than on `from` (Paul 11-15: "if a 4090 is usually 20% slower than a 5090, then we go with
+    /// that"): the median, over the functions with one-GPU rows on both (`rows`, else `fleet`), of `to`'s time over `from`'s at `from`'s
+    /// request; and how many functions that is. None: they share none.
+    pub fn ratio(&self, from: &str, to: &str) -> Option<(f64, usize)> {
+        let mut functions: HashMap<&String, &Vec<Benchmark>> = self.fleet.iter().collect();
+        functions.extend(&self.rows);
+        let ratios: Vec<f64> = (functions.into_values())
+            .filter_map(|rows| {
+                let row = rows.iter().find(|row| row.gpus == 1 && row.warm_ms > 0 && is_card(from, &row.gpu))?;
+                let at = nearest(rows.iter().filter(|other| other.gpus == 1 && is_card(to, &other.gpu)), &row.request)?.1;
+                Some(at / row.warm_ms as f64)
+            })
+            .collect();
+        (!ratios.is_empty()).then(|| (median(&ratios), ratios.len()))
     }
 
     /// How `function` goes faster with GPUs on `gpu`, by its rows of that card at one GPU and the widest more: that width and its
@@ -499,7 +532,7 @@ impl<'r> Machine<'r> {
             if let Some((ms, _)) = references.measured(function, &self.card, size) {
                 time = Time { one_ms: ms, basis: Basis::Reference, ..time };
             } else if let Some(ms) = references.scaled(function, &self.card, size) {
-                time = Time { one_ms: ms, basis: Basis::Reference, ..time };
+                time = Time { one_ms: ms, basis: Basis::Scaled, ..time };
             }
         }
         let widths = match widths.len() {

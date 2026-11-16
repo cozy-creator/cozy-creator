@@ -365,7 +365,7 @@ replaced?: Replaced | null, };
 /**
  * What a quote's run time stands on.
  */
-export type Basis = "measured" | "prior" | "reference" | "none";
+export type Basis = "measured" | "prior" | "reference" | "scaled" | "none";
 
 /**
  * A render as a view draws it: everything it covers, what has ended first, then what is going, then what waits. It is

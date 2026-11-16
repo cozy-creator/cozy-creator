@@ -162,7 +162,7 @@ impl Calcifer {
             };
             return Some(Self::barred(prior.with_steps(steps), steps, &of, basis, 1.0, extent));
         }
-        // Its release's benchmark (cl-1024): of its card, else another's scaled by the Hub's speeds; at what it asks.
+        // Its release's benchmark (cl-1024): of its card, else another's scaled to it (estimated); at what it asks.
         let hub = row.hub.as_ref()?.to_string();
         let (package, release, function) = parts(&row.target)?;
         let machines = self.machines()?;
@@ -170,11 +170,11 @@ impl Calcifer {
         let _ = tokio::time::timeout(crate::toolbox::HUB_LATE, fit::speeds(&machines.hubs, &hub, package, release, function)).await;
         let references = crate::placement::references(&machines.hubs, std::slice::from_ref(&row.target));
         let size = v1::JobSize::of(&Value::Object(asked.clone()));
-        let warm_ms = references.time(&row.target, &gpu, &size)?;
+        let (warm_ms, _) = references.time(&row.target, &gpu, &size)?;
         // Timed from its start, load and all: a cold run is held to the cold time where the benchmark has one.
         let (total_ms, basis) = match references.measured(&row.target, &gpu, &size) {
             Some((_, bench)) => (warm_ms * bench.cold_ms.map_or(1.0, |cold| cold as f64 / bench.warm_ms.max(1) as f64).max(1.0), format!("its release's benchmark of an {card}")),
-            None => (warm_ms, format!("its release's benchmarks scaled to an {card} by the Hub's speeds")),
+            None => (warm_ms, format!("an estimate: its release's benchmarks of other cards, scaled to an {card}")),
         };
         Some(Bar { total_ms, lead_ms: None, stages: vec![], width: 1, basis, extent: Extent::of(&asked) })
     }

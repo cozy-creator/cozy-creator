@@ -704,8 +704,10 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   one GPU (a checkout's package from source: its newest release's), only those its benchmarks (its release's, or its source's)
   measured, never a speed-scaled guess, the cheapest a render (price × time), the faster
   of those as cheap; its time there, both times and its cost a render in a `line`, and the `rent`. A time where nothing of it ran
-  (here and in `tools`) is what's typical on that card: this computer's runs on it, else its release's benchmarks (of that card, else
-  another's scaled by the Hub's per-SKU speeds, the card nearest in speed). A run's media seconds (every `duration` in its input),
+  (here and in `tools`) is what's typical on that card: this computer's runs on it, else its release's benchmark of that card (`basis`
+  `reference`), else an estimate (`scaled`, th-377): another card's benchmark times how the two compare, the median of their time ratio
+  over the functions both have benchmarks for in the cards kept here, else the Hub's per-SKU speeds; of the cards with a benchmark,
+  the median of those so related, else the one nearest in speed. `cozy run` says `scaled` as "estimated". A run's media seconds (every `duration` in its input),
   frames, megapixels, steps and tokens scale each, and the pictures it reads pick the benchmark most like it. The page shows `run_ms` beside Render from 15 s, and `faster` as a notice that opens Rent with its card.
 - `GET /v1/projects/{id}/benchmarks?package=`: `{benchmarks: [{function, gpu, gpus, request, warm_ms, cold_ms?, ran_on?, note}]}`
   (cl-1024): `package`'s (`[org/]name`) from this project's completed runs of its functions on a GPU, whichever release or local copy

@@ -6,7 +6,10 @@
 //! machine are settled by its queue. This computer's `local`, which stops after 15 idle minutes, starts to be quoted, so its finish counts
 //! its start (cl-894). A rental on its way is quoted as it will picture itself once it serves (`coming`, cl-915): a job may wait for one
 //! that finishes it sooner than any machine up now. A `new` run weighs a rental against them (`runs::instead_of_renting`).
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock, Mutex},
+};
 
 use api::{
     calcifer::{MachineEstimate, On},
@@ -151,6 +154,9 @@ pub(crate) fn references(hubs: &crate::rentals::Hubs, named: &[String]) -> Refer
             references.add_speeds(target, speeds);
         }
     }
+    for (package, rows) in kept_benchmarks(root, &hub) {
+        references.add_fleet(&package, &rows);
+    }
     references
 }
 
@@ -183,6 +189,25 @@ pub(crate) fn references_for<'j>(api: &Api, jobs: impl IntoIterator<Item = &'j J
         }
     }
     references
+}
+
+/// Every package's benchmarks at its newest release this computer keeps a card of (th-377): how cards compare across functions
+/// (`References::ratio`). A card never changes, so each is read once.
+fn kept_benchmarks(root: &std::path::Path, hub: &str) -> Vec<(String, Vec<api::estimate::Benchmark>)> {
+    type Read = HashMap<(String, String), (String, Vec<api::estimate::Benchmark>)>;
+    static READ: LazyLock<Mutex<Read>> = LazyLock::new(Default::default);
+    let mut read = READ.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    (cards::kept_packages(root, hub).into_iter())
+        .filter_map(|package| {
+            let newest = tensorfs::format::newest_by(cards::kept_releases(root, hub, &package), |r| r)?;
+            let key = (hub.to_owned(), package.clone());
+            if read.get(&key).is_none_or(|(release, _)| *release != newest) {
+                let rows = cards::kept(root, hub, &package, &newest).map(|card| card.benchmarks()).unwrap_or_default();
+                read.insert(key.clone(), (newest, rows));
+            }
+            Some((package, read[&key].1.clone())).filter(|(_, rows)| !rows.is_empty())
+        })
+        .collect()
 }
 
 /// Each of `pictures` with the benchmarks its quotes stand on (`references_for`): those of `jobs` and of each function queued or ahead
