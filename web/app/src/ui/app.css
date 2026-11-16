@@ -4369,12 +4369,9 @@ input[type="checkbox"] {
   font-weight: var(--w-title);
 }
 
-/* Each machine, top right: what it's doing, its name, and how many things. */
-/* Every machine shows: past its width the chips wrap to another row. */
+/* Each machine, top right: what it's doing, its name, and how many things. As many as fit, the rest behind "N more", then + (MachineTabs). */
 .mtabs {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
   align-items: stretch;
   gap: calc(2px * var(--ui));
   min-width: 0;
@@ -4410,7 +4407,24 @@ input[type="checkbox"] {
   color: var(--mute);
   font-variant-numeric: tabular-nums;
 }
-.mtabs .dot,
+.mtab.more {
+  color: var(--mute);
+}
+.mtab.more:hover {
+  color: var(--ink);
+}
+/* Each tab at its full width, where no one sees it, as .ptabs-ghost. */
+.mtabs-ghost {
+  position: absolute;
+  width: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+.mtabs-ghost > div {
+  display: flex;
+  width: max-content;
+}
+.mtab .dot,
 .activity .dot {
   width: calc(9px * var(--ui));
   height: calc(9px * var(--ui));
@@ -4609,7 +4623,8 @@ p.warn.slow {
 .field.find {
   margin-top: 8px;
 }
-.list .tabbed {
+.list .tabbed,
+.rows .tabbed {
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--line);

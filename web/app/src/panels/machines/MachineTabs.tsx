@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 import { Link } from "react-router-dom"
 import { machinesQuery, maintenanceRunsQuery, projectQuery, runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
@@ -10,6 +11,7 @@ import { ordinal } from "../format"
 import { runName as runLabel, workWords } from "../runs/words"
 import { Checks, Spec } from "./RenderHere"
 import { type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
+import type { MachinesAsk } from "./Machines"
 import { called, gpusWords, slowWords, stableName, stateWords } from "./words"
 
 type Mark = "broken" | "slow" | "up" | "download" | "install" | "work" | "idle"
@@ -33,6 +35,20 @@ function MarkOf({ mark }: { mark: Mark }) {
       </span>
     )
   return <span className={`dot ${mark}`} />
+}
+
+/** A tab's marks, name and how many function runs, its GPUs' work: an install or a download is listed, not counted (cl-889). */
+function Face({ machine, doing }: { machine: Machine; doing: Doing[] }) {
+  const total = doing.filter((one) => one.kind === "run" && one.run.kind === "call").length
+  return (
+    <>
+      {marksOf(machine, doing).map((mark) => (
+        <MarkOf key={mark} mark={mark} />
+      ))}
+      <b>{called(machine)}</b>
+      {total > 0 && <span className="load">{total}</span>}
+    </>
+  )
 }
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
@@ -145,7 +161,9 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
 }
 
 /** Each machine, top right, `local` first: what it's doing at a glance, and a click shows each thing with how far it is, and Render here,
- *  which makes it one of the open project's preferred machines, green (Paul 11-12). Kept by the stream. */
+ *  which makes it one of the open project's preferred machines, green (Paul 11-12). Kept by the stream. As many as fit the strip's width,
+ *  the rest behind "N more", which lists them first; then + for a new machine wherever renting is (Paul 11-16). As ProjectTabs fits its
+ *  own: a hidden copy of every tab says what each takes, what it holds refits it in that frame, a size changing by the next. */
 export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; projectId: string | null }) {
   const { client, stream } = useConnection()
   const { data } = useQuery(machinesQuery(client))
@@ -156,23 +174,62 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
   const ownQueued = useQuery(maintenanceRunsQuery(client, { status: "queued" }, 100))
   const { data: project } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
   const [open, setOpen] = useState<{ name: string; chip: HTMLElement } | null>(null)
+  const [count, setCount] = useState(Number.POSITIVE_INFINITY)
+  const strip = useRef<HTMLElement>(null)
+  const sizes = useRef<HTMLDivElement>(null)
+  const renting = !client.transport.channel
   const chosen = project?.machines ?? []
   // Every machine of this computer's, a rental still booting too, and any the project prefers.
   const machines = (data?.machines ?? [])
     .filter((machine) => machine.kind !== "rental" || (machine.state !== "ended" && (machine.ordered !== false || chosen.includes(machine.name))))
     .sort((a, b) => Number(b.kind === "local") - Number(a.kind === "local"))
-  if (!machines.length) return null
+  const tabs = machines.slice(0, Math.max(count, 1))
+  const hidden = machines.slice(tabs.length)
+  const named = machines.map((machine) => machine.name).join(" ")
+  const fit = useRef(() => count)
+
+  useLayoutEffect(() => {
+    fit.current = () => {
+      const [held, ghost] = [strip.current, sizes.current]
+      if (!held || !ghost) return count
+      const style = getComputedStyle(held)
+      const space = (Number.parseFloat(style.maxWidth) || Number.POSITIVE_INFINITY) - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight)
+      const gap = Number.parseFloat(style.columnGap) || 0
+      const widths = [...ghost.children].map((child) => child.getBoundingClientRect().width)
+      const more = widths.pop() ?? 0
+      const fits = (n: number) => [...widths.slice(0, n), ...(n < widths.length ? [more] : [])].reduce((sum, each) => sum + each + gap, -gap) <= space
+      if (fits(widths.length)) return widths.length
+      let n = 1
+      while (n < widths.length - 1 && fits(n + 1)) n++
+      return n
+    }
+  })
+  useLayoutEffect(() => setCount(fit.current()), [named])
+  // Never inside the observer: WebKit says the loop (cl-973). The window's width moves the strip's (40vw); a tab's own, the hidden copy's.
+  useLayoutEffect(() => {
+    let frame = 0
+    const refit = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => flushSync(() => setCount(fit.current())))
+    }
+    const watch = new ResizeObserver(refit)
+    if (sizes.current) watch.observe(sizes.current)
+    window.addEventListener("resize", refit)
+    return () => {
+      cancelAnimationFrame(frame)
+      watch.disconnect()
+      window.removeEventListener("resize", refit)
+    }
+  }, [])
+
   const runs = [...(projectId ? [...(running.data?.runs ?? []), ...(queued.data?.runs ?? [])] : []), ...(ownRunning.data?.runs ?? []), ...(ownQueued.data?.runs ?? [])]
   const boxes = new Map((project?.assets ?? []).flatMap((asset) => (asset.making ?? []).map((number) => [number, asset.name] as const)))
-  const shown = open && machines.find((machine) => machine.name === open.name)
+  const shown = open && tabs.find((machine) => machine.name === open.name)
   return (
     <>
-      <nav className="mtabs" aria-label="Machines">
-        {machines.map((machine) => {
-          const doing = doingOf(machine, runs, projectId)
-          // Its jobs are function runs, its GPUs' work: an install or a download is listed, not counted (cl-889).
-          const total = doing.filter((one) => one.kind === "run" && one.run.kind === "call").length
-          return (
+      {machines.length > 0 && (
+        <nav className="mtabs" aria-label="Machines" ref={strip}>
+          {tabs.map((machine) => (
             <button
               key={machine.name}
               type="button"
@@ -186,15 +243,33 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
                 setOpen((now) => (now?.name === machine.name ? null : { name: machine.name, chip }))
               }}
             >
-              {marksOf(machine, doing).map((mark) => (
-                <MarkOf key={mark} mark={mark} />
-              ))}
-              <b>{called(machine)}</b>
-              {total > 0 && <span className="load">{total}</span>}
+              <Face machine={machine} doing={doingOf(machine, runs, projectId)} />
             </button>
-          )
-        })}
-      </nav>
+          ))}
+          {hidden.length > 0 && (
+            <Link className="mtab more" to={to("machines")} state={{ first: hidden.map((machine) => machine.name) } satisfies MachinesAsk} title="All machines">
+              {hidden.length} more
+            </Link>
+          )}
+        </nav>
+      )}
+      {renting && (
+        <span className="ptabs-add">
+          <Link className="ptab add" to={to("machines/new")} aria-label="New machine" title="New machine">
+            +
+          </Link>
+        </span>
+      )}
+      <div className="mtabs-ghost" aria-hidden>
+        <div ref={sizes}>
+          {machines.map((machine) => (
+            <span key={machine.name} className="mtab">
+              <Face machine={machine} doing={doingOf(machine, runs, projectId)} />
+            </span>
+          ))}
+          <span className="mtab">{machines.length} more</span>
+        </div>
+      </div>
       {open && shown && <Activity machine={shown} doing={doingOf(shown, runs, projectId)} boxes={boxes} to={to} chip={open.chip} close={() => setOpen(null)} />}
     </>
   )
