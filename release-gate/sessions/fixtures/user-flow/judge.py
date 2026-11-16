@@ -3,9 +3,11 @@
 Exit 1 on any FAIL.
     judge.py <flow dir> <bench.json> <release-gate dir>
 Works: each run completes, its take lands and shows. Lean: what each machine fetched against what its runs loaded, 8-bit lanes and
-kernels, nothing fetched twice, no disk refusal, disks of 300 GB (cl-1076). Fast: rent, download and steps against bench.json (5%: a
-tie). Placed right: machine B works while A is busy, a waiting run never sits behind a busy machine while a preferred one idles
-(cl-1073), a run takes every GPU of its machine. The page tells the truth: each take's tile names its phase (Downloading, then
+kernels, nothing fetched twice, no disk refusal, disks of 300 GB (cl-1076), a quote's download no more than what landed (cl-1071).
+Fast: rent, download and steps against bench.json (5%: a tie); a run's own work, from its GPU lease (a machine's first run: from the
+executor start before it) to its end, against the stored run, which ran alone on a machine holding its weights: its download and its
+wait for a GPU are judged by their own lines. Placed right: machine B works while A is busy, a run never waits for a busy machine's
+GPU while a preferred one idles (cl-1073), a run takes every GPU of its machine. The page tells the truth: no page or console error; each take's tile names its phase (Downloading, then
 Rendering) with that phase's share and its machine, and a cancel (cl-1074); no MBps, no "0 of 0"; no CLI command in a toast (cl-1085);
 the take in Focus at its own shape (cl-1080); Calcifer never restarted; no page load nobody asked for (cl-1066); runs numbered from 1
 in a new project (cl-1075). The H3 edit's steps are not all dense (cl-1081)."""
@@ -27,6 +29,8 @@ Obj: TypeAlias = dict[str, JSON]
 TIE = 1.05
 MIB, GB = 2**20, 1e9
 PHASES = ('queued', 'installing', 'downloading', 'preparing', 'rendering', 'landing', 'completed')
+# A run's own word for it, in its `waiting`: "waiting for a GPU, held by run <name>" (its stage still names its finished download).
+GPU_WAIT = re.compile(r'waiting for (a|a free|the) GPU|let go of the GPUs', re.I)
 verdict: list[str] = []
 
 
@@ -118,6 +122,12 @@ class Row:
     first: dict[str, float] = field(default_factory=dict)
     # Where its stream placed it, in turn: (machine, from, to); a move starts another.
     spans: list[tuple[str, float, float]] = field(default_factory=list)
+    # When its stream said it waited (queued, or for a GPU another run held) on a machine: (machine, from, to).
+    waits: list[tuple[str, float, float]] = field(default_factory=list)
+    # Its own GPU work: its calls' GPU leases, first start to last end, in ms; `work_s` to its end from there (see `own`).
+    lease: tuple[float, float] | None = None
+    work_s: float | None = None
+    quoted_fetch: float | None = None
     dl_bytes: float = 0
     dl_s: float | None = None
     record: Run | None = None
@@ -150,6 +160,7 @@ class Held:
     free: float | None
     speed: str
     ops: list[Obj]
+    software: str
 
 
 flow = obj(load('flow.json'))
@@ -164,11 +175,21 @@ for label, value in obj(flow.get('machines')).items():
     machines[label] = Machine(label, rec, text(rec.get('sku')), int(num(rec.get('gpus')) or 1), text(rec.get('name')))
 by_name = {m.name: label for label, m in machines.items() if m.name}
 
+
+def gone_at(m: Machine) -> float | None:
+    """When it left by itself: gone from the page's list with End never pressed (a rental idle 15 min releases itself)."""
+    if m.record.get('end_pressed_at'):
+        return None
+    return num(m.record.get('left_at')) or removed.get(m.name)
+
 # Each run's changes as the page read them, and each machine's.
 run_events: dict[str, list[tuple[float, Obj]]] = defaultdict(list)
 machine_events: dict[str, list[tuple[float, Obj]]] = defaultdict(list)
+removed: dict[str, float] = {}  # when each machine left the page's list
 for e in events:
     at, ev = num(e.get('at')) or 0.0, obj(e.get('event'))
+    if ev.get('type') == 'machine.removed':
+        removed[text(ev.get('id'))] = at
     if ev.get('type') == 'run.updated':
         one = obj(ev.get('run'))
         run_events[text(one.get('id'))].append((at, one))
@@ -189,7 +210,7 @@ def phase(run: Obj) -> str:
     status = text(run.get('status'))
     if status in ('completed', 'failed', 'canceled'):
         return 'landing' if run.get('arriving') else status
-    if not run.get('machine') or run.get('queue_position') is not None or (run.get('waiting') and not p):
+    if not run.get('machine') or run.get('queue_position') is not None or (run.get('waiting') and not p) or GPU_WAIT.search(text(run.get('waiting'))):
         return 'queued'
     if 'download' in stage or (num(p.get('bytes_total')) and not re.search(r'load|bake', stage)):
         return 'downloading'
@@ -198,6 +219,28 @@ def phase(run: Obj) -> str:
     if num(p.get('completed')) and num(p.get('total')) and not re.search(r'load|prepar|decode|encode', stage):
         return 'rendering'
     return 'preparing'
+
+
+def own(full: Obj, cold: bool) -> tuple[float, float] | None:
+    """Its calls' GPU leases (`execution.gpus[].start_us`/`end_us`), first start to last end, in ms. A machine's first run starts at the
+    executor start those leases followed (its start-up is in the stored cold run's time too), when that came after the run started."""
+    begins: list[float] = []
+    ends: list[float] = []
+    boots: list[float] = []
+    for m in [obj(full.get('measurements'))] + [obj(obj(c).get('measurements')) for c in arr(full.get('calls'))]:
+        ex = obj(m.get('execution'))
+        gpus = [g for g in map(obj, arr(ex.get('gpus'))) if (num(g.get('gpu')) or 0.0) >= 0 and g.get('gpu') is not None]  # -1: an orchestrator, on no GPU
+        begins += [v / 1000 for v in (num(g.get('start_us')) for g in gpus) if v]
+        ends += [v / 1000 for v in (num(g.get('end_us')) for g in gpus) if v]
+        boot = num(obj(ex.get('executor')).get('started_unix_ms'))
+        if gpus and boot:
+            boots.append(boot)
+    if not begins or not ends:
+        return None
+    first = min(begins)
+    if cold and boots and (num(full.get('started_at_ms')) or 0.0) <= min(boots) <= first:
+        first = min(boots)
+    return first, max(ends)
 
 
 rows: list[Row] = []
@@ -215,11 +258,24 @@ for s in map(obj, arr(flow.get('sent'))):
             if row.spans:
                 row.spans[-1] = (row.spans[-1][0], row.spans[-1][1], at)
             row.spans.append((where, at, 0.0))
+    waiting: tuple[str, float] | None = None
+    for at, one in timeline:
+        where = text(one.get('machine'))
+        queued = bool(where) and phase(one) == 'queued'
+        if waiting and (not queued or waiting[0] != where):
+            row.waits.append((waiting[0], waiting[1], at))
+            waiting = None
+        if queued and not waiting:
+            waiting = (where, at)
+    if waiting and timeline:
+        row.waits.append((waiting[0], waiting[1], timeline[-1][0]))
     placed = next((at for at, one in timeline if one.get('machine')), None)
     row.placed_s = secs(row.sent_at, placed)
     downloads = [(at, obj(one.get('progress'))) for at, one in timeline if phase(one) == 'downloading']
     row.dl_bytes = max((num(p.get('bytes_total')) or 0.0 for _, p in downloads), default=0.0)
-    row.dl_s = secs(downloads[0][0], downloads[-1][0]) if len(downloads) > 1 else None
+    # The time its stream said it was downloading: not its wait for a GPU after, nor a later look at a download long done.
+    took = sum(then - at for (at, one), (then, _) in zip(timeline, timeline[1:]) if phase(one) == 'downloading') / 1000
+    row.dl_s = took if took > 0 else None
     rec_run = Run.read(os.path.join(FLOW, 'runs', f'{name}.json'))
     row.machine = (rec_run.record.get('machine') or '') if rec_run else (text(timeline[-1][1].get('machine')) if timeline else '')
     row.label = by_name.get(row.machine, '?')
@@ -238,6 +294,10 @@ for s in map(obj, arr(flow.get('sent'))):
         sol = [obj(o.get('fields')) for o in rec_run.observations if o.get('name') == 'attention.sol.calls']
         row.sol = {k: sum(int(num(f.get(k)) or 0) for f in sol) for k in ('dense_step', 'prefix_heavy', 'sparse')} if sol else None
         full = obj(json.loads(json.dumps(rec_run.record)))
+        row.quoted_fetch = num(obj(full.get('placed')).get('fetch_bytes'))
+        row.lease = own(full, not any(o.label == row.label and o.record for o in rows))
+        if row.lease and row.settled_at:
+            row.work_s = (row.settled_at - row.lease[0]) / 1000
         measured = [obj(part) for part in arr(obj(full.get('report')).get('measured'))]
         models = [obj(mm) for part in measured for mm in arr(part.get('models'))]
         row.precisions = [(text(mm.get('slot')), text(mm.get('lane')), text(mm.get('precision'))) for mm in models]
@@ -315,8 +375,9 @@ for label, m in sorted(machines.items()):
     for r in rows:
         if r.label == label:
             used |= r.used
-    held = [(text(obj(mm).get('model')), num(obj(mm).get('total_bytes')) or 0.0, [text(obj(c).get('lane')) or '?' for c in arr(obj(mm).get('checkpoints'))])
-            for mm in arr(status.get('models'))]
+    # `cozy machine show --json`: each model by its `repository`, the disk as `disk_total_bytes` and `disk_free_bytes`.
+    held = [(text(obj(mm).get('repository')) or text(obj(mm).get('model')), num(obj(mm).get('total_bytes')) or 0.0,
+             [text(obj(c).get('lane')) or '?' for c in arr(obj(mm).get('checkpoints'))]) for mm in arr(status.get('models'))]
     unused = [(model, size) for model, size, _ in held if model and not any(model == u or model.split('/')[-1] == u.split('/')[-1] for u in used)]
     disk = obj(status.get('disk'))
     speed = [f"{int(b) / float(sec) / 1e6:.0f} MB/s" for b, sec in re.findall(r"download speed to the Hub: Some\(WorkerDownload \{ bytes: (\d+), seconds: ([\d.]+)", log) if float(sec)]
@@ -326,19 +387,32 @@ for label, m in sorted(machines.items()):
             if op.get('kind') == 'download':
                 ops[text(op.get('id'))] = op
     disk_gb = num(rental.get('disk_gb')) or num(m.record.get('disk_gb'))
-    h = Held(label, m, held, fetched, (max(stamps) - min(stamps)) if len(stamps) > 1 else None, twice, unused, disk_gb, num(disk.get('free_bytes')),
-             speed[-1] if speed else '', list(ops.values()))
+    h = Held(label, m, held, fetched, (max(stamps) - min(stamps)) if len(stamps) > 1 else None, twice, unused, disk_gb,
+             num(status.get('disk_free_bytes')) or num(disk.get('free_bytes')),
+             speed[-1] if speed else '', list(ops.values()),
+             ', '.join(f"{what} {text(status.get(key))}" for what, key in (('cozy', 'version'), ('Runtime', 'runtime'), ('TensorFS', 'tensorfs')) if status.get(key))
+             + (f" ({text(status.get('commit'))[:8]})" if status.get('commit') else ''))
     held_rows.append(h)
     if not landed:
         check(f'{label} fetched nothing twice', None, 'no TensorD log of its downloads read')
     else:
         check(f'{label} fetched nothing twice', not twice, ', '.join(f"{o[:19]} {len(v)}x {max(v) / MIB:.0f} MiB" for o, v in twice.items()) or f"{len(landed)} objects, {fetched / GB:.1f} GB")
-    check(f'{label} fetched nothing its runs did not load (cl-1077)', bool(used) and not unused,
-          ', '.join(f"{model} {size / GB:.1f} GB" for model, size in unused) or f"holds only what its runs loaded: {', '.join(sorted(used))}")
+    ran_here = [r for r in rows if r.label == label and r.record]
+    check(f'{label} fetched nothing its runs did not load (cl-1077)', (bool(used) and not unused) if ran_here or held else None,
+          ', '.join(f"{model} {size / GB:.1f} GB" for model, size in unused) or (f"holds only what its runs loaded: {', '.join(sorted(used))}" if ran_here else 'no request ran on it, and it holds nothing'))
     models_bytes = num(status.get('models_bytes')) or sum(size for _, size, _ in held)
     if models_bytes and landed:
         check(f'{label} fetched no more than it holds', fetched <= models_bytes * 1.02 + 64 * MIB, f"{fetched / GB:.1f} GB landed, {models_bytes / GB:.1f} GB held")
     check(f'{label} has a 300 GB disk (cl-1076)', (disk_gb or 0) >= 300, f"{disk_gb} GB")
+    if renting:
+        pressed, ended, went = num(m.record.get('end_pressed_at')), num(m.record.get('ended_at')), gone_at(m)
+        if went:
+            idle_from = max([r.settled_at or 0.0 for r in ran_here] + [num(m.record.get('ready_at')) or 0.0])
+            check(f'{label} ended through the page', None,
+                  f"it ended by itself at {datetime.fromtimestamp(went / 1000, timezone.utc):%H:%M:%S}, before End was pressed, {fmt(secs(idle_from, went), ' s')} after "
+                  + (f"its last run settled (requests {[r.request for r in ran_here]})" if ran_here else 'it was ready: no request ran on it') + '; a rental idle 15 min releases itself')
+        elif pressed:
+            check(f'{label} ended through the page', bool(ended), f"gone from the list {fmt(secs(pressed, ended), ' s')} after End" if ended else 'End pressed, never gone from the list')
 
 for r in rows:
     if not r.record:
@@ -351,6 +425,11 @@ for r in rows:
     said = f"{r.status} {r.reason} {json.dumps(obj(json.loads(json.dumps(r.record.record))).get('warnings') or [])}"
     refused = re.search(r'disk|no room|space', said, re.I)
     check(f"request {r.request} met no disk refusal", not refused, said[:200] if refused else 'none')
+
+    # What its quote said it would fetch against its own download, where it fetched (cl-1071: quoted 65.1 GiB, 22 GiB landed).
+    if r.quoted_fetch and r.dl_bytes and not any(o.label == r.label and o.request < r.request for o in rows):
+        check(f"request {r.request}'s quote fetches what its run does (cl-1071)", r.quoted_fetch <= r.dl_bytes * 1.25 + GB,
+              f"quoted {r.quoted_fetch / GB:.1f} GB, its download {r.dl_bytes / GB:.1f} GB")
 
 # ---- Fast: against bench.json, 5% a tie.
 for r in rows:
@@ -365,8 +444,10 @@ for r in rows:
         continue
     cold = not any(o.label == r.label and o.request < r.request and o.record for o in rows)
     want = num(r.stored.get('cold_exec_s' if cold else 'warm_exec_s')) or 0.0
-    check(f"request {r.request} executes within 5% of stored ({fn}, {key}, {'cold' if cold else 'warm'})", r.exec_s is not None and r.exec_s <= want * TIE,
-          f"{fmt(r.exec_s, ' s', 1)} vs {want} s")
+    # Its own work, as the stored run's time is: that run was alone on a machine that held its weights. This one's download and its wait
+    # for a GPU behind another run are not its work; its download's rate and placement judge those.
+    check(f"request {r.request}'s own work within 5% of stored ({fn}, {key}, {'cold' if cold else 'warm'})", r.work_s is not None and r.work_s <= want * TIE,
+          f"{fmt(r.work_s, ' s', 1)} vs {want} s" + ('' if r.work_s is not None else ': no GPU lease in its record'))
     for part, step in (('dense', r.dense), ('sparse', r.sparse)):
         stored = num(r.stored.get(f'{part}_step_s'))
         if stored and step is not None:
@@ -473,22 +554,24 @@ if renting:
         check('a new request goes to the free machine while the other is busy (cl-1073)', r3.label == 'B' if busy_a else None,
               f"request 3 ran on {r3.label} {r3.machine}, A holding {[o.request for o, _ in busy_a]}; {placing}" if busy_a else 'A was free when request 3 was sent')
 
-    # A run waiting on a busy machine moves to one that finishes it clearly sooner (cause 3: an LTX run waited 40 min).
+    # A run waiting on a busy machine moves to one that finishes it clearly sooner (cause 3: an LTX run waited 40 min). Waiting is the
+    # run's own word in the page's stream (`waits`: queued, or "waiting for a GPU, held by run <name>"); its `started_at_ms` is no end of
+    # it, since a run starts on its machine before its download and its turn on the GPU. A machine sits free from when it's ready and
+    # preferred until it leaves, but while one of our runs is placed on it.
     moved = [d for d in decisions if d.moved_from]
     worst, why = 0.0, ''
     for r in rows:
-        for where, since, until in r.spans:
-            if r.started_at and since >= r.started_at:
-                continue
-            waited_to = min(until, r.started_at or until)
+        for where, since, until in r.waits:
             for label, m in machines.items():
                 free_from = max(num(m.record.get('preferred_at')) or 1e18, num(m.record.get('ready_at')) or 1e18)
-                if not m.name or m.name == where or free_from >= waited_to:
+                free_to = min(gone_at(m) or 1e18, num(m.record.get('end_pressed_at')) or 1e18)
+                if not m.name or m.name == where:
                     continue
-                idle_from = max(since, free_from)
-                busy_until = max([u for _, u in held_on(m.name, idle_from)] or [idle_from])
-                if waited_to - busy_until > worst * 1000:
-                    worst, why = (waited_to - busy_until) / 1000, f"request {r.request} waited on {where} while {m.name} sat free"
+                # The longest stretch of this wait with nothing of ours on `m`.
+                edges = sorted({max(since, free_from), min(until, free_to)} | {t for o in rows for w, a, z in o.spans if w == m.name for t in (a, z) if since < t < until})
+                for a, z in zip(edges, edges[1:]):
+                    if z - a > worst * 1000 and a >= free_from and z <= free_to and not held_on(m.name, (a + z) / 2):
+                        worst, why = (z - a) / 1000, f"request {r.request} waited on {where} ({name_of.get(where, '?')}) while {m.name} ({label}) sat free"
     if moved:
         check('a waiting run moves to a machine clearly sooner (cl-1073)', worst <= 120,
               '; '.join(f"request {request_of(d)} {d.key} moved from {d.moved_from} to {d.to}: {d.line.split(': ', 1)[-1][:200]}" for d in moved)
@@ -516,8 +599,11 @@ for label, m in machines.items():
         continue
     for r in on:
         check(f"request {r.request} takes every GPU of {label} (cl-1073)", len(r.gpus) == m.gpus, f"GPUs {r.gpus} of {m.gpus}")
-    split = [(a.request, b.request) for a in on for b in on if a.request < b.request and (b.started_at or 0) < (a.settled_at or 0) and (a.started_at or 0) < (b.settled_at or 0)]
-    check(f"the next run on {label} queues or goes elsewhere, never beside one on its GPUs (cl-1073)", not split, f"ran at once: {split}" if split else f"{len(on)} runs, one at a time")
+    # By their GPU leases: two runs both started on the machine while one waits for the other's GPUs.
+    leased = [(r.request, r.lease) for r in on if r.lease]
+    split = [(a, b) for a, x in leased for b, y in leased if a < b and y[0] < x[1] and x[0] < y[1]]
+    check(f"the next run on {label} queues or goes elsewhere, never beside one on its GPUs (cl-1073)", (not split) if leased else None,
+          f"ran at once: {split}" if split else f"{len(leased)} runs, one at a time" if leased else 'no GPU lease in their records')
 
 # ---- The page tells the truth.
 tiles: dict[str, list[Obj]] = defaultdict(list)
@@ -546,6 +632,9 @@ if renting:
         check(f"request {r.request}'s tile names its machine (cl-1074)", bool(r.machine) and any(r.machine in w for w in named), f"said {named}, ran on {r.machine}")
         check(f"request {r.request}'s tile has its own cancel (cl-1074)", all(t.get('cancel') for t in said_tiles),
               f"{sum(1 for t in said_tiles if t.get('cancel'))} of {len(said_tiles)} looks")
+if 'errors' in flow:
+    errors = [text(obj(e).get('line')) for e in arr(flow.get('errors'))]
+    check('the page reports no error (page and console errors)', not errors, f"{len(errors)}: " + '; '.join(errors[:3]) if errors else 'none')
 rates = [text(s.get('text')) for s in seen if s.get('key') == 'MBps']
 check('the page says rates in MB/s, never MBps (cl-1074)', not rates, '; '.join(rates[:3]) or 'never MBps')
 zeros = [text(s.get('text')) for s in seen if s.get('key') == '0 of 0']
@@ -563,30 +652,37 @@ fails = [v for v in verdict if v.startswith('FAIL')]
 out = [f"### user-flow: {'PASS' if not fails else 'FAIL'} ({len(fails)} of {sum(1 for v in verdict if not v.startswith('NOTE'))} checks failed)\n",
        f"cozy {text(flow.get('cozy')) or '?'}; A {text(flow.get('sku'))} x1, B {text(flow.get('sku_b'))} x{flow.get('gpus_b')}; tools {tools}; billed ${spent:.2f} ({each})\n",
        '\n#### Each run\n',
-       '| # | run | box | function | machine | sent → placed | downloaded | to step 1 | dense / sparse step (stored) | exec (stored cold) | sent → done | lanes | GEMM | GPUs | VRAM peak | status |',
-       '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+       '| # | run | box | function | machine | sent → placed | downloaded | waited (queue, GPU) | to step 1 | dense / sparse step (stored) | own work (stored cold / warm) | sent → done | lanes | GEMM | GPUs | VRAM peak | status |',
+       '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
 for r in rows:
     dl = f"{r.dl_bytes / GB:.1f} GB in {fmt(r.dl_s, ' s')}" if r.dl_bytes else '-'
     stepped = f"{fmt(r.dense, ' s', 1)} / {fmt(r.sparse, ' s', 1)} ({r.stored.get('dense_step_s', '-')} / {r.stored.get('sparse_step_s', '-')})"
     lanes = ', '.join(f"{s} {l}" for s, l, _ in r.precisions) or '?'
     gemm = ', '.join(f for f, _ in r.gemm) or '?'
     peak = f"{r.vram_peak / 1024:.1f} GiB" if r.vram_peak else '?'
-    out.append(f"| {r.request} | {r.run} | {r.box} | {r.target.split('/')[-1] or '?'} | {r.label} {r.machine} | {fmt(r.placed_s, ' s')} | {dl} | "
-               f"{fmt(r.to_step1_s, ' s')} | {stepped} | {fmt(r.exec_s, ' s')} ({r.stored.get('cold_exec_s', '-')}) | {fmt(secs(r.sent_at, r.last_at), ' s')} | "
+    waited = sum(until - since for _, since, until in r.waits) / 1000
+    out.append(f"| {r.request} | {r.run} | {r.box} | {r.target.split('/')[-1] or '?'} | {r.label} {r.machine} | {fmt(r.placed_s, ' s')} | {dl} | {waited:.0f} s | "
+               f"{fmt(r.to_step1_s, ' s')} | {stepped} | {fmt(r.work_s, ' s')} ({r.stored.get('cold_exec_s', '-')} / {r.stored.get('warm_exec_s', '-')}) | {fmt(secs(r.sent_at, r.last_at), ' s')} | "
                f"{lanes} | {gemm} | {r.gpus or '?'} | {peak} | {r.status} |")
 out += ['\n#### Each machine\n',
-        '| machine | SKU x GPUs | stated | ordered → ready | disk | holds | landed | fetched twice | unused | link | ended |',
-        '|---|---|---|---|---|---|---|---|---|---|---|']
+        '| machine | SKU x GPUs | software | stated | ordered → ready | disk | holds | landed | fetched twice | unused | link | ended |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|']
 for h in held_rows:
     rec = h.m.record
     pace = f" ({h.fetched / h.span / 1e6:.0f} MB/s)" if h.span else ''
     holds = '; '.join(f"{model} {size / GB:.1f} GB {'/'.join(lanes)}" for model, size, lanes in h.held) or '?'
-    out.append(f"| {h.label} {h.m.name} | {h.m.sku} x{h.m.gpus} | {text(rec.get('stated')) or '?'} | {fmt(secs(num(rec.get('ordered_at')), num(rec.get('ready_at'))), ' s')} | "
+    out.append(f"| {h.label} {h.m.name} | {h.m.sku} x{h.m.gpus} | {h.software or '?'} | {text(rec.get('stated')) or '?'} | {fmt(secs(num(rec.get('ordered_at')), num(rec.get('ready_at'))), ' s')} | "
                f"{fmt(h.disk_gb, ' GB')}, {fmt((h.free or 0.0) / GB, ' GB free')} | {holds} | {h.fetched / GB:.1f} GB in {fmt(h.span, ' s')}{pace} | "
                f"{len(h.twice)} | {', '.join(x for x, _ in h.unused) or '-'} | {h.speed or '?'} | "
-               f"{fmt(secs(num(rec.get('end_pressed_at')), num(rec.get('ended_at'))), ' s after End')} |")
-out += ["\n#### Download events: each machine's weights, as the page read them\n",
+               + (f"by itself, {datetime.fromtimestamp((gone_at(h.m) or 0.0) / 1000, timezone.utc):%H:%M:%S} |" if gone_at(h.m) else f"{fmt(secs(num(rec.get('end_pressed_at')), num(rec.get('ended_at'))), ' s after End')} |"))
+out += ["\n#### Download events: each request's weights, then each machine's fetches ahead, as the page read them\n",
         '| machine | what | fetched | already there | started | stage | rate |', '|---|---|---|---|---|---|---|']
+for r in rows:
+    if r.dl_bytes:
+        began = r.first.get('downloading')
+        clock = datetime.fromtimestamp(began / 1000, timezone.utc).strftime('%H:%M:%S') if began else '?'
+        out.append(f"| {r.label} | request {r.request}'s weights ({r.target.split('/')[-1] or '?'}) | {r.dl_bytes / GB:.2f} GB in {fmt(r.dl_s, ' s')} | - | {clock} | | "
+                   f"{fmt(r.dl_bytes / r.dl_s / 1e6 if r.dl_s else None, ' MB/s')} |")
 for h in held_rows:
     for op in h.ops:
         started = num(op.get('started_at_ms'))
