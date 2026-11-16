@@ -489,6 +489,7 @@ WEB_1=(
   timeline
   open
   gone
+  play-link
 )
 WEB_2=(
   fields
@@ -523,6 +524,7 @@ WEB_ENGINES=(
   open
   vault
   fullscreen
+  play-link
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
