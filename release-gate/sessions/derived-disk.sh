@@ -67,13 +67,12 @@ ballast() {  # ballast <bytes>: the file that takes the disk, at that size
 ballast $((free - reserve - (10 << 30)))
 cd "$TREE" || fail "no $TREE"
 step ltx run ./ltx-2.5/generate prompt="waves on a pebble beach at dusk, the sound of the surf" seed:=1081 --on "$NAME"
-N=$(runno ltx); cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
-[ -z "$N" ] || cozy run watch "$N" --once --json --full > "$OUT/ltx.json" 2>/dev/null
 cd "$OUT" || fail "no $OUT"
-said=$(jq -r '[.reason.code // "", .reason.message // ""] | join(": ")' "$OUT/ltx.json" 2>/dev/null)
+# The refusal as the CLI said it: `Run PRO-8 failed [machine_disk_full]: … (… free past its reserve, N GiB in models …)`.
+said=$(grep -m1 -F '[machine_disk_full]' "$OUT/ltx.txt")
 held=$(grep -oE '[0-9.]+ (GiB|MiB) in models no queued or running job holds' <<< "$said" | awk '{printf "%d", $1 * ($2 == "GiB" ? 1073741824 : 1048576)}')
 say "LTX-2.5: ${said:0:500}"
-[[ $said == machine_disk_full* ]] && [ -n "$held" ] || fail "LTX-2.5 was not refused machine_disk_full naming what the models free: ${said:0:300}"
+[ -n "$said" ] && [ -n "$held" ] || fail "LTX-2.5 was not refused machine_disk_full naming what the models free: $(tail -c 300 "$OUT/ltx.txt")"
 [ "$held" -ge $((derived - (1 << 30))) ] && [ "$held" -le $((store + (1 << 30))) ] ||
   fail "the refusal counts $((held >> 20)) MiB in models no call holds: want at least the $((derived >> 20)) MiB of bakes, at most the store's $((store >> 20)) MiB"
 free=$(show | jq -r .status.disk_free_bytes)
