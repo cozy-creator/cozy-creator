@@ -863,7 +863,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh) ;;
+    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh | thumbs) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints
