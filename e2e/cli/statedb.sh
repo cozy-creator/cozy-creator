@@ -353,6 +353,8 @@ for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
   cozy --json machine ls > /dev/null || fail "vault purge due: Calcifer didn't start again"
   for _ in $(seq 150); do in_files "$plain" "$plain_pic" || break; sleep 0.2; done
   ! in_files "$plain" "$plain_pic" || check "vault purge due: back after its window, the plaintext project's deleted box kept its file past a start"
+  # Its row goes as the purge settles, a moment after its files.
+  for _ in $(seq 50); do [ "$(due_rows "$plain_id")" != 1 ] && break; sleep 0.2; done
   rows=$(due_rows "$plain_id")
   [ "$rows" = 0 ] || check "vault purge due: after its purge, state.db holds the plaintext project's next purge ($rows rows)"
 
