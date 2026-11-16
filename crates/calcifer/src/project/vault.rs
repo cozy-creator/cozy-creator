@@ -1056,6 +1056,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     drop(operation);
     // Past its idle limit or maximum, held only by its runs: its lock waits on their machine, and one that doesn't answer never keeps
     // the vault open (cl-1064). Asked at most every `ASKED_AGAIN` meanwhile, never otherwise.
+    if !needs && past && let Some(work) = work { say(&root, "past", || format!("past its limit, held by {}", work.why)); }
     if !needs && past && work.is_some_and(|work| work.runs) {
         let asked = ASKED.lock().expect("vault asks").get(&root).is_some_and(|at| at.elapsed() < ASKED_AGAIN);
         if !asked {
