@@ -730,7 +730,7 @@ cut_api() {
   shift 2
   holder=$(sudo cat "$(getent passwd "$CUT_USER" | cut -d: -f6)/.cozy/calcifer/calcifer.lock.holder") || return
   encoded=$(python3 -c 'from urllib.parse import quote; import sys; print(quote(sys.argv[1], safe=""))' "$directory")
-  sudo -u "$CUT_USER" curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token <<< "$holder")" -H 'cozy-project-storage: 3' "$@" "http://$(jq -r .address <<< "$holder")/v1/projects/$encoded$suffix"
+  sudo -u "$CUT_USER" curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token <<< "$holder")" "$@" "http://$(jq -r .address <<< "$holder")/v1/projects/$encoded$suffix"
 }
 # cut_sql <query>: the cut's user's state.db, read without a write (immutable).
 cut_sql() {

@@ -1001,6 +1001,11 @@ impl Engine {
         self.journal.lock().unwrap().children(parent)
     }
 
+    /// When root `root`'s first call on a GPU took it, ended or not; 0: none has yet (cl-1107).
+    pub(crate) fn first_gpu_claim(&self, root: &str) -> io::Result<u64> {
+        self.journal.lock().unwrap().first_gpu_claim(root)
+    }
+
     /// Run `id` as its caller names it (the id it was submitted under), else as this machine does.
     pub(crate) fn caller_id(&self, id: &str) -> String {
         self.get(id)

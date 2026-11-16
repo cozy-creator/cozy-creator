@@ -1139,9 +1139,12 @@ impl Calcifer {
     /// Moves run `id`, waiting for its machine, to `machine`, which finishes it sooner (cl-1073): one held here (its machine updating)
     /// goes there now; one in its machine's queue is canceled there before it starts and sent again, the same run, there
     /// (`Store::moved`). Whether it goes: one that started, is canceled, or reads a file only its machine keeps, stays.
-    pub(crate) fn move_to(self: &Arc<Self>, id: &RunId, machine: &str) -> bool {
+    pub(crate) fn move_to(self: &Arc<Self>, id: &RunId, machine: &str, unbegun: bool) -> bool {
         let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return false };
-        if !matches!(row.state, State::Queued | State::Accepted) || row.cancel_requested || row.started_at_ms.is_some() || row.machine.as_deref() == Some(machine) {
+        // A run started there moves only on its machine's word that it runs on its CPU alone, its GPU work not begun (`unbegun`,
+        // cl-1107: an orchestrator whose call waits for its weights or a GPU): nothing it did there is lost.
+        let started = row.started_at_ms.is_some() && !unbegun;
+        if !matches!(row.state, State::Queued | State::Accepted) || row.cancel_requested || started || row.machine.as_deref() == Some(machine) {
             return false;
         }
         let kept_there = |input: &v1::InputFile| !row.inputs.iter().any(|(digest, _)| digest.to_string() == input.digest);

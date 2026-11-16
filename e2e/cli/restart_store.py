@@ -132,7 +132,7 @@ def measure(args: argparse.Namespace) -> None:
     holder = new_record(args.holder, args.old_pid)
     recorded = time.monotonic()
     host, port = str(holder["address"]).rsplit(":", 1)
-    headers = {"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3"}
+    headers = {"Authorization": f"Bearer {holder['token']}"}
     routes = [("GET", "/v1/machines"), ("GET", "/v1/tools"), ("POST", "/v1/machines/local/keepalive"),
               ("GET", f"/v1/projects/{args.project}/address"), ("GET", "/v1/events"),
               ("GET", f"/v1/projects/{args.project}/runs?limit=50"), ("GET", f"/v1/runs/{args.run}")]

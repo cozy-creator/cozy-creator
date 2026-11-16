@@ -168,7 +168,7 @@ async function died(why) {
   const paper = pages.paper;
   const held = { token: holderToken() };
   const api = (path, init = {}) => paper.evaluate(async ({ path, init }) => {
-    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `look-${Date.now()}-${Math.random()}` } : {}) } });
+    const answer = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `look-${Date.now()}-${Math.random()}` } : {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init });
   const post = async (path, body) => {

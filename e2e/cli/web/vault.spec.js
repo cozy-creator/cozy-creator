@@ -307,7 +307,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
         (async () => {
           while (!reads.stop) {
             reads.asked += 1;
-            const answer = await fetch(`/v1/projects/${id}${path}`, { cache: 'no-store', headers: { 'cozy-project-storage': '3' } }).catch(() => null);
+            const answer = await fetch(`/v1/projects/${id}${path}`, { cache: 'no-store' }).catch(() => null);
             const body = await answer?.text().catch(() => '') ?? '';
             const heard = `${answer?.status ?? 'failed'} ${answer?.ok ? '' : body.match(/"code":"([a-z_]+)"/)?.[1] ?? ''}`.trim();
             reads.said[heard] = (reads.said[heard] ?? 0) + 1;

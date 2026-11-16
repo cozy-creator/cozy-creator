@@ -79,7 +79,7 @@ async function candidate(context, origin) {
   const api = async (path, body) => {
     sameService();
     const budget = process.env.PIXI_PHASE === 'prepare' ? PREPARE_READ : STEP;
-    const response = await fetch(origin + path, { method: body ? 'PATCH' : 'GET', headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', ...(body ? { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(budget) }).catch(error => { throw new Error(`${body ? 'PATCH' : 'GET'} ${path}: ${budget}ms setup/request budget: ${error.message}`); });
+    const response = await fetch(origin + path, { method: body ? 'PATCH' : 'GET', headers: { Authorization: `Bearer ${holder.token}`, ...(body ? { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() } : {}) }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(budget) }).catch(error => { throw new Error(`${body ? 'PATCH' : 'GET'} ${path}: ${budget}ms setup/request budget: ${error.message}`); });
     if (!response.ok) throw new Error(`API ${body ? 'PATCH' : 'GET'} status ${response.status}`);
     const value = await response.json(); sameService(); return value;
   };
@@ -294,14 +294,8 @@ async function candidate(context, origin) {
     const canonical = `/p/${encodeURIComponent(state.code)}`;
     if (link.origin !== origin || link.hash || link.search || ![canonical, `/projects/${encodeURIComponent(project.id)}`].includes(link.pathname)) throw new Error('CLI open did not return this project plain Calcifer URL');
     link.pathname = canonical;
-    const nativeStorage = await api('/v1/project-storage');
-    if (nativeStorage.version !== 3 || typeof nativeStorage.daemon_birth !== 'string' || !nativeStorage.daemon_birth || !String(nativeStorage.principal ?? '').startsWith('user:')) throw new Error('Calcifer did not prove the native project-storage principal');
-    // The page itself must prove storage over the real same-origin connection, without a bearer or session.
-    const proving = page.waitForResponse(response => { const url = new URL(response.url()); return url.origin === origin && url.pathname === '/v1/project-storage' && response.request().method() === 'GET'; });
     const coldStart = performance.now(), document = await page.goto(link.href);
-    const proof = await proving, storage = proof.ok() ? await proof.json() : null;
-    if (!proof.ok() || proof.request().headers().authorization || storage?.version !== 3 || storage.principal !== nativeStorage.principal || storage.daemon_birth !== nativeStorage.daemon_birth || !document.headers()['content-security-policy'] || document.headers()['referrer-policy'] !== 'no-referrer') throw new Error('real page storage/CSP verification failed');
-    (seen.page_storage ??= []).push({ project: project.id, status: proof.status(), version: storage.version, principal: storage.principal, daemon_birth: storage.daemon_birth, credential_free: true });
+    if (!document.headers()['content-security-policy'] || document.headers()['referrer-policy'] !== 'no-referrer') throw new Error('real page CSP verification failed');
     await until('canvas ready', camera, Boolean);
     const gpu = await page.locator('canvas.canvas-pixels').evaluate(element => { const gl = element.getContext('webgl2') || element.getContext('webgl'), ext = gl?.getExtension('WEBGL_debug_renderer_info'); return ext ? { vendor: gl.getParameter(ext.UNMASKED_VENDOR_WEBGL), renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL), version: gl.getParameter(gl.VERSION), dpr: devicePixelRatio } : null; });
     if (!gpu || /swiftshader|llvmpipe|lavapipe|softpipe|software|swrast/i.test(gpu.renderer)) throw new Error('actual production canvas hardware WebGL not established');

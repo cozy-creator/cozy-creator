@@ -2739,6 +2739,29 @@ impl Journal {
             .map(readable)
     }
 
+    /// When root `root`'s first call on a GPU took it (Unix ms), ended or not; 0: none has yet (cl-1107).
+    pub(crate) fn first_gpu_claim(&self, root: &str) -> io::Result<u64> {
+        let after: i64 = root.parse().unwrap_or(0);
+        let mut statement = self
+            .connection
+            .prepare("SELECT record FROM executions WHERE id>?1 AND json_extract(invocation,'$.root')=?2 AND json_extract(invocation,'$.degree')>0")
+            .map_err(db_error)?;
+        let records = statement.query_map(params![after, root], |row| row.get::<_, String>(0)).map_err(db_error)?;
+        let mut first = 0;
+        for record in records {
+            // A private call whose scope can't be read now is no claim known.
+            let Ok(call) = decoded_execution(&record.map_err(db_error)?) else { continue };
+            let took = match call.starting_at_ms {
+                0 => call.started_at_ms,
+                at => at,
+            };
+            if call.state != State::Queued && took > 0 && (first == 0 || took < first) {
+                first = took;
+            }
+        }
+        Ok(first)
+    }
+
     /// Hold a known outcome in the existing record, without releasing its reservation.
     pub(crate) fn defer_completion(
         &mut self, id: &str, outcome: Outcome, processes: Vec<Birth>,

@@ -219,20 +219,52 @@ fn kept_benchmarks(root: &std::path::Path, hub: &str) -> Vec<(String, Vec<api::e
 /// (`references_for`), and each run of this computer's going on one, its time left as its clock says it (cl-1073, Paul 11-16: runs went
 /// to a busy machine while a faster one sat idle, each run going there counted seconds from done while it fetched its weights).
 pub(crate) fn benched<'j, 'p>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>, pictures: impl IntoIterator<Item = &'p mut Picture>) {
+    let jobs: Vec<&Job> = jobs.into_iter().collect();
     let mut pictures: Vec<&mut Picture> = pictures.into_iter().collect();
     let mut named: Vec<String> = vec![];
     for picture in &pictures {
         named.extend(picture.frame.queue.iter().flatten().map(|root| root.function.clone()));
         named.extend(picture.ahead.iter().map(|job| job.function.clone()));
     }
-    let mut references = references_for(api, jobs, named);
+    let asked: Vec<String> = jobs.iter().map(|job| job.function.clone()).chain(pictures.iter().flat_map(|picture| picture.ahead.iter().map(|job| job.function.clone()))).collect();
+    let mut references = references_for(api, jobs.iter().copied(), named);
     for root in pictures.iter().flat_map(|picture| picture.frame.queue.iter().flatten()).filter(|root| root.running && !root.run.is_empty()) {
         if let Some(left) = api.calcifer.left_there(crate::store::calcifer_id(&root.run)) {
             references.left.insert(root.run.clone(), left);
         }
     }
+    // What each of them timed, with its card: a function one machine timed isn't a minute on another (cl-1107, the user-flow: lillie
+    // was quoted 60 s for H3's generate on no timing, chocola having just timed it at 247 s). Local code is known by its install.
+    for picture in &pictures {
+        let card = picture.frame.gpus.first().map(|gpu| gpu.name.clone()).unwrap_or_default();
+        for timed in picture.frame.times.iter().flatten().filter(|timed| !card.is_empty() && !timed.runs.is_empty()) {
+            references.timed.entry(timed.function.clone()).or_default().push((card.clone(), timed.runs.clone()));
+        }
+        for function in &asked {
+            if let Some(name) = api::estimate::timed_name(&picture.frame, function) {
+                references.timed_as.entry(function.clone()).or_insert(name);
+            }
+        }
+    }
     let references = Arc::new(references);
     pictures.iter_mut().for_each(|picture| picture.references = references.clone());
+}
+
+/// How long `frame`'s machine stays busy with the runs it holds (`api::estimate::busy_ms`, cl-1107), timed as its quotes time them:
+/// with the benchmarks of what it never ran and this computer's clocks of its runs there.
+pub(crate) fn busy_ms(machines: &crate::machines::Machines, frame: &v1::StatusFrame) -> Option<u64> {
+    let queue = frame.queue.as_deref().unwrap_or_default();
+    if queue.is_empty() {
+        return None;
+    }
+    let named: Vec<String> = queue.iter().map(|root| root.function.clone()).filter(|function| !function.is_empty()).collect();
+    let mut references = references(&machines.hubs, &named);
+    for root in queue.iter().filter(|root| root.running && !root.run.is_empty()) {
+        if let Some(left) = machines.calcifer.left_there(crate::store::calcifer_id(&root.run)) {
+            references.left.insert(root.run.clone(), left);
+        }
+    }
+    api::estimate::busy_ms(frame, now_ms(), &references)
 }
 
 /// The machines of `jobs`, each named once, in the order they name them.
@@ -389,7 +421,18 @@ fn last_picture(api: &Arc<Api>, on: &On, name: &str) -> Result<Picture, String> 
     if let Some(broken) = &frame.broken {
         return Err(format!("it's broken: {}", broken.message));
     }
-    Ok(Picture { on: on.clone(), name: name.to_owned(), frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
+    Ok(Picture { on: on.clone(), name: name.to_owned(), frame: linked(api, name, frame), ready_at_ms: None, ahead: vec![], references: Arc::default() })
+}
+
+/// `frame` with the link its machine would download at where it hasn't measured one: what this account's rentals beside it measured
+/// (`Machines::link_guess`), else the estimator's flat default.
+pub(crate) fn linked(api: &Arc<Api>, name: &str, mut frame: v1::StatusFrame) -> v1::StatusFrame {
+    if frame.link_bytes_per_s <= 0.0
+        && let Some(guess) = api.machines.link_guess(name)
+    {
+        frame.link_bytes_per_s = guess;
+    }
+    frame
 }
 
 /// Each job quoted on each of `machines` as `pictured`.
@@ -502,6 +545,7 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     {
         return Err(format!("it's updating to cozy {own} first (run {})", run.name));
     }
+    let frame = linked(api, &row.name, frame);
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }
 

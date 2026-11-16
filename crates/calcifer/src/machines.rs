@@ -297,6 +297,33 @@ impl Machines {
         lock(&self.seen).get(name).and_then(|seen| seen.frame.as_ref()?.gpus.first().map(|gpu| gpu.name.clone()))
     }
 
+    /// What rental `name`'s weights would arrive at, bytes a second, where it hasn't measured its link (cl-1107, the user-flow: lillie
+    /// was quoted 712 s for 59 GB at the estimator's flat 100 MB/s, while chocola, rented beside it, landed its own at 348 MB/s): the
+    /// median of what this account's other rentals from its Hub and provider measured, else from its Hub. None: none did, or it isn't
+    /// a rental (the Hub's own guess for a host is th-377's).
+    pub(crate) fn link_guess(&self, name: &str) -> Option<f64> {
+        let rows = self.store().live_machines().ok()?;
+        let row = rows.iter().find(|row| row.name == name && row.kind == MachineKind::Rental)?;
+        let provider = self.hubs.provider(row);
+        let others: Vec<(bool, &MachineRow)> = (rows.iter())
+            .filter(|other| other.name != row.name && other.kind == MachineKind::Rental && other.hub == row.hub)
+            .map(|other| (self.hubs.provider(other) == provider, other))
+            .collect();
+        let measured: Vec<(bool, f64)> = {
+            let seen = lock(&self.seen);
+            (others.iter())
+                .filter_map(|(same, other)| Some((*same, seen.get(&other.name)?.frame.as_ref()?.link_bytes_per_s)))
+                .filter(|(_, link)| *link > 0.0)
+                .collect()
+        };
+        let mut links: Vec<f64> = measured.iter().filter(|(same, _)| *same).map(|(_, link)| *link).collect();
+        if links.is_empty() {
+            links = measured.iter().map(|(_, link)| *link).collect();
+        }
+        links.sort_by(f64::total_cmp);
+        links.get(links.len() / 2).copied()
+    }
+
     /// Stops every task where it stands, as if the process ended.
     pub(crate) fn close(&self) {
         lock(&self.tasks).abort_all();
@@ -930,6 +957,8 @@ impl Machines {
         }
         visible.toolchain.detail.clear();
         let mut status = status(&visible, &self.hubs);
+        // When its GPUs are free of what it holds, as placement counts it (cl-1107): to 10 s, so a countdown isn't a change.
+        status.busy_until_ms = crate::placement::busy_ms(self, frame).map(|ms| (crate::store::now_ms() + ms as i64 + 9_999) / 10_000 * 10_000);
         // An update says what it waits for by this controller's run numbers.
         status.update = (frame.update.as_ref())
             .map(|u| self.calcifer.machine_waiting_for(&u.waiting_for).unwrap_or_else(|| Some(&u.waiting).filter(|w| !w.is_empty()).unwrap_or(&u.state).clone()))
@@ -2345,6 +2374,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         stuck: frame.stuck.clone(),
         heat: frame.heat.clone(),
         runtime_kernels: frame.runtime_kernels.clone(),
+        busy_until_ms: None,
         disk_total_bytes: frame.disk.as_ref().map_or(0, |d| d.total_bytes),
         disk_free_bytes: frame.disk.as_ref().map_or(0, |d| d.free_bytes),
         disk_models_bytes: frame.disk.as_ref().map_or(0, |d| d.models_bytes),

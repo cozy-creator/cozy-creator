@@ -135,7 +135,7 @@ function devConfig(text) {
     const headers = await request.allHeaders().catch(() => ({}));
     if (url.pathname.startsWith('/v1/session') || headers.authorization) minted.push(url.pathname);
   });
-  const read = (page) => page.evaluate(async (id) => (await fetch(`/v1/projects/${id}?assets=false`, { headers: { 'cozy-project-storage': '3' } })).status, project.id);
+  const read = (page) => page.evaluate(async (id) => (await fetch(`/v1/projects/${id}?assets=false`)).status, project.id);
 
   // Two tabs, each Calcifer's own page: nothing minted, nothing sent but the page's own requests.
   const tabs = [await context.newPage(), await context.newPage()];
@@ -200,7 +200,7 @@ function devConfig(text) {
     spawnSync('sudo', ['-n', 'useradd', '-m', OTHER]);
     const asOther = [
       ['bearer', bearer, `/v1/status`],
-      ['page', { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'cozy-project-storage': '3' }, `/v1/projects/${project.id}?assets=false`],
+      ['page', { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors' }, `/v1/projects/${project.id}?assets=false`],
       ['img', { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'image' }, `/v1/projects/${project.id}/files/${file}`],
     ];
     for (const [name, headers, path] of asOther) {
@@ -333,7 +333,7 @@ async function devMode(context, base, project, token) {
     writeFileSync(tokens, `${css}\n/* access.js: a hot update */\n`);
     await until('a hot update arrives', async () => said.some((line) => line.includes('hot updated') && line.includes('tokens.css')), Boolean);
     check('dev_hot_reload_through_calcifer', true);
-    check('dev_page_still_works', (await page.evaluate(async (id) => (await fetch(`/v1/projects/${id}?assets=false`, { headers: { 'cozy-project-storage': '3' } })).status, project.id)) === 200);
+    check('dev_page_still_works', (await page.evaluate(async (id) => (await fetch(`/v1/projects/${id}?assets=false`)).status, project.id)) === 200);
     await page.close();
 
     // Another account gets none of this checkout's code through Calcifer, and the lock record is no file Vite serves.

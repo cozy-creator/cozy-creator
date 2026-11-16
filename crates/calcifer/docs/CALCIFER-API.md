@@ -60,10 +60,10 @@ each request is judged alone (`crates/calcifer/src/loopback.rs`). Every request 
 
 Every `/v1` answer carries `Content-Security-Policy: sandbox`, so nothing under it (a
 package's preview, a project's file) runs script on Calcifer's origin; a run's preview is a raster picture or nothing (no SVG: the page shows previews as blob URLs, which carry its own CSP). There are no
-cookies, and nothing of Calcifer's is kept in the browser: a tab outlives a restart. Project storage's principal is the verified
-account (`GET /v1/project-storage`: `principal: user:<uid or SID>`). The page's restart guard pins the first one and that
-Calcifer's `daemon_birth`, proves them again right before sending a passphrase or recovery secret, and after a restart sends
-neither until it's reloaded. Calcifer runs with umask 077: what it makes is its
+cookies, and nothing of Calcifer's is kept in the browser: a tab outlives a restart. Every `/v1` request is checked against the
+kernel's word for its socket's account (`other_user` otherwise). A passphrase or recovery secret leaves the CLI or the page only after
+`GET /v1/status`'s `os_user` names their own account (the page's: the one it opened on); otherwise `secret_other_account`, and nothing
+is sent. Calcifer runs with umask 077: what it makes is its
 account's alone.
 
 ## Conventions
@@ -187,7 +187,7 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 `Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
 
 ### Status
-- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, home}`. `home` is this person's home folder, where the page suggests a first project's folder. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
+- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, home, os_user}`. `os_user` is the OS account Calcifer runs as (uid, or SID on Windows). `home` is this person's home folder, where the page suggests a first project's folder. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
   without asking the Hub (`GET /v1/account` does).
 - `GET /v1/settings`: `{send_performance_data}`, this computer's settings Calcifer holds (config.toml's `[calcifer]`); `PUT` sends them
@@ -330,7 +330,7 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
   read in its scope, which the machine never times itself, so its quote is `measured`, cl-1047). A machine that ran none of it and has
   no prior is timed by its release's benchmarks (`api::estimate::References`, cl-1024: of its card, else another card's times its Hub
   speed over this one's, the card nearest in speed; local code from source, a packages checkout's or a project's `./dir`, by its own
-  `benchmarks.json`: rows travel with the package, in its source before it is published, on the Hub after), else a minute; a machine packing its own queue knows no benchmarks. A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
+  `benchmarks.json`: rows travel with the package, in its source before it is published, on the Hub after), else a minute; a machine packing its own queue knows no benchmarks. Before its release's benchmarks, another of this computer's machines' runs of it on the same card (`prior`), and after them its runs on another card scaled by how the two compare (`scaled`; GPUs only, cl-1107). A machine's runs ahead count all their work not done: a root on its GPUs what's left since it took them, a root started on its CPU alone while its GPU calls wait for their weights or a GPU (an orchestrator, `Queued::gpu_waits`) all of it, after its calls' downloads. A rental that hasn't measured its link is quoted at the median of what this account's other rentals from its Hub and provider measured (cl-1107). `cozy machine show` says when a machine's GPUs are free of what it holds, as these quotes count it (`status.busy_until_ms`). A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
   finishes soonest after those placed before it, then single moves while the whole ends sooner. A ready job goes when its planned machine
   has a GPU for it (one machine: at once); each machine is told its upcoming jobs (`PUT /v1/upcoming`) and, idle with nothing planned
   while others hold unstarted work it can run, what to prepare (`PUT /v1/prepare`).
@@ -348,6 +348,8 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
 - Only a machine on this cozy's minor quotes ("Machines on this minor"); one on another is updated first and quotes on the next turn.
 - With several machines, a job a machine would start more than a second after its preparation waits here, quoted again as the render
   moves or every 10 s, so it commits to no queue early. A quote reserves nothing: two clients picking one machine are settled by its queue.
+  A run sent that waits there (in its queue, or started on its CPU alone while its GPU work waits) is quoted again at each report of a
+  machine and moves, the same run, to one clearly sooner (10% and 30 s), never back to a machine it left (cl-1073, cl-1107).
 - `any` is never quoted: it goes to the least busy rental. A `new` run of a published function weighs a rental against the account's
   rentals up or on their way and the computers added here (not `local`): the rental's boot (its Hub's `boot_seconds` for the product it
   would place it on, else 4 min), preparation and run on that card against their soonest finish. When one of them is sooner it goes there,
@@ -664,8 +666,8 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `POST /v1/projects` `{path, starter?, passphrase?, unencrypted?}`: new projects are encrypted by default.
   A nonempty user-supplied `passphrase` is required unless `unencrypted: true` explicitly opts out; opt-out and
   passphrase cannot be combined. Encrypted creation requires a new/empty directory and initializes its first
-  database inside the native encrypted mount. The client first checks the encrypted-creation capability from
-  `GET /v1/status`; absent/false refuses before sending credentials or creating files.
+  database inside the native encrypted mount. The client first checks that `GET /v1/status`'s `os_user` is its own
+  account; otherwise it sends nothing.
   Credentials and the one-time `recovery_secret` response have no
   Debug representation, outbox or persistent response cache. Encrypted creation refuses `Idempotency-Key` and
   returns `Cache-Control: private, no-store`; ordinary opt-out creation retains the existing idempotency behavior.

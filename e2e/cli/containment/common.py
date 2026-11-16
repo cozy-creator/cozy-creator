@@ -117,7 +117,6 @@ class ReceiptValue(TypedDict, total=False):
 class RawOptions(TypedDict, total=False):
     auth: bool
     extra: dict[str, str] | None
-    preflight: bool
 
 
 # Closed fixture case codes only; never serialize a free-form exception message.
@@ -141,7 +140,7 @@ _FAILURE_CODES = frozenset({
     'native_outside_file_created', 'native_private_run_identity_missing', 'native_project_write_failed',
     'native_terminal_result_missing', 'not_own_page_refusal', 'old_holder_authority_survived', 'other_user_account',
     'other_user_refusal', 'outside_baseline_replaced', 'outside_project_canary', 'owned_host_core_control_required',
-    'owned_host_core_control_unavailable', 'page_capability', 'page_no_store_200', 'page_no_store_206',
+    'owned_host_core_control_unavailable', 'page_no_store_200', 'page_no_store_206',
     'page_no_store_conditional', 'piped_core_not_refused', 'piped_core_refusal_not_specific', 'receipt_schema',
     'regular_core_native_execution_failed', 'response_object', 'restart_holder_ready', 'scan_decoder_unavailable',
     'scan_markers_missing', 'scan_process', 'upgrade_needs_bearer',
@@ -166,16 +165,6 @@ def sha(data: bytes) -> str:
 def birth(pid: int) -> Birth:
     fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
     return {"pid": pid, "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(), "start_ticks": int(fields[19])}
-
-
-def daemon_birth(pid: int) -> str:
-    """`GET /v1/project-storage`'s `daemon_birth` for the Calcifer at `pid`."""
-    return sha(json.dumps(birth(pid), separators=(",", ":")).encode())
-
-
-def principal() -> str:
-    """Whom Calcifer binds project storage to: its own account (loopback.rs `Principal`)."""
-    return f"user:{os.geteuid()}"
 
 
 def alive(expected: Birth) -> bool:
@@ -339,15 +328,12 @@ class Native:
     def holder(self) -> Holder:
         return cast(Holder, json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_bytes()))  # cast: the holder record's JSON
 
-    def raw(self, method: str, path: str, body: bytes | dict[str, object] | None = None, *, auth: bool = True, extra: dict[str, str] | None = None, preflight: bool = True) -> Reply:
+    def raw(self, method: str, path: str, body: bytes | dict[str, object] | None = None, *, auth: bool = True, extra: dict[str, str] | None = None) -> Reply:
         holder = self.holder()
         endpoint = urlsplit("http://" + holder["address"])
         if endpoint.hostname not in {"127.0.0.1", "::1", "localhost"}:
             raise Failure("holder_loopback")
-        if preflight and path != "/v1/project-storage":
-            cap = self.raw("GET", "/v1/project-storage", preflight=False).json()
-            require(cap.get("version") == 3 and cap.get("principal") == principal() and cap.get("daemon_birth") == daemon_birth(holder["pid"]) and self.holder() == holder, "native_capability")
-        headers = {"cozy-project-storage": "3", "Cozy-Client": "cli"}
+        headers = {"Cozy-Client": "cli"}
         if auth:
             headers["Authorization"] = "Bearer " + holder["token"]
         if isinstance(body, dict):

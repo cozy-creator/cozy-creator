@@ -86,7 +86,7 @@ class Development:
         # Vite answers no API, and forwards none: every /v1 path is its fixed 404 (web/app/vite.config.ts).
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            with opener.open("http://127.0.0.1:5173/v1/project-storage", timeout=5) as response:
+            with opener.open("http://127.0.0.1:5173/v1/status", timeout=5) as response:
                 status, body = response.status, response.read()
         except urllib.error.HTTPError as error:
             status, body = error.code, error.read()

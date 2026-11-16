@@ -29,8 +29,7 @@ use api::{
     machine::{HELD, LogLines, Ranges, parse_held},
 };
 use reqwest::{RequestBuilder, Response, StatusCode, header};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sha2::{Digest as _, Sha256};
+use serde::{Serialize, de::DeserializeOwned};
 use tensorfs::fetch::Backoff;
 
 /// `calcifer::api::IGNORED_FIELDS`: the request fields Calcifer did not read.
@@ -155,11 +154,9 @@ impl Client {
     }
 
     fn new(ctx: &Context) -> Result<Self, Error> {
-        // Who a project's history says made an edit, its project storage protocol, and which process asks (cl-962: Calcifer tells
-        // its requests from others').
+        // Who a project's history says made an edit, and which process asks (cl-962: Calcifer tells its requests from others').
         let said = header::HeaderMap::from_iter([
             (header::HeaderName::from_static("cozy-client"), header::HeaderValue::from_static("cli")),
-            (header::HeaderName::from_static(api::calcifer::project::PROJECT_STORAGE_HEADER), header::HeaderValue::from_static(api::calcifer::project::PROJECT_STORAGE_VERSION)),
             (header::HeaderName::from_static(PROCESS_HEADER), header::HeaderValue::from(std::process::id())),
         ]);
         let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone")
@@ -255,10 +252,20 @@ impl Client {
         self.exchange(Ask::Unkeyed, |c, base| json(c.post(format!("{base}{path}")), &body)).await
     }
 
+    /// Before a passphrase or recovery secret leaves (cl-1066): the Calcifer answering is this OS account's. That secret reaching another
+    /// account's process is the harm; this account's Calcifer, restarted, is still its own.
+    pub(crate) async fn own_account(&self) -> Result<(), Error> {
+        let status: api::calcifer::CalciferStatus = self.get("/v1/status").await?;
+        match platform::net::User::current() {
+            Some(own) if own.to_string() == status.os_user => Ok(()),
+            _ => Err(Error::new(Kind::Forbidden, "secret_other_account",
+                "The Cozy answering here runs as another account on this computer, so nothing secret was sent to it.")),
+        }
+    }
+
     /// One vault operation ID for the command's lifetime. Reconnecting the same PUT attaches to
     /// that operation; the server acknowledges receipt immediately and records admission before
     /// changing storage, so an accepted operation is never run twice.
-    /// Protocol 3 is negotiated before each wire attempt; older vault routes are never used.
     pub(crate) async fn vault(
         &self,
         path: &str,
@@ -270,7 +277,9 @@ impl Client {
         let mut reconnects = Backoff::transfer();
         let mut accepted = false;
         let mut last_progress = None;
+        let secret = request.passphrase.is_some() || request.recovery_secret.is_some();
         loop {
+            if secret { self.own_account().await?; }
             let mut answer = self.send(Ask::Write, |c, base| {
                 json(c.put(format!("{base}{operation}")), &body).header(header::ACCEPT, "text/event-stream")
             }).await.map_err(vault_uncertain)?;
@@ -988,33 +997,6 @@ impl Client {
             let holder = self.endpoint().await?;
             let base = format!("http://{}", holder.address);
             let request = build(&self.0.http, &base).bearer_auth(&holder.token);
-            let probe = request.try_clone().ok_or_else(|| Error::new(Kind::Internal, "request_unrepeatable", "The request cannot be inspected before transmission"))?
-                .build().map_err(unreachable)?;
-            if needs_project_storage(probe.url().path()) {
-                let birth = match self.project_storage(&holder).await {
-                    Ok(birth) => birth,
-                    Err(Probe::Unsupported) => return Err(storage_unsupported()),
-                    // Mid-restart (cl-716 B): asked again on the record it publishes, by the call's rule.
-                    Err(Probe::Restarting(why)) => {
-                        self.remember(None);
-                        let why = format!("{RESTARTING} ({why})");
-                        match backoff.again(&why, false, None) {
-                            Some((wait, said)) => {
-                                output::warn(&said);
-                                tokio::time::sleep(wait).await;
-                                continue;
-                            }
-                            None => return Err(Error::new(Kind::Unavailable, "calcifer_unreachable", backoff.spent(&why)).next("cozy doctor")),
-                        }
-                    }
-                };
-                // No old daemon can receive the project request after a restarted holder was probed. Never by
-                // taking the lock: a client whose home holds only a copy of the record would erase it.
-                if self.record().as_ref() != Some(&holder) || process::Birth::of(holder.pid).ok().as_ref() != Some(&birth) {
-                    self.remember(None);
-                    continue;
-                }
-            }
             let sent = self.heard(holder.pid, Instant::now(), REPORT, request.send()).await;
             let (error, stated, restarting) = match sent {
                 // A restart minted a new token: asked again once under the record it published. The same
@@ -1063,33 +1045,6 @@ impl Client {
                 }
             }
         }
-    }
-
-    /// A header alone is insufficient: old controllers ignore unknown headers. This response is
-    /// bound to both this exact process birth and this OS account before any project bytes go.
-    /// A Calcifer that is stopping or starting is `Restarting`; only one that answers without the
-    /// protocol is `Unsupported`.
-    async fn project_storage(&self, holder: &Holder) -> Result<process::Birth, Probe> {
-        #[derive(Deserialize)]
-        struct Capability { version: u32, daemon_birth: String, principal: String }
-        let birth = process::Birth::of(holder.pid).map_err(|_| Probe::Restarting("its process ended".into()))?;
-        let expected_birth = hex::encode(Sha256::digest(serde_json::to_vec(&birth).map_err(|_| Probe::Unsupported)?));
-        let answer = self.0.http.get(format!("http://{}/v1/project-storage", holder.address)).bearer_auth(&holder.token)
-            .send().await.map_err(|error| Probe::Restarting(format!("no answer: {error}")))?;
-        let status = answer.status();
-        // A new token, or a Calcifer stopping or not yet serving.
-        if status == StatusCode::UNAUTHORIZED || weather(status) { return Err(Probe::Restarting(format!("it answered {status}"))); }
-        if !status.is_success() { return Err(Probe::Unsupported); }
-        let body = answer.bytes().await.map_err(|error| Probe::Restarting(format!("its answer broke: {error}")))?;
-        let capability: Capability = serde_json::from_slice(&body).map_err(|_| Probe::Unsupported)?;
-        // The account Calcifer verified for this connection: this process's own.
-        let own = platform::net::User::current().map(|user| format!("user:{user}"));
-        if capability.version != 3 || Some(capability.principal) != own {
-            return Err(Probe::Unsupported);
-        }
-        // Another process answers at the record's address: the record is being replaced.
-        if capability.daemon_birth != expected_birth { return Err(Probe::Restarting("another Calcifer answers".into())); }
-        Ok(birth)
     }
 
     /// Samples `done` until it holds, saying what it waits for every few seconds.
@@ -1587,19 +1542,3 @@ mod tests;
 #[path = "calcifer_restart_tests.rs"]
 mod restart_tests;
 
-/// Global service/account diagnostics remain available to diagnose an old controller.
-/// Why a project storage probe proved nothing.
-enum Probe {
-    /// Calcifer is stopping, starting or replaced: asked again.
-    Restarting(String),
-    /// It answers without protocol 3: a Calcifer released before it.
-    Unsupported,
-}
-
-fn storage_unsupported() -> Error {
-    Error::new(Kind::Unavailable, "project_storage_unsupported", "Calcifer cannot prove project storage protocol 3; no project request was sent").next("cozy update")
-}
-
-fn needs_project_storage(path: &str) -> bool {
-    ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/maintenance/source", "/v1/events"].iter().any(|prefix| path.starts_with(prefix))
-}

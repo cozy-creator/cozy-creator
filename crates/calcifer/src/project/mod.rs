@@ -1552,6 +1552,12 @@ struct Walker {
     making: HashSet<(String, String)>,
     /// The last turn held a job for a busy machine.
     held: bool,
+    /// A run sent waits on its machine, which another may take sooner (`moves`).
+    waits: bool,
+    /// The machines each job's run moved away from, by its key: it never goes back to one (no flapping).
+    left: HashMap<String, Vec<On>>,
+    /// What `moves` last quoted its runs on (`moves_key`).
+    moves_seen: u64,
     /// What the machine each job went to quoted, by its key.
     sent: HashMap<String, Offer>,
     /// What's on its way may still say an old name: what each is called now, by name key.
@@ -3927,6 +3933,26 @@ fn unplanned(walker: &mut Walker, dir: &str, key: &str, why: String) {
     }
 }
 
+/// What `moves` quotes its waiting `runs` on, hashed: each machine's runs ahead as its quotes read them, its boot, phase, update, link
+/// (to 10 MB/s), installs and timings. Bytes still to come count by the GiB, so a download's progress isn't a change.
+fn moves_key(runs: &[&str], pictures: &[placement::Picture]) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    runs.hash(&mut hasher);
+    for picture in pictures {
+        let frame = &picture.frame;
+        (picture.on.to_string(), &frame.boot_id, &frame.phase, frame.serving_gpus, (frame.link_bytes_per_s / 1e7) as u64, picture.ready_at_ms).hash(&mut hasher);
+        (frame.update.as_ref().map(|update| &update.state), frame.environments.len(), frame.resident.len(), frame.models.len(), picture.ahead.len()).hash(&mut hasher);
+        for root in frame.queue.iter().flatten() {
+            (&root.run, &root.function, root.running, root.gpu_waits, root.gpu_at_unix_ms, root.width, root.bytes_left >> 30).hash(&mut hasher);
+        }
+        for timed in frame.times.iter().flatten() {
+            (&timed.function, timed.runs.len()).hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
 /// How many times a quote's read that may answer if asked again is asked, backing off between (1, 2, 4, 8 s).
 const QUOTE_ATTEMPTS: u32 = 5;
 /// A quote going longer than this says so, and what it's waiting on, in the project's walk log.
@@ -4343,7 +4369,8 @@ impl Walk {
         }
         // A project's revision moved (this Calcifer's commit, or another program's its folder watch saw): what was deleted stops.
         let mut edits = crate::events::edits();
-        // A machine's Status moved (a run started or ended, bytes came, a machine came or went): a job held for a machine is placed again.
+        // A machine's Status moved (a run started or ended, bytes came, a machine came or went): a job held for a machine, or a run
+        // waiting on one, is placed again (cl-1107).
         let mut machines = self.host.api().calcifer.machines_changed();
         // A machine became ready or ended: what isn't sent yet is placed again.
         let mut arrivals = self.host.api().machines.arrivals.subscribe();
@@ -4447,7 +4474,11 @@ impl Walk {
                     }
                     () = self.project.asked.notified() => break,
                     Ok(()) = machines.changed() => {
-                        if self.project.walker.lock().expect("walker lock").held {
+                        let (held, waits) = {
+                            let walker = self.project.walker.lock().expect("walker lock");
+                            (walker.held, walker.waits)
+                        };
+                        if held || (waits && self.moves().await) {
                             break;
                         }
                     }
@@ -4595,24 +4626,26 @@ impl Walk {
         quoted
     }
 
-    /// Its runs waiting for a machine, in its queue or held here while it updates, each moved to another of its machines that would
-    /// finish it clearly sooner (cl-1073, Paul 11-16: an LTX run waited 40 minutes in chartreux's queue behind runs still loading their
-    /// weights while kamitsure could run it): the same run (`Calcifer::move_to`). Where it waits is quoted as if asked again with what
-    /// holds that machine now; it leaves only for a finish clearly sooner (`plan::clearly_sooner`), what it fetched there given up.
-    async fn moves(&self) {
-        let Ok(walk) = self.folder().walk_now() else { return };
+    /// Its runs waiting for a machine, in its queue, held here while it updates, or started there on its CPU alone while their GPU work
+    /// waits (cl-1107), each moved to another of its machines that would finish it clearly sooner (cl-1073, Paul 11-16: an LTX run
+    /// waited 40 minutes in chartreux's queue behind runs still loading their weights while kamitsure could run it): the same run
+    /// (`Calcifer::move_to`). Where it waits is quoted as if asked again with what holds that machine now; it leaves only for a finish
+    /// clearly sooner (`plan::clearly_sooner`), what it fetched there given up, and never goes back to a machine it left. Whether one
+    /// moved. While one waits, each machine's report asks again (`go`).
+    async fn moves(&self) -> bool {
+        let Ok(walk) = self.folder().walk_now() else { return false };
         let api = self.host.api();
         let quotables = self.project.walker.lock().expect("walker lock").quotables.clone();
-        let mut waiting = vec![];
+        let mut sent_or_held = vec![];
         for (key, pending) in walk.pending.iter().filter(|(_, pending)| pending.run > 0 && pending.target.on.len() > 1) {
             let Some(run) = self.host.numbered(pending.run) else { continue };
-            // In its machine's queue, or held here for it (its machine updating).
+            // Accepted by its machine, whose picture says whether it waits there; or held here for it (its machine updating).
             let sent = run.accepted_at_ms.is_some();
             let waits = match sent {
-                true => run.machine_state.as_deref() == Some("queued"),
-                false => run.status == RunStatus::Queued,
+                true => matches!(run.machine_state.as_deref(), Some("queued" | "starting" | "running")),
+                false => run.status == RunStatus::Queued && run.started_at_ms.is_none(),
             };
-            let waits = waits && run.started_at_ms.is_none() && run.settled_at_ms.is_none() && !api.calcifer.moving(&run.id);
+            let waits = waits && run.settled_at_ms.is_none() && !api.calcifer.moving(&run.id);
             let (true, Some(machine), Some(job)) = (waits, run.machine, quotables.get(pending.job_of(key))) else { continue };
             // Between rentals and added machines: a run for this computer is made for it (its project's private storage), and one
             // made for another isn't.
@@ -4620,33 +4653,56 @@ impl Walk {
             if machine == "local" || on.len() < 2 {
                 continue;
             }
-            waiting.push((key.clone(), pending.job_of(key).to_owned(), run.id, On::Machine(machine), sent, placement::Job { on, ..job.clone() }));
+            sent_or_held.push((key.clone(), pending.job_of(key).to_owned(), run.id, On::Machine(machine), sent, placement::Job { on, ..job.clone() }));
         }
-        if waiting.is_empty() {
-            return;
-        }
-        let now = now_ms();
-        let jobs: Vec<placement::Job> = waiting.iter().map(|(.., job)| job.clone()).collect();
-        let machines = placement::machines_of(&jobs);
-        let scope = jobs.iter().find_map(|job| job.scope.clone());
         let mut pictures = vec![];
-        for picture in placement::pictures(&api, &machines, false, now).await.into_iter().flatten() {
-            pictures.push(placement::scoped_picture(&api, &picture, scope.as_ref()).await);
+        let now = now_ms();
+        if !sent_or_held.is_empty() {
+            let jobs: Vec<placement::Job> = sent_or_held.iter().map(|(.., job)| job.clone()).collect();
+            let machines = placement::machines_of(&jobs);
+            let scope = jobs.iter().find_map(|job| job.scope.clone());
+            for picture in placement::pictures(&api, &machines, false, now).await.into_iter().flatten() {
+                pictures.push(placement::scoped_picture(&api, &picture, scope.as_ref()).await);
+            }
         }
+        // Of those sent, the ones its machine's picture lists queued, or running on its CPU alone while their GPU work waits. Running
+        // with it begun, or on a machine that doesn't say, it stays.
+        let waiting: Vec<_> = (sent_or_held.into_iter())
+            .filter_map(|(key, of, id, held, sent, job)| {
+                let unbegun = match sent {
+                    false => false,
+                    true => {
+                        let queue = pictures.iter().find(|picture| picture.on == held)?.frame.queue.as_ref()?;
+                        let root = queue.iter().find(|root| crate::store::calcifer_id(&root.run) == id.as_str())?;
+                        if root.running && !root.gpu_waits {
+                            return None;
+                        }
+                        root.running
+                    }
+                };
+                Some((key, of, id, held, sent, unbegun, job))
+            })
+            .collect();
+        self.project.walker.lock().expect("walker lock").waits = !waiting.is_empty();
+        if waiting.is_empty() {
+            return false;
+        }
+        // Quoted again only when what a quote reads changed since: with no change, time alone moves no finish against another.
+        let seen = moves_key(&waiting.iter().map(|(_, _, id, ..)| id.as_str()).collect::<Vec<_>>(), &pictures);
+        if std::mem::replace(&mut self.project.walker.lock().expect("walker lock").moves_seen, seen) == seen {
+            return false;
+        }
+        let jobs: Vec<placement::Job> = waiting.iter().map(|(.., job)| job.clone()).collect();
         placement::benched(&api, &jobs, pictures.iter_mut());
         let frames: Vec<&api::machine::StatusFrame> = pictures.iter().map(|picture| &picture.frame).collect();
-        'runs: for (key, of, id, held, sent, job) in waiting {
+        let mut moved = false;
+        for (key, of, id, held, sent, unbegun, job) in waiting {
+            let left: Vec<On> = self.project.walker.lock().expect("walker lock").left.get(&of).cloned().unwrap_or_default();
             let mut offers = vec![];
-            for picture in pictures.iter().filter(|picture| job.on.contains(&picture.on)) {
+            for picture in pictures.iter().filter(|picture| job.on.contains(&picture.on) && (picture.on == held || !left.contains(&picture.on))) {
                 let mut picture = picture.clone();
                 if picture.on == held && sent {
-                    let queue = picture.frame.queue.get_or_insert_default();
-                    let listed = queue.len();
-                    queue.retain(|root| crate::store::calcifer_id(&root.run) != id.as_str());
-                    // Not listed there: nothing says where it stands.
-                    if queue.len() == listed {
-                        continue 'runs;
-                    }
+                    picture.frame.queue.get_or_insert_default().retain(|root| crate::store::calcifer_id(&root.run) != id.as_str());
                 }
                 let mut ask = placement::asked(&job, placement::prior(&api, &picture, &job).await);
                 api::estimate::learn_reads(&frames, &mut ask);
@@ -4655,16 +4711,22 @@ impl Walk {
             let Some(here) = offers.iter().find(|offer| offer.machine == held && offer.fits) else { continue };
             let Some(sooner) = placement::soonest(&offers, now).filter(|offer| offer.machine != held && plan::clearly_sooner(offer, here, now)) else { continue };
             let to = sooner.machine.to_string();
-            if !api.calcifer.move_to(&id, &to) {
+            if !api.calcifer.move_to(&id, &to, unbegun) {
                 continue;
             }
+            moved = true;
             let said = offers.iter().map(|offer| placement::said(offer, now)).collect::<Vec<_>>().join("; ");
             info!("{}: {key} moves from {held} to {to}: {said}", self.folder().dir.display());
             crate::private_io::diagnose(&self.folder().dir, || format!("{key} moves from {held} to {to}: {said}"));
             self.host.placed(&self.project.id, &id, &sooner.placed());
             self.host.quoted(&id, sooner.quoted());
-            self.project.walker.lock().expect("walker lock").sent.insert(of, sooner.clone());
+            {
+                let mut walker = self.project.walker.lock().expect("walker lock");
+                walker.left.entry(of.clone()).or_default().push(held);
+                walker.sent.insert(of, sooner.clone());
+            }
         }
+        moved
     }
 
     /// Places the jobs not sent yet, the nearest `plan::PLANNED` of them (cl-967): every machine pictured from the Status it pushed, each
@@ -5371,7 +5433,11 @@ impl Walk {
             Done::Landed { job, landed } => {
                 let failed = landed.landed.as_ref().is_ok_and(Result::is_err);
                 let asset = landed.name.clone();
-                self.project.walker.lock().expect("walker lock").sent.remove(&job);
+                {
+                    let mut walker = self.project.walker.lock().expect("walker lock");
+                    walker.sent.remove(&job);
+                    walker.left.remove(&job);
+                }
                 if let Some((id, version)) = self.landed(landed, followed, first)? {
                     let name = asset.clone();
                     work.push(async move { Done::Arrived { name, result: self.arrived_owed(&id, version).await } }.boxed());

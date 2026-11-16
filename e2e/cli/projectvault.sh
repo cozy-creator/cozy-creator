@@ -246,7 +246,7 @@ vault_no_fuse() (
     || check "no FUSE: cozy new --passphrase-file: exit $code, not the refusal naming \`$install\`: $(head -c 500 "$work/new.json") $(tail -c 200 "$work/new.err")"
   # The page's ask, as the page sends it: a typed 409, never a 503.
   holder=$HOME/.cozy/calcifer/calcifer.lock.holder
-  status=$(curl -s -o "$work/http.json" -w '%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' \
+  status=$(curl -s -o "$work/http.json" -w '%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" \
     -H 'Content-Type: application/json' --data "$(jq -nc --arg p "$work/q" '{path: $p, passphrase: "synthetic no-fuse passphrase"}')" \
     "http://$(jq -r .address "$holder")/v1/projects")
   [ "$status" = 409 ] && jq -e '.error.code == "vault_dependency_missing"' "$work/http.json" > /dev/null \

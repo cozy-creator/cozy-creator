@@ -1587,7 +1587,7 @@ first=$(cat "$OUT/play-still.number")
 name=$(jq -r '.output[0].name // empty' "$OUT/play-still.json") || true
 if [ "$first" = none ] || [ -z "$name" ]; then check "run playback API: no still to play"; else
   read -r id project < <(cozy --json run watch "$first" --once | jq -r '"\(.id) \(.project_id)"')
-  curl -sS -G -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' \
+  curl -sS -G -H "Authorization: Bearer $(jq -r .token "$holder")" \
     --data-urlencode "output=$name" --data-urlencode "expires=30s" "$base/v1/projects/$project/runs/$id/play" > "$OUT/play.json" || true
   J --arg id "$id" --arg name "$name" '(.url | startswith("https://cozy-creator.github.io/cozy-creator/play/#")) and (.url | contains("r=" + $id))
     and (.url | contains("o=" + $name)) and (.token | length > 0) and .expires_s == 30' "$OUT/play.json" \

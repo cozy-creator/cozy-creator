@@ -125,7 +125,7 @@ function calciferUse() {
   await page.waitForSelector('.top');
   const held = { token: holderToken() };
   const api = (path, init = {}) => page.evaluate(async ({ path, init }) => {
-    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init });
 
