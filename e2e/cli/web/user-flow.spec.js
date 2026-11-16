@@ -428,15 +428,27 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
 
     let SHOT, generate, edit;
     await test.step("H3's Shot from Tools › Video onto open canvas, its words typed", async () => {
-      // The tools as the palette lists them, the Hub's releases: what each box runs.
-      const { tools } = await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`);
-      [generate, edit] = [GENERATE, EDIT].map((id) => tools.find((tool) => tool.id === id || tool.id.endsWith(`/${id}`)));
+      // The tools as the palette lists them, by the page's own question: the Hub's releases, or in a dev home the packages checkout's,
+      // which Calcifer reads from source behind the list and lists once read (pre-flight 43956716291: none yet, 8 s after its start).
+      const listing = Date.now();
+      await expect.poll(async () => {
+        const { tools } = await api.get(`/v1/tools?on=local&project=${encodeURIComponent(project.id)}`);
+        [generate, edit] = [GENERATE, EDIT].map((id) => tools.find((tool) => tool.id === id || tool.id.endsWith(`/${id}`)));
+        return Boolean(generate && edit);
+      }, { message: `the palette lists ${GENERATE} and ${EDIT}`, timeout: 1_200_000, intervals: [2_000, 5_000] }).toBe(true);
       flow.tools = [generate, edit].map((tool) => tool && { id: tool.id, version: tool.version ?? tool.release ?? null, source: tool.source ?? null });
-      expect(generate, `the palette lists ${GENERATE}`).toBeTruthy();
-      expect(edit, `the palette lists ${EDIT}`).toBeTruthy();
+      flow.tools_listed_s = (Date.now() - listing) / 1000;
+      keep();
       const before = new Set((await project.assets()).map((asset) => asset.name));
       await fit(page);
-      const row = await toolRow(['Video'], generate.id);
+      // A tool listed after the page opened shows in its palette without a reload; one that doesn't is said, and the page loaded again.
+      const row = await toolRow(['Video'], generate.id).catch(async (error) => {
+        failed('the palette shows a tool listed after the page opened', error);
+        await goto(project.url());
+        await expect(page.locator('.stage')).toBeVisible({ timeout: 60_000 });
+        await fit(page);
+        return toolRow(['Video'], generate.id);
+      });
       const at = await roomAt(page);
       await carry(page, row, at);
       flow.shot_dropped_at = at;
