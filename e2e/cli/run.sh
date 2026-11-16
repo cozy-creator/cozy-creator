@@ -567,6 +567,7 @@ case $SHARD in
     uninstall_on
     component_models
     lora_reads
+    ltx_lora
     second_project
     lock_platforms
     yaml_requests
@@ -683,6 +684,7 @@ case $SHARD in
     uninstall_on
     component_models
     lora_reads
+    ltx_lora
     second_project
     lock_platforms
     yaml_requests

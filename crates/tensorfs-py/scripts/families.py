@@ -11,9 +11,11 @@
 Reads only safetensors headers and, for the layout probe, a few row blocks, by HTTP range. A
 component's keys are its reference header's in file order; where a family's converter is the
 only way to its canonical form (Ideogram 4's fused Q/K/V, SeedVR2's pickles), they are that
-converter's output. Every converter table of a family must produce one of its forms, and every
-LoRA table row must target one of its weights: checked here, so the registry and the tables
-cannot drift apart. Forms and trained-on fields are spec data below, each with its source.
+converter's output. A family whose upstream is gated is read from Cozy's Hub mirror of it: its
+header as `tfs --json inspect` printed it, banked in `vectors/` (`inspected`). Every converter
+table of a family must produce one of its forms, and every LoRA table row must target one of
+its weights: checked here, so the registry and the tables cannot drift apart. Forms and
+trained-on fields are spec data below, each with its source.
 """
 
 from __future__ import annotations
@@ -96,6 +98,21 @@ class Spec(TypedDict, total=False):
     folds: list[str]
     variants: dict[str, tuple[str, str]]
     banked: dict[str, str]
+    #: The reference's header as `tfs --json inspect <reference>` prints it (vectors/): its folders' classes and keys.
+    inspected: str
+
+
+class InspectedTensor(TypedDict):
+    key: str
+    shape: list[int]
+
+
+# A component of `tfs --json inspect`'s document (`class` is a keyword).
+InspectedComponent = TypedDict("InspectedComponent", {"name": str, "class": list[str], "tensors": list[InspectedTensor]})
+
+
+class Inspected(TypedDict):
+    components: list[InspectedComponent]
 
 
 # A family's component (`class` is a keyword, hence the functional form).
@@ -341,6 +358,17 @@ FAMILIES: list[Spec] = [
         # DiffSynth-Studio's `base_model`.
         "trained_on": [{"producer": "its file", "field": "base_model", "values": {
             "briaai/Fibo-2.0-dev": "transformer", "briaai/Fibo-2.0-edit-turbo": "transformer_edit_turbo"}}],
+    },
+    {
+        "name": "ltx-2-5",
+        # Lightricks' repository is gated (hf://Lightricks/LTX-2.5-Diffusers@4791a1100e0cf97f7ed5c55c12dd71dce13f9dd3): the
+        # reference is Cozy's mirror of it, lightricks/ltx-2.5@0.1.0's bf16 lane, imported as it is but for its text encoder's
+        # two renamed prefixes (packages examples/client-scripts/ingest-ltx25.py: Transformers 5's Gemma 4 names).
+        "reference": "lightricks/ltx-2.5@sha256:52006a9153444121e43feda29dabbb4decfa12a17a94573a340de4c62fab7a2c",
+        "inspected": "ltx-2.5-headers/lightricks-ltx-2.5-0.1.0-bf16.inspect.json",
+        "classes": ["LTX2Pipeline", "LTX2VideoTransformer3DModel"],
+        "folders": ["transformer", "connectors", "text_encoder", "vae", "audio_vae", "vocoder", "latent_upsampler"],
+        "sources": ["ltx2.lora"],
     },
     {
         "name": "hunyuan-image-3",
@@ -715,20 +743,29 @@ def readers(fam: Spec, folder: str, at: dict[str, Location], source: list[Keyed]
 
 # --------------------------------------------------------------------------------- families
 
+def inspected(path: str) -> dict[str, InspectedComponent]:
+    doc: Inspected = json.loads((VECTORS / path).read_text())
+    return {c["name"]: c for c in doc["components"]}
+
+
 def build(spec: Spec) -> Family:
     print(spec["name"])
-    files = tree(spec["reference"]) if spec["folders"] else []
+    held = inspected(spec["inspected"]) if "inspected" in spec else None
+    files = tree(spec["reference"]) if spec["folders"] and held is None else []
     comps: dict[str, Component] = {}
     where: dict[str, dict[str, Reader]] = {}
     shapes: dict[str, dict[str, list[int]]] = {}
     for folder in spec["folders"]:
-        source, at = component(spec["reference"], files, folder)
+        if held is None:
+            source, at = component(spec["reference"], files, folder)
+        else:  # its header's keys in its order; nothing to probe by
+            source, at = [(t["key"], t["shape"]) for t in held[folder or "model"]["tensors"]], {}
         name = spec.get("converted", {}).get(folder)
         keys = converted(table(name), folder, source) if name else source
         weights = {k for k, _ in keys}
         keys = [(k, s) for k, s in keys if not any(k.endswith(f) and k.removesuffix(f) + ".weight" in weights
                                                      for f in spec.get("folds", []))]
-        where[folder] = readers(spec, folder, at, source)
+        where[folder] = readers(spec, folder, at, source) if at else {}
         shapes[folder] = dict(keys)
         mine = sorted((k, tuple(s)) for k, s in keys)
         same = next((c for c, d in comps.items() if "keys" in d and sorted((k, tuple(s)) for k, s in d["keys"]) == mine), None)
@@ -737,7 +774,8 @@ def build(spec: Spec) -> Family:
         if same:
             comps[comp] = {"same_as": same}
             continue
-        comps[comp] = {"class": class_of(spec["reference"], files, folder), "keys": [(k, s) for k, s in keys]}
+        named = class_of(spec["reference"], files, folder) if held is None else held[comp]["class"][2] or None
+        comps[comp] = {"class": named, "keys": [(k, s) for k, s in keys]}
         if comp in spec.get("optional", {}):
             comps[comp]["optional"] = spec["optional"][comp]
     # A variant with a checkpoint of its own: its keys and shapes are its root's, but for the root's optional ones.

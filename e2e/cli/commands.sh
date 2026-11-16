@@ -273,6 +273,27 @@ J --slurpfile plain "$OUT/lora-plain.json" '.result.sum != $plain[0].result.sum'
 echo "lora reads: e2e/lora-base here after the LoRA'd call $held; its adapter stage moved ${stage} bytes; sums $(jq .result.sum "$OUT/lora-adapted.json") with, $(jq .result.sum "$OUT/lora-plain.json") without"
 }
 
+# ltx2.lora (the ltx-2.5 package's LoRAs, for the release coordinator: "`cozy model upload` / `cozy lora` / `cozy run --lora` can
+# take an LTX-2.5 LoRA (including IC-LoRAs such as Lightricks' Ingredients) and store it as a LoRA whose component is
+# `transformer`, with Diffusers' `LTX2VideoTransformer3DModel` module names and a PEFT adapter config"; Paul 11-16: "convert
+# in-the-wild deviations ... to our canonical cozytensors format"). e2e/isolated.sh uploads Lightricks' LTX-2.3 Motion Track
+# Control IC-LoRA from Hugging Face as published, LTX's native names under diffusion_model.: it is an ltx-2-5 LoRA of its
+# transformer, its 480 modules under Diffusers' names (to_out.0), r and lora_alpha 32 (no .alpha: a scale of 1, as ltx-core applies it).
+ltx_lora() {
+step "a published LTX IC-LoRA is a LoRA of ltx-2-5's transformer in Diffusers' names"
+local lora=lightricks/ltx-2.3-motion-track-control show=$OUT/ltx-lora-show.json
+cozy --json --full lora show "$lora" > "$show" 2>&1 || { check "lora show $lora: $(tail -c 300 "$show")"; return; }
+J '.family == "ltx-2-5" and .lanes[0].records.adapter.transformer == {family: "ltx-2-5", component: "transformer"}' "$show" \
+  || check "$lora: not a LoRA of ltx-2-5's transformer: family $(jq -c '[.family, .lanes[0].records.adapter]' "$show")"
+J '[.lanes[0].components[] | select(.tensors > 0) | .name] == ["transformer"]' "$show" \
+  || check "$lora: not one component, transformer: $(jq -c '[.lanes[0].components[] | {name, tensors}]' "$show")"
+J '.lanes[0].components[] | select(.name == "transformer") | .lora.modules == 480 and .lora.alphas == 0 and .config_file == "adapter_config.json"
+   and .config.peft_type == "LORA" and .config.r == 32 and .config.lora_alpha == 32 and (.config.target_modules | length) == 480
+   and (.config.target_modules | index("transformer_blocks.0.attn1.to_out.0") != null)
+   and all(.config.target_modules[]; startswith("transformer_blocks."))' "$show" \
+  || check "$lora: its transformer is not 480 modules in Diffusers' names at r = lora_alpha = 32: $(jq -c '.lanes[0].components[] | select(.name == "transformer") | {lora, config_file, r: .config.r, lora_alpha: .config.lora_alpha, targets: (.config.target_modules // [] | .[:3])}' "$show")"
+}
+
 # Paul's rule (11-13, cl-984): "1. project data is private 2. models / packages installed are machine-specific (not project
 # specific)". After component_models ran parts.py (a script package on e2e/parts, ~4 MiB) in the suite's project, a second
 # project's first run of it downloads nothing, builds no environment and adds no weights anywhere, and the first project's
