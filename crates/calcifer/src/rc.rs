@@ -374,7 +374,8 @@ impl Machines {
     }
 
     /// Whether a run to `machine` (`on`'s, or none yet for a rental to come) runs the open RC's Runtime: it does now, or in a
-    /// dev home it is (or will be) a rental that moves to the RC before its run. It takes packages built for the RC.
+    /// dev home it is (or will be) a rental that moves to the RC before its run. Its package releases resolve as any machine's
+    /// (cl-1109): being on the RC takes no prerelease.
     pub(crate) fn takes_rc(&self, machine: &str, on: &api::calcifer::On) -> bool {
         if let Some(frame) = self.frame(machine) {
             if prerelease::dev(&frame.runtime) {

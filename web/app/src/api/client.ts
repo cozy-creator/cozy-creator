@@ -232,7 +232,8 @@ export class Client {
         throw failure
       }
       say(attempt + 1)
-      await pause(500 * 2 ** (attempt - 1), init.signal)
+      // Cancelled while it waits to try again, as when cancelled in flight: nothing is being tried any more (cl-1110).
+      try { await pause(500 * 2 ** (attempt - 1), init.signal) } catch (error) { say(0); throw error }
     }
   }
 

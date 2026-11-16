@@ -507,6 +507,7 @@ WEB_2=(
   hover
   notes
   fullscreen
+  llm-reads
 )
 WEB_3=(
   focus
@@ -547,6 +548,7 @@ WEB_ENGINES=(
   move
   open
   vault
+  tool-retry
   glloss
   keyboard
   input
@@ -742,6 +744,7 @@ case $SHARD in
     run_filters
     project_keys
     run_failures
+    quantize_outside
     bound_runs
     own_references
     lane_fit

@@ -403,17 +403,16 @@ pub(crate) fn canonical(hub: &str) -> String {
     Origin::parse(hub).map_or_else(|_| hub.to_owned(), String::from)
 }
 
-/// What `on` has installed from `hub`: each package and its newest release there, as a run there takes it: on the RC's
-/// Runtime a prerelease built for it before the last final, elsewhere finals only (`api::release::newest`, cl-952).
+/// What `on` has installed from `hub`: each package and its newest release there, as a run naming none takes it: its newest
+/// final, else its newest prerelease (`api::release::newest`, cl-1109).
 async fn installed_releases(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(String, String)> {
-    let Some((machine, environments)) = api.machines.holds(on, true).await else { return vec![] };
-    let rc = api.machines.takes_rc(&machine, on);
+    let Some((_, environments)) = api.machines.holds(on, true).await else { return vec![] };
     let here = canonical(hub);
     let mut packages: Vec<&str> = (environments.iter()).filter(|env| !env.release.is_empty() && canonical(&env.hub) == here).map(|env| env.package.as_str()).collect();
     packages.sort_unstable();
     packages.dedup();
     let releases = |package: &'_ str| -> Option<String> {
-        api::release::newest(environments.iter().filter(|env| env.package == package && !env.release.is_empty()).map(|env| env.release.as_str()), rc).map(str::to_owned)
+        api::release::newest(environments.iter().filter(|env| env.package == package && !env.release.is_empty()).map(|env| env.release.as_str())).map(str::to_owned)
     };
     packages.into_iter().filter_map(|package| Some((package.to_owned(), releases(package)?))).collect()
 }

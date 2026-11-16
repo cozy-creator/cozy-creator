@@ -574,7 +574,8 @@ function MentionThumb({ name, asset, unused, pictures, onRange }: { name: string
   const said = store.mentionOf(name, asset)
   useElement(said?.name ?? baseOf(name))
   const shown = store.fileOf(name, asset)
-  if (!shown || shown.absent || shown.field === "audio" || leftOut(unused, name)) return null
+  // Words go in as words (xs-204): no picture of them.
+  if (!shown || shown.absent || shown.field === "audio" || shown.field === "text" || leftOut(unused, name)) return null
   // An orbit's angle has no in and out to drag: its chip says it.
   if (angleOf(name)) return null
   if (shown.field === "video") {

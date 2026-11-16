@@ -11,7 +11,7 @@
 // paper and dark. Its second test, GPU use, is PR B's (below).
 const { execFileSync } = require('child_process');
 const { randomUUID } = require('crypto');
-const { rmSync } = require('fs');
+const { rmSync, writeFileSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
 const { test, expect, fixtureTool } = require('./fixtures');
@@ -209,6 +209,7 @@ test('machine-details: GPU use', { tag: '@solo' }, async ({ page, project, api, 
 
   const asked = [];
   page.on('request', (request) => { if (new URL(request.url()).pathname.endsWith('/gpus')) asked.push(request.url()); });
+  if (process.env.GPU_LOG) await page.addInitScript(heardGpus);
   await page.goto(project.url(`machines/${encodeURIComponent(name)}`));
   const section = page.locator('.drawer section.sect').filter({ has: page.locator('h3 > span', { hasText: /^GPUs$/ }) });
   await expect(section).toBeVisible({ timeout: 60_000 });
@@ -232,4 +233,62 @@ test('machine-details: GPU use', { tag: '@solo' }, async ({ page, project, api, 
       await section.screenshot({ path: test.info().outputPath(`gpu-use-${width}x${height}-${theme}.png`) });
     }
   }
+  // GPU_LOG (release-gate/sessions/llm-tools.sh, during renders on the rental): for GPU_LOG_S seconds, twice a second, what the drawer
+  // shows for each GPU beside the last reading the page heard; then every reading it heard. The session holds these to nvidia-smi.
+  if (process.env.GPU_LOG && gpus.length) {
+    await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+    const until = Date.now() + Number(process.env.GPU_LOG_S || 60) * 1000;
+    const lines = [];
+    while (Date.now() < until) {
+      lines.push(await page.evaluate(() => ({
+        at: Date.now(),
+        last: window.__gpuLast ?? null,
+        shown: [...document.querySelectorAll('.drawer li.gpu[data-gpu]')].map((gpu) => ({
+          index: Number(gpu.dataset.gpu),
+          busy: Number(gpu.querySelector('.meter.busy')?.getAttribute('aria-valuenow') ?? NaN),
+          memory: gpu.querySelectorAll('.gpu-use b')[1]?.textContent ?? null,
+        })),
+      })));
+      await page.waitForTimeout(500);
+    }
+    writeFileSync(process.env.GPU_LOG, lines.map((line) => JSON.stringify(line)).join('\n') + '\n');
+    const heard = await page.evaluate(() => window.__gpuHeard ?? []);
+    writeFileSync(`${process.env.GPU_LOG}.heard`, heard.map((one) => JSON.stringify(one)).join('\n') + '\n');
+    expect(heard.length, 'the page heard a reading each second').toBeGreaterThan(Number(process.env.GPU_LOG_S || 60) / 2);
+  }
 });
+
+/** In the page, before its scripts: each `gpus` reading its stream of a machine's GPU use brings, kept in `__gpuHeard` (the last in
+ *  `__gpuLast`), the page's own copy of the stream untouched. */
+function heardGpus() {
+  const real = window.fetch;
+  window.__gpuHeard = [];
+  window.fetch = async function (input, init) {
+    const response = await real.call(this, input, init);
+    try {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (!url.pathname.endsWith('/gpus') || (init?.method ?? 'GET') !== 'GET' || !response.body) return response;
+      const [ours, theirs] = response.body.tee();
+      (async () => {
+        const reader = ours.pipeThrough(new TextDecoderStream()).getReader();
+        let held = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) return;
+          held += value;
+          for (let end = held.indexOf('\n\n'); end >= 0; end = held.indexOf('\n\n')) {
+            const lines = held.slice(0, end).split('\n');
+            held = held.slice(end + 2);
+            if (!lines.some((line) => /^event: ?gpus$/.test(line))) continue;
+            const reading = JSON.parse(lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n'));
+            window.__gpuLast = reading;
+            window.__gpuHeard.push({ heard: Date.now(), ...reading });
+          }
+        }
+      })().catch(() => {});
+      return new Response(theirs, { status: response.status, statusText: response.statusText, headers: response.headers });
+    } catch {
+      return response;
+    }
+  };
+}

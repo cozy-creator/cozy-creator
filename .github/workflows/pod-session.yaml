@@ -77,6 +77,7 @@ jobs:
             release-gate/sessions
             release-gate/ref
             release-gate/suites/bench/vram.py
+            release-gate/suites/bench/fixtures
             release-gate/suites/tensord
             release-gate/suites/disk
             e2e/candidates

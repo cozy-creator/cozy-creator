@@ -311,6 +311,11 @@ pub(crate) fn main_of(files: &Files) -> Option<&String> {
     ["video", "image", "audio"].iter().find_map(|name| files.get(*name)).or_else(|| files.values().next())
 }
 
+/// The words a file of words in the project at `dir` holds (xs-204). None: it isn't here.
+pub(crate) fn words(dir: &Path, file: &File) -> Option<String> {
+    Some(String::from_utf8_lossy(&std::fs::read(dir.join(&file.path)).ok()?).into_owned())
+}
+
 /// A piece a cut was made without, and why.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Without {

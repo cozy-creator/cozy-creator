@@ -214,10 +214,10 @@ fn reference_header<'a>(card: &'a types::ModelCard, reference: &ModelRef) -> Opt
 }
 
 /// The release a named one resolves to: the newest public one of its series after it, as TensorD resolves it
-/// (`api::release::newest_fix`; a model's prerelease is no RC build, so `rc` is false).
+/// (`api::release::newest_fix`).
 fn newest_fix<'a>(release: &'a str, card: &'a types::ModelCard) -> &'a str {
     let public = card.releases.iter().filter(|held| held.visibility == api::model_ref::ReleaseVisibility::Public).map(|held| held.version.as_str());
-    api::release::newest_fix(release, public, false).unwrap_or(release)
+    api::release::newest_fix(release, public).unwrap_or(release)
 }
 
 /// What `reference` is, as the run that names it loads it: a named release as the newest fix it resolves to, an unnamed one as the

@@ -139,7 +139,7 @@ async fn from_hub(client: impl FnOnce() -> Result<Client, Error>, root: &Path, h
 /// A package's releases as its Hub answered.
 #[derive(Debug, Default)]
 pub struct Releases {
-    /// The newest release that isn't yanked.
+    /// The release a run naming none takes (`release::newest` of those not yanked).
     pub newest: Option<String>,
     /// Every release it has, yanked or not.
     pub released: HashSet<String>,
@@ -147,6 +147,11 @@ pub struct Releases {
 }
 
 impl Releases {
+    /// Every release that isn't yanked.
+    pub fn open(&self) -> impl Iterator<Item = &str> {
+        self.released.iter().map(String::as_str).filter(|release| !self.yanked.contains(*release))
+    }
+
     /// The newest release, or why `package` has none to run.
     pub fn newest(&self, package: &str) -> Result<String, Error> {
         self.newest.clone().ok_or_else(|| {
@@ -161,11 +166,13 @@ pub async fn releases(client: &Client, package: &str) -> Result<Releases, Error>
     let (org, name) = package.split_once('/').expect("a package is org/name");
     let card = client.get_package(org, name).await.map_err(|e| absent(refusal(e), package))?;
     let yanked = |row: &&crate::hub::types::CatalogRelease| row.yanked == Some(true) || row.yanked_at.as_deref().is_some_and(|at| !at.is_empty());
-    Ok(Releases {
-        newest: card.package.latest_release,
+    let mut read = Releases {
+        newest: None,
         released: card.releases.iter().map(|row| row.release.clone()).collect(),
         yanked: card.releases.iter().filter(yanked).map(|row| row.release.clone()).collect(),
-    })
+    };
+    read.newest = crate::release::newest(read.open()).map(str::to_owned);
+    Ok(read)
 }
 
 /// The Hub's 404 names what it lacks, and where to look.
