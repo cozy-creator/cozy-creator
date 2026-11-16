@@ -35,7 +35,7 @@ fn run() -> Result<(), Failure> {
         return Ok(());
     }
     let bytes = match (mode.as_str(), arguments.len()) {
-        ("normal" | "crash-host" | "mount" | "controls", 3) => None,
+        ("normal" | "crash-host" | "mount" | "controls" | "dropped", 3) => None,
         ("throughput", 4) => Some(
             arguments[3]
                 .to_str()
@@ -44,7 +44,7 @@ fn run() -> Result<(), Failure> {
                 .ok_or("throughput takes a positive byte count")?,
         ),
         _ => {
-            return Err("usage: vault-provider normal|crash-host|mount|controls <securefs> <artifacts> | throughput <securefs> <artifacts> <bytes>".into());
+            return Err("usage: vault-provider normal|crash-host|mount|controls|dropped <securefs> <artifacts> | throughput <securefs> <artifacts> <bytes>".into());
         }
     };
     let expected_helper = PathBuf::from(&arguments[1]);
@@ -59,6 +59,9 @@ fn run() -> Result<(), Failure> {
     }
     if mode == "controls" {
         return controls(&provider, &artifacts);
+    }
+    if mode == "dropped" {
+        return dropped(&provider, &artifacts);
     }
     let backing = artifacts.join("encrypted");
     let view = project_mount::view_path(&artifacts.join("runtime"))?;
@@ -684,6 +687,34 @@ fn controls(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
         None => Ok(()),
         Some(first) => Err(format!("{} of {calls} status reads failed; first: {first}", failures.len()).into()),
     }
+}
+
+/// Linux: a session dropped without a lock while another process of this user holds the supervisor's stdin open for writing, as
+/// any can now that the supervisor is dumpable. The drop must still end the provider and leave no view mounted, within its deadline.
+fn dropped(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
+    let backing = artifacts.join("encrypted");
+    let view = project_mount::view_path(&artifacts.join("runtime"))?;
+    let secret = new_secret()?;
+    eprintln!("provider fixture: create and mount");
+    provider.create(&backing, secret.as_bytes())?;
+    let mounted = provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+    let stdin = format!("/proc/{}/fd/0", mounted.provider_pid());
+    let held = fs::OpenOptions::new()
+        .write(true)
+        .open(&stdin)
+        .map_err(|error| format!("reopen the supervisor's stdin ({stdin}) for writing: {error}"))?;
+    eprintln!("provider fixture: drop the session while {stdin} has a second writer");
+    let started = Instant::now();
+    drop(mounted);
+    let seconds = started.elapsed().as_secs_f64();
+    let mounted_after = provider.is_mounted(&view)?;
+    drop(held);
+    let pass = !mounted_after && seconds < 15.0;
+    println!("{}", json!({"result": if pass {"pass"} else {"failed"}, "drop_seconds": seconds, "view_mounted": mounted_after}));
+    if !pass {
+        return Err(format!("a dropped session with a second stdin writer took {seconds:.1} s, view mounted after: {mounted_after}").into());
+    }
+    Ok(())
 }
 
 /// Writes `bytes` through a new encrypted view in 4 MiB chunks of a deterministic pattern, fsyncs, locks, unlocks and reads them
