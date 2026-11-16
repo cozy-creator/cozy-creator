@@ -12,9 +12,11 @@ The caller owns the vault before and after: it is left unlocked with no idle lim
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -48,6 +50,7 @@ class Output(TypedDict, total=False):
 class Run(TypedDict, total=False):
     """A run as the CLI answers it: the fields this proof reads."""
 
+    name: str
     number: int
     status: str
     machine_state: str
@@ -212,6 +215,21 @@ def after_failure(args: argparse.Namespace, number: object, mark: str) -> str:
             f"{time.monotonic() - began:.0f} s, and its file {'came back from the project' if kept else 'did not come back'}")
 
 
+def traces(since: datetime, names: list[str]) -> list[str]:
+    """Lines of Calcifer's own logs, written since `since`, that name the encrypted project's runs or its code (cl-1060): none
+    may, as nothing of a locked project but its folder stays outside it."""
+    code = names[0].split("-")[0]
+    markers = [re.compile(rf"\b{re.escape(name)}\b") for name in names] + [re.compile(rf"\b{re.escape(code)}\b")]
+    stamp = since.strftime("%Y-%m-%dT%H:%M:%S")
+    logs = {path.name: [line for line in path.read_text(errors="replace").splitlines() if line[:19] >= stamp]
+            for path in (Path.home() / ".cozy/calcifer").glob("*.log")}
+    journal = subprocess.run(["journalctl", "--user", "-u", "cozy-calcifer.service", "--no-pager", "-o", "cat",
+                              "--since", f"@{int(since.timestamp())}"], capture_output=True, text=True)
+    if journal.returncode == 0:
+        logs["journal"] = journal.stdout.splitlines()
+    return [f"{name}: {line[:240]}" for name, lines in logs.items() for line in lines if any(marker.search(line) for marker in markers)]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", required=True, type=Path)
@@ -221,6 +239,7 @@ def main() -> None:
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     receipt: dict[str, object] = {}
+    since, names = datetime.now(timezone.utc), list[str]()
 
     if state(args) != "locked":
         cli(args, "lock-before", "vault", "lock")
@@ -390,6 +409,13 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     for path in view.rglob("*"):
         if path.is_file() and path.stat().st_size > 32 << 20:
             path.unlink()
+    # No trace of it outside it: deadline locks waited on saves (steps 3 and 5), a lock ended one (step 4), runs ran slow.
+    names += [name for out in ("outlives", "ended", "past-maximum", "save-lock", "stall")
+              if (name := run_of(args.out / f"{out}.ndjson").get("name"))]
+    if names:
+        found = traces(since, sorted(set(names)))
+        assert not found, f"Calcifer's own logs name the encrypted project's runs or its code: {found[:5]}"
+    receipt["no_traces"] = {"runs": sorted(set(names)), "logs_scanned": True}
     receipt["synthetic_only"] = True
     (args.out / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(f"vault work: {json.dumps(receipt)}", flush=True)
