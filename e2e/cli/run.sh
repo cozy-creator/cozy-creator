@@ -16,6 +16,7 @@
 parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
+. "$(dirname "$0")/asleep.sh"
 . "$(dirname "$0")/lines.sh"
 . "$(dirname "$0")/ondemand.sh"
 . "$(dirname "$0")/disk.sh"
@@ -569,6 +570,7 @@ case $SHARD in
     own_references
     lane_fit
     no_descriptions
+    choice_clamp
     orbit_angles
     old_runtime
     hostile_media
@@ -638,6 +640,8 @@ case $SHARD in
   env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
   ondemand) parts="ondemand_ahead ondemand_need ondemand_share logs" ;;
+  # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
+  ondemand-ramp) parts="ondemand_ramp logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
@@ -658,6 +662,7 @@ case $SHARD in
     own_references
     lane_fit
     no_descriptions
+    choice_clamp
     orbit_angles
     old_runtime
     hostile_media
@@ -743,6 +748,8 @@ case $SHARD in
   projectdb-closes) parts="db_closes logs" ;;
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
+  # cl-1049: an encrypted project made, written, locked, unlocked and read back on this runner's OS (Windows: WinFsp by doctor --fix).
+  projectvault-native) parts="vault_native logs" ;;
   # cl-1000: the static provider timed beside the glibc build, then on FUSE 3 alone through cozy, then on fresh Ubuntu and Fedora
   # (e2e.yaml builds the probe and installs fuse3 and libfuse2t64 for it).
   projectvault-static) parts="vault_throughput vault_fuse3 vault_distros logs" ;;
@@ -753,6 +760,7 @@ case $SHARD in
     vault_times
     vault_queue
     shared_scratch
+    project_traces
     open_unlocks
     projectvault
     vault_leftovers
@@ -818,6 +826,8 @@ case $SHARD in
     rental_self
     logs
   " ;;
+  # A call asleep past Calcifer's 10-minute "no progress", followed by `cozy run` to its end (cl-977): by dispatch, 12 min.
+  asleep) parts="asleep logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating
@@ -847,7 +857,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | web-serves | notraces | fresh) ;;
+    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints

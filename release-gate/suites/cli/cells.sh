@@ -133,8 +133,8 @@ project_cell() {
 }
 [ -z "$ONLY" ] || [[ $ONLY == *",cli-project,"* ]] && project_cell
 
-# A render and a run that stop moving (cl-783): a followed `cozy run` ends with 4 once Calcifer says so (10 minutes with no
-# progress), naming how to follow it, and goes on until it's canceled. The render's job stands stalled on the page's board and
+# A render and a run that stop moving (cl-783): a followed `cozy run` says so once Calcifer does (10 minutes with no progress)
+# and follows on to the run's end (cl-977), here its cancel. The render's job stands stalled on the page's board and
 # stream (`job.updated`) and a real move clears it. About 13 minutes, the two at once. Weightless: tool.py's `slow` sleeps 700 s
 # a step, weightless `silent` 20 minutes. Gone by design with 0.24's verbs: `cozy project wait` (the page shows a render).
 stall_cell() {
@@ -164,8 +164,11 @@ stall_cell() {
   for _ in $(seq 300); do [ "$(held_job | jq -r .state)" = running ] && break; sleep 2; done
   # Its exit kept whether or not the shell stops at a command that fails (`set -e`); nothing in the background reads stdin.
   ( code=0; cd "$S" && "$CLI" --json run "$e2e/weightless/silent" seconds:=1200 --on "$M" > "$OLDPWD/stall-run.ndjson" 2> "$OLDPWD/stall-run.err" || code=$?; echo "$code" > "$OLDPWD/stall-run.exit" ) < /dev/null & running=$!
-  wait "$running"
-  [ "$(cat stall-run.exit)" = 4 ] || cli_fail "stall: cozy run exited $(cat stall-run.exit), not 4: $(tail -c 300 stall-run.err)"
+  # Calcifer says the run stopped moving after 10 minutes; its follower says so and follows on to its end (cl-977).
+  for _ in $(seq 800); do grep -q '"stalled":{' stall-run.ndjson 2> /dev/null && break; kill -0 "$running" 2> /dev/null || break; sleep 1; done
+  grep -q '"stalled":{' stall-run.ndjson || cli_fail "stall: cozy run's events never said the run stopped moving: $(tail -c 300 stall-run.err)"
+  sleep 5
+  kill -0 "$running" 2> /dev/null || cli_fail "stall: cozy run stopped following a silent run (exit $(cat stall-run.exit 2> /dev/null))"
   held_job | jq -e '.stalled != null' > /dev/null || cli_fail "stall: held doesn't stand stalled: $(held_job)"
   grep '"type":"job.updated"' "$stream" | grep '"asset":"held"' | grep -q '"stalled"' || cli_fail "stall: the page heard no job.updated with held stalled"
   # A real move clears it: slow's next step, 700 s after its last.
@@ -174,8 +177,10 @@ stall_cell() {
   grep '"type":"job.updated"' "$stream" | grep '"asset":"held"' | tail -1 | grep -vq '"stalled"' || cli_fail "stall: the page's last job.updated for held still says stalled"
   kill "$page" 2> /dev/null || true
   n=$(run_number stall-run.ndjson)
-  [ -n "$n" ] && [ "$("$CLI" --json run watch "$n" --once | jq -r .status)" = in_progress ] || cli_fail "stall: run ${n:-?} isn't going on after its follower left"
+  [ -n "$n" ] && [ "$("$CLI" --json run watch "$n" --once | jq -r .status)" = in_progress ] || cli_fail "stall: run ${n:-?} isn't going on"
   cli_page cancel "$S" held > stall-cancel.log 2>&1 || cli_fail "stall: cancel held: $(tail -c 300 stall-cancel.log)"
   [ -z "$n" ] || "$CLI" run cancel "$n" > stall-run-cancel.log 2>&1 || cli_fail "stall: run cancel $n: $(tail -c 300 stall-run-cancel.log)"
+  wait "$running"
+  [ "$(cat stall-run.exit)" = 1 ] || cli_fail "stall: cozy run exited $(cat stall-run.exit) on its canceled run, not 1: $(tail -c 300 stall-run.err)"
 }
 [ -z "$ONLY" ] || [[ $ONLY == *",cli-stall,"* ]] && stall_cell

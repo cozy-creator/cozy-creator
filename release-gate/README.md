@@ -170,12 +170,15 @@ A package a session runs or installs from a `packages_refs` checkout carries its
 `scripts/triton.sh` as a release ships them (`lib.sh` `kernels`). `parity` (xs-194) runs a package from source and its Hub release on one
 pod, each cold then warm on the same seed: the environments' distributions, their `_triton` kernels, cold execution and the output bytes must match.
 `tool-functions` (cl-774) takes `qwen-image-2/image`, `birefnet/remove_background`, `minimax-h3/generate`, `upscale` and `edit` from dropping the tool to accepting its output on one 4090, as the page does (`e2e/page.py`), a shape like `lab`'s beside them, from a `packages_refs` checkout `pk`, keeping frames to judge.
+`h3-upscale` (se-138) upscales the gate's 15 s Skater take as the page does, from `packages_refs` checkouts `was` and `now`: with no
+prompt both must give the same frames; an overriding prompt (0.7 and 0.909) must differ; the take's file as a box (no latents) runs with
+a prompt, and with no text it warns and holds the source by the gate's regen bar. Side-by-side frames in `frames/`.
 `h3-later-segments` (se-130) is a 26 s H3 shot of two segments whose summary names segment 1's event, then a redo from its seam, as the
 page does it (`e2e/page.py`), from a `packages_refs` checkout `pk`: segment 2's summary and the redo's say only that they continue,
 without the event, their prompts are the same, and their frames are kept to judge that the event isn't played again.
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `render-estimate` (cl-1004) is the bench's H3 Turbo 15 s shot as a box on one pod this runner never ran H3 on: the time `fit` gives
-the page before any run (our measurement of that card) against the warm render's, within 35%, then `fit` again, measured there.
+the page before any run (its release's benchmark of that card) against the warm render's, within 35%, then `fit` again, measured there.
 `run-no-on` (tools.md) is `cozy run` with no `--on` on a runner with no GPU and one rental: a weightless still and a function that orchestrates a GPU model go to the rental, as a render does, and nothing warns; `e2e/cli/project.sh`'s `run_no_on` is the case with no rental.
 `disk` runs the `disk` suite's cells on one pod under the session's TensorD (its installs only with `installs: yes`);
 `disk-valentino` (cl-774) is a 100 GB 4090 past a full disk: Qwen-Image 2.1 and turbo, then H3, which makes its room by

@@ -184,7 +184,9 @@ class Scanner:
                               input=json.dumps(request).encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         return cast(dict[str, object], json.loads(done.stdout)) if done.returncode == 0 else None  # cast: the scan process's JSON
 
-    def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path] | None = None) -> dict[str, object]:
+    def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path] | None = None,
+             since_ns: int | None = None) -> dict[str, object]:
+        """`since_ns`: only files written since then (a marker made after it can be in no older file)."""
         self.counts.clear(); self.matches.clear()
         inside = self.patterns()
         require(inside, "scan_markers_missing")
@@ -222,6 +224,8 @@ class Scanner:
                             self.found(os.fsencode(os.readlink(path)), label, patterns)
                             continue
                         if not stat.S_ISREG(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) in seen:
+                            continue
+                        if since_ns is not None and metadata.st_mtime_ns < since_ns:
                             continue
                         seen.add((metadata.st_dev, metadata.st_ino))
                         self.counts["files"] += 1

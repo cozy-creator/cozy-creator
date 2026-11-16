@@ -1,16 +1,18 @@
 // account-rent (cl-973 core cell 24, solo): the account and renting, as a person does them in the page. On the stand-in too, render-time
 // (cl-1004): beside Render, how long a box takes where it would go, from 15 s (a slow box once it ran, none for a fast one), and Slow here
-// on an H3 shot this computer, which has no GPU, would run on its CPU: our measurement of the stand-in's rtx-4090, and Rent with it. Signed out by Account's inline
+// on an H3 shot this computer, which has no GPU, would run on its CPU: its release's benchmark of the stand-in's rtx-4090, what a render
+// there costs, and Rent with it. Signed out by Account's inline
 // confirm, Rent says to sign in; a wrong code stays in the form in plain words, the code the isolated Hub logs signs in, and nothing of
 // the Hub's is in the browser. On localfit's GPU stand-in (a proxy in front of the isolated Hub that sells an rtx-4090 and places runs on
 // it), a box this computer would render poorly asks on itself, Rent a GPU first: Run here anyway renders here and is kept (canceled as it
 // waits on its fresh install, that install ends with it, and the next Render installs again), and Rent opens Machines with the card chosen,
 // rendering nothing. Then the docker provider's cpu, rented from Machines at its quoted price, listed as the CLI lists it, made the
 // project's machine and ended: nothing of it left running. Never paid: that provider starts a container here that never gets ready
-// (e2e/cli/rental.sh).
+// (e2e/cli/rental.sh). In a dev home whose packages checkout holds H3 (an RC build), the checkout's H3 is timed by its source's
+// benchmarks.json before any run (cl-1024).
 // $E2E_HUB_EMAIL and $E2E_HUB_LOG (e2e/isolated.sh): the suite's account, and the isolated Hub's log of the codes it would mail.
 const { execFile, spawn } = require('child_process');
-const { appendFileSync, mkdirSync, readFileSync, readdirSync } = require('fs');
+const { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = require('fs');
 const http = require('http');
 const { dirname, join } = require('path');
 const { promisify } = require('util');
@@ -295,9 +297,9 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
         await expect.soft(page.getByRole('region', { name: 'Focused asset' }).getByRole('note', { name: 'Render time' })).toBeVisible({ timeout: 30_000 });
       };
       // This computer's runs are its project's own (xs-160), so its machine times none of them: the estimate stands on the
-      // project's run here (`prior`).
+      // project's run here, a measurement of this machine all the same (`measured`, cl-1047).
       const ran = (await api.post(project.at('/fit'), { names: ['slow'] })).estimates?.[0];
-      expect.soft(ran, "by this project's run here").toMatchObject({ machine: 'local', basis: 'prior' });
+      expect.soft(ran, "by this project's run here").toMatchObject({ machine: 'local', basis: 'measured' });
       expect.soft(ran?.run_ms, 'its run here, about its 24 s').toBeGreaterThanOrEqual(20_000);
       await look('slow', timed);
       await leave();
@@ -307,7 +309,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await region.getByRole('button', { name: 'Render', exact: true }).click();
       await expect.poll(async () => (await project.asset('quick')).versions ?? 0, { message: "quick's first take", timeout: 120_000 }).toBe(1);
       const quick = (await api.post(project.at('/fit'), { names: ['quick'] })).estimates?.[0];
-      expect.soft({ basis: quick?.basis, fast: (quick?.run_ms ?? 0) > 0 && (quick?.run_ms ?? 0) < 15_000 }, 'the fast box, timed and short').toEqual({ basis: 'prior', fast: true });
+      expect.soft({ basis: quick?.basis, fast: (quick?.run_ms ?? 0) > 0 && (quick?.run_ms ?? 0) < 15_000 }, 'the fast box, timed and short').toEqual({ basis: 'measured', fast: true });
       await expect.soft(region.getByRole('note', { name: 'Render time' }), 'a short render says no time').toHaveCount(0);
       await expect.soft(region.getByRole('button', { name: 'Slow here' })).toHaveCount(0);
       await leave();
@@ -317,7 +319,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       region = await focus(page, 'shot');
       const shot = await answered;
       expect.soft(shot, 'H3 on this computer, which has no GPU').toMatchObject({ machine: 'local', card: '', faster: { rent: { sku: CARD.name, card: 'RTX 4090' } } });
-      // release-gate 43211705140: 335.1 s for the 15 s shot on one RTX 4090 (api::estimate's references.tsv).
+      // release-gate 43211705140: 335.1 s for the 15 s shot on one RTX 4090, its release's benchmark as the isolated Hub serves it.
       expect.soft(shot?.faster?.run_ms, 'the 15 s shot on a rented RTX 4090, as we measured it').toBe(335_100);
       const slowHere = region.getByRole('button', { name: 'Slow here', exact: true });
       await expect(slowHere, 'Slow here beside Render').toBeVisible();
@@ -337,7 +339,8 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await slowHere.click();
       await expect(notice, 'it opens under the box').toBeVisible();
       await expect.soft(notice, 'in view, next to Render').toBeInViewport();
-      await expect.soft(notice.locator('p').first()).toHaveText('This computer has no GPU, so this would run on its CPU, slowly. On a rented RTX 4090, about 6 min.');
+      // Its release's benchmark of the RTX 4090 (benchmarks-seed.json, published with it by isolated.sh), at the stand-in's $0.69/h.
+      await expect.soft(notice.locator('p').first()).toHaveText('This computer has no GPU, so this would run on its CPU, slowly. On a rented RTX 4090, about 6 min and about $0.06 a render.');
       await expect.soft(notice.locator('p').nth(1)).toHaveText('A rented RTX 4090 runs it for $0.69/h.');
       await look('shot-notice', opened);
       // A press that begins inside and ends outside leaves it open; a click outside closes it; Slow here opens it again.
@@ -355,6 +358,53 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await notice.getByRole('button', { name: 'Rent an RTX 4090', exact: true }).click();
       await expect(page, 'Machines, the card asked for').toHaveURL(`${project.url('machines')}?rent=${CARD.name}&gpus=1`);
       expect.soft(asked.filter((one) => one.names?.includes('shot')), 'Rent renders nothing').toEqual([]);
+    });
+
+    await test.step("Render time from source: a packages checkout's H3 is timed by its own benchmarks.json before any run", async () => {
+      // A dev home (`dev = true`, an RC build) runs first-party packages from its checkout (`[calcifer] packages`, xs-195); unpublished,
+      // their benchmarks are their source's `benchmarks.json`, the file `cozy package publish` attaches (cl-1024). Its RTX 4090 row here
+      // (300 s) isn't the release's (335.1 s): the estimate stands on the source's.
+      const version = (await run(need('COZY'), ['--version'])).stdout;
+      if (!/-dev\+g/.test(version) || !process.env.E2E_PACKAGES) {
+        testInfo.annotations.push({ type: 'skipped', description: `from source: ${version.trim()} ${process.env.E2E_PACKAGES ? 'is no RC build' : 'and no $E2E_PACKAGES'}` });
+        return;
+      }
+      const co = join(need('OUT'), 'web', 'packages-rc');
+      await run('rm', ['-rf', co]);
+      mkdirSync(co, { recursive: true });
+      await run('cp', ['-r', join(process.env.E2E_PACKAGES, 'minimax-h3'), join(co, 'minimax-h3')]);
+      const row = { function: 'generate', gpu: 'NVIDIA GeForce RTX 4090', gpus: 1, request: { refs: 0, seconds: 15 }, warm_ms: 300_000, note: 'account-rent: the source' };
+      writeFileSync(join(co, 'minimax-h3', 'benchmarks.json'), JSON.stringify([row], null, 2));
+      await run('git', ['-C', co, 'init', '-q', '-b', 'rc/e2e']);
+      await run('git', ['-C', co, 'add', '-A']);
+      await run('git', ['-C', co, '-c', 'user.name=e2e', '-c', 'user.email=e2e@localhost', 'commit', '-qm', 'checkout']);
+      // local stays on the candidates the suite put on it by hand (e2e/lib.sh's `candidates`), which hold it: a dev home's local would
+      // otherwise follow the RC's builds at rest.
+      const config = calciferControl.config;
+      const before = readFileSync(config, 'utf8');
+      const lines = before.split('\n').filter((line) => !/^dev\s*=/.test(line));
+      const table = lines.findIndex((line) => /^\[calcifer\]\s*$/.test(line));
+      if (table < 0) lines.push('', '[calcifer]', `packages = "${co}"`);
+      else lines.splice(table + 1, 0, `packages = "${co}"`);
+      writeFileSync(config, ['dev = true', ...lines].join('\n'));
+      try {
+        await page.goto('about:blank');
+        await calciferControl.stop();
+        await calciferControl.start();
+        await project.add({ name: 'source_shot', tool: 'minimax-h3/generate', kind: 'video', fields: { beats: [{ description: 'Waves roll onto a beach at dusk.', duration: 15 }], turbo: true }, at: { x: 840, y: 460 } });
+        let sourced = null;
+        await expect.poll(async () => {
+          sourced = (await api.post(project.at('/fit'), { names: ['source_shot'] })).estimates?.[0] ?? null;
+          return sourced?.faster?.run_ms ?? 0;
+        }, { message: "the checkout's H3 on a rented RTX 4090, by its source's benchmark", timeout: 240_000, intervals: [5_000] }).toBe(300_000);
+        expect.soft(sourced, 'H3 from source on this computer, which has no GPU').toMatchObject({ machine: 'local', card: '', faster: { rent: { sku: CARD.name, card: 'RTX 4090' } } });
+        expect.soft(sourced?.faster?.line).toBe('This computer has no GPU, so this would run on its CPU, slowly. On a rented RTX 4090, about 5 min and about $0.06 a render.');
+      } finally {
+        await api.delete(project.at('/assets/source_shot')).catch(() => {});
+        writeFileSync(config, before);
+        await calciferControl.stop();
+        await calciferControl.start();
+      }
     });
 
     await test.step('A heavy box asks first; Run here anyway renders here, then Cancel; Render again, and again after a reload', async () => {

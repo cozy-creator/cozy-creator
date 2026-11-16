@@ -110,7 +110,7 @@ for at in 1 2 3; do
   esac
 done
 cp "$log" "$OUT/plan-published.log"
-grep -E "isn't planned: " "$OUT/plan-published.log" | sed 's/^/plan: /'
+{ grep -E "isn't planned: " "$OUT/plan-published.log" || true; } | sed 's/^/plan: /'
 for at in 1 2 3; do
   key=${keys[$((at - 1))]}
   ! grep -qF "$key isn't planned: " "$OUT/plan-published.log" || check "plan: cut_$at wasn't planned: $(grep -F "$key isn't planned: " "$OUT/plan-published.log" | head -1)"

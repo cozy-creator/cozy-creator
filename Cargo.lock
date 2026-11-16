@@ -616,6 +616,7 @@ dependencies = [
  "tempfile",
  "tensorfs",
  "tokio",
+ "toml",
  "toon-format",
  "unicode-width",
  "url",

@@ -99,7 +99,7 @@ pub enum State {
 }
 
 impl Birth {
-    /// The birth of the process that has `pid` now.
+    /// The birth of the process that has `pid` now; an exited child not yet reaped has one too.
     pub fn of(pid: u32) -> Result<Birth> {
         sys::birth(pid).map_err(Error::os("read a process's birth"))
     }
