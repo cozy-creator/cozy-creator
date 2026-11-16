@@ -209,7 +209,7 @@ export function MachineDrawer() {
       {details && <Details machine={machine} now={now} />}
       {!ended && machine.status && (
         <>
-          <Gpus status={machine.status} />
+          <Gpus machine={machine} status={machine.status} />
           <Disk machine={machine} status={machine.status} />
           <Queue machine={machine} status={machine.status} />
           <Packages status={machine.status} />

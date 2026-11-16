@@ -790,6 +790,11 @@ export class Client {
     return this.opened(`${machine(name)}/logs/${log}?lines=${lines}${place}`, signal)
   }
 
+  /** Its GPUs' use, a reading each second while the stream is read (cl-1100). */
+  machineGpuEvents(name: string, signal: AbortSignal): Promise<Response> {
+    return this.opened(`${machine(name)}/gpus`, signal)
+  }
+
   // Packages
 
   packages(q: string, limit: number, signal?: AbortSignal): Promise<PackageSearch> {
