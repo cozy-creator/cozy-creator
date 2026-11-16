@@ -703,12 +703,14 @@ fn saving(api: &Arc<Api>, root: &FsPath) -> Option<Error> {
 /// Before a lock closes the machine's side of the project (cl-1060), which forgets what the machine still holds for it: every
 /// output its runs still owe lands first, judged by progress, never a timer. The lock waits while those saves move bytes; a save
 /// silent for `EXPORT_SILENCE` (its machine not answering, its exporter unable to go on) is cut: its exporter ends, its half-written
-/// files go, its outputs are recorded not saved and its run reads failed, saying why. The runs it cut, by name, for the lock's
-/// answer to its own client and nothing else (no log). One rule for every lock: one asked for, a deadline's, a stop's.
-fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Result<Vec<String>, Error> {
+/// files go. A local run's outputs, which the machine's close then forgets, are recorded not saved and its run reads failed, saying
+/// why. A remote machine's run keeps its outputs across a lock (the lock closes only this computer's machine,
+/// `private_io::close_private_project`), so its save stays owed and resumes when that machine answers. The runs it cut and the runs
+/// it left owed, by name, for the lock's answer to its own client and nothing else (no log). One rule for every lock.
+fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Result<(Vec<String>, Vec<String>), Error> {
     let journal = |_: crate::store::StoreError| error("project_journal", "the project journal could not be checked");
     let projects = api.projects.now_open();
-    let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok(vec![]) };
+    let Some(project) = projects.iter().find(|project| project.root == root).cloned() else { return Ok((vec![], vec![])) };
     let owner = super::RunOwner::of(&project, &api.calcifer);
     let mut said = false;
     loop {
@@ -718,7 +720,7 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
             Err(crate::store::StoreError::Locked(code)) if code == "project_busy" => { std::thread::sleep(Duration::from_millis(200)); continue; }
             Err(e) => return Err(journal(e)),
         };
-        if owed.is_empty() { return Ok(vec![]); }
+        if owed.is_empty() { return Ok((vec![], vec![])); }
         for (id, _) in &owed { api.calcifer.export(id); }
         if !said { saving(); said = true; }
         if owed.iter().any(|(id, _)| api.calcifer.export_moving(id)) {
@@ -729,11 +731,16 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
         let ids: Vec<crate::RunId> = owed.iter().map(|(id, _)| id.clone()).collect();
         api.calcifer.end_exports_of(&ids);
         let store = owner.store().map_err(journal)?;
-        let mut cut = vec![];
+        let (mut cut, mut deferred) = (vec![], vec![]);
         for (id, number) in owed {
             let Ok(Some(row)) = store.run(id.as_str()) else { continue };
             let items = store.outputs_to_export(id.as_str()).unwrap_or_default();
             crate::outputs::drop_partials(&row, &items);
+            // Its machine keeps the outputs: owed, saved when it answers (a rental's paid work is never thrown away).
+            if row.machine.as_deref() != Some("local") {
+                deferred.push(format!("{}-{number}", project.key()));
+                continue;
+            }
             let why = "not saved: its save stopped moving before the project locked";
             for item in &items {
                 if let Ok(events) = store.export_failed(id.as_str(), &item.name, item.index, item.rev, why) { api.calcifer.publish(&id, events); }
@@ -742,7 +749,7 @@ fn drain_saves(api: &Arc<Api>, root: &FsPath, mut saving: impl FnMut()) -> Resul
             if let Ok(events) = store.outputs_not_saved(id.as_str(), &reason) { api.calcifer.publish(&id, events); }
             cut.push(format!("{}-{number}", project.key()));
         }
-        return Ok(cut);
+        return Ok((cut, deferred));
     }
 }
 
@@ -974,7 +981,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
                 say(root, "activity op", || "its idle clock restarts on a page's activity".into());
             }
         }
-        return Ok(VaultChanged { vault: reported_status(api, root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![] });
+        return Ok(VaultChanged { vault: reported_status(api, root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![] });
     }
     if ask.action == "lock" && !encrypted(root) {
         return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked"));
@@ -982,7 +989,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     progress.phase("waiting");
     let mut browser = if matches!(ask.action.as_str(), "lock" | "encrypt" | "decrypt" | "rotate") { prepare_browser(api)? } else { None };
     let op = operation(&root); let _guard = op.lock().expect("vault operation");
-    let (mut ended, mut cut) = (vec![], vec![]);
+    let (mut ended, mut cut, mut deferred) = (vec![], vec![], vec![]);
     if ask.action == "lock" {
         // A lock that found the project busy already revoked its view: this one finishes it, and admits no receipt into
         // a view that can no longer be opened.
@@ -1002,12 +1009,12 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
         ended = end_work(&api, &root)?;
         // What the project's runs still owe lands before the machine's side closes, judged by progress (cl-1060).
-        cut = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
+        (cut, deferred) = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
         // A request still holds the project: its view is revoked, and the sweeper locks once it ends.
         if let Some(busy) = busy {
             if ended.is_empty() { return Err(busy); }
             progress.readable = readable_token(root);
-            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![] });
+            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![] });
         }
     }
     // A lock waits for the project as the drain above does: for the requests let in before its view was revoked (each now
@@ -1022,7 +1029,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         Ok(transition) => transition,
         Err(busy) if settling && busy.code == "project_busy" => {
             progress.readable = readable_token(root);
-            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![] });
+            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![] });
         }
         Err(error) => return Err(error),
     };
@@ -1033,7 +1040,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let mut changed = loop {
         match change(&api, &root, ask, progress, &transition, &mut browser) {
             // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![] },
+            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![] },
             // Its view is revoked, so nothing new opens it: what still holds it (a request, a journal read, a measurement) is
             // finishing. A lock or a decrypt waits for that a moment rather than refuse; Cozy's browser was asked already.
             Err(busy) if drains && busy.code == "project_busy" && std::time::Instant::now() < draining => {
@@ -1050,7 +1057,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     // Capture this exact mount's revocation token while the operation still
     // holds the transition guard, so a later lock cannot revive its reply.
     progress.readable = readable_token(root);
-    changed.unsaved = cut;
+    (changed.unsaved, changed.deferred) = (cut, deferred);
     Ok(changed)
 }
 
@@ -1236,7 +1243,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.finish_receipt(&store, "completed")?;
     }
-    Ok(VaultChanged { vault: reported_status(api, root), recovery_secret, ended: vec![], skipped_files: progress.skipped(), unsaved: vec![] })
+    Ok(VaultChanged { vault: reported_status(api, root), recovery_secret, ended: vec![], skipped_files: progress.skipped(), unsaved: vec![], deferred: vec![] })
 }
 
 /// What holds an unlocked vault open: why, and whether its end stirs the vault clock. One that doesn't is looked at again shortly.
