@@ -577,27 +577,12 @@ impl Store {
     /// dropped, and its bakes of every LoRA it ran with held 61 GB of kamitsure's 200 (cl-1081). One a
     /// reader has open stays (`discard`).
     pub(super) fn drop_derived(&self, short: &dyn Fn() -> Result<u64>) -> Result<u64> {
-        let mut pages: Vec<(SystemTime, std::path::PathBuf)> = Vec::new();
-        for slot in list(&self.root.join("derived"))? {
-            for page in list(&slot)? {
-                if page.file_name().and_then(|n| n.to_str()).is_some_and(is_digest) {
-                    let used = fs::metadata(&page).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
-                    pages.push((used, page));
-                }
-            }
-        }
-        pages.sort();
         self.restore_trash()?;
         let mut freed = 0;
-        for (_, page) in pages {
+        for (page, object) in self.derived_pages()? {
             if short()? == 0 {
                 break;
             }
-            let object = match fs::read(&page) {
-                Ok(bytes) => serde_json::from_slice::<ObjectRef>(&bytes).ok(),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(fail("read", &page)(error)),
-            };
             if let Some(object) = &object {
                 match self.discard(&object.sha256, SystemTime::now())? {
                     Some(bytes) => freed += bytes,
@@ -613,6 +598,29 @@ impl Store {
             tracing::info!("tensorfs: freed {} of derived pages, least recently used first", size(freed));
         }
         Ok(freed)
+    }
+
+    /// Every derived page's record and the object it names (None: not one), least recently used first.
+    pub(super) fn derived_pages(&self) -> Result<Vec<(std::path::PathBuf, Option<ObjectRef>)>> {
+        let mut pages: Vec<(SystemTime, std::path::PathBuf)> = Vec::new();
+        for slot in list(&self.root.join("derived"))? {
+            for page in list(&slot)? {
+                if page.file_name().and_then(|n| n.to_str()).is_some_and(is_digest) {
+                    let used = fs::metadata(&page).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+                    pages.push((used, page));
+                }
+            }
+        }
+        pages.sort();
+        let mut named = Vec::with_capacity(pages.len());
+        for (_, page) in pages {
+            match fs::read(&page) {
+                Ok(bytes) => named.push((page, serde_json::from_slice::<ObjectRef>(&bytes).ok())),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(fail("read", &page)(error)),
+            }
+        }
+        Ok(named)
     }
 
     /// Removes what fetches that ended unfinished kept, those running aside. Their ranges hold no

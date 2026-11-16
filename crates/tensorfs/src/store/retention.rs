@@ -470,6 +470,12 @@ impl Store {
         let mut spare: u64 = objects.iter()
             .filter(|(sha, (_, modified))| *modified < cutoff && !kept.contains(sha.as_str()) && !roots.contains(*sha))
             .map(|(_, (length, _))| length).sum();
+        // Derived pages go first whatever lane keeps them (`drop_derived`): spare, but for one a reader has open.
+        let derived: BTreeSet<String> = self.derived_pages()?.into_iter().filter_map(|(_, object)| object).map(|o| o.sha256).collect();
+        for sha in &derived {
+            let unheld = self.blob(sha).ok().and_then(|blob| File::open(blob).ok()).is_some_and(|f| f.try_lock().is_ok());
+            spare += unheld.then(|| objects.get(sha).map_or(0, |(length, _)| *length)).unwrap_or(0);
+        }
         for entry in list(&self.root.join("tmp"))? {
             if entry.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("partial-")) {
                 let unheld = File::open(&entry).is_ok_and(|f| f.try_lock().is_ok());
@@ -481,7 +487,7 @@ impl Store {
                 .unwrap_or_else(|| format!("cache entry {}", &lane.uses[0].name[..12])),
             used: lane.used,
             holders: holders.iter().filter(|(digest, _)| lane.held_by(digest, &count)).flat_map(|(_, pids)| pids.iter().copied()).collect(),
-            digests: lane.digests.iter().map(|d| d.to_string()).collect(),
+            digests: lane.digests.iter().filter(|d| !derived.contains(**d)).map(|d| d.to_string()).collect(),
         }).collect();
         let lengths = objects.into_iter().map(|(sha, (length, _))| (sha, length)).collect();
         Ok(Room { lanes, spare, lengths })
