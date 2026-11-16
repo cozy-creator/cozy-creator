@@ -436,12 +436,51 @@ if [ -n "$needs" ]; then
     rm -f "$seed/disk.safetensors"
   fi
   if [[ " $needs " == *" calls "* ]]; then
-    # ondemand_calls' orchestrator (cl-1077): the model of the function it calls and of one it never calls, 32 MiB each.
-    for name in used unused; do
-      random_weights "$seed/calls.safetensors" 32 "calls-$name"
+    # ondemand_calls' orchestrator (cl-1077): the model of the function it calls and of one it never calls, 32 MiB each; and
+    # ondemand_adapted's other model, bigger than its base, so its root's prefetch (smallest first) can't land it before its call.
+    for name in used:32 unused:32 other:256; do
+      random_weights "$seed/calls.safetensors" "${name#*:}" "calls-${name%:*}"
+      name=${name%:*}
       mirror "$seed/calls.safetensors" "e2e/calls-$name" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
       rm -f "$seed/calls.safetensors"
     done
+    # And ondemand_adapted's: a base whose `layer.weight` [4096, 4096] a LoRA of rank 2 fits, 224 MiB in all, and that LoRA.
+    python3 -I - "$seed/calls-base.safetensors" "$seed/calls-lora.safetensors" <<'PYCALLS'
+import json, os, struct, sys
+FINITE = bytes(b & 0xBF for b in range(256))
+def write(path, shapes, fill):
+    header, at = {}, 0
+    for key, shape in shapes.items():
+        n = 2 * shape[0] * (shape[1] if len(shape) > 1 else 1)
+        header[key] = {"dtype": "F16", "shape": shape, "data_offsets": [at, at + n]}
+        at += n
+    raw = json.dumps(header).encode()
+    raw += b" " * (-len(raw) % 8)
+    with open(path, "wb") as out:
+        out.write(struct.pack("<Q", len(raw)) + raw)
+        for key, shape in shapes.items():
+            left = header[key]["data_offsets"][1] - header[key]["data_offsets"][0]
+            while left:
+                out.write(fill(min(left, 8 << 20)))
+                left -= min(left, 8 << 20)
+random = lambda n: bytes(os.urandom(n)).translate(FINITE)
+write(sys.argv[1], {"layer.weight": [4096, 4096], **{f"w.{i}": [32 << 20] for i in range(3)}}, random)
+write(sys.argv[2], {"layer.lora_A.weight": [2, 4096], "layer.lora_B.weight": [4096, 2]}, lambda n: b"\x00\x10" * (n // 2))
+PYCALLS
+    # One refused is the cell's to report (E2E_CALLS_SEED), never the shard's.
+    if ! mirror "$seed/calls-base.safetensors" e2e/calls-base bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is 2> "$seed/calls-base.err"; then
+      E2E_CALLS_SEED="e2e/calls-base: $(tail -c 400 "$seed/calls-base.err" | tr '\n' ' ')"
+    elif ! cozy --json lora upload "$seed/calls-lora.safetensors" e2e/calls-lora --lane f16 --source-format as-is \
+      --mirror https://github.com/cozy-creator/cozy-creator/tree/master/e2e --on local -y > "$seed/upload-calls-lora.json" 2>&1; then
+      E2E_CALLS_SEED="uploading e2e/calls-lora: $(tail -c 400 "$seed/upload-calls-lora.json" | tr '\n' ' ')"
+    else
+      commit=$(python3 "$here/model-details.py" e2e/calls-lora | jq -r '.checkpoints[0].checkpoint // empty')
+      [ -n "$commit" ] && cozy --json lora publish e2e/calls-lora 0.1.0 "$commit" -y > "$seed/publish-calls-lora.json" 2>&1 \
+        || E2E_CALLS_SEED="publishing e2e/calls-lora: $(tail -c 400 "$seed/publish-calls-lora.json" | tr '\n' ' ')"
+    fi
+    export E2E_CALLS_SEED=${E2E_CALLS_SEED:-}
+    log "published e2e/calls-used, e2e/calls-unused, e2e/calls-other, e2e/calls-base and e2e/calls-lora${E2E_CALLS_SEED:+ (not all: $E2E_CALLS_SEED)}"
+    rm -f "$seed"/calls-*.safetensors
   fi
   if [[ " $needs " == *" spare "* ]]; then
     # ondemand_share's weights (cl-1007): more than the 60 Mbit link moves while its install runs.
