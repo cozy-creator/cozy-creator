@@ -145,7 +145,12 @@ export class CardView {
       const unavailable = Boolean(failed?.handle?.failed && !failed.handle.texture)
       const sentence = unavailable ? "Selected image unavailable" : show.error ?? show.note
       // Far out a box is its picture and its name: words too small to read aren't drawn (look-at-your-own-ui).
-      if (sentence && !far) label(unavailable ? "unavailable" : "note", sentence, body.x + 12, body.y + Math.max(8, body.h / 2 - BODY * 1.25), body.w - 24, { size: BODY, color: show.error ? colors.failed : colors.mute }, 2)
+      if (sentence && !far && show.picture && !unavailable && !show.error) {
+        // Over a picture, a note sits on a pill along its foot.
+        const room = Math.min(body.w - 16, width(sentence, SMALL) + 16)
+        this.ink.roundRect(body.x + (body.w - room) / 2, body.y + body.h - SMALL * 1.6 - 8, room, SMALL * 1.6, 5).fill({ color: colors.card, alpha: 0.9 })
+        label("note", ellipsis(sentence, room - 16, SMALL), body.x + (body.w - room) / 2 + 8, body.y + body.h - SMALL * 1.5 - 8, room - 16, { size: SMALL, color: colors.mute })
+      } else if (sentence && !far) label(unavailable ? "unavailable" : "note", sentence, body.x + 12, body.y + Math.max(8, body.h / 2 - BODY * 1.25), body.w - 24, { size: BODY, color: show.error ? colors.failed : colors.mute }, 2)
       if (!far && show.words && (!show.picture || node.view.asset?.standing === "making")) this.words(show, body, colors, used, env)
       if (show.duration && !far) {
         const room = width(show.duration, SMALL, true, true) + 12
