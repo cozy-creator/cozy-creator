@@ -247,6 +247,7 @@ impl Store {
                 tx.execute("DELETE FROM projects WHERE id = ?1", [id])?;
                 tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
                 tx.execute("DELETE FROM purge_due WHERE project = ?1", [id])?;
+                tx.execute("DELETE FROM project_handles WHERE path = ?1", [&path])?;
             }
             Ok(())
         })?;
@@ -272,12 +273,16 @@ impl Store {
             return Ok(code);
         }
         self.write(|tx| {
+            // What it retires leaves no page behind (cl-984): a locked project's handle row among them.
+            tx.pragma_update(None, "secure_delete", "ON")?;
             // The handle it had while locked names it still, until its next lock (cl-1090): a page that opened it from the list goes on.
             tx.execute("INSERT OR IGNORE INTO project_handles (handle, path) SELECT id, path FROM projects WHERE path = ?1 AND id LIKE 'locked-%'", [path.to_string_lossy()])?;
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
             tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
             let code = project_code(tx, id, preferred, crate::project::code::generate)?;
             tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code", params![id, path.to_string_lossy(), code])?;
+            // A handle whose folder no longer holds a project here (it moved, its folder went, it never locked again) goes.
+            tx.execute("DELETE FROM project_handles WHERE path NOT IN (SELECT path FROM projects)", [])?;
             Ok(code)
         })
     }

@@ -1,7 +1,16 @@
 // vault-list (cl-1090, xs-203's user flow; Paul 11-16: "open webui, decrypt project"): an encrypted project, locked, opened from the
 // Projects list under its `locked-…` handle and unlocked there, opens at its own address: no "can't be opened", and nothing more is asked
 // under the handle (its tool reads and dropped files answered 404). `@vault`: on the job with the filesystem driver.
+const { execFileSync } = require('child_process');
+const { dirname, join } = require('path');
 const { test, expect } = require('./fixtures');
+
+/** How many rows of Calcifer's index pair a locked project's handle with `folder` (`project_handles`, cl-1090), read-only. */
+const handleRows = (folder, handle = null) => Number(execFileSync('python3', ['-I', '-c', [
+  'import sqlite3, sys',
+  'db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)',
+  'print(db.execute("SELECT count(*) FROM project_handles WHERE path = ?1 AND (?2 = \'\' OR handle = ?2)", (sys.argv[2], sys.argv[3])).fetchone()[0])',
+].join('\n'), join(dirname(process.env.HOLDER), 'state.db'), folder, handle ?? '']).toString().trim());
 
 test.use({ projectOptions: { starter: false, encrypted: true } });
 
@@ -34,7 +43,11 @@ test('vault-list', { tag: '@vault' }, async ({ page, project, api, cli, guards }
   await expect(page.getByText(/couldn't open|can't be opened/i), 'never "can\'t be opened"').toHaveCount(0);
   await page.waitForTimeout(3000);
   expect(underHandle, 'nothing is asked under the locked handle once it opened').toEqual([]);
+  expect.soft(handleRows(project.path, listed.id), 'its handle names it while it is unlocked').toBe(1);
 
   const again = await cli('--json', 'vault', '--directory', project.path, 'lock');
   expect.soft(again.code, `locked again before its folder goes: ${again.stderr.slice(-300)}`).toBe(0);
+  await expect.poll(async () => (await vault()).state, { message: 'locked again', timeout: 60_000 }).toBe('locked');
+  // cl-984: after a lock, nothing in the index pairs a handle it had with its folder.
+  expect(handleRows(project.path), 'no handle row for its folder once locked').toBe(0);
 });

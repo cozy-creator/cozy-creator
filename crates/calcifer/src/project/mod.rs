@@ -662,9 +662,11 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
         return Ok(unlocked(indexed.swap_remove(at)));
     }
-    // A locked project's handle, the project opened since by its own id (cl-1090): the project now in that folder, until its next lock.
+    // A locked project's handle, the project opened since by its own id (cl-1090): the project now in that folder, until its next lock,
+    // and only while that folder holds an unlocked encrypted project: never a plain one moved in, never a locked one.
     if text.starts_with("locked-") {
-        let path = api.calcifer.store().handle_path(text).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+        let path = api.calcifer.store().handle_path(text).map_err(|e| Error::internal("calcifer_store", e.to_string()))?
+            .filter(|path| vault::encrypted(path) && vault::require_path(path).is_ok());
         if let Some(at) = path.and_then(|path| indexed.iter().position(|entry| entry.path == path && !entry.id.starts_with("locked-"))) {
             return Ok(indexed.swap_remove(at));
         }
