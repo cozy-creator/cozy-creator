@@ -921,7 +921,7 @@ impl Mounted {
         if self.is_mounted()? {
             self.provider.unmount(&self.view)?;
         }
-        self.input.take();
+        self.tell_stop();
         #[cfg(target_os = "macos")]
         let acknowledgement = if self.provider.native {
             apfs::SHUTDOWN_ACK
@@ -942,12 +942,30 @@ impl Mounted {
     }
 }
 
+impl Mounted {
+    /// Tells the supervisor to stop: a byte, then its stdin closed. EOF alone can be held off: the supervisor's stdin is its own
+    /// user's to reopen (it's dumpable), and another writer keeps EOF from coming. Written on a thread of its own, so a full pipe
+    /// can't hold this one. A byte from that other writer stops it too: its user could end it anyway.
+    fn tell_stop(&mut self) {
+        if let Some(mut input) = self.input.take() {
+            thread::spawn(move || {
+                let _ = input.write_all(b"\n");
+            });
+        }
+    }
+}
+
 impl Drop for Mounted {
     fn drop(&mut self) {
         if self.retired { return; }
-        self.input.take();
-        // A failed startup cannot return while its delayed helper could still expose a view.
-        // EOF makes the supervisor stop its owned provider before this process releases it.
+        // A failed startup cannot return while its delayed helper could still expose a view: told to stop, the supervisor stops
+        // its owned provider before this process releases it. Past the deadline its whole tree ends, the provider with it, and
+        // the view detaches lazily, so a dropped session never stays mounted or holds this thread.
+        self.tell_stop();
+        if !self.owner.wait_for(CONTROL_ACK).unwrap_or(false) {
+            let _ = platform::process::end_tree(&platform::process::tree(self.owner.birth().pid));
+            detach_stale(&self.view);
+        }
         let _ = self.child.wait();
         if self.reconcile().is_err() {
             for helper in &self.helpers {
