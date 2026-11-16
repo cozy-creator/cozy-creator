@@ -753,10 +753,10 @@ case $SHARD in
     vault_times
     vault_queue
     shared_scratch
-    kept_latents
     open_unlocks
     projectvault
     vault_leftovers
+    kept_latents
     vault_swapped
     ended_logs
     logs
