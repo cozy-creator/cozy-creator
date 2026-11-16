@@ -172,6 +172,25 @@ next() {
   log "published $E2E_NEXT 0.1.0 (cozy-runtime>=0.46.0)"
 }
 
+# final_model (final_model, cl-1109): e2e/final-model, two checkpoints of 1 MiB of random weights published as 0.1.0 and then
+# 0.2.0-rc.1, a newer prerelease label (minimaxai/minimax-h3's are 1.0.0-rc.N).
+final_model() {
+  local page=https://github.com/cozy-creator/cozy-creator/tree/master/e2e release first='' commit
+  for release in 0.1.0 0.2.0-rc.1; do
+    random_weights "$seed/final-model.safetensors" 1 "final-$release"
+    cozy --json model upload "$seed/final-model.safetensors" e2e/final-model --lane bf16 --mirror "$page" --on local -y --source-format as-is \
+      > "$seed/upload-final-model-$release.json" 2>&1 \
+      || { echo "uploading e2e/final-model $release failed: $(tail -c 600 "$seed/upload-final-model-$release.json")" >&2; return 1; }
+    commit=$(python3 "$here/model-details.py" e2e/final-model | jq -r --arg first "$first" '[.checkpoints[].checkpoint | select(. != $first)][0] // empty')
+    [ -n "$commit" ] || { echo "e2e/final-model has no new checkpoint after its $release upload" >&2; return 1; }
+    cozy --json model publish e2e/final-model "$release" "$commit" -y > "$seed/publish-final-model-$release.json" 2>&1 \
+      || { echo "publishing e2e/final-model $release failed: $(tail -c 600 "$seed/publish-final-model-$release.json")" >&2; return 1; }
+    log "published e2e/final-model@$release ($commit)"
+    first=$commit
+  done
+  rm -f "$seed/final-model.safetensors"
+}
+
 # mirror <source> <org/name> <lane> <release> <page> [upload flags...]: a model uploaded by this computer's machine and
 # published, as an admin mirrors an author's model.
 mirror() {
@@ -443,6 +462,7 @@ if [ -n "$needs" ]; then
   if [[ " $needs " == *" birefnet "* ]]; then
     mirror hf://ZhengPeng7/BiRefNet@e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4 zhengpeng7/birefnet fp16 0.1.0 https://huggingface.co/ZhengPeng7/BiRefNet
   fi
+  case $shard in local-code | '') final_model ;; esac
   # The real Qwen3.5 0.8B, which an LLM tool runs on the CPU (xs-204); it also stands in for the downloads' 1.6 GB.
   if [[ " $needs " == *" qwen "* ]]; then
     mirror hf://Qwen/Qwen3.5-0.8B@2fc06364715b967f1860aea9cf38778875588b17 qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B
