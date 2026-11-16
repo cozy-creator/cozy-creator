@@ -12,7 +12,7 @@ import asyncio
 import msgspec
 import torch
 
-from cozy_runtime.author import App, Loader, Lora, Model, ModelChoice, Serving, call
+from cozy_runtime.author import App, Loader, Lora, Model, ModelChoice, Serving, call, uses_components
 
 app = App()
 
@@ -69,6 +69,11 @@ class Transformer(Model[Graph]):
     def load(self, loader: Loader) -> None:
         self.graph = loader.construct(lambda config: Graph())
 
+    @uses_components("transformer")
+    def read(self) -> float:
+        with torch.no_grad():
+            return float(self.graph.components["transformer"].proj(torch.ones(1, 8192)).double().sum())
+
 
 @app.entrypoint(
     private=True,
@@ -77,7 +82,7 @@ class Transformer(Model[Graph]):
     components={"base": ("transformer",)},
 )
 def adapted(payload: Ask, base: Transformer, extra: Extra) -> Said:
-    return Said(used="e2e/calls-base under e2e/calls-lora, and e2e/calls-other")
+    return Said(used=f"e2e/calls-base under e2e/calls-lora ({base.read():.3f}), and e2e/calls-other")
 
 
 @app.entrypoint(accelerator=False)

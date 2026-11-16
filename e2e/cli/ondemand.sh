@@ -79,7 +79,9 @@ echo "ondemand-calls: the machine holds $held"
 # cl-1077 (Paul, 11-16): "Downloading the minimax h3 turbo lora makes sense, although it's stuck right now." H3's `edit` puts its edit
 # LoRA on a segment's base, and TensorD pulled that base inline while it bound the slot: the segment's turbo LoRA was wanted only
 # once the base's 72.8 GB had landed, and sat at 0 bytes for 10 minutes. calls.py's `adapt` calls `adapted` with e2e/calls-lora on
-# its base (e2e/calls-base, 224 MiB) beside e2e/calls-other, over a 30 MB/s link: both come in the call's one download, at once.
+# its base's transformer (e2e/calls-base: 256 MiB, and a 16 MiB text encoder it doesn't read) beside e2e/calls-other, over a 30 MB/s
+# link: both come in the call's one download, at once, and only what it loads (a cold H3 edit: transformer_ref and the shared
+# parts, 51.7 of the int8 lane's 72.8 GB).
 ondemand_adapted() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a LoRA'd base comes in its call's one download with the call's other weights (cl-1077)"
@@ -98,6 +100,12 @@ pulled=$(awk -v t="$began" '$1 >= t && $2 == "pull" && $3 ~ /^e2e\/calls-base@/'
 together=$(grep -o 'downloading [^"]*weights' "$OUT/ondemand-adapted.ndjson" | sort -u | grep 'e2e/calls-base' | grep 'e2e/calls-other' | head -1 || true)
 grep -o 'downloading [^"]*weights' "$OUT/ondemand-adapted.ndjson" | sort -u | sed 's/^/ondemand-adapted: /' || true
 [ -z "$pulled" ] || check "ondemand-adapted: the LoRA'd base was pulled before the call's other weights were wanted: $pulled"
+local held
+cozy --json model ls --on local > "$OUT/ondemand-adapted.models.json" 2>&1 || check "ondemand-adapted: model ls --on local failed"
+held=$(jq -c '[.models[]? | select(.model == "e2e/calls-base") | {complete, bytes}]' "$OUT/ondemand-adapted.models.json" 2> /dev/null || true)
+echo "ondemand-adapted: e2e/calls-base here: $held"
+jq -e '[.models[] | select(.model == "e2e/calls-base")] | length == 1 and .[0].complete == false and .[0].bytes >= 268435456 and .[0].bytes < 276824064' "$OUT/ondemand-adapted.models.json" > /dev/null \
+  || check "ondemand-adapted: e2e/calls-base here isn't its 256 MiB transformer alone (the call doesn't load its 16 MiB text encoder): $held"
 [ -n "$together" ] || check "ondemand-adapted: e2e/calls-base and e2e/calls-other never downloaded together for the call"
 }
 

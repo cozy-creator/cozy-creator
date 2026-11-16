@@ -447,9 +447,9 @@ if [ -n "$needs" ]; then
       mirror "$seed/calls.safetensors" "e2e/calls-$name" bf16 0.1.0 "$page" --source-format as-is
       rm -f "$seed/calls.safetensors"
     done
-    # And ondemand_adapted's, as lora_reads' (tfs-300): e2e/calls-base, a 1 MiB text encoder (e2e/calls-te's) with a 256 MiB
+    # And ondemand_adapted's, as lora_reads' (tfs-300): e2e/calls-base, a 16 MiB text encoder (e2e/calls-te's) with a 256 MiB
     # transformer put on it, one linear `proj` [8192, 8192]; and e2e/calls-lora, a rank-4 LoRA of `proj` in PEFT's names.
-    part_weights "$seed/calls-te.safetensors" text_encoder 8 262144
+    part_weights "$seed/calls-te.safetensors" text_encoder 8 4194304
     python3 -I - "$seed" <<'PYCALLS'
 import json, os, random, struct, sys
 def write(path, tensors):
