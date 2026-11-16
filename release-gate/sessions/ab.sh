@@ -31,6 +31,8 @@
 #              dispatch input's 65,535 characters
 #   max_fails  optional: the failed cells that stop the session (2); a memory matrix whose tight caps may fail on both
 #              arms sets more
+#   floor_mb_s optional: while the first cell's update and run move files, an upload or weights download reporting under
+#              this many MB/s 2 min into its step ends the session, `host too slow` (a slow host's fetch would eat the cap)
 #   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
 #              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
@@ -40,7 +42,8 @@ if [ -n "$F" ]; then
   F=$(dirname "$0")/../../$F; jq -e 'type == "object"' "$F" > /dev/null 2>&1 || fail "params file $F"; PARAMS=$(cat "$F")
 fi
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1)
-MAX_FAILS=$(param max_fails 2)
+MAX_FAILS=$(param max_fails 2) FLOOR_MBS=$(param floor_mb_s '')
+[[ -z $FLOOR_MBS || $FLOOR_MBS =~ ^[0-9]+$ ]] || fail "floor_mb_s $FLOOR_MBS"
 [[ $MAX_FAILS =~ ^[1-9][0-9]*$ ]] || fail "max_fails $MAX_FAILS"
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
 [[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
@@ -220,7 +223,7 @@ for k in "${names[@]}"; do
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
   say "$k: start"  # what each process held as it started: gpu-pod.log's last reading before this (cr-297)
-  step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
+  step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?; FLOOR_MBS=''
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
   cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"

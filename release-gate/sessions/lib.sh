@@ -79,6 +79,13 @@ kernels() {
   "$root/scripts/triton.sh" "$d" > "$OUT/kernels-${d##*/}.log" 2>&1 || fail "${d##*/}'s Triton sets did not build: $(tail -c 400 "$OUT/kernels-${d##*/}.log")"
   say "kernels ${d##*/}: $(find "$d" -path '*/_triton/manifest.json' -printf '%P ' 2>/dev/null)built in $((SECONDS - t0)) s"
 }
+# floor FILE: the last upload or weights rate FILE reports, when it is under FLOOR_MBS MB/s (the result's download is
+# small and never judged)
+floor() {
+  grep -aoE '(uploading|downloading) .{0,160} at [0-9.]+ (B|KiB|MiB|GiB)/s' "$1" | grep -v 'the result' | tail -1 |
+    awk -v f="$FLOOR_MBS" '{ u = $NF; m = u == "GiB/s" ? 2^30 : u == "MiB/s" ? 2^20 : u == "KiB/s" ? 2^10 : 1; r = $(NF - 1) * m / 1e6
+      if (r < f) { printf "%.1f MB/s, under the %s MB/s floor (%s)", r, f, $0; low = 1 } } END { exit !low }'
+}
 step() {
   local n=$1 directory=$PWD; shift
   local words=("$@")
@@ -98,6 +105,7 @@ step() {
     size=$(stat -c %s "$OUT/$n.txt")
     if [ "$size" = "$last" ]; then still=$((still + 30)); else still=0; last=$size; fi
     [ "$still" -lt 900 ] || { kill "$p"; say "$n: no output for 15 min"; return 124; }
+    [ -z "${FLOOR_MBS:-}" ] || [ "$t" -lt 120 ] || ! slow=$(floor "$OUT/$n.txt") || { kill "$p"; fail "host too slow: $slow"; }
   done
   wait "$p"; local c=$?
   tail -6 "$OUT/$n.txt" | cut -c1-300 | sed 's/^/    /' >> "$R"
