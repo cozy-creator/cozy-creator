@@ -55,7 +55,7 @@ export class CardView {
   private began = performance.now()
   private pulsing = false
   /** For inspection: each label's full text, the chips and controls as drawn, in card-local units. */
-  readonly drawn = { full: new Map<string, string>(), chips: [] as { text: string; struck: boolean; box: Box }[], controls: [] as { part: Part; box: Box }[], meter: null as Box | null, dot: null as Box | null }
+  readonly drawn = { full: new Map<string, string>(), chips: [] as { text: string; struck: boolean; box: Box }[], controls: [] as { part: Part; box: Box }[], parts: new Map<Part, Box>(), meter: null as Box | null, dot: null as Box | null }
 
   constructor() {
     this.pulse.eventMode = this.ground.eventMode = this.ink.eventMode = "none"
@@ -72,6 +72,7 @@ export class CardView {
   }
 
   get picture() { return this.pictures.get("main") }
+  get previewing() { return this.video ? { active: true, ready: Boolean(this.video.handle.texture) } : null }
 
   update(node: SceneNode, show: Presentation, state: CardState, env: CardEnv) {
     this.input = { node, show, state, env }
@@ -109,7 +110,7 @@ export class CardView {
     body.x -= node.box.x; body.y -= node.box.y
     const used = new Set<string>(), pictures = new Set<string>()
     this.ground.clear(); this.ink.clear()
-    this.drawn.chips = []; this.drawn.controls = []; this.drawn.meter = null; this.drawn.dot = null
+    this.drawn.chips = []; this.drawn.controls = []; this.drawn.parts.clear(); this.drawn.meter = null; this.drawn.dot = null
     for (const area of this.parts.values()) area.visible = false
     const label = (key: string, text: string, x: number, y: number, room: number, style: LabelStyle, lines = 1) => { used.add(key); return this.label(key, text, x, y, room, style, env, lines) }
 
@@ -521,6 +522,7 @@ export class CardView {
     if (!box) return
     const rect = area.hitArea as Rectangle
     rect.x = box.x; rect.y = box.y; rect.width = box.w; rect.height = box.h
+    this.drawn.parts.set(part, box)
     if (part === "delete" || part === "cancel") this.drawn.controls.push({ part, box })
   }
 
