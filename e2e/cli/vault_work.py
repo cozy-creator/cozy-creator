@@ -12,6 +12,7 @@ The caller owns the vault before and after: it is left unlocked with no idle lim
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,7 @@ class Changed(TypedDict, total=False):
 
     vault: Vault
     ended: list[int]
+    unsaved: list[str]
 
 
 class Output(TypedDict, total=False):
@@ -40,6 +42,7 @@ class Output(TypedDict, total=False):
 
     name: str
     status: str
+    sha256: str
 
 
 class Run(TypedDict, total=False):
@@ -137,9 +140,9 @@ def machines(stop: signal.Signals, pids: list[int] | None = None) -> list[int]:
     return pids
 
 
-def settled(args: argparse.Namespace, number: object, seconds: float) -> str:
-    """Run `number`'s status once it settles, or as it is after `seconds`."""
-    began, status = time.monotonic(), ""
+def settled(args: argparse.Namespace, number: object, seconds: float) -> tuple[str, Run]:
+    """Run `number`'s status once it settles, or as it is after `seconds`, and its record."""
+    began, status, record = time.monotonic(), "", cast(Run, {})
     while time.monotonic() - began < seconds:
         done = subprocess.run([str(args.cli), "--json", "run", "watch", str(number), "--once"], cwd=args.project, capture_output=True)
         lines = [line for line in done.stdout.splitlines() if line.strip()]
@@ -150,23 +153,25 @@ def settled(args: argparse.Namespace, number: object, seconds: float) -> str:
         if isinstance(watched, dict) and isinstance(watched.get("run"), dict):
             watched = watched["run"]
         status = str(watched.get("status", "")) if isinstance(watched, dict) else ""
+        record = cast(Run, watched) if isinstance(watched, dict) else record
         if status in ("completed", "failed", "canceled"):
             break
         time.sleep(2)
-    return status
+    return status, record
 
 
-def whole(args: argparse.Namespace, number: object, mark: str, name: str) -> int:
-    """Run `number`'s file as a person fetches it from the project: its size, the mark at its start; the copy not kept."""
+def whole(args: argparse.Namespace, number: object, mark: str, name: str) -> tuple[int, str]:
+    """Run `number`'s file as a person fetches it from the project: its size and digest, the mark at its start; the copy not kept."""
     fetched = args.out / name
     done = subprocess.run([str(args.cli), "run", "watch", str(number), "--once", "-o", str(fetched)], cwd=args.project, capture_output=True)
     kept = [path for path in fetched.rglob("*") if path.is_file() and mark.encode() in path.read_bytes()[:200]]
     size = max((path.stat().st_size for path in kept), default=0)
+    digest = "sha256:" + hashlib.sha256(kept[0].read_bytes()).hexdigest() if kept else ""
     for path in fetched.rglob("*"):
         if path.is_file():
             path.unlink()
     assert kept, f"run {number}'s file did not come back from the project: exit {done.returncode} {done.stderr[-400:]!r}"
-    return size
+    return size, digest
 
 
 def after_failure(args: argparse.Namespace, number: object, mark: str) -> str:
@@ -327,22 +332,37 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
                                    "unlocked_past_maximum_s": round((settled_ms - deadline_ms) / 1000), "unlocked_reads_past_maximum": len(past),
                                    "locked_after_end_s": round(max_lock_s, 1), "fetched": kept[0].name, "file_mb": VIDEO_MB}
 
-    # 4. An explicit lock while a run saves its outputs refuses, naming the run, and the file lands whole (cl-1060).
+    # 4. An explicit lock during a save goes through at once: the save stops, nothing half-written is left in the project, and the
+    #    next unlock saves the file whole, the bytes its run made (cl-1060).
     script = unlock(args, "unlock-for-save-lock", 0) / "vault-work-proof" / "sleeper.py"
     mark = f"cl1060-lock-{time.time_ns()}"
     process, stdout = start(args, "save-lock", script, 2, mark, SAVE_MB)
     assert saving(stdout, process), f"the run never said it was saving its outputs: {run_of(stdout)}"
-    refused = subprocess.run([str(args.cli), "--json", "vault", "lock"], cwd=args.project, capture_output=True)
-    (args.out / "save-lock-refused.json").write_bytes(refused.stdout + refused.stderr)
-    process.wait(timeout=300)
-    run = run_of(stdout)
-    said = (refused.stdout + refused.stderr).decode(errors="replace")
-    assert refused.returncode != 0 and "is saving its outputs" in said, \
-        f"a lock while run {run.get('number')} saved its outputs did not refuse, naming it: exit {refused.returncode} {said[-400:]}"
-    assert process.returncode == 0 and run.get("status") == "completed", f"run {run.get('number')}, saving through a lock: {run}"
-    size = whole(args, run.get("number"), mark, "save-lock.out")
-    assert size >= SAVE_MB << 20, f"run {run.get('number')}'s file came back {size} bytes, not {SAVE_MB} MB"
-    receipt["lock_while_saving"] = {"run": run.get("number"), "refused": said.strip()[-200:], "file_mb": SAVE_MB}
+    began = time.monotonic()
+    locked = cast(Changed, cli(args, "lock-while-saving", "vault", "lock"))
+    save_lock_s = locked_within(args, 30) + (time.monotonic() - began)
+    assert save_lock_s < 15, f"a lock during a save took {save_lock_s:.0f} s"
+    process.wait(timeout=120)
+    saved = run_of(stdout).get("number")
+    left = [line for line in Path("/proc/self/mountinfo").read_text().splitlines() if f"{args.project}/.vault-runtime/" in line]
+    assert not left, f"the lock left a view mounted: {left}"
+    # The next unlock, its save held back (the machine stopped), shows nothing half-written.
+    stopped = machines(signal.SIGSTOP)
+    try:
+        view = unlock(args, "unlock-after-save-lock", 0)
+        partial = [str(path) for path in view.rglob("*") if path.name.endswith((".part", ".part.held", ".manifest.part"))]
+        torn = [str(path) for path in view.rglob("*") if path.is_file() and path.stat().st_size < SAVE_MB << 20
+                and mark.encode() in path.read_bytes()[:200]]
+    finally:
+        machines(signal.SIGCONT, stopped)
+    assert not partial and not torn, f"after a lock stopped run {saved}'s save, the project held half-written files: {partial} {torn}"
+    status, record = settled(args, saved, 180)
+    assert status == "completed", f"run {saved}, its save stopped by a lock, is {status or 'unread'} after the next unlock"
+    size, digest = whole(args, saved, mark, "save-lock.out")
+    made = [item.get("sha256") for item in record.get("output", [])]
+    assert size >= SAVE_MB << 20 and digest in made, f"run {saved}'s file came back {size} bytes, {digest}, not its own {made}"
+    receipt["lock_while_saving"] = {"run": saved, "locked_s": round(save_lock_s, 1), "unsaved": locked.get("unsaved", []),
+                                    "next_unlock": status, "file_mb": SAVE_MB}
     cli(args, "lock-after-save", "vault", "lock")
 
     # 5. An exporter that can't move its bytes (its machine stopped) holds the vault open no longer than a moment past its
@@ -359,10 +379,11 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     process.wait(timeout=120)
     stalled = run_of(stdout).get("number")
     view = unlock(args, "unlock-after-stall", 0)
-    status = settled(args, stalled, 180)
+    status, record = settled(args, stalled, 180)
     assert status == "completed", f"run {stalled}, its save stopped by a lock, is {status or 'unread'} after the next unlock"
-    size = whole(args, stalled, mark, "stall.out")
-    assert size >= SAVE_MB << 20, f"run {stalled}'s file came back {size} bytes after the next unlock, not {SAVE_MB} MB"
+    size, digest = whole(args, stalled, mark, "stall.out")
+    made = [item.get("sha256") for item in record.get("output", [])]
+    assert size >= SAVE_MB << 20 and digest in made, f"run {stalled}'s file came back {size} bytes, {digest}, not its own {made}"
     receipt["stalled_export"] = {"run": stalled, "machine_stopped": len(stopped), "locked_s": round(stall_lock_s, 1),
                                  "next_unlock": status, "file_mb": SAVE_MB}
     # Its large files aren't artifacts.
