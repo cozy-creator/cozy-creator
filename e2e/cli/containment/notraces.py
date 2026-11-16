@@ -26,7 +26,7 @@ from typing import cast
 from urllib.parse import quote, urlsplit
 
 from common import Failure, sha
-from scan import Scanner, places
+from scan import WINDOWS_UNREADABLE, Scanner, places, unexplained
 
 PROGRAM = '''# /// script
 # requires-python = ">=3.12"
@@ -190,10 +190,18 @@ def main() -> int:
     located = places(home, Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())), projects=args.root.resolve(), temporary=temporary.resolve())
     result = scanner.scan(sorted({root.resolve() for root in roots if root.exists()}), [], args.out.resolve() / "notraces.json", located)
     counts = {key: value for key, value in result.items() if type(value) is int}
-    (args.out / "notraces.json").write_text(json.dumps({"os": sys.platform, "ran": local, **counts}, indent=2))
+    # Every path it couldn't read, named: on Windows each must be one WINDOWS_UNREADABLE explains, or the cell fails.
+    unreadable = sorted(set(scanner.unreadable))
+    (args.out / "notraces.json").write_text(json.dumps({"os": sys.platform, "ran": local, **counts, "unreadable_paths": unreadable}, indent=2))
+    for path in unreadable:
+        print("unreadable: " + path, file=sys.stderr)
     require(counts.get("files", 0) > 0, "notraces_scanned_nothing")
     require(counts.get("matches", 0) == 0, "outside_project_canary: " + json.dumps({key: value for key, value in counts.items() if key.startswith("match")}))
-    print(json.dumps({"no_traces": True, "os": sys.platform, "ran": local, "files": counts.get("files"), "matches": 0}))
+    unknown = unexplained(unreadable) if sys.platform == "win32" else []
+    require(not unknown, "unreadable_unexplained: " + json.dumps(unknown))
+    allowed = sorted(WINDOWS_UNREADABLE.values()) if sys.platform == "win32" else []
+    print(json.dumps({"no_traces": True, "os": sys.platform, "ran": local, "files": counts.get("files"), "matches": 0,
+                      "unreadable": len(unreadable), "unreadable_allowed": allowed}))
     return 0
 
 

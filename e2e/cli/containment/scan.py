@@ -9,6 +9,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
 import struct
@@ -20,6 +21,19 @@ import zipfile
 import zlib
 
 from common import Failure, require, sha
+
+
+# Windows files and folders no process of the user's can read, each with why. no-traces lists every unreadable path and, on
+# Windows, fails on one these don't explain: an unreadable place is never where a trace may hide unnoticed (cl-984).
+WINDOWS_UNREADABLE: dict[str, str] = {
+    r"\\AppData\\Local\\Microsoft\\WindowsApps\\(?:[^\\]+\\)?[^\\]+\.exe$":
+        "app execution aliases: reparse points Windows resolves only to launch a Store app, never opens as files",
+}
+
+
+def unexplained(paths: list[str]) -> list[str]:
+    """`paths` no `WINDOWS_UNREADABLE` pattern explains."""
+    return [path for path in paths if not any(re.search(pattern, path, re.IGNORECASE) for pattern in WINDOWS_UNREADABLE)]
 
 
 def places(home: Path, temp: Path, **extra: Path) -> dict[str, Path]:
@@ -47,6 +61,8 @@ class Scanner:
         self.images: set[bytes] = set()
         self.counts: Counter[str] = Counter()
         self.matches: set[str] = set()
+        # Every path the last scan couldn't read: no-traces lists them (never part of `scan`'s result, which names no path).
+        self.unreadable: list[str] = []
 
     def add(self, value: str | bytes) -> None:
         raw = value.encode() if isinstance(value, str) else value
@@ -187,7 +203,7 @@ class Scanner:
     def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path] | None = None,
              since_ns: int | None = None) -> dict[str, object]:
         """`since_ns`: only files written since then (a marker made after it can be in no older file)."""
-        self.counts.clear(); self.matches.clear()
+        self.counts.clear(); self.matches.clear(); self.unreadable.clear()
         inside = self.patterns()
         require(inside, "scan_markers_missing")
         outside = self.patterns(self.markers + self.identities)
@@ -205,12 +221,16 @@ class Scanner:
                 continue
             def unreadable(error: OSError) -> None:
                 self.counts["unreadable"] += 1
+                self.unreadable.append(str(error.filename or root))
                 if places:
                     self.counts["unreadable_" + place(Path(error.filename or root))] += 1
             for directory, dirs, names in os.walk(root, followlinks=False, onerror=unreadable):
                 parent = Path(directory)
-                dirs[:] = [name for name in dirs if not any((parent / name).absolute().is_relative_to(skip) for skip in excluded)]
-                for name in dirs + names:
+                # A Windows junction is another name for a folder walked by its own (AppData\Local\Application Data is its own
+                # parent's): like a symlink, its name and target are read, never descended.
+                junctions = [name for name in dirs if os.path.isjunction(parent / name)]
+                dirs[:] = [name for name in dirs if name not in junctions and not any((parent / name).absolute().is_relative_to(skip) for skip in excluded)]
+                for name in dirs + names + junctions:
                     path = parent / name
                     if path == receipt or any(path.absolute().is_relative_to(skip) for skip in excluded):
                         continue
@@ -220,7 +240,7 @@ class Scanner:
                     self.found(os.fsencode(path), label, patterns)
                     try:
                         metadata = path.lstat()
-                        if stat.S_ISLNK(metadata.st_mode):
+                        if stat.S_ISLNK(metadata.st_mode) or os.path.isjunction(path):
                             self.found(os.fsencode(os.readlink(path)), label, patterns)
                             continue
                         if not stat.S_ISREG(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) in seen:
@@ -246,6 +266,15 @@ class Scanner:
                         self.counts["vanished"] += 1
                     except PermissionError:
                         self.counts["unreadable"] += 1
+                        self.unreadable.append(str(path))
+                        if places:
+                            self.counts["unreadable_" + labels[label]] += 1
+                    # Windows won't open some system files for anyone (its app execution aliases): listed, and judged by no-traces.
+                    except OSError:
+                        if sys.platform != "win32":
+                            raise
+                        self.counts["unreadable"] += 1
+                        self.unreadable.append(str(path))
                         if places:
                             self.counts["unreadable_" + labels[label]] += 1
         if places:
