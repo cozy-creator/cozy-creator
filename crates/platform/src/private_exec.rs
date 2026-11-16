@@ -13,8 +13,8 @@ pub enum PrivateDescriptor {
     KernelIpc(File),
 }
 
-/// Set a trusted parent's core limit to zero before it handles secrets. The compiled parent
-/// never restores it. This does not constrain an external host administrator or OS snapshots.
+/// Set a trusted parent's core limit to zero before it handles secrets (Windows: no fault dialog, no heap in its error
+/// reports). The compiled parent never restores it. This does not constrain an external host administrator or OS snapshots.
 pub fn disable_project_parent_dumps() -> Result<()> {
     imp::parent_cores()
 }
@@ -324,6 +324,26 @@ mod imp {
             os: crate::Os::CURRENT,
         }
     }
+    /// Windows writes a process's memory out only through Windows Error Reporting: this process (and the provider it starts,
+    /// which inherits its error mode) shows no fault dialog holding it, and its reports carry no heap (cl-1049). Process-local:
+    /// no registry, no other process.
+    #[cfg(windows)]
+    pub(super) fn parent_cores() -> Result<()> {
+        use windows_sys::Win32::System::{
+            Diagnostics::Debug::{GetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode},
+            ErrorReporting::{WER_FAULT_REPORTING_FLAG_NOHEAP, WerSetFlags},
+        };
+        // SAFETY: scalar arguments only.
+        let status = unsafe {
+            SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+            WerSetFlags(WER_FAULT_REPORTING_FLAG_NOHEAP)
+        };
+        if status < 0 {
+            return Err(std::io::Error::from_raw_os_error(status).into());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
     pub(super) fn parent_cores() -> Result<()> {
         Err(unsupported())
     }

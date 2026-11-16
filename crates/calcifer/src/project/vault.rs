@@ -92,8 +92,12 @@ fn unusable_for_creation(e: project_mount::Error) -> Error {
         false => refused,
     }
 }
-/// A mount's failure; one whose supervisor this cozy can't start, as an update replaced it, names the restart (cl-981).
+/// A provider's create or mount failure: its cause on one line for the person, all it said in the log (cl-1049). One whose
+/// supervisor this cozy can't start, as an update replaced it, names the restart (cl-981).
 fn mounting(e: project_mount::Error) -> Error {
+    if let Some(detail) = e.provider_detail() {
+        tracing::warn!(error = %e, provider_said = detail, "encrypted filesystem provider failed");
+    }
     match e {
         project_mount::Error::Platform(e @ platform::Error::Updated { .. }) => crate::cozy::updated(e),
         other => provider(other),
@@ -1002,7 +1006,7 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
     let recovery = created.recovery_secret.expose().to_owned();
     let outcome = (|| {
         let took = crate::took::Took::new("vault filesystem");
-        created.secret.with_bytes(|bytes| engine.create(&root.join(BACKING), bytes)).map_err(provider)?;
+        created.secret.with_bytes(|bytes| engine.create(&root.join(BACKING), bytes)).map_err(mounting)?;
         drop(took);
         // Persist the wrapping slots before writing any project state: the user's known passphrase
         // can reopen this backing even if setup or delivery of the recovery response is interrupted.
@@ -1712,7 +1716,7 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &
         let source_view = project_mount::view_path(&runtime).map_err(provider)?;
         progress.phase("mounting");
         let mut source = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &source_view, bytes,
-            MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(provider)?;
+            MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(mounting)?;
         progress.phase("validating");
         progress.begin_inventory();
         walk_tree(source.view(), None, FsPath::new(""), true, !cfg!(windows), progress)?;
@@ -1803,7 +1807,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
         backing_id: None, plain: None };
     save_conversion(&receipt)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(unusable)?;
-    secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(provider)?;
+    secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(mounting)?;
     keybag.save(&staged.join(KEYBAG_FILE)).map_err(key)?;
     receipt.backing_id = Some(directory_id(&staged.join(BACKING))?);
     save_conversion(&receipt)?;
@@ -1817,7 +1821,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
         close(api, root, transition, browser)?;
         let runtime = project_runtime(root)?;
         let view = project_mount::view_path(&runtime).map_err(provider)?;
-        let mounted = old.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(provider)?;
+        let mounted = old.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(mounting)?;
         let path = mounted.view().to_owned();
         source_mount = Some(mounted);
         source_runtime = Some(runtime);
@@ -1826,7 +1830,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     let runtime = project_runtime(&staged)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     progress.phase("mounting");
-    let mut target = secret.with_bytes(|bytes| engine.mount(&staged.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
+    let mut target = secret.with_bytes(|bytes| engine.mount(&staged.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(mounting)?;
     progress.phase("copying");
     walk_tree(&source, Some(target.view()), FsPath::new(""), managed, source_mount.is_some() && !cfg!(windows), progress)?;
     progress.phase("verifying");

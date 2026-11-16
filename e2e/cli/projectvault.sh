@@ -654,3 +654,20 @@ vault_swapped() (
   trap - EXIT
   rm -rf -- "$secrets" "$S"
 )
+
+# cl-1049: an encrypted project on this runner's OS through cozy and its Calcifer (vault_native.py): made, written, locked, unlocked
+# by passphrase and by recovery secret, read back each time. On Windows, `cozy doctor --fix` installs WinFsp first, as an
+# administrator's would; its exit isn't the cell's.
+vault_native() (
+  step "an encrypted project on this OS: made, written, locked, unlocked by passphrase and recovery, read back"
+  local py root=$OUT/vault-native
+  py=$(command -v python3 || command -v python) || fail "vault native: no python"
+  if [ "${RUNNER_OS:-}" = Windows ]; then
+    cozy --json doctor --fix > "$OUT/vault-native-doctor.json" 2> "$OUT/vault-native-doctor.err" || true
+    jq -e '[.tools[] | select(.name == "winfsp" and .found)] | length == 1' "$OUT/vault-native-doctor.json" > /dev/null \
+      || fail "vault native: doctor --fix left no WinFsp: $(tail -c 300 "$OUT/vault-native-doctor.err")"
+  fi
+  mkdir -p "$root"
+  "$py" "$E2E/cli/vault_native.py" --cli "$COZY" --root "$root" > "$OUT/vault-native.json" 2>&1 || fail "vault native: $(tail -c 1200 "$OUT/vault-native.json")"
+  echo "vault native: $(tail -1 "$OUT/vault-native.json")"
+)
