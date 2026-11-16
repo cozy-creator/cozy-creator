@@ -384,8 +384,10 @@ export function createInteraction(o: InteractionOptions): Interaction {
   stage.on("pointerover", over)
   stage.on("pointerout", out)
   root.addEventListener("contextmenu", menu)
-  window.addEventListener("keydown", keyDown)
-  window.addEventListener("keyup", keyUp)
+  // Heard as they start down the page, not as they bubble back: a control that keeps Space or Enter to itself (the zoom control stops
+  // them) would otherwise hide Space held for a pan. What isn't the canvas's is only looked at, never stopped.
+  window.addEventListener("keydown", keyDown, true)
+  window.addEventListener("keyup", keyUp, true)
   window.addEventListener("blur", cancel)
   sync()
 
@@ -401,8 +403,8 @@ export function createInteraction(o: InteractionOptions): Interaction {
       stage.off("pointerover", over)
       stage.off("pointerout", out)
       root.removeEventListener("contextmenu", menu)
-      window.removeEventListener("keydown", keyDown)
-      window.removeEventListener("keyup", keyUp)
+      window.removeEventListener("keydown", keyDown, true)
+      window.removeEventListener("keyup", keyUp, true)
       window.removeEventListener("blur", cancel)
     },
     state: () => ({
