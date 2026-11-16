@@ -1518,6 +1518,13 @@ impl Calcifer {
         }
     }
 
+    /// Run `id`'s time left on its machine as its clock says it now (cl-1073): what a quote of that machine counts of it. None: no clock,
+    /// or one with nothing to go on.
+    pub(crate) fn left_there(&self, id: &str) -> Option<::api::estimate::Left> {
+        let id = RunId::try_from(id.to_owned()).ok()?;
+        lock(&self.live).get(&id)?.clock.as_ref()?.left_there(store::now_ms() as f64)
+    }
+
     pub(crate) fn quoted(&self, id: &RunId, quoted: eta::Quoted) {
         if !lock(&self.drivers).contains_key(id) {
             return;

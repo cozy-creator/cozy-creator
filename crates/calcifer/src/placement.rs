@@ -215,8 +215,9 @@ fn kept_benchmarks(root: &std::path::Path, hub: &str) -> Vec<(String, Vec<api::e
         .collect()
 }
 
-/// Each of `pictures` with the benchmarks its quotes stand on (`references_for`): those of `jobs` and of each function queued or ahead
-/// on any of them.
+/// Each of `pictures` with what its quotes stand on: the benchmarks of `jobs` and of each function queued or ahead on any of them
+/// (`references_for`), and each run of this computer's going on one, its time left as its clock says it (cl-1073, Paul 11-16: runs went
+/// to a busy machine while a faster one sat idle, each run going there counted seconds from done while it fetched its weights).
 pub(crate) fn benched<'j, 'p>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>, pictures: impl IntoIterator<Item = &'p mut Picture>) {
     let mut pictures: Vec<&mut Picture> = pictures.into_iter().collect();
     let mut named: Vec<String> = vec![];
@@ -224,7 +225,13 @@ pub(crate) fn benched<'j, 'p>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>
         named.extend(picture.frame.queue.iter().flatten().map(|root| root.function.clone()));
         named.extend(picture.ahead.iter().map(|job| job.function.clone()));
     }
-    let references = Arc::new(references_for(api, jobs, named));
+    let mut references = references_for(api, jobs, named);
+    for root in pictures.iter().flat_map(|picture| picture.frame.queue.iter().flatten()).filter(|root| root.running && !root.run.is_empty()) {
+        if let Some(left) = api.calcifer.left_there(crate::store::calcifer_id(&root.run)) {
+            references.left.insert(root.run.clone(), left);
+        }
+    }
+    let references = Arc::new(references);
     pictures.iter_mut().for_each(|picture| picture.references = references.clone());
 }
 
@@ -424,14 +431,14 @@ async fn offered(api: &Arc<Api>, jobs: &[Job], machines: &[On], pictured: &[Resu
 }
 
 /// The soonest finish of `offers` that can run there at all (release owner, 11-09: one that can't has no finish); of those within a tie
-/// of it, a machine that serves before one on its way, one on its own measured runs before one that isn't, and a rental before this
-/// computer.
+/// of it, a machine that serves before one on its way, one on its own measured runs before one that isn't, a rental before this
+/// computer, then the sooner: never the first listed for being first (cl-1073).
 pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     let fits = || offers.iter().filter(|offer| offer.fits);
     let first = fits().map(|offer| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
     let tied = || fits().filter(|offer| offer.finish_at_ms <= first + tie);
-    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local());
+    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local(), offer.finish_at_ms);
     tied().min_by_key(rank)
 }
 

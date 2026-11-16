@@ -236,9 +236,9 @@ pub struct BenchmarkRanOn {
     pub runtime: String,
 }
 
-/// The benchmarks a quote stands on where a function's runs don't (cl-1024): each function's release's rows, and the Hub's per-card
-/// speeds, which scale a row to a card none measured. Calcifer's, from the release cards it keeps; a machine packing its own queue has
-/// none.
+/// What a quote stands on past a machine's own picture: the benchmarks of what it never ran (cl-1024), each function's release's rows
+/// and the Hub's per-card speeds, which scale a row to a card none measured; and the caller's clocks of its runs going there (cl-1073).
+/// Calcifer's; a machine packing its own queue has none.
 #[derive(Clone, Debug, Default)]
 pub struct References {
     /// By function as `package/function` (no org, no release): its release's rows.
@@ -248,6 +248,17 @@ pub struct References {
     pub speeds: HashMap<String, BTreeMap<String, f64>>,
     /// By function, as `rows`: every kept package's newest rows (th-377), which say how cards compare (`ratio`).
     pub fleet: HashMap<String, Vec<Benchmark>>,
+    /// By a running root's caller id (`Queued::run`): its time left there, as its caller's clock says it.
+    pub left: HashMap<String, Left>,
+}
+
+/// A running root's time left on its machine as its caller's clock says it (cl-1073): from its steps, its weights moving and the runs
+/// like it, where a machine's picture has only its function's time and its executor's start, which comes before its download and load.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Left {
+    pub ms: f64,
+    /// The clock knows only its weights still coming: its compute, not begun, comes after them.
+    pub weights_only: bool,
 }
 
 /// `[org/]package/function[@release]` as `References` keys it: `package/function`.
@@ -561,7 +572,15 @@ impl<'r> Machine<'r> {
                             0 => 0.0,
                             started => (self.now_ms - started).max(0) as f64,
                         };
-                        job.running = Some((width, (whole - ran).max(whole * OVERRUN)));
+                        // Counted from its executor's start, a root still fetching its weights is all but done (cl-1073): its caller's
+                        // clock says more.
+                        let clock = self.references.filter(|_| !root.run.is_empty()).and_then(|references| references.left.get(&root.run));
+                        let left = match clock {
+                            Some(left) if left.weights_only => left.ms + whole,
+                            Some(left) if left.ms > 0.0 => left.ms,
+                            _ => (whole - ran).max(whole * OVERRUN),
+                        };
+                        job.running = Some((width, left));
                     }
                 }
                 job
