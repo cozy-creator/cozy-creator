@@ -98,9 +98,6 @@ pub(super) async fn search(
         };
         loop {
             let answer = (client.search_models_by_role(q, family, &tags, &no_tags, limit, if family.is_none() || upstream_paged { ask.offset } else { names.len() as u32 }, role).await).map_err(|e| refusal(&hub, e))?;
-            if !role_page_matches(&answer, role) {
-                return Err(role_unavailable());
-            }
             total = answer.search.total;
             let read = take(&mut names, answer.models);
             if upstream_paged || family.is_none() || read == 0 || names.len() as u32 >= wanted || names.len() as i64 >= total {
@@ -113,7 +110,6 @@ pub(super) async fn search(
             let (mut seen, mut offset) = (BTreeSet::new(), 0);
             while offset < READ_AT_MOST {
                 let answer = (client.search_models_by_role(q, None, &tags, &no_tags, PAGE, offset, role).await).map_err(|e| refusal(&hub, e))?;
-                if !role_page_matches(&answer, role) { return Err(role_unavailable()); }
                 let fresh = answer.models.iter().filter(|m| seen.insert((m.org.clone(), m.name.clone()))).count();
                 offset += answer.models.len() as u32;
                 take(&mut names, answer.models);
@@ -140,9 +136,6 @@ pub(super) async fn search(
     let mut models: Vec<FoundModel> = cards.iter().map(found).collect();
     // An exact model name is shown whatever its role, including a LoRA under `model ls`.
     let role = role.filter(|_| exact.is_none());
-    if role.is_some() && cards.iter().any(|card| canonical_role(&card.model).is_none()) {
-        return Err(role_unavailable());
-    }
     if role.is_none() {
         checkpoints::said(&api, &hub, &cards, &mut models).await;
     }
@@ -155,7 +148,7 @@ pub(super) async fn search(
         models.retain(is);
 
     }
-    // A publication can change the card's role after the summary page was read.
+    // What the Hub's page holds of another role, or of none it says, is left out here.
     retain_role(&mut models, role);
     if exact.is_some() { total = models.len() as i64; }
     Ok(Json(page(models, total, ask.offset, limit, (upstream_paged || family.is_none()) && exact.is_none())))
@@ -165,14 +158,6 @@ fn retain_role(models: &mut Vec<FoundModel>, role: Option<&str>) {
     if let Some(role) = role { models.retain(|model| model.role.as_deref() == Some(role)); }
 }
 
-fn role_unavailable() -> Refusal {
-    Refusal(Error::new(Kind::Unavailable, "catalog_role_unavailable", "This Hub cannot separate models and LoRAs yet")
-        .remedy("Retry after the Hub catalog has been updated"))
-}
-
-fn role_page_matches(answer: &types::ModelSearch, role: Option<&str>) -> bool {
-    role.is_none() || (answer.search.role.as_deref() == role && answer.models.iter().all(|model| canonical_role(model).as_deref() == role))
-}
 
 fn page(models: Vec<FoundModel>, total: i64, offset: u32, limit: u32, already_paged: bool) -> ModelSearch {
     let models = if already_paged { models } else { models.into_iter().skip(offset as usize).take(limit as usize).collect() };
@@ -225,36 +210,19 @@ mod pagination_tests {
     }
 
     #[test]
-    fn empty_pages_need_the_hubs_role_acknowledgment() {
-        let old: types::ModelSearch = serde_json::from_value(serde_json::json!({"models": [], "search": {"total": 5}})).unwrap();
-        assert!(!role_page_matches(&old, Some("lora")));
-        let current: types::ModelSearch = serde_json::from_value(serde_json::json!({"models": [], "search": {"total": 0, "role": "lora"}})).unwrap();
-        assert!(role_page_matches(&current, Some("lora")));
-        assert!(!role_page_matches(&current, Some("model")));
-        assert!(role_page_matches(&old, None));
-    }
-
-    #[test]
     fn canonical_kind_only_cards_and_pages_preserve_role_filters() {
         for (kind, role, other) in [("base", "model", "lora"), ("lora", "lora", "model")] {
             let model = serde_json::json!({"org": "author", "name": "weights", "kind": kind});
             let card: types::ModelCard = serde_json::from_value(serde_json::json!({"model": model})).unwrap();
             assert!(card.model.role.is_none());
             assert_eq!(canonical_role(&card.model).as_deref(), Some(role));
-            let answer: types::ModelSearch = serde_json::from_value(serde_json::json!({
-                "models": [model], "search": {"total": 1, "role": role}
-            })).unwrap();
-            assert!(role_page_matches(&answer, Some(role)));
-            assert!(!role_page_matches(&answer, Some(other)));
             let mut models = vec![found(&card)];
             retain_role(&mut models, Some(role));
             assert_eq!(models.len(), 1);
             assert_eq!(models[0].role.as_deref(), Some(role));
+            retain_role(&mut models, Some(other));
+            assert!(models.is_empty());
         }
-        let unknown: types::ModelSearch = serde_json::from_value(serde_json::json!({
-            "models": [{"org": "author", "name": "unknown"}], "search": {"total": 1, "role": "model"}
-        })).unwrap();
-        assert!(!role_page_matches(&unknown, Some("model")));
         let legacy: types::ModelSummary = serde_json::from_value(serde_json::json!({"role": "model"})).unwrap();
         assert_eq!(canonical_role(&legacy).as_deref(), Some("model"));
     }

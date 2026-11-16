@@ -103,9 +103,6 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
             rented.quote.disk_gb
         ));
     }
-    if rented.replay {
-        output::say(ctx, "this order was placed already; following it");
-    }
     let machine = match follow(ctx, rented.machine.clone(), notices).await? {
         Followed::Ready(machine) => machine,
         Followed::Unfollowed => return Ok(ExitCode::from(UNFOLLOWED)),

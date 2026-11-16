@@ -196,15 +196,7 @@ async fn calcifer(ctx: &Context) -> Vec<Check> {
     let mut checks = vec![];
     // What it needs, and why.
     let (stop, why) = match client.lock_state() {
-        Lock::Free { stale } => {
-            if stale {
-                checks.push(Check::ok(
-                    "lock record",
-                    "named a Calcifer killed before it let go; the next one replaces it",
-                ));
-            }
-            (false, "not running".to_owned())
-        }
+        Lock::Free => (false, "not running".to_owned()),
         Lock::Captive => match captive(ctx, &mut checks, None) {
             Some(why) => (false, why),
             None => return checks,

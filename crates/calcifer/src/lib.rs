@@ -394,13 +394,12 @@ impl Calcifer {
         Ok(Submitted { run: self.record(&row)?, replay: !fresh, notes: vec![], preparing: false, lock: None })
     }
 
-    /// Carries out Calcifer's own run `id` again, as an earlier Calcifer left it (`hub::jobs::resume`): said in its log.
+    /// Carries out Calcifer's own run `id` again, as an earlier Calcifer left it (`hub::jobs::resume`).
     pub(crate) fn here_again<F, Fut>(self: &Arc<Self>, id: RunId, work: F)
     where
         F: FnOnce(Here) -> Fut + Send + 'static,
         Fut: Future<Output = Result<serde_json::Value, ::api::error::Error>> + Send + 'static,
     {
-        Here { calcifer: self.clone(), id: id.clone() }.say("Calcifer restarted under this; it starts again");
         self.start_here(id, work);
     }
 
@@ -2077,11 +2076,6 @@ impl Calcifer {
                     // A restart while it prepared kept it without its access, which stays off the
                     // machine's disk: the same spec sent again brings it, and it prepares on.
                     Ok((state, events)) if state.state == "needs_access" => {
-                        // Said in the run's own log: Calcifer's diagnostics hold no run ids.
-                        let said = format!("{machine} restarted while it prepared and kept it as needs_access: its access sent again");
-                        if let Ok(noted) = self.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "info", &said)) {
-                            self.publish(&run.id, noted);
-                        }
                         let _turn = sending.lock().await;
                         let Some(state) = self.deliver(run, machine, link).await? else { return Ok(()) };
                         (state, Some(events))
@@ -2170,14 +2164,6 @@ impl Calcifer {
                     true => return Ok(None),
                     false => continue,
                 }
-            }
-            // Which RC builds it runs on, said with the run once (cl-922).
-            if row.state == State::Queued
-                && row.kind != ::api::calcifer::Kind::Update
-                && let Some(line) = self.machines().and_then(|machines| machines.rc_line(machine))
-                && let Ok(events) = self.row_store(&row)?.note(row.id.as_str(), "machine", &line)
-            {
-                self.publish(&row.id, events);
             }
             sent.push((own, v1::RunRequest { id: row.sent_id(), spec }));
         }

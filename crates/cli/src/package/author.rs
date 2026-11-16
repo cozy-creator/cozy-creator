@@ -17,9 +17,6 @@ use crate::{Context, calcifer_client::path, output, run};
 async fn sent(ctx: &Context) -> Result<(std::path::PathBuf, api::code::LocalCode, Option<String>), Error> {
     let dir = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let (code, project) = crate::send::Sender::local_code(ctx, &dir).await?;
-    if project.is_some() {
-        output::warn("publishing exports this package's source: the published copy leaves its project's protection");
-    }
     Ok((dir, code, project))
 }
 

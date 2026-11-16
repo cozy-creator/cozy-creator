@@ -141,7 +141,8 @@ impl Lists {
             let ended = matches!(run.state.as_str(), "succeeded" | "failed" | "canceled");
             let row = Row {
                 ready: run.state == "succeeded",
-                held_back: (run.state == "failed").then(|| format!("{machine} couldn't make it ready")),
+                // A fetch ahead that failed is no failure of the job: its own run makes it ready, and says so if that fails.
+                held_back: None,
                 waiting: (!run.waiting.is_empty() && !ended).then(|| run.waiting.clone()),
                 function: listed.function.clone(),
                 machine: machine.to_owned(),
