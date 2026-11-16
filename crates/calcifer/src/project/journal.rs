@@ -54,6 +54,11 @@ impl RunOwner {
     pub(crate) async fn when_admitted(&self) -> Result<(), Error> {
         vault::admit_work(&self.project).await.map(drop)
     }
+    /// A read of the project for one write into it (cl-1060), waited for behind a lock that has its turn: the lock waits for the
+    /// write, and none starts into a view the lock took.
+    pub(crate) async fn writing(&self) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+        vault::admit_work(&self.project).await
+    }
     pub(crate) fn store(&self) -> store::Result<ProjectStore> {
         let view = vault::try_admit_work(&self.project).map_err(project_error)?;
         Ok(ProjectStore { project: self.project.clone(), controller: self.controller.clone(), _view: view, access:Access::Work })

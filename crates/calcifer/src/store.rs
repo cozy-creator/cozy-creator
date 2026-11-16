@@ -1629,6 +1629,22 @@ macro_rules! journal_methods {
 
     /// Records why revision `rev` of the output will not be exported; while that is its current
     /// revision, the run's next event is the item done again, carrying why.
+    /// A settled run with an output that wasn't saved (cl-1060): a lock cut its save, or its export failed for good. It reads failed
+    /// with `reason`, typed by why, never completed with no file; its items keep their own export errors.
+    pub(crate) fn outputs_not_saved(&self, run: &str, reason: &Reason) -> Result<Vec<Event>> {
+        self.write(|tx| {
+            let changed = tx.execute(
+                "UPDATE runs SET status = 'failed', reason_code = ?2, reason = ?3 WHERE id = ?1 AND state = 'settled' AND status = 'completed'",
+                params![
+                    run,
+                    seal_run_text(tx, run, &run_context(run, "reason_code"), &reason.code)?,
+                    seal_run_text(tx, run, &run_context(run, "reason"), &reason.message)?,
+                ],
+            )?;
+            Ok(if changed == 0 { vec![] } else { vec![lifecycle(tx, run)?] })
+        })
+    }
+
     pub(crate) fn export_failed(&self, run: &str, name: &str, index: u32, rev: u64, reason: &str) -> Result<Vec<Event>> {
         self.write(|tx| {
             tx.execute(
