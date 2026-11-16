@@ -9,11 +9,11 @@ import { machinesQuery, runFullQuery } from "../../api/queries"
 import { ownActivity, waitsOnOf } from "../../panels/machines/activity"
 import { useSignal, tabShown } from "../../ui/signal"
 import { theme } from "../../ui/theme"
-import type { CanvasStore, ElementNode } from "../CanvasStore"
+import type { CanvasStore, ElementNode, ElementView } from "../CanvasStore"
 import { carried } from "../checkpoints"
 import { NameField } from "../NameField"
 import { HEAD, watched } from "../shown"
-import { viewState } from "../StateDot"
+import { SAID, unseenSaid, viewState } from "../StateDot"
 import type { Viewport } from "./Camera"
 import { MAX_ZOOM, MIN_ZOOM } from "./Camera"
 import { hitOf } from "./CardView"
@@ -25,6 +25,12 @@ import { pictureBox, type RunContext } from "./presentation"
 import { type Chosen, parkRenderer, takeRenderer } from "./renderer"
 import { Scene } from "./Scene"
 import { forgetMeasurements, onFontsLoaded } from "./text"
+
+/** What a box's dots say on hover: its run's state, then what's new and not looked at. */
+const dotsSaid = (view: ElementView) => {
+  const state = viewState(view), count = view.asset?.unseen?.length ?? 0
+  return [state && state !== "unseen" ? SAID[state] : "", count ? unseenSaid(count, view.asset?.noun ?? "version") : ""].filter(Boolean).join(". ")
+}
 
 type Pointer = MouseEvent | PointerEvent
 
@@ -211,7 +217,6 @@ export function Stage(props: StageProps) {
         pictured = held.pictured
         if (open.cards >= 0 && held.pictured >= held.wanting) open.previews = drewMore
       }
-      try { scene.didRender() } catch (error) { console.error("Seen:", error) }
       if (!board.camera.hasDrawn && ((store.hasRead && store.empty) || [...scene.views()].length > 0)) board.camera.markDrawn()
       if (!dirty && !moving && !animating && !board.camera.isMoving) stop()
     }
@@ -264,9 +269,10 @@ export function Stage(props: StageProps) {
         scene: {
           setHover: (hit) => {
             scene?.setHover(hit)
-            // A truncated name reads whole on hover (zoom-never-moves-nodes): the browser's own tooltip.
-            const view = hit?.part === "title" ? store.get(hit.name) : undefined
-            if (view) element.title = view.name
+            // A truncated name reads whole on hover (zoom-never-moves-nodes), its dots what they mean: the browser's own tooltip.
+            const view = hit?.part === "title" || hit?.part === "dot" ? store.get(hit.name) : undefined
+            const said = view && (hit?.part === "title" ? view.name : dotsSaid(view))
+            if (said) element.title = said
             else element.removeAttribute("title")
           }, setResize: (name, label) => scene?.setResize(name, label), setMarquee: (box) => scene?.setMarquee(box) },
         props: () => latest.current, invalidate,

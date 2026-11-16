@@ -6532,7 +6532,7 @@ impl Walk {
             }
             Ok(())
         })?;
-        self.landed_unseen(name, number, approve);
+        unseen::landed(&self.project, name, number);
         self.say_landed(name, &version, noun, number)
     }
 
@@ -6571,15 +6571,8 @@ impl Walk {
             }
             tally.execution_ms += version.execution_ms;
         }
-        self.landed_unseen(name, number.get(), approve);
+        unseen::landed(&self.project, name, number.get());
         self.say_landed(name, &version, noun, number.get())
-    }
-
-    /// A version that lands beside an approved one, which the box goes on showing, is unseen until it's looked at (cl-928).
-    fn landed_unseen(&self, name: &str, number: u32, approve: bool) {
-        if !approve {
-            unseen::landed(&self.project, name, number);
-        }
     }
 
     fn say_landed(&self, name: &str, version: &Version, noun: &str, number: u32) -> Result<(), Error> {
