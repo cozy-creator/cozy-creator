@@ -49,5 +49,5 @@ def late_call(payload: Ask, extra: Extra) -> Said:
 
 @app.entrypoint(accelerator=False)
 async def late(payload: Ask) -> Said:
-    # The image's Runtime (0.46) names a call's arguments.
-    return await call(late_call, payload=Ask())
+    # The image's Runtime (0.46) names a call's arguments; the RC's stubs know only call(target, request).
+    return await call(late_call, payload=Ask())  # type: ignore[call-overload,no-any-return]
