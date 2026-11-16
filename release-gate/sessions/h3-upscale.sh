@@ -7,7 +7,7 @@
 #                  source (frames.py regen, the gate's bar)
 #   clip_prompt    the same file with the shot's words as the prompt
 #   prompt, p909   the take with `prompt` replacing its text, at 0.7 and 0.909: they differ from `now`
-# After each take: each process on GPU 0 (nvidia-smi over SSH) and varena's split at the take's end. The candidates' upscales
+# After each take: its GPU call's memory, varena's split at its end. The candidates' upscales
 # start in a fresh TensorD (session 43777750768: one in the executor that rendered the take ran out of memory on a 4090).
 # Each upscale is held against its shot by frames.py regen; frames 72 and 288, side by side, in $OUT/frames. params:
 #   to        1080p (default), 1440p or 2160p
@@ -56,9 +56,8 @@ memory() { jq -c "[.calls[]? | select(.measurements.memory? != null) | .measurem
   peak_allocated: ((\$m.peak_allocated_bytes // 0) $GIB), driver_before: ([\$m.driver[]?.before_bytes] | max // 0 $GIB),
   driver_peak: ([\$m.driver[]?.peak_bytes] | max // 0 $GIB), varena_allocated: ((\$m.stats.varena[0].stats.allocated // 0) $GIB),
   varena_reserved: ((\$m.stats.varena[0].stats.reserved // 0) $GIB), error: .error.message}]" "$1" 2>&1; }
-# snapshot <label> <take box>: what holds GPU 0 now, each process, and the take's GPU call's memory at its end.
+# snapshot <label> <take box>: the machine now, and the take's GPU call's memory at its end.
 snapshot() {
-  say "$1 GPU now: $(timeout 60 cozy machine ssh "$NAME" "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader; nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader" 2>&1 | grep -v '^Warning: Permanently added' | paste -sd';')"
   cozy machine show "$NAME" --json > "$OUT/$1-show.json" 2>&1
   record "$2" > "$OUT/$2.json"; say "$1 the take's call: $(memory "$OUT/$2.json")"
 }
@@ -119,7 +118,6 @@ sheet() {
 kernels "$WAS"; kernels "$NOW"
 cp "$REF/seed.jpg" "$OUT/skater.jpg"
 run_page import "$OUT/skater.jpg" --name "$HERO" > "$OUT/import.txt" 2>&1 || fail "import: $(cat "$OUT/import.txt")"
-RENT_ARGS=--ssh  # nvidia-smi from the pod's root shell
 quote "$(param need_s 5400)"
 rent
 pod() { say "pod $(cozy machine show "$NAME" --json | jq -c '{v: .status.version, rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"; }
