@@ -177,7 +177,14 @@ export function Stage(props: StageProps) {
       stops.push(board.camera.bind(element, viewport))
       interaction = createInteraction({
         root: element, stage, viewport, camera: board.camera, board, store, hitOf,
-        scene: { setHover: (hit) => scene?.setHover(hit), setResize: (name, label) => scene?.setResize(name, label), setMarquee: (box) => scene?.setMarquee(box) },
+        scene: {
+          setHover: (hit) => {
+            scene?.setHover(hit)
+            // A truncated name reads whole on hover (zoom-never-moves-nodes): the browser's own tooltip.
+            const view = hit?.part === "title" ? store.get(hit.name) : undefined
+            if (view) element.title = view.name
+            else element.removeAttribute("title")
+          }, setResize: (name, label) => scene?.setResize(name, label), setMarquee: (box) => scene?.setMarquee(box) },
         props: () => latest.current, invalidate,
       })
       const resize = new ResizeObserver(() => {
