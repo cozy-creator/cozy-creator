@@ -203,10 +203,12 @@ pub(crate) fn connect(path: &Path, read_only: bool) -> Result<Connection, Error>
     Ok(conn)
 }
 
-/// A connection that only reads a project.db already opened (and so migrated) here: a run journal's (`Folder::journal_read`). Opened
-/// read-only, with nothing checked or created, so a read that needs one more pays a file open, not an open's checks (cl-1010).
+/// A connection that only reads a project.db already opened (and so migrated) here: a run journal's (`Folder::journal_read`), with
+/// nothing checked or created, so a read that needs one more pays a file open, not an open's checks (cl-1010). It reads as any reader
+/// does (`query_only`): one opened read-only would rebuild the WAL's index from the WAL itself, a slower read each time.
 pub(crate) fn reader(path: &Path) -> Result<Connection, Error> {
-    let conn = connect(path, true)?;
+    let conn = connect(path, false)?;
+    conn.pragma_update(None, "query_only", "ON").map_err(|error| sql(path, error))?;
     conn.pragma_update(None, "temp_store", "MEMORY").map_err(|error| sql(path, error))?;
     crate::store::register_owner(&conn, path.parent().map(Path::to_owned)).map_err(|error| sql(path, error))?;
     Ok(conn)

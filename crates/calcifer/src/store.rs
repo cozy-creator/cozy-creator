@@ -2171,22 +2171,37 @@ impl Store {
         ended
     }
 
-    /// Takes out ended machines older than [`KEPT_FOR_MS`] that no kept run names, at most `limit`, and gives the pages back (a new store
-    /// vacuums incrementally): the store keeps 90 days of them, with no timer (Paul 11-15). Not while the legacy history's rows can still
-    /// name them (cl-1003). How many went.
+    /// Takes out ended machines older than [`KEPT_FOR_MS`] that no kept run names, at most `limit`, with their logs, and gives the pages
+    /// back (a new store vacuums incrementally): the store keeps 90 days of them, with no timer (Paul 11-15). Not while the legacy
+    /// history's rows can still name them (cl-1003). Its own check stands for the foreign key's, which with no index on runs(machine) (one
+    /// would take the unsettled-run plans) read every run for each machine: off for this transaction only. How many went.
     pub(crate) fn prune_machines(&self, limit: i64) -> Result<usize> {
         let before = now_ms() - KEPT_FOR_MS;
-        self.write(|tx| {
-            if has_table(tx, "legacy_project_runs")? { return Ok(0); }
-            let pruned = tx.execute(
-                // No index on runs(machine): one would take the plans that read `runs_owed` (unsettled runs) and read every run instead.
-                "DELETE FROM machines WHERE name IN (SELECT name FROM machines WHERE state = 'ended' AND coalesce(ended_at, created_at) < ?1
-                     AND name NOT IN (SELECT machine FROM runs WHERE machine IS NOT NULL) LIMIT ?2)",
-                params![before, limit],
-            )?;
-            if pruned > 0 { tx.execute_batch("PRAGMA incremental_vacuum(256)")?; }
-            Ok(pruned)
-        })
+        let (pruned, commit) = {
+            let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            if has_table(&conn, "legacy_project_runs")? { return Ok(0); }
+            conn.pragma_update(None, "foreign_keys", "OFF")?;
+            let pruned = (|| -> Result<usize> {
+                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS pruned_machines (name TEXT PRIMARY KEY); DELETE FROM temp.pruned_machines;")?;
+                tx.execute(
+                    "INSERT INTO temp.pruned_machines SELECT name FROM machines WHERE state = 'ended' AND coalesce(ended_at, created_at) < ?1
+                         AND name NOT IN (SELECT machine FROM runs WHERE machine IS NOT NULL) LIMIT ?2",
+                    params![before, limit],
+                )?;
+                if has_table(&tx, "machine_logs")? {
+                    tx.execute("DELETE FROM machine_logs WHERE machine IN (SELECT name FROM temp.pruned_machines)", [])?;
+                }
+                let pruned = tx.execute("DELETE FROM machines WHERE name IN (SELECT name FROM temp.pruned_machines)", [])?;
+                if pruned > 0 { tx.execute_batch("PRAGMA incremental_vacuum(256)")?; }
+                tx.commit()?;
+                Ok(pruned)
+            })();
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            (pruned?, self.durable.committed())
+        };
+        self.durable.wait(commit)?;
+        Ok(pruned)
     }
 
     pub(crate) fn open(path: &Path) -> Result<Self> {
