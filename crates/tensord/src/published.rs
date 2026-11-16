@@ -1692,12 +1692,11 @@ fn slot_components(slot: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The components a call loads of a slot's checkpoint, as its plan binds them (`gpu_service`'s `PlanSlot`): those declared
-/// (`components=`), else every one its methods use (`component_use`); none: all of them.
+/// The components a call loads of a slot's checkpoint, as `prepare_root` binds them: those declared (`components=`), else
+/// every one its methods use (`component_use`); none: all of them.
 fn slot_reads(slot: &Value) -> Vec<String> {
-    let declared = slot_components(slot);
-    if !declared.is_empty() || slot.get("components").is_some() {
-        return declared;
+    if slot["components"].is_array() {
+        return slot_components(slot);
     }
     let used: BTreeSet<String> = (slot["component_use"].as_object().into_iter().flat_map(|uses| uses.values()))
         .flat_map(|components| components.as_array().into_iter().flatten())
@@ -1991,10 +1990,11 @@ fn apply_adapters(
     }
     // The view reads the base's own chunks, from this store: those of the components its slot reads come first, never the
     // rest of its checkpoint (tfs-300, LAB2-47829: a LoRA on Noct Q's transformer waited for its 9.9 GiB text encoder too).
+    // One it lacks is `prepare_root`'s to refuse, by name.
     let base = object(&grant.manifest)?;
     if let (Some(pulled), Some(source)) = (publisher.pulled(&base).map_err(io_failure)?, source) {
-        let components = (!reads.is_empty()).then_some(reads);
-        publisher.pull(source, &pulled, components, job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
+        let components: Option<Vec<String>> = (!reads.is_empty()).then(|| reads.iter().filter(|c| grant.components.contains(c)).cloned().collect());
+        publisher.pull(source, &pulled, components.as_deref(), job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
     }
     // The view is composed by reference and kept in memory, never written; Load sends its bytes.
     let composed = crate::adapter::compose(store, &base, &selections)
