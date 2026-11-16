@@ -708,3 +708,20 @@ vault_native() (
   "$py" "$E2E/cli/vault_native.py" --cli "$COZY" --root "$root" > "$OUT/vault-native.json" 2>&1 || fail "vault native: $(tail -c 1200 "$OUT/vault-native.json")"
   echo "vault native: $(tail -1 "$OUT/vault-native.json")"
 )
+
+# A run on `local` after a lock that ended one, then unlock, a run, lock, unlock, attaches; the vault locks at its maximum (cl-1082;
+# coordinator 11-16: "an ordinary user who locks mid-render"). Nothing is stopped (e2e/cli/vault_reattach.py).
+vault_reattach() (
+  step "a run on local after a lock that ended one, a run, a lock, attaches; the vault locks at its maximum (cl-1082)"
+  [ -n "$LOCAL" ] || exit 0
+  local work secrets project
+  work=$(mktemp -d "$OUT/vault-reattach.XXXXXX") secrets=$(mktemp -d "$OUT/vault-reattach-credentials.XXXXXX")
+  trap 'rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic vault reattach passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  project=$work/reattach-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
+  cozy --json new "$project" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" \
+    || { check "vault reattach: cozy new: $(tail -c 300 "$work/new.json")"; exit 0; }
+  python3 "$E2E/cli/vault_reattach.py" --project "$project" --passphrase-file "$secrets/passphrase" --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" \
+    || { cat "$work/proof.err"; check "vault reattach: $(tail -n 1 "$work/proof.err" | cut -c1-900)"; }
+  in_project "$project" --json vault lock > /dev/null 2>&1 || true
+)

@@ -815,8 +815,11 @@ case $SHARD in
     kept_latents
     vault_swapped
     ended_logs
+    vault_reattach
     logs
   " ;;
+  # A run on local after a lock that ended one, a run and a lock, attaches (cl-1082), alone. Named projectvault-* for its driver.
+  projectvault-reattach) parts="vault_reattach logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
