@@ -1347,7 +1347,12 @@ end_unconfirmed?: string | null,
 /**
  * In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
  */
-rc?: RcFollow | null, };
+rc?: RcFollow | null,
+/**
+ * The software an update by hand gave it, in that update's words, which it keeps: it moves to neither the open RC nor a
+ * package's floor until `cozy machine update <name>` names nothing (cl-952).
+ */
+held?: string | null, };
 
 /**
  * What a machine is to Calcifer: this computer's, a rental, or another computer's added by address.

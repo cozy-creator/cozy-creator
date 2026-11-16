@@ -31,6 +31,7 @@ parse "$@"
 . "$(dirname "$0")/fallback.sh"
 . "$(dirname "$0")/previews.sh"
 . "$(dirname "$0")/released.sh"
+. "$(dirname "$0")/installed.sh"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
@@ -565,6 +566,7 @@ case $SHARD in
     calcifer_restarts
     stuck_exit
     update
+    installed_follow
     remove
   " ;;
   runs) parts="
@@ -585,6 +587,7 @@ case $SHARD in
     kept_preparing
     released_project
     update
+    installed_follow
     remove
   " ;;
   # A project the newest release made, read by the candidate (cl-930); then the release refuses the candidate's store.
