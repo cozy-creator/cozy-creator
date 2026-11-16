@@ -82,7 +82,13 @@ step() { echo "::endgroup::"; echo "::group::$*"; }
 fail() { check "$@"; exit 1; }
 # A failure can span lines, and a check can run in a subshell: failures.count has one line per check.
 check() { echo "::error::$*"; echo "$*" >> "$OUT/failures.txt"; echo >> "$OUT/failures.count"; }
+# run_parts PART...: a suite's parts in turn. A shell error in a part (an arithmetic or substitution error, `$(( 0 0 ))`) makes bash
+# drop the rest of the top-level command that called this and go on at the next line, past `set -e`, so that part's later checks and
+# every part after it never run: `running` keeps the part's name, and `finish` fails the run rather than passing it (cl-1079).
+running=''
+run_parts() { local part; for part in "$@"; do running=$part; "$part"; done; running=''; }
 finish() {
+  [ -z "$running" ] || check "$running ended on a shell error (the line above names it): its later checks and every part after it didn't run"
   hub_checked
   echo "::endgroup::"
   [ -s "$OUT/failures.txt" ] || { echo "$1: passed"; return 0; }
