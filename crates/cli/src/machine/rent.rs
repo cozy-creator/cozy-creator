@@ -20,7 +20,7 @@ pub(crate) struct Rent {
     /// Number of GPUs.
     #[arg(long, requires = "sku", value_parser = clap::value_parser!(u32).range(1..))]
     gpus: Option<u32>,
-    /// Minimum disk space in GB. Defaults to 300, or 100 where 300 would add over 5% to the price.
+    /// Minimum disk space in GB. Defaults to 300 (a host that offers less gives its largest).
     #[arg(long, requires = "sku", value_parser = clap::value_parser!(u32).range(1..))]
     disk_gb: Option<u32>,
     /// SSH public key file. Omit the path to use your default key.
