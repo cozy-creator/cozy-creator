@@ -19,7 +19,7 @@ const { spawn } = require('child_process');
 const { appendFileSync, closeSync, copyFileSync, mkdirSync, openSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasVisible, canvasPoint, focus, canvasIdle } = require('./fixtures');
-const { dropFiles, fit, toolRow, leave } = require('./hands');
+const { dropFiles, fit, leave } = require('./hands');
 const { carry } = require('./geometry');
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: release-gate/sessions/user-flow.sh sets it`); })();
@@ -223,6 +223,23 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     await beat.click();
     await page.keyboard.type(words);
   };
+  /** Tool `id`'s row in the Tools palette, looked for in `groups` in turn: H3's Edit is in Video since #3515 and in Edit Video before
+   *  (tonight's RC). A group shut again by a change to the page is opened again until the row shows. */
+  const toolRow = async (groups, id) => {
+    const tools = page.getByRole('complementary', { name: 'Tools' });
+    const row = tools.locator(`li[data-implementation][data-tool=${JSON.stringify(id)}]`);
+    await expect.poll(async () => {
+      for (const group of groups) {
+        if (await row.isVisible()) return true;
+        const button = tools.getByRole('button', { name: group, exact: true });
+        if (!(await button.count())) continue;
+        if ((await button.getAttribute('aria-expanded')) !== 'true') await button.click();
+        if (await row.isVisible()) return true;
+      }
+      return false;
+    }, { message: `${id} in Tools › ${groups.join(' or ')}`, timeout: 60_000, intervals: [500, 1000] }).toBe(true);
+    return row;
+  };
   /** Option `option` of choice `label` in Focus `r`, as the page draws it: the browser's own menu (since cl-1066), the page's dropdown of
    *  described options before it (tonight's RC, fc1956d16), or segments for a few. */
   const choose = async (r, label, option) => {
@@ -391,7 +408,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       expect(edit, `the palette lists ${EDIT}`).toBeTruthy();
       const before = new Set((await project.assets()).map((asset) => asset.name));
       await fit(page);
-      const row = await toolRow(page, 'Video', generate.id);
+      const row = await toolRow(['Video'], generate.id);
       const at = await roomAt(page);
       await carry(page, row, at);
       flow.shot_dropped_at = at;
@@ -419,7 +436,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
 
     await test.step("H3's Edit from Tools › Video dropped on the plate: VFX edit, its beat as long as the plate", async () => {
       await fit(page);
-      const row = await toolRow(page, 'Video', edit.id);
+      const row = await toolRow(['Video', 'Edit Video'], edit.id);
       await carry(page, row, await canvasPoint(page, 'plate'));
       await expect.poll(async () => (await project.asset('plate'))?.tool ?? null, { message: 'the plate takes the Edit tool', timeout: 60_000 }).toBe(edit.id);
       const r = await look('plate');
