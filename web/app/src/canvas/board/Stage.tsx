@@ -14,7 +14,7 @@ import { Asking } from "../Asking"
 import type { CanvasStore, ElementNode } from "../CanvasStore"
 import { carried } from "../checkpoints"
 import { NameField } from "../NameField"
-import { HEAD } from "../shown"
+import { HEAD, watched } from "../shown"
 import { viewState } from "../StateDot"
 import type { Viewport } from "./Camera"
 import { MAX_ZOOM, MIN_ZOOM } from "./Camera"
@@ -65,7 +65,7 @@ export function Stage(props: StageProps) {
   const live = useRef({ invalidate: () => {}, enable: () => {} })
   const [failed, setFailed] = useState<string | null>(null)
   const [overlays, setOverlays] = useState<{ name: string; draft?: string; asking?: NonNullable<ReturnType<CanvasStore["get"]>>["asking"]; box: { x: number; y: number; w: number; under: number } }[]>([])
-  const [cards, setCards] = useState<{ name: string; label: string; selected: boolean }[]>([])
+  const [cards, setCards] = useState<{ name: string; label: string; selected: boolean; cancel: boolean }[]>([])
   const focused = useSignal(store.focusedName)
   const entering = useSignal(store.focusEntering)
   useLayoutEffect(() => { live.current.enable(); live.current.invalidate() }, [active, disabled, focused, entering])
@@ -166,7 +166,7 @@ export function Stage(props: StageProps) {
       } else software.value = true
       // No global move walks every card on every pointer move: Interaction listens to the window while it holds a press.
       made.events.features.globalMove = false
-      made.canvas.className = "canvas-pixels"
+      made.canvas.className = "canvas-pixels canvas-pane"
       element.prepend(made.canvas)
       const contextLost = (event: Event) => { event.preventDefault(); lost = true; enable() }
       const contextRestored = () => { lost = false; enable(); scene?.redrawAll(); invalidate() }
@@ -175,6 +175,7 @@ export function Stage(props: StageProps) {
       stops.push(() => { made.canvas.removeEventListener("webglcontextlost", contextLost); made.canvas.removeEventListener("webglcontextrestored", contextRestored) })
       viewport = new PixiViewport({ screenWidth: width, screenHeight: height, events: made.events, noTicker: true, passiveWheel: false, ignoreWheelFromOtherElements: true, disableOnContextMenu: true })
       viewport.enableRenderGroup()
+      viewport.cursor = "grab"
       viewport.drag({ wheel: true }).pinch().wheel({ wheelZoom: false, trackpadPinch: true, smooth: false }).decelerate({ friction: 0.93 }).clampZoom({ minScale: MIN_ZOOM, maxScale: MAX_ZOOM })
       // A gesture moves the viewport between ticks; it starts one.
       viewport.on("moved", invalidate).on("zoomed", invalidate)
@@ -237,7 +238,8 @@ export function Stage(props: StageProps) {
       const list = board.getNodes().map((node) => {
         const view = store.get(node.data.name)
         const state = view ? viewState(view) : null
-        return { name: node.data.name, label: `${view?.name ?? node.data.name}${state ? `, ${state}` : ""}`, selected: Boolean(node.selected) }
+        const going = Boolean(view?.asset && !view.placing && (view.asset.standing === "making" || view.queued || view.asked !== undefined))
+        return { name: node.data.name, label: `${view?.name ?? node.data.name}${state ? `, ${state}` : ""}`, selected: Boolean(node.selected), cancel: going }
       })
       const key = JSON.stringify(list)
       if (key !== listKey) { listKey = key; setCards(list) }
@@ -313,6 +315,14 @@ export function Stage(props: StageProps) {
     <ul className="canvas-cards sr-only" role="listbox" aria-label="Boxes on the canvas" aria-multiselectable="true">
       {cards.map((card) => <li key={card.name} role="option" data-asset={card.name} aria-selected={card.selected}>{card.label}</li>)}
     </ul>
+    {/* What the drawn Cancel does, for a keyboard or a screen reader. */}
+    <div className="canvas-actions sr-only" role="group" aria-label="Renders on the canvas">
+      {cards.filter((card) => card.cancel).map((card) => <button key={card.name} type="button" className="canvas-control" aria-label={`Cancel ${card.name}'s render`} onClick={() => {
+        const view = store.get(card.name), take = view && watched(view)
+        if (take) store.cancelTake(card.name, { id: take.id, run: take.run })
+        else store.cancelRender(card.name)
+      }}>Cancel</button>)}
+    </div>
     <span id={helpId} className="sr-only">Use arrow keys to select a box, Enter to open it, and Escape to return. Drag empty space to pan; Shift-drag selects a rectangle.</span>
     {failed && <div className="empty-canvas" role="alert"><p>This browser couldn't draw the canvas ({failed}). Turn on hardware acceleration in its settings, or open this page in another browser.</p></div>}
   </div>
