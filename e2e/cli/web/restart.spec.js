@@ -68,9 +68,16 @@ test('restart', { tag: '@solo' }, async ({ context, page, project, api, cli, sig
       const said = await locking;
       expect(said.code, `cozy vault lock: ${said.stdout.slice(-300)} ${said.stderr.slice(-300)}`).toBe(0);
       await expect(covered, 'the tab covered').toBeVisible({ timeout: 60_000 });
-      await page.getByLabel('Passphrase', { exact: true }).fill(project.passphrase);
-      await page.getByRole('button', { name: 'Unlock project', exact: true }).click();
-      await expect.poll(() => canvasVisible(page, 'words'), { message: 'the canvas is back', timeout: 60_000 }).toBe(true);
+      // Unlocked from the tab. Its form clears as the lock's last state lands, so the passphrase goes in again until it takes.
+      await expect(async () => {
+        if (await canvasVisible(page, 'words')) return;
+        const field = page.getByLabel('Passphrase', { exact: true });
+        if (await field.isVisible()) {
+          await field.fill(project.passphrase);
+          await page.getByRole('button', { name: 'Unlock project', exact: true }).click({ timeout: 5_000 });
+        }
+        expect(await canvasVisible(page, 'words'), 'the canvas is back').toBe(true);
+      }).toPass({ timeout: 90_000, intervals: [1_000, 2_000, 5_000] });
       const kept = (await project.asset('words'))?.fields?.text ?? '';
       expect(kept !== WAS && typed.startsWith(kept) && kept.length >= FIRST.length,
         `what was typed before the lock began is saved (${FIRST.length} characters at least): ${JSON.stringify(kept)}`).toBe(true);
