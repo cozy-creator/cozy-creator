@@ -47,7 +47,6 @@ class Output(TypedDict, total=False):
     name: str
     status: str
     sha256: str
-    path: str
 
 
 class Run(TypedDict, total=False):
@@ -137,7 +136,7 @@ def exporting(stdout: Path, process: subprocess.Popen[bytes]) -> bool:
 def settled(args: argparse.Namespace, number: object, seconds: float) -> tuple[str, Run]:
     """Run `number`'s status once it settles, or as it is after `seconds`, and its record."""
     began, status, record = time.monotonic(), "", cast(Run, {})
-    while time.monotonic() - began < seconds:
+    while True:
         done = subprocess.run([str(args.cli), "--json", "run", "watch", str(number), "--once"], cwd=args.project, capture_output=True)
         lines = [line for line in done.stdout.splitlines() if line.strip()]
         try:
@@ -148,38 +147,29 @@ def settled(args: argparse.Namespace, number: object, seconds: float) -> tuple[s
             watched = watched["run"]
         status = str(watched.get("status", "")) if isinstance(watched, dict) else ""
         record = cast(Run, watched) if isinstance(watched, dict) else record
-        if status in ("completed", "failed", "canceled"):
+        if status in ("completed", "failed", "canceled") or time.monotonic() - began >= seconds:
             break
         time.sleep(2)
     return status, record
 
 
 def items(args: argparse.Namespace, number: object) -> list[dict[str, object]]:
-    """Run `number`'s outputs as `cozy run show --json` says them: status, landed path or not, export error."""
-    done = subprocess.run([str(args.cli), "--json", "run", "show", str(number)], cwd=args.project, capture_output=True)
-    lines = [line for line in done.stdout.splitlines() if line.strip()]
-    try:
-        shown: object = json.loads(lines[-1]) if lines else {}
-    except ValueError:
-        return []
-    if isinstance(shown, dict) and isinstance(shown.get("run"), dict):
-        shown = shown["run"]
-    output = shown.get("output", []) if isinstance(shown, dict) else []
-    return [{"name": item.get("name"), "status": item.get("status"), "landed": bool(item.get("path")), "error": item.get("export_error")}
-            for item in output if isinstance(item, dict)] if isinstance(output, list) else []
+    """Run `number`'s outputs as its record says them (`cozy run watch --once`): name, status, digest or not."""
+    _, record = settled(args, number, 0)
+    return [{"name": item.get("name"), "status": item.get("status"), "digest": bool(item.get("sha256"))} for item in record.get("output", [])]
 
-
-def whole(args: argparse.Namespace, number: object, mark: str, name: str) -> tuple[int, str]:
+def whole(args: argparse.Namespace, number: object, mark: str, name: str) -> tuple[int, str, int]:
     """Run `number`'s file as a person fetches it from the project: its size and digest, the mark at its start, read as a stream;
     (0, "") when it doesn't come back. The copy isn't kept."""
     fetched = args.out / name
     subprocess.run([str(args.cli), "run", "watch", str(number), "--once", "-o", str(fetched)], cwd=args.project, capture_output=True)
-    size, digest = 0, ""
+    size, digest, marked = 0, "", 0
     for path in fetched.rglob("*"):
         if not path.is_file():
             continue
         with path.open("rb") as file:
             head = file.read(200)
+            marked += mark.encode() in head
             # The run's file, not its small note, which starts with the mark too.
             if mark.encode() in head and path.stat().st_size > size:
                 hasher = hashlib.sha256(head)
@@ -187,7 +177,7 @@ def whole(args: argparse.Namespace, number: object, mark: str, name: str) -> tup
                     hasher.update(chunk)
                 size, digest = path.stat().st_size, "sha256:" + hasher.hexdigest()
         path.unlink()
-    return size, digest
+    return size, digest, marked
 
 def after_failure(args: argparse.Namespace, number: object, mark: str) -> str:
     """What a save cut off by the lock left (cl-1060): the vault locked, unlocked again, and the run watched until it settles."""
@@ -409,15 +399,15 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     status, record = settled(args, saved, 600)
     save_s = round(time.monotonic() - resumed, 1)
     print(f"vault work: lock while saving: items after the save: {items(args, saved)}", flush=True)
-    landed = [item for item in record.get("output", []) if item.get("path")]
+
     partial = [str(path) for path in view.rglob("*") if path.name.endswith((".part", ".part.held", ".manifest.part"))]
-    size, digest = whole(args, saved, mark, "save-lock.out")
+    size, digest, marked = whole(args, saved, mark, "save-lock.out")
     made = [item.get("sha256") for item in record.get("output", [])]
     observed = {"run": saved, "file_mb": SAVE_MB, "lock_exit": asked.returncode,
                 "lock_error": error.get("code") if isinstance(error, dict) else None, "unsaved": answer.get("unsaved", []),
                 "lock_answered_s": lock_s, "locked_s": locked_s, "views_left": len(left), "saved_before_lock": done_before,
                 "next_unlock": status, "save_after_unlock_s": save_s, "half_written": partial, "file_bytes": size,
-                "digest_is_runs": digest in made, "items_landed": len(landed), "items": len(record.get("output", []))}
+                "digest_is_runs": digest in made, "outputs_back": marked, "outputs": len(record.get("output", []))}
     print(f"vault work: lock while saving: {json.dumps(observed)}", flush=True)
     receipt["lock_while_saving"] = observed
     # Its large files aren't artifacts.
@@ -428,7 +418,7 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     assert not left, f"the lock left a view mounted: {observed}"
     assert status == "completed" and not partial, f"after a lock stopped run {saved}'s save, the next unlock: {observed}"
     assert size >= SAVE_MB << 20 and digest in made, f"run {saved}'s file after the next unlock: {observed}"
-    assert len(landed) == len(record.get("output", [])) == 2, f"run {saved}'s outputs after the next unlock, the one behind the big one too: {observed}"
+    assert marked == len(record.get("output", [])) == 2, f"run {saved}'s outputs after the next unlock, the one behind the big one too: {observed}"
     cli(args, "lock-after-save", "vault", "lock")
 
     receipt["synthetic_only"] = True
