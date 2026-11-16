@@ -53,6 +53,8 @@ phase() {
   step "$p-h3" run ./minimax-h3/generate --input "$OUT/$p-h3.req.json" --gpus 2 --lane int8 --on "$NAME" ||
     fail "$p: H3 over both GPUs: $(tail -c 300 "$OUT/$p-h3.txt")"
   cd "$OUT" || fail "no $OUT"
+  # The group idle: no run of the machine's left (a call's end is reported before its executors are back in the pool).
+  for i in $(seq 1 60); do [ "$(show | jq '.status.runs // [] | length')" = 0 ] && break; sleep 2; done
   read -r free total < <(show | jq -r '.status | "\(.disk_free_bytes) \(.disk_total_bytes)"')
   reserve=$((total / 50)); [ "$reserve" -ge $((1 << 30)) ] || reserve=$((1 << 30)); [ "$reserve" -le $((10 << 30)) ] || reserve=$((10 << 30))
   # 1 GiB free past the reserve: LTX's 71.5 GB needs H3's room, beyond the bake's and the LoRAs'.
@@ -61,6 +63,13 @@ phase() {
     || fail "$p: the ballast: $(tail -c 300 "$OUT/$p-ballast.txt")"; }
   say "$p: installed $(installed); ballast $((ballast >> 20)) MiB, free $(( $(show | jq -r .status.disk_free_bytes) >> 20 )) MiB"
   step "$p-ltx" model install lightricks/ltx-2.5 --on "$NAME" -y; LANDED=$?
+  # What held the store then: each locked hold, its process and the digests it names first.
+  if [ "$LANDED" != 0 ]; then
+    cozy machine ssh "$NAME" 'cd /var/lib/tensorfs/holds && for f in *; do [ "$f" = gc.lock ] && continue
+        flock -n "$f" true && continue; p=${f%%-*}; echo "$f: $(ps -o pid=,pgid=,ppid=,etime=,args= -p "$p" | cut -c1-160) | $(head -c 130 "$f" | tr "\n" " ")"
+      done; ps -eo pid,pgid,ppid,etime,args | grep -E "pytho[n]|tensor[d]" | cut -c1-160' > "$OUT/$p-holds.txt" 2>&1
+    sed 's/^/    /' "$OUT/$p-holds.txt" >> "$R"
+  fi
   cozy machine ssh "$NAME" "rm -f /var/lib/cozy/cl1076-ballast" > /dev/null 2>&1 || fail "$p: removing the ballast"
   cozy machine logs "$NAME" tensord -n 0 --since 30m > "$OUT/$p-tensord.log" 2>&1
   ENDED=$(grep -c 'ended the idle executors holding .*minimax-h3' "$OUT/$p-tensord.log")
