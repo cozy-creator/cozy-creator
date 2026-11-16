@@ -28,6 +28,8 @@ export class Camera {
   private ends = new Set<(view: Viewport) => void>()
   private draws = new Set<() => void>()
   private drawn = false
+  /** Asks the canvas for a tick: a move or an animation of the camera needs frames. */
+  wake: () => void = () => {}
 
   constructor(initial?: Viewport | null) {
     this.view = initial && valid(initial) ? { ...initial } : { x: 0, y: 0, zoom: 1 }
@@ -114,6 +116,7 @@ export class Camera {
         callbackOnComplete: () => { this.place(target); this.finish(true) },
       })
       viewport.dirty = true
+      this.wake()
     })
   }
 
@@ -160,6 +163,7 @@ export class Camera {
       viewport.position.set(view.x, view.y)
       viewport.scale.set(view.zoom)
       viewport.dirty = true
+      this.wake()
     }
     if (same(view, this.view)) return
     this.view = { ...view }
