@@ -193,7 +193,7 @@ test('fullscreen', { tag: '@engines' }, async ({ page, project, api, cli }) => {
     expect.soft(await playing(held), 'F: the same <video>, still paused where it was').toMatchObject({ connected: true, full: true, paused: true, at });
     await page.keyboard.press('f');
     await expect.poll(() => fullNow(page), { message: 'F again: out' }).toBeNull();
-    await region.getByRole('button', { name: 'Rename node', exact: true }).click();
+    await region.getByRole('button', { name: 'Rename box', exact: true }).click();
     const field = region.getByRole('textbox', { name: 'Name', exact: true });
     await field.click();
     await page.keyboard.press('End');

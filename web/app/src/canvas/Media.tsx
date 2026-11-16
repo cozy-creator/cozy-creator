@@ -915,11 +915,11 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.here && !focused ? view.scrub : undefined} previewing={previewing} />}
         {nearImage && field === "image" && !own && <BufferedImage sha256={drawnImage?.sha256 ?? null} originalPath={drawnImage?.path} neighborPaths={neighborPaths} neighbors={nearImage.absent || nearImage === drawnImage ? neighbors : [nearImage.sha256, ...neighbors]} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
-        {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"}</span>}
+        {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Stored on ${shown.machine}` : "Stored on another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       </div>
       {blank && words && !madeFrom && !makingMedia && <Said words={words} view={view} name={name} />}
-      {blank && !words && clips && <span className="media-note">Drag videos and stills here</span>}
+      {blank && !words && clips && <span className="media-note">Drag videos and images here</span>}
       {blank && !words && field === "file" && <span className="media-note">A file</span>}
       {glyph && (
         <span className="blank-glyph">
@@ -937,7 +937,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
       {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action canvas-control" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
-        <span className="orbit-badge" title="An orbit: open it and drag to turn">
+        <span className="orbit-badge" title="An orbit. Open it, then drag to turn it.">
           <Icon name="orbit" />
         </span>
       )}
