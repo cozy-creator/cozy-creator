@@ -73,6 +73,7 @@ export class CardView {
   }
 
   get picture() { return this.pictures.get("main") }
+  get latentShown() { const latent = this.latent; return latent?.handle.texture ? { width: latent.handle.texture.width, opacity: latent.sprite.alpha } : null }
   get previewing() { return this.video ? { active: true, ready: Boolean(this.video.handle.texture), muted: true, loop: true } : null }
 
   update(node: SceneNode, show: Presentation, state: CardState, env: CardEnv) {
@@ -434,7 +435,7 @@ export class CardView {
   /** A video's preview plays over its poster on hover; the poster stays until its first frame. */
   private syncVideo(state: CardState, env: CardEnv) {
     const { node, show } = this.input!
-    const sha = state.hover === "body" && !env.software && show.picture?.kind === "video" && show.picture.sha256 && env.band === 0 ? hexOf(show.picture.sha256) : undefined
+    const sha = state.hover === "body" && show.picture?.kind === "video" && show.picture.sha256 && env.band === 0 ? hexOf(show.picture.sha256) : undefined
     if (this.video && this.video.sha !== sha) { this.video.handle.release(); this.video.sprite.destroy(); this.video = undefined }
     if (sha && !this.video && !node.dragging) {
       const sprite = new Sprite({ texture: Texture.EMPTY, eventMode: "none" })
@@ -468,10 +469,15 @@ export class CardView {
       this.ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thick + 2 / scale, color: colors.gap, alignment: 0.5 })
       this.ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thick, color: colors.select, alignment: 0.5 })
     } else if (node.view.hot) {
-      this.ink.rect(body.x - 3, body.y - 3, body.w + 6, body.h + 6).stroke({ width: 2, color: colors.select, alignment: 0.5 })
+      // What's held over a box that takes it (app.css .card.hot): an ember outline 2px off it, in a soft 6px ember halo.
+      const edge = node.view.refused ? colors.failed : colors.ember
+      this.ink.rect(body.x - 3, body.y - 3, body.w + 6, body.h + 6).stroke({ width: 6, color: colors.ember, alpha: 0.22, alignment: 0.5 })
+      this.ink.rect(body.x - 3, body.y - 3, body.w + 6, body.h + 6).stroke({ width: 2, color: edge, alignment: 0.5 })
     } else if (state.hover && (show.picture || show.note || show.error || show.references.length)) {
       // The page's hover: a 1px --line2 outline 2px off the picture (app.css .card:hover > .media).
-      this.ink.rect(body.x - 2.5, body.y - 2.5, body.w + 5, body.h + 5).stroke({ width: 1, color: colors.line2, alignment: 0.5 })
+      const px = 1 / Math.max(env.zoom, 0.25)
+      // 1.5 screen pixels: a 1px line off the pixel grid (any fractional camera offset) washes out to a faint smear.
+      this.ink.rect(body.x - 2 - px * 0.75, body.y - 2 - px * 0.75, body.w + 4 + px * 1.5, body.h + 4 + px * 1.5).stroke({ width: px * 1.5, color: colors.line2, alignment: 0.5 })
     }
   }
 
