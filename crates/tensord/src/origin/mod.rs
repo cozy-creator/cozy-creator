@@ -36,8 +36,8 @@ pub(crate) mod priority {
     pub(crate) const EMERGENCY: u64 = tensorfs::fetch::EMERGENCY;
     /// Software, no job's weights: the machine's update, a package's files as it installs. Weights yield to it (cl-1007).
     pub(crate) const SOFTWARE: u64 = tensorfs::fetch::SOFTWARE;
-    /// The run a started run's fetches are ordered as (its calls' weights): ahead of every queued
-    /// root, whose order is its acceptance, from 1.
+    /// The run a call sharing a GPU an ancestor holds is ordered as (`runs::call_order`): ahead of
+    /// every queued root, whose order is its acceptance, from 1.
     pub(crate) const STARTED: u64 = 0;
     fn at(class: u64, run: u64, rank: u32) -> u64 {
         2 + (class << 62 | run.min((1 << 30) - 1) << 32 | u64::from(rank))
