@@ -170,7 +170,7 @@ while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.fa
 # bottleneck's queue, where a paced flow's one or two in flight lose to drop-tail and wait out TCP's retransmission timer; a
 # real link's are 1500 bytes, as here for the cell.
 # SHARE_LINK (tfs-300's variants of the shipped behaviour, by shard): `queue` (the default) the 60 Mbit FIFO above; `police` the
-# same rate as one token bucket that drops what it can't pass, no queue (a provider's policer); `open` no limit (TensorFS's
+# same rate and burst as one token bucket that drops what it can't pass, no queue (a provider's policer); `open` no limit (TensorFS's
 # fast-link gate). SHARE_NETLINK=closed: Calcifer, and TensorD its child, start with netlink refused (systemd
 # RestrictAddressFamilies, as a seccomp sandbox does), so an install's socket bytes can't be read.
 share_link() {
@@ -181,7 +181,7 @@ case ${SHARE_LINK:-queue} in
       && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$minio" 0xffff flowid 1:3 \
       && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$wheels" 0xffff flowid 1:3 || { share_unlink; check "ondemand-share: the shared link wasn't made"; return 1; } ;;
   police)
-    sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio && sudo tc actions add action police rate 60mbit burst 128k drop index 1 \
+    sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio && sudo tc actions add action police rate 60mbit burst 1mb drop index 1 \
       || { share_unlink; check "ondemand-share: the policed link wasn't made"; return 1; }
     for port in "$minio" "$wheels"; do
       sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:3 action police index 1 \
@@ -204,18 +204,17 @@ case $1 in
   open) rm -f "$dropin/tfs-300-no-netlink.conf" ;;
 esac
 systemctl --user daemon-reload && systemctl --user restart cozy-calcifer || { check "ondemand-share: Calcifer didn't restart (netlink $1)"; return 1; }
-for pid in $(pgrep -u "$(id -u)" -f 'machine serve'); do kill "$pid"; done
+for pid in $(pgrep -u "$(id -u)" -f 'machine serve'); do kill "$pid" 2> /dev/null || true; done
 for _ in $(seq 100); do pgrep -u "$(id -u)" -f 'machine serve' > /dev/null || break; sleep 0.2; done
 cozy --json doctor > "$OUT/ondemand-share/doctor-netlink-$1.json" 2>&1 || true
 }
 
 share_unlink() {
-sudo tc qdisc del dev lo root 2> /dev/null
-sudo tc actions flush action police 2> /dev/null
-sudo ip link set dev lo mtu 65536
-sudo iptables -w -D INPUT -i lo -j E2E_SHARE 2> /dev/null
-sudo iptables -w -F E2E_SHARE 2> /dev/null; sudo iptables -w -X E2E_SHARE 2> /dev/null
-true
+sudo tc qdisc del dev lo root 2> /dev/null || true
+sudo tc actions flush action police 2> /dev/null || true
+sudo ip link set dev lo mtu 65536 || true
+sudo iptables -w -D INPUT -i lo -j E2E_SHARE 2> /dev/null || true
+sudo iptables -w -F E2E_SHARE 2> /dev/null || true; sudo iptables -w -X E2E_SHARE 2> /dev/null || true
 }
 
 # share_package <dir> <arm> <port>: arm's own package (names and URLs its own, so no cache of uv's serves another arm), its files on
