@@ -508,6 +508,7 @@ WEB_3=(
   instant
   select
   move
+  dblclick-text
   svg
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
