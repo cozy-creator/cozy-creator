@@ -807,6 +807,7 @@ case $SHARD in
   stuck) parts="
     stuck_exit
     rental_self
+    rental_queue
     logs
   " ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.

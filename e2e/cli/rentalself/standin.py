@@ -1,7 +1,8 @@
 """A rental's stood-in Hub (worker routes, HTTPS under a CA of its own) and provider (vast.ai's instance DELETE), for
 e2e/cli/rentalself.sh (cl-977). Each request is one line of <dir>/events.jsonl.
 
-  standin.py serve <dir> <case>   serves until killed; <dir>/ready holds "<hub port> <provider port> <CA DER base64url>"
+  standin.py serve <dir> <case> [<hub port>]   serves until killed; <dir>/ready holds "<hub port> <provider port> <CA DER
+                                               base64url>". Started again in <dir> on its port, it is the same Hub restarted.
   standin.py verdict <dir> <case> prints one line per thing the machine got wrong
 
 The Hub answers the machine's key reads with a 4 s lease (a check-in every 2 s) and refuses its release with worker.ended, so the
@@ -23,7 +24,7 @@ REFUSALS = 2
 LEASE_SECONDS = 4
 
 
-def serve(dir: str, case: str) -> None:
+def serve(dir: str, case: str, port: str = "0") -> None:
     events = open(os.path.join(dir, "events.jsonl"), "a", buffering=1)
     lock = threading.Lock()
 
@@ -94,18 +95,19 @@ def serve(dir: str, case: str) -> None:
     def openssl(*args: str) -> None:
         subprocess.run(["openssl", *args], check=True, capture_output=True)
 
-    openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1", "-subj", "/CN=stand-in hub CA",
-            "-keyout", f"{tls}/ca.key", "-out", f"{tls}/ca.pem", "-addext", "basicConstraints=critical,CA:TRUE", "-addext",
-            "keyUsage=critical,keyCertSign")
-    openssl("req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout",
-            f"{tls}/hub.key", "-out", f"{tls}/hub.csr")
-    with open(f"{tls}/ext", "w") as ext:
-        ext.write("subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n")
-    openssl("x509", "-req", "-in", f"{tls}/hub.csr", "-CA", f"{tls}/ca.pem", "-CAkey", f"{tls}/ca.key", "-CAcreateserial", "-days",
-            "1", "-extfile", f"{tls}/ext", "-out", f"{tls}/hub.pem")
+    if not os.path.exists(f"{tls}/hub.pem"):
+        openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1", "-subj", "/CN=stand-in hub CA",
+                "-keyout", f"{tls}/ca.key", "-out", f"{tls}/ca.pem", "-addext", "basicConstraints=critical,CA:TRUE", "-addext",
+                "keyUsage=critical,keyCertSign")
+        openssl("req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout",
+                f"{tls}/hub.key", "-out", f"{tls}/hub.csr")
+        with open(f"{tls}/ext", "w") as ext:
+            ext.write("subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n")
+        openssl("x509", "-req", "-in", f"{tls}/hub.csr", "-CA", f"{tls}/ca.pem", "-CAkey", f"{tls}/ca.key", "-CAcreateserial", "-days",
+                "1", "-extfile", f"{tls}/ext", "-out", f"{tls}/hub.pem")
     der = subprocess.run(["openssl", "x509", "-in", f"{tls}/ca.pem", "-outform", "DER"], check=True, capture_output=True).stdout
 
-    hub = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Hub)
+    hub = http.server.ThreadingHTTPServer(("127.0.0.1", int(port)), Hub)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(f"{tls}/hub.pem", f"{tls}/hub.key")
     context.set_alpn_protocols(["http/1.1"])
@@ -153,4 +155,4 @@ def verdict(dir: str, case: str) -> None:
 
 
 if __name__ == "__main__":
-    (serve if sys.argv[1] == "serve" else verdict)(sys.argv[2], sys.argv[3])
+    (serve if sys.argv[1] == "serve" else verdict)(*sys.argv[2:])
