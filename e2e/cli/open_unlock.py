@@ -113,8 +113,8 @@ def main() -> None:
         assert state() == "unlocked", f"{name}: the project is not unlocked after open"
         found = re.search(r"url:\s*\"?([^\"\s]+)", stdout)
         assert found, f"{name}: no URL printed: {stdout}"
-        here = json.loads(cozy("--json", "--full", "status").stdout)["project"]["id"]
-        assert re.fullmatch(rf"http://(127\.0\.0\.1|localhost|\[::1\]):\d+/projects/{re.escape(here)}", found.group(1)), f"{name}: {found.group(1)}"
+        here = json.loads(cozy("--json", "--full", "status").stdout)["project"]["code"]
+        assert re.fullmatch(rf"http://(127\.0\.0\.1|localhost|\[::1\]):\d+/p/{re.escape(here)}", found.group(1)), f"{name}: {found.group(1)}"
         opens = browser_log.read_text().splitlines() if browser_log.exists() else []
         assert opens and opens[-1] == f"--incognito {found.group(1)}", f"{name}: no private window was started at {found.group(1)}: {opens}"
         receipt[name] = {"url": found.group(1), "browser": True}
