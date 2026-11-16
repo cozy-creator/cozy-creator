@@ -8,7 +8,8 @@ In a plain project and an encrypted one, boxes of project/kept.py's `shot` rende
 store is aged past its TTL and grace, the local machine restarts and a render writes to that store, so its upkeep collects what nothing
 holds: a run naming the take's latents by their hash still reads them whole, from files/. Deleted, a take nothing read loses its latents
 file from files/ when its undo window ends (Calcifer runs with a short one here). That take's latents are large, so they land after its
-run has arrived (cl-1093): they're its version's file, with no loose run row of the project's to keep them past its purge."""
+run has arrived (cl-1093): they're its version's file, with no loose run row of the project's to keep them past its purge. Put back as
+a take purged before that fix left them (the file and a loose row of its run), the project's one sweep takes both as it opens again."""
 
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -95,6 +97,34 @@ def loose_rows(view: Path, hex_digest: str) -> int:
         db.close()
 
 
+def run_of(view: Path, box: str) -> tuple[int, str]:
+    """The number and id of the run that made `box`'s newest version, as its project.db keeps them."""
+    db = sqlite3.connect(f"file:{view / 'project.db'}?mode=ro", uri=True, timeout=30)
+    try:
+        record = db.execute("SELECT record FROM versions WHERE key = ? ORDER BY number DESC LIMIT 1", (box,)).fetchone()[0]
+    finally:
+        db.close()
+    version = json.loads(record)
+    return int(version["run"]), str(version["run_id"])
+
+
+def left_unswept(view: Path, run: int, run_id: str, hex_digest: str, saved: Path) -> None:
+    """As a take purged before cl-1093 left its project: its latents in files/, a loose run row of its run naming them, and the
+    project not swept yet. Written as another program writes project.db."""
+    shutil.copy2(saved, view / "files" / saved.name)
+    db = sqlite3.connect(str(view / "project.db"), timeout=30, isolation_level=None)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        order = db.execute("SELECT coalesce(max(ord), -1) + 1 FROM lock_runs").fetchone()[0]
+        row = {"id": "cl1093unswept", "run_id": run_id, "run": run, "function": f"{KEPT}/shot", "output": "latents", "sha256": f"sha256:{hex_digest}"}
+        db.execute("INSERT INTO lock_runs (ord, record) VALUES (?, ?)", (order, json.dumps(row)))
+        db.execute("INSERT INTO run_files (ord, run, function, output, sha256) VALUES (?, ?, ?, 'latents', ?)", (order, run, f"{KEPT}/shot", f"sha256:{hex_digest}"))
+        db.execute("DELETE FROM meta WHERE key = 'late_rows_swept'")
+        db.execute("COMMIT")
+    finally:
+        db.close()
+
+
 def landed(folder: Path, hex_digest: str, began: float, seconds: float = 60) -> float | None:
     """Seconds from `began` until `folder` has the bytes named `hex_digest`; none if they don't come within `seconds`."""
     deadline = time.monotonic() + seconds
@@ -143,6 +173,10 @@ def project_case(cli: Path, out: Path, project: Path, view: Path) -> dict[str, o
 
     # Landed after its run arrived, the take's latents are its version's file, no loose run row (cl-1093).
     facts["gone_loose_rows"] = loose_rows(view, doomed)
+    gone_run = run_of(view, "gone")
+    saved = out / f"{project.name}-gone-latents"
+    saved.mkdir(parents=True, exist_ok=True)
+    kept_copy = [shutil.copy2(path, saved / path.name) for path in held(view / "files", doomed)][:1]
 
     # Deleted: a take nothing else read; its latents file leaves files/ once its undo window ends.
     deleted = cozy(cli, "--json", "delete", "gone", cwd=project, out=out, name=f"delete-{project.name}")
@@ -152,6 +186,18 @@ def project_case(cli: Path, out: Path, project: Path, view: Path) -> dict[str, o
             break
         time.sleep(2)
     facts["latents_after_delete"] = [str(path) for path in held(view / "files", doomed)]
+
+    # A take purged before the fix left its latents and their loose run row behind: put back, the project's next purge (as it opens
+    # again) sweeps them once, as nothing else holds them (cl-1093).
+    if kept_copy:
+        left_unswept(view, *gone_run, doomed, Path(kept_copy[0]))
+    for _ in range(30):
+        api(project, "/assets/warm")
+        if not held(view / "files", doomed) and not loose_rows(view, doomed):
+            break
+        time.sleep(3)
+    facts["unswept_after_open"] = [str(path) for path in held(view / "files", doomed)]
+    facts["unswept_rows_after_open"] = loose_rows(view, doomed)
     return facts
 
 
@@ -188,6 +234,8 @@ def main() -> None:
         assert case["gone_latents_landed"], f"{kind}: the take to delete kept no latents in files/, so its going proves nothing"
         assert not case["gone_loose_rows"], f"{kind}: the take's latents, landed after its run arrived, left {case['gone_loose_rows']} loose run row(s)"
         assert case["deleted"] and not case["latents_after_delete"], f"{kind}: the deleted take's latents stayed in files/: {case['latents_after_delete']}"
+        assert not case["unswept_after_open"] and not case["unswept_rows_after_open"], \
+            f"{kind}: a take purged before the fix kept its latents ({case['unswept_after_open']}) and {case['unswept_rows_after_open']} loose row(s) past the project's sweep"
 
 
 if __name__ == "__main__":
