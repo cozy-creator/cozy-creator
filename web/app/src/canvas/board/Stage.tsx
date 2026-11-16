@@ -103,7 +103,8 @@ export function Stage(props: StageProps) {
         pace += (Math.min(took, 500) - pace) * 0.1
         slow = slow ? pace > SLOW_FRAME_MS / 2 : pace > SLOW_FRAME_MS
       }
-      const delta = Math.min(100, Math.max(0, took))
+      // The camera's glides and coasting run in real time: a slow frame moves them on by all it took, never stretching a glide out.
+      const delta = Math.min(1000, Math.max(0, took))
       last = time
       tick(delta)
       if (running && !stopped) frame = requestAnimationFrame(loop)
