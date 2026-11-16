@@ -209,15 +209,17 @@ export class Media {
     for (const video of this.videos) video.pause()
   }
 
+  /** What it holds, in the names the cells read (the old cache's): `unusedBytes` is what no card holds, kept within `unusedTargetBytes`. */
   stats() {
-    let textures = 0, pinnedBytes = 0, failed = 0, queued = 0
+    let textures = 0, pinnedTextures = 0, pinnedBytes = 0, failed = 0, queued = 0
     for (const entry of this.entries.values()) {
       if (entry.texture) textures++
+      if (entry.pins && entry.texture) pinnedTextures++
       if (entry.pins) pinnedBytes += entry.bytes
       if (entry.failed) failed++
       else if (entry.pins && !entry.texture && !entry.loading) queued++
     }
-    return { textures, textureBytes: this.bytes, pinnedBytes, unpinnedBytes: this.unpinnedBytes, loading: this.active, failed, queued }
+    return { textures, pinnedTextures, textureBytes: this.bytes, pinnedBytes, unusedBytes: this.unpinnedBytes, unusedTargetBytes: UNPINNED_BYTES, loading: this.active, failed, queued }
   }
 
   destroy() {
