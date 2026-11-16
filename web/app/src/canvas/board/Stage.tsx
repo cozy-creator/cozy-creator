@@ -1,6 +1,6 @@
 // Pixi's optional math methods, which its typings declare whether or not they're installed.
 import "pixi.js/math-extras"
-import { Container, Rectangle, type Renderer, Ticker } from "pixi.js"
+import { Container, Rectangle, type Renderer } from "pixi.js"
 import { Viewport as PixiViewport } from "pixi-viewport"
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
@@ -49,7 +49,7 @@ export interface StageProps {
   onDragCancel(nodes: ElementNode[]): void
 }
 
-/** The canvas: one renderer, one on-demand ticker, the scene, the camera, input, and DOM only where text is typed. */
+/** The canvas: one renderer, frames drawn on demand, the scene, the camera, input, and DOM only where text is typed. */
 export function Stage(props: StageProps) {
   const { store, active, disabled } = props
   const board = useBoard()
@@ -87,11 +87,21 @@ export function Stage(props: StageProps) {
     let pictured = 0, drewMore = 0
     const stops: (() => void)[] = []
     const stage = new Container({ eventMode: "static" })
-    const ticker = new Ticker()
-    ticker.autoStart = false
+    // Frames on demand: asked for, the next animation frame draws. Not Pixi's Ticker: started on demand it skips a frame stamped before its start,
+    // and a box let go between a frame's vsync and its callbacks showed a frame late.
+    let frame = 0, running = false, last = 0
+    const loop = (time: number) => {
+      frame = 0
+      const delta = Math.min(100, Math.max(0, time - last))
+      last = time
+      tick(delta)
+      if (running && !stopped) frame = requestAnimationFrame(loop)
+    }
+    const start = () => { if (running) return; running = true; last = performance.now(); frame = requestAnimationFrame(loop) }
+    const stop = () => { running = false; cancelAnimationFrame(frame); frame = 0 }
     const media = new Media({ client, project: store.projectId ?? "", changed: () => invalidate() })
     const visible = () => latest.current.active && tabShown.get() && !lost
-    const invalidate = () => { dirty = true; if (!stopped && renderer && visible() && !ticker.started) ticker.start() }
+    const invalidate = () => { dirty = true; if (!stopped && renderer && visible()) start() }
     const enable = () => {
       const on = visible()
       media.setVisible(on)
@@ -145,13 +155,13 @@ export function Stage(props: StageProps) {
       if (world.current) world.current.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.zoom})`
     }
 
-    const tick = () => {
+    const tick = (delta: number) => {
       if (stopped || !renderer || !viewport || !scene) return
-      if (!visible()) { ticker.stop(); return }
+      if (!visible()) { stop(); return }
       const began = performance.now()
       if (open.read < 0 && store.hasRead) open.read = frames
       let moving = false
-      try { viewport.update(ticker.deltaMS); moving = board.camera.sync() } catch (error) { console.error("Camera:", error) }
+      try { viewport.update(delta); moving = board.camera.sync() } catch (error) { console.error("Camera:", error) }
       if (moving) placeWorld()
       if (dirty || moving || animating) {
         dirty = false
@@ -181,9 +191,8 @@ export function Stage(props: StageProps) {
       }
       try { scene.didRender() } catch (error) { console.error("Seen:", error) }
       if (!board.camera.hasDrawn && ((store.hasRead && store.empty) || [...scene.views()].length > 0)) board.camera.markDrawn()
-      if (!dirty && !moving && !animating && !board.camera.isMoving) ticker.stop()
+      if (!dirty && !moving && !animating && !board.camera.isMoving) stop()
     }
-    ticker.add(tick)
 
     const ready = async () => {
       const taken = await takeRenderer(width, height)
@@ -327,12 +336,12 @@ export function Stage(props: StageProps) {
     stops.push(() => { store.canvasAt = () => null })
     Object.defineProperty(element, "canvasInspection", {
       configurable: true,
-      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, open: () => open, ticking: () => ticker.started, renderer: () => renderer, graphics: () => chosen ? { backend: chosen.backend, why: chosen.why, gpu: chosen.gpu, state: "ready" as const } : { backend: "none" as const, state: refused ? "failed" as const : "starting" as const, refused }, retired: () => stopped }),
+      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, open: () => open, ticking: () => running, renderer: () => renderer, graphics: () => chosen ? { backend: chosen.backend, why: chosen.why, gpu: chosen.gpu, state: "ready" as const } : { backend: "none" as const, state: refused ? "failed" as const : "starting" as const, refused }, retired: () => stopped }),
     })
     return () => {
       stopped = true
       clearTimeout(wakeTimer)
-      ticker.destroy()
+      stop()
       interaction?.destroy()
       for (const stop of stops) stop()
       scene?.destroy()
