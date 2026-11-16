@@ -3016,9 +3016,6 @@ fn export_settled(tx: &Transaction, run: &str, name: &str, index: u32, rev: u64,
     }])
 }
 
-/// Whether an output stays on its machine (`OutputItem::stays`): its run's result declares it `Latents`, by its name.
-const STAYS: &str =
-    "EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
 
 /// An output owed to this computer: its newest revision neither landed nor given up, no checkpoint, and none that stays.
 pub(super) const OWED: &str = "outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
@@ -3756,10 +3753,13 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
     let mut statement = conn.prepare(&format!(
         "SELECT name, idx, rev, length, digest, media_type, label, done,
              CASE WHEN exported_rev = rev THEN path END, CASE WHEN failed_rev = rev THEN export_error END,
-             checkpoint, {STAYS}, width, height, measured_ms, duration_us
+             checkpoint, 0, width, height, measured_ms, duration_us
          FROM outputs WHERE run = ?1 ORDER BY created_seq"
     ))?;
     let settled_ok = row.status == Some(Status::Completed);
+    // Its outputs that stay on its machine, read once: STAYS read the run's row again for each output, through its outcome (cl-1010).
+    let stays: Vec<String> = conn.query_row("SELECT stays FROM runs WHERE id = ?1", [row.id.as_str()], |r| r.get::<_, String>(0)).optional()?
+        .and_then(|stays| serde_json::from_str(&stays).ok()).unwrap_or_default();
     let items = statement.query_map([row.id.as_str()], |r| {
         let name: String = r.get(0)?;
         let index = r.get::<_, i64>(1)? as u32;
@@ -3781,6 +3781,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
             (true, true) => ItemStatus::Completed,
             (true, false) => ItemStatus::Incomplete,
         };
+        let stays = stays.contains(&name);
         let label = sql_text(r, 6, &output_context(row.id.as_str(), &name, index, rev, "label"))?;
         let export_error = sql_optional_text(r, 9, &output_context(row.id.as_str(), &name, index, rev, "export_error"))?;
         Ok(OutputItem {
@@ -3801,8 +3802,8 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
             status,
             path: path.filter(|_| checkpoint.is_none()),
             export_error: export_error.filter(|_| checkpoint.is_none()),
+            stays,
             checkpoint,
-            stays: r.get(11)?,
         })
     })?;
     let placed = (conn.query_row("SELECT placed FROM run_placements WHERE run = ?1", [row.id.as_str()], |r| r.get::<_, String>(0)).optional())
