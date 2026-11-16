@@ -67,8 +67,9 @@ fn retirer() -> Result<&'static Arc<Retirer>> {
             abandoned: AtomicU64::new(0),
         });
         let worker = retirer.clone();
+        // `~`: a watcher; TensorD's hang watch reads its ticks as no sign of this process's work (cl-977).
         std::thread::Builder::new()
-            .name("varena-retire".into())
+            .name("~varena-retire".into())
             .spawn(move || run(worker, receiver))
             .map_err(|error| error.to_string())?;
         Ok(retirer)

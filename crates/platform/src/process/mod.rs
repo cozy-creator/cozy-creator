@@ -347,6 +347,43 @@ pub fn meter(pid: u32) -> Option<(u64, u64)> {
     sys::meter(pid)
 }
 
+/// What one thread shows of life (cl-977): the CPU it used or is owed and the bytes it moved (`meter`'s), and what it waits on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Life {
+    pub tid: u32,
+    pub name: String,
+    pub meter: (u64, u64),
+    pub wait: Wait,
+}
+
+/// What a thread waits on, read from the syscall it is blocked in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// It runs, or its wait can't be read.
+    Unknown,
+    /// A sleep, or a wait with a deadline: it wakes by itself.
+    Time,
+    /// An untimed read, poll, epoll or select on these descriptors.
+    On(Vec<i32>),
+    /// Any other untimed wait: a lock, a child, the kernel.
+    Still,
+}
+
+/// Each live thread of a process (Linux, read as its ancestor: Yama lets only an ancestor read a thread's syscall). `None`:
+/// unreadable, or a system that doesn't say.
+pub fn lives(pid: u32) -> Option<Vec<Life>> {
+    sys::lives(pid)
+}
+
+/// Whether a thread of the process waits on time (`Wait::Time`). `None`: unreadable, or a system that doesn't say.
+pub fn waits_on_time(pid: u32) -> Option<bool> {
+    let lives = lives(pid)?;
+    match lives.iter().any(|life| life.wait == Wait::Time) {
+        true => Some(true),
+        false => (!lives.iter().any(|life| life.wait == Wait::Unknown)).then_some(false),
+    }
+}
+
 /// The bytes a process has written: what an install lands (its downloads, unpacked wheels).
 /// `None`: unreadable.
 pub fn written_bytes(pid: u32) -> Option<u64> {

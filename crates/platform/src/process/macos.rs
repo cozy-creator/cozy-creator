@@ -107,6 +107,10 @@ pub(super) fn wait(handle: &Handle, period: Option<Duration>) -> io::Result<bool
     unix::readable(handle.0.as_fd(), period)
 }
 
+pub(super) fn lives(_pid: u32) -> Option<Vec<super::Life>> {
+    None
+}
+
 pub(super) fn in_kernel(_pid: u32) -> Option<String> {
     None
 }

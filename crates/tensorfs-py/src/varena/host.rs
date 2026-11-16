@@ -59,7 +59,8 @@ mod imp {
         let host: &'static Host = Box::leak(Box::new(Host {
             table, row, tiers: Mutex::default(), asking: Mutex::default(), ask: Condvar::new(), watching: Once::new(),
         }));
-        let serving = std::thread::Builder::new().name("tensorfs-host-owner".into())
+        // `~`: a watcher; TensorD's hang watch reads its ticks as no sign of this process's work (cl-977).
+        let serving = std::thread::Builder::new().name("~host-owner".into())
             .spawn(move || host.table.serve(host.row, &mut Giving(host)));
         let asking = std::thread::Builder::new().name("tensorfs-host-ask".into()).spawn(move || host.asks());
         if let Err(error) = serving.and(asking) {

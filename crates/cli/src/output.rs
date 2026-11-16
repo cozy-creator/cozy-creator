@@ -17,9 +17,6 @@ use serde::Serialize;
 
 use crate::Context;
 
-/// The exit of a follower that heard its run stop moving (Calcifer's word, after 10 minutes with no progress): the run goes on.
-pub(crate) const STALLED: u8 = 4;
-
 const KEY: Style = Style::new().bold();
 const DIM: Style = Style::new().dimmed();
 const WARN: Style = AnsiColor::Yellow.on_default().bold();
@@ -261,11 +258,6 @@ pub(crate) fn say(ctx: &Context, message: &str) {
 /// A warning on stderr: the command goes on.
 pub(crate) fn warn(message: &str) {
     anstream::eprintln!("{WARN}warning{WARN:#}: {}", shown(message));
-}
-
-/// A line that is a warning, said as written.
-pub(crate) fn warned(line: &str) {
-    anstream::eprintln!("{}", shown(line));
 }
 
 /// Whether `name` holds every one of `words`, in any case: `ls` words over what a machine holds.

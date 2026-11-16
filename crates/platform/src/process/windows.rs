@@ -450,6 +450,10 @@ fn resume(pid: u32) -> io::Result<()> {
     }
 }
 
+pub(super) fn lives(_pid: u32) -> Option<Vec<super::Life>> {
+    None
+}
+
 pub(super) fn in_kernel(_pid: u32) -> Option<String> {
     None
 }

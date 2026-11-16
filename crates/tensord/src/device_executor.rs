@@ -60,6 +60,10 @@ fn spool(command: &Command) -> Option<(&str, &Path)> {
 
 pub(crate) trait Services {
     fn progress(&mut self, _: &Frame) {}
+    /// What shows the executor alive while it computes for this command, besides itself (`vigil`).
+    fn elsewhere(&self) -> crate::vigil::Elsewhere {
+        crate::vigil::Elsewhere::default()
+    }
     fn request(
         &mut self,
         frame: &Frame,
@@ -236,6 +240,8 @@ pub(crate) struct DeviceExecutor {
     call_log: Option<PathBuf>,
     memo: Option<Arc<crate::memo::Memo>>,
     lookahead: Arc<Mutex<LookaheadState>>,
+    /// TensorD is answering one of its requests: it waits on TensorD, not on itself.
+    answering: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A cancel ends the call at once: its executor is killed (its exact process and scope), never
@@ -513,18 +519,26 @@ impl Codec {
         let mut line = serde_json::to_vec(&request)?;
         line.push(b'\n');
         let mut answer = String::new();
+        let current = helper.as_mut().expect("spawned codec helper");
+        // Watched while it encodes: one that shows no life for the window is killed (`vigil`).
+        let vigil = Birth::of(current.child.id()).ok().and_then(|birth| Exact::open(&birth).ok().flatten())
+            .map(|exact| crate::vigil::Vigil::keep(&exact, Arc::default(), Default::default())).transpose()?;
         let exchanged = (|| {
-            let current = helper.as_mut().expect("spawned codec helper");
             current.input.write_all(&line)?;
             current.input.flush()?;
             current.output.read_line(&mut answer)
         })();
+        let hung = vigil.and_then(crate::vigil::Vigil::end);
         match exchanged {
             Ok(n) if n > 0 => {}
             Ok(_) | Err(_) => {
                 helper.take(); // the next output starts a fresh helper
+                let how = match hung {
+                    Some(hung) => format!("hung ({hung})"),
+                    None => "stopped".into(),
+                };
                 return Err(io::Error::other(format!(
-                    "selected SDK encoder stopped; {}: {}",
+                    "selected SDK encoder {how}; {}: {}",
                     self.log.display(), self.stderr_tail()
                 )));
             }
@@ -916,9 +930,15 @@ impl DeviceExecutor {
             serving: Arc::default(),
         };
         on_birth(&birth, &cancellation)?;
-        // Wait for connection OR observed process death. No elapsed-time startup kill.
-        let Some(stream) = listener.accept_unless(&exact)? else {
+        // Wait for connection OR observed process death, or its hang (`vigil`): no elapsed-time startup kill.
+        let vigil = crate::vigil::Vigil::keep(&exact, Arc::default(), Default::default())?;
+        let accepted = listener.accept_unless(&exact);
+        let hung = vigil.end();
+        let Some(stream) = accepted? else {
             let status = unready.ended()?;
+            if let Some(hung) = hung {
+                return Err(io::Error::other(hung));
+            }
             return Err(io::Error::other(EndedBeforeStart {
                 status,
                 stderr_tail: tail(&config.root.join("stderr.log")),
@@ -953,6 +973,7 @@ impl DeviceExecutor {
             call_log: None,
             memo: None,
             lookahead: Arc::default(),
+            answering: Arc::default(),
         };
         end_channel_at_exit(executor.exact.try_clone()?, executor.stream.try_clone()?)?;
         let hello = executor.command(&Command::Hello, &mut Baseline)?;
@@ -1063,7 +1084,19 @@ impl DeviceExecutor {
         result
     }
 
+    /// The command's exchange, while a vigil watches the executor: one that shows no life for its window is killed, and the
+    /// command fails as `Hung`.
     fn exchange(
+        &mut self,
+        command: &Command,
+        services: &mut impl Services,
+    ) -> io::Result<Frame> {
+        let vigil = crate::vigil::Vigil::keep(&self.exact, self.answering.clone(), services.elsewhere())?;
+        let result = self.converse(command, services);
+        vigil.judged(result)
+    }
+
+    fn converse(
         &mut self,
         command: &Command,
         services: &mut impl Services,
@@ -1114,20 +1147,21 @@ impl DeviceExecutor {
                 Some(Event::Progress) if !frame.malformed.is_empty() => (),
                 Some(Event::Progress) if outside => (),
                 Some(Event::Progress) => services.progress(&frame),
-                Some(Event::Request) if outside => {
-                    // A queued preflight has no current attempt's spool or child-call grants.
-                    self.answer(&frame, &mut Baseline)?;
+                Some(Event::Request) => {
+                    let _answering = Answering::begin(&self.answering);
+                    if outside {
+                        // A queued preflight has no current attempt's spool or child-call grants.
+                        self.answer(&frame, &mut Baseline)?;
+                    } else if matches!(frame.request, Some(Request::StageMemoLookup(_) | Request::StageMemoStore(_))) {
+                        let answer = match (&self.memo, spool(command)) {
+                            (Some(memo), Some((run, spool))) => memo.answer(run, spool, frame.seq, frame.request.as_ref().expect("a memo request")),
+                            _ => Answer::unavailable(frame.seq),
+                        };
+                        write_frame(&mut self.writer.lock().unwrap(), &answer)?;
+                    } else {
+                        self.answer(&frame, services)?;
+                    }
                 }
-                Some(Event::Request)
-                    if matches!(frame.request, Some(Request::StageMemoLookup(_) | Request::StageMemoStore(_))) =>
-                {
-                    let answer = match (&self.memo, spool(command)) {
-                        (Some(memo), Some((run, spool))) => memo.answer(run, spool, frame.seq, frame.request.as_ref().expect("a memo request")),
-                        _ => Answer::unavailable(frame.seq),
-                    };
-                    write_frame(&mut self.writer.lock().unwrap(), &answer)?;
-                }
-                Some(Event::Request) => self.answer(&frame, services)?,
                 Some(Event::Unknown) => (),
                 None if frame.reply == command.name() && request.is_none_or(|id|
                     frame.request_id == id
@@ -1198,6 +1232,20 @@ impl DeviceExecutor {
             retained: std::mem::take(&mut self.retained),
             socket: std::mem::take(&mut self.socket),
         }
+    }
+}
+
+/// Set while TensorD answers an executor's request.
+struct Answering(Arc<std::sync::atomic::AtomicBool>);
+impl Answering {
+    fn begin(flag: &Arc<std::sync::atomic::AtomicBool>) -> Self {
+        flag.store(true, std::sync::atomic::Ordering::Release);
+        Self(flag.clone())
+    }
+}
+impl Drop for Answering {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 

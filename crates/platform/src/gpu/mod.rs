@@ -340,6 +340,8 @@ const EVERY_MS: u64 = 100;
 /// A call's clock readings of one GPU, summed into [`Used`].
 struct Clocks {
     busy: u32,
+    /// Readings with a kernel running (NVML's utilization above 0, or unreadable): its work, for cl-977's hang watch.
+    working: u32,
     mhz_sum: u64,
     low: u32,
     throttled: u32,
@@ -351,14 +353,18 @@ struct Clocks {
 
 impl Clocks {
     fn new() -> Self {
-        Self { busy: 0, mhz_sum: 0, low: 0, throttled: 0, hot: 0, seen: ThrottleReasons::empty(), temperature: 0, power_mw: 0 }
+        Self { busy: 0, working: 0, mhz_sum: 0, low: 0, throttled: 0, hot: 0, seen: ThrottleReasons::empty(), temperature: 0, power_mw: 0 }
     }
 
     fn read(&mut self, device: &Device) {
-        let Ok(gpu) = device.nvml.device_by_index(device.index) else { return };
+        let Ok(gpu) = device.nvml.device_by_index(device.index) else {
+            self.working += 1;
+            return;
+        };
         let temperature = gpu.temperature(TemperatureSensor::Gpu).unwrap_or(0);
         let power_mw = gpu.power_usage().unwrap_or(0);
         let reasons = gpu.current_throttle_reasons().unwrap_or(ThrottleReasons::empty());
+        self.working += u32::from(gpu.utilization_rates().map_or(true, |rates| rates.gpu > 0));
         match gpu.clock_info(Clock::SM) {
             Ok(mhz) => self.add(mhz, reasons, temperature, power_mw),
             Err(_) => self.add(0, ThrottleReasons::GPU_IDLE, temperature, power_mw),
@@ -425,7 +431,8 @@ pub type Hot = Box<dyn FnMut(&Used) + Send>;
 /// Where a call's readings come from: its GPUs through NVML, or recorded ones, each GPU's in turn, from the first again
 /// once they run out.
 enum Source {
-    Live(Vec<Device>),
+    /// The GPUs NVML opened, of how many asked.
+    Live(Vec<Device>, usize),
     Recorded(Vec<Vec<Sample>>),
 }
 
@@ -434,6 +441,7 @@ enum Source {
 pub struct Peak {
     stop: std::sync::mpsc::Sender<()>,
     thread: std::thread::JoinHandle<Vec<Used>>,
+    busy: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Peak {
@@ -442,7 +450,7 @@ impl Peak {
         if entries.is_empty() {
             return None;
         }
-        Self::spawn(move || Source::Live(entries.iter().filter_map(|entry| Device::open(entry).ok()).collect()), hot)
+        Self::spawn(move || Source::Live(entries.iter().filter_map(|entry| Device::open(entry).ok()).collect(), entries.len()), hot)
     }
 
     /// Recorded readings in place of the GPUs' own, by GPU; None for none.
@@ -459,11 +467,13 @@ impl Peak {
 
     fn spawn(source: impl FnOnce() -> Source + Send + 'static, mut hot: Option<Hot>) -> Option<Peak> {
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let busy = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counted = busy.clone();
         let thread = std::thread::Builder::new().name("gpu-peak".into()).spawn(move || {
             let source = source();
             // Each GPU's row, readings, card maximum, place in its recording, and whether it was said hot.
             let mut rows: Vec<(Used, Clocks, u32, usize, bool)> = match &source {
-                Source::Live(devices) => devices.iter()
+                Source::Live(devices, _) => devices.iter()
                     .filter_map(|d| {
                         let bytes = d.used().ok()?;
                         let limit = d.nvml.device_by_index(d.index).and_then(|gpu| gpu.max_clock_info(Clock::SM)).unwrap_or(0);
@@ -480,7 +490,7 @@ impl Peak {
             while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(std::time::Duration::from_millis(EVERY_MS)) {
                 for (at, (row, clocks, limit, next, said)) in rows.iter_mut().enumerate() {
                     match &source {
-                        Source::Live(devices) => {
+                        Source::Live(devices, _) => {
                             row.peak_bytes = row.peak_bytes.max(devices[at].used().unwrap_or(0));
                             clocks.read(&devices[at]);
                         }
@@ -490,6 +500,7 @@ impl Peak {
                             row.peak_bytes = row.peak_bytes.max(sample.used_bytes);
                             *limit = (*limit).max(sample.sm_mhz_limit);
                             clocks.add(sample.sm_mhz, sample.reasons(), sample.temperature_c, sample.power_w * 1000);
+                            clocks.working += u32::from(!sample.reasons().contains(ThrottleReasons::GPU_IDLE));
                         }
                     }
                     if let Some(hot) = hot.as_mut().filter(|_| !*said) {
@@ -501,6 +512,10 @@ impl Peak {
                         }
                     }
                 }
+                // A GPU NVML can't open hides its work: it counts as working.
+                let blind = matches!(&source, Source::Live(_, asked) if rows.len() < *asked);
+                let working: u64 = rows.iter().map(|(_, clocks, ..)| u64::from(clocks.working)).sum();
+                counted.store(if blind { counted.load(std::sync::atomic::Ordering::Relaxed) + 1 } else { working }, std::sync::atomic::Ordering::Relaxed);
             }
             rows.into_iter()
                 .map(|(mut row, clocks, limit, ..)| {
@@ -509,7 +524,12 @@ impl Peak {
                 })
                 .collect()
         });
-        thread.ok().map(|thread| Peak { stop, thread })
+        thread.ok().map(|thread| Peak { stop, thread, busy })
+    }
+
+    /// Its GPUs' readings with a kernel running so far, counted as they come: a call's GPU activity (cl-977).
+    pub fn busy(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.busy.clone()
     }
 
     pub fn end(self) -> Vec<Used> {

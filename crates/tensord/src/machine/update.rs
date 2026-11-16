@@ -1319,7 +1319,7 @@ fn compile_once(uv: &super::uv::Uv, python: &str, input: &str, stop: &Stop, whee
             })
         };
         let (out, reason) = (drain(Box::new(stdout)), drain(Box::new(stderr)));
-        let ended = crate::process::supervise_progressing(&mut child, Some(stop));
+        let ended = crate::process::supervise(&mut child, Some(stop), &|_| ());
         (ended, out.join().unwrap_or_default(), reason.join().unwrap_or_default())
     });
     match ended.map_err(|e| io::Error::new(e.kind(), format!("resolving with uv: {e}")))? {

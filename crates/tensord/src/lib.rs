@@ -55,3 +55,4 @@ mod storage;
 mod triage;
 mod trees;
 mod uuid;
+mod vigil;

@@ -81,7 +81,8 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
     let _ = others_came(device);
     if let Some(serving) = serving {
         let mut donor = Native::new(device, shared, uuid)?;
-        std::thread::Builder::new().name(format!("varena-owner-{device}")).spawn(move || {
+        // `~`: a watcher; TensorD's hang watch reads its ticks as no sign of this process's work (cl-977).
+        std::thread::Builder::new().name(format!("~varena-owner-{device}")).spawn(move || {
             let Serving(_, service) = &serving;
             let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.table.serve(service.row, &mut donor)));
             eprintln!("varena: GPU {device}'s donor ended: {served:?}");

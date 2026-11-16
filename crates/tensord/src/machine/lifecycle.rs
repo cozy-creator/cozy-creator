@@ -72,7 +72,7 @@ pub(crate) struct Lifecycle {
     /// and when an admission or a follower lets go: the idle clock may start.
     changed: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
     /// Why nothing can run here (cl-977): new work is refused, and a rental releases itself once nothing works there.
-    broken: std::sync::OnceLock<String>,
+    broken: std::sync::OnceLock<::api::machine::Broken>,
 }
 
 /// How long this computer's machine stays up idle while broken (cl-977): long enough for whoever started it to hear why.
@@ -194,9 +194,16 @@ impl Lifecycle {
     }
 
     /// Nothing can run here (cl-977): it takes no new work, and a rental releases itself once nothing works there.
-    pub(crate) fn broken(&self, why: &str) {
-        let _ = self.broken.set(why.to_owned());
+    pub(crate) fn broken(&self, code: &str, why: &str) {
+        if self.broken.set(::api::machine::Broken { code: code.into(), message: why.into() }).is_ok() {
+            tracing::error!("broken: {why}; it takes no work, and a rental releases itself");
+        }
         self.changed();
+    }
+
+    /// Why nothing can run here, if so: its Status's `broken`.
+    pub(crate) fn broken_now(&self) -> Option<::api::machine::Broken> {
+        self.broken.get().cloned()
     }
 
     /// An output read or an object upload moved bytes: the rental is in use, and its idle clock
@@ -250,7 +257,7 @@ impl Lifecycle {
                 "the machine is activating an update; submit again once it is back",
             ));
         }
-        if let Some(why) = self.broken.get() {
+        if let Some(why) = self.broken.get().map(|broken| &broken.message) {
             let then = match self.rental {
                 true => "it releases itself",
                 false => "it stops after 2 idle minutes, and its next use starts it and checks again",
@@ -517,7 +524,7 @@ pub(crate) async fn release_when_idle(
             match lifecycle.claim() {
                 Ok(true) => match hub.release().await {
                     Ok(()) => {
-                        match lifecycle.broken.get() {
+                        match lifecycle.broken.get().map(|broken| &broken.message) {
                             Some(why) => tracing::info!("broken ({why}); Tensorhub accepted the release"),
                             None => tracing::info!("15 minutes without a job; Tensorhub accepted the release"),
                         }

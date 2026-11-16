@@ -1,4 +1,4 @@
-//! This computer's network interfaces, and who is at the other end of a loopback connection.
+//! This computer's network interfaces, who is at the other end of a loopback connection, and the TCP connections a process waits on.
 #![allow(unsafe_code)]
 #[cfg(unix)]
 use std::{net::Ipv4Addr, ptr};
@@ -76,6 +76,27 @@ pub fn tcp_peer_user(peer: SocketAddr, local: SocketAddr, accepted: SystemTime) 
 pub fn tcp_peer_user_quick(peer: SocketAddr, local: SocketAddr, accepted: SystemTime) -> Option<Result<User, &'static str>> {
     let (peer, local) = (canonical(peer), canonical(local));
     sys::quick(peer, local, accepted)
+}
+
+/// An established TCP connection a process waits on (cl-977): its far end, whether bytes it sent are unacknowledged, and whether
+/// the kernel is backing off resending them (the peer stopped answering).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TcpWait {
+    pub remote: SocketAddr,
+    pub unacked: bool,
+    pub backoff: bool,
+}
+
+/// Those of `fds` (descriptors of process `pid`) that are established TCP connections, from its network namespace's table (the
+/// kernel's tcp_info: `tx_queue`, `retrnsmt`). Linux only; none elsewhere.
+pub fn tcp_waits(pid: u32, fds: &[i32]) -> Vec<TcpWait> {
+    #[cfg(target_os = "linux")]
+    return sys::tcp_waits(pid, fds);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pid, fds);
+        vec![]
+    }
 }
 
 /// An IPv4-mapped IPv6 address as its IPv4, as a listener on IPv4 sees it.
@@ -275,6 +296,31 @@ mod sys {
             }
         }
         Err("no_socket")
+    }
+
+    pub(super) fn tcp_waits(pid: u32, fds: &[i32]) -> Vec<super::TcpWait> {
+        let inodes: Vec<String> = fds.iter()
+            .filter_map(|fd| std::fs::read_link(format!("/proc/{pid}/fd/{fd}")).ok())
+            .filter_map(|link| Some(link.to_str()?.strip_prefix("socket:[")?.strip_suffix(']')?.to_owned()))
+            .collect();
+        if inodes.is_empty() {
+            return vec![];
+        }
+        let hex = |text: &str| u64::from_str_radix(text, 16).unwrap_or(0);
+        let mut waits = vec![];
+        for table in ["tcp", "tcp6"] {
+            let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/net/{table}")) else { continue };
+            for row in text.lines().skip(1) {
+                // sl local rem st tx:rx tr:when retrnsmt uid timeout inode
+                let fields: Vec<&str> = row.split_whitespace().collect();
+                if fields.len() > 9 && fields[3] == "01" && inodes.iter().any(|inode| inode == fields[9]) {
+                    let Some(remote) = address(fields[2]) else { continue };
+                    let unacked = fields[4].split_once(':').is_some_and(|(tx, _)| hex(tx) > 0);
+                    waits.push(super::TcpWait { remote, unacked, backoff: hex(fields[6]) > 0 });
+                }
+            }
+        }
+        waits
     }
 
     /// An address as `/proc/net/tcp*` prints it: each 32-bit word of the address in hex as the host holds it, then `:` and the port.

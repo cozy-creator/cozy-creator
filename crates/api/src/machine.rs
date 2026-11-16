@@ -1384,8 +1384,8 @@ pub struct Operation {
 }
 
 /// Why nothing can run on a machine (`StatusFrame::broken`, cl-977). `code` is the state: `stuck_in_driver`, the TensorD
-/// before this one can't exit (it is in `stuck`) and a fresh process can't open its GPUs; Calcifer's own, for a rental that
-/// hasn't answered since an update restarted it, `silent_after_update`.
+/// before this one can't exit (it is in `stuck`) and a fresh process can't open its GPUs, or killed executors stuck in the
+/// kernel hold every GPU; Calcifer's own, for a rental that hasn't answered since an update restarted it, `silent_after_update`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]

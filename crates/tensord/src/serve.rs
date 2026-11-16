@@ -298,12 +298,9 @@ fn run_machine(
             None
         }
     };
-    let broken = broken.map(|(code, message)| {
-        tracing::error!("broken: {message}; it takes no work, and a rental releases itself");
-        ::api::machine::Broken { code: code.into(), message }
-    });
+    let broken = broken.map(|(code, message)| ::api::machine::Broken { code: code.into(), message });
     if let Some(broken) = &broken {
-        lifecycle.broken(&broken.message);
+        lifecycle.broken(&broken.code, &broken.message);
     }
     boot.at("pool");
     {
@@ -334,6 +331,10 @@ fn run_machine(
             config,
             store,
         )?)?;
+        if let Some(pool) = service.pool() {
+            let lifecycle = lifecycle.clone();
+            pool.on_broken(move |why| lifecycle.broken("stuck_in_driver", why));
+        }
         if let Err(error) = service.import_installed() {
             tracing::warn!("importing the installed environments: {error}");
         }
@@ -421,7 +422,6 @@ fn run_machine(
         mode: mode.name(),
         torch,
         stuck: crate::machine::stuck::Before::watch(stuck, paths.clone(), broken.is_some()),
-        broken,
     };
     // The boot answer ends before the API takes its listener: one server answers at a time.
     booting.abort();

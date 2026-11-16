@@ -880,6 +880,8 @@ pub(crate) struct Pool {
     unreported: Mutex<Vec<(usize, String)>>,
     /// GPUs out of service, by the killed executor stuck in the kernel that holds their memory (cl-935).
     lost: Mutex<BTreeMap<u32, Lost>>,
+    /// Told once stuck executors hold every GPU: the machine is broken (cl-977).
+    broken: std::sync::OnceLock<Broken>,
     /// GPUs out of service, by envelope index: in use at this run's start by processes it doesn't own (cl-935).
     foreign: Mutex<BTreeMap<usize, Foreign>>,
     /// The host's ledger, supervised: an executor's exit is told to it, as to each GPU's.
@@ -888,6 +890,9 @@ pub(crate) struct Pool {
     // Drop session/resource custody before ending the actual spawning thread.
     launcher: crate::child_launcher::ChildLauncher,
 }
+/// What is told why the machine is broken.
+type Broken = Box<dyn Fn(&str) + Send + Sync>;
+
 /// A killed executor process stuck in the kernel and the GPUs whose memory it holds (cl-935): they
 /// are out of service until it exits.
 #[derive(Clone, Debug)]
@@ -1132,6 +1137,7 @@ impl Pool {
                 lanes: Mutex::default(),
                 unreported: Mutex::default(),
                 lost: Mutex::default(),
+                broken: Default::default(),
                 foreign: Mutex::default(),
                 #[cfg(target_os = "linux")]
                 host_ledger: Default::default(),
@@ -1534,8 +1540,15 @@ impl Pool {
         tracing::warn!("{} out of service: pid {pid} ({}) holds that memory, killed and stuck in the kernel; \
             back once it exits", shown.join(", "), stuck.command);
         self.notes.note(serde_json::json!({"event": "gpu_lost", "pid": pid, "wchan": stuck.wchan, "gpus": gpus}));
-        self.lost.lock().unwrap().insert(pid, Lost { stuck, gpus });
+        self.lost.lock().unwrap().insert(pid, Lost { stuck: stuck.clone(), gpus });
         self.refresh_out();
+        let held: std::collections::BTreeSet<u32> = self.lost.lock().unwrap().values().flat_map(|l| l.gpus.iter().map(|(gpu, _)| *gpu)).collect();
+        if (0..self.devices.len()).all(|d| held.contains(&self.index(d))) {
+            if let Some(broken) = self.broken.get() {
+                broken(&format!("every GPU is held by an executor killed and stuck in the kernel (pid {pid}, {}, at {})",
+                    stuck.command, stuck.wchan));
+            }
+        }
         let exact = match tenant.and_then(|(_, exact)| exact.ok()) {
             Some(exact) => Some(exact),
             None => Birth::of(pid).ok().and_then(|birth| Exact::open(&birth).ok().flatten()),
@@ -1548,6 +1561,11 @@ impl Pool {
             },
         }
         self.found(pid);
+    }
+
+    /// What is told once stuck executors hold every GPU (`lose`).
+    pub(crate) fn on_broken(&self, broken: impl Fn(&str) + Send + Sync + 'static) {
+        let _ = self.broken.set(Box::new(broken));
     }
 
     /// `pid` exited: the GPUs no other stuck process holds are back in service.
@@ -2010,7 +2028,7 @@ impl Pool {
         let mut callbacks = Callbacks {
             engine, id: preparation.map_or("", Stoppable::id), seen: Default::default(),
             generation: &member.held.record, spool: None, caller: None, calls: None,
-            formation: None, host: self.host.as_deref(),
+            formation: None, host: self.host.as_deref(), gpu: None,
         };
         let reply = session.executor.command(
             &Command::Map(Map {
@@ -3847,6 +3865,7 @@ impl Pool {
                 width: session.degree as usize,
             }),
             host: self.host.as_deref(),
+            gpu: driver.as_ref().map(platform::gpu::Peak::busy),
         };
         if !session.started {
             if !load_only {
@@ -4410,6 +4429,8 @@ fn ending(error: io::Error, executor: DeviceExecutor) -> (io::Error, String) {
                 code: refusal.code.clone(),
                 detail: format!("{}; executor exit unproven: {unproven}", refusal.detail),
             }),
+            // A hang stays the run's reason: its executor stuck in the kernel is the machine's to show (cl-977).
+            None if crate::vigil::hung(&error) => error,
             None => io::Error::other(format!("{error}; executor exit unproven: {unproven}")),
         },
     };
@@ -4542,6 +4563,8 @@ pub(crate) fn settle(engine: &Arc<Engine>, id: &str, error: &io::Error) -> io::R
         } else { format!("canceled; its executor ended: {error}") };
         if let Err(log) = engine.append_log(id, "warn", &detail) { tracing::warn!("run {id}: {log}"); }
         Outcome::Canceled
+    } else if crate::vigil::hung(error) {
+        Outcome::Failed(Failure::machine("hung", error.to_string()))
     } else if let Some(refusal) = refused(error) {
         // The executor's own reason, typed: a group's first fault names its GPU. An import's
         // traceback is the run's detail, not its one line.
@@ -4950,8 +4973,17 @@ struct Callbacks<'a> {
     /// The host watcher: each frame nudges it to look (the only wakeup where the kernel gives
     /// none, cgroup v1 with PSI denied).
     host: Option<&'a memory::Host>,
+    /// Its GPUs' busy readings (`platform::gpu::Peak::busy`): life its executor shows there.
+    gpu: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 impl Services for Callbacks<'_> {
+    fn elsewhere(&self) -> crate::vigil::Elsewhere {
+        let waits = self.calls.map(|calls| {
+            let (calls, engine, id) = (calls.clone(), self.engine.clone(), self.id.to_owned());
+            Box::new(move || calls.waiting(&engine, &id)) as Box<dyn Fn() -> bool + Send>
+        });
+        crate::vigil::Elsewhere { gpu: self.gpu.clone(), waits }
+    }
     fn progress(&mut self, frame: &Frame) {
         if let (Some(formation), false) = (&self.formation, frame.follower_pids.is_empty()) {
             if let Err(error) = formation.register(&frame.follower_pids) {
