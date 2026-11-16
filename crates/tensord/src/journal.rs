@@ -333,6 +333,9 @@ pub(crate) struct Execution {
     /// When it waited for its weights to download (Unix ms), as its meter saw them arrive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fetched: Option<(u64, u64)>,
+    /// What this machine had of what it loads, and what it fetched for it (`Account`), as first reckoned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<Account>,
     #[serde(default)]
     pub executor: Option<ExecutorFacts>,
     pub result: Option<ResultRecord>,
@@ -531,6 +534,17 @@ pub(crate) struct ProgressSnapshot {
     pub revision: u64,
     /// When it last moved (Unix ms).
     pub at_ms: u64,
+}
+
+/// What a machine had of what a call loads and what it waits for, in bytes (cl-1102, `access::Needs`): `has`, what of its needs
+/// was here; `needs`, what wasn't, all its call waits on (it comes once: an earlier run's download may be what brings it, so runs'
+/// needs don't sum to what a machine downloaded); `extras`, what comes besides in the background, which nothing waits on.
+/// Read as a run's measurements' `weights` (`cozy run watch --full`, the release gate's cells).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct Account {
+    pub has: u64,
+    pub needs: u64,
+    pub extras: u64,
 }
 
 /// Weights arriving for a run (`access::meter`): their repositories, and the bytes here of their
@@ -1907,6 +1921,7 @@ fn insert(
         executed_ms: 0,
         width: 0,
         fetched: None,
+        needs: None,
         executor: None,
         result: None,
         pending_completion: None,
@@ -2571,6 +2586,19 @@ impl Journal {
                 return Ok(false);
             }
             record.fetched = Some((from, to));
+            Ok(true)
+        })
+        .map(drop)
+    }
+
+    /// What its machine had of what it loads and what it fetches for it, as first reckoned: what a fetch before its call brought
+    /// was fetched for it too.
+    pub(crate) fn needs(&mut self, id: &str, account: Account) -> io::Result<()> {
+        self.update(id, |record| {
+            if record.state.terminal() || record.needs.is_some() {
+                return Ok(false);
+            }
+            record.needs = Some(account);
             Ok(true)
         })
         .map(drop)

@@ -707,6 +707,7 @@ case $SHARD in
     ondemand_calls
     ondemand_adapted
     ondemand_order
+    ondemand_needs
     ondemand_behind
     logs
   " ;;
