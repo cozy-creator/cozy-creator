@@ -1069,10 +1069,16 @@ impl Runs {
         }
         Ok(named)
     }
-    /// One line on run `id`'s log, as a warning its owner reads (`cozy run show`).
-    fn warn(&self, id: &str, text: &str) {
-        if let Err(error) = self.service.engine.append_warning(id, text) {
-            crate::private_io::warning(&self.service.engine, id, format_args!("{text} ({error})"));
+    /// A warning of run `id` by its `code`, which its controller keeps among the run's warnings (`cozy run show`): on its root
+    /// run's log, a call's led by its function, as `Engine::append_warning` says one.
+    fn warn(&self, id: &str, code: &str, text: &str) {
+        let engine = &self.service.engine;
+        let said = engine.get(id).and_then(|record| match record.invocation.root.as_str() {
+            "" => engine.append_coded_warning(id, code, text),
+            root => engine.append_coded_warning(root, code, &format!("{}: {text}", record.invocation.entrypoint)),
+        });
+        if let Err(error) = said {
+            crate::private_io::warning(engine, id, format_args!("{text} ({error})"));
         }
     }
 
@@ -1208,7 +1214,7 @@ impl Runs {
         // What its function's rules say this request needs of its models and of the functions it calls (cl-1103).
         let ruled = ruled(&interface, &spec.entrypoint, asked(&spec));
         for (name, why) in &ruled.unanswered {
-            self.warn(id, &format!("{name}: its needs rule gives no answer for this request ({why}), so it is fetched as if it had none."));
+            self.warn(id, "needs_rule_unanswered", &format!("{name}: its needs rule gives no answer for this request ({why}), so it is fetched as if it had none."));
         }
         // What a root call reads, for its function's next quote on any machine (cl-967).
         if let (false, true, Some(plan)) = (spec.warm, spec.parent.is_empty(), &plan) {
@@ -1938,7 +1944,7 @@ impl Runs {
         }
         // Its caller's rule said this request doesn't call it (cl-1103), so nothing of it came ahead: that rule's miss.
         if self.contexts.lock().unwrap().get(&parent.id).is_some_and(|context| context.uncalled.contains(entrypoint)) {
-            self.warn(&parent.id, &format!("{entrypoint}: called, though its caller's needs rule says this request doesn't call it, so its weights weren't fetched ahead. The rule is wrong for this request."));
+            self.warn(&parent.id, "needs_rule_missed", &format!("{entrypoint} is called, though its caller's needs rule says this request doesn't call it, so its weights weren't fetched ahead. The rule is wrong for this request."));
         }
         let spec =
             self.child_spec(&actor, &parent.id, application, entrypoint, input, inputs, intent, &passed)?;
@@ -2142,7 +2148,7 @@ impl Runs {
             context.unneeded.iter().find(|(held, read, _)| held == manifest && read.as_slice() == components).map(|(_, _, parameter)| parameter.clone())
         });
         if let Some(parameter) = missed {
-            self.warn(id, &format!("{parameter}: read, though its needs rule says this request doesn't use it, so its weights weren't fetched ahead. The rule is wrong for this request."));
+            self.warn(id, "needs_rule_missed", &format!("{parameter} is read, though its needs rule says this request doesn't use it, so its weights weren't fetched ahead. The rule is wrong for this request."));
         }
         let store = self.publisher.store();
         let checkpoint = crate::storage::checkpoint(store, manifest)?;
