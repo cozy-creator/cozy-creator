@@ -97,12 +97,12 @@ export class Placer {
   }
 
   /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says, `fields` with what it starts with
-   *  (a checkpoint dropped is on it). Dropping keeps the current canvas interaction mode. */
-  addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>) {
+   *  (a checkpoint dropped is on it). Dropping keeps the current canvas interaction mode. The name it's placed under. */
+  addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>): string {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool.id === TEXT_TOOL.id
     const timeline = tool.fields.some((field) => field.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
-    this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
+    return this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */

@@ -22,6 +22,7 @@ import { CARD_WIDTH, CanvasStore, type ElementNode } from "./CanvasStore"
 import { CanvasStoreProvider, useCanvasStore, useElement } from "./context"
 import { carriedAt, LET_GO, type Load, type LetGo } from "./carry"
 import { boxAt, carriedOver, letGo } from "./checkpoints"
+import { TEXT_TOOL } from "./controls"
 import { copyBoxes, copyOf, middleOf, ownCopy } from "./copy"
 import { FocusedViewport } from "./FocusedViewport"
 import { HistoryControls } from "./HistoryControls"
@@ -939,6 +940,12 @@ function Canvas({
   const paneClicked = useCallback(() => {
     if (!store.focusedName.get() && pressBeganOutside((element) => Boolean(element.closest(".canvas-node, .canvas-selection")))) leaveHere()
   }, [store, leaveHere])
+  // A double click on open canvas starts words there (Paul, 11-16: "there is no way to just start typing text"): a Text box, as Tools › Text
+  // drops one, opened on its words as a double click on it opens it.
+  const paneDoubleClicked = useCallback((_: MouseEvent, at: { x: number; y: number }) => {
+    if (!store.projectId || store.focusedName.get()) return
+    focusNode(placer.addTool(TEXT_TOOL, at))
+  }, [store, placer, focusNode])
   const nodeMenu = useCallback(
     (event: MouseEvent, node: ElementNode) => {
       if (node.type !== "element") return
@@ -1019,6 +1026,7 @@ function Canvas({
           onNodeClick={nodeClicked}
           onNodeDoubleClick={nodeDoubleClicked}
           onPaneClick={paneClicked}
+          onPaneDoubleClick={paneDoubleClicked}
           onNodeContextMenu={nodeMenu}
           onDragStart={nodeDragStart}
           onDrag={nodeDrag}

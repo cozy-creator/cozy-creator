@@ -42,6 +42,8 @@ export interface StageProps {
   onNodeClick(event: MouseEvent, node: ElementNode): void
   onNodeDoubleClick(event: MouseEvent, node: ElementNode): void
   onPaneClick(): void
+  /** A double click on open canvas, at `at` on the canvas. */
+  onPaneDoubleClick(event: MouseEvent, at: { x: number; y: number }): void
   onNodeContextMenu(event: MouseEvent, node: ElementNode): void
   onDragStart(event: Pointer, node: ElementNode, nodes: ElementNode[]): void
   onDrag(event: Pointer, node: ElementNode, nodes: ElementNode[]): void
