@@ -2,8 +2,8 @@
 //! function that loads a model on one, a GPU its weights fill more than three quarters of (the Hub's rule for a card that holds them),
 //! a GPU that also draws the screen, which a render makes lag (cl-796), or its runs here far slower than on a rented card (cl-897). A
 //! tool's weights are what the Hub places a run of its release by; local code's, its models' releases; either with a checkpoint on its box
-//! in place of its model's. Its runs here and on rented cards say how long it takes each. Render here is kept by tool and what this
-//! computer has (`state.db`'s `rendered_here`), and asked again only on another computer, or for weights half as big again.
+//! in place of its model's. Its runs here and on rented cards say how long it takes each. Nothing is asked: a render here says it as it
+//! goes (cl-1066, Paul: render here; "Slow here" offers a rental).
 //! Each box named also gets its typical inference time where a render of it would go now (cl-1004, Paul 11-15: "before the user pushes
 //! 'render' we should display to them some sort of estimated time"), by the estimator placement uses, and the tool's recommended GPU
 //! when renting it would be far faster.
@@ -23,7 +23,6 @@ use ::api::hub::types::RentalPlacementRequest;
 use api::{
     calcifer::On,
     estimate::References,
-    error::{Error, Kind},
     interface::{Interface, Slot},
     machine::{Basis, JobSize},
     model_ref::ModelRef,
@@ -43,8 +42,6 @@ use crate::{
 
 /// What the Hub said is kept this long: a release's weights never change, the price of a card to rent does.
 const KEPT: Duration = Duration::from_secs(600);
-/// Render here holds for weights up to half as big again as those it was said for.
-const GROWN: u64 = 2;
 /// Slow here: more than this many times a rented card's time, and more than `LONGER_S` longer.
 const SLOWER: f64 = 3.0;
 const LONGER_S: f64 = 60.0;
@@ -89,31 +86,21 @@ struct Need {
     away: Option<(String, f64)>,
 }
 
-/// Whether a Render here said for weights of `kept` bytes holds for `bytes`.
-fn holds(kept: u64, bytes: u64) -> bool {
-    bytes * GROWN <= kept * (GROWN + 1)
-}
 
 /// `POST /v1/projects/{id}/fit`: what a render of `names` here would do poorly.
 pub(super) async fn fit(State(api): State<Arc<Api>>, Path(id): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Json<Fit>, Refusal> {
     let asked: FitAsk = parse(&body?)?;
-    Ok(Json(judged(&api, &id, &asked, false).await?))
+    Ok(Json(judged(&api, &id, &asked).await?))
 }
 
-/// `POST /v1/projects/{id}/fit/here`: the same, each tool kept as rendered here, so nothing asks again.
-pub(super) async fn here(State(api): State<Arc<Api>>, Path(id): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Json<Fit>, Refusal> {
-    let asked: FitAsk = parse(&body?)?;
-    Ok(Json(judged(&api, &id, &asked, true).await?))
-}
-
-async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<Fit, Refusal> {
+async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk) -> Result<Fit, Refusal> {
     // Its runs, which its times here stand on, are its project's own (xs-160): read in its storage.
     let folder = api.projects.get(api, id)?.folder.dir.clone();
     let scope = crate::private_io::of_path(&folder).map_err(Refusal)?;
-    crate::private_io::context(scope, judged_in(api, id, asked, keep)).await
+    crate::private_io::context(scope, judged_in(api, id, asked)).await
 }
 
-async fn judged_in(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<Fit, Refusal> {
+async fn judged_in(api: &Arc<Api>, id: &str, asked: &FitAsk) -> Result<Fit, Refusal> {
     let project = api.projects.get(api, id)?;
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let (targets, boxes, dir) = {
@@ -138,7 +125,6 @@ async fn judged_in(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Resu
     let Some(gpus) = gpus(api) else { return Ok(Fit { estimates: estimating.await, ..Fit::default() }) };
     let largest = gpus.iter().map(|gpu| gpu.1).max();
     let display = gpus.iter().any(|gpu| gpu.2);
-    let machine = machine_of(&gpus);
     let judging = targets.into_iter().map(|(target, assets)| {
         let (api, hub, dir) = (api.clone(), hub.clone(), dir.clone());
         async move {
@@ -153,29 +139,19 @@ async fn judged_in(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Resu
         }
     });
     let (needs, estimates) = futures_util::future::join(futures_util::future::join_all(judging), estimating).await;
-    let kept = api.calcifer.project_store(&project.id)?.rendered_here(&machine)?;
     let mut fit = Fit { estimates, ..Fit::default() };
     let mut picks = vec![];
     for (need, names) in needs.into_iter().flatten() {
         let Some(line) = said(&need, largest, display) else { continue };
-        let here = kept.get(&need.tool).is_some_and(|kept| holds(*kept, need.bytes));
-        picks.push((here, need.pick.clone()));
-        fit.tools.push(ToolFit { tool: need.tool, label: need.label, names, line, bytes: need.bytes, here });
+        picks.extend(need.pick.clone());
+        fit.tools.push(ToolFit { tool: need.tool, label: need.label, names, line, bytes: need.bytes });
     }
-    // The GPU for what's asked about, else for all of them: the biggest of the Hub's picks.
-    let asked_of = picks.iter().any(|(here, _)| !here);
-    let picks: Vec<RentFor> = picks.into_iter().filter(|(here, _)| !asked_of || !here).filter_map(|(_, pick)| pick).collect();
-    let them = if fit.tools.iter().filter(|tool| !asked_of || !tool.here).count() == 1 { "it" } else { "them" };
+    // The GPU for all of them: the biggest of the Hub's picks.
+    let them = if fit.tools.len() == 1 { "it" } else { "them" };
     fit.rent = picks.into_iter().reduce(|best, pick| if pick.vram_gb > best.vram_gb { pick } else { best }).map(|pick| RentFor {
         line: format!("A rented {} runs {them} for ${:.2}/h.", pick.card, pick.usd_micros_per_hour as f64 / 1e6),
         ..pick
     });
-    if keep && !fit.tools.is_empty() {
-        let tools: Vec<(String, u64)> = fit.tools.iter().map(|tool| (tool.tool.clone(), tool.bytes)).collect();
-        let kept = api.calcifer.project_store(&project.id)?.keep_rendered_here(&machine, &tools);
-        kept.map_err(|why| Refusal(Error::new(Kind::Unavailable, "here_io", why.to_string())))?;
-        fit.tools.iter_mut().for_each(|tool| tool.here = true);
-    }
     Ok(fit)
 }
 
@@ -282,14 +258,6 @@ fn gpus(api: &Api) -> Option<Vec<(String, u64, bool)>> {
 /// Whether a GPU of this computer draws its screen now: a render here makes it lag (cl-796).
 pub(super) fn draws_screen(api: &Api) -> bool {
     gpus(api).is_some_and(|gpus| gpus.iter().any(|gpu| gpu.2))
-}
-
-/// What a Render here holds for: another computer, or a GPU more or less, is another question.
-fn machine_of(gpus: &[(String, u64, bool)]) -> String {
-    match gpus {
-        [] => "no GPU".into(),
-        gpus => gpus.iter().map(|(name, bytes, _)| format!("{name} {} MiB", bytes >> 20)).collect::<Vec<_>>().join(", "),
-    }
 }
 
 /// How it would go here, or None when well enough: why first, then how long here against a rented card, then the screen.
@@ -408,15 +376,11 @@ pub(super) fn poorly_now(api: &Api, hub: &str, package: &super::Package, functio
     largest.is_none_or(|largest| bytes > 0 && bytes * 4 > largest * 3)
 }
 
-/// What a walk's job sent here alone says first, as `here_now`, unless Render here was said of `tool` on this computer for weights as big.
-pub(super) fn told_here(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>, tool: &str) -> Option<String> {
+/// What a walk's job sent here alone says first, as `here_now`.
+pub(super) fn told_here(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Option<String> {
     let interface = Interface::parse(package.document()).ok()?;
     let release = package.local.is_none().then_some(package.release.as_str());
-    let line = here_now(api, hub, &package.name, release, function, &interface, &package.summary, made)?;
-    let weights = Weights::of_interface(&interface, function, made)?;
-    let (bytes, _) = weights.weighed(hub, &package.name, &package.release, function, package.local.is_some());
-    let kept = api.calcifer.store().rendered_here(&machine_of(&gpus(api)?)).ok()?;
-    (!kept.get(tool).is_some_and(|kept| holds(*kept, bytes))).then_some(line)
+    here_now(api, hub, &package.name, release, function, &interface, &package.summary, made)
 }
 
 /// What a run of `function` of `package@release` here says first when this computer would run it poorly, by what's known here without

@@ -404,7 +404,7 @@ code {
   transform-origin: 0 0;
   pointer-events: none;
 }
-/* What's typed over a box (its name) and what it asks under it (Asking): the box stays drawn beneath. */
+/* What's typed over a box (its name): the box stays drawn beneath. */
 .canvas-over {
   position: absolute;
   top: 0;
@@ -1556,21 +1556,6 @@ video.preview.on {
 .card.here .tc {
   font-size: calc(var(--t-small) * var(--ui));
 }
-/* Render leaves the box: what it asks first hangs under it, over what's below. */
-.rest-asking {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  width: max(100%, 280px);
-  z-index: 6;
-}
-.rest-asking .status.asking {
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--round);
-  background: var(--card);
-  box-shadow: 0 4px 16px #0002;
-}
 /* All of a box, under it: one block with its picture and its takes, from the picture's left edge to the takes' right edge and a gap below
    them. --here-room comes with each fit, --here is how large it's drawn against its box, and --here-gap, in its own pixels, is between the
    picture and its takes and under them. */
@@ -1930,35 +1915,8 @@ video.preview.on {
 .status.bad {
   color: var(--bad);
 }
-.status.asking {
-  display: grid;
-  gap: 6px;
-  color: var(--ink);
-  font-size: 12px;
-  line-height: 1.4;
-}
-.status.asking p {
-  margin: 0;
-}
-.status.asking .row {
-  display: flex;
-  gap: 6px;
-  padding-top: 2px;
-}
 .render-all {
   position: relative;
-}
-.render-all .status.asking {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  width: 320px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--round);
-  background: var(--card);
-  box-shadow: 0 6px 24px #0003;
-  z-index: 20;
 }
 .act {
   color: var(--ink);

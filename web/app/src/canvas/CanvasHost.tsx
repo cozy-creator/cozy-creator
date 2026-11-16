@@ -17,7 +17,6 @@ import { type Ask, asked, giveUp } from "../app/making"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetMenu } from "./AssetMenu"
-import { Asking } from "./Asking"
 import { CARD_WIDTH, CanvasStore, type ElementNode } from "./CanvasStore"
 import { CanvasStoreProvider, useCanvasStore, useElement } from "./context"
 import { carriedAt, LET_GO, type Load, type LetGo } from "./carry"
@@ -182,13 +181,11 @@ function RenderAll({ id }: { id: string }) {
   const store = useCanvasStore()
   const { data } = useQuery(projectQuery(client, stream, id))
   const fresh = (data?.assets ?? []).filter((asset) => asset.tool && (asset.kind === "image" || asset.tool === "cozy/edit" || (!madeHere(asset.tool) && !asset.pinned))).length
-  const asking = useSignal(store.allAsking)
   return (
     <span className="render-all">
       {fresh > 0 && <button type="button" className="tb primary" onClick={() => store.runAll()}>
         Render all {fresh}
       </button>}
-      {asking && <Asking fit={asking.fit} all />}
     </span>
   )
 }
