@@ -13,9 +13,11 @@ import { pictureBox, present, type Presentation, type RunContext, type SceneNode
 import { fontEpoch } from "./text"
 
 export interface Frame { moving: boolean; camera: Viewport; width: number; height: number; dpr: number; settled: boolean; theme: string; now: number; hidden: ReadonlySet<string>; offering: boolean }
-interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; seen?: number }
+interface Held { view: CardView; node?: SceneNode; show?: Presentation; key?: unknown[]; glide?: { from: { x: number; y: number }; began: number }; landing?: number; seen?: number; decoding?: number; waits?: boolean }
 
 const MARGIN = 160
+/** How long a file dropped waits, at most, to be first drawn with its picture. */
+const DECODE_MS = 250
 /** A box's name sits this far over it (app.css): a ring that would reach it is drawn inside the box's edge. */
 const NAME_FOOT = 12
 const ease = (t: number) => 1 - (1 - t) ** 3
@@ -207,8 +209,14 @@ export class Scene {
     card.root.position.set(x + node.bounds.w * (1 - scale) / 2, y + node.bounds.h * (1 - scale) / 2)
     card.root.alpha = alpha
     card.root.zIndex = dragging ? 3 : state.hover ? 2 : node.selected ? 1 : 0
-    card.root.visible = !frame.hidden.has(name)
-    return card.animate(now, env) || animating
+    // A file dropped is first drawn with its picture: held back while it's decoded, a quarter second at most (upload: "each is first drawn
+    // where and as it stays, its picture decoded").
+    const main = card.picture
+    const decoding = Boolean(view.placing && main?.local && !main.handle?.texture && !main.handle?.failed && !main.next?.failed)
+    held.decoding = decoding ? held.decoding ?? now : undefined
+    const waits = held.waits = decoding && now - held.decoding! < DECODE_MS
+    card.root.visible = !frame.hidden.has(name) && !waits
+    return card.animate(now, env) || animating || waits
   }
 
   private request(picture: ScenePicture, width: number, dpr: number) {

@@ -28,7 +28,8 @@ export function inspection(o: Sources) {
   }
   const rendered = (name: string) => {
     const held = o.scene()?.viewOf(name)
-    if (!held?.node || !held.show) return null
+    // Not drawn yet: a file dropped is held back while its picture decodes.
+    if (!held?.node || !held.show || held.waits) return null
     const card = held.view, root = card.root
     const origin = { x: root.x, y: root.y }, scale = root.scale.x
     const body = pictureBox(held.node)
