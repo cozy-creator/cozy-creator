@@ -3,7 +3,8 @@
 #   layout at 112x64 (frames.py), since regenerated texture rightly differs, and that it moves as the original does (no
 #   flicker: a refine window off the latent chunk grid flickers at every chunk, run 22567).
 # - SeedVR2 (its own package) at 2160p on the same shot, its lane the one an empty card gives.
-# - A 15 s take made as a box, then its no-prompt 1080p Upscale in that executor and in a fresh one (`take-upscale-15s`, cr-299).
+# - A 15 s take made as a box, then its no-prompt Upscale at 1080p in that executor and at 1440p in a fresh one
+#   (`take-upscale-15s`, cr-299).
 # - A plate (a synthetic, people-free test pattern) edited as long as the shot, shorter, longer, at 30 fps and at 9:16: the
 #   output must follow it frame by frame.
 # - First and last keyframes: the shot opens and ends on them without a cut.
@@ -393,10 +394,11 @@ if [ -n "$lt" ]; then
   fi
 fi
 
-# Make a take, then upscale it (cr-299): a 15 s shot as a box, then its no-prompt 1080p Upscale from its latents in the
-# executor that made it, and again in a fresh one (TensorD restarted). The 15 s refine is one window of 218k rows on 24 GB:
-# its attention and FFN must cut inside the window. The 0.26.0 RC ran them whole and ran out of memory asking for a whole
-# Q/K/V beside 19.2 GiB of its own activations (pod-session 43777750768). About 16 + 2 x 6 min on a 4090.
+# Make a take, then upscale it (cr-299): a 15 s shot as a box, then its no-prompt Upscale from its latents at 1080p in the
+# executor that made it, and at 1440p (the tool's default) in a fresh one (TensorD restarted). On 24 GB the 1080p refine is
+# one window of 218k rows and the 1440p one two: their attention and FFN must cut inside the windows. The 0.26.0 RC ran them
+# whole and ran out of memory asking for a whole Q/K/V beside 19.2 GiB of its own activations (pod-session 43777750768).
+# About 6 + 6 + 10 min on a 4090 (pod-session 43784736621).
 SAVED=$ONLY; [[ $ONLY == *",take-upscale-15s"* ]] && ONLY="$ONLY,take-15s,"
 box_cell take-15s take_15s "$(jq -cn --argjson s $((R + 145)) '{seed: $s, beats: [{duration: 15, description: $ARGS.positional[0]}]}' \
   --args "$SCENE. A cyclist rides through the scene from left to right, and a dog runs after her, barking. Wind and distant traffic.")"
@@ -407,8 +409,8 @@ if [ -f take-15s.number ] && [ "$(run_get "$OUT" take-15s .status)" = completed 
   if [ -z "$ONLY" ] || [[ $ONLY == *",take-upscale-15s-fresh,"* || $ONLY == *",minimax-h3,"* ]]; then
     "$CLI" machine update "$M" --gpu-memory-limit off -y > take-upscale-restart.log 2>&1 ||
       log "take-upscale-15s-fresh: TensorD not restarted: $(tail -c 300 take-upscale-restart.log)"
-    cell take-upscale-15s-fresh "$UP" video='<take_15s>' to=1080p strength:=0.8
-    av take-upscale-15s-fresh 1080
+    cell take-upscale-15s-fresh "$UP" video='<take_15s>' to=1440p
+    av take-upscale-15s-fresh 1440
   fi
 fi
 
