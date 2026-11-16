@@ -80,6 +80,9 @@ impl Machines {
     /// One on another is updated to this release first, as `cozy machine update` does, once per boot for all that send there: its
     /// update run, to wait for. One added from another computer, or with work going, is left as it is: the refusal names the command.
     pub(crate) async fn current(self: &Arc<Self>, name: &str) -> Result<Option<Run>, Error> {
+        if self.booting_for_rc(name) {
+            return Err(Error::new(Kind::Unavailable, "machine_booting", format!("waiting for {name} to start")));
+        }
         let frame = match self.frame(name) {
             Some(frame) => frame,
             None => {

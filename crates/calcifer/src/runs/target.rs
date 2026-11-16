@@ -421,6 +421,36 @@ pub(crate) async fn installed_release(api: &Arc<Api>, hub: &str, package: &str, 
     Ok((card.release, moved, upgrade, cozy))
 }
 
+/// Local code's machine move `on` it, for `needs` (its `cozy-runtime` requirement), as a published release's (cl-952, cl-1069): to the
+/// newest Runtime it can take that runs it, plus this cozy's minor for a project's run on `local` (cl-1055). None for a run not sent
+/// to a named machine, or when its Runtime runs it, isn't known yet, or it moves to none that does (its machine then says why); held
+/// by hand, refused naming the update.
+pub(crate) async fn local_upgrade(api: &Arc<Api>, hub: &str, on: &On, package: &str, needs: Option<pep440_rs::VersionSpecifiers>) -> Result<Option<crate::floor::Upgrade>, Error> {
+    if !matches!(on, On::Machine(_)) {
+        return Ok(None);
+    }
+    let held = Held::read(api, hub, on, true).await;
+    let project = crate::private_io::current().is_some() && held.machine == "local";
+    let needs = match (needs, project) {
+        (needs, true) => api::release::for_project(needs),
+        (Some(needs), false) => needs,
+        (None, false) => return Ok(None),
+    };
+    let machine = &held.machine;
+    match api::release::takes(&needs, &held.machine()) {
+        api::release::Takes::Moves(runtime) => {
+            Ok(Some(crate::floor::Upgrade { machine: machine.clone(), from: held.runtime.clone(), to: runtime, release: package.to_owned() }))
+        }
+        api::release::Takes::Held(_) => Err(Error::new(
+            Kind::Conflict,
+            "runtime_held",
+            format!("{package} needs cozy-runtime{needs}, and {machine} is held on Runtime {} by hand: `cozy machine update {machine}` lets it move", held.runtime),
+        )
+        .next(format!("cozy machine update {machine}"))),
+        _ => Ok(None),
+    }
+}
+
 /// The card of `release`, with its requirements: `v0.2.0` for the release named `0.2.0` too.
 async fn card_of(api: &Arc<Api>, hub: &str, package: &str, release: &str) -> Result<Card, Error> {
     let hubs = &api.machines.hubs;

@@ -1825,10 +1825,10 @@ impl Calcifer {
                         }
                         continue;
                     }
-                    // Not known yet (its status unread, a link down): asked again.
+                    // Not known yet (booting, its status unread, a link down): asked again once it says more.
                     Err(e) => {
                         self.waiting(id, e.message);
-                        pause.wait(wake, None).await;
+                        pause.wait(wake, Some(&mut settled)).await;
                         continue;
                     }
                 }

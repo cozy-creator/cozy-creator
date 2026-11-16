@@ -307,7 +307,7 @@ pub(crate) struct Wheel {
 }
 
 /// `src`'s `cozy-runtime` requirement, as its pyproject.toml declares it: None when it names no version.
-fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
+pub(crate) fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
     let pyproject: toml::Value = std::fs::read_to_string(src.join("pyproject.toml")).ok().and_then(|text| toml::from_str(&text).ok())?;
     let dependencies = pyproject.get("project").and_then(|p| p.get("dependencies")).and_then(toml::Value::as_array);
     api::release::required(dependencies.into_iter().flatten().filter_map(toml::Value::as_str), "cozy-runtime")
