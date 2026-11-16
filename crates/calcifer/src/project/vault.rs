@@ -674,7 +674,12 @@ pub(crate) fn unlocked(api: &Arc<Api>) -> Vec<(PathBuf, Option<String>)> {
             let store = super::RunOwner::of(project, &api.calcifer).store().map_err(journal)?;
             Ok(!store.unsettled().map_err(journal)?.is_empty() || !store.unsettled_here().map_err(journal)?.is_empty())
         });
-        let busy = match held { Ok(held) => held.map(|held| held.reason().to_owned()), Err(e) => Some(e.message) };
+        // Fixed reasons only: this goes to a script's log and Calcifer's, outside the project.
+        let busy = match held {
+            Ok(held) => held.map(|held| held.reason().to_owned()),
+            Err(e) if e.code == "project_busy" => Some("a lock is under way".to_owned()),
+            Err(_) => Some("its journal could not be read".to_owned()),
+        };
         (root, busy)
     }).collect()
 }

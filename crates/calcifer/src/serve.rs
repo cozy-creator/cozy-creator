@@ -456,11 +456,15 @@ async fn shutdown_after_signal(api: Arc<Api>) {
             warn!(code = %error.code, "SIGTERM: cannot finish closing encrypted views; shutdown remains blocked");
             return;
         }
-        // Which folder holds it and why (cl-1059): past systemd's stop timeout (90 s) it SIGKILLs the cgroup, and this says what it cut.
-        if reported.as_ref().is_none_or(|(said, at)| said != &error.message || at.elapsed() >= Duration::from_secs(5)) {
+        // Which folder holds it and why (cl-1059): past systemd's stop timeout (90 s) it SIGKILLs the cgroup, and this says what it
+        // cut. The folder and a fixed reason only, never the refusal's text: no log outside a project names its runs.
+        if reported.as_ref().is_none_or(|(code, at)| code != &error.code || at.elapsed() >= Duration::from_secs(5)) {
+            let held: Vec<String> = crate::project::vault::unlocked(&api).into_iter()
+                .filter_map(|(folder, busy)| busy.map(|why| format!("{}: {why}", folder.display()))).collect();
+            let held = if held.is_empty() { "a view still in use".to_owned() } else { held.join("; ") };
             info!(code = %error.code, elapsed_ms = began.elapsed().as_millis() as u64,
-                "SIGTERM: waiting for encrypted views to close: {}", error.message);
-            reported = Some((error.message, Instant::now()));
+                "SIGTERM: waiting for encrypted views to close: {held}");
+            reported = Some((error.code, Instant::now()));
         }
         tokio::select! {
             () = api.stopped() => return,
