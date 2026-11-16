@@ -52,6 +52,7 @@ parse "$@"
 . "$(dirname "$0")/fresh.sh"
 . "$(dirname "$0")/typedcalls.sh"
 . "$(dirname "$0")/harness.sh"
+. "$(dirname "$0")/devstart.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -707,6 +708,8 @@ case $SHARD in
   " ;;
   # Calcifer restarted on a large store, its disk slow (cl-1010).
   restart) parts="state_restart logs" ;;
+  # A dev build's Calcifer at the stack size it ships resumes a render walk and answers /fit (cl-1069: E2E_DEV_COZY, e2e.yaml).
+  dev-start) parts="dev_start logs" ;;
   # What cozy needs is on the computer once its installer is done (cl-1030): Linux, macOS and Windows.
   fresh) parts="fresh_install logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
