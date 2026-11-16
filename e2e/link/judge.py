@@ -54,12 +54,12 @@ class Arm:
             secs = sum(dt for dt, _ in got)
             if secs > 3:
                 return sum(dt * x for dt, x in got) / secs, "measured"
-        # Open: the best 5 s of the arm.
+        # Open: the best 3 s of the arm.
         best, window = 0.0, []
         for t, dt, _, total in self.rates:
-            window = [w for w in window + [(t, dt, total)] if w[0] > t - 5000]
+            window = [w for w in window + [(t, dt, total)] if w[0] > t - 3000]
             secs = sum(w[1] for w in window)
-            if secs >= 4:
+            if secs >= 2:
                 best = max(best, sum(w[1] * w[2] for w in window) / secs)
         return best or 1.0, "observed"
 
@@ -228,7 +228,7 @@ def install_span(arm, name, package):
 
 
 def cold(rec):
-    for form in ("q60", "p60", "open"):
+    for form in ("q60", "p60", "p60m", "open"):
         i, w, c = (rec.arms.get(f"{form}-{k}") for k in ("install", "weights", "cold"))
         if not (i and w and c):
             continue
@@ -258,14 +258,19 @@ def cold(rec):
         # The install downloading: a second its files move a tenth of the link; quiet: none, two seconds from any busy one.
         if c0 and c1:
             span = [(t, dt, r["files"], r["weights"]) for t, dt, r, _ in c.rates if c0 < t <= min(c1, end)]
-            busy = [t for t, _, f, _ in span if f > 0.1 * c.ceiling]
-            quiet = [(dt, w) for t, dt, f, w in span if f < 0.01 * c.ceiling and all(abs(t - b) > 2000 for b in busy)]
+            # Downloading: a second its own port moved any bytes (design agent 11-16: a share of the link read a slow, steady
+            # install as quiet); quiet: none, two seconds from any such second.
+            busy = [t for t, _, f, _ in span if f > 0]
+            quiet = [(dt, w) for t, dt, f, w in span if f == 0 and all(abs(t - b) > 2000 for b in busy)]
             during = [(dt, w) for t, dt, f, w in span if t in busy]
+            moving = [(dt, f) for t, dt, f, w in span if t in busy]
             share = lambda xs: round(sum(dt * w for dt, w in xs) / sum(dt for dt, _ in xs) / c.ceiling, 3)
             qs = sum(dt for dt, _ in quiet)
             rec.row(f"{form}.install_quiet_s", round(qs, 1))
             rec.row(f"{form}.weights_quiet_share", share(quiet) if qs >= 5 else None)
             rec.row(f"{form}.weights_install_share", share(during) if during else None)
+            rec.row(f"{form}.install_busy_share", share(moving) if moving else None)
+            rec.row(f"{form}.install_busy_s", round(sum(dt for dt, _ in moving), 1))
             rec.row(f"{form}.install_rate_ratio", ratio(rate_busy(c, c0, c1), rate_busy(i, i0, i1)))
         p50, p95, top, drops = c.queue_ms(ask_c, end)
         rec.row(f"{form}.queue_p95_ms", round(p95) if p95 is not None else None)
@@ -279,7 +284,7 @@ def ideal(arm, nbytes, ask, done):
 def rate_busy(arm, lo, hi):
     if lo is None:
         return None
-    xs = [(dt, x) for _, dt, x, _ in arm.series("files", lo, hi) if x > 0.1 * arm.ceiling]
+    xs = [(dt, x) for _, dt, x, _ in arm.series("files", lo, hi) if x > 0]
     s = sum(dt for dt, _ in xs)
     return sum(dt * x for dt, x in xs) / s if s else None
 
@@ -313,36 +318,11 @@ def need(rec):
     rec.row("ahead_s", secs(ask, done))
     rec.row("ahead_ratio", ratio(secs(ask, done), alone))
     rec.row("ahead_vs_ceiling", ideal(both, total_of(both, "pagebox", 1600), ask, done))
+    rec.row("both_s", secs(min(both.at("ask_need"), ask), max(done or 0, settled(both, "need") or 0) or None))
     use, idle = both.use([(both.at("ask_need"), max(done or 0, settled(both, "need") or 0))])
     rec.row("link_use", use)
     rec.row("idle_wanted_s", idle)
     rec.row("ahead_longest_zero_s", longest_subject(both, "pagebox", ask, done or ask))
-    starved = both.longest("weights", ask, done or ask, also=0.5)
-    rec.hold("no_starvation", starved < 5, f"the link sat under half with the weights under 1% for {starved} s")
-
-
-def thirdparty(rec):
-    a, b, both = rec.arms.get("fetch-alone"), rec.arms.get("ahead-alone"), rec.arms.get("both")
-    if not (a and b and both):
-        return
-    rec.hold("completed", completed(a, "fetch") and completed(b, "ahead") and completed(both, "fetch", "ahead"), "a run didn't complete")
-    took = lambda arm: (arm.run("fetch").get("result") or {}).get("read_s")
-    rec.row("fetch_alone_s", round(took(a), 1) if took(a) is not None else None)
-    rec.row("fetch_s", round(took(both), 1) if took(both) is not None else None)
-    rec.row("fetch_ratio", ratio(took(both), took(a)))
-    alone = secs(b.at("ask_ahead"), settled(b, "ahead"))
-    ask, done = both.at("ask_ahead"), settled(both, "ahead")
-    rec.row("ahead_alone_s", alone)
-    rec.row("ahead_s", secs(ask, done))
-    rec.row("ahead_ratio", ratio(secs(ask, done), alone))
-    rec.row("ahead_vs_ceiling", ideal(both, total_of(both, "pagebox", 1600), ask, done))
-    f0 = (both.run("fetch").get("result") or {}).get("began_unix_ms")
-    if f0 and took(both):
-        f1 = f0 + took(both) * 1e3
-        rec.row("ahead_share_during_fetch", round(both.moved("weights", f0, f1) / ((f1 - f0) / 1e3) / both.ceiling, 3))
-        rec.row("fetch_share", round(both.moved("files", f0, f1) / ((f1 - f0) / 1e3) / both.ceiling, 3))
-    use, idle = both.use([(ask, done or ask)])
-    rec.row("link_use", use)
     starved = both.longest("weights", ask, done or ask, also=0.5)
     rec.hold("no_starvation", starved < 5, f"the link sat under half with the weights under 1% for {starved} s")
 
@@ -490,7 +470,7 @@ def main():
     scenario, d = sys.argv[1], Path(sys.argv[2])
     arms = {p.name: Arm(p) for p in sorted(d.iterdir()) if (p / "meta.json").is_file() and (p / "kernel.ndjson").is_file()}
     rec = Record(scenario, arms)
-    {"cold": cold, "need": need, "thirdparty": thirdparty, "cancel": cancel, "update": update, "control": control, "two": two,
+    {"cold": cold, "need": need, "cancel": cancel, "update": update, "control": control, "two": two,
      "disk": disk}[scenario](rec)
     print(json.dumps(rec.done(), indent=1))
 

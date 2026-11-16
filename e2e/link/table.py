@@ -21,6 +21,7 @@ BARS = [
     ("*.share_a", 0, 0, False), ("*.jain", 0, 0, False), ("*.progress_gap", 0, 0, False),
     ("*.install_quiet_s", 0, 0, False), ("*.queue_p95_ms", 0, 0, False), ("*.cancel_call_s", 0, 0, False),
     ("*.fetch_share", 0, 0, False), ("*.weights_install_share", 0, 0, False), ("*.ahead_share_during_fetch", 0, 0, False),
+    ("*.install_busy_share", 0, 0, False), ("*.install_busy_s", 0, 0, False),
     ("*.link_mb_s", 0, 0, False),
     ("*.disk_mb_s", 1, 0.1, True),
     ("*longest_zero_s", -1, 2.0, True),

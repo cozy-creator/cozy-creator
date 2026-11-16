@@ -13,7 +13,7 @@ link_packages() {
   (cd / && exec python3 -m http.server "$port" --bind 127.0.0.1 --directory "$E2E_LINK_WWW") > "$seed/link-files.log" 2>&1 &
   E2E_LINK_FILES=http://127.0.0.1:$port
   export E2E_LINK_FILES E2E_LINK_WWW COZY_LOCAL_ORIGINS=$COZY_LOCAL_ORIGINS,$E2E_LINK_FILES
-  for n in warm q60a q60c p60a p60c opena openc; do
+  for n in warm q60a q60c p60a p60c p60ma p60mc opena openc; do
     python3 -I - "$seed/link-pkgs" "$E2E_LINK_WWW" "$E2E_LINK_FILES" "$n" <<'PY' || return 1
 import base64, hashlib, io, os, sys, tarfile, zipfile
 pkgs, www, files, n = sys.argv[1:5]

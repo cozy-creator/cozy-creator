@@ -651,7 +651,6 @@ case $SHARD in
   link-cold) parts="link_cold logs" ;;
   link-mix) parts="
     link_need
-    link_thirdparty
     link_cancel
     link_update
     logs

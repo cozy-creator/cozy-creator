@@ -9,7 +9,9 @@
 #                 trip as a pod's to its origin, so TCP's windows grow and a loss-based sender fills the queue, which loopback's
 #                 zero round trip never lets it (th-378's runs); the runner's congestion control is kept in each arm's meta
 #           q60c  q60 with cubic as the senders' congestion control, when the runner's isn't
-#           p60   60 Mbit, one shared token bucket that drops, no queue (tc police; tfs-300 proof branch 4158e8650's), the same 20 ms
+#           p60   60 Mbit, one shared token bucket that drops, no queue (tc police; tfs-300 proof branch 4158e8650's), burst 128 KiB,
+#                 the same 20 ms; a lone flow holds about a tenth of the rate here, whatever else runs (design agent, 11-16)
+#           p60m  p60 with a 1 MB burst: a lone flow can take the link
 #           open  no limit, no delay
 here_link=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LINK_TOOLS=$here_link/../link
@@ -44,7 +46,7 @@ link_up() {
   sudo iptables -w -F E2E_LINK || return 1
   sudo iptables -w -C INPUT -i lo -j E2E_LINK 2> /dev/null || sudo iptables -w -I INPUT -i lo -j E2E_LINK || return 1
   case $form in
-    q60 | q60c | p60) sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio bands 4 \
+    q60 | q60c | p60 | p60m) sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio bands 4 \
       && sudo tc qdisc add dev lo parent 1:4 handle 40: netem delay "${LINK_RTT_MS:-20}ms" limit 100000 || return 1 ;;
     open) ;;
     *) check "link: no form $form"; return 1 ;;
@@ -52,6 +54,7 @@ link_up() {
   case $form in
     q60 | q60c) sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate 60mbit burst 1mb latency 1s || return 1 ;;
     p60) sudo tc actions add action police rate 60mbit burst 128k drop index 1 || return 1 ;;
+    p60m) sudo tc actions add action police rate 60mbit burst 1mb drop index 1 || return 1 ;;
   esac
   if [ "$form" = q60c ]; then
     LINK_CC=$(sysctl -n net.ipv4.tcp_congestion_control)
@@ -63,7 +66,7 @@ link_up() {
     sudo iptables -w -A E2E_LINK -p tcp --"$match" "$port" -m comment --comment "$name" || return 1
     case $form in
       q60 | q60c) sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip "$match" "$port" 0xffff flowid 1:3 || return 1 ;;
-      p60) sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip "$match" "$port" 0xffff flowid 1:3 action police index 1 || return 1 ;;
+      p60 | p60m) sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip "$match" "$port" 0xffff flowid 1:3 action police index 1 || return 1 ;;
     esac
     [ "$form" = open ] || [ "$match" != sport ] \
       || sudo tc filter add dev lo parent 1: protocol ip prio 2 u32 match ip dport "$port" 0xffff flowid 1:4 || return 1
@@ -211,7 +214,7 @@ link_cold() {
   mkdir -p "$LINK_ARM"
   run_submit "$LINK_ARM" warm run e2e-link-warm/bare --on local > /dev/null
   link_end warm
-  for form in ${LINK_FORMS:-q60 p60 open}; do
+  for form in ${LINK_FORMS:-q60 p60 p60m open}; do
     link_arm cold "$form-install" "$form" "weights:$minio" || continue
     link_run install run "e2e-link-${form}a/bare" --on local
     link_end install
@@ -251,36 +254,9 @@ link_need() {
   link_judge need
 }
 
-# 10. Package code's own download at run time (tfs-300's design asks): a call GETs 200 MiB from the file server through the link
-# while pagebox is fetched ahead. Alone, each.
-link_thirdparty() {
-  [ "$RUNNER_OS" = Linux ] || return 0
-  local minio url
-  minio=$(link_minio)
-  link_files || return 0
-  [ -f "$LINK_WWW/blob-200.bin" ] || head -c $((200 << 20)) /dev/urandom > "$LINK_WWW/blob-200.bin"
-  url=http://127.0.0.1:$LINK_FILES_PORT/blob-200.bin
-  # Its environment first, so neither arm times an install.
-  LINK_ARM=$OUT/link/thirdparty/warm
-  mkdir -p "$LINK_ARM"
-  run_submit "$LINK_ARM" warm run "$LINK_SCRIPT/fetch" "url=http://127.0.0.1:$LINK_FILES_PORT/ceiling.bin" --on local > /dev/null
-  link_end warm
-  link_arm thirdparty fetch-alone q60 "weights:$minio" || return 0
-  link_run fetch run "$LINK_SCRIPT/fetch" "url=$url" --on local
-  link_end fetch
-  link_arm_end
-  link_arm thirdparty ahead-alone q60 "weights:$minio" || return 0
-  link_run ahead model install "$PAGEBOX" --on local
-  link_end ahead
-  link_arm_end
-  link_arm thirdparty both q60 "weights:$minio" || return 0
-  link_run ahead model install "$PAGEBOX" --on local
-  link_until weights $((100 << 20)) 120 || check "link thirdparty: pagebox moved under 100 MiB in 120 s"
-  link_run fetch run "$LINK_SCRIPT/fetch" "url=$url" --on local
-  link_end fetch ahead
-  link_arm_end
-  link_judge thirdparty
-}
+# 10. Package code's own download at run time (asked by the design): not a cell. The Runtime refuses it by policy: urllib in a
+# call by its network fence (sandbox.refuse_network), a subprocess by the package's static description ("a child process is outside
+# the sandbox", 43818865686), so no supported route carries one to schedule.
 
 # 8. Cancel: a run whose e2e/link-a (600 MiB) is a third in is canceled; the kernel's counts every 0.1 s until 20 s after.
 link_cancel() {
@@ -338,7 +314,7 @@ link_update_ask() {
 # 20 s idle, then pagebox's 1.6 GB.
 link_control() {
   [ "$RUNNER_OS" = Linux ] || return 0
-  local minio hub form forms=${LINK_FORMS:-q60 p60 q60c}
+  local minio hub form forms=${LINK_FORMS:-q60 p60 p60m q60c}
   minio=$(link_minio) hub=$(link_hub)
   [ -n "$hub" ] || { check "link control: no Hub port in COZY_TEST_HUB_HEALTH ($COZY_TEST_HUB_HEALTH)"; return 0; }
   # cubic is the runner's own: q60c would be q60 again.
