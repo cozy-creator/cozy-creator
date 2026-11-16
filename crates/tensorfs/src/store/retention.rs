@@ -470,15 +470,16 @@ impl Store {
         let lanes = super::gc::lanes(&uses);
         let count = super::gc::keepers(&lanes);
         let kept: BTreeSet<&str> = count.keys().copied().collect();
-        let mut spare: u64 = objects.iter()
-            .filter(|(sha, (_, modified))| *modified < cutoff && !kept.contains(sha.as_str()) && !roots.contains(*sha))
-            .map(|(_, (length, _))| length).sum();
-        // Derived pages go first whatever lane keeps them (`drop_derived`): spare, but for one a reader has open.
+        // Derived pages go first whatever lane keeps them (`drop_derived`): one no reader has open is spare,
+        // counted once and out of its lane; one a reader has open stays in its lane, freed when its reader ends.
         let derived: BTreeSet<String> = self.derived_pages()?.into_iter().filter_map(|(_, object)| object).map(|o| o.sha256).collect();
-        for sha in &derived {
-            let unheld = self.blob(sha).ok().and_then(|blob| File::open(blob).ok()).is_some_and(|f| f.try_lock().is_ok());
-            spare += unheld.then(|| objects.get(sha).map_or(0, |(length, _)| *length)).unwrap_or(0);
-        }
+        let unheld: BTreeSet<&str> = derived.iter()
+            .filter(|sha| objects.contains_key(*sha) && self.blob(sha).ok().and_then(|blob| File::open(blob).ok()).is_some_and(|f| f.try_lock().is_ok()))
+            .map(String::as_str).collect();
+        let mut spare: u64 = objects.iter()
+            .filter(|(sha, (_, modified))| unheld.contains(sha.as_str())
+                || (*modified < cutoff && !kept.contains(sha.as_str()) && !roots.contains(*sha)))
+            .map(|(_, (length, _))| length).sum();
         for entry in list(&self.root.join("tmp"))? {
             if entry.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("partial-")) {
                 let unheld = File::open(&entry).is_ok_and(|f| f.try_lock().is_ok());
@@ -490,7 +491,7 @@ impl Store {
                 .unwrap_or_else(|| format!("cache entry {}", &lane.uses[0].name[..12])),
             used: lane.used,
             holders: holders.iter().filter(|(digest, _)| lane.held_by(digest, &count)).flat_map(|(_, pids)| pids.iter().copied()).collect(),
-            digests: lane.digests.iter().filter(|d| !derived.contains(**d)).map(|d| d.to_string()).collect(),
+            digests: lane.digests.iter().filter(|d| !unheld.contains(**d)).map(|d| d.to_string()).collect(),
         }).collect();
         let lengths = objects.into_iter().map(|(sha, (length, _))| (sha, length)).collect();
         Ok(Room { lanes, spare, lengths })
