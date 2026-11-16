@@ -392,3 +392,6 @@ export const holdMedia = (signal: AbortSignal) => ration(["cozy-media-0", "cozy-
 
 /** The one run's log stream, across tabs. */
 export const holdLog = (signal: AbortSignal) => ration(["cozy-log"], signal)
+
+/** The one machine's GPU readings, across tabs (cl-1100). */
+export const holdGpus = (signal: AbortSignal) => ration(["cozy-gpus"], signal)

@@ -70,6 +70,38 @@
 .gpu-why {
   margin: 4px 0 0;
 }
+.gpu-use {
+  display: grid;
+  grid-template-columns: auto minmax(60px, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 6px 0 2px;
+  color: var(--mute);
+}
+.gpu-use b {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.meter {
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--tint2);
+}
+.meter i {
+  display: block;
+  height: 100%;
+  transition: width 400ms ease-out;
+}
+.meter.busy i {
+  background: var(--cur);
+}
+.meter.memory i {
+  background: var(--mak);
+}
 .gpu-why.bad,
 .gpu-problem {
   color: var(--bad);

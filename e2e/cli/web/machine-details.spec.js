@@ -8,7 +8,7 @@
 // rest; BiRefNet installed by the CLI under Models with its size, and a package under Packages with its version; three renders of a slow
 // tool in the queue, the running one first and the other two queued, by their boxes' names; and with the disk filled past nearly full
 // (under a tenth free), the warning, gone once it's freed. Solo: it fills the runner's disk. Screenshots of each, 1440×900 and 1920×1080,
-// paper and dark.
+// paper and dark. Its second test, GPU use, is PR B's (below).
 const { execFileSync } = require('child_process');
 const { randomUUID } = require('crypto');
 const { rmSync } = require('fs');
@@ -151,5 +151,85 @@ test('machine-details', { tag: '@solo' }, async ({ page, project, api, cli }) =>
   } finally {
     if (fill) rmSync(fill, { force: true });
     await api.post(project.at('/cancel'), { names: ['all'] }).catch(() => {});
+  }
+});
+
+/** The first `count` `gpus` events of Calcifer's stream of `name`'s GPU use, each parsed, then the stream closed; fewer if none come for
+ *  `wait` ms. */
+async function gpuReadings(calcifer, name, count, wait = 5_000) {
+  const stop = new AbortController();
+  const answer = await fetch(`${calcifer.origin}/v1/machines/${encodeURIComponent(name)}/gpus`, {
+    headers: { Authorization: `Bearer ${calcifer.token}`, Accept: 'text/event-stream' },
+    signal: stop.signal,
+  });
+  if (!answer.ok) throw new Error(`GET /v1/machines/${name}/gpus: ${answer.status} ${(await answer.text()).slice(0, 300)}`);
+  const reader = answer.body.pipeThrough(new TextDecoderStream()).getReader();
+  const readings = [];
+  let held = '';
+  try {
+    while (readings.length < count) {
+      const next = await Promise.race([reader.read(), new Promise((done) => setTimeout(() => done(null), wait))]);
+      if (!next || next.done) break;
+      held += next.value;
+      for (let end = held.indexOf('\n\n'); end >= 0; end = held.indexOf('\n\n')) {
+        const lines = held.slice(0, end).split('\n');
+        held = held.slice(end + 2);
+        if (lines.includes('event: gpus') || lines.includes('event:gpus')) readings.push(JSON.parse(lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')));
+      }
+    }
+  } finally {
+    stop.abort();
+  }
+  return readings;
+}
+
+// Paul's 4th: "a list of its GPUs and GPU utilization ... That way we can see how hard its GPUs are working". Calcifer's stream of a
+// machine's GPU use answers as SSE, a reading a second while followed and none otherwise. A machine with no NVIDIA GPU (a runner's) sends
+// one empty reading, and its drawer opens no stream. With NVIDIA GPUs (GPU_MACHINE names one, on a pod), the readings come each second,
+// and the drawer shows each GPU's busy share and memory in use under it, as the stream says.
+test('machine-details: GPU use', { tag: '@solo' }, async ({ page, project, api, calcifer, cli }) => {
+  const name = process.env.GPU_MACHINE || 'local';
+  if (name === 'local') await cli.json('machine', 'show', 'local');
+  const status = (await api.get(`/v1/machines/${encodeURIComponent(name)}`)).status;
+  const gpus = status?.gpus ?? [];
+  const readings = await gpuReadings(calcifer, name, gpus.length ? 3 : 2);
+  if (!gpus.length) {
+    expect(readings, 'one empty reading from a machine with no GPU, then nothing').toEqual([{ at_unix_ms: expect.any(Number), gpus: [] }]);
+  } else {
+    expect(readings.length, 'a reading each second').toBe(3);
+    expect(readings[2].at_unix_ms - readings[0].at_unix_ms, 'two seconds across three readings').toBeGreaterThan(1_500);
+    for (const reading of readings) {
+      for (const gpu of reading.gpus) {
+        expect(gpu.busy_percent).toBeGreaterThanOrEqual(0);
+        expect(gpu.busy_percent).toBeLessThanOrEqual(100);
+        expect(gpu.memory_used_bytes).toBeLessThanOrEqual(gpus.find((one) => one.index === gpu.index).memory_bytes);
+      }
+    }
+  }
+
+  const asked = [];
+  page.on('request', (request) => { if (new URL(request.url()).pathname.endsWith('/gpus')) asked.push(request.url()); });
+  await page.goto(project.url(`machines/${encodeURIComponent(name)}`));
+  const section = page.locator('.drawer section.sect').filter({ has: page.locator('h3 > span', { hasText: /^GPUs$/ }) });
+  await expect(section).toBeVisible({ timeout: 60_000 });
+  if (!gpus.length) {
+    await expect(section).toContainText('No GPUs');
+    await page.waitForTimeout(3_000);
+    expect(asked, 'no GPU stream for a machine with none').toEqual([]);
+    return;
+  }
+  for (const gpu of gpus) {
+    const busy = section.getByRole('meter', { name: `GPU ${gpu.index} busy` });
+    await expect(busy, `GPU ${gpu.index}'s busy share shows`).toBeVisible({ timeout: 30_000 });
+    await expect(section.locator(`[data-gpu="${gpu.index}"] .gpu-use b`).first()).toHaveText(/^\d{1,3}%$/);
+    await expect(section.getByRole('meter', { name: `GPU ${gpu.index} memory in use` })).toBeVisible();
+  }
+  expect(asked.length, 'one stream while the drawer is open').toBeGreaterThan(0);
+  for (const [width, height] of SIZES) {
+    await page.setViewportSize({ width, height });
+    for (const theme of ['paper', 'dark']) {
+      await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme === 'dark');
+      await section.screenshot({ path: test.info().outputPath(`gpu-use-${width}x${height}-${theme}.png`) });
+    }
   }
 });

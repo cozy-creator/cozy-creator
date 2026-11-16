@@ -241,6 +241,12 @@ impl Link {
         Ok(Box::pin(lines.map_err(LinkError::from)))
     }
 
+    /// Its GPUs' readings, once a second while followed (cl-1100).
+    pub(crate) async fn follow_gpus(&self) -> Result<Live<v1::GpuUse>, LinkError> {
+        let readings = self.machine.follow_gpus().await?;
+        Ok(Box::pin(readings.map_err(LinkError::from)))
+    }
+
     /// The run's newest preview; none while it has none. Asking keeps the machine making them.
     pub(crate) async fn preview(&self, id: &str) -> Result<Option<crate::machine_client::Preview>, LinkError> {
         Ok(self.machine.preview(id).await?)

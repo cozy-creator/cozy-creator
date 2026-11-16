@@ -29,7 +29,7 @@ use url::Url;
 use api::{
     error::{Envelope, Kind},
     machine::{
-        Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
+        Event, GpuUse, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
         PREVIEW_STEP, RunBatch, RunBatchAnswer, RunEvent, RunList, RunRequest, RunState, SERVER_NAME, StatusFrame, capability, parse_held,
         path,
     },
@@ -332,6 +332,19 @@ impl Machine {
         Ok(events.filter_map(|event| async move {
             match event {
                 Ok(event) if event.event == "lines" => Some(parse(&event.data)),
+                Ok(_) => None,
+                Err(e) => Some(Err(e)),
+            }
+        }))
+    }
+
+    /// Its GPUs' readings, once a second while this stays open (`path::GPUS`, cl-1100).
+    pub(crate) async fn follow_gpus(&self) -> Result<impl Stream<Item = Result<GpuUse, Error>> + Send + 'static, Error> {
+        let request = self.request(Method::GET, path::GPUS, &[]);
+        let events = sse(send(request.header(header::ACCEPT, "text/event-stream")).await?)?;
+        Ok(events.filter_map(|event| async move {
+            match event {
+                Ok(event) if event.event == "gpus" => Some(parse(&event.data)),
                 Ok(_) => None,
                 Err(e) => Some(Err(e)),
             }

@@ -109,6 +109,17 @@ paths:
         '503':
           description: '`log_follow_unsupported`: this machine''s OS cannot follow'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+  /v1/gpus:
+    get:
+      summary: >-
+        Its NVIDIA GPUs' use (cl-1100), as SSE: a `gpus` event each second while the caller stays, read only then. One with none to
+        read sends one empty reading. It holds no idle clock.
+      operationId: gpus
+      responses:
+        '200':
+          description: 'SSE `event: gpus`'
+          content:
+            text/event-stream: {schema: {$ref: '#/components/schemas/GpuUse'}}
   /v1/objects/held:
     post:
       summary: >-
@@ -787,6 +798,19 @@ components:
           description: >-
             The place after them, also the event's id: a follow resumed there goes on with the next line.
         text: {type: string}
+    GpuUse:
+      type: object
+      description: 'One reading of each NVIDIA GPU, as `GET /v1/gpus` streams them (`event: gpus`).'
+      properties:
+        at_unix_ms: {type: integer, format: int64}
+        gpus:
+          type: array
+          items:
+            type: object
+            properties:
+              index: {type: integer, format: int32}
+              busy_percent: {type: integer, format: int32, description: "The share of its last sample period a kernel ran, as nvidia-smi's GPU-Util."}
+              memory_used_bytes: {type: integer, format: int64, description: Its memory in use, every process's.}
     RemoveModel:
       type: object
       required: [model]

@@ -921,6 +921,17 @@ run: string, at_unix_ms: number,
 replayed: boolean, };
 
 /**
+ * One GPU's reading: the share of its last sample period a kernel ran (`nvidia-smi`'s GPU-Util), and its memory in use, every
+ * process's.
+ */
+export type GpuReading = { index: number, busy_percent: number, memory_used_bytes: number, };
+
+/**
+ * What a machine's NVIDIA GPUs are doing now (`path::GPUS`, cl-1100): one reading each; none from a machine without one.
+ */
+export type GpuUse = { at_unix_ms: number, gpus: Array<GpuReading>, };
+
+/**
  * What the machine holds of each object asked, in the order asked; a stored object is held
  * whole, and asking renews it, as a `HEAD` does.
  */
