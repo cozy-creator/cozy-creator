@@ -97,7 +97,7 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
     if (signedOut.get()) close.current()
     return () => { unwatch(); unsign() }
   }, [store, bridge, privateViewEpoch, signedOut])
-  // In place under the tool, over nothing (Paul 11-05: no pop-ups): Esc closes it, and so does a press that begins outside it (Paul 11-12:
+  // Under the tool, or in Focus in front of the picture (Paul 11-15): Esc closes it, and so does a press that begins outside it (Paul 11-12:
   // a press from inside let go outside dismisses nothing). Models & LoRAs itself toggles it.
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
