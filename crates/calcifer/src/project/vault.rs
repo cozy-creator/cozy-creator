@@ -975,6 +975,18 @@ const SAVE_GRACE: Duration = Duration::from_secs(30);
 /// When each open vault was first seen past its deadline and not yet locked.
 static DUE: LazyLock<Mutex<BTreeMap<PathBuf, std::time::Instant>>> = LazyLock::new(Mutex::default);
 
+/// When the clock last asked whether the machine of runs holding a vault past its deadline answers (cl-1064), and how often it asks.
+static ASKED: LazyLock<Mutex<BTreeMap<PathBuf, Instant>>> = LazyLock::new(Mutex::default);
+const ASKED_AGAIN: Duration = Duration::from_secs(10);
+
+/// Whether `root`'s runs on `local` hold it while local doesn't answer (cl-1064).
+fn unanswered(api: &Arc<Api>, root: &FsPath) -> bool {
+    let Some(id) = project_id(root).or_else(|| plain_project_id(root)) else { return false };
+    encrypted(root)
+        && api.calcifer.unsettled_on(&id, "local").unwrap_or(false)
+        && !tokio::runtime::Handle::current().block_on(api.machines.answers("local"))
+}
+
 /// Vaults whose lock is going on a thread of its own.
 static LOCKING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
 
@@ -988,7 +1000,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     // Its folder gone: it ends now, not at its deadline (cl-1124).
     if end_if_gone(api, &root) { return None; }
     let work = working(api, &root);
-    let (needs, deadline) = held(&root).map_or((false, None), |session| {
+    let (needs, deadline, past) = held(&root).map_or((false, None, false), |session| {
         let mut session = session.lock().expect("vault session");
         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
         // Work going holds it open, its maximum included: the clocks go on when the last of it ends. Only an explicit lock ends
@@ -998,9 +1010,30 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
             session.active_ms = super::now_ms();
             if session.idle > 0 { say(&root, "held", || format!("its idle clock is held by {}", work.why)); }
         }
-        (lapsed(&session), session.timer.deadline())
+        (lapsed(&session), session.timer.deadline(), session.timer.held_past_limit())
     });
     drop(operation);
+    // Past its idle limit or maximum, held only by its runs: its lock waits on their machine, and one that doesn't answer never keeps
+    // the vault open (cl-1064). Asked at most every `ASKED_AGAIN` meanwhile, never otherwise.
+    if !needs && past && work.as_ref().is_some_and(|work| matches!(work.why, "runs not settled" | "a run not yet settled")) {
+        let asked = ASKED.lock().expect("vault asks").get(&root).is_some_and(|at| at.elapsed() < ASKED_AGAIN);
+        if !asked {
+            ASKED.lock().expect("vault asks").insert(root.clone(), Instant::now());
+            LOCKING.lock().expect("vault locks").insert(root.clone());
+            let api = api.clone();
+            let root = root.clone();
+            runtime.spawn_blocking(move || {
+                if unanswered(&api, &root) {
+                    if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
+                    lock_lapsed(&api, &root, Instant::now(), false);
+                }
+                LOCKING.lock().expect("vault locks").remove(&root);
+                ASKED.lock().expect("vault asks").remove(&root);
+                stir();
+            });
+        }
+        return Some(SystemTime::now() + ASKED_AGAIN);
+    }
     if !needs {
         DUE.lock().expect("vault deadlines").remove(&root);
         return match work { Some(Work { told: false, .. }) => again(), _ => deadline };

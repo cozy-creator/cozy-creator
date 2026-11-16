@@ -820,6 +820,14 @@ impl SessionTimer {
         self.held = held;
     }
 
+    /// Whether work alone holds the session past a limit: its idle limit since the last activity, or its maximum (cl-1064). A
+    /// lock then waits on that work's machine.
+    pub fn held_past_limit(&self) -> bool {
+        self.held
+            && (self.policy.idle_seconds.is_some_and(|seconds| self.activity.elapsed() >= Duration::from_secs(seconds))
+                || self.policy.maximum_seconds.is_some_and(|seconds| self.opened.elapsed() >= Duration::from_secs(seconds)))
+    }
+
     /// An expired timer cannot be revived by delayed interaction or a heartbeat.
     /// Reauthorization creates a new timer instead.
     pub fn activity(&mut self) -> bool {
