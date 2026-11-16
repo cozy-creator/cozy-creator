@@ -711,12 +711,31 @@ impl Calcifer {
         Ok(values)
     }
 
+    /// The machine a run recorded under `name` is now (cl-1089): the one so named, else the one whose former name (the handle a
+    /// rental has until its Hub names its host) or rental id it is. A project's run keeps the name it was sent to, which a rename
+    /// doesn't reach. None: nothing here was ever so named. `local` is always itself.
+    pub(crate) fn machine_now(&self, name: &str) -> store::Result<Option<MachineRow>> {
+        if name == "local" {
+            return self.store.machine(name);
+        }
+        if let Some(row) = self.store.machine(name)? {
+            return Ok(Some(row));
+        }
+        let rows = self.store.machines_named(name)?;
+        Ok(rows.iter().find(|row| row.state != ::api::calcifer::MachineState::Ended).or(rows.first()).cloned())
+    }
+
+    /// `name` as a run's machine is called now (`machine_now`): itself when nothing else names it.
+    pub(crate) fn machine_name_now(&self, name: &str) -> String {
+        self.machine_now(name).ok().flatten().map_or_else(|| name.to_owned(), |row| row.name)
+    }
+
     /// Each machine's function runs (accepted, waiting) across Calcifer's journal and every open project's: counts only.
     pub(crate) fn machine_load(&self) -> store::Result<HashMap<String, (u32, u32)>> {
         let mut load = HashMap::new();
         for journal in self.each_store(|store| store.machine_load())? {
             for (machine, (running, queued)) in journal {
-                let sum: &mut (u32, u32) = load.entry(machine).or_default();
+                let sum: &mut (u32, u32) = load.entry(self.machine_name_now(&machine)).or_default();
                 *sum = (sum.0 + running, sum.1 + queued);
             }
         }
@@ -1054,6 +1073,7 @@ impl Calcifer {
     async fn tell_cancel(self: &Arc<Self>, id: &RunId) {
         let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return };
         let (Some(machine), true) = (row.machine.clone(), matches!(row.state, State::Sent | State::Accepted)) else { return };
+        let machine = self.machine_name_now(&machine);
         let Ok(Some(link)) = self.link(&machine) else { return };
         let scope = match self.run_store(id.as_str()) {
             Ok(store::RunStore::Project(store)) => Some((store.project_id().to_owned(), store.execution_scope().1.to_owned())),
@@ -1073,6 +1093,7 @@ impl Calcifer {
     pub(crate) fn record(&self, row: &RunRow) -> Result<Run, Error> {
         let journal=self.row_store(row)?;
         let mut run=journal.record(row)?;
+        if let Some(machine) = &run.machine { run.machine = Some(self.machine_name_now(machine)); }
         let owned=match &journal {store::RunStore::Project(store)=>row.owner==store.project_id(),store::RunStore::Maintenance(_)=>true};
         if let Some((id, name)) = project_of(row) {
             (run.project_id, run.project) = (Some(id), Some(name));
@@ -1210,7 +1231,16 @@ impl Calcifer {
     pub(crate) fn machine_ended(&self, name: &str, reason: &str) -> Result<(), Error> {
         let mut events = self.store.machine_ended(name, reason)?;
         let served = self.store.machine(name)?.is_some_and(|machine| machine.served);
-        for owner in self.owners() { if let Ok(store) = owner.store() { events.extend(store.runs_on_ended_machine(name, served, reason)?); } }
+        // A project's runs sent to it by its former name keep that name (cl-1089).
+        let alias = self.store.alias(name)?;
+        let names: Vec<&str> = std::iter::once(name).chain(alias.as_deref()).collect();
+        for owner in self.owners() {
+            if let Ok(store) = owner.store() {
+                for name in &names {
+                    events.extend(store.runs_on_ended_machine(name, served, reason)?);
+                }
+            }
+        }
         let mut woken = HashSet::new();
         for (id, event) in events {
             self.publish(&id, vec![event]);
@@ -1745,6 +1775,32 @@ impl Calcifer {
                 wake.notified().await;
                 continue;
             };
+            // Sent to a rental by its handle before its Hub named its host, a project's run keeps the handle (cl-1089): it follows the
+            // machine to its name now; with nothing so named, it settles as on an ended machine, never waits for one.
+            match self.machine_now(&name) {
+                Ok(Some(machine)) if machine.name != name => {
+                    match self.with_run_store(id.as_str(), |store| store.repoint(id.as_str(), &name, &machine.name)) {
+                        Ok(events) => self.publish(id, events),
+                        Err(e) => warn!(run = %id, "{e}"),
+                    }
+                    continue;
+                }
+                Ok(None) => {
+                    let gone = format!("{name} is no machine here");
+                    match self.with_run_store(id.as_str(), |store| store.runs_on_ended_machine(&name, true, &gone)) {
+                        Ok(events) => {
+                            for (settled, event) in events {
+                                self.publish(&settled, vec![event]);
+                                self.wake(&settled);
+                            }
+                        }
+                        Err(e) => warn!(run = %id, "{e}"),
+                    }
+                    pause.wait(wake, None).await;
+                    continue;
+                }
+                _ => {}
+            }
             // Sent now, it would run on what the machine is leaving, or go as it restarts. An update already with the machine
             // finishes what it has first, and what's held here goes to what it became.
             if run.state == State::Queued && run.kind != ::api::calcifer::Kind::Update {

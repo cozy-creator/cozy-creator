@@ -1746,6 +1746,14 @@ macro_rules! journal_methods {
         })
     }
 
+    /// Points the unsettled run `id`, recorded under `from`, at `to`: its machine's name now (cl-1089, `Calcifer::machine_now`).
+    pub(crate) fn repoint(&self, id: &str, from: &str, to: &str) -> Result<Vec<Event>> {
+        self.write(|tx| {
+            let moved = tx.execute("UPDATE runs SET machine = ?3 WHERE id = ?1 AND machine = ?2 AND state <> 'settled'", params![id, from, to])?;
+            Ok(if moved == 1 { vec![lifecycle(tx, id)?] } else { vec![] })
+        })
+    }
+
     /// Returns an accepted run its machine refused for its Runtime to the outbox (cl-1069, `Machines::refloored`), saying `said`:
     /// to its machine once that moved, or (`elsewhere`) an `any` run to be placed again. Nothing past its attempts or once canceled:
     /// it settles as refused.
@@ -2847,6 +2855,11 @@ impl Store {
             let rows = statement.query_map([text], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             rows.into_iter().collect()
         })
+    }
+
+    /// The name `name` had before its Hub named its host: a rental's handle (cl-1089).
+    pub(crate) fn alias(&self, name: &str) -> Result<Option<String>> {
+        self.read(|conn| Ok(conn.query_row("SELECT alias FROM machines WHERE name = ?1", [name], |r| r.get(0)).optional()?.flatten()))
     }
 
     /// The update by hand that holds `name` on its software, in its words (cl-952).

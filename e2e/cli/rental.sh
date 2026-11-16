@@ -203,3 +203,62 @@ for _ in $(seq 90); do [ -z "$(docker ps -aq --filter label=com.cozy.tensorhub.p
 [ -z "$ended" ] || echo "rental_end_again: $rental ended by Calcifer's own second ask, $(($(date +%s) - at)) s after sign-in"
 cozy --json logout > /dev/null 2>&1 || true
 }
+
+# rental_rename (cl-1089): a project's run sent to a rental by its `rent-…` handle, before its Hub names the host, follows the name:
+# cl-1069's pod sessions (43849240267, 43850691690) waited on "no machine named rent-…" until cut, as the rename moves only the
+# machine store's runs. The run says the host's name, never that wait, and once the rental ends it settles. This Hub's docker
+# rental never gets ready, so the run is never sent: where it stands is the cell.
+rename_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+rental_rename() {
+step "a project's run sent to a rental by its handle follows its Hub's name for the host, and settles when it ends (cl-1089)"
+[ -n "${E2E_HUB_LOG:-}" ] && [ -n "${E2E_HUB_EMAIL:-}" ] || { check "rental_rename: e2e/isolated.sh named no Hub log or email to sign in with"; return; }
+local pid rental='' handle number='' name='' w=$OUT/rename-watch.json
+signin "$E2E_HUB_EMAIL" > "$OUT/rename-login.json" || { check "rental_rename: cozy login failed: $(tail -c 300 "$OUT/rename-login.json")"; return; }
+cozy --json machine rent cpu -y > "$OUT/rename-rent.ndjson" 2> "$OUT/rename-rent.err" & pid=$!
+for _ in $(seq 180); do
+  rental=$(jq -r 'select(.type? == "rental.accepted") | .rental_id // empty' "$OUT/rename-rent.ndjson" 2> /dev/null | tail -1 || true)
+  [ -n "$rental" ] || ! kill -0 "$pid" 2> /dev/null || { sleep 1; continue; }
+  break
+done
+kill -KILL "$pid" 2> /dev/null || true
+wait "$pid" 2> /dev/null || true
+handle=$(jq -r 'select(.type? == "rental.accepted") | .name // empty' "$OUT/rename-rent.ndjson" 2> /dev/null | tail -1 || true)
+[ -n "$rental" ] && [[ $handle == rent-* ]] || { check "rental_rename: no rental accepted with a handle: $(tail -c 400 "$OUT/rename-rent.ndjson")"; cozy --json logout > /dev/null 2>&1 || true; return; }
+# The project's run, to it by its handle before its host is named: it waits for the rental.
+(cd "$RUN_PROJECT" && cozy --json run "$rename_here/weightless/reverse" "text=renamed$RANDOM" --on "$handle" > "$OUT/rename-run.ndjson" 2>&1) & pid=$!
+for _ in $(seq 120); do number=$(run_number "$OUT/rename-run.ndjson"); [ -z "$number" ] || break; sleep 1; done
+kill "$pid" 2> /dev/null || true
+wait "$pid" 2> /dev/null || true
+if [ -z "$number" ]; then
+  check "rental_rename: the run to $handle wasn't made: $(tail -c 400 "$OUT/rename-run.ndjson")"
+else
+  for _ in $(seq 120); do
+    name=$(cozy --json machine ls 2> /dev/null | jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' 2> /dev/null || true)
+    [ -n "$name" ] && [[ $name != rent-* ]] && break
+    sleep 1
+  done
+  if [ -z "$name" ] || [[ $name == rent-* ]]; then
+    check "rental_rename: its Hub never named $rental's host in 2 min"
+  else
+    for _ in $(seq 60); do
+      (cd "$RUN_PROJECT" && cozy --json run watch "$number" --once) > "$w" 2>&1
+      jq -e --arg n "$name" '.machine == $n' "$w" > /dev/null 2>&1 && break
+      sleep 2
+    done
+    echo "rental_rename: run $number, sent to $handle, after its host was named $name: $(jq -c '{machine, status, waiting}' "$w" 2> /dev/null)"
+    jq -e --arg n "$name" '.machine == $n' "$w" > /dev/null 2>&1 || check "rental_rename: the run stayed on $handle after its host was named $name: $(jq -c '{machine, waiting}' "$w" 2> /dev/null)"
+    ! jq -e '(.waiting // "") | test("no machine named")' "$w" > /dev/null 2>&1 || check "rental_rename: the run waits on $(jq -r .waiting "$w")"
+  fi
+fi
+# Ended, the rental settles the run, whichever name it was sent by.
+cozy --json machine end "$rental" -y > "$OUT/rename-end.json" 2>&1 || check "rental_rename: machine end $rental: $(tail -c 300 "$OUT/rename-end.json")"
+if [ -n "$number" ]; then
+  for _ in $(seq 90); do
+    (cd "$RUN_PROJECT" && cozy --json run watch "$number" --once) > "$w" 2>&1
+    jq -e '.status == "failed" or .status == "canceled"' "$w" > /dev/null 2>&1 && break
+    sleep 2
+  done
+  jq -e '.status == "failed" or .status == "canceled"' "$w" > /dev/null 2>&1 || check "rental_rename: the run didn't settle when $rental ended: $(jq -c '{machine, status, waiting}' "$w" 2> /dev/null)"
+fi
+cozy --json logout > /dev/null 2>&1 || true
+}
