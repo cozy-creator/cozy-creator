@@ -204,7 +204,8 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     const target = names.image;
     const onIt = () => canvasPoint(page, target);
     await openOperation('video');
-    const video = implementations('video').and(palette.locator('[data-tool^="minimax-h3/"]')).first();
+    // MiniMax H3's Shot, which makes a video from nothing.
+    const video = implementations('video').and(palette.locator('[data-tool="minimax-h3/generate"]'));
     const videoId = await video.getAttribute('data-tool');
     const videoWire = tools.find((tool) => tool.id === videoId);
     const before = await project.asset(target);
