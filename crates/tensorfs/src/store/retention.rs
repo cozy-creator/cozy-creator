@@ -339,7 +339,10 @@ impl Store {
     /// drop the least recently used. False when `incoming` still does not fit: skip the write.
     /// An origin's handle runs none. A handle collects once at a time: an admit that finds one
     /// collecting waits for it, judges the disk again and, still short, collects for its own bytes.
-    /// Short, the machine's garbage goes first (`on_short`), then the store's own.
+    /// Short, in this order (cl-1081): the machine's garbage (`on_short`, which also ends idle executors
+    /// whose open models alone keep the room), then what cut fetches kept, then derived pages least
+    /// recently used first (`drop_derived`), then the least recently used models no queued or running
+    /// call holds (`collect_locked`); only then is the write refused.
     pub fn maintain(&self, incoming: u64) -> Result<bool> {
         if !self.cache {
             return Ok(true);
