@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """lock_hung (cl-1064): an encrypted project locks while its local machine doesn't answer. Paul: "lock must succeed when asked".
 
-A run sleeps in an encrypted project, then writes a file of its mark; the local machine is stopped (SIGSTOP), as a hung GPU machine
-is. `cozy vault lock` locks within its bound and says local's clean-up is owed; the view is gone; and nothing of the project is
-anywhere outside its folder but the machine's own journal, which only the stopped machine writes: the one exception, named. The
-project is unlocked again before the machine answers. Then the machine goes on (SIGCONT): what it held of the project's last view is
-cancelled and retired before anything else; the run stays canceled, its file never appears, the journal has nothing of that view,
-and the project runs again. The same with the maximum's deadline in place of the lock. The machine always goes on at the end."""
+The local machine's service is stopped (SIGSTOP), as a hung GPU machine is: the processes that answer its requests, never its
+stable parent, which only holds the listeners (tensord machine/supervise.rs). Each way it hangs must lock within its bound, its view
+gone, nothing of the project anywhere outside its folder but the machine's own journal, which only the stopped machine writes: the
+one exception, named. Once the machine goes on (SIGCONT), what it held of that view is cancelled and retired before anything else.
+
+1. `cozy vault lock`, stopped as a run's output starts coming into the project (the machine holds the project's output): it locks
+   and says local's clean-up is owed. Unlocked again before the machine answers; once it does, nothing the lock settled changes, no
+   file of the run appears, and the project runs again.
+2. The maximum's deadline, stopped the same way.
+3. The maximum's deadline, stopped while a run's call is going, in a second project: the run holds the vault past its maximum until
+   the clock asks local, which doesn't answer; the vault locks and the run settles canceled.
+
+A step that doesn't lock takes the release note's workaround, as a person does (the hung machine ended, the lock asked again), and
+the cell goes on: a red names each way it hangs. The machine always goes on at the end."""
 
 from __future__ import annotations
 
@@ -14,6 +22,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import sqlite3
@@ -25,14 +34,17 @@ from typing import cast
 sys.path.insert(0, str(Path(__file__).resolve().parent / "containment"))
 from scan import Scanner, places  # noqa: E402
 
-SLEEPS = 45
 MAXIMUM = 30
-# The lock's bound: three unanswered asks of local (a second apart, two seconds each) and the lock itself.
+# The lock's bound: a save gone silent is cut (outputs.rs EXPORT_SILENCE, 20 s), three unanswered asks of local (a second apart,
+# two seconds each), and the lock itself.
 BOUND = 60
+# Big enough that its save into the project takes seconds, so the stop lands in it (as vault_work's step 4).
+SAVE_MB = 2048
 SLEEPER = '''# /// script
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime>=0.43.1", "msgspec>=0.19"]
 # ///
+import os
 import time
 import msgspec
 from cozy_runtime.author import App, Outputs
@@ -41,68 +53,116 @@ app = App()
 class Request(msgspec.Struct, forbid_unknown_fields=True):
     seconds: int
     mark: str
+    size: int = 0
 class Answer(msgspec.Struct):
     file: File
 @app.entrypoint(accelerator=False)
 def lock_hung_sleep(payload: Request, out: Outputs) -> Answer:
     time.sleep(payload.seconds)
     target = out.temporary_file(".txt")
-    with open(target, "w") as file:
-        file.write(payload.mark)
+    with open(target, "wb") as file:
+        file.write(f"{payload.mark}\\n".encode())
+        for _ in range(payload.size):
+            file.write(os.urandom(1 << 20))
     return Answer(out.save_file(target, media_type="text/plain"))
 '''
 
 
 class Cell:
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(self, args: argparse.Namespace, project: Path, tag: str) -> None:
         self.cli: Path = args.cli
         self.out: Path = args.out
-        self.project: Path = args.project
         self.passphrase: Path = args.passphrase_file
+        self.project = project
+        self.tag = tag
 
     def cozy(self, name: str, *words: str, fails: bool = False, timeout: float = 300) -> dict[str, object]:
         done = subprocess.run([str(self.cli), "--json", *words], cwd=self.project, capture_output=True, timeout=timeout)
-        (self.out / f"{name}.json").write_bytes(done.stdout)
-        (self.out / f"{name}.stderr").write_bytes(done.stderr)
-        assert bool(done.returncode) == fails, f"{name}: exit {done.returncode}: {done.stdout[-500:]!r} {done.stderr[-500:]!r}"
-        lines = [line for line in done.stdout.splitlines() if line.strip()]
-        try:
-            answer: object = json.loads(lines[-1]) if lines else {}
-        except ValueError:
-            answer = {}
-        return cast(dict[str, object], answer) if isinstance(answer, dict) else {}
+        (self.out / f"{self.tag}{name}.json").write_bytes(done.stdout)
+        (self.out / f"{self.tag}{name}.stderr").write_bytes(done.stderr)
+        assert bool(done.returncode) == fails, f"{self.tag}{name}: exit {done.returncode}: {done.stdout[-500:]!r} {done.stderr[-500:]!r}"
+        return last(done.stdout)
 
     def state(self) -> str:
-        return str(self.cozy("status", "vault", "status").get("state"))
+        done = subprocess.run([str(self.cli), "--json", "vault", "status"], cwd=self.project, capture_output=True, timeout=60)
+        return str(last(done.stdout).get("state"))
 
     def unlock(self, name: str, maximum: int = 0) -> Path:
         unlocked = self.cozy(name, "vault", "unlock", "--passphrase-file", str(self.passphrase), "--idle", "0", "--max-duration", str(maximum))
         vault = cast(dict[str, object], unlocked["vault"])
-        assert vault["state"] == "unlocked", f"{name}: {unlocked}"
+        assert vault["state"] == "unlocked", f"{self.tag}{name}: {unlocked}"
         return Path(str(vault["view"]))
 
-    def start(self, name: str, script: Path, seconds: int, mark: str) -> tuple[subprocess.Popen[bytes], Path]:
-        stdout = self.out / f"{name}.ndjson"
-        process = subprocess.Popen([str(self.cli), "--json", "run", str(script), f"seconds:={seconds}", f"mark={mark}", "--on", "local"],
-                                   cwd=self.project, stdout=stdout.open("wb"), stderr=(self.out / f"{name}.stderr").open("wb"))
-        began = time.monotonic()
-        while time.monotonic() - began < 180:
-            if b'"started_at_ms"' in stdout.read_bytes():
-                return process, stdout
-            assert process.poll() is None, f"{name} ended before it started: {stdout.read_bytes()[-400:]!r}"
-            time.sleep(0.2)
-        raise AssertionError(f"{name} didn't start within 180 s")
+    def start(self, name: str, script: Path, seconds: int, mark: str, size: int = 0) -> tuple[subprocess.Popen[bytes], Path]:
+        stdout = self.out / f"{self.tag}{name}.ndjson"
+        words = [str(self.cli), "--json", "run", str(script), f"seconds:={seconds}", f"mark={mark}", *([f"size:={size}"] if size else []), "--on", "local"]
+        process = subprocess.Popen(words, cwd=self.project, stdout=stdout.open("wb"), stderr=(self.out / f"{self.tag}{name}.stderr").open("wb"))
+        return process, stdout
 
     def status(self, number: object) -> str:
-        done = subprocess.run([str(self.cli), "--json", "run", "watch", str(number), "--once"], cwd=self.project, capture_output=True)
-        lines = [line for line in done.stdout.splitlines() if line.strip()]
-        try:
-            watched: object = json.loads(lines[-1]) if lines else {}
-        except ValueError:
-            return ""
+        """Run `number`'s status, and its reason's code when it has one."""
+        done = subprocess.run([str(self.cli), "--json", "run", "watch", str(number), "--once"], cwd=self.project, capture_output=True, timeout=60)
+        watched: object = last(done.stdout)
         if isinstance(watched, dict) and isinstance(watched.get("run"), dict):
             watched = watched["run"]
-        return str(watched.get("status", "")) if isinstance(watched, dict) else ""
+        if not isinstance(watched, dict):
+            return ""
+        reason = watched.get("reason") or watched.get("error")
+        code = reason.get("code") if isinstance(reason, dict) else None
+        return f"{watched.get('status', '')}{f' ({code})' if code else ''}"
+
+    def lock(self, name: str) -> tuple[float, dict[str, object], str]:
+        """`cozy vault lock`, then the vault seen locked: its seconds, its answer, and what went wrong if it didn't lock."""
+        began = time.monotonic()
+        try:
+            done = subprocess.run([str(self.cli), "--json", "vault", "lock"], cwd=self.project, capture_output=True, timeout=BOUND * 3)
+        except subprocess.TimeoutExpired as expired:
+            (self.out / f"{self.tag}{name}.json").write_bytes(expired.stdout or b"")
+            return round(time.monotonic() - began, 1), {}, f"cozy vault lock didn't answer within {BOUND * 3} s"
+        (self.out / f"{self.tag}{name}.json").write_bytes(done.stdout)
+        (self.out / f"{self.tag}{name}.stderr").write_bytes(done.stderr)
+        while done.returncode == 0 and time.monotonic() - began < BOUND and self.state() != "locked":
+            time.sleep(1)
+        seconds = round(time.monotonic() - began, 1)
+        if done.returncode != 0 or self.state() != "locked":
+            return seconds, {}, (done.stdout[-400:] + done.stderr[-400:]).decode(errors="replace") or f"still {self.state()}"
+        return seconds, last(done.stdout), ""
+
+    def locked_by(self, since: float, seconds: float) -> float | None:
+        """Seconds from `since` until the vault reads locked; None if it doesn't within `seconds`."""
+        while time.monotonic() - since < seconds:
+            if self.state() == "locked":
+                return round(time.monotonic() - since, 1)
+            time.sleep(1)
+        return None
+
+    def workaround(self, label: str, scanner: Scanner, view: Path) -> dict[str, object]:
+        """The release note's workaround, as a person does it: the hung machine ended, then the lock asked again."""
+        for pid in list(STOPPED):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        STOPPED.clear()
+        retried = subprocess.run([str(self.cli), "--json", "vault", "lock"], cwd=self.project, capture_output=True, timeout=BOUND * 3)
+        return {"lock_exit": retried.returncode, "state": self.state(), "mounted": mounted(view),
+                "scan": traces(scanner, self.out, f"{self.tag}{label}-workaround", [self.project.resolve()])}
+
+
+def last(stdout: bytes) -> dict[str, object]:
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    try:
+        answer: object = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        answer = {}
+    return cast(dict[str, object], answer) if isinstance(answer, dict) else {}
+
+
+def sleeper(view: Path) -> Path:
+    script = view / "lock-hung" / "sleeper.py"
+    script.parent.mkdir(exist_ok=True)
+    script.write_text(SLEEPER)
+    return script
 
 
 def number_of(stdout: Path) -> object:
@@ -116,30 +176,61 @@ def number_of(stdout: Path) -> object:
     raise AssertionError(f"no run in {stdout.name}")
 
 
-def machine_pid() -> int:
-    """The local machine's process: what holds its root's lock (local.rs `lock`)."""
+def waiting(stdout: Path, process: subprocess.Popen[bytes], seen: re.Pattern[bytes], seconds: float = 300) -> bool:
+    """Until the run's events show `seen`, or it ends, or `seconds` pass."""
+    began = time.monotonic()
+    while process.poll() is None and time.monotonic() - began < seconds:
+        if seen.search(stdout.read_bytes()):
+            return True
+        time.sleep(0.02)
+    return bool(seen.search(stdout.read_bytes()))
+
+
+# Its output starts coming into the project: its call ended (outputs are saved as it returns). Or its call began.
+ARRIVING = re.compile(rb'"output_item\.added"')
+BEGUN = re.compile(rb'"started_at_ms":\s*\d')
+
+
+def services() -> list[int]:
+    """The local machine's service: what answers its requests. The lock's holder is its stable parent, which only holds the
+    listeners and forks the service (tensord machine/supervise.rs): stopping that parent stops nothing that answers."""
     holder = Path.home() / ".cozy/machine/var/lib/cozy/machine/agent.lock.holder"
     assert holder.is_file(), "no local machine running"
-    return int(json.loads(holder.read_text())["pid"])
+    parent = int(json.loads(holder.read_text())["pid"])
+    found = []
+    for stat in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            fields = stat.read_text().rsplit(")", 1)[1].split()
+            command = (stat.parent / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if int(fields[1]) == parent and "serve" in command:
+            found.append(int(stat.parent.name))
+    assert found, f"no service under the local machine's parent {parent}"
+    return found
 
 
 STOPPED: list[int] = []
 
 
-def stop() -> dict[str, object]:
-    """The local machine stopped (SIGSTOP), as a hung one is: its process as it holds its root now, seen stopped."""
-    pid = machine_pid()
-    command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-    os.kill(pid, signal.SIGSTOP)
-    STOPPED.append(pid)
-    state = ""
-    for _ in range(50):
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-        if state == "T":
-            break
-        time.sleep(0.1)
-    assert state == "T" and "serve" in command, f"the local machine {pid} ({command}) isn't stopped: {state}"
-    return {"pid": pid, "command": command, "state": state}
+def stop(view: Path) -> dict[str, object]:
+    """The local machine's service stopped (SIGSTOP), as a hung one is, each seen stopped; and whether it holds the project's
+    output in its store in the view."""
+    stopped: dict[str, object] = {}
+    for pid in services():
+        os.kill(pid, signal.SIGSTOP)
+        STOPPED.append(pid)
+        state = ""
+        for _ in range(50):
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            if state == "T":
+                break
+            time.sleep(0.1)
+        assert state == "T", f"the local machine's service {pid} isn't stopped: {state}"
+        stopped[str(pid)] = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    store = view / ".vault-machine"
+    stopped["holds_output"] = store.is_dir() and any(path.is_file() for path in store.rglob("*"))
+    return stopped
 
 
 def go_on() -> None:
@@ -171,6 +262,16 @@ def journaled(view: Path) -> int | None:
     return int(row[0])
 
 
+def paid(view: Path) -> tuple[int | None, float]:
+    """Once the machine goes on: its journal's runs of `view` once they're gone (or after 90 s), and the seconds it took."""
+    began = time.monotonic()
+    rows = journaled(view)
+    while rows != 0 and time.monotonic() - began < 90:
+        time.sleep(1)
+        rows = journaled(view)
+    return rows, round(time.monotonic() - began, 1)
+
+
 def mounted(view: Path) -> bool:
     for line in Path("/proc/self/mountinfo").read_text().splitlines():
         point = line.split(" ")[4].replace("\\040", " ")
@@ -180,15 +281,17 @@ def mounted(view: Path) -> bool:
 
 
 def written(folder: Path, mark: str) -> list[str]:
-    """Files under `folder` that hold `mark`."""
+    """Files under `folder` that begin with `mark`, whole or partly written."""
     found = []
     for path in folder.rglob("*") if folder.is_dir() else []:
         try:
-            if path.is_file() and path.stat().st_size < 1 << 20 and mark.encode() in path.read_bytes():
-                found.append(str(path))
+            if path.is_file():
+                with path.open("rb") as file:
+                    if file.read(len(mark) + 1).startswith(mark.encode()):
+                        found.append(str(path))
         except OSError:
             continue
-    return found
+    return sorted(found)
 
 
 def traces(scanner: Scanner, out: Path, label: str, also_excluded: list[Path]) -> dict[str, object]:
@@ -210,13 +313,21 @@ def traces(scanner: Scanner, out: Path, label: str, also_excluded: list[Path]) -
 SINCE = time.time_ns()
 
 
-def hung(cell: Cell, label: str, scanner: Scanner, view: Path, lock: object) -> dict[str, object]:
-    """While the machine is stopped: the view gone, and nothing outside the folder but the machine's journal, named."""
+def hung(cell: Cell, label: str, scanner: Scanner, view: Path, projects: list[Path]) -> dict[str, object]:
+    """While the machine is stopped: the view gone, and nothing outside the folders but the machine's journal, named."""
     facts: dict[str, object] = {"mounted": mounted(view), "journal_rows": journaled(view), "journal": str(journal()[0])}
-    facts["scan"] = traces(scanner, cell.out, f"{label}-stopped", [cell.project.resolve(), *journal()])
+    facts["scan"] = traces(scanner, cell.out, f"{label}-stopped", [*(project.resolve() for project in projects), *journal()])
     print(f"lock hung: {label}: while local is stopped, the one exception is its own journal {facts['journal']}: "
           f"{facts['journal_rows']} runs of the ended view", flush=True)
     return facts
+
+
+def finish(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.wait(timeout=120)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=30)
 
 
 def main() -> None:
@@ -224,117 +335,149 @@ def main() -> None:
     parser.add_argument("--project", required=True, type=Path)
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--passphrase-file", required=True, type=Path)
+    parser.add_argument("--second", required=True, type=Path, help="where step 3's project is made")
+    parser.add_argument("--recovery-out", required=True, type=Path, help="its recovery secret")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--cli", type=Path, default=Path.home() / ".cozy/bin/cozy")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    cell, facts = Cell(args), dict[str, object]()
+    first = Cell(args, args.project, "")
+    facts: dict[str, object] = {}
+    failures: list[str] = []
     scanner = Scanner()
-    scanner.identity(cell.project, args.project_id, cell.project.name)
+    scanner.identity(first.project, args.project_id, first.project.name)
+    projects = [first.project]
     try:
-        if cell.state() != "locked":
-            cell.cozy("lock-before", "vault", "lock")
-        view = cell.unlock("unlock")
-        script = view / "lock-hung" / "sleeper.py"
-        script.parent.mkdir(exist_ok=True)
-        script.write_text(SLEEPER)
-        cell.cozy("warm", "run", str(script), "seconds:=0", "mark=warm", "--on", "local")
+        if first.state() != "locked":
+            first.cozy("lock-before", "vault", "lock")
+        view = first.unlock("unlock")
+        first.cozy("warm", "run", str(sleeper(view)), "seconds:=0", "mark=warm", "--on", "local")
 
-        # 1. The lock asked while local is stopped: it locks within its bound, says the clean-up is owed, and the view is gone.
+        # 1. The lock asked while local is stopped as a run's output starts coming: it locks within its bound, says the clean-up is
+        #    owed, and the view is gone.
         mark = f"CL1064_LOCK_{secrets.token_hex(12)}"
         scanner.add(mark)
-        process, stdout = cell.start("stopped-run", script, SLEEPS, mark)
-        started, number = time.monotonic(), number_of(stdout)
-        facts["stopped"] = stop()
-        began = time.monotonic()
-        done = subprocess.run([str(cell.cli), "--json", "vault", "lock"], cwd=cell.project, capture_output=True, timeout=BOUND * 3)
-        (cell.out / "lock-stopped.json").write_bytes(done.stdout)
-        (cell.out / "lock-stopped.stderr").write_bytes(done.stderr)
-        while done.returncode == 0 and time.monotonic() - began < BOUND and cell.state() != "locked":
-            time.sleep(1)
-        facts["lock_s"] = round(time.monotonic() - began, 1)
-        if done.returncode != 0 or cell.state() != "locked":
-            # The release notes' workaround, as a person does it: the hung machine ended, then the lock asked again.
-            facts["lock_failed"] = (done.stdout[-400:] + done.stderr[-400:]).decode(errors="replace")
-            os.kill(cast(int, cast(dict[str, object], facts["stopped"])["pid"]), signal.SIGKILL)
-            retried = subprocess.run([str(cell.cli), "--json", "vault", "lock"], cwd=cell.project, capture_output=True, timeout=BOUND * 3)
-            facts["workaround"] = {"lock_exit": retried.returncode, "state": cell.state(), "mounted": mounted(view),
-                                   "scan": traces(scanner, cell.out, "workaround", [cell.project.resolve()])}
-            raise AssertionError(f"the lock failed while local was stopped: {facts['lock_failed']}; the workaround: {facts['workaround']}")
-        lines = [line for line in done.stdout.splitlines() if line.strip()]
-        locked = cast(dict[str, object], json.loads(lines[-1])) if lines else {}
-        facts["lock_said"] = locked.get("owed")
-        facts["lock"] = hung(cell, "lock", scanner, view, locked)
+        process, stdout = first.start("lock-run", sleeper(view), 1, mark, SAVE_MB)
+        assert waiting(stdout, process, ARRIVING), f"the run's output never started coming: {stdout.read_bytes()[-400:]!r}"
+        number = number_of(stdout)
+        facts["lock_stopped"] = stop(view)
+        facts["lock_s"], locked, failed = first.lock("lock-stopped")
+        if failed:
+            failures.append(f"the lock failed while local was stopped ({facts['lock_s']} s): {failed}")
+            facts["lock_workaround"] = first.workaround("lock", scanner, view)
+            go_on()
+            finish(process)
+        else:
+            if cast(float, facts["lock_s"]) > BOUND:
+                failures.append(f"the lock took {facts['lock_s']} s while local was stopped, past its {BOUND} s bound")
+            facts["lock_said"] = locked.get("owed")
+            if "didn't answer" not in str(facts["lock_said"]):
+                failures.append(f"the lock didn't say local's clean-up is owed: {facts['lock_said']!r}")
+            facts["lock"] = hung(first, "lock", scanner, view, projects)
 
-        # 2. Unlocked again before local answers: the old view's run is canceled here, and stays so once local goes on.
-        again = cell.unlock("unlock-again")
-        assert again != view, f"unlocked again at the same view {view}"
-        facts["canceled_before"] = cell.status(number)
-        go_on()
-        waited = time.monotonic()
-        while time.monotonic() - waited < 90 and journaled(view):
-            time.sleep(1)
-        facts["journal_rows_after"] = journaled(view)
-        facts["owed_paid_s"] = round(time.monotonic() - waited, 1)
-        while time.monotonic() - started < SLEEPS + 20:
-            time.sleep(1)
-        facts["canceled_after"] = cell.status(number)
-        facts["file_written"] = written(again / "files", mark) + written(again / ".vault-machine", mark)
-        process.wait(timeout=60)
-        cell.cozy("runs-again", "run", str(again / "lock-hung" / "sleeper.py"), "seconds:=0", "mark=again", "--on", "local")
-        answered = cell.cozy("lock-answered", "vault", "lock")
-        facts["answered_said"] = answered.get("owed")
-        facts["after_lock"] = traces(scanner, cell.out, "lock-after", [cell.project.resolve()])
+            # Unlocked again before local answers: once it goes on, nothing the lock settled changes, nothing of the run appears in
+            # the project, the machine forgets the ended view, and the project runs again.
+            again = first.unlock("unlock-again")
+            assert again != view, f"unlocked again at the same view {view}"
+            facts["run_before"] = first.status(number)
+            facts["files_before"] = written(again / "files", mark) + written(again / ".vault-machine", mark)
+            go_on()
+            facts["journal_rows_after"], facts["owed_paid_s"] = paid(view)
+            finish(process)
+            facts["run_after"] = first.status(number)
+            facts["files_after"] = written(again / "files", mark) + written(again / ".vault-machine", mark)
+            first.cozy("runs-again", "run", str(sleeper(again)), "seconds:=0", "mark=again", "--on", "local")
+            facts["answered_said"] = first.cozy("lock-answered", "vault", "lock").get("owed")
+            facts["after_lock"] = traces(scanner, args.out, "lock-after", projects)
+            if str(facts["run_before"]).split(" ")[0] not in ("canceled", "failed", "completed") or facts["run_after"] != facts["run_before"]:
+                failures.append(f"the stopped run was {facts['run_before']!r} when unlocked again and {facts['run_after']!r} once local went on")
+            if facts["files_after"] != facts["files_before"]:
+                failures.append(f"the stopped run wrote into the project once local went on: {facts['files_before']} became {facts['files_after']}")
+            if facts["journal_rows_after"] != 0:
+                failures.append(f"local's journal keeps the ended view's runs once it answered: {facts['journal_rows_after']}")
+            if facts["answered_said"]:
+                failures.append(f"a lock local answered said its clean-up is owed: {facts['answered_said']!r}")
+            for label in ("lock", "after_lock"):
+                found = cast(dict[str, object], facts[label])
+                if label == "lock" and found["mounted"]:
+                    failures.append("lock: the view is still mounted while local is stopped")
+                scan = cast(dict[str, object], found["scan"]) if label == "lock" else found
+                if scan["matches"]:
+                    failures.append(f"{label}: the project is outside its folder: {scan}")
 
-        # 3. The maximum's deadline while local is stopped: it locks past the maximum, and the same clean-up follows.
+        # 2. The maximum's deadline while local is stopped as a run's output starts coming: it locks past the maximum, within its
+        #    bound, and the same clean-up follows.
         mark = f"CL1064_MAX_{secrets.token_hex(12)}"
         scanner.add(mark)
-        view = cell.unlock("unlock-maximum", MAXIMUM)
+        if first.state() != "locked":
+            first.cozy("lock-before-maximum", "vault", "lock")
+        view = first.unlock("unlock-maximum", MAXIMUM)
         unlocked_at = time.monotonic()
-        process, stdout = cell.start("maximum-run", view / "lock-hung" / "sleeper.py", 300, mark)
-        facts["maximum_stopped"] = stop()
-        while time.monotonic() - unlocked_at < MAXIMUM + BOUND and cell.state() != "locked":
-            time.sleep(1)
-        facts["maximum_locked_s"] = round(time.monotonic() - unlocked_at, 1)
-        assert cell.state() == "locked", f"the vault is open {MAXIMUM + BOUND} s past a {MAXIMUM} s maximum while local is stopped"
-        facts["maximum"] = hung(cell, "maximum", scanner, view, None)
-        go_on()
-        waited = time.monotonic()
-        while time.monotonic() - waited < 90 and journaled(view):
-            time.sleep(1)
-        facts["maximum_journal_rows_after"] = journaled(view)
-        process.wait(timeout=60)
-        facts["after_maximum"] = traces(scanner, cell.out, "maximum-after", [cell.project.resolve()])
+        process, stdout = first.start("maximum-run", sleeper(view), 1, mark, SAVE_MB)
+        assert waiting(stdout, process, ARRIVING), f"the maximum's run's output never started coming: {stdout.read_bytes()[-400:]!r}"
+        facts["maximum_stopped"] = stop(view)
+        facts["maximum_locked_s"] = first.locked_by(unlocked_at, MAXIMUM + BOUND)
+        failures.extend(deadline(first, "maximum", scanner, view, projects, facts, process))
+
+        # 3. The maximum's deadline while local is stopped mid-call, in a second project: the run holds the vault past its maximum
+        #    until the clock asks local, which doesn't answer; the vault locks and the run settles canceled.
+        made = subprocess.run([str(args.cli), "--json", "new", str(args.second), "--passphrase-file", str(args.passphrase_file),
+                               "--recovery-out", str(args.recovery_out)], capture_output=True, timeout=300)
+        assert made.returncode == 0, f"cozy new {args.second}: {made.stdout[-300:]!r} {made.stderr[-300:]!r}"
+        second = Cell(args, args.second, "second-")
+        scanner.identity(second.project, str(last(made.stdout).get("id")), second.project.name)
+        projects.append(second.project)
+        if second.state() != "locked":
+            second.cozy("lock-before", "vault", "lock")
+        view = second.unlock("unlock")
+        second.cozy("warm", "run", str(sleeper(view)), "seconds:=0", "mark=warm", "--on", "local")
+        second.cozy("lock-warm", "vault", "lock")
+        mark = f"CL1064_GOING_{secrets.token_hex(12)}"
+        scanner.add(mark)
+        view = second.unlock("unlock-maximum", MAXIMUM)
+        unlocked_at = time.monotonic()
+        process, stdout = second.start("going-run", sleeper(view), 600, mark)
+        assert waiting(stdout, process, BEGUN, 180), f"the going run didn't begin: {stdout.read_bytes()[-400:]!r}"
+        number = number_of(stdout)
+        facts["going_stopped"] = stop(view)
+        facts["going_locked_s"] = second.locked_by(unlocked_at, MAXIMUM + BOUND)
+        failures.extend(deadline(second, "going", scanner, view, projects, facts, process))
+        facts["going_run"] = second.status(number)
+        if facts["going_locked_s"] is not None and not str(facts["going_run"]).startswith("canceled"):
+            failures.append(f"going: the run going when local stopped is {facts['going_run']!r} once the vault locked, not canceled")
     finally:
         go_on()
         (args.out / "lock-hung.json").write_text(json.dumps(facts, indent=2, default=str))
 
     print(f"lock hung: {json.dumps({k: v for k, v in facts.items() if not isinstance(v, dict)})}", flush=True)
-    failures = []
-    lock, maximum = cast(dict[str, object], facts["lock"]), cast(dict[str, object], facts["maximum"])
-    if cast(float, facts["lock_s"]) > BOUND:
-        failures.append(f"the lock took {facts['lock_s']} s while local was stopped, past its {BOUND} s bound")
-    if "didn't answer" not in str(facts["lock_said"]):
-        failures.append(f"the lock didn't say local's clean-up is owed: {facts['lock_said']!r}")
-    for label, stopped in (("lock", lock), ("maximum", maximum)):
-        if stopped["mounted"]:
-            failures.append(f"{label}: the view is still mounted while local is stopped")
-        if cast(dict[str, object], stopped["scan"])["matches"]:
-            failures.append(f"{label}: while local is stopped, the project is outside its folder beyond the machine's journal: {stopped['scan']}")
-    if facts["canceled_before"] != "canceled" or facts["canceled_after"] != "canceled":
-        failures.append(f"the stopped run was {facts['canceled_before']} when unlocked again and {facts['canceled_after']} after local went on")
-    if facts["file_written"]:
-        failures.append(f"the stopped run's file appeared after local went on: {facts['file_written']}")
-    if facts["journal_rows_after"] or facts["maximum_journal_rows_after"]:
-        failures.append(f"local's journal keeps the ended views' runs after it answered: {facts['journal_rows_after']}, {facts['maximum_journal_rows_after']}")
-    if facts["answered_said"]:
-        failures.append(f"a lock local answered said its clean-up is owed: {facts['answered_said']!r}")
-    for label in ("after_lock", "after_maximum"):
-        if cast(dict[str, object], facts[label])["matches"]:
-            failures.append(f"{label}: the project is outside its folder once local answered: {facts[label]}")
     assert not failures, "lock hung: " + "; ".join(failures)
-    print(f"lock hung: locked in {facts['lock_s']} s and {facts['maximum_locked_s']} s (maximum {MAXIMUM} s) with local stopped; "
-          f"its clean-up done {facts['owed_paid_s']} s after it went on", flush=True)
+    print(f"lock hung: locked in {facts['lock_s']} s by hand, {facts['maximum_locked_s']} s and {facts['going_locked_s']} s at a "
+          f"{MAXIMUM} s maximum, with local stopped; its clean-up done {facts['owed_paid_s']} s after it went on", flush=True)
+
+
+def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: list[Path], facts: dict[str, object],
+             process: subprocess.Popen[bytes]) -> list[str]:
+    """A deadline step once its vault locked or didn't: what's wrong with it, the machine gone on and its clean-up seen done."""
+    failures = []
+    if facts[f"{label}_locked_s"] is None:
+        failures.append(f"{label}: the vault is open {MAXIMUM + BOUND} s past unlocking with a {MAXIMUM} s maximum while local is stopped")
+        facts[f"{label}_workaround"] = cell.workaround(label, scanner, view)
+    else:
+        found = facts[label] = hung(cell, label, scanner, view, projects)
+        if found["mounted"]:
+            failures.append(f"{label}: the view is still mounted while local is stopped")
+        if cast(dict[str, object], found["scan"])["matches"]:
+            failures.append(f"{label}: while local is stopped, the project is outside its folder beyond the machine's journal: {found['scan']}")
+    go_on()
+    rows, _ = paid(view)
+    facts[f"{label}_journal_rows_after"] = rows
+    if rows != 0:
+        failures.append(f"{label}: local's journal keeps the ended view's runs once it answered: {rows}")
+    finish(process)
+    after = facts[f"after_{label}"] = traces(scanner, cell.out, f"{label}-after", projects)
+    if after["matches"]:
+        failures.append(f"after_{label}: the project is outside its folder once local answered: {after}")
+    return failures
 
 
 if __name__ == "__main__":
