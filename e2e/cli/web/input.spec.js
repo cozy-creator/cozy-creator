@@ -190,6 +190,8 @@ test('input', { tag: '@engines' }, async ({ page, project, browserName }) => {
   await test.step('Japanese and Chinese through an IME: each character once, through a reload', async () => {
     if (!chromium) return skip('IME');
     if (await region.count()) await leave(page);
+    // Every box in view again: the keys' step left the camera on box a.
+    if (!(await page.getByRole('region', { name: 'Focused asset' }).count())) await fit(page);
     await focus(page, 'ime');
     const text = region.getByRole('textbox', { name: 'Text', exact: true });
     await expect(text).toBeFocused();
@@ -220,6 +222,7 @@ test('input', { tag: '@engines' }, async ({ page, project, browserName }) => {
     expect.soft((await canvasNames(page)).sort(), 'no box drawn').toEqual(before);
     expect.soft((await project.assets()).length, 'none made').toBe(assets);
     await page.keyboard.press('Escape');
+    if (!(await page.getByRole('region', { name: 'Focused asset' }).count())) await fit(page);
     const { x, y } = await canvasPoint(page, 'c');
     await page.mouse.click(x, y);
     await expect.poll(() => selectedNames(page), { message: 'a click after it selects' }).toEqual(['c']);

@@ -61,7 +61,7 @@ function LEDGER() {
 
 test('soak', { tag: '@solo' }, async ({ context, project, api, signIn, removeAfter }, testInfo) => {
   test.setTimeout(15 * 60_000);
-  const record = { cycles: CYCLES, samples: {}, timeline: [] };
+  const record = { cycles: CYCLES, renderer: process.env.WEB_RENDERER === '2d' ? '2d lane' : 'webgl lane', samples: {}, timeline: [] };
   const save = () => writeFileSync(testInfo.outputPath('soak.json'), JSON.stringify(record, null, 2));
   const b = await api.post('/v1/projects', { path: join(process.env.OUT, 'web', 'projects', `web-soak-b-${randomBytes(3).toString('hex')}`), unencrypted: true });
   removeAfter(b.path);

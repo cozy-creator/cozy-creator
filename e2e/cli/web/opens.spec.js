@@ -467,6 +467,8 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     };
     result.timing_boundary = 'retained display-object/native preview readiness observed on animation frames; screenshot pixels verified after timing';
     result.pixels = await provePixels(label, page);
+    // Which renderer this was measured on, so no number is read against another's bar (coordinator, 11-16).
+    result.renderer = await page.evaluate(() => { const g = document.querySelector('.canvas-root')?.canvasInspection?.resources()?.graphics; return g ? [g.backend ?? 'webgl', g.why, g.software ? 'software' : null].filter(Boolean).join(' ') : 'unknown'; });
     seen[label] = result;
     const said = (what) => `${label}: ${what}: ${JSON.stringify({ ...result, trace: undefined, preview_times_ms: undefined })}`;
     expect.soft(result.pulsed_while_waiting, said('every box waiting for its preview pulses')).toBe(result.waited_for_preview);

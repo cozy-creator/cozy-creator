@@ -707,13 +707,13 @@ jobs:
       fail-fast: false
       matrix:
         # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
-        # web-1, web-2, web-3, web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once. Manual shard selections
+        # web-1, web-2, web-3, web-2d (the canvas in 2D, as with no GPU), web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once. Manual shard selections
         # remain available.
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","local-code"]') }}
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-2d","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","local-code"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
-    timeout-minutes: ${{ contains(fromJSON('["web-1","web-2","web-3","web-engines","web-solo"]'), matrix.shard) && 20 || 90 }}
+    timeout-minutes: ${{ contains(fromJSON('["web-1","web-2","web-3","web-2d","web-engines","web-solo"]'), matrix.shard) && 20 || 90 }}
     defaults:
       run:
         shell: bash

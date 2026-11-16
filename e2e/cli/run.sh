@@ -507,6 +507,16 @@ WEB_3=(
   steady
   rendering
   glloss
+)
+# The path of a computer with no GPU: the canvas in 2D (cl-1048), for the core cells (web.sh's lane `2d`; coordinator, 11-16).
+WEB_2D=(
+  create
+  move
+  open
+  type
+  focus
+  upload
+  resize
   nogpu
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
@@ -701,6 +711,7 @@ case $SHARD in
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
   web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
+  web-2d) web_cells=(${WEB_2D[@]+"${WEB_2D[@]}"}); parts="web_lane logs" ;;
   web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
   # cl-982's opens on a busy computer: 3,000 other loopback connections open (web/busy.js), as the gate's lookups meet them (cl-985).
   web-opens-busy) export BUSY_SOCKETS=3000; web_cells=(opens); parts="web_lane logs" ;;

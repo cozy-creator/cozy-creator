@@ -64,7 +64,7 @@ const FRAMING = (grid) => {
 test('large', { tag: '@solo' }, async ({ context, project, api, signIn, removeAfter }, testInfo) => {
   test.setTimeout(30 * 60_000);
   const speed = runnerSpeed();
-  const record = { runner: speed, viewport: VIEWPORT, sizes: {} };
+  const record = { runner: speed, viewport: VIEWPORT, renderer: process.env.WEB_RENDERER === '2d' ? '2d lane' : 'webgl lane', sizes: {} };
   testInfo.annotations.push({ type: 'runner', description: JSON.stringify(speed) });
   const save = () => writeFileSync(testInfo.outputPath('large.json'), JSON.stringify(record, null, 2));
 

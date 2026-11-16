@@ -218,6 +218,22 @@ async function removeFolder(folder) {
 }
 
 /** In every page of a guarded context: CSP violations and modal dialogs, said to the fixture as they happen. */
+/** Test-only, in this file and nowhere in the product (no setting or URL reaches it; coordinator, 11-16): a runner has no GPU, and the canvas
+ *  draws in 2D when WebGL is only software (cl-1048). Every lane but web-2d names the runner's software WebGL as a hardware GPU, so the canvas
+ *  takes the WebGL path most people's computers take, still drawn by the runner's software GL; web-2d (WEB_RENDERER=2d, web.sh) leaves the
+ *  browser as it is, the path of a computer with no GPU. */
+function hardwareGl() {
+  for (const Context of [globalThis.WebGLRenderingContext, globalThis.WebGL2RenderingContext].filter(Boolean)) {
+    const read = Context.prototype.getParameter;
+    Context.prototype.getParameter = function (name) {
+      // RENDERER, and WEBGL_debug_renderer_info's UNMASKED_RENDERER_WEBGL.
+      if (name === 0x1f01 || name === 0x9246) return 'Test GPU (hardware, for the web suite)';
+      return read.call(this, name);
+    };
+  }
+}
+const WEBGL_PATH = process.env.WEB_RENDERER !== '2d';
+
 function guardPage() {
   addEventListener('securitypolicyviolation', (event) => window.__cozyGuard(`CSP violation: ${event.violatedDirective} blocked ${event.blockedURI}`));
   const showModal = HTMLDialogElement.prototype.showModal;
@@ -354,6 +370,7 @@ const test = base.extend({
 
   context: async ({ context, guards }, use) => {
     await guards.watch(context);
+    if (WEBGL_PATH) await context.addInitScript(hardwareGl);
     await context.addInitScript(watchBoxes);
     await use(context);
     guards.over();
@@ -366,6 +383,7 @@ const test = base.extend({
       const context = await browser.newContext(options);
       made.push(context);
       await guards.watch(context);
+      if (WEBGL_PATH) await context.addInitScript(hardwareGl);
       return context;
     });
     guards.over();
