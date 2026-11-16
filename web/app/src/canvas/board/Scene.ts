@@ -184,7 +184,7 @@ export class Scene {
   redrawAll() { for (const held of this.held.values()) { held.key = undefined; held.view.refresh() } this.faults.clear(); this.o.invalidate() }
 
   views(): Iterable<[string, Held]> { return this.held }
-  viewOf(name: string): Held | undefined { for (const held of this.held.values()) if (held.node?.name === name) return held; return undefined }
+  viewOf(name: string): Held | undefined { const id = this.o.board.byName(name)?.id; return id ? this.held.get(id) : undefined }
   get settled() { return this.settledZoom }
 
   private release(id: string, held: Held) {

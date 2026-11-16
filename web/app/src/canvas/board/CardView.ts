@@ -28,6 +28,8 @@ export const BODY = 12.5 * 1.35
 export const TITLE = 15.5 * 1.35
 const SMALL = BODY * 0.9
 const hits = new WeakMap<Container, Hit>()
+/** One-line labels in small type share a glyph atlas (BitmapText) instead of a canvas and texture each: a card's open costs its title and words. */
+const SMALL_LABELS = new Set(["version", "tool", "shape", "machine", "time", "count", "cancel", "duration", "kind", "ratio"])
 /** The card part a federated event's target belongs to. */
 export function hitOf(target: Container | null): Hit | null {
   for (let at: Container | null = target; at; at = at.parent) { const hit = hits.get(at); if (hit) return hit }
@@ -518,7 +520,7 @@ export class CardView {
     const value = lines > 1 ? wrap(text, room, style.size, lines).join("\n") : text
     if (!value || room <= 0) { if (label) label.view.visible = false; return null }
     // Far out, where thousands of names show at once, a name is drawn from one shared glyph atlas, not a texture of its own.
-    const bitmap = key === "title" && env.band === 2
+    const bitmap = (key === "title" && env.band === 2) || SMALL_LABELS.has(key)
     if (label && label.bitmap !== bitmap) { label.view.destroy(); this.texts.delete(key); label = undefined }
     if (!label) {
       label = new Label(bitmap)
