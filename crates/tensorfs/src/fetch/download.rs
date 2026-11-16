@@ -294,8 +294,8 @@ const BURST: f64 = 0.1;
 /// The share grows only after the install's rate held this long: a TCP flow takes seconds to grow into new room, and a share
 /// that grew faster would fill that room first.
 const STEADY: Duration = Duration::from_secs(2);
-/// The link's highest rate halves over this while the weights get less than they may: what it carries now soon outweighs an
-/// old high (an earlier, faster link; a congested host), which would let the weights grow into room that isn't there.
+/// The link's highest rate halves over this while unpaced weights get less than they may: what it carries now soon outweighs
+/// an old high (an earlier, faster link; a congested host), which would let the weights grow into room that isn't there.
 const FORGET: Duration = Duration::from_secs(3);
 
 /// While an install downloads, the weights read at an allowance, on as few requests as it needs. It is judged once a ramp
@@ -313,6 +313,11 @@ struct Share {
     cap: AtomicUsize,
     /// What one weight request moves at full speed, bytes/s (f64 bits): the cap's unit.
     connection: AtomicU64,
+    /// What a downloader moved in its last unpaced window with its ramp settled, bytes/s (f64 bits): where a share starts from.
+    settled: AtomicU64,
+    /// A downloader's ramp has settled unpaced since the downloaders were last idle: the link's speed is a measured number,
+    /// and only then is a share taken of it.
+    measured: AtomicBool,
     /// The install under way, as it says what it received.
     install: Mutex<Install>,
     judged: Mutex<Measured>,
@@ -468,6 +473,7 @@ impl Share {
         // little as that long ago does (another network, another cell's shaped link).
         if since > 2 * WINDOW {
             judged.capacity *= 0.5f64.powf(since.as_secs_f64() / FORGET.as_secs_f64());
+            self.measured.store(false, Ordering::Release);
             return;
         }
         let seconds = since.as_secs_f64();
@@ -480,23 +486,34 @@ impl Share {
         // The install's download: its own sockets', with our software and emergency reads.
         let install = rate + others;
         let link = weights + install;
-        // The most the link carries. Weights with requests out that get less than they may (unpaced, or under their
-        // allowance) are held back by the link, which carries what it moved now: an old high halves every `FORGET`. Held to
-        // their allowance, they leave room by design, and only a higher rate moves it.
+        // The most the link carries. Unpaced weights with requests out are held back by the link, which carries what it moved
+        // now: an old high halves every `FORGET`. A paced window measures the share, not the link, and only a higher rate moves
+        // it: two paced requests short of their allowance on a lossy link had read as a full one (tfs-300: a policer's 7.5 MB/s
+        // estimated at 2 MB/s, and with the install unreadable, half of the weights' first second, 0.28 MB/s, for a whole install).
         let allowance = f64::from_bits(self.allowance.load(Ordering::Acquire));
         (judged.weights, judged.install) = (0.7 * judged.weights + 0.3 * weights, 0.7 * judged.install + 0.3 * install);
-        let limited = self.flights.load(Ordering::Acquire) > 0 && (allowance == 0.0 || judged.weights < 0.8 * allowance);
+        let limited = self.flights.load(Ordering::Acquire) > 0 && allowance == 0.0;
         let link = link.min(judged.weights + judged.install);
         judged.capacity = match limited {
             true => link.max(judged.capacity * 0.5f64.powf(seconds / FORGET.as_secs_f64())),
             false => link.max(judged.capacity),
         };
-        let capacity = judged.capacity;
-        if self.installs.load(Ordering::Acquire) == 0 || capacity <= 0.0 {
+        if self.installs.load(Ordering::Acquire) == 0 || judged.capacity <= 0.0 {
             judged.downloading = false;
             drop(judged);
             return self.whole("no install under way");
         }
+        // Half, or a sixteenth, of a speed nothing has measured is no share: until a ramp settles unpaced, the weights take
+        // the link (tfs-300: paced from their first second, they measured only their own pace, 0.28 MB/s of 7.5).
+        if !self.measured.load(Ordering::Acquire) {
+            judged.downloading = false;
+            return;
+        }
+        // A share starts from the higher of that and the speed a ramp last settled at, unpaced: an old high idles away.
+        if allowance == 0.0 && (readable != Some(true) || install > judged.capacity / 1024.0) {
+            judged.capacity = judged.capacity.max(f64::from_bits(self.settled.load(Ordering::Acquire)));
+        }
+        let capacity = judged.capacity;
         // Its sockets can't be read here: half the link while it runs, so neither starves the other.
         if readable != Some(true) {
             let blind = !self.paced();
@@ -1228,6 +1245,12 @@ impl Shared {
         // latency (th-378: cale's ramp doubled on 0 MB/s, then again on anything against that, to 64 streams on 28 MB/s).
         let measured = rate > 0.0 && pace.flowing;
         pace.flowing = rate > 0.0;
+        // Settled (two windows after a doubling that grew the rate less than `GAIN`) or at every place it may have, unpaced:
+        // what the link carries is measured, and a share may be taken of it.
+        if measured && (pace.settled || pace.level >= pace.max) && !SHARE.paced() {
+            SHARE.settled.store(rate.to_bits(), Ordering::Release);
+            SHARE.measured.store(true, Ordering::Release);
+        }
         if !(waiting || tail) || pace.settled || pace.level >= pace.max || !measured {
             return false;
         }
