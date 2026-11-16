@@ -8,7 +8,22 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 
 const out = join(process.env.OUT || tmpdir(), 'web');
-const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME } };
+// A runner has no GPU, so each browser draws WebGL in software. The canvas asks for a context without a major performance caveat
+// (CanvasSurface.tsx); Chrome's SwiftShader is named so it never rests on Chrome's deprecated automatic fallback, and Firefox is told to
+// give its software context without the caveat, as Chrome's does. The browser's setting, not the page's: each cell's bars stand.
+// A runner has no GPU but a Mac's. Linux's Chrome draws WebGL on SwiftShader with no major performance caveat; Windows' Chrome flags it,
+// so there ANGLE takes SwiftShader as its device (as layout.spec.js does everywhere).
+const SOFTWARE = { linux: ['--enable-unsafe-swiftshader'], win32: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] };
+const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME, args: SOFTWARE[process.platform] ?? [] } };
+// Headless Firefox makes no WebGL context on Linux; web.sh gives it a virtual display (FIREFOX_DISPLAY) and Mesa's software GL there.
+const firefox = {
+  browserName: 'firefox',
+  launchOptions: {
+    headless: !process.env.FIREFOX_DISPLAY,
+    env: { ...process.env, ...(process.env.FIREFOX_DISPLAY ? { DISPLAY: process.env.FIREFOX_DISPLAY } : {}), LIBGL_ALWAYS_SOFTWARE: '1' },
+    firefoxUserPrefs: { 'webgl.force-enabled': true, 'webgl.forbid-software': false, 'webgl.disable-fail-if-major-performance-caveat': true },
+  },
+};
 
 module.exports = defineConfig({
   testDir: __dirname,
@@ -32,7 +47,7 @@ module.exports = defineConfig({
   },
   projects: [
     { name: 'chrome', grepInvert: /@solo|@vault/, use: chrome },
-    { name: 'firefox', grep: /@engines/, use: { browserName: 'firefox' } },
+    { name: 'firefox', grep: /@engines/, use: firefox },
     { name: 'webkit', grep: /@engines/, use: { browserName: 'webkit' } },
     { name: 'vault', grep: /@vault/, use: chrome },
     { name: 'solo', grep: /@solo/, timeout: 300_000, use: chrome },

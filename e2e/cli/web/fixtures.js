@@ -260,6 +260,9 @@ function watchBoxes() {
   }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'data-moving', 'aria-selected'], attributeOldValue: true });
 }
 
+/** WebKit's words for a page's fetch that failed, its reason masked: the URL it asked. */
+const CUT_FETCH = /^Fetch API cannot load (\S+) due to access control checks\.$/;
+
 const test = base.extend({
   /** This job's Calcifer, from its lock record ($HOLDER), read once a worker. */
   calcifer: [async ({}, use) => {
@@ -283,10 +286,12 @@ const test = base.extend({
 
   /** Calcifer stopped, started, killed or put on another Hub (CalciferControl): the solo project's alone, as every other cell shares this
    *  Calcifer. Put back as it was after the cell, however it ended. */
-  calciferControl: async ({ calcifer, api }, use, testInfo) => {
+  calciferControl: async ({ calcifer, api, guards }, use, testInfo) => {
     if (testInfo.project.name !== 'solo') throw new Error(`calciferControl is the solo project's: ${testInfo.project.name}'s cells share this Calcifer`);
     const control = new CalciferControl(calcifer, api);
     await use(control);
+    // Put back with the cell over: what its pages say as Calcifer restarts is this teardown's doing.
+    guards.over();
     await control.restore();
   },
 
@@ -317,7 +322,27 @@ const test = base.extend({
         await context.exposeBinding('__cozyGuard', (_, line) => say(line));
         await context.addInitScript(guardPage);
         const watch = (page) => {
-          page.on('pageerror', (error) => say(`page error: ${error.message}`));
+          // From a main-frame navigation until the next document's DOMContentLoaded, the last document is ending. WebKit says a fetch of
+          // its own Calcifer's /v1 cut as it ends (and caught by the page: its event stream, a read in flight) as a page error in its masked
+          // words: only that is the document's end. Anywhere else in a document's life it fails the cell (run 43730578847: `open`'s goto
+          // from a project to /).
+          let ending = null;
+          page.on('request', (request) => {
+            if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) return;
+            const was = new URL(page.url());
+            ending = /^https?:$/.test(was.protocol) ? was.origin : null;
+          });
+          page.on('domcontentloaded', () => { ending = null; });
+          const cut = (error) => {
+            const asked = (error.stack ?? '').split('\n')[0].match(CUT_FETCH)?.[1];
+            if (!ending || !asked || !error.message.endsWith(' due to access control checks.')) return false;
+            const url = new URL(asked);
+            return url.origin === ending && url.pathname.startsWith('/v1/');
+          };
+          page.on('pageerror', (error) => {
+            if (cut(error)) return;
+            say(`page error: ${error.message}`);
+          });
           page.on('console', (message) => { if (message.type() === 'error') say(`console error: ${message.text()} ${message.location().url}`); });
         };
         context.pages().forEach(watch);
@@ -382,10 +407,12 @@ const test = base.extend({
   },
 
   /** A tab open at the cell's project, its canvas up. The box log is attached when the cell fails. */
-  page: async ({ page, project, signIn }, use, testInfo) => {
+  page: async ({ page, project, signIn, guards }, use, testInfo) => {
     await signIn(page, project.url());
     await expect(page.locator('.stage')).toBeVisible();
     await use(page);
+    // Torn down before the context, which closes this page: the cell is over from here.
+    guards.over();
     if (testInfo.status !== testInfo.expectedStatus && !page.isClosed()) {
       const said = await page.evaluate(() => ({ url: location.href, log: window.boxLog?.slice(-60), focus: `${document.activeElement?.tagName}.${document.activeElement?.className}` }));
       await testInfo.attach('boxes', { body: JSON.stringify(said, null, 2), contentType: 'application/json' });
@@ -410,17 +437,37 @@ const test = base.extend({
 /** A mounted native card: Focus or the one under the pointer. Passive cards use canvasCard; controls require hoverBox. */
 const box = (page, name) => page.locator(`.canvas-node .card[data-asset=${JSON.stringify(name)}], [data-focused-asset=${JSON.stringify(name)}] .card[data-asset=${JSON.stringify(name)}]`).first();
 
-/** Read-only product geometry and logical names. Neither is evidence that the GPU presented the expected pixels. */
-const canvasCard = (page, name) => page.evaluate((name) => document.querySelector('.canvas-root')?.canvasInspection?.card(name) ?? null, name);
-const canvasNames = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.names() ?? []);
+/** Read-only product geometry and logical names. Neither is evidence that the GPU presented the expected pixels.
+ *  A file still on its way to Calcifer is drawn under the name it was given while the scene and its card key it `placing:N` (place.ts):
+ *  these helpers take and give the name a person sees, from its drawn title or, mounted under the pointer, its card's. */
+const SHOWN = `(inspection, key) => {
+  if (!key.startsWith('placing:')) return key;
+  const title = inspection.card(key)?.rendered?.labels?.title?.title;
+  if (title) return title;
+  // Mounted under the pointer, its card says the name it's drawn under (Card.tsx data-asset is the view's name).
+  const native = inspection.interaction().nativeHover === key ? document.querySelector('.canvas-node .card[data-asset]') : null;
+  return native?.dataset.asset || key;
+}`;
+const KEY = `(inspection, name) => inspection.card(name) ? name : inspection.names().find((key) => key.startsWith('placing:') && (${SHOWN})(inspection, key) === name)`;
+const canvasCard = (page, name) => page.evaluate(`((name) => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  const key = inspection && (${KEY})(inspection, name);
+  return key ? inspection.card(key) : null;
+})(${JSON.stringify(name)})`);
+const canvasNames = (page) => page.evaluate(`(() => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  return inspection?.names().map((key) => (${SHOWN})(inspection, key)) ?? [];
+})()`);
 const selectedNames = (page) => page.evaluate(() => [...(document.querySelector('.canvas-root')?.canvasInspection?.selectedNames() ?? [])].sort());
-const canvasVisible = (page, name) => page.evaluate((name) => {
-  const root = document.querySelector('.canvas-root'), card = root?.canvasInspection?.card(name);
-  const native = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}]`);
+const canvasVisible = (page, name) => page.evaluate(`((name) => {
+  const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
+  const key = inspection && (${KEY})(inspection, name);
+  const card = key && inspection.card(key);
+  const native = key && document.querySelector('.canvas-node .card[data-asset=' + JSON.stringify(name) + ']');
   if (!root || !card || (!card.rendered && !native?.checkVisibility())) return false;
   const r = native?.getBoundingClientRect() ?? card.bounds, view = root.getBoundingClientRect();
   return r.width > 0 && r.height > 0 && r.x + r.width > view.left && r.y + r.height > view.top && r.x < view.right && r.y < view.bottom;
-}, name);
+})(${JSON.stringify(name)})`);
 
 /** Text held by actual rendered labels/words, or the committed native card; never read from the document store. */
 const canvasText = (page, name) => page.evaluate((name) => {
