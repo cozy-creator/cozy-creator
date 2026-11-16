@@ -73,6 +73,8 @@ def slow(ctx: Context, payload: SlowBox, tel: Telemetry) -> Picture:
 class FetchingBox(msgspec.Struct, kw_only=True):
     seconds: Annotated[float, Range(0, 600)] = 1.0
     download: Annotated[float, Range(0, 600)] = 0.0
+    # Each render a take of its own (web run-tiles): with no seed, one asked while another of the same inputs goes is that one.
+    seed: Seed | None = None
 
 
 @app.tool(label="A still that downloads first")

@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react"
 import { useConnection } from "../app/Connection"
-import { Copyable } from "./Copyable"
 import { CopyError } from "./CopyError"
 import { Icon } from "./Icon"
 import { dismiss, held, notes } from "./notes"
@@ -31,9 +30,6 @@ export function Notes() {
           <span className="line">{note.message}</span>
           {note.copy && <CopyError text={note.copy} />}
           {note.remedy && <span className="remedy">{note.remedy}</span>}
-          {note.next?.map((command) => (
-            <Copyable key={command} text={command} />
-          ))}
           {note.action && (
             <button
               type="button"

@@ -22,11 +22,11 @@ export function LibraryFrame({ on, title, back, children }: { on: "packages" | "
       </div>
       {!signedIn && !client.transport.channel && (
         <p className="muted">
-          These are what's public.{" "}
+          You're seeing public items only.{" "}
           <Link className="more" to={to("account")}>
             Sign in
           </Link>{" "}
-          to see what's private to you as well, and to publish, yank and delete.
+          to see your private ones too, and to publish, yank or delete.
         </p>
       )}
       {children}

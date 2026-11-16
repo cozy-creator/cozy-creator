@@ -321,7 +321,7 @@ impl Destinations {
 }
 
 pub(crate) async fn remove(ctx: &Context, model: &str) -> Result<api::calcifer::RemovedModel, Error> {
-    super::machine::remove_local(ctx, model).await
+    super::machine::remove_from(ctx, model, "local").await
 }
 
 pub(crate) async fn download(ctx: &Context, choice: DownloadChoice) -> Result<std::process::ExitCode, Error> {

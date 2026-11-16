@@ -6,8 +6,8 @@
 // A failed render is said once, as a toast, and its take is gone: nothing in the column to pick or delete, the frame back on the take it
 // showed, through a reload (cl-1070). The take watched in Focus is the one drawn
 // when it lands, through a reload; its run's warnings are the box's, never a note. Two boxes rendered at once: the one whose tool is warm
-// starts before the other's install ends. A picture's take on its way is, in its takes column, the shape it will be: the one set, else
-// Auto's from the picture it edits (cl-1072).
+// is ready before the other's install ends, waiting only for the CPU another run holds, which its log names (cl-1086). A picture's
+// take on its way is, in its takes column, the shape it will be: the one set, else Auto's from the picture it edits (cl-1072).
 const { writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasIdle, focus, middle, openPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
@@ -332,7 +332,7 @@ test('render', async ({ page, project, api, cli }) => {
     await softly.poll(() => renderState(page, 'latent')).toBeNull();
 
     // Landed at rest: its note names it and its take, and View opens it on that take.
-    const note = page.locator('[data-note]').filter({ hasText: 'latent finished: version 1' });
+    const note = page.locator('[data-note]').filter({ hasText: 'Version 1 of latent is ready' });
     await expect.soft(note).toBeVisible();
     await note.getByRole('button', { name: 'View', exact: true }).click();
     region = focused(page);
@@ -340,7 +340,7 @@ test('render', async ({ page, project, api, cli }) => {
     await canvasIdle(page);
     await expect.soft(region.getByLabel('Take', { exact: true })).toHaveText('v1');
     await back(page);
-    expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`${first} finished`)), 'a take landing where it is looked at says nothing').toEqual([]);
+    expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`of ${first} is ready`)), 'a take landing where it is looked at says nothing').toEqual([]);
   });
 
   await test.step('Render all, on a slow box that mentions the first', async () => {
@@ -472,28 +472,57 @@ test('render', async ({ page, project, api, cli }) => {
     expect.soft(notes.filter((text) => text.includes(WARNED)), 'no note says a warning').toEqual([]);
   });
 
-  await test.step("Render two boxes at once: the one whose tool is warm starts before the other's install ends", async () => {
-    // One render of both, so they're ready in one turn of its walk: `eager` on tool.py, warm and read by this project in the first step;
+  await test.step("Render two boxes at once: the one whose tool is warm is ready before the other's install ends, waiting only for the CPU, named", async () => {
+    // One render of both, so they're ready in one turn of its walk: `eager` on tool.py, installed and read by this project in the first step;
     // `fresh` on installs.py, whose first render installs it (cl-973: a box that can start now never waits for another's install).
+    // cl-1086 (Paul: "a run never waits on something it doesn't need"; "every wait is tied to what it waits on, observed"): a run of
+    // tool.py's `slow` holds this machine's one CPU slot first, so eager waits for it whatever else the lane runs, and its start (a cold
+    // executor, ~2 s) judges nothing. Its log says what it waits for as the wait begins, naming that run, on the machine's clock: it is
+    // ready before fresh's install ends, and nothing it waits for is fresh's. Once the CPU is free, eager goes before fresh.
     const installs = join(project.path, 'installs.py');
     writeFileSync(installs, INSTALLS);
     await project.add({ name: 'eager', tool: STILL, kind: 'image', fields: { instructions: 'Ready now.' }, at: { x: 720, y: 420 } });
     await project.add({ name: 'fresh', tool: `${installs}/installed`, kind: 'image', fields: { instructions: 'Once installed.' }, at: { x: 1080, y: 420 } });
     const runs = async () => (await api.get(project.at('/runs?limit=1000'))).runs;
     const earlier = new Set((await runs()).map((run) => run.id));
+    const made = async (kind, target) => (await runs()).find((run) => !earlier.has(run.id) && run.kind === kind && run.target === target);
+    const holding = cli('run', `${TOOL}/slow`, 'instructions=Holds the CPU.', 'seconds=600', '--on', 'local');
+    let hold;
+    await expect.poll(async () => (hold = await made('call', 'local/tool/slow'))?.started_at_ms ?? 0, { message: 'a slow run holds the CPU', timeout: 120_000 })
+      .toBeGreaterThan(0);
     const rendering = cli('--json', 'render', 'eager', 'fresh', '--on', 'local');
+    await expect.poll(async () => (await made('warm', 'install local/installs'))?.status, { message: "fresh's install, while eager waits", timeout: 120_000 })
+      .toBe('completed');
+    await api.post(project.at(`/runs/${encodeURIComponent(hold.id)}/cancel`));
     const takes = async () => ({ eager: (await project.asset('eager'))?.versions ?? 0, fresh: (await project.asset('fresh'))?.versions ?? 0 });
     await expect.poll(takes, { message: 'both takes', timeout: 120_000 }).toEqual({ eager: 1, fresh: 1 });
     const rendered = await rendering;
+    await holding;
     expect.soft(rendered.code, `cozy render: ${rendered.stderr.slice(-400)}`).toBe(0);
-    const made = (await runs()).filter((run) => !earlier.has(run.id));
-    const install = made.find((run) => run.kind === 'warm' && run.target === 'install local/installs');
-    const eager = made.find((run) => run.kind === 'call' && run.target === 'local/tool/still');
-    const fresh = made.find((run) => run.kind === 'call' && run.target === 'local/installs/installed');
+    const install = await made('warm', 'install local/installs');
+    const eager = await made('call', 'local/tool/still');
+    const fresh = await made('call', 'local/installs/installed');
+    // What each run's machine said, as its log keeps it: its stages and waits, each when it began, on the machine's clock.
+    const stages = async (run) => {
+      if (!run) return [];
+      const stream = await (await api.raw('GET', project.at(`/runs/${encodeURIComponent(run.id)}/events`))).text();
+      return stream.split('\n').filter((line) => line.startsWith('data:')).map((line) => JSON.parse(line.slice(5)))
+        .filter((event) => event.type === 'run.log' && event.level === 'stage').map((event) => ({ at: event.at_ms, text: event.text }));
+    };
+    const [waited, building] = [await stages(eager), await stages(install)];
+    // Built, the install gives up the machine's install line and describes what it built (said, not judged: a warm uv cache builds in 0.7 s).
+    const built = building.find((line) => line.text.startsWith('describing '))?.at;
+    // Ready: queued for what it waits on, or else starting.
+    const queued = waited.filter((line) => / in the queue\b/.test(line.text));
+    const ready = queued[0]?.at ?? waited.find((line) => /^(importing |starting the executor)/.test(line.text))?.at ?? eager?.started_at_ms;
     const times = (run) => run && { number: run.number, status: run.status, created: run.created_at_ms, started: run.started_at_ms, ended: run.settled_at_ms };
-    const said = JSON.stringify({ install: times(install), eager: times(eager), fresh: times(fresh) });
-    expect.soft([install, eager, fresh].map((run) => run?.status), `fresh's install, eager's call, fresh's call: ${said}`).toEqual(['completed', 'completed', 'completed']);
-    expect.soft(eager?.started_at_ms < install?.settled_at_ms, `eager's call starts before fresh's install ends: ${said}`).toBe(true);
+    const told = JSON.stringify({ hold: hold.id, built, ready, eager: { ...times(eager), log: waited }, install: times(install), fresh: times(fresh) });
+    expect.soft([install, eager, fresh].map((run) => run?.status), `fresh's install, eager's call, fresh's call: ${told}`).toEqual(['completed', 'completed', 'completed']);
+    expect.soft(ready < install?.settled_at_ms, `eager is ready, waiting only for the CPU, before fresh's install ends: ${told}`).toBe(true);
+    expect.soft(queued.map((line) => line.text).join('\n'), `eager's wait names the run holding the CPU: ${told}`).toContain(hold.id);
+    const theirs = waited.filter((line) => /install/.test(line.text) || [install?.id, fresh?.id].some((id) => id && line.text.includes(id)));
+    expect.soft(theirs, `eager waits for nothing of fresh's: ${told}`).toEqual([]);
+    expect.soft(eager?.started_at_ms < fresh?.started_at_ms, `the CPU free, eager goes before fresh: ${told}`).toBe(true);
   });
 });
 

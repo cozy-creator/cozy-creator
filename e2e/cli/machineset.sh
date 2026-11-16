@@ -114,6 +114,13 @@ cmp -s "$OUT/set-before-down.txt" "$OUT/set-after-down.txt" || check "a run none
 
 in_project "$P" --json machine use > "$OUT/set-any.json" && J '.machines == []' "$OUT/set-any.json" || check "machine use with none: $(cat "$OUT/set-any.json")"
 for name in stand-a stand-b; do timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true; done
+
+# A run naming a machine by the name only an ended one had is refused as that machine ended (cl-1066): `machine_ended`, which a render
+# places again (`project::GONE`), never `machine_name_ended`, "name it by its rental id", which failed Paul's box for good.
+step "machine set: a run naming an ended machine by name is refused as ended"
+code=0; in_project "$P" --json run "$echo" text=x --on stand-a > "$OUT/set-ended.json" 2>&1 || code=$?
+[ "$code" != 0 ] && J '.error.code == "machine_ended" and (.error.message | test("stand-a has ended"))' "$OUT/set-ended.json" \
+  || check "run --on stand-a once it ended: exit $code: $(head -c 400 "$OUT/set-ended.json")"
 }
 
 # local_idle (cl-894): this computer's machine stopped, as 15 idle minutes stop it, and no other machine. A render naming none, as the

@@ -215,8 +215,9 @@ fn kept_benchmarks(root: &std::path::Path, hub: &str) -> Vec<(String, Vec<api::e
         .collect()
 }
 
-/// Each of `pictures` with the benchmarks its quotes stand on (`references_for`): those of `jobs` and of each function queued or ahead
-/// on any of them.
+/// Each of `pictures` with what its quotes stand on: the benchmarks of `jobs` and of each function queued or ahead on any of them
+/// (`references_for`), and each run of this computer's going on one, its time left as its clock says it (cl-1073, Paul 11-16: runs went
+/// to a busy machine while a faster one sat idle, each run going there counted seconds from done while it fetched its weights).
 pub(crate) fn benched<'j, 'p>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>, pictures: impl IntoIterator<Item = &'p mut Picture>) {
     let mut pictures: Vec<&mut Picture> = pictures.into_iter().collect();
     let mut named: Vec<String> = vec![];
@@ -224,7 +225,13 @@ pub(crate) fn benched<'j, 'p>(api: &Api, jobs: impl IntoIterator<Item = &'j Job>
         named.extend(picture.frame.queue.iter().flatten().map(|root| root.function.clone()));
         named.extend(picture.ahead.iter().map(|job| job.function.clone()));
     }
-    let references = Arc::new(references_for(api, jobs, named));
+    let mut references = references_for(api, jobs, named);
+    for root in pictures.iter().flat_map(|picture| picture.frame.queue.iter().flatten()).filter(|root| root.running && !root.run.is_empty()) {
+        if let Some(left) = api.calcifer.left_there(crate::store::calcifer_id(&root.run)) {
+            references.left.insert(root.run.clone(), left);
+        }
+    }
+    let references = Arc::new(references);
     pictures.iter_mut().for_each(|picture| picture.references = references.clone());
 }
 
@@ -376,14 +383,11 @@ pub(crate) async fn offers_now(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>
     (offers, pictured)
 }
 
-/// `on` as its last Status pictured it, however long ago; none for one that never said, is broken, or runs another minor.
+/// `on` as its last Status pictured it, however long ago; none for one that never said, or is broken.
 fn last_picture(api: &Arc<Api>, on: &On, name: &str) -> Result<Picture, String> {
-    let frame = api.machines.frame(name).ok_or("it hasn't said what it has")?;
+    let frame = api.machines.frame(name).ok_or("it hasn't reported what it has yet")?;
     if let Some(broken) = &frame.broken {
         return Err(format!("it's broken: {}", broken.message));
-    }
-    if !same_minor(&frame.version, this_release()) && !rc_version() {
-        return Err(format!("it runs cozy {}, another minor than this cozy's", frame.version));
     }
     Ok(Picture { on: on.clone(), name: name.to_owned(), frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }
@@ -414,7 +418,7 @@ async fn offered(api: &Arc<Api>, jobs: &[Job], machines: &[On], pictured: &[Resu
     for (on, mine, answer) in futures_util::future::join_all(asked).await {
         match answer {
             Ok(quotes) => mine.into_iter().zip(quotes).for_each(|(at, offer)| offers[at].push(offer)),
-            Err(why) => said.push(format!("{on} didn't say when it would finish: {why}")),
+            Err(why) => said.push(format!("{on} didn't say when it could finish: {why}")),
         }
     }
     for (job, offers) in jobs.iter().zip(&mut offers) {
@@ -424,14 +428,14 @@ async fn offered(api: &Arc<Api>, jobs: &[Job], machines: &[On], pictured: &[Resu
 }
 
 /// The soonest finish of `offers` that can run there at all (release owner, 11-09: one that can't has no finish); of those within a tie
-/// of it, a machine that serves before one on its way, one on its own measured runs before one that isn't, and a rental before this
-/// computer.
+/// of it, a machine that serves before one on its way, one on its own measured runs before one that isn't, a rental before this
+/// computer, then the sooner: never the first listed for being first (cl-1073).
 pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     let fits = || offers.iter().filter(|offer| offer.fits);
     let first = fits().map(|offer| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
     let tied = || fits().filter(|offer| offer.finish_at_ms <= first + tie);
-    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local());
+    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local(), offer.finish_at_ms);
     tied().min_by_key(rank)
 }
 
@@ -450,15 +454,15 @@ pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result
     for name in names.iter().filter(|name| **name != "local").chain(names.iter().filter(|name| **name == "local")) {
         let machine = On::Machine((*name).to_owned());
         match offers.iter().find(|offer| offer.machine == machine) {
-            Some(offer) => why.push(format!("{name} can't run it: {}", offer.refusal.as_ref().map_or("no reason given", |reason| reason.message.as_str()))),
+            Some(offer) => why.push(format!("{name} can't run it ({})", offer.refusal.as_ref().map_or("no reason given", |reason| reason.message.as_str()))),
             None => match api.machines.reach(name).await {
                 Ok(_) => return Ok(machine),
                 Err(e) => why.push(e.message),
             },
         }
     }
-    let said = format!("none of {} can take this run: {}", names.join(", "), why.join("; "));
-    Err(Error::new(Kind::Unavailable, "machines_unavailable", said).remedy("bring one of them back, or name others with --on").next("cozy machine ls"))
+    let said = format!("None of {} can take this run: {}.", names.join(", "), why.join("; "));
+    Err(Error::new(Kind::Unavailable, "machines_unavailable", said).remedy("Bring one of them back, or pick other machines.").next("cozy machine ls"))
 }
 
 /// `on` as its last Status pictures it, read once if none came yet.
@@ -471,7 +475,7 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     }
     let (row, link) = machines.linked(text).map_err(|e| e.message)?;
     if let Some(broken) = machines.broken(&row.name) {
-        return Err(format!("it's broken: {}", broken.message));
+        return Err(format!("it isn't working ({})", broken.message));
     }
     // Its Status as its open stream says it; with none open (it stopped answering, or never did), what it answers now, or no quote: one
     // that doesn't answer isn't a candidate, never placed on what it said before, until it answers again (xs-199).
@@ -480,17 +484,16 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         None => machines.status_read(&row.name, &link).await?,
     };
     if let Some(broken) = &frame.broken {
-        return Err(format!("it's broken: {}", broken.message));
+        return Err(format!("it isn't working ({})", broken.message));
     }
+    // Any version takes work (cl-1069); one on an older minor this computer may move is updated first, and placed once it's done.
     let own = this_release();
-    if !same_minor(&frame.version, own) && !rc_version() {
-        if !update {
-            return Err(format!("it runs cozy {}, another minor than this cozy's {own}: its first run updates it", frame.version));
-        }
-        match machines.current(&row.name).await.map_err(|e| e.message)? {
-            None => {}
-            Some(run) => return Err(format!("updating it to cozy {own} first (run {})", run.name)),
-        }
+    if update
+        && !same_minor(&frame.version, own)
+        && !rc_version()
+        && let Some(run) = machines.current(&row.name).await.map_err(|e| e.message)?
+    {
+        return Err(format!("it's updating to cozy {own} first (run {})", run.name));
     }
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![], references: Arc::default() })
 }
@@ -499,13 +502,13 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
 /// 12.0 GiB to fetch), ready in 210 s`, `local can't: does_not_fit`. Preparing: its install, download and load.
 pub(crate) fn said(offer: &Offer, now: i64) -> String {
     if !offer.fits {
-        return format!("{} can't: {}", offer.machine, offer.refusal.as_ref().map_or("no reason given", |reason| reason.code.as_str()));
+        return format!("{} can't run it ({})", offer.machine, offer.refusal.as_ref().map_or("no reason given", |reason| reason.message.as_str()));
     }
     let ready = offer.ready_at_ms.map(|at| format!(", ready in {} s", (at - now).max(0) / 1000)).unwrap_or_default();
     let warm = if offer.warm { ", warm" } else { "" };
     let fetch = match offer.fetch_bytes {
         0 => String::new(),
-        bytes => format!(", {:.1} GiB to fetch", bytes as f64 / (1u64 << 30) as f64),
+        bytes => format!(", {} to download", crate::bytes(bytes as f64)),
     };
     let preparing = match offer.prepare_ms / 1000 {
         0 => String::new(),
@@ -513,7 +516,7 @@ pub(crate) fn said(offer: &Offer, now: i64) -> String {
     };
     let demand = match offer.on_demand_bytes {
         0 => String::new(),
-        bytes => format!("; plus up to {:.1} GiB on demand", bytes as f64 / (1u64 << 30) as f64),
+        bytes => format!("; plus up to {} on demand", crate::bytes(bytes as f64)),
     };
     format!("{} finishes in {} s ({:?}{warm}{preparing}{demand}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
 }
@@ -523,7 +526,7 @@ pub(crate) fn within(ms: i64) -> String {
     let seconds = ms.max(0) as f64 / 1e3;
     match seconds {
         s if s < 45.0 => "in under a minute".into(),
-        s if s < 90.0 * 60.0 => format!("in about {} min", (s / 60.0).round().max(1.0)),
-        s => format!("in about {:.1} h", s / 3600.0),
+        s if s < 90.0 * 60.0 => format!("in about {}m", (s / 60.0).round().max(1.0)),
+        s => format!("in about {:.1}h", s / 3600.0),
     }
 }

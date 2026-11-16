@@ -25,7 +25,7 @@ export function HistoryControls({ onAddFiles }: { onAddFiles: () => void }) {
   const kept = useSignal(history.kept)
   const undo = kept ? history.nextUndo() : undefined
   const redo = kept ? history.nextRedo() : undefined
-  const none = "This Calcifer keeps no history: it's older than this page"
+  const none = "Undo needs a newer version of Cozy on this computer"
 
   return (
     <div className="history">

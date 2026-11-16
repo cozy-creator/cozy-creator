@@ -73,7 +73,7 @@ These hold for every resource. A route that cannot follow one says why in its se
 **Naming.** Paths are `/v1/<resources>[/{id}[/<sub-resource>]]`, plural and kebab-case (`/v1/rental-quotes`).
 An action on a resource is a POST to a sub-resource named for it (`/v1/runs/{id}/cancel`,
 `/v1/projects/{id}/approve`). JSON fields are snake_case. Ids are strings with a kind prefix (`run-…`,
-`project-…`); a run's `number` is its project's and is accepted wherever its id is, in that project. A run's `name` is
+`project-…`); a run's `number` is its project's, 1 for its first (cl-1075), and is accepted wherever its id is, in that project. A run's `name` is
 `KEY-N` (cl-987), its project's key and its number there, `COZY-N` for Calcifer's own runs; it is accepted wherever its id is,
 in any scope, as is a key the project had. A locked project's keys are in no index of Calcifer's, only its `project.db`, and are
 registered again as it opens: its runs' names are unknown here until then (`404 run_not_found`). Times are Unix milliseconds in
@@ -181,7 +181,7 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 `Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
 
 ### Status
-- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, encrypted_project_creation, home}`. `home` is this person's home folder, where the page suggests a first project's folder. Clients must require `encrypted_project_creation: true` before sending encrypted-creation credentials or requests; older controllers omit it. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
+- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, home}`. `home` is this person's home folder, where the page suggests a first project's folder. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
 - `GET /v1/settings`: `{send_performance_data}`, this computer's settings Calcifer holds (config.toml's `[calcifer]`); `PUT` sends them
   whole, written to config.toml first. `send_performance_data` (default true, cl-1006): each published function's run on any
   machine is reported to the Hub (`POST /v1/run-reports`) with no credential, for troubleshooting and usage, never estimates: its
@@ -433,6 +433,9 @@ A machine is this computer's (`local`, started when used), a rental, or another 
 - `GET /v1/machines/{name}/models[?fresh=true]`: `MachineModels {machine, models: [{machine, model, release, lane, precision, checkpoint, bytes, shared_bytes}], silent?, repositories, bytes, stored_bytes}`.
   `silent`: it has reported no Status yet. `repositories` and `bytes` are its store's, shared content counted once;
   `stored_bytes` is all its store takes on the disk, models or not (0 from a machine that doesn't measure it).
+- `POST /v1/machines/{name}/models/remove` `{model}`: its downloaded copies leave that machine, never the Hub:
+  `RemovedModel {model, removed, cache_bytes_removed, retained_bytes}`. One a run there reads is refused
+  `machine_refused` (cause `model_in_use`), naming the run.
 - `GET /v1/machines/{name}/logs/{tensord|tensorfs|memory}?lines=N&since_ms=T`, and on `local` `logs/calcifer`, Calcifer's own (`400 log_not_kept` elsewhere; the CLI reads its file, so it works with Calcifer down):
   - The newest `N` whole lines (`0`: all), as `text/plain`. `since_ms` drops the lines before the first one
     stamped at or after `T`.
@@ -517,7 +520,9 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   named: the newest; `checkpoint=sha256:…`: that one) holds, read from its header alone, never a weight: each component's
   class, config keys (`full`: the config), run data with sizes, tensor count and a LoRA's modules with their α; and the
   header's records of where it came from (`inherited`, `composed`, `added`, `provenance`, `family`, `adapter`). `resolves_to`
-  is the release a run naming this one takes, its series' newest fix.
+  is the release a run naming this one takes, its series' newest fix. `gpus=8.9[,…]` (dev-only `--gpu`), with `components=`:
+  only the lane the Hub resolves the release to for those GPUs and a slot reading those components, memory unasked, as
+  TensorD asks for a slot that takes encoded weights; `resolved` says it and why a better lane was passed over.
 - `PATCH /v1/models/{org}/{name}` `{hub, family, tags, add_tags, remove_tags, triggers, strength}`:
   `ModelEdited {model, warnings}`, the model as `GET` reads it. Each field given is set, an absent one
   kept: `family` empty or `none` clears the label (its weights' family shows then); `tags` replaces them
@@ -665,7 +670,8 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   it is back by its id, under its name, or `<name>_2` if another took it.
 - `GET|PUT /v1/projects/{id}/key` (`{key}`): `{key, former}`, the key its runs are named by and the keys it had here, which still name
   them. A key is 2 to 10 letters and digits, a letter first, unique among this computer's projects, proposed from the project's name
-  as it first opens here and kept in its `project.db`. `409 project_key_taken` (another project's, now or before, or `COZY`),
+  as it first opens here (its digits kept, `lab3_2` is `LAB32`; one taken lengthened with letters; never another known folder's name's
+  first key, cl-1075) and kept in its `project.db`. `409 project_key_taken` (another project's, now or before, or `COZY`),
   `400 project_key_invalid`.
 - `GET /v1/projects/{id}/address`: the index's `{id, code, key, gone?}` for a registered project. It resolves browser links while the project is locked without opening its content. One whose folder went is still answered, by what it was known by, with `gone`: where it was (cl-980); a link to it says so, and nothing of it reads.
 - `GET /v1/projects/{id}` (`?assets=false`: all but its assets; `unsent`: what kept its last render from reaching a machine, each error once, until another is asked): worked out once per revision, so another read costs only its answer. `{id, path, board?, assets, queue?: [{name, running, run?}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy,
@@ -801,6 +807,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy whoami` | `GET /v1/account` |
 | `cozy model ls [query]` | `GET /v1/models` |
 | `cozy model ls --on` | `GET /v1/machines/{name}/models`; `--on all`: `GET /v1/machines` |
+| `cozy model uninstall [--on]`, `cozy lora uninstall [--on]` | `POST /v1/machines/{name}/models/remove` (default `local`) |
 | `cozy model show`, `cozy lora show` | `GET /v1/models/{org}/{name}/headers` |
 | `cozy model edit` | `PATCH /v1/models/{org}/{name}` |
 | `cozy model publish` | `POST /v1/models/{org}/{name}/releases` |

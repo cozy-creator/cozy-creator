@@ -270,7 +270,7 @@ impl Calcifer {
     pub(crate) async fn bring(&self, digest: &str, machine: &str) -> Result<(), String> {
         let made = self.making_scoped(digest, machine).map_err(|e| e.to_string())?;
         let Some((run, item)) = made else {
-            return Err(format!("Calcifer knows of no run on {machine} that made it"));
+            return Err(format!("Cozy doesn't know which run on {machine} made it"));
         };
         // On its way here already: that export's landing, and no second read of it.
         let mut events = self.subscribe();
@@ -300,7 +300,7 @@ impl Calcifer {
             };
             let why = match done {
                 Ok(()) => return Ok(()),
-                Err(Failure::Superseded) => return Err("a newer revision of it is recorded".into()),
+                Err(Failure::Superseded) => return Err("a newer version of it was saved".into()),
                 Err(Failure::Lost(message) | Failure::Refused(message)) => return Err(message),
                 Err(Failure::Again(message) | Failure::Wrong(message)) => message,
             };
@@ -355,13 +355,13 @@ impl Calcifer {
                 let (name, index, rev) = (&item.name, item.index, item.rev);
                 let exported = match exported {
                     Err(Failure::Refused(message)) if run.state == RunState::Settled => {
-                        Err(Failure::Lost(format!("the machine refused it ({message})")))
+                        Err(Failure::Lost(format!("the machine refused to send it ({message})")))
                     }
                     Err(Failure::Wrong(message)) => {
                         let reads = wrong.entry((name.clone(), index, rev)).or_default();
                         *reads += 1;
                         match *reads >= WRONG_READS {
-                            true => Err(Failure::Lost(format!("read {reads} times, never its bytes: {message}"))),
+                            true => Err(Failure::Lost(format!("Cozy tried {reads} times but never got the whole file: {message}"))),
                             false => Err(Failure::Again(message)),
                         }
                     }
@@ -444,13 +444,13 @@ impl Calcifer {
         let (machine, link, watch, _) = self.machine(name).map_err(Failure::Again)?;
         *changed = Some(watch);
         if machine.state == MachineState::Ended {
-            let reason = machine.reason.as_deref().unwrap_or("no reason was given");
-            return Err(Failure::Lost(format!("its machine {name} ended: {reason}")));
+            let reason = machine.reason.as_deref().unwrap_or("no reason given");
+            return Err(Failure::Lost(format!("{name} ended ({reason})")));
         }
-        let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start")))?;
-        let owner=self.row_owner(run).map_err(|_|Failure::Again("project storage owner is unavailable".into()))?;
+        let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start up")))?;
+        let owner=self.row_owner(run).map_err(|_|Failure::Again("the project isn't open right now".into()))?;
         if let Some(owner)=owner {
-            if run.owner!=owner.project_id() { return Err(Failure::Refused("copied execution history is inert".into())); }
+            if run.owner!=owner.project_id() { return Err(Failure::Refused("it was copied from another project's history".into())); }
             return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Refused(error.code));
         }
         Ok(link)
@@ -490,7 +490,7 @@ impl Calcifer {
         lock(&self.exports.moving).insert(key.clone(), (moved.clone(), item.length));
         let work = async {
             tokio::fs::create_dir_all(&out_dir).await.map_err(|e| {
-                Failure::Again(format!("cannot create {}: {e}", out_dir.display()))
+                Failure::Again(format!("couldn't create {}: {e}", out_dir.display()))
             })?;
             let staged = if item.media_type == tree::MEDIA {
                 fetch_tree(link, &target, item, &dest, &moved).await?
@@ -525,8 +525,8 @@ impl Calcifer {
                         && let Ok(Some(machine)) = self.store.machine(name)
                         && machine.state == MachineState::Ended
                     {
-                        let reason = machine.reason.as_deref().unwrap_or("no reason was given");
-                        break Err(Failure::Lost(format!("its machine {name} ended: {reason}")));
+                        let reason = machine.reason.as_deref().unwrap_or("no reason given");
+                        break Err(Failure::Lost(format!("{name} ended ({reason})")));
                     }
                     continue;
                 }
@@ -647,7 +647,7 @@ impl Calcifer {
         let began = Instant::now();
         let old = suffixed(dest, ".old");
         let unplaced =
-            |e: std::io::Error| Failure::Again(format!("cannot place {}: {e}", dest.display()));
+            |e: std::io::Error| Failure::Again(format!("couldn't save {}: {e}", dest.display()));
         let timings = {
             let _placing = lock(&self.exports.placing);
             let lock_ms = began.elapsed().as_secs_f64() * 1000.0;
@@ -682,7 +682,7 @@ impl Calcifer {
                         }
                         // The file stands where it landed if `files/` itself can't take it.
                         Err(why) => {
-                            unlisted = Some(format!("{name} stands in .runs/, and its project can't keep it: {why}"));
+                            unlisted = Some(format!("{name} is in .runs/, but the project couldn't keep it: {why}"));
                             dest.to_owned()
                         }
                     }
@@ -762,13 +762,13 @@ pub(crate) async fn serve(
         let _placing = lock(&api.calcifer.exports.placing);
         let item = api.calcifer.row_store(&row)?.output(row.id.as_str(), name, index)?;
         let item = item.ok_or_else(|| {
-            let message = format!("run {number} has no output {name} at index {index}");
+            let message = format!("Run {number} has no result {name} at index {index}.");
             Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run watch {number}")))
         })?;
         let (file, landed_folder) = match (&item.checkpoint, &item.path, item.exported_rev) {
             (None, Some(path), Some(_)) if item.media_type == tree::MEDIA => (None, Some(crate::project::vault::resolve_path(path).map_err(Refusal)?)),
             (None, Some(path), Some(_)) => (Some(std::fs::File::open(crate::project::vault::resolve_path(path).map_err(Refusal)?).map_err(|e| {
-                let message = format!("its file {} is gone: {e}", path.display());
+                let message = format!("The result's file {} is gone: {e}.", path.display());
                 Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run watch {number}")))
             })?), None),
             _ => (None, None),
@@ -780,7 +780,7 @@ pub(crate) async fn serve(
     }
     if let Some(checkpoint) = &item.checkpoint {
         let message = format!(
-            "output {name} of run {number} is a TensorFS checkpoint reference: {}@{}",
+            "Result {name} of run {number} is a model checkpoint ({}@{}), not a file.",
             checkpoint.model_id, checkpoint.revision
         );
         return Err(api::refuse(
@@ -793,11 +793,11 @@ pub(crate) async fn serve(
         let record = api.calcifer.record(&row)?;
         if record.output.iter().any(|kept| kept.stays && kept.name == *name && kept.index == index) {
             let on = row.machine.as_deref().unwrap_or("its machine");
-            let message = format!("output {name} of run {number} stays on {on}: it isn't brought to this computer");
+            let message = format!("Result {name} of run {number} stays on {on} and isn't downloaded to this computer.");
             return Err(Refusal(api::refuse(Kind::Conflict, "output_on_its_machine", message).0.next(format!("cozy run watch {number}"))));
         }
         if let Some(reason) = item.export_error {
-            let message = format!("output {name} of run {number} will not land: {reason}");
+            let message = format!("Result {name} of run {number} can't be downloaded: {reason}.");
             return Err(Refusal(api::refuse(Kind::Unavailable, "output_not_exported", message).0.next(format!("cozy run watch {number}"))));
         }
         let state = match row.state {
@@ -805,7 +805,7 @@ pub(crate) async fn serve(
             RunState::Accepted => "is running",
             _ => "is queued",
         };
-        let message = format!("output {name} of run {number} has not landed yet; the run {state}");
+        let message = format!("Result {name} of run {number} hasn't downloaded yet; the run {state}.");
         let refusal = api::refuse(Kind::Conflict, "output_not_ready", message);
         return Err(Refusal(refusal.0.next(format!("cozy run watch {number}"))));
     };
@@ -842,7 +842,7 @@ fn protect(mut response: Response, readable: Option<Arc<AtomicBool>>) -> Respons
 /// A folder output: its tree document, or with `member` one of its files, each named by its content so a client caches it.
 async fn folder(dir: &Path, member: Option<&str>, number: &str, name: &str, headers: &HeaderMap) -> Result<Response, Refusal> {
     let gone = |e: std::io::Error| {
-        let message = format!("its folder {} is gone: {e}", dir.display());
+        let message = format!("The result's folder {} is gone: {e}.", dir.display());
         Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run watch {number}")))
     };
     let at = dir.to_owned();
@@ -863,7 +863,7 @@ async fn folder(dir: &Path, member: Option<&str>, number: &str, name: &str, head
             let path = parts.iter().fold(dir.to_owned(), |path, part| path.join(part));
             let held = staged.files.iter().find(|file| file.path == path).filter(|_| !parts.iter().any(|part| matches!(*part, "" | "." | "..")));
             let Some(held) = held else {
-                let message = format!("output {name} of run {number} holds no {member}");
+                let message = format!("Result {name} of run {number} has no {member}.");
                 return Err(Refusal(api::refuse(Kind::NotFound, "output_member_not_found", message).0.next(format!("cozy run watch {number}"))));
             };
             let media = crate::runs::bind::sniff(&held.path).map(|sniffed| sniffed.media_type).unwrap_or_else(|_| "application/octet-stream".into());
@@ -957,7 +957,7 @@ async fn fetch_file(
             Ok(held) => held,
             Err(e) if from == 0 => {
                 return Err(Failure::Again(format!(
-                    "cannot write {}: {e}",
+                    "couldn't write {}: {e}",
                     part.display()
                 )));
             }
@@ -999,7 +999,7 @@ async fn fetch_tree(
 ) -> Result<PathBuf, Failure> {
     let (stage, manifest) = (suffixed(dest, ".part"), suffixed(dest, ".manifest.part"));
     let unwritable =
-        |e: std::io::Error| Failure::Again(format!("cannot write {}: {e}", stage.display()));
+        |e: std::io::Error| Failure::Again(format!("couldn't write {}: {e}", stage.display()));
     let prepared = blocking({
         let (stage, manifest, length) = (stage.clone(), manifest.clone(), item.length);
         move || {
@@ -1016,7 +1016,7 @@ async fn fetch_tree(
     let _ = std::fs::remove_file(&manifest);
     let mut read: HashMap<String, PathBuf> = HashMap::new();
     let members =
-        tree::parse(&listed).map_err(|e| Failure::Lost(format!("the tree's manifest: {e}")))?;
+        tree::parse(&listed).map_err(|e| Failure::Lost(format!("couldn't read the folder's manifest: {e}")))?;
     for (path, tree::Member { length, sha256, .. }) in members {
         let digest = format!("sha256:{sha256}");
         let file = stage.join(&path);
@@ -1123,7 +1123,7 @@ async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
         let hash_ms = hash_began.elapsed().as_secs_f64() * 1000.0;
         if held != length || got != digest {
             return Ok(Err(Failure::Wrong(format!(
-                "read {held} bytes with digest {got}, not {length} with {digest}"
+                "got {held} bytes with digest {got}, not {length} with {digest}"
             ))));
         }
         let sync_began = Instant::now();
@@ -1258,20 +1258,20 @@ async fn read_range(
     timing.phase = "validate_headers";
     if output.length != length {
         let held = format!(
-            "the machine holds {} bytes of revision {rev}, not {length}",
+            "the machine has {} bytes of version {rev}, not {length}",
             output.length
         );
         return Err(Ranged::Stop(Failure::Lost(held)));
     }
     if output.range.0 != first {
         return Err(Ranged::Again(format!(
-            "the machine answered bytes from {}, not {first}",
+            "the machine sent bytes from {}, not {first}",
             output.range.0
         )));
     }
     let unwritable = |e: std::io::Error| {
         Ranged::Stop(Failure::Again(format!(
-            "cannot write {}: {e}",
+            "couldn't write {}: {e}",
             part.display()
         )))
     };
@@ -1294,7 +1294,7 @@ async fn read_range(
         let data = match next {
             Some(Ok(data)) => data,
             Some(Err(e)) => return Err(Ranged::Again(e.to_string())),
-            None => return Err(Ranged::Again("the machine ended the range early".into())),
+            None => return Err(Ranged::Again("the machine stopped sending early".into())),
         };
         timing
             .first_body_ms
@@ -1320,7 +1320,7 @@ async fn read_range(
 fn refused(e: machine_client::Error) -> Ranged<Failure> {
     match e {
         machine_client::Error::Refused { status: 404, error } => Ranged::Stop(Failure::Lost(format!(
-            "the machine no longer holds it ({}: {})",
+            "the machine no longer has it ({}: {})",
             error.code, error.message
         ))),
         // Definitive: the machine will not serve this read (403, 400, 416, 501) or holds the

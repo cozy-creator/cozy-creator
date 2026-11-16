@@ -38,7 +38,7 @@ fn signed(api: &Api, hub: &Origin) -> Result<Endpoint, Error> {
 }
 
 fn failed(error: Failed) -> Error {
-    Error::new(Kind::Unavailable, "project_transfer", format!("{}: {}", error.code.as_str(), error.detail))
+    Error::new(Kind::Unavailable, "project_transfer", format!("Couldn't move the project's files: {}.", error.detail.trim_end_matches('.'))).cause(error.code.as_str())
 }
 
 fn local(detail: impl ToString) -> Failed {

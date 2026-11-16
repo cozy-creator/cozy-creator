@@ -13,7 +13,7 @@ function Held({ machine }: { machine: Machine }) {
   const models = useQuery({ queryKey: ["machine", name, "models"], queryFn: ({ signal }) => client.machineModels(name, signal) })
   return (
     <>
-      <Failure error={packages.error} lead="Couldn't read its packages" />
+      <Failure error={packages.error} lead="Couldn't load this machine's packages" />
       <ul className="rows">
         {packages.data?.packages.map((held) => (
           <li className="heldrow" key={`${held.package}@${held.release}`}>
@@ -23,9 +23,9 @@ function Held({ machine }: { machine: Machine }) {
           </li>
         ))}
       </ul>
-      {packages.data && !packages.data.packages.length && <p className="muted">No packages.</p>}
-      <Failure error={models.error} lead="Couldn't read its models" />
-      {models.data?.silent && <p className="muted">It hasn't reported yet, so nothing is known of what it holds.</p>}
+      {packages.data && !packages.data.packages.length && <p className="muted">No packages installed.</p>}
+      <Failure error={models.error} lead="Couldn't load this machine's models" />
+      {models.data?.silent && <p className="muted">It hasn't reported in yet, so its models aren't known.</p>}
       <ul className="rows">
         {models.data?.models.map((held) => (
           <li className="heldrow" key={`${held.model}@${held.release}:${held.lane}`}>
@@ -34,10 +34,10 @@ function Held({ machine }: { machine: Machine }) {
           </li>
         ))}
       </ul>
-      {models.data && !models.data.silent && !models.data.models.length && <p className="muted">No models.</p>}
+      {models.data && !models.data.silent && !models.data.models.length && <p className="muted">No models downloaded.</p>}
       {Boolean(models.data?.bytes) && (
         <p className="muted">
-          {bytes(models.data?.bytes ?? 0)} in all, with shared content counted once.
+          {bytes(models.data?.bytes ?? 0)} in total (shared files counted once).
         </p>
       )}
     </>

@@ -191,7 +191,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await drawer.getByRole('button', { name: 'Sign out', exact: true }).click();
       const confirm = drawer.locator('.confirm');
       await expect(confirm, 'Sign out asks in the drawer').toBeVisible();
-      await expect.soft(confirm.locator('.says')).toHaveText(`Sign this computer out of ${email}? Its key is revoked at the Hub and erased here. Rentals go on billing until they end, and it can't rent or end them until it signs in again.`);
+      await expect.soft(confirm.locator('.says')).toHaveText(`Sign this computer out of ${email}? The Hub revokes this computer's key, and Cozy deletes it here. Your rentals keep running and costing money until they end, and you can't rent or end one from this computer until you sign in again.`);
       await confirm.getByRole('button', { name: 'Sign out', exact: true }).click();
       const address = drawer.getByLabel('Email', { exact: true });
       await expect(address, "AuthKit's form, signed out").toBeVisible();
@@ -212,7 +212,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect(field).toBeVisible();
       // cozy login's code went out moments ago, and the Hub spaces codes to one email: the page says how long, and Resend opens once it
       // may ask again.
-      await expect.soft(drawer.getByText(/^Check your email\. You can ask for another code in \d+ s\.$/), 'the wait, said in words').toBeVisible();
+      await expect.soft(drawer.getByText(/^Check your email\. You can ask for another code in \d+s\.$/), 'the wait, said in words').toBeVisible();
       const resend = drawer.getByRole('button', { name: 'Resend', exact: true });
       await expect(resend).toBeEnabled({ timeout: 75_000 });
       const before = codesFor(email).length;
@@ -502,7 +502,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect.soft(row.locator('small'), 'its vCPUs').toHaveText(`${width.vcpu_count} vCPU, no GPU`);
       await expect.soft(row.locator('.price'), 'its price').toHaveText(`$${(width.price_usd_micros_per_hour / 1e6).toFixed(2)}/h`);
       await row.getByRole('button', { name: 'Rent', exact: true }).click();
-      await expect.soft(rent.getByText('It bills until you end it, or after 15 minutes idle.', { exact: true }), 'what the quote bills').toBeVisible();
+      await expect.soft(rent.getByText('You pay for it until you end it. It also ends by itself after 15 minutes idle.', { exact: true }), 'what the quote costs').toBeVisible();
       const order = rent.getByRole('button', { name: /^Rent 1× CPU at \$\d+\.\d{2}\/h$/ });
       await expect(order, 'one click on its stated price').toBeEnabled();
       const placed = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/machines');
@@ -539,10 +539,10 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
 
       await drawer.getByRole('button', { name: 'End', exact: true }).click();
       const confirm = drawer.locator('.confirm');
-      await expect.soft(confirm.locator('.says'), 'End asks in the drawer').toHaveText(/^End (this rental|\S+)\? Outputs of its runs that haven't landed here land first, then it shuts down\. Its files on the pod go\./);
-      await confirm.getByRole('button', { name: 'End it', exact: true }).click();
+      await expect.soft(confirm.locator('.says'), 'End asks in the drawer').toHaveText(/^End (this rental|\S+)\? Cozy downloads any results still on it first, then shuts it down and deletes its files\./);
+      await confirm.getByRole('button', { name: 'End rental', exact: true }).click();
       await expect.soft(drawer.getByText(/^Shutting down\./), 'ending').toBeVisible();
-      await expect(drawer.getByText('Ended. Nothing of it bills now, and what landed here stays.', { exact: true }), 'ended').toBeVisible({ timeout: 90_000 });
+      await expect(drawer.getByText('Ended. It costs nothing more, and results already downloaded stay on this computer.', { exact: true }), 'ended').toBeVisible({ timeout: 90_000 });
       const record = (await cli.json('machine', 'ls', '--history')).rentals.find((one) => one.rental_id === rental);
       expect.soft(record?.ended_at_ms, "ended once its Hub says it's gone").toBeGreaterThan(0);
       await expect.poll(async () => (await run('docker', CONTAINERS)).stdout.trim(), { message: "the docker provider's containers", timeout: 90_000 }).toBe('');

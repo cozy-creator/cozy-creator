@@ -112,7 +112,7 @@ test('delete-undo', async ({ page, project, api, guards }) => {
     await page.keyboard.press('Delete');
     await gone('F', 'F');
     const said = page.locator('.notes .note .line').filter({ hasText: 'Deleted F.' });
-    await expect.soft(said, 'the note names who reads it').toHaveText(`Deleted F. ${G.name} reads this and isn't approved yet.`);
+    await expect.soft(said, 'the note names who reads it').toHaveText(`Deleted F. ${G.name} uses it and isn't approved yet.`);
     const line = await said.evaluate((el) => el.getBoundingClientRect().height / (parseFloat(getComputedStyle(el).lineHeight) || parseFloat(getComputedStyle(el).fontSize) * 1.3));
     expect.soft(Math.round(line), 'in one line').toBe(1);
     const answer = await api.raw('GET', project.at('/assets/F'));

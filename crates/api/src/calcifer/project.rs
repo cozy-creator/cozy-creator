@@ -105,6 +105,11 @@ pub fn key(text: &str) -> Option<String> {
     ((2..=10).contains(&key.len()) && spelled && key.starts_with(|c: char| c.is_ascii_uppercase())).then_some(key)
 }
 
+/// What names run `number` of the project keyed `key` (cl-987, cl-1075): `KEY-N`, N its number there, counted from 1.
+pub fn run_label(key: &str, number: u64) -> String {
+    format!("{key}-{number}")
+}
+
 /// A run's name, `KEY-N` in any case: its project's key and its number there.
 pub fn run_name(text: &str) -> Option<(String, u64)> {
     let (key, number) = text.trim().rsplit_once('-')?;
@@ -124,7 +129,7 @@ pub struct Key {
 
 /// A request in no project, which needs one.
 pub fn unnamed() -> Error {
-    Error::new(crate::error::Kind::Usage, "not_in_a_project", "run this command from an existing project directory. Use cozy new to create one")
+    Error::new(crate::error::Kind::Usage, "not_in_a_project", "Run this from inside a project folder, or create a project first.").next("cozy new")
         .next("cozy new")
 }
 

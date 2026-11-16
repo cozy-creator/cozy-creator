@@ -1,4 +1,4 @@
-//! `cozy model ls --on`, `install` and `upload`: models on machines, through Calcifer
+//! `cozy model ls --on`, `install`, `uninstall` and `upload`: models on machines, through Calcifer
 //! (CALCIFER-API.md "Models"). Download and upload are warm runs on the machine `--on` names. The
 //! machine fetches, makes and publishes the bytes itself, so no weight passes through this
 //! computer; a local file goes to the machine as the run's input. A Hub checkpoint is recorded at the
@@ -79,32 +79,31 @@ pub(super) async fn download_to(ctx: &Context, mut ask: ModelDownload, on: Optio
     Ok(crate::run::exit_code(&run))
 }
 
-pub(super) async fn remove(ctx: &Context, model: &str) -> Result<ExitCode, Error> {
-    let removed = remove_local(ctx, model).await?;
-    print_removed(ctx, &removed);
+pub(super) async fn remove(ctx: &Context, model: &str, on: &str) -> Result<ExitCode, Error> {
+    let removed = remove_from(ctx, model, on).await?;
+    print_removed(ctx, &removed, on);
     Ok(ExitCode::SUCCESS)
 }
 
-pub(super) async fn remove_local(ctx: &Context, model: &str) -> Result<api::calcifer::RemovedModel, Error> {
+/// `model`'s downloaded copies off machine `on` (`POST /v1/machines/{name}/models/remove`), as `model ls --on` reads it.
+pub(super) async fn remove_from(ctx: &Context, model: &str, on: &str) -> Result<api::calcifer::RemovedModel, Error> {
     let model_id = api::model_ref::ModelId::parse(model)?;
+    let route = format!("{}/models/remove", crate::machine::route(&on.to_ascii_lowercase())?);
     let key = crate::run::mint_key();
-    let removed: api::calcifer::RemovedModel = ctx.calcifer().await?.post(
-        "/v1/machines/local/models/remove", &api::calcifer::RemoveModel { model: model_id.to_string() }, Some(&key),
-    ).await?;
-    Ok(removed)
+    ctx.calcifer().await?.post(&route, &api::calcifer::RemoveModel { model: model_id.to_string() }, Some(&key)).await
 }
 
-fn print_removed(ctx: &Context, removed: &api::calcifer::RemovedModel) {
+fn print_removed(ctx: &Context, removed: &api::calcifer::RemovedModel, on: &str) {
     let model = &removed.model;
     if ctx.json {
         output::json(&removed);
     } else if removed.removed {
-        anstream::println!("Removed local copy of {}. Cache bytes removed: {}.", model, output::bytes(removed.cache_bytes_removed));
+        anstream::println!("Removed {model} from {on}: {} freed.", output::bytes(removed.cache_bytes_removed));
         if removed.retained_bytes > 0 {
-            anstream::println!("{} retained because the data is in use or shared.", output::bytes(removed.retained_bytes));
+            anstream::println!("{} kept: other models share it, or a reader holds it.", output::bytes(removed.retained_bytes));
         }
     } else {
-        anstream::println!("No local copy of {model} was found.");
+        anstream::println!("{on} holds no copy of {model}.");
     }
 }
 

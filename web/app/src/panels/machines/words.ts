@@ -21,27 +21,29 @@ export const gpusWords = (machine: Machine) => {
   return `${rental.gpus}× ${rental.accelerator}`
 }
 
+/** Its state in a word or two, with why where that's known: `Ready`, `Starting up (pulling the image)`, `Offline (its provider stopped
+ *  it)`. */
 export function stateWords(machine: Machine, now: number): string {
-  if (machine.offline) return `offline: ${machine.offline}`
-  if (machine.broken && machine.state !== "ended") return `broken: ${machine.broken.code}`
-  const unverified = machine.unverified ? " (unverified)" : ""
+  if (machine.offline) return `Offline (${machine.offline})`
+  if (machine.broken && machine.state !== "ended") return `Not working (${machine.broken.message.replace(/\.$/, "")})`
+  const unverified = machine.unverified ? " (may be out of date)" : ""
   switch (machine.state) {
     case "booting":
-      return `booting${machine.boot ? ` · ${machine.boot}` : ""}${unverified}`
+      return `Starting up${machine.boot ? ` (${machine.boot})` : ""}${unverified}`
     case "ready": {
       const since = machine.rental?.unreachable_since_ms
-      if (since) return `the Hub can't reach it, for ${span((now - since) / 1000)}${unverified}`
-      if (machine.unreachable_since_ms) return `ready, not answering for ${span((now - machine.unreachable_since_ms) / 1000)}${unverified}`
-      return `ready${unverified}`
+      if (since) return `The Hub hasn't reached it for ${span((now - since) / 1000)}${unverified}`
+      if (machine.unreachable_since_ms) return `Not responding for ${span((now - machine.unreachable_since_ms) / 1000)}${unverified}`
+      return `Ready${unverified}`
     }
     case "ending":
-      return "ending"
+      return "Ending"
     case "ended":
-      return "ended"
+      return "Ended"
     case "stopped":
-      return "stopped, starts when used"
+      return "Stopped, starts when needed"
     default:
-      return "unknown"
+      return "State unknown"
   }
 }
 
@@ -51,13 +53,13 @@ export function brokenWords(machine: Machine): string {
   if (!broken || machine.state === "ended") return ""
   const then =
     machine.kind !== "rental"
-      ? "It takes no work, stops after 2 idle minutes, and its next use starts it and checks again."
+      ? "Cozy won't send it work. It stops after 2 idle minutes, and checks itself again the next time it's needed."
       : machine.status?.phase === "releasing"
-        ? "It's releasing itself."
+        ? "It's ending itself."
         : broken.code === "silent_after_update" && machine.ordered !== false
-          ? "This computer ends it, as it bills for nothing."
-          : "It takes no work, and releases itself once nothing runs there."
-  return `It's broken: ${broken.message}. ${then}`
+          ? "Cozy is ending it, since it costs money and can't do any work."
+          : "Cozy won't send it work, and it ends itself once nothing is running on it."
+  return `This machine can't run anything right now: ${broken.message.replace(/\.$/, "")}. ${then}`
 }
 
 /** What makes its runs slow now (cl-913): a GPU throttled for heat, a Runtime without its kernels. Red wherever it shows. */
@@ -66,9 +68,9 @@ export function slowWords(machine: Machine): string[] {
   if (!status || machine.state === "ended") return []
   const heat = (status.heat ?? []).map(
     (hot) =>
-      `GPU ${hot.gpu} ran throttled for heat ${Math.round(hot.share * 100)}% of its last run (${hot.temperature_max_c} °C, ${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${hot.replayed ? " (replayed readings)" : ""}`,
+      `GPU ${hot.gpu} slowed down from heat for ${Math.round(hot.share * 100)}% of its last run (${hot.temperature_max_c} °C, ${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${hot.replayed ? " (replayed readings)" : ""}`,
   )
-  const kernels = status.runtime_kernels ? [`Its Runtime ${status.runtime} serves no native kernels: ${status.runtime_kernels}`] : []
+  const kernels = status.runtime_kernels ? [`Runtime ${status.runtime} is missing its fast GPU kernels, so runs here are slower: ${status.runtime_kernels}`] : []
   return [...heat, ...kernels]
 }
 
@@ -84,18 +86,19 @@ export const stateClass = (machine: Machine) =>
           : "s-queued"
 
 export const kindWords = (machine: Machine) =>
-  machine.kind === "rental" && machine.ordered === false ? "rental, another computer's" : machine.kind
+  machine.kind === "local" ? "This computer" : machine.kind === "added" ? "Added computer" : machine.ordered === false ? "Rental (rented by another computer)" : "Rental"
 
 /** When an idle machine ends itself; a rental with work names no deadline and ends after it. */
 export function endsWords(machine: Machine, now: number): string {
   const deadline = machine.status?.idle_deadline_ms
-  if (deadline != null) return deadline > now ? `ends in ${span((deadline - now) / 1000)} if it stays idle` : "ends now"
-  return machine.status && machine.kind === "rental" ? "ends 15 min after its last job" : ""
+  if (deadline != null) return deadline > now ? `Ends in ${span((deadline - now) / 1000)} if it stays idle` : "Ending now"
+  return machine.status && machine.kind === "rental" ? "Ends 15 minutes after its last run" : ""
 }
 
+/** What it has cost so far: `$1.20 so far`, `About $1.20 so far` while that's an estimate. */
 export function spentWords(machine: Machine): string {
   const rental = machine.rental
   if (rental?.spend_usd_micros == null) return ""
-  const basis = rental.spend_basis === "charged" ? "" : rental.spend_basis === "unmetered" ? " unmetered" : " est."
-  return `${usd(rental.spend_usd_micros)}${basis}`
+  const spent = usd(rental.spend_usd_micros)
+  return rental.spend_basis === "charged" ? `${spent} so far` : rental.spend_basis === "unmetered" ? `${spent} so far (not metered)` : `About ${spent} so far`
 }

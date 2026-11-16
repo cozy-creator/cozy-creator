@@ -250,6 +250,15 @@ impl Machines {
         (self.dev && (rental || local)).then_some(row)
     }
 
+    /// Whether `name` is a rental that follows the RC and hasn't said it's ready (cl-1069): it moves to the RC at boot, before it
+    /// takes work, and until it is ready it can't be told behind or not. Work sent now would run on its image's software
+    /// (LAB2-47826: a checkout package needing the RC's Runtime, refused on the 0.25.0 image's 0.46.0).
+    pub(crate) fn booting_for_rc(&self, name: &str) -> bool {
+        self.follows(name).is_some_and(|row| row.kind == MachineKind::Rental)
+            && self.held_by_hand(name).is_none()
+            && self.frame(name).is_none_or(|frame| frame.phase == "booting")
+    }
+
     /// Moves `name` to the open RC's builds when it follows the RC, is behind it, isn't held by hand and has no work going (nor,
     /// unless `sending`, any waiting for it): the update run to wait for. None when nothing moves, or the RC can't be read
     /// (its runs go on what it runs).
@@ -383,14 +392,4 @@ impl Machines {
         prerelease::dev(&frame.runtime) || self.follows(name).is_some()
     }
 
-    /// The line a run on `name` says when it runs dev builds: `RC: Runtime 0.47.0.dev2260 · cozy 1a2b3c4d`.
-    pub(crate) fn rc_line(&self, name: &str) -> Option<String> {
-        let frame = self.frame(name)?;
-        let built: Vec<String> = [("Runtime", &frame.runtime), ("TensorFS", &frame.tensorfs), ("cozy", &frame.version)]
-            .into_iter()
-            .filter(|(_, version)| prerelease::dev(version))
-            .map(|(label, version)| format!("{label} {}", prerelease::shown(version)))
-            .collect();
-        (!built.is_empty()).then(|| format!("{name} runs RC builds: {}", built.join(" · ")))
-    }
 }

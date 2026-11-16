@@ -302,13 +302,13 @@ fn index_legacy_owners(writer: &mut Connection) -> Result<()> {
 }
 
 /// The fenced runs that may be the project's at `root` (`id`): those of its root, its sealed records' (a move this Calcifer
-/// saw included) and every unreadable one, as `(id, out_dir, spec)`. The caller decides each as a full read did.
+/// saw included) and every unreadable one, as `(id, out_dir, spec)`, in the order made. The caller decides each as a full read did.
 pub(crate) fn legacy_run_candidates(conn: &Connection, root: &Path, id: &str) -> Result<Vec<(String, String, Vec<u8>)>> {
     let mut projects = vault::projects_moved_under(root);
     projects.push(id.to_owned());
     let projects = serde_json::to_string(&projects).map_err(|error| StoreError::Corrupt(error.to_string()))?;
     let mut stmt = conn.prepare("SELECT r.id, r.out_dir, r.spec FROM legacy_run_owners o JOIN legacy_project_runs r ON r.id = o.id
-        WHERE o.owner_root IN (?1, ?2) OR o.owner_project IN (SELECT value FROM json_each(?3))")?;
+        WHERE o.owner_root IN (?1, ?2) OR o.owner_project IN (SELECT value FROM json_each(?3)) ORDER BY r.created_at, r.number")?;
     let rows = stmt.query_map(params![path_key(root), UNREADABLE_OWNER, projects], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -1708,7 +1708,15 @@ macro_rules! journal_methods {
             };
             if machine_failure(outcome) && !row.cancel_requested && row.attempt < ATTEMPTS {
                 let rental = match row.machine.as_deref() { Some(name) => self.rental(tx, name)?, None => false };
-                return again(tx, &row, outcome, rental);
+                let reason = outcome.reason.clone().unwrap_or_default();
+                let machine = row.machine.clone().unwrap_or_default();
+                let elsewhere = reason.code == "gpu_lost" && rental;
+                let whither = match elsewhere {
+                    true => "to a rental with GPUs in service".to_owned(),
+                    false => format!("to {machine}, on GPUs in service"),
+                };
+                let said = format!("failed on {machine}, the machine's fault ({}: {}): sent again {whither}", reason.code, reason.message);
+                return again(tx, &row, elsewhere, &said);
             }
             let mut events = vec![];
             for product in &outcome.outputs {
@@ -1735,6 +1743,42 @@ macro_rules! journal_methods {
             )?;
             events.extend(end(tx, id, status, reason)?);
             Ok(events)
+        })
+    }
+
+    /// Returns an accepted run its machine refused for its Runtime to the outbox (cl-1069, `Machines::refloored`), saying `said`:
+    /// to its machine once that moved, or (`elsewhere`) an `any` run to be placed again. Nothing past its attempts or once canceled:
+    /// it settles as refused.
+    pub(crate) fn resend(&self, id: &str, elsewhere: bool, said: &str) -> Result<Vec<Event>> {
+        self.write(|tx| match run_in(tx, id)?.filter(|row| row.state == State::Accepted && !row.cancel_requested && row.attempt < ATTEMPTS) {
+            Some(row) => again(tx, &row, elsewhere, said),
+            None => Ok(vec![]),
+        })
+    }
+
+    /// Sends run `id` to `machine`, which finishes it sooner (cl-1073): one not sent yet goes there; one accepted, once the machine that
+    /// held it canceled it, is sent again there, the same run, its next attempt (one that started as it was told is sent again whole).
+    /// None: it can't go (sent meanwhile, no longer accepted, or canceled by its asker), and settles as its machine said.
+    pub(crate) fn moved(&self, id: &str, machine: &str) -> Result<Option<Vec<Event>>> {
+        self.write(|tx| {
+            let Some(row) = run_in(tx, id)?.filter(|row| matches!(row.state, State::Queued | State::Accepted) && !row.cancel_requested) else {
+                return Ok(None);
+            };
+            match row.state {
+                State::Queued => tx.execute("UPDATE runs SET machine = ?2 WHERE id = ?1", params![id, machine])?,
+                _ => tx.execute(
+                    "UPDATE runs SET state = 'queued', attempt = ?2, cursor = 0, machine_state = NULL, accepted_at = NULL, started_at = NULL, machine = ?3
+                     WHERE id = ?1",
+                    params![id, row.attempt + 1, machine],
+                )?,
+            };
+            let text = format!("moved from {} to {machine}, which finishes it sooner", row.machine.unwrap_or_default());
+            let (seq, at_ms) = (next_seq(tx, id)?, now_ms());
+            tx.execute(
+                "INSERT INTO run_logs (run, seq, at_ms, level, text) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, seq as i64, at_ms, "info", seal_run_text(tx, id, &log_context(id, seq), &text)?],
+            )?;
+            Ok(Some(vec![log_event(seq, at_ms, "info".to_owned(), text), lifecycle(tx, id)?]))
         })
     }
 
@@ -3556,15 +3600,11 @@ fn next_seq(tx: &Transaction, id: &str) -> Result<u64> {
 }
 
 /// A new lifecycle event for the run as it now stands.
-/// Sends `row` again after its machine's GPU failed under it: its attempt's outputs aren't kept. A
-/// run its machine can't serve (`gpu_lost`: too few GPUs in service there) goes to the least busy
-/// rental that has them (`Machines::place_unplaced`), when it was on a rental; else to its machine,
-/// which places it on GPUs in service.
-fn again(tx: &Transaction, row: &RunRow, outcome: &v1::Outcome, rental: bool) -> Result<Vec<Event>> {
+/// Sends `row` again, its attempt's outputs not kept, saying why (`said`): after its machine's GPU failed under it, or once its
+/// machine moved to a Runtime its package needs (cl-1069). `elsewhere`: an `any` run placed again (`Machines::place_unplaced`)
+/// rather than to its machine: one its machine can't serve (`gpu_lost` on a rental, or a Runtime it can't move to).
+fn again(tx: &Transaction, row: &RunRow, elsewhere: bool, said: &str) -> Result<Vec<Event>> {
     let id = row.id.as_str();
-    let reason = outcome.reason.clone().unwrap_or_default();
-    let machine = row.machine.clone().unwrap_or_default();
-    let elsewhere = reason.code == "gpu_lost" && rental;
     tx.execute(
         "UPDATE runs SET state = 'queued', attempt = ?2, cursor = 0, machine_state = NULL, accepted_at = NULL, started_at = NULL,
             machine = CASE WHEN ?3 THEN NULL ELSE machine END, wants = CASE WHEN ?3 THEN 'any' ELSE wants END,
@@ -3572,14 +3612,7 @@ fn again(tx: &Transaction, row: &RunRow, outcome: &v1::Outcome, rental: bool) ->
          WHERE id = ?1",
         params![id, row.attempt + 1, elsewhere],
     )?;
-    let whither = match elsewhere {
-        true => "to a rental with GPUs in service".to_owned(),
-        false => format!("to {machine}, on GPUs in service"),
-    };
-    let text = format!(
-        "attempt {} failed on {machine}, the machine's fault ({}: {}): sent again {whither}, attempt {} of {ATTEMPTS}",
-        row.attempt, reason.code, reason.message, row.attempt + 1
-    );
+    let text = format!("attempt {} {said}, attempt {} of {ATTEMPTS}", row.attempt, row.attempt + 1);
     let (seq, at_ms) = (next_seq(tx, id)?, now_ms());
     tx.execute(
         "INSERT INTO run_logs (run, seq, at_ms, level, text) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -3768,7 +3801,7 @@ fn run_name(conn: &Connection, row: &RunRow) -> String {
         Some(_) => conn.query_row("SELECT key FROM project_keys ORDER BY ord DESC LIMIT 1", [], |r| r.get::<_, String>(0)).ok(),
         None => Some(api::calcifer::project::MACHINE_KEY.to_owned()),
     };
-    key.map_or_else(|| row.number.to_string(), |key| format!("{key}-{}", row.number))
+    key.map_or_else(|| row.number.to_string(), |key| api::calcifer::project::run_label(&key, row.number))
 }
 
 fn record(conn: &Connection, row: &RunRow) -> Result<Run> {

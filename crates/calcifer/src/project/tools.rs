@@ -86,7 +86,7 @@ pub(crate) fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
     pieces.retain(|piece| {
         let past = piece.frames(fps).is_some_and(|(start, end)| start >= end);
         if past {
-            said.push(format!("the cut takes {} from frame {}, past its take's end: that cut is left out", piece.asset, piece.start));
+            said.push(format!("The cut starts {} at frame {}, past the end of its take, so Cozy left that clip out.", piece.asset, piece.start));
         }
         !past
     });
@@ -106,7 +106,7 @@ pub(crate) fn film_off(fields: &Map<String, Value>, reads: &[ReadNow], lock: &Lo
     pieces.retain(|piece| !version.without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
     past_end(&mut pieces, fps);
     let made = measure(&pieces, fps)?.frames;
-    (film.frames.abs_diff(made) > pieces.len() as u64).then(|| format!("its film holds {} frames, and its pieces add up to {made}", film.frames))
+    (film.frames.abs_diff(made) > pieces.len() as u64).then(|| format!("its film has {} frames, but its pieces add up to {made}", film.frames))
 }
 
 /// ffprobe's answer when the file at `path` isn't a video it reads.
@@ -134,7 +134,7 @@ pub(crate) fn unreadable(ffprobe: &Path, pieces: &[Piece]) -> Result<Vec<LeftOut
     let mut left = vec![];
     for piece in pieces.iter().filter(|piece| !piece.still && piece.shape.is_none()) {
         left.push(match probe(ffprobe, &piece.path, false) {
-            Ok(_) => LeftOut::new(piece, "it's no video", format!("{} is no video a cut takes: those are mp4, mov, m4v, webm and mkv", piece.path.display())),
+            Ok(_) => LeftOut::new(piece, "it isn't a video", format!("{} isn't a video a cut can use (mp4, mov, m4v, webm or mkv)", piece.path.display())),
             Err(error) if error.code == TOOL_WONT_START => return Err(error),
             Err(error) => LeftOut::new(piece, FFPROBE_CANT, error.message),
         });
@@ -260,7 +260,7 @@ impl Canvas {
         let fps = match fields.get("fps").and_then(Value::as_f64) {
             Some(fps) if fps.is_finite() && fps > 0.0 && fps <= 240.0 => fps,
             Some(fps) => {
-                said.push(format!("fps {fps} is not a frame rate such as 24, 25 or 30: it cuts at 24"));
+                said.push(format!("fps {fps} isn't a frame rate like 24, 25 or 30, so Cozy cuts at 24."));
                 24.0
             }
             None => 24.0,
@@ -268,7 +268,7 @@ impl Canvas {
         let short = fields.get("resolution").map(text).and_then(|written| {
             let short = written.strip_suffix('p').and_then(|n| n.parse::<u64>().ok()).filter(|n| *n >= 16);
             if short.is_none() {
-                said.push(format!("resolution {written} is not a short edge such as 1080p or 1440p: it is left out"));
+                said.push(format!("resolution {written} isn't a size like 1080p or 1440p, so Cozy ignored it."));
             }
             short
         });
@@ -276,7 +276,7 @@ impl Canvas {
         let ratio = fields.get("aspect_ratio").map(text).and_then(|written| {
             let ratio = written.split_once(':').and_then(|(w, h)| Some(side(w)? / side(h)?));
             if ratio.is_none() {
-                said.push(format!("aspect_ratio {written} is not W:H, such as 16:9 or 2.39:1: it is left out"));
+                said.push(format!("aspect_ratio {written} isn't a ratio like 16:9 or 2.39:1, so Cozy ignored it."));
             }
             ratio
         });
@@ -341,9 +341,9 @@ pub(crate) fn in_the_file(fields: &Map<String, Value>) -> Result<(Map<String, Va
         written.insert("tracks".to_owned(), Value::Null);
         return Ok((written, said));
     }
-    let timeline: Timeline = serde_json::from_value(value).map_err(|why| Error::new(Kind::Validation, "timeline_invalid", format!("timeline: {why}")))?;
+    let timeline: Timeline = serde_json::from_value(value).map_err(|why| Error::new(Kind::Validation, "timeline_invalid", format!("The timeline isn't valid: {why}.")))?;
     if timeline.tracks.len() > 1 {
-        said.push(format!("an Edit has one track for now: the other {} are left out", timeline.tracks.len() - 1));
+        said.push(format!("An edit uses only one track for now, so Cozy left out the other {}.", timeline.tracks.len() - 1));
     }
     let clips: Vec<Value> = timeline.tracks.first().into_iter().flat_map(|track| &track.clips).filter_map(clip_in_the_file).collect();
     written.insert("tracks".to_owned(), json!([{"clips": clips}]));
@@ -451,11 +451,11 @@ fn cut(
     // Each piece's frames at the project's rate, within its take, as the lock records it.
     let Some(made) = measure(pieces, fps) else {
         let unprobed: Vec<&str> = pieces.iter().filter(|piece| piece.shape.is_none()).map(|piece| piece.asset.as_str()).collect();
-        return Err(failed(format!("no frame rate is recorded for {}'s file", unprobed.join(", "))));
+        return Err(failed(format!("Cozy hasn't measured the frame rate of {}'s file yet.", unprobed.join(", "))));
     };
     let ranges: Vec<(u64, u64)> = pieces.iter().filter_map(|piece| piece.frames(fps)).collect();
     let native = |piece: &Piece| piece.shape.is_some_and(|shape| !retimed(&shape, fps));
-    let io = |e: std::io::Error| failed(format!("{}: {e}", cache.display()));
+    let io = |e: std::io::Error| failed(format!("Cozy couldn't use its cut cache at {}: {e}.", cache.display()));
     std::fs::create_dir_all(cache).map_err(io)?;
     let work = tempfile::tempdir_in(cache).map_err(io)?;
     let video = work.path().join("video.mp4");
@@ -572,7 +572,7 @@ fn write_otio(folder: &Folder, name: &str, pieces: &[Piece], probes: &[Probe], r
     let timeline = otio(name, pieces, probes, ranges, fps);
     let otio_path = folder.dir.join(Path::new(name).with_extension("otio"));
     let text = serde_json::to_string_pretty(&timeline).expect("a timeline serializes") + "\n";
-    platform::durable::replace(&otio_path, text.as_bytes(), 0o644).map_err(|e| failed(format!("{}: {e}", otio_path.display())))
+    platform::durable::replace(&otio_path, text.as_bytes(), 0o644).map_err(|e| failed(format!("Cozy couldn't write {}: {e}.", otio_path.display())))
 }
 
 /// The timeline of a cut that stands, when its `.otio` is gone: the same pieces, so nothing is cut.
@@ -896,7 +896,7 @@ fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
     let streams = read_json["streams"].as_array().cloned().unwrap_or_default();
     let video = streams.iter().find(|s| s["codec_type"] == "video").cloned().unwrap_or_default();
     let (Some(width), Some(height)) = (video["width"].as_u64(), video["height"].as_u64()) else {
-        return Err(failed(format!("{} holds no video ffprobe reads", path.display())));
+        return Err(failed(format!("ffprobe can't find a video in {}.", path.display())));
     };
     let rate_text = video["r_frame_rate"].as_str().unwrap_or("24/1").to_owned();
     let rate = match rate_text.split_once('/') {
@@ -948,7 +948,7 @@ fn quiet(ffmpeg: &Path) -> Media {
 /// One ffmpeg run, `frame` told each frame count it reports.
 fn run_counting(ffmpeg: &mut Media, frame: &dyn Fn(u64)) -> Result<(), Error> {
     let started = ffmpeg.piped();
-    let mut child = started.map_err(|e| failed(format!("ffmpeg did not start: {e}")))?;
+    let mut child = started.map_err(|e| failed(format!("ffmpeg didn't start: {e}.")))?;
     let (stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
     // What it says goes on two pipes, each read as it comes, so a full one stops nothing.
     let said = std::thread::spawn(move || std::io::read_to_string(stderr).unwrap_or_default());
@@ -957,11 +957,11 @@ fn run_counting(ffmpeg: &mut Media, frame: &dyn Fn(u64)) -> Result<(), Error> {
             frame(count);
         }
     }
-    let status = child.wait().map_err(|e| failed(format!("ffmpeg: {e}")))?;
+    let status = child.wait().map_err(|e| failed(format!("ffmpeg failed: {e}.")))?;
     let said = said.join().unwrap_or_default();
     match status.success() {
         true => Ok(()),
-        false => Err(failed(format!("ffmpeg could not cut the edit: {}", said.trim()))),
+        false => Err(failed(format!("ffmpeg couldn't cut the edit: {}", said.trim()))),
     }
 }
 
@@ -971,7 +971,7 @@ fn run(ffmpeg: &mut Media) -> Result<(), Error> {
     match done.status.success() {
         true => Ok(()),
         false => {
-            Err(failed(format!("ffmpeg could not cut the edit: {}", String::from_utf8_lossy(&done.stderr).trim())))
+            Err(failed(format!("ffmpeg couldn't cut the edit: {}", String::from_utf8_lossy(&done.stderr).trim())))
         }
     }
 }
@@ -984,7 +984,7 @@ const TOOL_WONT_START: &str = "edit_tool_wont_start";
 
 /// No clip's doing: every cut here would meet it.
 fn wont_start(tool: &str, error: &std::io::Error) -> Error {
-    Error::new(Kind::Unavailable, TOOL_WONT_START, format!("{tool} did not start: {error}")).next("cozy doctor")
+    Error::new(Kind::Unavailable, TOOL_WONT_START, format!("{tool} didn't start: {error}.")).next("cozy doctor")
 }
 
 /// Each file `value`, a request by its digests, names: its field, path and digest.
@@ -1027,7 +1027,7 @@ fn transparent_share(ffmpeg: &Path, picture: &Path) -> f64 {
 /// The frame of `video` at `at` seconds (None: its last) as a PNG in `dir`. A take is what its function made, so one that ends
 /// before that gives its last frame: the bool says so.
 pub(crate) fn frame(ffmpeg: &Path, video: &Path, at: Option<f64>, dir: &Path) -> Result<(tempfile::NamedTempFile, bool), Error> {
-    let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("a frame of {}: {e}", video.display()));
+    let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("Cozy couldn't take a frame from {}: {e}.", video.display()));
     let frame = tempfile::Builder::new().suffix(".png").tempfile_in(dir).map_err(io)?;
     let grab = |seek: Vec<String>, once: bool| {
         let mut command = quiet(ffmpeg);
@@ -1048,7 +1048,7 @@ pub(crate) fn frame(ffmpeg: &Path, video: &Path, at: Option<f64>, dir: &Path) ->
     };
     let done = done.map_err(io)?;
     if !done.status.success() || std::fs::metadata(frame.path()).map_or(0, |m| m.len()) == 0 {
-        let said = format!("{} has no frame ({})", video.display(), String::from_utf8_lossy(&done.stderr).trim());
+        let said = format!("{} has no frame Cozy can use ({}).", video.display(), String::from_utf8_lossy(&done.stderr).trim());
         return Err(Error::new(Kind::Validation, "frame_missing", said));
     }
     Ok((frame, past))

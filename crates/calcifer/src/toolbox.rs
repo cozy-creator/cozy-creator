@@ -145,7 +145,7 @@ fn owned(package: &str) -> String {
 pub(crate) async fn change(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) -> Result<Json<ToolList>, Refusal> {
     let asked: ToolListChange = parse(&body?)?;
     if let Some(path) = asked.add.as_deref().filter(|package| api::target::written_as_path(package)) {
-        let said = format!("{path} is local code, which is a project's: a box names it by its path from the project's folder");
+        let said = format!("{path} is local code, which belongs to a project. Use it from a box, by its path from the project's folder.");
         return Err(Refusal(Error::new(Kind::Usage, "tool_list_local", said).next("cozy open")));
     }
     let add = asked.add.map(|package| (owned(&package), format!("{}/", shown(&package))));
@@ -464,16 +464,17 @@ impl Listing {
             return (kept.tools, None);
         }
         // An older list is the answer at once, its read going behind it: a list waits on the Hub only when it has none (cl-1010).
-        if let Some(age) = kept.age() {
-            let failed = kept.failed.as_ref().filter(|(at, _)| at.elapsed() < ASK_AGAIN).map(|(_, why)| why.clone());
-            if failed.is_none() && self.begin_asking(&key) {
+        // It is the list, said as nothing less: the Hub's next answer replaces it.
+        if kept.age().is_some() {
+            let failed = kept.failed.as_ref().is_some_and(|(at, _)| at.elapsed() < ASK_AGAIN);
+            if !failed && self.begin_asking(&key) {
                 let (api, origin) = (api.clone(), hub.to_owned());
                 tokio::spawn(async move {
                     let read = every_tool(&api, &origin).await;
                     api.listing.keep(&origin, read.map_err(|why| format!("the Hub said {}", why.message)));
                 });
             }
-            return (kept.tools, failed.map(|why| format!("the Hub's tools as read {} s ago: {why}", age.as_secs())));
+            return (kept.tools, None);
         }
         let why = match &kept.failed {
             Some((at, why)) if at.elapsed() < ASK_AGAIN => why.clone(),
@@ -496,10 +497,7 @@ impl Listing {
                 }
             }
         };
-        match kept.age() {
-            Some(age) => (kept.tools, Some(format!("the Hub's tools as read {} s ago: {why}", age.as_secs()))),
-            None => (kept.tools, Some(format!("only what's installed: {why}"))),
-        }
+        (kept.tools, Some(format!("only what's installed: {why}")))
     }
 
     fn keep(&self, hub: &str, read: Result<Arc<Vec<Offered>>, String>) {
@@ -728,10 +726,10 @@ pub(crate) async fn tool_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<To
     let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;
     let Some(function) = found.function.as_deref().or(target::only_function(&interface)).map(str::to_owned) else {
         let functions = interface.public().iter().map(|name| format!("{}/{name}", shown(&found.package))).collect::<Vec<_>>().join(", ");
-        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: a tool is one of its functions: {functions}")));
+        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package, not a tool. Pick one of its functions: {functions}.")));
     };
     tool::tools_of(&found.package, &found.release, &interface).into_iter().find(|held| held.function == function)
-        .ok_or_else(|| Error::new(Kind::Usage, "tool_not_a_tool", format!("{tool} is no tool: its function declares no @app.tool, or makes no media")))
+        .ok_or_else(|| Error::new(Kind::Usage, "tool_not_a_tool", format!("{tool} isn't a tool: its function has no @app.tool, or makes no media.")))
 }
 
 /// `tool` as `GET /v1/tools` lists it from the Hub: its package's newest release, by its card. None for local code, or what the Hub hasn't.
@@ -775,9 +773,9 @@ pub(crate) async fn read(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<(Stri
     let name = found.function.as_deref().map(str::to_owned).or_else(|| target::only_function(&interface).map(str::to_owned));
     let Some(name) = name else {
         let functions = interface.public().iter().map(|name| format!("{package}/{name}")).collect::<Vec<_>>().join(", ");
-        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: a tool is one of its functions: {functions}")).next(format!("cozy run {package}")));
+        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package, not a tool. Pick one of its functions: {functions}.")).next(format!("cozy run {package}")));
     };
     let callable = interface.callables.iter().find(|callable| callable.name == name);
     let made = callable.and_then(|callable| Some((tool::output_kind(callable)?.to_owned(), tool::box_name(&package, callable))));
-    made.ok_or_else(|| Error::new(Kind::Usage, "tool_makes_no_media", format!("{package}/{name} makes no picture, video or sound")).next("cozy package ls"))
+    made.ok_or_else(|| Error::new(Kind::Usage, "tool_makes_no_media", format!("{package}/{name} doesn't make an image, video or sound.")).next("cozy package ls"))
 }

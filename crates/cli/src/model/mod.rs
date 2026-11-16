@@ -34,7 +34,7 @@ enum LoraVerb {
     Show(Show),
     /// Install a LoRA on a machine.
     Install(Download),
-    /// Uninstall downloaded copies from this machine.
+    /// Uninstall downloaded copies from a machine.
     Uninstall(Remove),
     /// Update a LoRA's family, tags, trigger words or recommended strength.
     Edit(LoraEdit),
@@ -58,9 +58,9 @@ fn given(triggers: Vec<String>) -> Option<Vec<String>> {
 pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode, Error> {
     match args.verb {
         LoraVerb::Ls(args) => list(ctx, args, "lora").await,
-        LoraVerb::Show(args) => show::show(ctx, args, "lora").await,
+        LoraVerb::Show(args) => show::show(ctx, args, "lora", None).await,
         LoraVerb::Install(args) => machine::download(ctx, args).await,
-        LoraVerb::Uninstall(args) => machine::remove(ctx, &args.model).await,
+        LoraVerb::Uninstall(args) => machine::remove(ctx, &args.model, &args.on).await,
         LoraVerb::Edit(mut args) => {
             args.edit.triggers = given(args.trigger);
             args.edit.strength = args.strength;
@@ -84,12 +84,12 @@ enum Verb {
     #[command(alias = "list")]
     Ls(Ls),
     /// Show what each lane's checkpoint holds: components, configs, files and its recorded base.
-    Show(Show),
+    Show(ModelShow),
     /// Update a model's family or tags.
     Edit(Edit),
     /// Install a model on a machine.
     Install(Download),
-    /// Uninstall downloaded copies from this machine.
+    /// Uninstall downloaded copies from a machine.
     Uninstall(Remove),
     /// Upload weights as a private model checkpoint.
     #[command(hide = true)]
@@ -141,6 +141,19 @@ pub(crate) struct Show {
 }
 
 #[derive(clap::Args, Debug)]
+pub(crate) struct ModelShow {
+    #[command(flatten)]
+    show: Show,
+    // Dev-only (DEV.md): the lane a machine resolves, as TensorD asks the Hub for a slot (cl-1076).
+    /// Only the lane a machine with these GPUs resolves, by compute capability (8.9; several: one machine's).
+    #[arg(long, value_name = "CC[,CC…]")]
+    gpu: Option<String>,
+    /// With --gpu: the components a slot reads.
+    #[arg(long, value_name = "COMPONENT[,…]", requires = "gpu")]
+    components: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
 pub(crate) struct Edit {
     /// org/name.
     #[arg(value_name = "MODEL")]
@@ -177,6 +190,9 @@ pub(crate) struct Remove {
     /// org/name. Removes all downloaded releases and lanes, keeping the Hub model.
     #[arg(value_name = "MODEL")]
     model: String,
+    /// The machine to remove it from: local, an added machine or a rental.
+    #[arg(long, value_name = "MACHINE", default_value = "local")]
+    on: String,
 }
 
 /// `--strength`: a number, or `none`.
@@ -330,13 +346,13 @@ async fn list(ctx: &Context, mut args: Ls, role: &str) -> Result<ExitCode, Error
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::Ls(args) => list(ctx, args, "model").await,
-        Verb::Show(args) => show::show(ctx, args, "model").await,
+        Verb::Show(args) => show::show(ctx, args.show, "model", args.gpu.as_deref().map(|gpus| (gpus, args.components.as_deref()))).await,
         Verb::Edit(args) => catalog::edit(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args, "model").await,
         Verb::Unpublish(args) => releases::unpublish(ctx, args, "model").await,
         Verb::Delete(args) => releases::delete(ctx, args, "model").await,
         Verb::Install(args) => machine::download(ctx, args).await,
-        Verb::Uninstall(args) => machine::remove(ctx, &args.model).await,
+        Verb::Uninstall(args) => machine::remove(ctx, &args.model, &args.on).await,
         Verb::Upload(args) => machine::upload(ctx, args).await,
         Verb::Quantize(args) => quantize::quantize(ctx, args).await,
     }

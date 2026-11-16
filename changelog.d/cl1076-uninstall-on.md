@@ -1,0 +1,1 @@
+- `cozy model uninstall <model> --on <machine>` (and `cozy lora uninstall`) removes a model's downloaded copies from a rental or an added machine as well as `local`, saying the bytes it freed; one a queued or running run there reads is refused, naming the run (cl-1076).

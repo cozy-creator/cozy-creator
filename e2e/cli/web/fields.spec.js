@@ -40,7 +40,7 @@ const undeclared = (region, tool) => region.locator('.focus-card').evaluate((car
   for (const el of scope.flatMap((part) => [...part.querySelectorAll('[data-field]')])) {
     if (!names.includes(el.dataset.field.split('.')[0])) odd.push(`data-field ${el.dataset.field}`);
   }
-  const controls = scope.flatMap((part) => [...part.querySelectorAll('input, select, [role=radiogroup], [role=switch], [role=slider], [role=textbox], button.dropdown')]);
+  const controls = scope.flatMap((part) => [...part.querySelectorAll('input, select, [role=radiogroup], [role=switch], [role=slider], [role=textbox]')]);
   for (const el of controls) {
     if (el.closest('.beats-edit, .group-block')) continue;
     const label = (el.getAttribute('aria-label') ?? '').split(': ')[0];
@@ -72,6 +72,7 @@ test('fields', async ({ page, project, api, cli }) => {
 
   const steps = region.getByRole('slider', { name: 'Steps', exact: true });
   const resolution = region.getByRole('combobox', { name: 'Resolution', exact: true });
+  const edit = region.getByRole('combobox', { name: 'Edit', exact: true });
   const turbo = region.getByRole('switch', { name: 'Turbo', exact: true });
   const quality = region.getByRole('radiogroup', { name: 'Quality', exact: true });
   const megapixels = region.getByRole('slider', { name: 'Megapixels', exact: true });
@@ -93,6 +94,14 @@ test('fields', async ({ page, project, api, cli }) => {
     await expect.poll(async () => (await fieldsOf('every')).steps, { message: 'the slider, in the API' }).toBe(9);
     await resolution.selectOption({ label: '1080p' });
     await expect.poll(async () => (await fieldsOf('every')).resolution, { message: 'the menu, in the API' }).toBe('1080p');
+    // Options that say what they are (cl-1066, Paul 11-16: a list drawn inside the box was "clipped by the bounding box it's inside of"):
+    // the browser's own menu, which nothing clips, and what the chosen one does on a line under it.
+    await expect.soft(edit, 'a described choice is a menu').toHaveJSProperty('tagName', 'SELECT');
+    expect.soft(await chosen(edit), 'at its default').toBe('Character swap');
+    await edit.selectOption({ label: 'Head swap' });
+    await expect.poll(async () => (await fieldsOf('every')).edit, { message: 'the described menu, in the API' }).toBe('head');
+    await expect.soft(region.locator('.described-says'), 'what the chosen one does, under it').toHaveText('Only the head');
+    await expect.soft(page.locator('.dropdown-list'), 'no list drawn inside the box').toHaveCount(0);
     await turbo.click();
     await expect.poll(async () => (await fieldsOf('every')).turbo, { message: 'the switch, in the API' }).toBe(false);
     await quality.getByRole('radio', { name: 'full', exact: true }).click();
@@ -160,8 +169,8 @@ test('fields', async ({ page, project, api, cli }) => {
     let from;
     await expect.poll(async () => (from = await reach(page, 'walk')), { message: 'walk in reach beside Focus' }).toBeTruthy();
     const said = await carry(page, from, await middle(slot), async () => ({ refuses: /\brefuses\b/.test(await slot.getAttribute('class')), why: await slot.locator('.refusal').textContent() }));
-    expect.soft(said, 'said as it is carried over').toMatchObject({ refuses: true, why: expect.stringContaining('takes a picture') });
-    await expect.soft(page.locator('.notes .note .line', { hasText: 'takes a picture' }), 'and said once let go').toHaveCount(1);
+    expect.soft(said, 'said as it is carried over').toMatchObject({ refuses: true, why: expect.stringContaining('takes an image') });
+    await expect.soft(page.locator('.notes .note .line', { hasText: 'takes an image' }), 'and said once let go').toHaveCount(1);
     expect.soft(await fieldsOf('every'), 'refused').not.toHaveProperty('first_frame');
     expect.soft(await stood(), 'refused, walk stays where it was: a drop is no move').toEqual(strip);
 

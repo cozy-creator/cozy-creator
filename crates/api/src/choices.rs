@@ -92,8 +92,8 @@ impl<'a> Choices<'a> {
             if let Some(reference) = entry.get("ref").and_then(Value::as_str) {
                 for path in self.slots(&slot)? {
                     if let Some((key, was)) = named.get(&path).filter(|(_, was)| was != reference) {
-                        return Err(usage("model_slot_twice", format!("models gives {path} two models, {was} ({key}) and {reference} ({slot}): a model slot takes one"))
-                            .remedy("keep one: pick it in Models & LoRAs, or name the slot once"));
+                        return Err(usage("model_slot_twice", format!("{path} was given two models, {was} ({key}) and {reference} ({slot}), but a model slot takes one."))
+                            .remedy("Keep one: pick it in Models & LoRAs, or name the slot once."));
                     }
                     named.insert(path, (slot.clone(), reference.to_owned()));
                 }
@@ -258,10 +258,10 @@ impl<'a> Choices<'a> {
         let through: BTreeSet<&str> = self.calls.iter().map(|s| s.param.as_str()).collect();
         declared.extend(through.iter().filter(|p| !declared.contains(p)).collect::<Vec<_>>());
         let remedy = match declared.is_empty() {
-            true => format!("{} declares no model slots", self.callable),
-            false => format!("{} takes: {}", self.callable, declared.join(", ")),
+            true => format!("{} has no model slots.", self.callable),
+            false => format!("Its slots are {}.", declared.join(", ")),
         };
-        Err(usage("model_slot_unknown", format!("no model slot {asked:?} for {}", self.callable)).remedy(remedy))
+        Err(usage("model_slot_unknown", format!("{} has no model slot {asked:?}.", self.callable)).remedy(remedy))
     }
 }
 

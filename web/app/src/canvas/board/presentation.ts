@@ -64,8 +64,10 @@ export interface Presentation {
   picture?: ScenePicture
   references: ScenePicture[]
   words: string
-  /** Mentions in `words` its tool can't use there (cl-944): struck through, as Focus strikes them. */
+  /** Mentions in `words` its tool can't use there (cl-944). */
   unused: string[]
+  /** Mentions drawn struck through: gone, or of a kind its tool can't use (Paul, 11-12). */
+  struck: string[]
   note: string
   error?: string
   tool: string
@@ -87,6 +89,7 @@ function pictureOf(view: ElementView): ScenePicture | undefined {
   const shown = shownOf(view)
   const own = view.preview && (!view.preview.sha256 || !shown || hexOf(shown.sha256) === view.preview.sha256)
   if (own && view.preview) return { url: view.preview.url, kind: view.placing?.media ?? shown?.field ?? view.asset?.kind ?? "image" }
+  // A file kept on another computer has no thumbnail here: it says where it is instead (as the RC's canvas did; asking 404s).
   if (shown && !shown.absent && ["image", "video", "audio"].includes(shown.field)) {
     return { sha256: shown.sha256, path: shown.path, kind: shown.field, alpha: shown.alpha ?? undefined }
   }
@@ -135,7 +138,6 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
   const line = asset ? lineAt(valuesOf(view), fieldsOf(asset, tools)) : null
   let words = line?.words ?? "", at = line?.at
   const tool = asset?.tool ? tools.get(asset.tool) : undefined
-  const failed = viewState(view) === "failed" ? asset?.failure : undefined
   const output = pictureOf(view)
   const run = node.runContext?.run ?? view.run
   const onItsWay = asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
@@ -175,7 +177,7 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
     })
     const left = run?.status === "completed" ? run.arriving?.eta_s : run?.progress?.eta_s
     const since = run ? Math.max(0, (now - run.created_at_ms) / 1000) : undefined
-    const time = since !== undefined && left != null ? ` - ${short(since)} / ${short(since + left)}` : ""
+    const time = since !== undefined && left != null ? `${short(since)} / ${short(since + left)}` : ""
     progress = {
       ...face, time, cancel: !["canceling", "failed", "result"].includes(face.phase),
       fraction: since !== undefined && left != null && left > 0 ? Math.min(0.99, since / (since + left)) : undefined,
@@ -187,16 +189,19 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
   const continued = pickup && store.mentionOf(pickup.take.replace(/^<|>$/g, ""), name)
   const from = continued && continued.name !== store.resolveName(name) ? `from ${continued.name}` : ""
   let note = ""
-  if (shown?.absent && !arriving) note = shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"
-  else if (view.placing && !output) note = ({ waiting: "Waiting", reading: "Reading file", sending: "Sending file", adding: "Adding file" })[view.placing.stage]
-  else if (!output && !words) note = asset?.timeline ? "Drag videos and stills here" : kind === "audio" ? "Audio" : kind === "file" ? "A file" : makes(view) ? kind === "video" ? "Video" : kind === "image" ? "Image" : "" : ""
+  if (shown?.absent && !arriving) note = shown.machine ? `Stored on ${shown.machine}` : "Stored on another computer"
+  else if (view.placing && !output) note = ({ waiting: "Waiting", reading: "Reading the file", sending: "Uploading the file", adding: "Adding the file" })[view.placing.stage]
+  else if (!output && !words) note = asset?.timeline ? "Drag videos and images here" : kind === "audio" ? "Audio" : kind === "file" ? "A file" : makes(view) ? kind === "video" ? "Video" : kind === "image" ? "Image" : "" : ""
+  const unused = (asset?.unused ?? []).filter((one) => one.at === at).map((one) => one.mention)
+  const struck = mentionsIn(words).filter((mention) => asset?.missing?.includes(mention) || unused.includes(mention) || store.mentionOf(mention, name)?.gone)
   return {
+    struck,
     title: view.placing ? store.shownName(store.resolveName(name)) : view.name,
     version: asset?.kind !== "text" && shown?.number !== undefined ? `v${shown.number}` : !asset && isPicture(view) ? "v1" : undefined,
     state: view.entity ? view.linked === "failed" ? "failed" : view.linked === "making" ? "running" : null : viewState(view),
     unseen: asset?.unseen?.length ?? 0, kind, picture: output, references, words, note,
-    unused: (asset?.unused ?? []).filter((one) => one.at === at).map((one) => one.mention),
-    error: failed?.message.replace(`${name}: `, "") ?? view.refused,
+    unused,
+    error: view.refused,
     tool: asset?.tool ? tool ? toolName(tool) : asset.tool : "",
     shape: shapeOf(view, tools), from, progress,
     duration: shown?.duration_ms ? clock(shown.duration_ms) : "",

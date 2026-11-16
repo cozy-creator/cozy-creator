@@ -68,8 +68,9 @@ fn local(api: &Api, text: &str, code: Option<&LocalCode>, cwd: Option<&Path>) ->
 /// A client's local code named by its path, which Calcifer can't read. API clients upload
 /// the tree's files with `PUT /v1/files` and send its `code` reference (see `api::code`).
 pub(crate) fn by_path(text: &str) -> Error {
-    Error::new(Kind::Usage, "target_by_path", format!("Local code was not uploaded: {}", text.trim()))
-        .remedy("Run local code with cozy run ./path, which uploads it automatically.")
+    Error::new(Kind::Usage, "target_by_path", format!("Your local code wasn't uploaded: {}.", text.trim()))
+        .remedy("Run it by its folder path, and Cozy uploads it for you.")
+        .next("cozy run ./path")
 }
 
 /// `text` resolved for a run `on` its machine: local code made ready there (or its install sent
@@ -199,7 +200,7 @@ pub(crate) fn only_function(interface: &Interface) -> Option<&str> {
 
 fn parse(document: &serde_json::Value) -> Result<Interface, Error> {
     Interface::parse(document).map_err(|why| {
-        Error::new(Kind::Unavailable, "package_interface_invalid", format!("the package interface is unreadable: {why}")).next("cozy update")
+        Error::new(Kind::Unavailable, "package_interface_invalid", format!("Cozy can't read this package's interface: {why}.")).remedy("Update cozy.").next("cozy update")
     })
 }
 
@@ -229,7 +230,7 @@ pub(crate) async fn published(api: &Arc<Api>, hub: &str, text: &str, on: Option<
                     return Err(Error::new(
                         Kind::NotFound,
                         "package_not_found",
-                        format!("the Hub has neither a package {first} nor {owned}"),
+                        format!("The Hub has no package {first} or {owned}."),
                     )
                     .next(format!("cozy package ls {first}")));
                 }
@@ -300,7 +301,7 @@ impl Held {
         Err(Error::new(
             Kind::Conflict,
             "package_rc_only",
-            format!("{package} has only {latest}, built for the open RC's Runtime, which {machine} doesn't run"),
+            format!("{package} only has {latest}, which needs the open RC's Runtime, and {machine} doesn't have it. Update {machine} first."),
         )
         .next(format!("cozy machine update {machine}")))
     }
@@ -359,7 +360,7 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
         api::release::Refused::Held { release, needs, .. } => Error::new(
             Kind::Conflict,
             "runtime_held",
-            format!("{shown} {release} needs cozy-runtime{needs}, and {machine} is held on Runtime {} by hand: `cozy machine update {machine}` lets it move", held.runtime),
+            format!("{shown} {release} needs cozy-runtime{needs}, but {machine} is pinned to Runtime {} by hand. Update {machine} to let it move.", held.runtime),
         )
         .next(format!("cozy machine update {machine}")),
         // Below this cozy's minor with this cozy's Runtime not to be had now (offline, none named for this cozy): the update names it.
@@ -369,16 +370,17 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
             Error::new(
                 Kind::Unavailable,
                 "runtime_outdated",
-                format!("{machine} runs Runtime {}, below this cozy's, and this cozy's Runtime can't be had for it now: `cozy machine update {machine}` moves it", held.runtime),
+                format!("{machine} runs Runtime {}, older than this computer's, and Cozy can't get a newer one for it right now. Update {machine} to move it.", held.runtime),
             )
             .next(format!("cozy machine update {machine}"))
         }
         api::release::Refused::Unmet { release, needs } => Error::new(
             Kind::Conflict,
             "runtime_unmet",
-            format!("{shown} {release} needs cozy-runtime{needs}: {machine} runs {}, and no Runtime it can take meets it", held.runtime),
+            format!("{shown} {release} needs cozy-runtime{needs}, but {machine} runs {} and can't move to a Runtime that meets it.", held.runtime),
         )
-        .remedy(format!("name a release it runs: {shown}@<release>")),
+        .remedy(format!("Pick a release of {shown} that runs on {machine}."))
+        .next(format!("cozy run {shown}@<release>")),
         api::release::Refused::Major { release, cozy, .. } => crate::cozy::major_refusal(&format!("{shown} {release}"), &cozy),
         api::release::Refused::Unread(e) => e,
     })?;
@@ -391,10 +393,10 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
         }
         api::release::Chosen::Older { release, newest, needs } => {
             let why = match held.moves {
-                api::release::Moves::No => "it isn't this computer's to move",
-                _ => "no Runtime it can take does",
+                api::release::Moves::No => "only its owner can change it",
+                _ => "no Runtime it can move to does",
             };
-            let message = format!("{shown} {newest} needs cozy-runtime{needs}, which {machine}'s {} doesn't meet, and {why}: this run takes {release}", held.runtime);
+            let message = format!("{shown} {newest} needs cozy-runtime{needs}, which {machine}'s {} doesn't meet, and {why}, so this run uses {release}.", held.runtime);
             (release, Some(Note { level: NoteLevel::Info, message }), None)
         }
         api::release::Chosen::Moves { release, runtime } => {
@@ -419,6 +421,36 @@ pub(crate) async fn installed_release(api: &Arc<Api>, hub: &str, package: &str, 
     let held = Held::read(api, hub, on, true).await;
     let Found { card, moved, upgrade, cozy, .. } = release_of(api, hub, package, release, Some(&held)).await?;
     Ok((card.release, moved, upgrade, cozy))
+}
+
+/// Local code's machine move `on` it, for `needs` (its `cozy-runtime` requirement), as a published release's (cl-952, cl-1069): to the
+/// newest Runtime it can take that runs it, plus this cozy's minor for a project's run on `local` (cl-1055). None for a run not sent
+/// to a named machine, or when its Runtime runs it, isn't known yet, or it moves to none that does (its machine then says why); held
+/// by hand, refused naming the update.
+pub(crate) async fn local_upgrade(api: &Arc<Api>, hub: &str, on: &On, package: &str, needs: Option<pep440_rs::VersionSpecifiers>) -> Result<Option<crate::floor::Upgrade>, Error> {
+    if !matches!(on, On::Machine(_)) {
+        return Ok(None);
+    }
+    let held = Held::read(api, hub, on, true).await;
+    let project = crate::private_io::current().is_some() && held.machine == "local";
+    let needs = match (needs, project) {
+        (needs, true) => api::release::for_project(needs),
+        (Some(needs), false) => needs,
+        (None, false) => return Ok(None),
+    };
+    let machine = &held.machine;
+    match api::release::takes(&needs, &held.machine()) {
+        api::release::Takes::Moves(runtime) => {
+            Ok(Some(crate::floor::Upgrade { machine: machine.clone(), from: held.runtime.clone(), to: runtime, release: package.to_owned() }))
+        }
+        api::release::Takes::Held(_) => Err(Error::new(
+            Kind::Conflict,
+            "runtime_held",
+            format!("{package} needs cozy-runtime{needs}, and {machine} is held on Runtime {} by hand: `cozy machine update {machine}` lets it move", held.runtime),
+        )
+        .next(format!("cozy machine update {machine}"))),
+        _ => Ok(None),
+    }
 }
 
 /// The card of `release`, with its requirements: `v0.2.0` for the release named `0.2.0` too.
@@ -460,8 +492,8 @@ async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> R
     // What it holds that the Hub still has: an older one is said; a yanked one is said as moved off.
     let had = held.newest(holds.iter().copied().filter(|release| read.released.contains(*release) && *release != newest));
     let said = had.filter(|_| !holds.contains(&newest.as_str())).map(|had| match read.yanked.contains(had) {
-        true => Note { level: NoteLevel::Warning, message: format!("{shown}@{had} on {machine} is yanked: this run moves it to {newest}, the newest") },
-        false => Note { level: NoteLevel::Info, message: format!("{shown} {newest}, newer than {machine}'s {had}") },
+        true => Note { level: NoteLevel::Info, message: format!("{shown}@{had} on {machine} was yanked, so this run moves it to {newest}, the newest release.") },
+        false => Note { level: NoteLevel::Info, message: format!("Using {shown} {newest}, newer than the {had} on {machine}.") },
     });
     Ok(Err(Unversioned { candidates, said }))
 }
@@ -526,7 +558,7 @@ impl Releases {
             }
             None => match tokio::time::timeout(LATE, self.now(api, hub, package)).await {
                 Ok(read) => read,
-                Err(_) => Err(Error::new(Kind::Unavailable, "hub_slow", format!("{package}'s releases: no answer in {}s", LATE.as_secs())).remedy("run it again, or name a release: <package>@<release>")),
+                Err(_) => Err(Error::new(Kind::Unavailable, "hub_slow", format!("The Hub didn't list {package}'s releases within {}s.", LATE.as_secs())).remedy("Try again, or pick a release.")),
             },
         }
     }
@@ -542,8 +574,8 @@ impl Releases {
             (Ok(Ok(read)), _) => Ok(read),
             (_, Some((_, read))) => Ok(read),
             (Ok(Err(e)), None) => Err(e),
-            (Err(_), None) => Err(Error::new(Kind::Unavailable, "hub_slow", format!("{package}'s releases: no answer in {}s", LATE.as_secs()))
-                .remedy("run it again, or name a release: <package>@<release>")),
+            (Err(_), None) => Err(Error::new(Kind::Unavailable, "hub_slow", format!("The Hub didn't list {package}'s releases within {}s.", LATE.as_secs()))
+                .remedy("Try again, or pick a release.")),
         }
     }
 

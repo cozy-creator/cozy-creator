@@ -181,6 +181,34 @@ J --arg lane "$lane" 'any(.models[]; .model == "zhengpeng7/birefnet" and .lane =
 grep -q e2e-birefnet "$OUT/models.json" || check "model ls --on local: the local/e2e-birefnet alias is not listed"
 }
 
+# cl-1076 (Paul, 11-16, a rental's disk full with LTX 2.5's 71.5 GB unused): "The CLI can remove a model from a rental. `cozy model
+# uninstall` only works on this computer; give it `--on <machine>`." On local through the route a rental takes: while ondemand.py's
+# `hold` holds with e2e/uninstall bound, its uninstall is refused naming that run; once the run ends, it goes, its bytes freed.
+uninstall_on() {
+step "a model uninstalled from a named machine, refused while a run reads it (cl-1076)"
+[ -n "$LOCAL" ] || return 0
+local run
+cozy --json model install e2e/uninstall --on local > "$OUT/uninstall-on-install.ndjson" 2>&1 \
+  || { check "uninstall --on: model install e2e/uninstall failed: $(tail -c 300 "$OUT/uninstall-on-install.ndjson")"; return; }
+[ -n "$(run_submit "$OUT" uninstall-on-hold run "$here/script/ondemand.py/hold" seconds:=20 --model extra=e2e/uninstall --on local)" ] \
+  || { check "uninstall --on: the holding run was not made: $(tail -c 300 "$OUT/uninstall-on-hold.err")"; return; }
+run=$(cat "$OUT/uninstall-on-hold.id")
+for _ in $(seq 900); do grep -q '"holding"' "$OUT/uninstall-on-hold.ndjson" 2> /dev/null && break; sleep 0.2; done
+grep -q '"holding"' "$OUT/uninstall-on-hold.ndjson" || { check "uninstall --on: run $run never held: $(tail -c 300 "$OUT/uninstall-on-hold.ndjson")"; return; }
+cozy --json model uninstall e2e/uninstall --on local > "$OUT/uninstall-on-held.json" 2> "$OUT/uninstall-on-held.err" \
+  && check "uninstall --on: e2e/uninstall went while run $run held it"
+J --arg run "$run" '.error.cause == "model_in_use" and (.error.message | contains($run)) and .error.next == ["cozy run watch \($run)"]' "$OUT/uninstall-on-held.json" \
+  || check "uninstall --on: not refused naming run $run: $(head -c 400 "$OUT/uninstall-on-held.json") $(tail -c 200 "$OUT/uninstall-on-held.err")"
+run_wait "$OUT" uninstall-on-hold && [ "$(run_get "$OUT" uninstall-on-hold .status)" = completed ] \
+  || { check "uninstall --on: run $run did not complete: $(tail -c 300 "$OUT/uninstall-on-hold.ndjson")"; return; }
+cozy --json model uninstall e2e/uninstall --on local > "$OUT/uninstall-on.json" 2> "$OUT/uninstall-on.err" \
+  && J '.model == "e2e/uninstall" and .removed and .cache_bytes_removed > 0' "$OUT/uninstall-on.json" \
+  || check "uninstall --on local: e2e/uninstall not removed, or no bytes freed: $(head -c 400 "$OUT/uninstall-on.json") $(tail -c 200 "$OUT/uninstall-on.err")"
+cozy --json model ls --on local > "$OUT/uninstall-on-models.json" && J 'all(.models[]; .model != "e2e/uninstall")' "$OUT/uninstall-on-models.json" \
+  || check "uninstall --on local: model ls --on local still lists e2e/uninstall"
+echo "uninstall --on: $(jq -c . "$OUT/uninstall-on.json")"
+}
+
 # xs-190: a model of one component (e2e/parts-vae, uploaded as `<file>:vae` by e2e/isolated.sh), composed at run time with another
 # model's other components. Its card and install hold its `vae` alone; a run whose `vae` slot names it reads the default
 # pipeline's transformer and its VAE, and its stored picture differs from the default's. xs-192: an unversioned pick of
@@ -345,7 +373,7 @@ safetensors_file "$OUT/refused.safetensors"
 refused() {  # refused <name> <cozy args...>
   local name=$1 code=0; shift
   cozy --json "$@" > "$OUT/refused-$name.json" 2> "$OUT/refused-$name.err" || code=$?
-  [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.remedy | contains("--on new"))' "$OUT/refused-$name.json" \
+  [ "$code" = 1 ] && J '.error.code == "local_unavailable" and (.error.next | any(contains("--on new")))' "$OUT/refused-$name.json" \
     || check "cozy $*: exit $code, not refused local_unavailable: $(head -c 300 "$OUT/refused-$name.json") $(head -c 200 "$OUT/refused-$name.err")"
 }
 refused run run birefnet/remove_background --file "image=$dog"
@@ -373,14 +401,14 @@ refused logs machine logs local --lines 5
 refused authorize machine authorize "$key"
 refused doctor doctor --on local
 cozy run birefnet/remove_background --file "image=$dog" > "$OUT/refused.txt" 2>&1 && check "a local run without --on was not refused"
-grep -q "local runs aren't available on" "$OUT/refused.txt" && grep -q -- '--on new' "$OUT/refused.txt" \
-  || check "the refusal does not say local runs aren't available and --on new: $(head -c 300 "$OUT/refused.txt")"
+grep -q "This computer can't run models on" "$OUT/refused.txt" && grep -q -- '--on new' "$OUT/refused.txt" \
+  || check "the refusal does not say this computer can't run models and --on new: $(head -c 300 "$OUT/refused.txt")"
 
 step "no local machine"
 cozy --json machine ls > "$OUT/machines.json" && J '.machines | all(.name != "local")' "$OUT/machines.json" || check "machine ls: a local machine is listed"
-cozy machine ls > "$OUT/machines.txt" 2>&1 && grep -q "local runs aren't available on" "$OUT/machines.txt" || check "machine ls does not say local runs aren't available"
+cozy machine ls > "$OUT/machines.txt" 2>&1 && grep -q "This computer can't run models on" "$OUT/machines.txt" || check "machine ls does not say this computer can't run models"
 fixture_calcifer > "$OUT/status.txt" && J '.calcifer.local_usable == false' "$OUT/status.txt" || check "status does not say local runs aren't available"
-cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("aren'"'"'t available"))))' "$OUT/doctor-gated.json" \
+cozy --json doctor > "$OUT/doctor-gated.json" && J '.healthy and (.checks | any(.check == "machine" and (.state | contains("can'"'"'t run models"))))' "$OUT/doctor-gated.json" \
   || check "doctor: not healthy, or no line that local runs aren't available: $(jq -c .checks "$OUT/doctor-gated.json")"
 cozy machine logs local calcifer --lines 5 > "$OUT/log-calcifer.txt" && [ -s "$OUT/log-calcifer.txt" ] || check "machine logs local calcifer: no Calcifer log"
 cozy --json package ls --on all > "$OUT/packages.json" || check "package ls --on all failed"
@@ -562,7 +590,7 @@ if cell angles "$here/project/angles.py/angles" 'pictures:=["<angles_spin:120deg
 fi
 before=$(cozy --json run ls --limit 0 | jq '.runs | length')
 in_project "$RUN_PROJECT" --json run "$here/project/angles.py/angles" 'pictures:=["<angles_plain:120deg>"]' --on local > "$OUT/angles-plain.json" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q mention_not_orbit "$OUT/angles-plain.json" && grep -q 'turn on Orbit' "$OUT/angles-plain.json" \
+{ [ "$code" != 0 ] && grep -q mention_not_orbit "$OUT/angles-plain.json" && grep -q 'Turn on Orbit' "$OUT/angles-plain.json" \
   && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
   || check "angles: an angle of a video that isn't an orbit was not refused mention_not_orbit before any run (exit $code): $(tail -c 300 "$OUT/angles-plain.json")"
 }
@@ -950,7 +978,7 @@ fi
 if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
   in_project "$RUN_PROJECT" run "$E2E_NEWER/relay" text=newer --on local > "$OUT/held-newer.out" 2> "$OUT/held-newer.err" \
     || check "held prerelease: the unversioned e2e-newer run failed: $(tail -c 300 "$OUT/held-newer.err")"
-  grep -q 'e2e-newer 0.1.1, newer than local.s 0.1.0' "$OUT/held-newer.err" \
+  grep -q 'e2e-newer 0.1.1, newer than the 0.1.0 on local' "$OUT/held-newer.err" \
     || check "held prerelease: holding e2e-newer 0.1.0, the run didn't say it takes 0.1.1: $(tail -c 300 "$OUT/held-newer.err")"
 fi
 cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.json" 2>&1 \
@@ -1073,7 +1101,7 @@ fi
 # call's temporary file is in its project's scratch.
 in_project "$RUN_PROJECT" run e2e-scratch/probe "marker=CL1055_MOVED_$RANDOM" --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
   || check "runtime floor: a project's probe run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
-grep -q "upgrading local.s Runtime 0.45.0 → 0.4[7-9][^ ]* for this project" "$OUT/floor-upgrade.err" \
+grep -q "Updating local.s Runtime from 0.45.0 to 0.4[7-9][^ ]* for this project" "$OUT/floor-upgrade.err" \
   || check "runtime floor: the run didn't say it upgrades local's Runtime for this project: $(tail -c 400 "$OUT/floor-upgrade.err")"
 local temporary
 temporary=$(awk '$1 == "temporary" { print $2 }' "$OUT/floor-upgrade.out" | tail -1)
@@ -1104,7 +1132,7 @@ if cell floor-release-older "$E2E_FLOOR/relay@0.1.0" "text=held, asked 0.1.0"; t
 fi
 in_project "$RUN_PROJECT" run "$E2E_CAPPED/relay" text=capped --on local > "$OUT/floor-capped.out" 2> "$OUT/floor-capped.err" \
   || check "runtime floor: the unversioned e2e-capped run failed: $(tail -c 400 "$OUT/floor-capped.err")"
-grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can take does: this run takes 0.1.0" "$OUT/floor-capped.err" \
+grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can move to does, so this run uses 0.1.0" "$OUT/floor-capped.err" \
   || check "runtime floor: on a release of the minor, e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
 if cell floor-release-held "$E2E_HELD/relay" "text=off the RC"; then
   grep -q 'relay@0\.1\.0"' "$OUT/floor-release-held.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/floor-release-held.ndjson" \

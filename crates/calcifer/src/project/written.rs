@@ -40,7 +40,7 @@ pub(crate) struct Boxed {
 }
 
 fn unknown(name: &str) -> Error {
-    Error::new(Kind::NotFound, "asset_unknown", format!("the project has no box {name}")).next("cozy status")
+    Error::new(Kind::NotFound, "asset_unknown", format!("There's no box called {name} in this project.")).next("cozy status")
 }
 
 impl PartialEq for Boxed {
@@ -212,7 +212,7 @@ impl Written {
 
     fn push(&mut self, held: Boxed) -> Result<(), Error> {
         if self.find(&held.name).is_some() {
-            return Err(Error::new(Kind::Conflict, "asset_exists", format!("the project has a {} already", held.name)));
+            return Err(Error::new(Kind::Conflict, "asset_exists", format!("There's already a box called {} in this project.", held.name)));
         }
         self.boxes.push(held);
         Ok(())
@@ -262,7 +262,7 @@ impl Written {
     /// What `removed` took, back where it was, else at the end, under the name it had.
     pub(crate) fn restored(&mut self, mut back: Boxed) -> Result<(), Error> {
         if self.find(&back.name).is_some() {
-            return Err(Error::new(Kind::Conflict, "asset_exists", format!("the project has a {} already", back.name)));
+            return Err(Error::new(Kind::Conflict, "asset_exists", format!("There's already a box called {} in this project.", back.name)));
         }
         let at = back.at.take().unwrap_or(self.boxes.len()).min(self.boxes.len());
         self.boxes.insert(at, back);

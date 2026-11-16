@@ -23,6 +23,9 @@ const STROKES = {
   warning: "M10 3.2l7.3 13H2.7zM10 8.2v3.8M10 14.4v.1",
   /** Scissors: a clip cut in two at the playhead. */
   split: "M7.5 6a2 2 0 11-4 0 2 2 0 014 0zM7.5 14a2 2 0 11-4 0 2 2 0 014 0zM7.2 7.1L16 13.5M7.2 12.9L16 6.5",
+  /** A player full screen, and back (cl-1080): corners out, corners in. */
+  fullscreen: "M3.5 7.5v-4h4M12.5 3.5h4v4M16.5 12.5v4h-4M7.5 16.5h-4v-4",
+  windowed: "M7.5 3.5v4h-4M16.5 7.5h-4v-4M12.5 16.5v-4h4M3.5 12.5h4v4",
 } as const
 
 const FILLS = {

@@ -125,10 +125,7 @@ fn parts(target: &str) -> Option<(&str, &str, &str)> {
 }
 
 fn minutes(ms: f64) -> String {
-    match ms / 1e3 {
-        s if s < 90.0 => format!("{s:.0} s"),
-        s => format!("{:.1} min", s / 60.0),
-    }
+    ::api::calcifer::clock(ms as i64)
 }
 
 impl Calcifer {
@@ -174,7 +171,7 @@ impl Calcifer {
         // Timed from its start, load and all: a cold run is held to the cold time where the benchmark has one.
         let (total_ms, basis) = match references.measured(&row.target, &gpu, &size) {
             Some((_, bench)) => (warm_ms * bench.cold_ms.map_or(1.0, |cold| cold as f64 / bench.warm_ms.max(1) as f64).max(1.0), format!("its release's benchmark of an {card}")),
-            None => (warm_ms, format!("an estimate: its release's benchmarks of other cards, scaled to an {card}")),
+            None => (warm_ms, format!("an estimate from its release's benchmarks on other cards, scaled to an {card}")),
         };
         Some(Bar { total_ms, lead_ms: None, stages: vec![], width: 1, basis, extent: Extent::of(&asked) })
     }
@@ -238,7 +235,7 @@ impl Calcifer {
             return;
         }
         let message = format!(
-            "run {} has run {} so far, {times:.1}× the {} {} takes here ({}){}",
+            "Run {} has been running for {}, {times:.1}× the {} that {} usually takes here (based on {}){}",
             self.run_name(&row),
             minutes(took),
             minutes(allowed),
@@ -277,7 +274,7 @@ impl Calcifer {
         let width = lock(&self.live).get(id).map_or(0, |live| live.width);
         let causes = self.causes(&row, &machine, Some(outcome), width, &bar);
         let message = format!(
-            "run {} took {}, {times:.1}× the {} {} takes here ({}){}",
+            "Run {} took {}, {times:.1}× the {} that {} usually takes here (based on {}){}",
             self.run_name(&row),
             minutes(took_ms),
             minutes(allowed),
@@ -341,22 +338,22 @@ impl Calcifer {
         hot.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)));
         hot.dedup_by_key(|(gpu, _)| *gpu);
         for (gpu, share) in hot {
-            causes.push(format!("GPU {gpu} throttled for heat {:.0}% of the time", share * 100.0));
+            causes.push(format!("GPU {gpu} slowed down from heat {:.0}% of the time", share * 100.0));
         }
         if codes.contains(&"gpu_throttled") && causes.is_empty() {
-            causes.push("a GPU throttled for heat".into());
+            causes.push("a GPU slowed down from heat".into());
         }
         if without {
-            causes.push("its machine's Runtime serves no native kernels (slower GEMMs, no FlashAttention-3)".into());
+            causes.push("the machine's Runtime has no native kernels (slower GEMMs, no FlashAttention-3)".into());
         }
         if building > 0 {
-            causes.push(format!("Sol attention ran dense in {building} calls while its kernel built"));
+            causes.push(format!("Sol attention ran dense in {building} calls while its kernel was building"));
         }
         if compiled > 0 {
-            causes.push(format!("{compiled} kernels compiled during it"));
+            causes.push(format!("{compiled} kernels compiled during the run"));
         }
         if degree > 0 && degree != bar.width {
-            causes.push(format!("it ran on {degree} GPUs, its bar's runs on {}", bar.width));
+            causes.push(format!("it ran on {degree} GPUs, but the runs it's compared with used {}", bar.width));
         }
         causes
     }
@@ -364,7 +361,7 @@ impl Calcifer {
 
 fn likely(causes: &[String]) -> String {
     match causes {
-        [] => ". No cause found in its record: cozy run watch --full shows it".into(),
-        causes => format!(". Likely: {}", causes.join("; ")),
+        [] => ". Cozy found no cause in its record.".into(),
+        causes => format!(". Likely cause: {}.", causes.join("; ")),
     }
 }

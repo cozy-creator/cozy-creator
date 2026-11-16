@@ -24,7 +24,7 @@ export function Packages() {
   return (
     <LibraryFrame on="packages">
       <input className="field wide" aria-label="Search packages" placeholder="Search packages" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
-      <Failure error={error} lead="Couldn't search the packages" />
+      <Failure error={error} lead="Couldn't search packages" />
       <ul className="list">
         {data?.packages.map((found) => (
           <li key={found.package}>
@@ -35,10 +35,10 @@ export function Packages() {
           </li>
         ))}
       </ul>
-      {data && !data.packages.length && <p className="muted">{q ? `No package matches ${q}.` : "No packages on this Hub."}</p>}
+      {data && !data.packages.length && <p className="muted">{q ? `No packages match “${q}”.` : "No packages on the Hub yet."}</p>}
       {Boolean(data?.older) && (
         <button type="button" className="tb" onClick={() => setLimit(Math.min(200, limit + 50))}>
-          {data?.older} more
+          Show {data?.older} more
         </button>
       )}
     </LibraryFrame>
@@ -60,7 +60,7 @@ function Remove({ name }: { name: string }) {
     <div className="row center">
       <label className="check">
         From
-        <select className="field" aria-label="Remove from which machine" value={on} onChange={(event) => setChosen(event.target.value)}>
+        <select className="field" aria-label="Machine to remove it from" value={on} onChange={(event) => setChosen(event.target.value)}>
           {machines.map((machine) => (
             <option key={machine.name} value={machine.name}>
               {machine.name}
@@ -71,8 +71,8 @@ function Remove({ name }: { name: string }) {
       <Confirm
         label="Remove"
         disabled={ask.busy || !on}
-        says={`Remove ${shown(name)} from ${on}: every release it holds, with its environment. The Hub and other machines keep it, and using it there installs it again.`}
-        yes="Remove it"
+        says={`Remove every release of ${shown(name)} from ${on}, with its environment? The Hub and other machines keep it, and using it on ${on} installs it again.`}
+        yes="Remove"
         onYes={() => {
           if (asked.current?.on !== on) asked.current = { on, key: `remove-${crypto.randomUUID()}` }
           const { key } = asked.current
@@ -83,7 +83,7 @@ function Remove({ name }: { name: string }) {
           })
         }}
       />
-      <Failure error={ask.error} lead="Couldn't remove it" />
+      <Failure error={ask.error} lead="Couldn't remove the package" />
     </div>
   )
 }
@@ -110,7 +110,7 @@ export function PackageDrawer() {
 
   return (
     <LibraryFrame on="packages" title={shown(name)} back={to("packages")}>
-      <Failure error={error} lead={`Couldn't read ${shown(name)}`} />
+      <Failure error={error} lead={`Couldn't load ${shown(name)}`} />
       <Failure error={ask.error} />
       {target?.summary && <p>{target.summary}</p>}
       {data?.warnings?.map((warning) => (
@@ -146,8 +146,8 @@ export function PackageDrawer() {
           ask={(body, key) => client.job("cozy/package_install", body, key)}
           onDone={({ run }) => navigate(to(`runs/${run.number}`))}
         >
-          <select className="field releasepick" aria-label="Which release" value={release} onChange={(event) => setRelease(event.target.value)}>
-            <option value="">The newest</option>
+          <select className="field releasepick" aria-label="Release" value={release} onChange={(event) => setRelease(event.target.value)}>
+            <option value="">Newest release</option>
             {data?.releases
               .filter((row) => !row.yanked)
               .map((row) => (
@@ -166,20 +166,20 @@ export function PackageDrawer() {
               <tr key={row.release}>
                 <td className="nm">{row.release}</td>
                 <td>{row.published && stamp(row.published)}</td>
-                <td>{row.yanked && <span className="warn">yanked</span>}</td>
+                <td>{row.yanked && <span className="warn">Yanked</span>}</td>
                 <td className="end">
                   {signedIn && !row.yanked && (
                     <Confirm
                       label="Yank"
                       disabled={ask.busy}
-                      says={`Yank ${shown(name)} ${row.release}? Machines that hold it keep it, and only an exact pin installs it. You can take the yank back.`}
-                      yes="Yank it"
+                      says={`Yank ${shown(name)} ${row.release}? Machines that have it keep it, and only a request for exactly this version installs it. You can undo this.`}
+                      yes="Yank"
                       onYes={() => yank(row.release, false)}
                     />
                   )}
                   {signedIn && row.yanked && (
                     <button type="button" className="tb" disabled={ask.busy} onClick={() => yank(row.release, true)}>
-                      Take back
+                      Undo yank
                     </button>
                   )}
                 </td>
@@ -193,12 +193,12 @@ export function PackageDrawer() {
           <Confirm
             label={`Delete ${shown(name)}`}
             disabled={ask.busy}
-            says={`Delete ${shown(name)} from the Hub, with all ${data.releases.length} of its releases? Its name and versions go free for anyone, and it can't be undone. Machines keep what they hold.`}
-            yes="Delete it for good"
+            says={`Delete ${shown(name)} from the Hub, with all ${data.releases.length} of its releases? Anyone can then take its name and versions. This can't be undone. Machines keep the copies they have.`}
+            yes="Delete forever"
             onYes={() =>
               void ask.run(async () => {
                 await client.deletePackage(name)
-                say(`${shown(name)} is deleted.`)
+                say(`Deleted ${shown(name)}.`)
                 void queries.invalidateQueries({ queryKey: ["packages"] })
                 navigate(to("packages"))
               })

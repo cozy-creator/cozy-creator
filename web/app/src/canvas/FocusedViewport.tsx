@@ -14,8 +14,8 @@ import { useSignal } from "../ui/signal"
 import { pressBeganOutside } from "../ui/press"
 import "./FocusedViewport.css"
 
-/** What's on a focused item rather than its background. */
-const OWN = ".media, .tl, .tl-player, .tl-transport, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
+/** What's on a focused item rather than its background: full screen, all of it (cl-1080). */
+const OWN = ".focus-viewer[data-full], .media, .tl, .tl-player, .tl-transport, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
 const own = (element: Element) => Boolean(element.closest(OWN))
 
 /** A workspace for one item. The Wander camera stays behind it, unchanged. */
@@ -107,7 +107,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         <button type="button" className="tb" aria-label="Back to canvas" onClick={onClose}><Icon name="back" />Back to canvas</button>
         <div className="focus-title">
           {view.draft === undefined && <StateDot state={viewState(view)} unseen={view.asset?.unseen?.length ?? 0} noun={view.asset?.noun ?? "take"} />}
-          {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename node" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
+          {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename box" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
           {/* Which take it is, a picture's or a video's: being written, "New take", unmistakably; none with no takes (cl-925). */}
           {(view.asset?.kind === "image" || view.asset?.kind === "video") && (version !== undefined || Boolean(view.asset.prefixes?.length) || Boolean(view.asset.sha256) || Boolean(view.asset.making?.length)) && <span className={`focus-version-label ${writing ? "writing" : ""}`} aria-label="Take">{writing ? "New take" : version === undefined ? "Rendering" : `v${version}`}</span>}
           {warnings.length > 0 && (

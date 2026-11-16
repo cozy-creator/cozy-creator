@@ -55,6 +55,8 @@ pub(crate) struct Service {
     /// While it holds (an update activating), no new root run starts: queued runs are journaled
     /// and start after the restart.
     held: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>,
+    /// Each run left waiting by a dispatch pass: since when, and what for, as this machine's log said it (cl-1086).
+    waits: Mutex<HashMap<String, (std::time::Instant, String)>>,
 }
 
 const SWEEP_EVERY: std::time::Duration = crate::reclaim::IDLE;
@@ -142,6 +144,7 @@ impl Service {
             started_ticks,
             queue: Default::default(),
             held: Default::default(),
+            waits: Default::default(),
         });
         service.engine.reconcile()?;
         // Its first sweep is the reclaim thread's (`reclaim_loop`): a long one never delays serving.
@@ -444,11 +447,7 @@ impl Service {
         let Some(store) = self.store() else {
             return false;
         };
-        let ended = self.end_idle_for_disk(&store, incoming);
-        if !ended.is_empty() {
-            tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(incoming), ended.join(", "));
-        }
-        !ended.is_empty()
+        !self.end_idle_for_disk(&store, incoming).is_empty()
     }
 
     /// Room on the disk for the `missing` bytes of run `run`'s weights, before any is wanted: the
@@ -487,11 +486,17 @@ impl Service {
         };
         let idle: BTreeSet<u32> = self.pool().map(|pool| pool.idle_executors().into_iter().map(|(pid, _)| pid).collect()).unwrap_or_default();
         let evictable = room.freed(|lane| lane.holders.iter().all(|pid| idle.contains(pid)));
-        let now = free().unwrap_or(0);
-        if now.saturating_add(evictable) < missing {
+        // A disk below its reserve lacks that too, as the store judges each admit.
+        let (now, below) = crate::reclaim::measure(store.root()).map_or((0, 0), |disk| (disk.free(), disk.reserve().saturating_sub(disk.available)));
+        let short = missing + below - now.min(missing);
+        if evictable < short {
+            let past = match below {
+                0 => format!("{} free past its reserve", size(now)),
+                below => format!("the disk {} below its reserve", size(below)),
+            };
             return Err(format!(
-                "machine_disk_full: its weights need {} more on this disk, and it can make only {} free ({} free past its reserve, {} in models no queued or running job holds){}",
-                size(missing), size(now + evictable), size(now), size(evictable), crate::reclaim::advice(store.root(), missing)
+                "machine_disk_full: its weights need {} more on this disk, and it can make only {} free ({past}, {} in models no queued or running job holds){}",
+                size(missing), size((now + evictable).saturating_sub(below)), size(evictable), crate::reclaim::advice(store.root(), missing)
             ));
         }
         let ended = self.end_idle_for_disk(&store, missing);
@@ -499,7 +504,7 @@ impl Service {
             Ok(made) if !made.evicted.is_empty() => {
                 let each: Vec<String> = made.evicted.iter().map(|e| format!("{} ({}, unused {} min)", e.name, size(e.bytes), e.idle.as_secs() / 60)).collect();
                 let idle = if ended.is_empty() { String::new() } else { "; their idle executors ended first".into() };
-                warn(format!("the disk was short {} for its weights: evicted {}{idle}", size(missing.saturating_sub(now)), each.join(", ")));
+                warn(format!("the disk was short {} for its weights: evicted {}{idle}", size(short), each.join(", ")));
             }
             Ok(_) => {}
             Err(error) => warn(format!("making room for its weights' {}: {error}", size(missing))),
@@ -508,7 +513,8 @@ impl Service {
     }
 
     /// Ends idle executors, least recently used first, while the models only they hold open
-    /// would give the disk `incoming` more bytes it lacks: an executor ends only when its holds
+    /// would give the disk what it lacks for `incoming` more bytes and its reserve, as the store
+    /// judges an admit (0: one of unknown length, or none): an executor ends only when its holds
     /// alone keep some of that room, never one a queued or running job also holds. The models
     /// they held, by name.
     fn end_idle_for_disk(&self, store: &crate::storage::Store, incoming: u64) -> Vec<String> {
@@ -516,7 +522,8 @@ impl Service {
             return vec![];
         };
         let idle = pool.idle_executors();
-        let need = crate::reclaim::measure(store.root()).map_or(0, |disk| incoming.saturating_sub(disk.free()));
+        // Below its reserve the disk lacks room for any write (kamitsure, 11-16: its idle LTX stayed while outputs went).
+        let need = crate::reclaim::measure(store.root()).map_or(0, |disk| (disk.reserve() + incoming.max(1)).saturating_sub(disk.available));
         if idle.is_empty() || need == 0 {
             return vec![];
         }
@@ -541,6 +548,9 @@ impl Service {
                 names.extend(room.lanes.iter().filter(|lane| lane.holders.contains(&pid)).map(|lane| lane.name.clone()));
                 (ended, can) = (with, more);
             }
+        }
+        if !names.is_empty() {
+            tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(need), names.join(", "));
         }
         names
     }
@@ -578,6 +588,10 @@ impl Service {
             })?;
             if let Some(calls) = self.calls().filter(|_| all) {
                 if disk()?.short().is_some() {
+                    // An idle executor's models go before any held output (kamitsure kept its idle LTX's 71.5 GB and let outputs go).
+                    if let Some(store) = self.store() {
+                        self.end_idle_for_disk(&store, 0);
+                    }
                     let (count, bytes) = calls.make_room()?;
                     swept.add(crate::reclaim::Kind::Object, count, bytes);
                 }
@@ -600,7 +614,7 @@ impl Service {
     /// One pass over the ready runs in the queue's order (`queue`). An older request with a
     /// ready GPU step keeps the GPUs it waits for (`claims`) from later offers (Slurm). A deviceless
     /// call takes CPU room; one waiting on its own call takes none. Each root left queued shows
-    /// its place in line.
+    /// its place in line and what it waits for, which this machine's log says as it changes.
     fn dispatch_ready(&self) -> io::Result<()> {
         let stopped = self.stopped.lock().unwrap();
         if *stopped {
@@ -623,10 +637,13 @@ impl Service {
         let mut claims = vec![None; pool.width()];
         let calls = self.calls();
         let waits = |r: &Execution| calls.as_ref().is_some_and(|calls| calls.waiting(&self.engine, &r.id));
-        let cpu_active = || -> io::Result<usize> {
-            Ok(self.engine.active(usize::MAX)?.iter()
-                .filter(|r| !gpu(r) && (output(r) || !waits(r))).count())
+        // The runs holding the CPU slots: a run left waiting for one names them.
+        let cpu_holders = || -> io::Result<Vec<Execution>> {
+            Ok(self.engine.active(usize::MAX)?.into_iter()
+                .filter(|r| !gpu(r) && (output(r) || !waits(r))).collect())
         };
+        let cpu_active = || cpu_holders().map(|holders| holders.len());
+        let mut waiting = HashSet::new();
         // CPU output work uses the existing capacity. At capacity one GPU wave may overlap;
         // once it returns, admit no more until CPU work advances.
         // A run whose plan cannot be read is its own model; its offer reports why.
@@ -646,6 +663,12 @@ impl Service {
                         true => "waiting for required model inputs".to_owned(),
                         false => format!("waiting for required model inputs: {on}"),
                     };
+                    // A private run's models aren't named in this machine's log.
+                    let said = match record.invocation.local_private {
+                        Some(_) => "for required model inputs",
+                        None => reason.trim_start_matches("waiting "),
+                    };
+                    self.waits_for(&record, said, &mut waiting);
                     self.engine.waiting(&record.id, Some(reason))?;
                     continue;
                 }
@@ -687,6 +710,7 @@ impl Service {
                 if crate::queue::job(&record) {
                     self.queue.lock().unwrap().started(&record);
                 }
+                self.went(&record);
             } else {
                 // An earlier incompatible GPU job remains a barrier. Lookahead never scans
                 // past it to improve model affinity at the expense of the existing queue.
@@ -702,14 +726,62 @@ impl Service {
                 }
                 if root {
                     place += 1;
-                    let after = if held { ", after the machine's update" } else { "" };
-                    let shown = self.engine.waiting(&record.id, Some(format!("position {place} in the queue{after}")));
+                    // What it waits for, named: a wait no one can see the cause of is a hang to whoever watches it (cl-1086).
+                    let holders = cpu_holders()?;
+                    let cpu_full = match invocation.degree {
+                        0 => holders.len() >= self.parallelism,
+                        _ => holders.len() > self.parallelism,
+                    };
+                    let why = if held {
+                        "after the machine's update".to_owned()
+                    } else if invocation.degree > 0 && gpu_fenced {
+                        "for the GPUs an earlier process holds".to_owned()
+                    } else if cpu_full {
+                        self.cpu_wait(&holders)
+                    } else if invocation.degree > 0 {
+                        "for a GPU".to_owned()
+                    } else {
+                        "for its turn".to_owned()
+                    };
+                    self.waits_for(&record, &why, &mut waiting);
+                    let shown = self.engine.waiting(&record.id, Some(format!("position {place} in the queue, {why}")));
                     shown.unwrap_or_else(|error| tracing::warn!("run {}: its place was not shown: {error}", record.id));
                 }
             }
         }
+        // A run that left the queue some other way (canceled, failed) waits no more.
+        self.waits.lock().unwrap().retain(|id, _| waiting.contains(id));
         pool.lookahead(&self.engine, next_gpu.as_ref().map(|(record, plan)| (record, plan)));
         Ok(())
+    }
+    /// What a deviceless run waits for while this machine's CPU slots are full: the runs holding them.
+    fn cpu_wait(&self, holders: &[Execution]) -> String {
+        let slots = match self.parallelism {
+            1 => "its one CPU slot".to_owned(),
+            n => format!("its {n} CPU slots"),
+        };
+        let named: Vec<String> = holders.iter().map(|holder| self.engine.caller_id(&holder.id)).collect();
+        match named.as_slice() {
+            [] => format!("for {slots}"),
+            [one] => format!("for this machine's CPU: {one} holds {slots}"),
+            many => format!("for this machine's CPU: {} hold {slots}", many.join(", ")),
+        }
+    }
+    /// Run `record` left waiting `why` this pass: this machine's log says so when what it waits for changes.
+    fn waits_for(&self, record: &Execution, why: &str, waiting: &mut HashSet<String>) {
+        waiting.insert(record.id.clone());
+        let mut waits = self.waits.lock().unwrap();
+        let (_, said) = waits.entry(record.id.clone()).or_insert_with(|| (std::time::Instant::now(), String::new()));
+        if said.as_str() != why {
+            why.clone_into(said);
+            drop(waits);
+            tracing::info!(run = %self.engine.caller_id(&record.id), "queue: waits {why}");
+        }
+    }
+    /// Run `record` went: if it waited, this machine's log says how long, and for what last.
+    fn went(&self, record: &Execution) {
+        let Some((since, why)) = self.waits.lock().unwrap().remove(&record.id) else { return };
+        tracing::info!(run = %self.engine.caller_id(&record.id), "queue: goes after {:.1} s waiting {why}", since.elapsed().as_secs_f64());
     }
     /// The plan `record` runs: its journaled preparation's, else a weightless call's.
     fn plan(&self, pool: &Pool, record: &Execution) -> io::Result<Plan> {
