@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 from typing import TypedDict, cast
@@ -48,12 +50,15 @@ class Run(TypedDict, total=False):
     machine_state: str
     output: list[Output]
     settled_at_ms: int
+    progress: dict[str, object]
 
 IDLE = 20
 OUTLIVES = 50
 MAXIMUM = 15
 # The maximum's run's file, in MB: a save into the project that takes a while after its call ends (cl-1060).
 VIDEO_MB = 128
+# Steps 4 and 5's files, in MB: a save long enough to lock during, or to stop the machine under (cl-1060).
+SAVE_MB = 256
 
 
 def cli(args: argparse.Namespace, name: str, *words: str, fails: bool = False) -> object:
@@ -108,6 +113,60 @@ def run_of(stdout: Path) -> Run:
         if isinstance(event, dict) and isinstance(event.get("run"), dict):
             return cast(Run, event["run"])
     return {}
+
+
+def saving(stdout: Path, process: subprocess.Popen[bytes]) -> bool:
+    """Until the run says it's saving its outputs (its call ended), or it ends."""
+    while process.poll() is None:
+        if run_of(stdout).get("progress", {}).get("stage") == "saving the outputs":
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def machines(stop: signal.Signals, pids: list[int] | None = None) -> list[int]:
+    """This computer's machine, stopped or let go on: unreachable for what it still owes."""
+    if pids is None:
+        found = subprocess.run(["pgrep", "-f", "machine serve"], capture_output=True, text=True)
+        pids = [int(pid) for pid in found.stdout.split()]
+    for pid in pids:
+        try:
+            os.kill(pid, stop)
+        except ProcessLookupError:
+            pass
+    return pids
+
+
+def settled(args: argparse.Namespace, number: object, seconds: float) -> str:
+    """Run `number`'s status once it settles, or as it is after `seconds`."""
+    began, status = time.monotonic(), ""
+    while time.monotonic() - began < seconds:
+        done = subprocess.run([str(args.cli), "--json", "run", "watch", str(number), "--once"], cwd=args.project, capture_output=True)
+        lines = [line for line in done.stdout.splitlines() if line.strip()]
+        try:
+            watched: object = json.loads(lines[-1]) if lines else {}
+        except ValueError:
+            watched = {}
+        if isinstance(watched, dict) and isinstance(watched.get("run"), dict):
+            watched = watched["run"]
+        status = str(watched.get("status", "")) if isinstance(watched, dict) else ""
+        if status in ("completed", "failed", "canceled"):
+            break
+        time.sleep(2)
+    return status
+
+
+def whole(args: argparse.Namespace, number: object, mark: str, name: str) -> int:
+    """Run `number`'s file as a person fetches it from the project: its size, the mark at its start; the copy not kept."""
+    fetched = args.out / name
+    done = subprocess.run([str(args.cli), "run", "watch", str(number), "--once", "-o", str(fetched)], cwd=args.project, capture_output=True)
+    kept = [path for path in fetched.rglob("*") if path.is_file() and mark.encode() in path.read_bytes()[:200]]
+    size = max((path.stat().st_size for path in kept), default=0)
+    for path in fetched.rglob("*"):
+        if path.is_file():
+            path.unlink()
+    assert kept, f"run {number}'s file did not come back from the project: exit {done.returncode} {done.stderr[-400:]!r}"
+    return size
 
 
 def after_failure(args: argparse.Namespace, number: object, mark: str) -> str:
@@ -185,7 +244,7 @@ class Answer(msgspec.Struct):
 def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     time.sleep(payload.seconds)
     target = out.temporary_file(".txt")
-    target.write_bytes(f"{payload.mark} slept {payload.seconds}\n".encode() + os.urandom(payload.size << 20))
+    target.write_bytes(f"{payload.mark} slept {payload.seconds}\\n".encode() + os.urandom(payload.size << 20))
     return Answer(payload.seconds, out.save_file(target, media_type="text/plain"))
 ''')
     # Its environment installed first, so the timed run below is the sleep, not an install.
@@ -267,6 +326,49 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     receipt["outlived_maximum"] = {"run": run.get("number"), "status": run.get("status"), "maximum_s": MAXIMUM,
                                    "unlocked_past_maximum_s": round((settled_ms - deadline_ms) / 1000), "unlocked_reads_past_maximum": len(past),
                                    "locked_after_end_s": round(max_lock_s, 1), "fetched": kept[0].name, "file_mb": VIDEO_MB}
+
+    # 4. An explicit lock while a run saves its outputs refuses, naming the run, and the file lands whole (cl-1060).
+    script = unlock(args, "unlock-for-save-lock", 0) / "vault-work-proof" / "sleeper.py"
+    mark = f"cl1060-lock-{time.time_ns()}"
+    process, stdout = start(args, "save-lock", script, 2, mark, SAVE_MB)
+    assert saving(stdout, process), f"the run never said it was saving its outputs: {run_of(stdout)}"
+    refused = subprocess.run([str(args.cli), "--json", "vault", "lock"], cwd=args.project, capture_output=True)
+    (args.out / "save-lock-refused.json").write_bytes(refused.stdout + refused.stderr)
+    process.wait(timeout=300)
+    run = run_of(stdout)
+    said = (refused.stdout + refused.stderr).decode(errors="replace")
+    assert refused.returncode != 0 and "is saving its outputs" in said, \
+        f"a lock while run {run.get('number')} saved its outputs did not refuse, naming it: exit {refused.returncode} {said[-400:]}"
+    assert process.returncode == 0 and run.get("status") == "completed", f"run {run.get('number')}, saving through a lock: {run}"
+    size = whole(args, run.get("number"), mark, "save-lock.out")
+    assert size >= SAVE_MB << 20, f"run {run.get('number')}'s file came back {size} bytes, not {SAVE_MB} MB"
+    receipt["lock_while_saving"] = {"run": run.get("number"), "refused": said.strip()[-200:], "file_mb": SAVE_MB}
+    cli(args, "lock-after-save", "vault", "lock")
+
+    # 5. An exporter that can't move its bytes (its machine stopped) holds the vault open no longer than a moment past its
+    #    deadline: it locks, and the next unlock saves the file (cl-1060).
+    script = unlock(args, "unlock-for-stall", 0, MAXIMUM) / "vault-work-proof" / "sleeper.py"
+    mark = f"cl1060-stall-{time.time_ns()}"
+    process, stdout = start(args, "stall", script, MAXIMUM + 5, mark, SAVE_MB)
+    assert saving(stdout, process), f"the run never said it was saving its outputs: {run_of(stdout)}"
+    stopped = machines(signal.SIGSTOP)
+    try:
+        stall_lock_s = locked_within(args, 90)
+    finally:
+        machines(signal.SIGCONT, stopped)
+    process.wait(timeout=120)
+    stalled = run_of(stdout).get("number")
+    view = unlock(args, "unlock-after-stall", 0)
+    status = settled(args, stalled, 180)
+    assert status == "completed", f"run {stalled}, its save stopped by a lock, is {status or 'unread'} after the next unlock"
+    size = whole(args, stalled, mark, "stall.out")
+    assert size >= SAVE_MB << 20, f"run {stalled}'s file came back {size} bytes after the next unlock, not {SAVE_MB} MB"
+    receipt["stalled_export"] = {"run": stalled, "machine_stopped": len(stopped), "locked_s": round(stall_lock_s, 1),
+                                 "next_unlock": status, "file_mb": SAVE_MB}
+    # Its large files aren't artifacts.
+    for path in view.rglob("*"):
+        if path.is_file() and path.stat().st_size > 32 << 20:
+            path.unlink()
     receipt["synthetic_only"] = True
     (args.out / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(f"vault work: {json.dumps(receipt)}", flush=True)
