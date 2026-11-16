@@ -19,7 +19,6 @@ FIX=$(cd "$(dirname "$0")/fixtures/gpu-queue" && pwd)/gpuq.py
 say "red TensorD $("$RED" --version), green $("$GREEN" --version)"
 quote 2400
 rent
-step runtime machine update "$NAME" --runtime "$W" -y || fail "the pod refused the Runtime wheel"
 
 # taken <name>: run <name> of this session accepted by the pod.
 taken() {
@@ -35,7 +34,8 @@ taken() {
 declare -A FIRST
 arm() {
   local a=$1 bin=$2 v n name e l
-  step "$a-tensord" machine update "$NAME" --tensord "$bin" -y || fail "$a: the pod refused its TensorD"
+  # The RC's Runtime runs only under the RC's cozy (rc_runtime_needs_rc_cozy): both in one update.
+  step "$a-tensord" machine update "$NAME" --tensord "$bin" --runtime "$W" -y || fail "$a: the pod refused its TensorD and the Runtime"
   v=$(cozy machine show "$NAME" --json | jq -r .status.version)
   [ "$v" = "$("$bin" --version | awk '{print $2}')" ] || fail "$a: the pod runs TensorD $v, not $("$bin" --version)"
   say "$a: TensorD $v"
