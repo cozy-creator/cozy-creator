@@ -961,6 +961,8 @@ struct Pace {
     last: Option<f64>,
     /// The level before the last doubling: settling gives that doubling back when it didn't pay.
     before: usize,
+    /// The last window received something: this one, if it did too, was spent whole on the transfer and measures it.
+    flowing: bool,
     seen: u64,
     /// Windows in a row since the last doubling that grew under `GAIN`.
     flat: u32,
@@ -1211,7 +1213,7 @@ impl Shared {
         if self.busy.load(Ordering::Acquire) == 0 {
             let gone = pace.level.saturating_sub(START.min(pace.max));
             self.shrink(&mut pace, gone);
-            (pace.last, pace.settled, pace.flat) = (None, false, 0);
+            (pace.last, pace.settled, pace.flat, pace.flowing) = (None, false, 0, false);
             return true;
         }
         // Demand is requests waiting, or ranges in flight with halves left to take; the tail is a new
@@ -1222,9 +1224,11 @@ impl Shared {
             (pace.last, pace.settled, pace.flat) = (None, false, 0);
         }
         pace.tail = tail;
-        // A window that received nothing measured no rate: the first is the requests' latency (th-378: cale's ramp doubled on
-        // 0 MB/s, and then again on anything against it, to 64 streams on a 28 MB/s link).
-        if !(waiting || tail) || pace.settled || pace.level >= pace.max || rate == 0.0 {
+        // Only a window spent whole on the transfer measures it: one that received nothing, or the first that did, is the requests'
+        // latency (th-378: cale's ramp doubled on 0 MB/s, then again on anything against that, to 64 streams on 28 MB/s).
+        let measured = rate > 0.0 && pace.flowing;
+        pace.flowing = rate > 0.0;
+        if !(waiting || tail) || pace.settled || pace.level >= pace.max || !measured {
             return false;
         }
         // A doubling's new requests take more than a window to deliver: two flat windows settle it, giving it back, as it
