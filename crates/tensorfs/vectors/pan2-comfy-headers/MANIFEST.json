@@ -1,0 +1,23 @@
+{
+ "note": "PAN2's transformer in ComfyUI's single file (bare Diffusers names, the curve form: `adaln_t_table` [4097, 192] in place of the time embedder, each modulation linear over its 192 coordinates): Comfy-Org's bf16 and int8_convrot (comfy_quant markers, per-row weight_scale, a comfy_attention.config per block)",
+ "members": [
+  {
+   "source": "Comfy-Org/PAN2@a97db318eab044a42abba9841b16b308078c6db2",
+   "member": "diffusion_models/pan2_bf16.safetensors",
+   "header_file": "pan2_bf16.safetensors.header",
+   "header_sha256": "78fff98c898b3907c1fd9265a88d3a4935ecf2a7f8c56dd83c07b80f1c7a7a97",
+   "header_bytes": 168352,
+   "full_length": 67369650976,
+   "declared_source_sha256": "07f59594371c7716db9a7cf348c914f5442e64ac97323a31987e5723289fa951"
+  },
+  {
+   "source": "Comfy-Org/PAN2@a97db318eab044a42abba9841b16b308078c6db2",
+   "member": "diffusion_models/pan2_int8_convrot.safetensors",
+   "header_file": "pan2_int8_convrot.safetensors.header",
+   "header_sha256": "9d3fca67f14593f02c880865ed94d40e15e98bf8c5de922fd58173c7e4f9d7fd",
+   "header_bytes": 296736,
+   "full_length": 26680974884,
+   "declared_source_sha256": "a906882e609f91be1cbe8ca26365d6c3d10535c998b0a99b92e462f92be57327"
+  }
+ ]
+}
