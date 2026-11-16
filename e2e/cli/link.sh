@@ -132,10 +132,10 @@ link_arm() {
 # The link's ceiling: four GETs of the file server's 256 MiB through it for 12 s; the judge reads the files class's bytes over the
 # last 10 s of the window.
 link_ceiling() {
-  local i
+  local i pids=()
   mark ceiling_from_ms
-  for i in 1 2 3 4; do curl -s -o /dev/null --max-time 12 "http://127.0.0.1:$LINK_FILES_PORT/ceiling.bin" & done
-  wait
+  for i in 1 2 3 4; do curl -s -o /dev/null --max-time 12 "http://127.0.0.1:$LINK_FILES_PORT/ceiling.bin" & pids+=($!); done
+  wait "${pids[@]}"
   mark ceiling_to_ms
   sleep 2
 }

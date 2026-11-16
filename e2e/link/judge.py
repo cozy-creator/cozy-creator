@@ -192,6 +192,11 @@ class Record:
                 "arms": {name: arm.facts() for name, arm in self.arms.items()}}
 
 
+def total_of(arm, subject, mib):
+    totals = [total for _, _, total in arm.ops("download", subject)]
+    return max(totals) if totals else mib * MIB
+
+
 def weights_done(arm, ask, subject, mib):
     """When a model's bytes had all come: Status's total for it (else `mib`), counted from the ask on the weights class."""
     totals = [total for _, _, total in arm.ops("download", subject)]
@@ -225,13 +230,14 @@ def cold(rec):
         rec.notes.append(f"{form}: install spans from {src_a} / {src_c}")
         alone_w = secs(ask_w, settled(w, "weights"))
         done, need = weights_done(c, ask_c, "pagebox", 1600)
-        rec.row(f"{form}.ttfo_s", secs(ask_c, settled(c, "cold")))
+        rec.row(f"{form}.ttfo_s", secs(c.run("cold").get("accepted_at_ms") or ask_c, settled(c, "cold")))
         rec.row(f"{form}.install_alone_s", secs(i0, i1))
         rec.row(f"{form}.install_s", secs(c0, c1))
         rec.row(f"{form}.install_ratio", ratio(secs(c0, c1), secs(i0, i1)))
         rec.row(f"{form}.weights_alone_s", alone_w)
         rec.row(f"{form}.weights_s", secs(ask_c, done))
         rec.row(f"{form}.weights_ratio", ratio(secs(ask_c, done), alone_w))
+        rec.row(f"{form}.weights_vs_ceiling", ideal(c, need / 0.99, ask_c, done))
         end = done or settled(c, "cold") or c.at("ended_ms")
         rec.row(f"{form}.weights_longest_zero_s", c.longest("weights", ask_c, end))
         starved = c.longest("weights", ask_c, end, also=0.5)
@@ -253,6 +259,11 @@ def cold(rec):
             rec.row(f"{form}.install_rate_ratio", ratio(rate_busy(c, c0, c1), rate_busy(i, i0, i1)))
         p50, p95, top, drops = c.queue_ms(ask_c, end)
         rec.row(f"{form}.queue_p95_ms", round(p95) if p95 is not None else None)
+
+
+def ideal(arm, nbytes, ask, done):
+    """The model's bytes at the link's ceiling over the time they took: 1.0 is the link full from the ask to the last byte."""
+    return round(nbytes / arm.ceiling / ((done - ask) / 1e3), 3) if done and ask and done > ask else None
 
 
 def rate_busy(arm, lo, hi):
@@ -291,6 +302,7 @@ def need(rec):
     rec.row("ahead_alone_s", alone)
     rec.row("ahead_s", secs(ask, done))
     rec.row("ahead_ratio", ratio(secs(ask, done), alone))
+    rec.row("ahead_vs_ceiling", ideal(both, total_of(both, "pagebox", 1600), ask, done))
     use, idle = both.use([(both.at("ask_need"), max(done or 0, settled(both, "need") or 0))])
     rec.row("link_use", use)
     rec.row("idle_wanted_s", idle)
@@ -313,6 +325,7 @@ def thirdparty(rec):
     rec.row("ahead_alone_s", alone)
     rec.row("ahead_s", secs(ask, done))
     rec.row("ahead_ratio", ratio(secs(ask, done), alone))
+    rec.row("ahead_vs_ceiling", ideal(both, total_of(both, "pagebox", 1600), ask, done))
     f0 = (both.run("fetch").get("result") or {}).get("began_unix_ms")
     if f0 and took(both):
         f1 = f0 + took(both) * 1e3
@@ -360,6 +373,7 @@ def update(rec):
     rec.row("weights_alone_s", alone)
     rec.row("weights_s", secs(ask, done))
     rec.row("weights_ratio", ratio(secs(ask, done), alone))
+    rec.row("weights_vs_ceiling", ideal(both, total_of(both, "pagebox", 1600), ask, done))
     rec.row("weights_longest_zero_s", both.longest("weights", ask, done or ask))
     rec.row("goodput", ratio(both.moved("weights", ask, done or ask), w.moved("weights", w.at("ask_weights"), settled(w, "weights") or 0)))
     rec.notes.append(f"TensorD {both.at('tensord_before')} → {both.at('tensord_after')} (restarted: {both.at('tensord_before') != both.at('tensord_after')})")
@@ -382,12 +396,14 @@ def control(rec):
         rec.row(f"{form}.probe_idle_p95_ms", pct(idle, 0.95))
         rec.row(f"{form}.probe_p50_ms", pct(busy, 0.5))
         rec.row(f"{form}.probe_p95_ms", pct(busy, 0.95))
+        rec.row(f"{form}.probe_p99_ms", pct(busy, 0.99))
         rec.row(f"{form}.probe_max_ms", max(busy) if busy else None)
         rec.row(f"{form}.probe_p95_over_idle_ms", pct(busy, 0.95) - pct(idle, 0.95) if busy and idle else None)
         rec.row(f"{form}.status_idle_p95_ms", pct(arm.status_ms(b0, idle_to), 0.95))
         rec.row(f"{form}.status_p95_ms", pct(arm.status_ms(lo, hi), 0.95))
         rec.row(f"{form}.probe_failures", len(failed))
         rec.row(f"{form}.weights_s", secs(ask, done))
+        rec.row(f"{form}.weights_vs_ceiling", ideal(arm, total_of(arm, "pagebox", 1600), ask, done))
         p50, p95, top, drops = arm.queue_ms(lo, hi)
         rec.row(f"{form}.queue_p95_ms", round(p95) if p95 is not None else None)
         rec.hold(f"{form}.control_never_failed", not failed, f"{form}: {len(failed)} control calls failed, first: {failed[0]['error'] if failed else ''}")
@@ -405,6 +421,7 @@ def two(rec):
     for k in "ab":
         rec.row(f"{k}_alone_s", alone[k])
         rec.row(f"{k}_s", took[k])
+    rec.row("both_s", secs(min(both.at("ask_a"), both.at("ask_b")), max(settled(both, "a") or 0, settled(both, "b") or 0) or None))
     r = [ratio(took[k], alone[k]) for k in "ab"]
     if None not in r:
         rec.row("mean_ratio", round(sum(r) / 2, 3))
