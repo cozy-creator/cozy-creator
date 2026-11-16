@@ -18,7 +18,7 @@ from cell import Cell, Json, module, save
 from tiny import _shared, qwen3_5
 from tiny._video import video
 
-REF = "ifm/pan2@0.1.0"
+REF = "ifm/pan2@0.2.0"
 _CAPTION = json.dumps({"video_style": "A fixed tabletop shot.", "lighting": "Daylight.",
                        "perspective_view": "Side view.", "subjects_lifecycle": [],
                        "init_frame_visual_description": "A red ball on a table.",
