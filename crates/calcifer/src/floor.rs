@@ -294,6 +294,55 @@ impl Machines {
         let (updating, _) = self.update(&key, name, ask).await.map_err(|e| refused(e.message))?;
         Ok(updating.run)
     }
+
+    /// A run `row` its machine refused because its Runtime is older than the package needs (`runtime_floor_unmet`; Paul 11-16: "I
+    /// should be able to send jobs and it just works"), however the send missed it: the machine moves to the newest Runtime it can
+    /// take that meets the package's `cozy-runtime` requirement (its card's, or what Calcifer read of local code), as before a send
+    /// (`upgrade`), and the run goes there again. One that can't move: an `any` run is placed again; any other fails as refused.
+    /// A machine that meets it already moves for nothing, so a second refusal there fails.
+    pub(crate) async fn refloored(self: &Arc<Self>, row: &crate::store::RunRow, outcome: &api::machine::Outcome) -> Option<Refloor> {
+        let refused = outcome.reason.as_ref().is_some_and(|reason| reason.code == "runtime_floor_unmet");
+        if !refused || outcome.status != "failed" || row.cancel_requested || !matches!(row.kind, api::calcifer::Kind::Call | api::calcifer::Kind::Warm) {
+            return None;
+        }
+        let name = row.machine.as_deref()?;
+        let (package, needs) = match row.spec.source.as_ref()? {
+            api::machine::Source::Release(release) => {
+                let hub = row.hub.as_ref()?.as_str();
+                let card = ::api::hub::cards::card_requiring(|| self.hubs.reader(hub), self.hubs.home().root(), hub, &release.package, &release.release).await.ok()?;
+                (format!("{} {}", release.package, release.release), api::release::required(card.requirements().unwrap_or_default(), "cozy-runtime")?)
+            }
+            api::machine::Source::Local(local) => (row.target.clone(), crate::local_code::needs_of(&local.manifest)?),
+            api::machine::Source::Installation(_) => return None,
+        };
+        let elsewhere = |why: String| (!row.pinned && row.wants == "any").then_some(Refloor::Elsewhere(why));
+        let frame = self.frame(name).filter(|frame| !frame.runtime.is_empty())?;
+        // Whether it takes the RC's build reads what the RC's prereleases last named: read once, if never yet.
+        if self.dev && let Err(e) = self.rc.now().await {
+            tracing::warn!(machine = name, "the open RC's builds: {}", e.message);
+        }
+        let rc = self.takes_rc(name, &api::calcifer::On::Machine(name.to_owned()));
+        let (runtimes, moves, newer) = self.runtimes(name, &frame, rc).await;
+        let machine = api::release::Machine { runtime: &frame.runtime, runtimes: &runtimes, moves, newer: newer.as_ref() };
+        let to = match api::release::takes(&needs, &machine) {
+            api::release::Takes::Moves(to) => to,
+            api::release::Takes::Runs => return None,
+            _ => return elsewhere(format!("{package} needs cozy-runtime{needs}, which {name} can't move to")),
+        };
+        let upgrade = Upgrade { machine: name.to_owned(), from: frame.runtime.clone(), to, release: package };
+        match self.upgrade(&upgrade).await {
+            Ok(_) => Some(Refloor::Moved(upgrade.note().message)),
+            Err(e) => elsewhere(e.message),
+        }
+    }
+}
+
+/// What a run its machine refused for its Runtime does next (`Machines::refloored`), and the line it says.
+pub(crate) enum Refloor {
+    /// Its machine moves first, then the run goes there again.
+    Moved(String),
+    /// An `any` run its machine can't move for: placed again.
+    Elsewhere(String),
 }
 
 /// Reads which `cozy_runtime` names a package wheel imports that a Runtime wheel lacks.
@@ -307,7 +356,7 @@ pub(crate) struct Wheel {
 }
 
 /// `src`'s `cozy-runtime` requirement, as its pyproject.toml declares it: None when it names no version.
-fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
+pub(crate) fn requirement_of(src: &Path) -> Option<VersionSpecifiers> {
     let pyproject: toml::Value = std::fs::read_to_string(src.join("pyproject.toml")).ok().and_then(|text| toml::from_str(&text).ok())?;
     let dependencies = pyproject.get("project").and_then(|p| p.get("dependencies")).and_then(toml::Value::as_array);
     api::release::required(dependencies.into_iter().flatten().filter_map(toml::Value::as_str), "cozy-runtime")

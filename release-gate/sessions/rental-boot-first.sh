@@ -5,8 +5,8 @@
 # should check for an upgraded version and upgrade to that automatically"; "I should be able to send jobs and it just works.
 # Either the remote machine or my local machine falls through and catches it."
 # A dev home (`dev = true`) on the session's RC cozy (pod-session `cozy`: a dev-build run of rc/<x>), one rental of $SKU:
-#   boot  local code with such a floor (fixtures/rc-floor) run `--on new:$SKU`, so its install is sent as the rental boots from
-#         the release image: it waits for the rental's move to the RC and completes on the RC's Runtime, never refused
+#   boot  local code with such a floor (fixtures/rc-floor) sent to a rental of $SKU as it boots from the release image, as
+#         LAB2-47826's render sent it: it waits for the rental's move to the RC and completes on the RC's Runtime, never refused
 #         `runtime_floor_unmet`. Before the fix this races the rental's first Status: it may pass by luck.
 #   held  the rental put back by hand on the release image's Runtime and TensorFS (a hold), the same code `--on` it: refused
 #         `runtime_held`, naming the update, before any install; before the fix the install went and was refused
@@ -43,14 +43,17 @@ GUARD_ALSO=own guard
 runs() { (cd "$RUN_PROJECT" && cozy --json run ls --all --on "$NAME" --limit 0) > "$OUT/$1.json" 2>&1; }
 refused() { grep -qs -- "$1" "$OUT/$2.txt" "$OUT/$2.json"; }
 
-step boot run "$CODE/runtime" --on "new:$SKU" --yes; boot=$?
-claim
-NAME=$( (cd "$RUN_PROJECT" && cozy --json run watch "$(runno boot)" --once) | jq -r '.machine // empty')
-[ -n "$NAME" ] || NAME=$(cozy machine show "$(own | head -1)" --json 2> /dev/null | jq -r '.name // empty')
-[ -n "$NAME" ] || fail "boot: no rental came of the run: $(tail -3 "$OUT/boot.txt")"
-RID=$(cozy machine show "$NAME" --json | jq -r '.rental_id // empty')
-cozy machine show "$NAME" > "$OUT/show.txt" 2>&1
-say "boot: on $NAME ($RID), image $(cozy machine show "$NAME" --json | jq -r '.rental.base_worker_image_digest // "?"')"
+# A project's run rents nothing itself: the rental is ordered, and the code sent to it by the name it has while it boots (its
+# runs move with it once its Hub names its host).
+order
+for _ in $(seq 30); do
+  first=$(cozy machine show "$RID" --json 2> /dev/null | jq -r '.name // empty'); [ -z "$first" ] || break; sleep 1
+done
+[ -n "$first" ] || fail "boot: $RID has no machine here"
+say "boot: the code sent to $first ($RID, $(state "$RID")) as it boots"
+step boot run "$CODE/runtime" --on "$first" text=boot; boot=$?
+ready
+say "boot: on $NAME ($RID), image $(jq -r '.rental.base_worker_image_digest // "?"' "$OUT/show.json")"
 runs boot-runs
 jq -r '.runs | sort_by(.created_at_ms)[] | "  run \(.number) \(.kind) \(.status) accepted \(.accepted_at_ms // "-") settled \(.settled_at_ms // "-") \(.target | .[0:80]) \(.reason.code // "")"' "$OUT/boot-runs.json" | tee -a "$R"
 if refused runtime_floor_unmet boot || refused runtime_floor_unmet boot-runs; then

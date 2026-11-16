@@ -1158,7 +1158,7 @@ impl Machines {
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
         self.lists.observe(name, &frame);
-        let back = {
+        let (back, ready) = {
             let mut seen = lock(&self.seen);
             let seen = seen.entry(name.to_owned()).or_default();
             // A stream sends its queue and times only when they change: absent, they stand as its last frame said.
@@ -1170,7 +1170,8 @@ impl Machines {
                     frame.times = last.times.clone();
                 }
             }
-            if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready") {
+            let ready = frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready");
+            if ready {
                 self.placing.notify_one();
                 self.rc_ready.notify_one();
             }
@@ -1185,10 +1186,10 @@ impl Machines {
             seen.since = None;
             seen.silent = None;
             seen.unanswered = None;
-            seen.unreachable.take().is_some()
+            (seen.unreachable.take().is_some(), ready)
         };
-        // Its runs and exports that wait on it try again now.
-        if back {
+        // Its runs and exports that wait on it try again now: it came back, or came up (a run held for its boot, cl-1069).
+        if back || ready {
             self.calcifer.touch(name);
         }
         // Its lists, unless this boot of it was sent them: it came up since they were set, or started again.
