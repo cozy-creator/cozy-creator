@@ -537,29 +537,9 @@ fn held_column(writer: &mut Connection) -> Result<()> {
     if has {
         return Ok(());
     }
-    // Each machine's hold as its updates leave it, newest first: what an older Calcifer read from them (minus whether the machine
-    // still runs it, which only it says).
-    let tx = writer.transaction()?;
-    tx.execute_batch("ALTER TABLE machines ADD COLUMN held TEXT")?;
-    let updates: Vec<(String, String, String)> = {
-        let mut statement = tx.prepare(
-            "SELECT machine, target, idempotency_key FROM runs WHERE kind = 'update' AND machine IS NOT NULL
-                 AND state = 'settled' AND status = 'completed' ORDER BY number DESC",
-        )?;
-        let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-        rows.collect::<rusqlite::Result<_>>()?
-    };
-    let mut seen = std::collections::HashSet::new();
-    for (machine, target, key) in updates {
-        if seen.contains(&machine) {
-            continue;
-        }
-        if let Some(hold) = crate::rc::hold_of(&key, &target) {
-            tx.execute("UPDATE machines SET held = ?2 WHERE name = ?1", params![machine, hold])?;
-            seen.insert(machine);
-        }
-    }
-    tx.commit()?;
+    // A store from before holds were kept starts with none (cl-1055): 0.25 had no pin that keeps a machine from moving, and its
+    // updates' words can't tell one named by hand from its Hub's target. A hold exists only once an update by hand writes it.
+    writer.execute_batch("ALTER TABLE machines ADD COLUMN held TEXT")?;
     Ok(())
 }
 

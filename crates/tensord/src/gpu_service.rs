@@ -3613,6 +3613,17 @@ impl Pool {
             }
         };
         *disposition = Disposition::Unknown(executor_births(&session.executor.birth, &session.followers));
+        // A project's call keeps its files in its project only on a Runtime with per-call scratch (cl-1055): on an older one they'd land
+        // in this executor's own folders, so it doesn't start. Calcifer moves the machine first; this is for what got past that.
+        if private.is_some() && !api::release::on_runtime_minor(&session.executor.hello.runtime_version) {
+            let said = format!("this machine's Runtime {} can't keep a project's files in the project: `cozy machine update local` moves it",
+                session.executor.hello.runtime_version);
+            if let Some(cancel) = cancellation.lock().unwrap().as_ref() { cancel.disable(); }
+            engine.returned_managed(id, &session.executor.birth)?;
+            *disposition = self.keep_idle(engine, session)?;
+            engine.finish(id, Outcome::Failed(Failure::machine("runtime_outdated", said)))?;
+            return Ok(None);
+        }
         // A shared executor's memoized stages are this run's project's, or the machine's for a run of none (cl-984).
         let mut session = session;
         session.executor.keep_memo(match &private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
