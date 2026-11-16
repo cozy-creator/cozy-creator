@@ -290,10 +290,19 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     await expect.poll(async () => (await project.asset(PHOTO)).tool, { message: 'SDXL goes on the picture' }).toBe(wordsId);
     expect.soft((await project.asset(PHOTO)).versions, 'its picture stays').toBe(before.versions);
     expect.soft((await project.assets()).length, 'and makes no box').toBe(count);
-    let unused = [];
-    await expect.poll(async () => (unused = (await project.asset(PHOTO)).unused ?? []).some((one) => /^self\.\d+$/.test(one.mention)), { message: "Calcifer says SDXL can't use the picture its words start from" }).toBe(true);
-    const self = unused.find((one) => /^self\.\d+$/.test(one.mention));
+    // Its words, as Edit opens them, start from the picture (`<self.N>`); a few more typed, then saved as Focus is left.
     let region = await writing();
+    const typed = region.locator('.in-frame .mention-text').first();
+    if (!(await typed.evaluate((el) => el === document.activeElement))) await typed.click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' a lighthouse');
+    await expect.poll(async () => JSON.stringify((await project.asset(PHOTO)).fields), { message: 'what was typed, saved' }).toContain('a lighthouse');
+    await leave(page);
+    let photo;
+    await expect.poll(async () => JSON.stringify({ fields: (photo = await project.asset(PHOTO)).fields, unused: photo.unused ?? [] }),
+      { message: "Calcifer says SDXL can't use the picture its words start from" }).toMatch(/"mention":"self\.\d+"/);
+    const self = photo.unused.find((one) => /^self\.\d+$/.test(one.mention));
+    region = await writing();
     const chip = region.locator(`.in-frame .chip[data-mention=${JSON.stringify(self.mention)}]`).first();
     await expect(chip, 'the picture SDXL can\'t use, marked').toHaveClass(/\bunsupported\b/);
     const style = await chip.evaluate((el) => {
