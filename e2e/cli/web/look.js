@@ -335,19 +335,19 @@ async function died(why) {
     await settled(page);
   } };
   for (const [which, open] of Object.entries(select)) {
-    for (const [at, steps] of [['fit', null], ['25', ['Zoom out', 4]], ['100', ['Zoom in', 0]], ['200', ['Zoom in', 2]]]) {
+    for (const [at, zoom] of [['fit', null], ['25', 0.25], ['100', 1], ['200', 2]]) {
       await shoot(`select-${which}-${at}`, {
         open,
         prepare: async (page) => {
           await fitCanvas(page);
-          if (!steps) return;
+          if (zoom === null) return;
           await page.keyboard.press('Shift+2');
           await settled(page);
           await zoomMenu(page, /^Zoom to 100%/);
-          for (let i = 0; i < steps[1]; i++) {
-            await page.click(`button[aria-label="${steps[0]}"]`);
-            await settled(page);
-          }
+          // The zoom's steps, out or in, until the canvas is at `zoom`.
+          for (let i = 0; i < 16 && (await zoomOf(page)) > zoom * 1.01; i++) { await page.click('button[aria-label="Zoom out"]'); await settled(page); }
+          for (let i = 0; i < 16 && (await zoomOf(page)) < zoom * 0.99; i++) { await page.click('button[aria-label="Zoom in"]'); await settled(page); }
+          (seen.select_zoom ??= {})[`${which}-${at}`] = await zoomOf(page);
           await page.mouse.move(4, 600);
           await settled(page);
         },
