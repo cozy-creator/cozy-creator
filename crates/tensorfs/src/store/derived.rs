@@ -5,7 +5,9 @@
 //! under one fill identity; each overlay its pages were made under is a page). Its mtime is the
 //! page's last use. The object is cache in its checkpoint's lane, kept by the use named by the
 //! checkpoint's header (which a commit's use names too), so it goes when that lane goes; a record
-//! whose object went is removed when it is next read.
+//! whose object went is removed when it is next read. A short disk drops them before any model,
+//! least recently used first, whatever lane keeps them (`drop_derived`), and making room for one
+//! never drops a model (`room_for_derived`).
 
 use std::fs;
 use std::io;
@@ -73,7 +75,7 @@ impl Store {
                 let path = self.root.join("derived").join(slot).join(page);
                 return Err(invalid(&path, "a derived page and its slot are named by digests"));
             }
-            if !self.maintain(bytes.len() as u64)? {
+            if !self.room_for_derived(bytes.len() as u64)? {
                 kept.push(None);
                 continue;
             }
