@@ -121,23 +121,13 @@ pub(crate) fn mint_key() -> String {
     format!("idem-{}", hex::encode(bytes))
 }
 
-/// 0 for a run that completed or goes on (no longer followed), 1 for one that failed or was canceled,
-/// `STALLED` for one going that has stopped moving, said in one line.
+/// 0 for a run that completed or goes on (no longer followed), 1 for one that failed or was canceled. A run that makes no
+/// progress is followed on, its warning shown (cl-977): only its end, or Ctrl-C, ends the following.
 pub(crate) fn exit_code(run: &Run) -> ExitCode {
     match run.status {
         Status::Failed | Status::Canceled => ExitCode::FAILURE,
-        _ if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) => {
-            let n = handle(&run);
-            output::warned(&format!("run {n}: {}. It keeps running: `cozy run watch {n}` follows it", stalled_words(stalled)));
-            ExitCode::from(output::STALLED)
-        }
         _ => ExitCode::SUCCESS,
     }
-}
-
-/// An event saying its run has stopped moving. A replayed one never does: the record a follower starts from says it.
-fn stalls(event: &Event) -> bool {
-    matches!(event, Event::InProgress { run, .. } if run.stalled.is_some())
 }
 
 /// Follows `run` to its end and its outputs to this computer, until Ctrl-C, which stops following
@@ -273,11 +263,6 @@ async fn watch(
     let mut placing: Option<Following> = None;
     let mut notices = Notices::default();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
-    // A run that has stopped moving ends the following, as one that ended does; it goes on until it's canceled.
-    if run.stalled.is_some() && !settled(&run) {
-        view.done();
-        return Ok((run, true));
-    }
     loop {
         // One read of the stream, kept going across the view's ticks: a reconnect's pause and retries carry on.
         let event = {
@@ -326,14 +311,6 @@ async fn watch(
             Some(Err(error)) => {
                 view.done();
                 return Err(error);
-            }
-            Some(Ok(event)) if stalls(&event) => {
-                match events_out {
-                    true => output::ndjson(&event),
-                    false => view.on(&event),
-                }
-                view.done();
-                return Ok((calcifer.run(&address).await?, true));
             }
             Some(Ok(event)) if events.restarted() && !events_out => {
                 view.line(&format!("  Calcifer restarted; following run {} again", view.number));

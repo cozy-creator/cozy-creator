@@ -16,6 +16,7 @@
 parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
+. "$(dirname "$0")/asleep.sh"
 . "$(dirname "$0")/lines.sh"
 . "$(dirname "$0")/ondemand.sh"
 . "$(dirname "$0")/disk.sh"
@@ -824,6 +825,8 @@ case $SHARD in
     rental_self
     logs
   " ;;
+  # A call asleep past Calcifer's 10-minute "no progress", followed by `cozy run` to its end (cl-977): by dispatch, 12 min.
+  asleep) parts="asleep logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # `cozy update`, its own runner, as it replaces this computer's cozy: the Latest updating to the candidate, then cozy updating
