@@ -2076,6 +2076,11 @@ impl Calcifer {
                     // A restart while it prepared kept it without its access, which stays off the
                     // machine's disk: the same spec sent again brings it, and it prepares on.
                     Ok((state, events)) if state.state == "needs_access" => {
+                        // Said in the run's own log: Calcifer's diagnostics hold no run ids.
+                        let said = format!("{machine} restarted while it prepared and kept it as needs_access: its access sent again");
+                        if let Ok(noted) = self.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "info", &said)) {
+                            self.publish(&run.id, noted);
+                        }
                         let _turn = sending.lock().await;
                         let Some(state) = self.deliver(run, machine, link).await? else { return Ok(()) };
                         (state, Some(events))
