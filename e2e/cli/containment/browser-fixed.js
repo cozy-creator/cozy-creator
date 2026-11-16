@@ -1,7 +1,8 @@
 async function containmentProof(input) {
   // Fixed hosted proof actions only. No caller-selected JavaScript or replacement app/client.
   const hash = async (bytes) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((n) => n.toString(16).padStart(2, '0')).join('');
-  const card = () => document.querySelector(`.card.here[data-asset="${CSS.escape(input.asset)}"]`) ?? document.querySelector(`.react-flow__node .card[data-asset="${CSS.escape(input.asset)}"]`);
+  // The box's DOM card: Focus's, or the canvas's mounted card under the pointer (cl-991 draws the rest).
+  const card = () => document.querySelector(`.card.here[data-asset="${CSS.escape(input.asset)}"]`) ?? document.querySelector(`.canvas-node .card[data-asset="${CSS.escape(input.asset)}"]`);
   switch (input.kind) {
     case 'ready':
       // Nothing is injected into the owned page: it works with no credential of its own. Its boxes: the canvas's list of them (cl-991's
@@ -27,34 +28,44 @@ async function containmentProof(input) {
       };
     }
     case 'locate': {
-      const box = card(), target = box?.classList.contains('here') ? box : box?.querySelector('.media');
-      if (!target) return { found: false };
-      const rect = target.getBoundingClientRect(), node = box.closest('.react-flow__node');
+      // In Focus the box is a DOM card; on the canvas it's drawn, and the canvas says where it is and what a point hits (cl-991).
+      const here = document.querySelector(`.card.here[data-asset="${CSS.escape(input.asset)}"]`);
+      const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
+      const at = here ? here.getBoundingClientRect() : inspection?.card(input.asset)?.body;
+      if (!at) return { found: false };
+      const rect = { x: at.x, y: at.y, width: at.width, height: at.height, left: at.x, top: at.y, right: at.x + at.width, bottom: at.y + at.height };
+      const hits = (px, py) => here ? here.contains(document.elementFromPoint(px, py)) : Boolean(root.contains(document.elementFromPoint(px, py)) && inspection.hitTest({ x: px, y: py })?.name === input.asset);
       // Press where the box itself is on top, as a person would: its centre can be off-screen or under the palette.
       const left = Math.max(rect.left, 0), right = Math.min(rect.right, innerWidth), top = Math.max(rect.top, 0), bottom = Math.min(rect.bottom, innerHeight);
       let x = null, y = null;
       for (const fy of [0.5, 0.3, 0.7, 0.15, 0.85]) for (const fx of [0.5, 0.3, 0.7, 0.15, 0.85]) {
         const px = left + (right - left) * fx, py = top + (bottom - top) * fy;
-        if (x === null && right > left && bottom > top && target.contains(document.elementFromPoint(px, py))) { x = px; y = py; }
+        if (x === null && right > left && bottom > top && hits(px, py)) { x = px; y = py; }
       }
       // Closed facts for an edit that never opens: the centre's place and cover, and which events reach the box.
       const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2, centre = document.elementFromPoint(cx, cy);
+      const centreHit = !here && centre && root?.contains(centre) ? inspection.hitTest({ x: cx, y: cy }) : null;
       const cover = { centre_in_view: cx >= 0 && cy >= 0 && cx < innerWidth && cy < innerHeight, centre_hit: centre !== null,
-        centre_on_pane: Boolean(centre?.closest('.react-flow__pane')), centre_on_other_node: Boolean(centre?.closest('.react-flow__node') && !node?.contains(centre)),
+        centre_on_pane: Boolean(centre?.classList.contains('canvas-pane')) && !centreHit, centre_on_other_node: Boolean(centreHit && centreHit.name !== input.asset),
         centre_on_tools: Boolean(centre?.closest('.tools')), centre_on_top: Boolean(centre?.closest('.top')), centre_on_zoom: Boolean(centre?.closest('.zoom')),
         centre_on_drawer: Boolean(centre?.closest('.drawer, .drawer-head, .drawer-body')), box_visible_point: x !== null };
-      const hit = x === null ? null : document.elementFromPoint(x, y);
       if (!globalThis.__cozyProofClicks) {
-        const seen = globalThis.__cozyProofClicks = { node: null };
-        for (const type of ['mousedown', 'click', 'dblclick']) document.addEventListener(type, (event) => { seen[type] = true; seen[`${type}_in_node`] ||= Boolean(seen.node?.contains(event.target)); }, true);
+        const seen = globalThis.__cozyProofClicks = { asset: null };
+        const reaches = (event) => {
+          const card = document.querySelector(`.card.here[data-asset="${CSS.escape(seen.asset ?? '')}"]`);
+          if (card) return card.contains(event.target);
+          const canvas = document.querySelector('.canvas-root');
+          return Boolean(canvas?.contains(event.target) && canvas.canvasInspection?.hitTest({ x: event.clientX, y: event.clientY })?.name === seen.asset);
+        };
+        for (const type of ['mousedown', 'click', 'dblclick']) document.addEventListener(type, (event) => { seen[type] = true; seen[`${type}_in_node`] ||= reaches(event); }, true);
       }
-      Object.assign(globalThis.__cozyProofClicks, { node, mousedown: false, click: false, dblclick: false, mousedown_in_node: false, click_in_node: false, dblclick_in_node: false });
+      Object.assign(globalThis.__cozyProofClicks, { asset: input.asset, mousedown: false, click: false, dblclick: false, mousedown_in_node: false, click_in_node: false, dblclick_in_node: false });
       if (x === null) {
-        // No press point: is the box's node still unmeasured (hidden), and is the page drawing at all?
+        // No press point: is the box drawn at all, and is the page drawing?
         const frame = await new Promise((done) => { const late = setTimeout(() => done(false), 500); requestAnimationFrame(() => { clearTimeout(late); done(true); }); });
-        Object.assign(cover, { node_hidden: Boolean(node) && getComputedStyle(node).visibility === 'hidden', visible: document.visibilityState === 'visible', has_focus: document.hasFocus(), animation_frame: frame });
+        Object.assign(cover, { node_hidden: !here && !inspection?.card(input.asset)?.rendered, visible: document.visibilityState === 'visible', has_focus: document.hasFocus(), animation_frame: frame });
       }
-      return { found: x !== null, x, y, hit_target: Boolean(hit && target.contains(hit)), hit_node: Boolean(hit && node?.contains(hit)), ...cover };
+      return { found: x !== null, x, y, hit_target: x !== null && hits(x, y), hit_node: x !== null && hits(x, y), ...cover };
     }
     case 'focus': {
       const editor = card()?.querySelector(`.mention-text[data-field="${CSS.escape(input.field)}"]`);
