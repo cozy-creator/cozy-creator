@@ -46,8 +46,7 @@ made() { awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} END{s
 runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
 finish() {
   local status=$?; [ "$RC" != 0 ] || RC=$status
-  # The watcher first, then its sleep: a killed sleep let the deadline watcher go on to TERM this trap (43971316155).
-  for p in $WD $BG $DL; do kill "$p"; pkill -P "$p"; done 2>/dev/null
+  for p in $WD $BG $DL; do pkill -P "$p"; kill "$p"; done 2>/dev/null
   local r
   for r in "${RIDS[@]}"; do
     local tries=0
@@ -68,7 +67,7 @@ trap 'RC=1; exit 1' INT TERM HUP
 # The step's deadline (SESSION_UNTIL, pod-session.yaml): 5 min before it the session ends itself, so its trap ends its rentals and
 # says END, GONE and the bill before the step is killed.
 if [ -n "${SESSION_UNTIL:-}" ]; then
-  ( left=$((SESSION_UNTIL - $(date +%s) - 300)); [ "$left" -le 0 ] || sleep "$left"
+  ( left=$((SESSION_UNTIL - $(date +%s) - 300)); [ "$left" -le 0 ] || sleep "$left" || exit 0  # its sleep killed by `finish`: no deadline (43971316155)
     say "DEADLINE: the step ends in 5 min; this session ends now"; kill -TERM $$ ) 9>&- & DL=$!
 fi
 # claim: what this runner's Calcifer ordered (machines.sh `own`) joins RIDS and $OUT/rental, for a session whose own work
