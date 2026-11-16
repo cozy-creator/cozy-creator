@@ -64,6 +64,8 @@ class PagesStats(TypedDict):
     persist_failed: int
     #: of `persisted`, the pages written from their own copy: the tier had no room to keep them
     persisted_unkept: int
+    #: of those copies, the ones made outside varena's books, one at a time
+    unkept_degraded: int
 
 
 class PlanPhase(TypedDict):

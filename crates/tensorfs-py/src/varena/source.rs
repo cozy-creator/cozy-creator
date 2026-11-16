@@ -505,7 +505,8 @@ impl Inner {
                             // full host bakes it again at every fill, request and process.
                             let own = match kept {
                                 Some(_) => Some(None),
-                                None => self.tier.unkept(self.bytes).map(|own| self.copied(py, &view, own)).transpose()?.map(Some),
+                                None => py.detach(|| self.tier.unkept(self.bytes))
+                                    .map(|own| self.copied(py, &view, own)).transpose()?.map(Some),
                             };
                             if let Some(own) = own {
                                 self.tier.persist(Persisting {

@@ -16,7 +16,7 @@
 //! reads it.
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -42,11 +42,6 @@ const FAULTERS: usize = 4;
 const AHEAD_READERS: usize = 2;
 /// Derived pages written under one sync, at most.
 const PERSIST_BATCH: usize = 16;
-/// Bytes of derived pages the tier had no room to keep on their way to disk in their own copies at
-/// once, past the first: a host too full to keep them writes them anyway, a page or so at a time, so
-/// no later fill, request or process bakes them again (tfs-299: Flux-2 Turbo re-baked 250 blocks in
-/// every request on a 4090 host with no room). One that would pass it waits for a later fill.
-const UNKEPT_IN_FLIGHT: usize = 512 << 20;
 
 /// Host bytes, page aligned, registered once filled: registering touched memory runs at about
 /// twice the rate of untouched memory. A window at a time, and no copy spans two: CUDA refuses it.
@@ -286,28 +281,38 @@ pub(super) struct Tier {
     persisted_bytes: AtomicU64,
     persist_skipped: AtomicU64,
     persist_failed: AtomicU64,
-    /// Of `persisted`, those written from their own copy (`Persisting::own`); and the bytes of
-    /// such copies queued or being written now.
+    /// Of `persisted`, those written from their own copy (`Persisting::own`); and of the copies,
+    /// those made with no room in varena's books, one at a time (`Tier::unkept`).
     persisted_unkept: AtomicU64,
-    unkept: Arc<AtomicUsize>,
+    unkept_degraded: AtomicU64,
+    /// The one copy made outside the books is on its way to disk; and the fill waiting for it.
+    degraded: Mutex<bool>,
+    degraded_done: Condvar,
 }
 
-/// A copy of a derived page the tier had no room to keep, made to be written to disk: its bytes count
-/// toward `UNKEPT_IN_FLIGHT` until it drops.
+/// A copy of a derived page the tier had no room to keep, to write to disk from: staging in varena's
+/// books while it lives, else the tier's one copy outside them (`Tier::unkept`).
 pub(super) struct Unkept {
-    page: Page,
-    count: Arc<AtomicUsize>,
+    page: Option<Page>,
+    tier: Arc<Tier>,
+    staged: bool,
 }
 
 impl Unkept {
     pub(super) fn ptr(&self) -> *mut u8 {
-        self.page.ptr
+        self.page.as_ref().map_or(std::ptr::null_mut(), |page| page.ptr)
     }
 }
 
 impl Drop for Unkept {
     fn drop(&mut self) {
-        self.count.fetch_sub(self.page.len, Ordering::AcqRel);
+        let len = self.page.take().map_or(0, |page| page.len);
+        if self.staged {
+            self.tier.unstage(len);
+        } else {
+            *self.tier.degraded.lock().unwrap_or_else(|error| error.into_inner()) = false;
+            self.tier.degraded_done.notify_one();
+        }
     }
 }
 
@@ -396,7 +401,8 @@ impl Tier {
             stores: Mutex::default(), objects: Mutex::default(), reader: OnceLock::new(), persists: OnceLock::new(),
             persisted: AtomicU64::new(0), persisted_bytes: AtomicU64::new(0),
             persist_skipped: AtomicU64::new(0), persist_failed: AtomicU64::new(0),
-            persisted_unkept: AtomicU64::new(0), unkept: Arc::default(),
+            persisted_unkept: AtomicU64::new(0), unkept_degraded: AtomicU64::new(0), degraded: Mutex::new(false),
+            degraded_done: Condvar::new(),
         });
         tier.look(&mut tier.state(), &budget());
         super::host::join(Arc::downgrade(&tier), shared);
@@ -972,20 +978,33 @@ impl Tier {
         }
     }
 
-    /// A host page of `len` bytes to copy a derived page the tier has no room for into, and write
-    /// from (`Persisting::own`): None while other such copies hold `UNKEPT_IN_FLIGHT`.
-    pub(super) fn unkept(&self, len: usize) -> Option<Unkept> {
-        self.unkept.try_update(Ordering::AcqRel, Ordering::Acquire, |held| {
-            (held == 0 || held + len <= UNKEPT_IN_FLIGHT).then_some(held + len)
-        }).ok()?;
-        let count = self.unkept.clone();
-        match Page::new(len) {
-            Ok(page) => Some(Unkept { page, count }),
-            Err(_) => {
-                count.fetch_sub(len, Ordering::AcqRel);
-                None
-            }
+    /// A host page of `len` bytes to copy a derived page the tier could not keep into, and write it
+    /// to disk from (`Persisting::own`), so no later fill, request or process makes it again (tfs-299:
+    /// with no room the tier kept nothing and wrote nothing, and Flux-2 Turbo baked 250 blocks in
+    /// every request). Taken from varena's books as staging, from free room only: kept weight pages
+    /// are worth more than a write's copy. Refused, it is the tier's one copy outside the books: the
+    /// fill waits for the last such copy to reach disk, so they are never more than one page. The
+    /// caller holds no lock, nor the interpreter.
+    pub(super) fn unkept(self: &Arc<Self>, len: usize) -> Option<Unkept> {
+        let (making, gone) = self.room_for(len, false);
+        drop(gone); // Unregistering waits on the device: never under the lock.
+        if let Some(making) = making {
+            let page = Page::new(len).ok()?;
+            self.state().staging += len as u64;
+            drop(making);
+            return Some(Unkept { page: Some(page), tier: Arc::clone(self), staged: true });
         }
+        let mut busy = self.degraded.lock().unwrap_or_else(|error| error.into_inner());
+        while *busy {
+            busy = self.degraded_done.wait(busy).unwrap_or_else(|error| error.into_inner());
+        }
+        *busy = true;
+        drop(busy);
+        self.unkept_degraded.fetch_add(1, Ordering::Relaxed);
+        // A failed allocation gives the claim back as its guard drops.
+        let page = Page::new(len).ok();
+        let unkept = Unkept { page, tier: Arc::clone(self), staged: false };
+        unkept.page.is_some().then_some(unkept)
     }
 
     /// Write a derived page to disk behind the fills: a later fill or process reads it there
@@ -1381,12 +1400,13 @@ impl PyPages {
         row.set_item("read_ahead", read_ahead_pages)?;
         row.set_item("read_ahead_bytes", read_ahead_bytes)?;
         row.set_item("read_ahead_refused", read_ahead_refused)?;
-        row.set_item("persisted_scope", "derived pages written to disk this process, skipped, failed, and of them written with no room to keep them")?;
+        row.set_item("persisted_scope", "derived pages written to disk this process, skipped, failed, of them written from a copy the tier could not keep, and of those copies the ones made outside varena's books")?;
         row.set_item("persisted", self.tier.persisted.load(Ordering::Relaxed))?;
         row.set_item("persisted_bytes", self.tier.persisted_bytes.load(Ordering::Relaxed))?;
         row.set_item("persist_skipped", self.tier.persist_skipped.load(Ordering::Relaxed))?;
         row.set_item("persist_failed", self.tier.persist_failed.load(Ordering::Relaxed))?;
         row.set_item("persisted_unkept", self.tier.persisted_unkept.load(Ordering::Relaxed))?;
+        row.set_item("unkept_degraded", self.tier.unkept_degraded.load(Ordering::Relaxed))?;
         Ok(row)
     }
 }
