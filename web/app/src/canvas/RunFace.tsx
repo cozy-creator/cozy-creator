@@ -5,7 +5,7 @@ import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useNow } from "../panels/common"
 import { modelWords, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
-import { size, stageParts } from "../panels/runs/words"
+import { bytesKind, rateWords, size, stageParts } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
@@ -27,7 +27,7 @@ export interface Face {
   machine: string
   /** What it's doing: the words, which give way to a narrow box. */
   state: string
-  /** How far within it and how fast (`Frame 3 / 12`, `2GB / 7GB - 100 MBps`): never cut (cl-953). */
+  /** How far within it and how fast (`Frame 3 / 12`, `2GB / 7GB - 100MB/s`): never cut (cl-953). */
   count?: string
 }
 
@@ -42,10 +42,7 @@ export function short(s: number): string {
 
 const sentence = (said: string) => said.charAt(0).toUpperCase() + said.slice(1)
 
-/** A rate as Paul writes it: `100 MBps`. */
-const rateWords = (rate: number) => size(rate).replace(/([KMGT]?B)$/, " $1ps")
-
-/** Bytes moving: `2.1GB / 7GB - 100 MBps`. */
+/** Bytes moving: `2.1GB / 7GB - 100MB/s`. */
 const moving = (done: number, total: number, rate?: number | null) => `${size(done)}${total ? ` / ${size(total)}` : ""}${rate ? ` - ${rateWords(rate)}` : ""}`
 
 /** The whole job's time left, Calcifer's: once it ended, its result coming here. */
@@ -127,7 +124,7 @@ export function faceOf(seen: Seen): Face {
   const progress = run.progress
   if (progress?.stage || progress?.total) {
     const { words, count } = stageParts(progress)
-    const phase = progress.bytes_total ? "download" : /install/i.test(progress.stage) ? "install" : "work"
+    const phase = bytesKind(progress) === "download" ? "download" : /install/i.test(progress.stage) ? "install" : "work"
     const numbers = [count, progress.bytes_per_s ? rateWords(progress.bytes_per_s) : ""].filter(Boolean).join(" - ")
     return face(phase, count || !numbers ? words : `${words} -`, where, numbers || undefined)
   }

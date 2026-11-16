@@ -28,7 +28,7 @@ function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
   )
 }
 
-const moved = (m?: Moved) => (m?.bytes ? `${bytes(m.bytes)}${m.gbps ? ` at ${m.gbps.toFixed(1)} Gb/s` : ""}` : "")
+const moved = (m?: Moved) => (m?.bytes ? `${bytes(m.bytes)}${m.gbps ? ` at ${m.gbps.toFixed(1)} GB/s` : ""}` : "")
 
 /** Where its time went, the models it ran, its kernels and each GPU's memory: worked out by Calcifer, only formatted here. */
 export function Report({ report }: { report: Measurements }) {

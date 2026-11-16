@@ -5,7 +5,7 @@ import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { fractionOf, useWaitsOn, waits } from "../panels/machines/activity"
 import { called } from "../panels/machines/words"
-import { countsOf, phaseOf } from "../panels/runs/words"
+import { bytesKind, countsOf, phaseOf } from "../panels/runs/words"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
 import "./Takes.css"
@@ -31,7 +31,7 @@ export function takeNow(run: Run | undefined, on: Operation | undefined, machine
   const bytes = share(progress.bytes_done, progress.bytes_total)
   const stage = progress.stage_fraction ?? undefined
   // Bytes arriving under a stage that doesn't say so (`preparing model adapters…`) are its download all the same.
-  if (phase === "downloading" || (bytes !== undefined && !["loading", "saving", "result"].includes(phase ?? ""))) return { phase: "Downloading", share: bytes ?? counted ?? stage }
+  if (phase === "downloading" || bytesKind(progress) === "download") return { phase: "Downloading", share: bytes ?? counted ?? stage }
   if (phase === "installing") return { phase: "Installing", share: counted ?? stage }
   if (phase === "loading") return { phase: "Loading", share: bytes ?? counted ?? stage }
   if (phase === "saving" || phase === "result") return { phase: "Saving", share: bytes ?? counted }
