@@ -6,8 +6,9 @@
 # This runner's cozy as a person installs it (pod-session `cozy`: released, a tag, or a dev-build run; a dev build is a dev home, so its
 # rentals take the open RC's builds, as Paul's laptop's do). e2e/cli/web/user-flow.spec.js drives Calcifer's page in Chrome: an encrypted
 # project unlocked, a plate dropped, H3's Shot and Edit from the Tools palette, machine A ($SKU, one GPU) rented through the page, the Shot
-# rendered, the plate's edit rendered, machine B (sku_b, gpus_b) rented, the Shot rendered again; every take back in the project and shown;
-# both machines ended through the page. fixtures/user-flow/judge.py judges what it recorded (works, lean, fast against bench.json, placed
+# rendered, the plate's edit rendered behind it, machine B (sku_b, gpus_b) rented and preferred as it boots, the Shot rendered while B
+# boots and again once it's ready (cl-1073's placement on real pods); every take back in the project and shown; both machines ended
+# through the page. fixtures/user-flow/judge.py judges what it recorded (works, lean, fast against bench.json, placed
 # right, the page tells the truth) into one table per run and per machine: report.md, in the job summary too. Without `rent`, $0: the page
 # as far as its quotes for A and B, nothing ordered. Whatever fails, the trap ends what this runner's Calcifer ordered.
 # params:
@@ -15,15 +16,15 @@
 #   gpus_b       B's GPUs (default 2)
 #   plate_s      the plate's seconds, the edit's length (default 5)
 #   quiet_min    a wait fails once nothing it watches has moved for this long (default 20)
-#   pin_tensord  each rental takes this runner's cozy as its TensorD once the dev home has moved it to the RC (default false): a red run
-#                pinned to a night's RC
-#   seconds      what the cap must buy of A and B together (default 5400)
+#   dev_home     false: a dev build's rentals stay on their image's release (a red run before the RC's machine fixes); default: a dev
+#                build is a dev home, as Paul's laptop is, so its rentals move to the open RC's builds
+#   seconds      what the cap must buy of A and B together (default 4800)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 WEB=$(cd "$HERE/../../e2e/cli/web" && pwd) || fail "no e2e/cli/web"
 FIX=$HERE/fixtures/user-flow
 for tool in jq node npm google-chrome ffmpeg python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
-SKU_B=$(param sku_b "$SKU") GPUS_B=$(param gpus_b 2) PLATE_S=$(param plate_s 5) PIN=$(param pin_tensord false)
+SKU_B=$(param sku_b "$SKU") GPUS_B=$(param gpus_b 2) PLATE_S=$(param plate_s 5) DEV_HOME=$(param dev_home true)
 [[ $GPUS_B =~ ^[1-8]$ && $PLATE_S =~ ^[0-9]+$ && $PLATE_S -ge 1 && $PLATE_S -le 15 ]] || fail "gpus_b $GPUS_B, plate_s $PLATE_S"
 FLOW=$OUT/flow
 mkdir -p "$FLOW"
@@ -40,12 +41,18 @@ if [ ! -x "$SECUREFS/securefs" ]; then
     chmod 755 "$SECUREFS/securefs" || fail "securefs not put in $SECUREFS"
 fi
 V=$(cozy --version | awk '{print $2}')
-if [[ $V == *-dev* ]]; then
+if [[ $V == *-dev* && $DEV_HOME != false ]]; then
   cfg=$HOME/.cozy/config.toml
   grep -qxE 'dev *= *true' "$cfg" 2> /dev/null ||
     { mkdir -p "${cfg%/*}" && { echo 'dev = true'; [ ! -f "$cfg" ] || grep -v '^dev *=' "$cfg"; } > "$cfg.new" && mv "$cfg.new" "$cfg"; } || fail "dev = true not written"
 fi
-# Calcifer started before the driver and the dev home: started again, as after an install.
+# Each project's walk says where it placed each take, every machine's quote beside it (tests only, `calcifer.diagnostics`): the judge's
+# record of the placement, kept in the project's own storage.
+cfg=$HOME/.cozy/config.toml
+mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
+awk '/^diagnostics *=/ { next } { print } /^\[calcifer\]/ { print "diagnostics = true"; put = 1 } END { if (!put) printf "\n[calcifer]\ndiagnostics = true\n" }' \
+  "$cfg" > "$cfg.next" 2> /dev/null && mv "$cfg.next" "$cfg" || fail "calcifer.diagnostics not written"
+# Calcifer started before the driver, the dev home and its diagnostics: started again, as after an install.
 cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 # What this runner's Calcifer ordered is this session's: the page orders it.
@@ -57,13 +64,13 @@ PW=$OUT/playwright-test
 npm install -s --prefix "$PW" @playwright/test@1.55.0 > "$OUT/npm.log" 2>&1 || fail "npm install @playwright/test: $(tail -c 300 "$OUT/npm.log")"
 # The cap must buy A and B: checked here whether or not this rents. Renting, the guard watches what this runner's Calcifer ordered.
 RENTING=$RENT
-RENT=true quote "$(param seconds 5400)" "$SKU" "$SKU_B:$GPUS_B"
+RENT=true quote "$(param seconds 4800)" "$SKU" "$SKU_B:$GPUS_B"
 GUARD_ALSO=own
 [ "$RENTING" != true ] || guard
-say "the flow on cozy $V: A $SKU x1, B $SKU_B x$GPUS_B, a ${PLATE_S} s plate$([ "$RENTING" = true ] || echo '; pre-flight: the page up to its quotes, nothing ordered')"
+say "the flow on cozy $V$(grep -qxE 'dev *= *true' "$HOME/.cozy/config.toml" 2> /dev/null && echo ', a dev home'): A $SKU x1, B $SKU_B x$GPUS_B, a ${PLATE_S} s plate$([ "$RENTING" = true ] || echo '; pre-flight: the page up to its quotes, nothing ordered')"
 
 COZY_VERSION=$V FLOW_OUT=$FLOW FLOW_RENT=$RENTING SKU=$SKU SKU_B=$SKU_B GPUS_B=$GPUS_B PLATE=$FLOW/plate.mp4 PLATE_S=$PLATE_S \
-  QUIET_MIN=$(param quiet_min 20) PIN_TENSORD=$PIN HOLDER=$HOME/.cozy/calcifer/calcifer.lock.holder COZY=$(command -v cozy) \
+  QUIET_MIN=$(param quiet_min 20) HOLDER=$HOME/.cozy/calcifer/calcifer.lock.holder COZY=$(command -v cozy) \
   CHROME=$(command -v google-chrome) OUT=$OUT ARGV_LOG=$OUT/argv.log NODE_PATH=$PW/node_modules \
   node "$PW/node_modules/@playwright/test/cli.js" test -c "$WEB/flow.config.js" > "$OUT/flow.log" 2>&1 & node=$!
 BG="$BG $node"

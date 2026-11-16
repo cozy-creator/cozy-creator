@@ -5,16 +5,18 @@
 //   an encrypted project, locked, opened from the Projects list and unlocked with its passphrase; a plate (a video) dropped on the canvas;
 //   H3's Shot dragged from Tools › Video onto open canvas and its words typed; H3's Edit from Tools › Edit Video dropped on the plate, VFX
 //   edit chosen, its beat as long as the plate; machine A rented through the Machines panel ($SKU, one GPU) and preferred; the Shot
-//   rendered, watched until it renders; the plate's edit rendered; machine B rented ($SKU_B, $GPUS_B GPUs) and preferred; the Shot
-//   rendered again. Calcifer places each (no machine is named). Every take lands in the project and shows in Focus; both machines end
-//   through the page.
+//   rendered; the plate's edit rendered, behind it on A; machine B rented ($SKU_B, $GPUS_B GPUs) and preferred as it boots (Paul had both
+//   preferred); the Shot rendered again while B boots, and once more when B is ready. Calcifer places each (no machine is named): cl-1073's
+//   proof on real pods (a busy machine's time left counted, a waiting run moved to one clearly sooner, a run on every GPU of B and the next
+//   one queued or elsewhere, a machine updating not free). Every take lands in the project and shows in Focus; both machines end through
+//   the page.
 // It records, and release-gate/sessions/fixtures/user-flow/judge.py judges: the page's own event stream as it reads it (events.ndjson:
 // run and machine changes, downloads and steps), what the page said (seen.ndjson: Focus's take tiles, run faces, toasts, sampled
 // every 500 ms), each run's events by `cozy --json run watch` and its full record, each machine's record and TensorD log, screenshots
 // at each step. Without $FLOW_RENT it spends nothing: the same up to the Machines panel's quotes, and no order.
-// $FLOW_OUT: where it keeps what it saw. $SKU, $SKU_B, $GPUS_B, $PLATE (an mp4), $PLATE_S, $QUIET_MIN, $PIN_TENSORD.
+// $FLOW_OUT: where it keeps what it saw. $SKU, $SKU_B, $GPUS_B, $PLATE (an mp4), $PLATE_S, $QUIET_MIN.
 const { spawn } = require('child_process');
-const { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, writeFileSync } = require('fs');
+const { appendFileSync, closeSync, copyFileSync, mkdirSync, openSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasVisible, canvasPoint, focus, openPoint, canvasIdle } = require('./fixtures');
 const { dropFiles, fit, toolRow, leave } = require('./hands');
@@ -193,9 +195,9 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     return focus(page, name);
   };
 
-  /** Rented through the Machines panel as a person does it: the SKU's row, its GPUs, Rent, the stated price, one click. Followed by the
-   *  page's stream until ready; then preferred (its "Prefer" checkbox: this project renders there). Without FLOW_RENT, the quote only. */
-  const rent = async (label, sku, gpus) => {
+  /** Ordered through the Machines panel as a person does it: the SKU's row, its GPUs, Rent, the stated price, one click; then preferred
+   *  from its drawer as it boots (its "Prefer" checkbox: this project renders there). Without FLOW_RENT, the quote only. */
+  const order = async (label, sku, gpus) => {
     const m = (flow.machines[label] = { label, sku, gpus, asked_at: Date.now() });
     await goto(`${project.url()}/machines`);
     const row = page.locator('li.sku').filter({ has: page.locator(`b:text-is(${JSON.stringify(sku)})`) });
@@ -221,30 +223,39 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     Object.assign(m, { name: said.machine?.name, rental_id: said.machine?.rental_id ?? null, answered_at: Date.now() });
     writeFileSync(join(FLOW, `rental-${label}`), `${m.rental_id ?? m.name}\n`);
     mark(`${label} ordered`, { name: m.name, rental_id: m.rental_id });
+    // The page opens its drawer as it orders: preferred there while it boots.
+    await page.waitForURL(/\/machines\/.+/, { timeout: 60_000 }).catch(() => {});
+    await prefer(m).catch((error) => failed(`${label} preferred as it boots`, error));
     await shot(`${label}-ordered`);
-    const ready = await until(`${label} ready`, () => {
-      const now = machineOf(m);
-      if (now?.rental_id) m.rental_id = now.rental_id;
-      if (now?.state === 'ended') throw new Error(`${label} ended while it booted`);
-      return now?.state === 'ready' ? now : null;
-    });
-    Object.assign(m, { name: ready.name, ready_at: Date.now(), disk_gb: ready.rental?.disk_gb, usd_micros_per_hour: ready.rental?.usd_micros_per_hour, gpu_names: ready.gpus });
-    mark(`${label} ready`, { name: m.name });
-    if (process.env.PIN_TENSORD === 'true') {
-      // The commit under test as its TensorD, not the RC's newest (a red run pinned to a night's RC): once the dev home has moved it to the
-      // RC's Runtime and TensorFS, so the two updates never cross.
-      await until(`${label} on the RC's Runtime`, () => (/dev/.test(machineOf(m)?.runtime ?? '') ? true : null)).catch((error) => failed(`${label} on the RC's Runtime`, error));
-      const pinned = await cli('--json', 'machine', 'update', m.name, '--tensord', need('COZY'), '-y');
-      m.pinned = { code: pinned.code, said: `${pinned.stdout}${pinned.stderr}`.slice(-400), at: Date.now() };
-      if (pinned.code !== 0) failed(`${label} pinned to this cozy's TensorD`, m.pinned.said);
-    }
-    await goto(`${project.url()}/machines/${encodeURIComponent(m.name)}`);
-    const prefer = page.locator('.machine-head input.render-check');
-    await expect(prefer, `${label} can be preferred`).toBeEnabled({ timeout: 60_000 });
-    if (!(await prefer.isChecked())) await prefer.check();
-    await expect(prefer).toBeChecked();
+    return m;
+  };
+
+  /** Its "Prefer" checkbox in its drawer, checked: this project renders there. */
+  const prefer = async (m) => {
+    if (m.preferred_at) return;
+    const box = page.locator('.machine-head input.render-check');
+    await expect(box, `${m.label} can be preferred`).toBeEnabled({ timeout: 60_000 });
+    if (!(await box.isChecked())) await box.check();
+    await expect(box).toBeChecked();
     m.preferred_at = Date.now();
-    await shot(`${label}-ready`);
+    mark(`${m.label} preferred`);
+  };
+
+  /** Followed by the page's stream until it's ready, then the project's canvas again. */
+  const ready = async (m) => {
+    const now = await until(`${m.label} ready`, () => {
+      const it = machineOf(m);
+      if (it?.rental_id) m.rental_id = it.rental_id;
+      if (it?.state === 'ended') throw new Error(`${m.label} ended while it booted`);
+      return it?.state === 'ready' ? it : null;
+    });
+    Object.assign(m, { name: now.name, ready_at: Date.now(), disk_gb: now.rental?.disk_gb, usd_micros_per_hour: now.rental?.usd_micros_per_hour, gpu_names: now.gpus });
+    mark(`${m.label} ready`, { name: m.name });
+    if (!m.preferred_at) {
+      await goto(`${project.url()}/machines/${encodeURIComponent(m.name)}`);
+      await prefer(m);
+    }
+    await shot(`${m.label}-ready`);
     await goto(project.url());
     await expect(page.locator('.stage')).toBeVisible({ timeout: 60_000 });
     return m;
@@ -354,46 +365,49 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       mark('edit made');
     });
 
-    const A = await test.step(`machine A rented through the page: ${SKU}, one GPU`, () => rent('A', SKU, 1));
+    const A = await test.step(`machine A rented through the page: ${SKU}, one GPU`, async () => {
+      const m = await order('A', SKU, 1);
+      return RENT ? ready(m) : m;
+    });
     if (!RENT) {
-      await test.step(`machine B quoted through the page: ${SKU_B}, ${GPUS_B} GPUs`, () => rent('B', SKU_B, GPUS_B));
+      await test.step(`machine B quoted through the page: ${SKU_B}, ${GPUS_B} GPUs`, () => order('B', SKU_B, GPUS_B));
       mark('pre-flight: nothing ordered');
       return;
     }
 
-    let first;
-    await test.step('request 1: the Shot rendered, watched until it renders', async () => {
-      first = await render(1, SHOT, GENERATE);
+    await test.step('request 1: the Shot rendered, on A', async () => {
+      const first = await render(1, SHOT, GENERATE);
       await shot('request-1-sent');
-      // In Focus, its take's tile says where it is: its download, then its render.
-      const rendering = await until('request 1 rendering', () => {
-        const run = runs.get(first.id);
-        if (run && settled(run)) return run;
-        return run?.progress && run.progress.completed > 0 && !/download|install|load|prepar/i.test(run.progress.stage) ? run : null;
-      });
-      await shot('request-1-rendering');
-      mark('request 1 rendering', { machine: rendering.machine });
+      await until('request 1 on A', () => (runs.get(first.id)?.machine ? true : null));
     });
 
-    await test.step('request 2: the plate edited', async () => {
+    await test.step('request 2: the plate edited, behind it on A', async () => {
       await render(2, 'plate', EDIT);
       await shot('request-2-sent');
-      await leave(page);
+      await look(SHOT);
     });
 
-    // Without B the flow goes on: request 3 is placed on what there is, and the judge says what B didn't do.
-    const B = await test.step(`machine B rented through the page: ${SKU_B}, ${GPUS_B} GPUs`, () => rent('B', SKU_B, GPUS_B))
-      .catch(async (error) => { failed(`machine B rented through the page: ${SKU_B}, ${GPUS_B} GPUs`, error); await goto(project.url()); return flow.machines.B; });
+    // Without B the flow goes on: requests 3 and 4 are placed on what there is, and the judge says what B didn't do.
+    const B = await test.step(`machine B ordered through the page: ${SKU_B}, ${GPUS_B} GPUs, preferred as it boots`, () => order('B', SKU_B, GPUS_B))
+      .catch((error) => { failed(`machine B ordered through the page: ${SKU_B}, ${GPUS_B} GPUs`, error); return flow.machines.B; });
+    await goto(project.url());
+    await expect(page.locator('.stage')).toBeVisible({ timeout: 60_000 });
 
-    await test.step('request 3: the Shot rendered again', async () => {
+    await test.step('request 3: the Shot again, while B boots and A is busy', async () => {
       await render(3, SHOT, GENERATE);
       await shot('request-3-sent');
+    });
+
+    await test.step('B ready, then request 4: the Shot once more, with both machines busy', async () => {
+      if (B?.ordered_at) await ready(B).catch((error) => failed('B ready', error));
+      await render(4, SHOT, GENERATE);
+      await shot('request-4-sent');
     });
 
     await test.step('every take lands in the project and shows', async () => {
       // Focus stays on the Shot (two takes, one per machine when placed well) until both land, then on the plate's edit.
       const takes = async (name) => (await project.asset(name))?.versions ?? 0;
-      const want = { [SHOT]: 2, plate: 2 };
+      const want = { [SHOT]: 3, plate: 2 };
       for (const name of [SHOT, 'plate']) {
         await look(name);
         await until(`${name}'s takes`, () => {
@@ -448,6 +462,10 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
           await save(`machines/${m.label}-tensord.log`, 'machine', 'logs', m.name, 'tensord', '--since', '6h', '-n', '0');
         }
         await save('calcifer.log', 'machine', 'logs', 'local', 'calcifer', '--lines', '20000');
+        // Where its walk placed each take and why, each machine's quote (calcifer.diagnostics, the session's): kept in the project's own
+        // readable view, never in Calcifer's log.
+        const { view } = await api.get(project.at('/vault')).catch(() => ({}));
+        try { copyFileSync(join(view ?? project.path, '.vault-calcifer', 'diagnostics', 'walk.log'), join(FLOW, 'walk.log')); } catch (error) { failed('the walk log', error); }
         mark('collected');
       }).catch((error) => failed('collection', error));
       await test.step('both machines ended through the page', async () => {
