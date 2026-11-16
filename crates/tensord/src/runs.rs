@@ -1016,8 +1016,12 @@ impl Runs {
         }
         Ok(named)
     }
-    /// What run `id` reads of the models its call waits on (`selected`), as its function's (cl-967); none for a private one.
-    fn record_reads(&self, id: &str, selected: &[(String, Vec<String>)]) {
+    /// What run `id` reads of the models its call waits on (`selected`), as its function's (cl-967); none for a private one. Under
+    /// each name a quote looks the function up by: as its sender names it, which is all a machine that hasn't installed its package
+    /// knows; and, once `installation` holds it, as its runs here are timed (`estimate::functions`: its distribution's name, which
+    /// its sender's `_/name` never was, so a quote of an installed function found no reads and counted a half-held checkpoint's
+    /// absent bytes for the slot's, cl-1104).
+    fn record_reads(&self, id: &str, installation: Option<&Installation>, selected: &[(String, Vec<String>)]) {
         let Ok(record) = self.service.engine.get(id) else { return };
         if record.invocation.local_private.is_some() {
             return;
@@ -1026,9 +1030,13 @@ impl Runs {
         if reads.is_empty() {
             return;
         }
-        let function = crate::journal::function_key(&record.invocation.package, &record.invocation.entrypoint);
-        if let Err(error) = self.service.engine.record_reads(&function, &reads) {
-            tracing::warn!("run {id}: what it reads: {error}");
+        let sent = crate::journal::function_key(&record.invocation.package, &record.invocation.entrypoint);
+        let entrypoint = std::slice::from_ref(&record.invocation.entrypoint);
+        let timed = installation.and_then(|installation| crate::estimate::functions(&self.service, installation, entrypoint).pop()).map(|held| held.timed_as);
+        for function in timed.into_iter().filter(|timed| *timed != sent).chain([sent.clone()]) {
+            if let Err(error) = self.service.engine.record_reads(&function, &reads) {
+                tracing::warn!("run {id}: what it reads: {error}");
+            }
         }
     }
 
@@ -1139,7 +1147,7 @@ impl Runs {
         let generation = self.service.catalog.resolve(&installation.generation)?;
         // What a root call reads, for its function's next quote on any machine (cl-967).
         if let (false, true, Some(plan)) = (spec.warm, spec.parent.is_empty(), &plan) {
-            self.record_reads(id, &plan.upfront());
+            self.record_reads(id, Some(&installation), &plan.upfront());
         }
         // A call reads them: no longer what only a guess brought (cl-1104).
         if let (false, Some(plan)) = (spec.warm, &plan) {
@@ -1273,7 +1281,7 @@ impl Runs {
                 let guessed = crate::ahead::guess(&caller).then(|| {
                     let all: Vec<_> = reads.sure.iter().chain(reads.guesses.iter().flat_map(|(_, set)| set)).cloned().collect();
                     crate::ahead::brought(self.publisher.store(), &all, true);
-                    self.record_reads(id, &reads.sure);
+                    self.record_reads(id, Some(&installation), &reads.sure);
                     crate::ahead::downloading(&stoppable.stop)
                 });
                 let downloaded = self.download(hub.clone(), &reads, (&sure, &guess), fits, &*observe, stoppable, &weights, id, &|| crate::ahead::lined(self, &caller));
@@ -1483,7 +1491,7 @@ impl Runs {
         if crate::ahead::guess(&self.service.engine.caller_id(id)) {
             let all: Vec<_> = reads.sure.iter().chain(reads.guesses.iter().flat_map(|(_, set)| set)).cloned().collect();
             crate::ahead::brought(self.publisher.store(), &all, true);
-            self.record_reads(id, &reads.sure);
+            self.record_reads(id, None, &reads.sure);
         }
         let sure = fetch.absent(&reads.sure)?;
         let free = || crate::reclaim::Disk::measure(self.publisher.store().root()).map(|disk| disk.free());

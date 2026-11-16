@@ -32,10 +32,15 @@ pre_show() {
     || { check "prefetch: the page couldn't show $1: $(tail -c 300 "$OUT/pre-show.json")"; return 1; }
 }
 pre_end() {
+  local project _
   [ -z "${PRE_PAGE:-}" ] || kill "$PRE_PAGE" 2> /dev/null || true
   PRE_PAGE=''
   [ -z "${PRE_SLOWED:-}" ] || sudo tc qdisc del dev lo root 2> /dev/null || check "prefetch: the store's link wasn't restored"
   PRE_SLOWED=''
+  # Its projects closed, as nothing shows them now: what the run keeps of them is read once their files stand still.
+  for project in "$OUT/pre-switch" "$OUT/pre-ready" "$OUT/pre-yields"; do
+    for _ in $(seq 75); do [ -e "$project/project.db-shm" ] || break; sleep 0.2; done
+  done
 }
 # pre_project <folder> <machines>: a plain project of those machines, shown by the page.
 pre_project() {
