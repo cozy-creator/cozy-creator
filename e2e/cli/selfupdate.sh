@@ -92,6 +92,9 @@ for _ in $(seq 36); do
   sleep 5
 done
 [ -n "$listed" ] || check "forward update: cozy $latest's run $id isn't listed completed on $candidate: $(tail -c 300 "$OUT/fw-runs.json")"
+# The next run in that project on local as the Latest left it (its TensorD and Runtime 0.25.0's), nothing moved by hand: it completes,
+# moving local to this cozy's minor and saying so, or, when it can't, its refusal names the one command that does.
+fw_next "$P"
 # The candidate set on local, as the suite's start puts it: a dev build is no release for the update to move it to.
 [ ! -f "${CAND_COZY:-}" ] || up+=(--tensord "$CAND_COZY")
 [ -z "$CAND_TFS" ] || up+=(--tensorfs "$CAND_TFS")
@@ -101,6 +104,20 @@ done
 (machine_ready) || return 0
 jq -e --arg v "${candidate%%+*}" '.status.version | startswith($v)' "$OUT/machine.json" > /dev/null || check "forward update: local runs cozy $(jq -r .status.version "$OUT/machine.json"), not $candidate"
 RUN_PROJECT=$P cell fw-after "$E2E_NEXT/echo" text=after || true
+}
+
+# fw_next <project>: the next run there on local as the Latest left it: completed, or refused naming one command.
+fw_next() {
+  local code=0 refusal
+  RUN_PROJECT=$1 run_cell "$OUT" fw-next "$E2E_NEXT/echo" text=next --on local || code=$?
+  if [ "$code" = 0 ]; then
+    echo "forward update: the next run completed on local as cozy $SU_LATEST left it: $(jq -c '[.warnings[]?.message // empty]' "$OUT/fw-next.json" 2> /dev/null)"
+    return 0
+  fi
+  refusal=$(grep -h -o '{"error":.*}' "$OUT/fw-next.err" "$OUT/fw-next.ndjson" 2> /dev/null | tail -1)
+  echo "forward update: the next run on local as cozy $SU_LATEST left it was refused: $refusal"
+  jq -e '(.error.next | length) == 1 and (.error.next[0] | startswith("cozy "))' <<< "$refusal" > /dev/null 2>&1 \
+    || check "forward update: the next run on local as cozy $SU_LATEST left it neither completed nor named the one command: ${refusal:-$(tail -c 300 "$OUT/fw-next.err")}"
 }
 
 # fw_timed <name> <command...>: Calcifer's first start on the Latest's home, inside the command: its time and the store's version said
