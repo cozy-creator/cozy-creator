@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { useCanvasViewport } from "./viewportContext"
+import { useBoard } from "./board/context"
 import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { runQuery } from "../api/queries"
@@ -10,26 +10,24 @@ import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
-import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
+import type { CanvasStore, CarriedFile, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapeNear } from "./controls"
 import { useDragScroll } from "./dragScroll"
-import { downloadable, Media, Preview, Thumb, usePreview, type PreviewHover } from "./Media"
+import { downloadable, Media, Preview, Thumb, usePreview } from "./Media"
 import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { ratioWords } from "./ratios"
-import { bare, beingMade, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
+import { beingMade, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
+import { aspectOf, bodyBox, bodyWidth, faceOf, isPicture, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { VideoEditor } from "./timeline/VideoEditor"
-import { AddOns } from "./AddOns"
 import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
 import { SlowNotice } from "./RenderTime"
-import { RunFace, RunMeter, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
 
 const WIDEST = 1600
@@ -437,7 +435,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
 function Corner({ name, view, width, focused = false }: { name: string; view: ElementView; width: number; focused?: boolean }) {
   const store = useCanvasStore()
   const focusResize = useFocusResize()
-  const flow = useCanvasViewport()
+  const flow = useBoard()
   const tools = useSignal(store.tools)
   const control = view.asset && reshapes(view) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
   const validRatio = (ratio: unknown): ratio is string => typeof ratio === "string" && ratio.split(":").length === 2 && ratio.split(":").map(Number).every((value) => value > 0 && Number.isFinite(value))
@@ -578,73 +576,7 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
-/** The shape it makes as set, else the one its picture was asked for, else its picture's, else what its tool makes unset (Auto): what a tile
- *  says under its picture (cl-932), as people say it (Paul, 11-13: H3's 16:9 is 1344×768 and says 16:9). */
-function useShapeSaid(view: ElementView, name: string): string | null {
-  const store = useCanvasStore()
-  const tools = useSignal(store.tools)
-  if (!view.asset || view.shape) return null
-  const field = fieldsOf(view.asset, tools).find((held) => held.type === "shape")
-  const held = field ? store.valueOf(name, field.field) : undefined
-  if (typeof held === "string" && ratioOf(held)) return ratioWords(held)
-  const shown = shownOf(view)
-  const asked = view.asset.prefixes?.find((version) => version.number === shown?.number)?.aspect_ratio
-  if (asked && ratioOf(asked)) return ratioWords(asked)
-  if (shown?.width && shown.height) return ratioWords(shown.width / shown.height)
-  if (!field) return null
-  return field.auto ? autoWords(view) : ratioWords(shapeFallback(field))
-}
-
-/** Under a box at rest, as Paul drew it (cl-932, 11-12): its tool and its shape; then, while it renders, cl-898's two lines with Cancel and
- *  the whole job's meter. Nothing else: what it can do is in Focus. It hangs under it, in the room it keeps clear (`underOf`). */
-/** The run a box at rest says how goes, while it's on its way or its result is: `going`, and the run's number once there is one. */
-function useGoing(view: ElementView): { going: boolean; number?: number } {
-  const arriving = useArriving(view)
-  const asset = view.asset
-  const onItsWay = asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
-  return { going: Boolean(asset && !view.placing && (onItsWay || arriving !== undefined) && asset.rendering == null), number: onItsWay ? makingRun(view) : arriving }
-}
-
-function Under({ view, name, lite }: { view: ElementView; name: string; lite: boolean }) {
-  const store = useCanvasStore()
-  const tools = useSignal(store.tools)
-  const { going, number } = useGoing(view)
-  const shape = useShapeSaid(view, name)
-  const asset = view.asset
-  if (!asset || view.placing) return null
-  const tool = asset.tool ? tools.get(asset.tool) : undefined
-  // What makes it (Paul, 11-12: "I want to see what tools are attached"): once, here, as "MiniMax H3 · Shot".
-  const named = asset.tool ? (tool ? toolName(tool) : asset.tool) : null
-  // A take that went on from another box's says which (cl-951).
-  const shown = shownOf(view)
-  const made = asset.prefixes?.find((version) => version.number === shown?.number)?.pickup
-  const of = made ? store.mentionOf(bare(made.take), name) : null
-  const source = of && of.name !== store.resolveName(name) ? of.name : null
-  const line = !lite && (named || shape || source)
-  if (!line && !going) return null
-  return (
-    <div className="tile-under">
-      {line && (
-        <div className="tile-line">
-          {named && <span className="node-tool" title={tool?.source ? `${asset.tool}, from source: ${tool.source}` : asset.tool!}>{named}</span>}
-          {source && <span className="continues-rest" title={`Continues ${made!.take}`}>from {source}</span>}
-          <span className="sp" />
-          {shape && <span className="ratio-rest">{shape}</span>}
-        </div>
-      )}
-      {going && <RunFace view={view} name={name} number={number} />}
-    </div>
-  )
-}
-
-/** Along the top of a box at rest, how far its whole job is (Paul, 11-12). */
-function TileMeter({ view }: { view: ElementView }) {
-  const { going, number } = useGoing(view)
-  return going ? <RunMeter view={view} number={number} /> : null
-}
-
-
-const CardBody = memo(function CardBody({ name, width, focused = false, snapshot, selected, previewHover }: { name: string; width: number; focused?: boolean; snapshot?: ElementView; selected?: boolean; previewHover?: PreviewHover }) {
+const CardBody = memo(function CardBody({ name, width, focused = false, snapshot, selected }: { name: string; width: number; focused?: boolean; snapshot?: ElementView; selected?: boolean }) {
   const store = useCanvasStore()
   const live = useElement(name)
   const view = snapshot ?? live
@@ -779,7 +711,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       )}
       {focused && !view.placing && !cut && <FocusActions view={view} name={name} />}
       {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text"} zooms={!plays} under={plays ? <VideoTransport name={name} view={view} /> : undefined}>
-        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width} previewHover={previewHover}>
+        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && editing && view.continuing && <LeadIn name={name} view={view} />}
           {here && !focused && !view.hereWords && asset && shownVersion?.main && (
@@ -800,8 +732,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {focused && asset?.kind === "video" && !asset.timeline && !editing && <OrbitToggle view={view} name={name} />}
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
-      {drawn && !here && !focused && <Under view={view} name={name} lite={lite} />}
-      {drawn && !here && !focused && <TileMeter view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
         <div className="rest-asking canvas-control">
@@ -846,25 +776,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
     </div>
   )
 })
-
-/** Native interaction overlay: identity and body width come from one geometry publication. */
-export function Card({ data, selected, previewHover }: Pick<ElementNode, "data" | "selected"> & { previewHover?: PreviewHover }) {
-  const store = useCanvasStore()
-  const focused = useSignal(store.focusedName)
-  const entering = useSignal(store.focusEntering)
-  const view = useElement(data.name)
-  const resting = useRef(view)
-  if (focused !== data.name) resting.current = view
-  if (focused === data.name && !entering) return <div className="focus-placeholder" style={{ width: view ? bodyWidth(view, data.width) : data.width, height: view ? heightFor(view, data.width) : 1 }} />
-  // While the canvas draws in on it, the box as it rested: the open box is Focus's alone.
-  const atRest = focused === data.name && entering && resting.current ? { ...resting.current, here: undefined, hereWords: undefined } : undefined
-  return (
-    <>
-      <CardBody name={data.name} width={data.width} snapshot={atRest} selected={selected} previewHover={previewHover} />
-      <AddOns name={data.name} />
-    </>
-  )
-}
 
 export function FocusedCard({ name }: { name: string }) {
   const store = useCanvasStore()

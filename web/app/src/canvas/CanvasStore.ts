@@ -1,4 +1,5 @@
-import type { CanvasController, CanvasNode, Viewport } from "./viewport"
+import type { Board, CanvasNode } from "./board/Board"
+import type { Viewport } from "./board/Camera"
 import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, keepLastWord, type LastWord, lastWordsOf, lost, type OutboxPort } from "../api/outbox"
 import { nextProjectOrder } from "../api/projectOrder"
@@ -270,7 +271,7 @@ export class CanvasStore {
   private retired = false
   projectId: string | null
   private client: Client
-  private viewport: CanvasController | null = null
+  private viewport: Board | null = null
   private views = new Map<string, ElementView>()
   private playbacks = new Map<string, VideoPlayback>()
   private aliases = new Map<string, string>()
@@ -476,7 +477,7 @@ export class CanvasStore {
   }
 
   /** A canvas drawn for it, the first or again: back on a project, its boxes are as it left them, whatever's still on its way to Calcifer. */
-  attach(viewport: CanvasController) {
+  attach(viewport: Board) {
     if (this.retired) return
     this.viewport = viewport
     if (this.state && this.rows) this.reconcile()
