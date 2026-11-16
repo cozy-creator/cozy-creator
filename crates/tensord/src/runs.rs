@@ -1989,7 +1989,7 @@ impl Runs {
         let Some(hub) = self.hub(id).filter(|_| !absent.is_empty()) else { return Ok(()) };
         let machine = self.publisher.machine();
         let Some(remote) = crate::access::remote(machine, &hub, checkpoint.id())? else { return Ok(()) };
-        let model = crate::held_models::Pulled::of(store, checkpoint.id())?.map_or_else(|| manifest.to_string(), |pulled| pulled.model);
+        let model = crate::access::hub_pull(store, checkpoint.id())?.map_or_else(|| manifest.to_string(), |pulled| pulled.model);
         let (engine, bytes, began) = (&self.service.engine, absent.iter().map(|object| object.length).sum::<u64>(), std::time::Instant::now());
         crate::private_io::info(engine, id, format_args!("emergency: {model} is read now, before every other download: {bytes} bytes"));
         machine.objects(&remote, &absent, crate::origin::priority::EMERGENCY, &Stop::default())
