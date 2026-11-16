@@ -93,6 +93,8 @@ pub(crate) struct Engine {
     pub(crate) store: Arc<crate::storage::Store>,
     roots: Mutex<crate::storage::Roots>,
     private_roots: Mutex<HashMap<String, crate::storage::Roots>>,
+    /// Projects whose folders are gone, going as their last runs settle (cl-1031).
+    gone: Mutex<HashSet<String>>,
     journal: Mutex<Journal>,
     /// Held while a run takes object references, and while unneeded roots are released.
     pub(crate) object_custody: Mutex<()>,
@@ -230,6 +232,7 @@ impl Engine {
             store,
             roots: Mutex::default(),
             private_roots: Mutex::default(),
+            gone: Mutex::default(),
             journal: Mutex::new(journal),
             object_custody: Mutex::new(()),
             active: Mutex::new(HashMap::new()),
@@ -318,6 +321,44 @@ impl Engine {
         self.assert_private_idle(project_id)?;
         self.private_roots.lock().unwrap().remove(project_id);
         self.journal.lock().unwrap().retire_project(project_id)
+    }
+    /// A project whose folder is gone (deleted, moved, its drive away): every record of it here goes, as a lock's does (cl-1031).
+    /// Refused while a folder it ran in still holds it. Its runs still going are canceled, as a lock ends them, and it goes as
+    /// the last of them settles (`retire_if_gone`). Answers whether it went now.
+    pub(crate) fn forget_project(&self, project_id: &str, actor: &str) -> io::Result<bool> {
+        let roots = self.journal.lock().unwrap().project_roots()?.remove(project_id);
+        if roots.is_some_and(|roots| roots.iter().any(|root| holds_project(root, project_id))) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "a folder this project ran in still holds it"));
+        }
+        self.gone.lock().unwrap().insert(project_id.to_owned());
+        let active = self.journal.lock().unwrap().private_active_ids(project_id)?;
+        for id in active {
+            if let Err(error) = self.cancel(&id, actor) { tracing::warn!("run {id} of a project whose folder is gone: {error}"); }
+        }
+        self.retire_if_gone(project_id)
+    }
+    /// A project `forget_project` was told is gone goes once none of its runs is active. Answers whether it went.
+    fn retire_if_gone(&self, project_id: &str) -> io::Result<bool> {
+        if !self.gone.lock().unwrap().contains(project_id) || self.journal.lock().unwrap().private_active(project_id)? {
+            return Ok(false);
+        }
+        self.private_roots.lock().unwrap().remove(project_id);
+        crate::private_io::forget(project_id);
+        self.journal.lock().unwrap().retire_project(project_id)?;
+        self.gone.lock().unwrap().remove(project_id);
+        Ok(true)
+    }
+    /// At start: every project journaled here none of whose folders holds it any more is forgotten (cl-1031), as Calcifer
+    /// asks when it finds a folder gone and this machine wasn't running to hear it.
+    pub(crate) fn forget_gone_projects(&self) {
+        let projects = match self.journal.lock().unwrap().project_roots() {
+            Ok(projects) => projects,
+            Err(error) => return tracing::warn!("the projects journaled here could not be read: {error}"),
+        };
+        for (project, roots) in projects {
+            if roots.iter().any(|root| holds_project(root, &project)) { continue; }
+            if let Err(error) = self.forget_project(&project, "machine") { tracing::warn!("a project whose folder is gone keeps its records here: {error}"); }
+        }
     }
     /// Keeps `objects` from the store's eviction while this machine runs, until the next sweep
     /// judges them again (`Objects::sweep`). Called once the journal names them.
@@ -1277,6 +1318,10 @@ impl Engine {
         if let Some(settled) = self.settled.get().filter(|_| record.state.terminal() && record.invocation.parent.is_empty()) {
             settled(&record);
         }
+        // The last run of a project whose folder is gone takes its records with it (cl-1031).
+        if let Some(scope) = record.invocation.local_private.as_ref().filter(|_| record.state.terminal()) {
+            if let Err(error) = self.retire_if_gone(&scope.project_id) { tracing::warn!("a project whose folder is gone keeps its records here: {error}"); }
+        }
         Ok(record)
     }
 
@@ -1790,5 +1835,13 @@ pub(crate) fn open_artifact(root: &Path, path: &Path) -> io::Result<File> {
             return Ok(file);
         }
         unreachable!()
+    }
+}
+
+/// Whether `root` still holds project `project_id`: its execution marker names it. One that can't be read holds it.
+fn holds_project(root: &Path, project_id: &str) -> bool {
+    match fs::read(root.join(api::machine::LOCAL_PRIVATE_MARKER)) {
+        Ok(raw) => serde_json::from_slice::<api::machine::LocalPrivateMarker>(&raw).map_or(true, |marker| marker.storage.project_id == project_id),
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
     }
 }

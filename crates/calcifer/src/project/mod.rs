@@ -457,13 +457,27 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
 /// again by its path it is back as it was, or as `<name>_2` if another took the name meanwhile.
 /// Where project `id` was, if its folder is gone: it leaves the index as `indexed` lets it go. None while it's there, or can't be told.
 pub(crate) fn gone(api: &Api, id: &str) -> Option<PathBuf> {
-    let store = api.calcifer.store();
-    match store.known_project(id) {
-        Ok(Some(entry)) if vault::keeps_index(&entry.path) => None,
-        Ok(Some(entry)) => store.projects_gone(std::slice::from_ref(&entry.id)).ok().map(|()| entry.path),
-        Ok(None) => store.project_gone(id, "").ok().flatten().map(|gone| gone.path),
-        Err(_) => None,
+    match api.calcifer.store().known_project(id) {
+        Ok(Some(entry)) if !vault::keeps_index(&entry.path) => let_go(api, std::slice::from_ref(&entry.id)).ok().map(|()| entry.path),
+        _ => None,
     }
+}
+
+/// Projects whose folders are gone (deleted, moved, on a drive that isn't there) leave this computer (cl-1031): Calcifer keeps only
+/// where each was, its runs' routes go, and the local machine retires every record of it, now or, when it isn't running, as it
+/// starts. Everything of value is in the folder: opened again from it, a project registers again from its own project.db.
+fn let_go(api: &Api, ids: &[String]) -> Result<(), Error> {
+    api.calcifer.store().projects_gone(ids).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+    for id in ids { api.calcifer.retire_project(id); }
+    if let (Ok(Some(link)), Ok(runtime)) = (api.calcifer.link("local"), tokio::runtime::Handle::try_current()) {
+        let ids = ids.to_vec();
+        runtime.spawn(async move {
+            for id in ids {
+                if let Err(error) = link.project_gone(&id).await { warn!("a project whose folder is gone keeps its records on the local machine: {error}"); }
+            }
+        });
+    }
+    Ok(())
 }
 
 fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
@@ -473,7 +487,7 @@ fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     for entry in &known { vault::recover_conversion(&entry.path)?; }
     let (mut here, gone): (Vec<_>, Vec<_>) = known.into_iter().partition(|entry| vault::keeps_index(&entry.path));
     if !gone.is_empty() {
-        store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
+        let_go(api, &gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>())?;
     }
     // An earlier Calcifer may have opened one of its own folders: its row stays, unlisted and unopened.
     here.retain(|entry| !own_folder(&entry.path));
@@ -539,16 +553,10 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     }
     let mut named: Vec<_> = indexed.into_iter().filter(|entry| entry.name.eq_ignore_ascii_case(text)).collect();
     match named.len() {
-        0 => {
-            let code = code::parse(text).unwrap_or_default();
-            let gone = api.calcifer.store().project_gone(text, &code).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
-            Err(match gone {
-                Some(gone) => Error::new(Kind::NotFound, "project_folder_gone", format!("this project's folder is gone: {}", gone.path.display()))
-                    .remedy("move the folder back, or open another project")
-                    .next("cozy new <folder>"),
-                None => Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy open"),
-            })
-        }
+        // One whose folder went is known by its folder alone (cl-1031): opened from it again, it is back as it was.
+        0 => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}"))
+            .remedy("if its folder moved or its drive was away, open the folder again where it is now")
+            .next("cozy open <folder>")),
         1 => Ok(named.remove(0)),
         _ => {
             let ids: Vec<String> = named.iter().map(|entry| format!("{} ({})", entry.id, entry.path.display())).collect();
@@ -1572,17 +1580,7 @@ async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> 
         let project = api.projects.get(&api, &reference)?;
         return Ok(Json(api::calcifer::project::Address { id: project.id.clone(), code: project.code.clone(), key: project.key(), gone: None }));
     }
-    let entry = match known(&api, &reference) {
-        Ok(entry) => entry,
-        // One whose folder went is still known by what it was known by: said, not refused (cl-980).
-        Err(error) => {
-            let code = code::parse(&reference).unwrap_or_default();
-            return match api.calcifer.store().project_gone(&reference, &code) {
-                Ok(Some(gone)) => Ok(Json(api::calcifer::project::Address { id: gone.id, code: gone.code, key: String::new(), gone: Some(gone.path.to_string_lossy().into_owned()) })),
-                _ => Err(Refusal(error)),
-            };
-        }
-    };
+    let entry = known(&api, &reference).map_err(Refusal)?;
     Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code, key: entry.key, gone: None }))
 }
 

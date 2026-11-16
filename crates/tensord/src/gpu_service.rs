@@ -3484,7 +3484,12 @@ impl Pool {
 
     /// The caller first proves this project has no active work/finalization. Public executors are untouched.
     pub(crate) fn close_private_namespace(&self, scope: &api::machine::LocalPrivateStorage) -> io::Result<()> {
-        let id = &scope.project_id;
+        self.close_project_namespace(&scope.project_id)
+    }
+
+    /// Project `id`'s executors and memo tier go: its storage closes, or its folder is gone (cl-1031).
+    pub(crate) fn close_project_namespace(&self, id: &str) -> io::Result<()> {
+        let id = &id.to_owned();
         let keys: Vec<_> = self.sessions.lock().unwrap().iter()
             .filter(|(_, session)| session.private_project.as_ref() == Some(id)).map(|(key, _)| key.clone()).collect();
         for key in keys { self.end_session(&key); }
