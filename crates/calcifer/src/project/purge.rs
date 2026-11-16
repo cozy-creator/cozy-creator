@@ -245,7 +245,13 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
         return Ok(next_due(&lock, window));
     }
     let doc = Doc::load(folder)?;
-    let kept = kept(&doc, &lock, &gone, now);
+    // A run row naming a file a purged version of that run lists is that version's file landed after its run arrived, left before
+    // cl-1093: it keeps nothing, and goes with the version.
+    let late: BTreeSet<(u64, String)> = gone.iter().flat_map(|key| lock.assets[key].on_record())
+        .filter_map(|version| version.run.map(|run| (run, version)))
+        .flat_map(|(run, version)| version.files.values().map(move |file| (run, file.clone())))
+        .collect();
+    let kept = kept(&doc, &lock, &gone, &late, now);
     let freed: BTreeSet<String> = gone.iter().flat_map(|key| lock.assets[key].files().cloned()).filter(|sha256| !kept.contains(sha256)).collect();
     let paths: Vec<PathBuf> = freed.iter().filter_map(|sha256| lock.files.get(sha256)).map(|file| folder.path(&file.path)).collect();
     let films: Vec<String> = gone.iter().map(|key| &lock.assets[key]).filter(|held| held.versions.iter().any(|version| !version.clips.is_empty())).map(|held| cut_name(&held.name)).collect();
@@ -259,6 +265,7 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
             }
         }
         lock.assets.retain(|key, held| !(set_aside(key) && forgotten(held)));
+        lock.runs.retain(|row| !late.contains(&(row.run, row.sha256.clone())));
         lock.files.retain(|sha256, _| !freed.contains(sha256));
     })?;
     // What's made of them first, so once a file is gone, all of it is.
@@ -304,7 +311,7 @@ fn dated(folder: &Folder, now: i64) -> Result<(), Error> {
 
 /// Every file something still in the project holds: its boxes' versions, discarded too, their pins and a cut's clips, what's on its way,
 /// a run's outputs, and what a box Undo can still bring back holds.
-fn kept(doc: &Doc, lock: &Lock, gone: &[String], now: i64) -> BTreeSet<String> {
+fn kept(doc: &Doc, lock: &Lock, gone: &[String], late: &BTreeSet<(u64, String)>, now: i64) -> BTreeSet<String> {
     let live = |key: &str| doc.find(key).is_some();
     let mut kept: BTreeSet<String> = lock.named(live).into_iter().map(str::to_owned).collect();
     kept.extend(doc.assets.iter().filter_map(|asset| asset.pin.clone()));
@@ -315,7 +322,7 @@ fn kept(doc: &Doc, lock: &Lock, gone: &[String], now: i64) -> BTreeSet<String> {
             kept.extend(held.on_record().flat_map(|version| &version.clips).filter_map(|clip| clip.sha256.clone()));
         }
     }
-    kept.extend(lock.runs.iter().map(|row| row.sha256.clone()));
+    kept.extend(lock.runs.iter().filter(|row| !late.contains(&(row.run, row.sha256.clone()))).map(|row| row.sha256.clone()));
     kept
 }
 

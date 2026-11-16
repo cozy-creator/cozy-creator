@@ -7,7 +7,8 @@ In a plain project and an encrypted one, boxes of project/kept.py's `shot` rende
 (both renders timed, and how long the large latents take to land); the latents are in the project's files/. Then the project's machine
 store is aged past its TTL and grace, the local machine restarts and a render writes to that store, so its upkeep collects what nothing
 holds: a run naming the take's latents by their hash still reads them whole, from files/. Deleted, a take nothing read loses its latents
-file from files/ when its undo window ends (Calcifer runs with a short one here)."""
+file from files/ when its undo window ends (Calcifer runs with a short one here). That take's latents are large, so they land after its
+run has arrived (cl-1093): they're its version's file, with no loose run row of the project's to keep them past its purge."""
 
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -84,6 +86,15 @@ def restart_machine(cli: Path) -> None:
     raise AssertionError("the local machine did not start again")
 
 
+def loose_rows(view: Path, hex_digest: str) -> int:
+    """How many of the project's run rows name the bytes `hex_digest`: a run's output no version holds, which a purge keeps."""
+    db = sqlite3.connect(f"file:{view / 'project.db'}?mode=ro", uri=True, timeout=30)
+    try:
+        return int(db.execute("SELECT count(*) FROM run_files WHERE sha256 = ?", (f"sha256:{hex_digest}",)).fetchone()[0])
+    finally:
+        db.close()
+
+
 def landed(folder: Path, hex_digest: str, began: float, seconds: float = 60) -> float | None:
     """Seconds from `began` until `folder` has the bytes named `hex_digest`; none if they don't come within `seconds`."""
     deadline = time.monotonic() + seconds
@@ -97,8 +108,8 @@ def landed(folder: Path, hex_digest: str, began: float, seconds: float = 60) -> 
 def project_case(cli: Path, out: Path, project: Path, view: Path) -> dict[str, object]:
     facts: dict[str, object] = {}
     # A box per render, each its own request, so each runs: the first installs its environment, the next are measured. `gone` is
-    # the take deleted at the end, which nothing else reads.
-    for box, size in (("warm", 64), ("small", 65), ("large", LARGE), ("gone", 67), ("after", 66)):
+    # the take deleted at the end, which nothing else reads: its latents large, so they land after its run arrives (cl-1093).
+    for box, size in (("warm", 64), ("small", 65), ("large", LARGE), ("gone", LARGE + 1), ("after", 66)):
         api(project, "/assets", "POST", {"name": box, "tool": f"{KEPT}/shot", "kind": "video", "exact": True, "fields": {"size": size}})
     render(cli, project, out, "warm")
     facts["small_s"] = round(render(cli, project, out, "small"), 2)
@@ -129,6 +140,9 @@ def project_case(cli: Path, out: Path, project: Path, view: Path) -> dict[str, o
     facts["read_latents"] = read.returncode == 0 and f"sha256:{latents}".encode() in read.stdout
     if not facts["read_latents"]:
         facts["read_failed"] = (read.stdout[-300:] + read.stderr[-300:]).decode(errors="replace")
+
+    # Landed after its run arrived, the take's latents are its version's file, no loose run row (cl-1093).
+    facts["gone_loose_rows"] = loose_rows(view, doomed)
 
     # Deleted: a take nothing else read; its latents file leaves files/ once its undo window ends.
     deleted = cozy(cli, "--json", "delete", "gone", cwd=project, out=out, name=f"delete-{project.name}")
@@ -172,6 +186,7 @@ def main() -> None:
         assert not case["store_copies_after_upkeep"], f"{kind}: the machine store kept its copy past upkeep, so nothing here proves files/ serves it"
         assert case["read_latents"], f"{kind}: the take's latents weren't read after the store's copy went: {case.get('read_failed', '')}"
         assert case["gone_latents_landed"], f"{kind}: the take to delete kept no latents in files/, so its going proves nothing"
+        assert not case["gone_loose_rows"], f"{kind}: the take's latents, landed after its run arrived, left {case['gone_loose_rows']} loose run row(s)"
         assert case["deleted"] and not case["latents_after_delete"], f"{kind}: the deleted take's latents stayed in files/: {case['latents_after_delete']}"
 
 

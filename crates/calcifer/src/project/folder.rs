@@ -2027,7 +2027,14 @@ impl Folder {
                     }
                     _ => self.update_lock(|lock| {
                         here(lock);
-                        listed(&mut lock.runs);
+                        // Its run arrived already and its version lists this file: that version's, as `arrived` makes what landed before
+                        // it, never a loose row (cl-1093: a local run's latents land after the rest, and such a row kept them past their
+                        // take's purge).
+                        let versioned = lock.assets.values().flat_map(Asset::on_record)
+                            .any(|version| version.run == Some(made.run) && version.files.values().any(|file| file.as_str() == digest));
+                        if !versioned {
+                            listed(&mut lock.runs);
+                        }
                     }),
                 }),
             };
