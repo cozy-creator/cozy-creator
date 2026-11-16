@@ -6,6 +6,7 @@ import { useConnection } from "../../app/Connection"
 import type { Machine, Operation } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
 import { Bar } from "../common"
+import { ordinal } from "../format"
 import { runName as runLabel, workWords } from "../runs/words"
 import { Checks, Spec } from "./RenderHere"
 import { type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
@@ -72,7 +73,7 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
   const said = on
     ? `Waiting for ${operationName(on)} to ${on.kind === "download" ? "download" : "install"}`
     : waits(run)
-      ? (run.waiting ?? (run.queue_position ? `Queued, number ${run.queue_position} in line` : "Queued"))
+      ? (run.waiting ?? (run.queue_position ? `Queued, ${ordinal(run.queue_position)} in line` : "Queued"))
       : workWords(run) || run.waiting
   return (
     <li className="doing" data-doing="run" data-run={run.number}>

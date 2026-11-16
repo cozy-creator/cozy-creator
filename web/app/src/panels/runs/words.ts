@@ -1,5 +1,5 @@
 import type { Progress, Run, Stalled } from "../../api/calcifer"
-import { shown, span, usd } from "../format"
+import { ordinal, shown, span, usd } from "../format"
 import stages from "./stages.json"
 
 export const settled = (run: Run) => run.status === "completed" || run.status === "failed" || run.status === "canceled"
@@ -9,11 +9,12 @@ export const runName = (run: Run) => run.name || String(run.number)
 
 export const target = (run: Run) => (run.kind === "call" ? shown(run.target) : `${run.kind} ${shown(run.target)}`)
 
-/** `canceling` once a cancel is asked; a waiting run's place in its line. */
+/** `Canceling` once a cancel is asked; a waiting run's place in its line. */
 export function statusWord(run: Run): string {
-  if (run.queue_position !== undefined) return `queue: ${run.queue_position}`
-  if (run.cancel_requested && !settled(run)) return "canceling"
-  return run.status === "in_progress" ? "running" : run.status
+  if (run.queue_position != null) return `Queued, ${ordinal(run.queue_position)} in line`
+  if (run.cancel_requested && !settled(run)) return "Canceling"
+  const word = run.status === "in_progress" ? "running" : run.status
+  return word.charAt(0).toUpperCase() + word.slice(1)
 }
 
 export const statusClass = (run: Run) =>
@@ -23,7 +24,7 @@ export const statusClass = (run: Run) =>
 export function stalledWords(stalled: Stalled, now: number): string {
   const minutes = Math.floor(Math.max(0, now - stalled.since_ms) / 60_000)
   const hourly = stalled.usd_micros_per_hour
-  const cost = hourly == null ? "" : `, ${usd((hourly * minutes) / 60)} so far at ${usd(hourly)}/h`
+  const cost = hourly == null ? "" : ` (${usd((hourly * minutes) / 60)} so far at ${usd(hourly)}/h)`
   return `No progress for ${span(minutes * 60)} on ${stalled.machine}${cost}`
 }
 
@@ -36,7 +37,7 @@ const firstRun = (run: Run) => run.progress?.eta_s === undefined && run.progress
 /** How long is left: `41s left`, `about 3m10s left` while that's little trusted; or that it isn't known yet. */
 export function eta(run: Run): string | null {
   const progress = run.progress
-  if (firstRun(run)) return "time left not known yet: nothing like it has run"
+  if (firstRun(run)) return "time left unknown: this is its first run"
   if (progress?.eta_s == null) return null
   // Only the bytes it moves are known: at least that.
   if (progress.eta_basis === "bytes") return `at least ${span(progress.eta_s)} left`
@@ -139,43 +140,43 @@ export function size(n: number): string {
   return `${unit === 0 ? value : value < 10 ? value.toFixed(1) : value.toFixed(0)}${units[unit]}`
 }
 
-/** How far a stage is, by what it counts (Paul, 11-12): `Step 7 / 8`, `Frame 173 / 350`, a decode's `65 tokens` (a cap is no total),
- *  `2.1GB / 7GB`, `173 / 350` for a count of anything else (`stages.json`'s items), a share. */
+/** How far a stage is, by what it counts (cl-1084): `step 7 of 8`, `frame 173 of 350`, a decode's `65 tokens` (a cap is no total),
+ *  `2.1GB of 7GB`, `173 of 350` for a count of anything else (`stages.json`'s items), a share. */
 export function countWords(progress: Progress): string {
   const counts = countsOf(progress)
   if (counts === "token") return `${progress.completed} token${progress.completed === 1 ? "" : "s"}`
-  if (progress.bytes_total) return `${size(progress.bytes_done)} / ${size(progress.bytes_total)}`
-  if (progress.total) return `${counts === "step" ? "Step " : counts === "frame" ? "Frame " : ""}${progress.completed} / ${progress.total}`
+  if (progress.bytes_total) return `${size(progress.bytes_done)} of ${size(progress.bytes_total)}`
+  if (progress.total) return `${counts === "step" ? "step " : counts === "frame" ? "frame " : ""}${progress.completed} of ${progress.total}`
   if (progress.stage_fraction != null) return `${Math.round(progress.stage_fraction * 100)}%`
   return ""
 }
 
-/** A stage with its count, as Paul wrote them: `Denoising image - Step 7 / 8`, `Rewriting prompt: 65 tokens`, `Segment 2 of 3: Decoding
- *  video - Frame 173 / 350`. */
+/** A stage with its count (cl-1084): `Rendering, step 7 of 8`, `Rewriting the prompt, 65 tokens`, `Segment 2 of 3: Decoding the video,
+ *  frame 173 of 350`. */
 export function stageLine(progress: Progress): string {
   const { words, count } = stageParts(progress)
   return count ? `${words} ${count}` : words
 }
 
-/** `stageLine`'s two halves: its words, `Segment 2 of 2: Decoding video -`, which give way to a narrow box, and how far within it,
- *  `Frame 3 / 12`, which never does (cl-953). */
+/** `stageLine`'s two halves: its words, `Segment 2 of 2: Decoding the video,`, which give way to a narrow box, and how far within it,
+ *  `frame 3 of 12`, which never does (cl-953). A scope of one (`Segment 1 of 1`) says nothing. */
 export function stageParts(progress: Progress): { words: string; count?: string } {
   const parts = progress.stage.trim().split(/\s+\/\s+/).filter(Boolean)
   const own = parts.length ? stageName(parts.at(-1)!) : "Working"
-  const scope = parts.slice(0, -1).map((part) => stageName(part)).join(", ")
+  const scope = parts.slice(0, -1).filter((part) => !/\b1 of 1$/i.test(part.trim())).map((part) => stageName(part)).join(", ")
   const words = saysBytes(progress, scope ? `${scope}: ${own}` : own)
   const count = countWords(progress)
   if (!count) return { words }
-  return { words: countsOf(progress) === "token" ? `${words}:` : `${words} -`, count }
+  return { words: `${words},`, count }
 }
 
-/** Its own work, as a person reads it: its stage and what it counts, `Generating the image · step 6 of 8, 3s left`,
- *  `Rewriting the prompt · 65 tokens`. The time is the whole run's, Calcifer's estimate. */
+/** Its own work, as a person reads it: its stage and what it counts, `Rendering, step 6 of 8, 3s left`, `Rewriting the prompt, 65
+ *  tokens`. The time is the whole run's, Calcifer's estimate. */
 export function workWords(run: Run): string {
   const progress = run.progress
   if (!progress?.stage && !progress?.total) return ""
   const left = secondsLeft(run)
-  const after = left !== undefined ? `, ${span(left)} left` : firstRun(run) ? ", time left not known yet" : ""
+  const after = left !== undefined ? `, ${span(left)} left` : firstRun(run) ? ", time left unknown" : ""
   return `${stageLine(progress)}${after}`
 }
 

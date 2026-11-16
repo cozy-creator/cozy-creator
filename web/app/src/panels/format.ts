@@ -30,6 +30,12 @@ export function leftWords(s: number): string {
   return minutes < 90 ? `${minutes}m left` : `${span(minutes * 60)} left`
 }
 
+/** A place in a line: `1st`, `2nd`, `3rd`, `11th`, `22nd`. */
+export function ordinal(n: number): string {
+  const teen = n % 100 >= 11 && n % 100 <= 13
+  return `${n}${teen ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th"}`
+}
+
 /** A short time: milliseconds, tenths of a second under a minute, then a span. */
 export const ms = (value: number) => (value < 1000 ? `${Math.round(value)}ms` : value < 60_000 ? `${(value / 1000).toFixed(1)}s` : span(value / 1000))
 

@@ -203,7 +203,7 @@ async function use(name, work) {
       // The last it names is its own, after local code's install.
       const number = [...out.matchAll(/^run (\d+)$/gm)].pop()?.[1] ?? (await page.locator('.runrow b').first().textContent()).slice(1);
       await page.goto(`${base}/#/runs/${number}`);
-      await until('its end in the page', () => page.textContent('.run-head'), (text) => text.includes('completed'));
+      await until('its end in the page', () => page.textContent('.run-head'), (text) => text.includes('Completed'));
       await page.click('summary:text-is("Result")');
       check('its_result_shows', (await page.textContent('.drawer-body')).includes('words'));
       await shot('run-done');

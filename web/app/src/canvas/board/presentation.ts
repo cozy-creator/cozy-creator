@@ -177,7 +177,7 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
     })
     const left = run?.status === "completed" ? run.arriving?.eta_s : run?.progress?.eta_s
     const since = run ? Math.max(0, (now - run.created_at_ms) / 1000) : undefined
-    const time = since !== undefined && left != null ? `${short(since)} / ${short(since + left)}` : ""
+    const time = since !== undefined && left != null ? `${short(since)} of ${short(since + left)}` : ""
     progress = {
       ...face, time, cancel: !["canceling", "failed", "result"].includes(face.phase),
       fraction: since !== undefined && left != null && left > 0 ? Math.min(0.99, since / (since + left)) : undefined,

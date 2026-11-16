@@ -397,9 +397,9 @@ export function Stage(props: StageProps) {
         else store.cancelRender(card.name)
       }}>Cancel</button>)}
     </div>
-    <span id={helpId} className="sr-only">Use arrow keys to select a box, Enter to open it, and Escape to return. Drag empty space to pan; Shift-drag selects a rectangle.</span>
+    <span id={helpId} className="sr-only">Use the arrow keys to pick a box, Enter to open it and Escape to go back. Drag empty space to move around, or Shift-drag to select several boxes.</span>
     <span className="sr-only" aria-live="polite">{said}</span>
-    {lostGraphics && <div className="empty-canvas" role="alert"><p>Graphics context lost; waiting for the browser to restore it.</p></div>}
+    {lostGraphics && <div className="empty-canvas" role="alert"><p>The browser stopped drawing the canvas. It comes back as soon as the browser restores its graphics.</p></div>}
     {failed && <div className="empty-canvas" role="alert"><p>This browser couldn't draw the canvas ({failed}). Turn on hardware acceleration in its settings, or open this page in another browser.</p></div>}
   </div>
 }

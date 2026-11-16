@@ -62,10 +62,10 @@ export const runName = (run: Run, boxes: Map<number, string>) => (run.project_id
 
 /** How far a download is, as the run face says it (cl-1074): `6.6GB / 9.4GB · 29MB/s · 3 min left · 8.8GB already here`. */
 export function fetchedWords(operation: Operation): string {
-  const parts = [operation.bytes_total ? `${size(operation.bytes_done)} / ${size(operation.bytes_total)}` : size(operation.bytes_done)]
+  const parts = [operation.bytes_total ? `${size(operation.bytes_done)} of ${size(operation.bytes_total)}` : size(operation.bytes_done)]
   if (operation.bytes_per_s) parts.push(rateWords(operation.bytes_per_s))
   if (operation.eta_s != null) parts.push(leftWords(operation.eta_s))
-  if (operation.bytes_here) parts.push(`${size(operation.bytes_here)} already here`)
+  if (operation.bytes_here) parts.push(`${size(operation.bytes_here)} already on this machine`)
   return parts.join(" · ")
 }
 
