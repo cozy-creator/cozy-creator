@@ -233,7 +233,7 @@ step "projects closed once nothing reads them: by the CLI and a page's stream, m
 [ "${RUNNER_OS:-}" = Linux ] || { echo "closes: Calcifer's open files are read on Linux"; return 0; }
 CLOSES=$OUT/closes CLOSES_PREV='' CLOSES_OPENS=() CLOSES_REOPENS=() CLOSES_OPEN=() CLOSES_HELD=()
 CLOSES_PAGE=(-H "Host: $(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder")" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' -H 'cozy-project-storage: 3')
-local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later pid first second update run_first look queued=0 held_first=0 held_second=0 P a b h1 h2 busy
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later pid first second update run_first look queued=0 held_first=0 held_second=0 P a b h1 h2 busy again=0
   local dropped=() looks=()
 mkdir -p "$CLOSES"
 ffmpeg -v error -y -f lavfi -i 'color=c=gray:size=32x18' -frames:v 1 "$CLOSES/seed.png"
@@ -289,6 +289,11 @@ for _ in $(seq 240); do
   ! closes_open "$first" || h1=1
   ! closes_open "$second" || h2=1
   busy=$(closes_busy "$a" "$b")
+  # Probed before the list said busy, a project may have closed and opened again between (a render's end, then another walk of it),
+  # or the probe missed: one busy and not seen open is probed once more, after the list said so. A render going holds it then.
+  [ "${busy% *}" != true ] || [ "$h1" = 1 ] || ! closes_open "$first" || { h1=1; again=$((again + 1)); }
+  [ "${busy#* }" != true ] || [ "$h2" = 1 ] || ! closes_open "$second" || { h2=1; again=$((again + 1)); }
+  echo "$SECONDS h1=$h1 h2=$h2 busy=$busy" >> "$CLOSES/samples.log"
   look=$(project_api "$second" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | "\(.status)/\(.machine_state // "")"' || true)
   [[ " ${looks[*]} " == *" ${look:-none} "* ]] || looks+=("${look:-none}")
   [ "${busy% *}" != true ] || [ "$h1" = 1 ] || dropped+=("first while it ran")
@@ -298,9 +303,9 @@ for _ in $(seq 240); do
   [ "$busy" != "false false" ] || break
   sleep 0.5
 done
-echo "closes: the second render went ${looks[*]}; dropped while going: ${dropped[*]:-none}"
+echo "closes: the second render went ${looks[*]}; dropped while going: ${dropped[*]:-none}; seen open only when probed again: $again"
 [ "$queued" = 1 ] || check "closes: the second render was never seen waiting behind the first: ${looks[*]}"
-[ "$held_first" = 1 ] && [ ${#dropped[@]} = 0 ] || check "closes: a render going didn't hold its project open: ${dropped[*]:-never seen going}"
+[ "$held_first" = 1 ] && [ ${#dropped[@]} = 0 ] || check "closes: a render going didn't hold its project open: ${dropped[*]:-never seen going}: $(grep -n 'busy=true' "$CLOSES/samples.log" | grep -E 'h1=0|h2=0' | head -5 | tr '\n' ' ')"
 [ "$held_second" = 1 ] || check "closes: a render waiting for its machine didn't hold its project open"
 for _ in $(seq 300); do kill -0 "$update" 2> /dev/null || break; sleep 1; done
 kill "$update" 2> /dev/null || true; wait "$update" 2> /dev/null || true
