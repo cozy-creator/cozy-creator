@@ -101,7 +101,7 @@ cozy machine rent > "$OUT/rent-catalog.txt" 2>&1 && grep -q -E '^NAME +GPU +GPUS
   || check "machine rent: no catalog table: $(head -c 300 "$OUT/rent-catalog.txt")"
 cozy --json machine rent > "$OUT/rent-catalog.json" 2> "$OUT/rent-catalog.err" && J 'type == "array" and all(.[]; .name | length > 0)' "$OUT/rent-catalog.json" \
   || check "machine rent --json: no catalog array: $(head -c 300 "$OUT/rent-catalog.json") $(head -c 200 "$OUT/rent-catalog.err")"
-# Pinned to the checkout's release: an RC-only package (a prerelease, xs-196 C) is refused package_rc_only before the sign-in check.
+# Pinned to the checkout's release, a run --on new is refused before the sign-in check.
 bir=birefnet/remove_background; v=$(sed -n 's/^version = "\(.*\)"$/\1/p' "${PACKAGES:-/nonexistent}/birefnet/pyproject.toml" 2>/dev/null | head -1)
 [ -z "$v" ] || bir="birefnet/remove_background@$v"
 code=0; in_project "$RUN_PROJECT" --json run "$bir" --file "image=$(picture dog1.jpg)" --on new > "$OUT/rent-signed-out.json" 2>&1 || code=$?
@@ -959,23 +959,26 @@ fi
 }
 
 # cl-952, se-128: an unversioned run takes the Hub's newest release its machine runs, installing it when the machine holds
-# an older one, and says so; a machine off the RC never takes a prerelease built for the RC's Runtime. isolated.sh publishes
-# e2e-held 0.1.0 and 0.2.0rc1, and e2e-newer 0.1.0 and 0.1.1. On the candidate, an RC build (`+dev`), local takes e2e-held
-# 0.2.0rc1 and holds only that. Put on a released Runtime by hand, it runs 0.1.0, never the prerelease it holds (sdxl
-# 0.10.0rc1 failed to import on 0.45.0, 47170). Holding e2e-newer 0.1.0 (asked by name), an unversioned run takes 0.1.1
-# and says it's newer (47617 stayed on minimax-h3 0.11.1 after 0.12.0rc2).
+# an older one, and says so. isolated.sh publishes e2e-held 0.1.0 and 0.2.0rc1, and e2e-newer 0.1.0 and 0.1.1. Put on a released
+# Runtime by hand, local refuses a project's run, naming the update (cl-1055). Holding e2e-newer 0.1.0 (asked by name), an
+# unversioned run takes 0.1.1 and says it's newer (47617 stayed on minimax-h3 0.11.1 after 0.12.0rc2).
+#
+# cl-1109 (coordinator, 11-16; xs-203's pod-session 43961722220 installed the Hub's minimax-h3 0.13.0rc2 on RC machines while the
+# palette said 0.12.0, and every H3 run failed): "an unpinned or range request never resolves to a prerelease; only an exact pin
+# (or an explicit opt-in) selects one" (Paul, 11-13: no test prereleases; finals only at promotion). isolated.sh publishes the tool
+# e2e-final 0.1.0 and 0.2.0rc1. On local, an RC build: the palette lists 0.1.0; an unpinned install installs 0.1.0, and the
+# palette still lists it; an unpinned run takes 0.1.0; a run pinned to 0.2.0rc1 takes it, and the palette, holding both, still
+# lists 0.1.0.
 held_prerelease() {
-step "an unversioned run takes the newest release its machine runs; held below this cozy's Runtime minor, a project's run is refused (cl-952, se-128, cl-1055)"
+step "an unversioned run or install takes the newest final, a prerelease only when pinned; held below this cozy's Runtime minor, a project's run is refused (cl-952, se-128, cl-1055, cl-1109)"
 [ -n "$LOCAL" ] || return 0
 [ -n "${E2E_HELD:-}" ] || { check "held prerelease: isolated.sh published no e2e-held: ${E2E_HELD_REFUSED:-not seeded}"; return; }
 local released=${HELD_RUNTIME:-0.45.1} was code=0
 machine_ready
+if [ -z "${E2E_FINAL:-}" ]; then check "unpinned final: isolated.sh published no e2e-final: ${E2E_FINAL_REFUSED:-not seeded}"
+else unpinned_final; fi
 case $(jq -r '.status.runtime // empty' "$OUT/machine.json") in *+dev*) ;; *) echo "held prerelease: local isn't on an RC build"; return 0 ;; esac
 was=${CAND_RT:-$(jq -r '.status.runtime // empty' "$OUT/machine.json")}
-if cell held-prerelease-rc "$E2E_HELD/relay" "text=on the RC"; then
-  grep -q '0\.2\.0rc1' "$OUT/held-prerelease-rc.ndjson" \
-    || check "held prerelease: local on an RC build didn't take 0.2.0rc1: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease-rc.ndjson" | head -1)"
-fi
 # Unversioned, in words as a person reads it: the run says what it moved to. On the RC's Runtime: a project's run needs this cozy's
 # Runtime minor (cl-1055).
 if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
@@ -995,6 +998,40 @@ in_project "$RUN_PROJECT" --json run "$E2E_HELD/relay" "text=off the RC" --on lo
 cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
 machine_ready
+}
+
+# unpinned_final: cl-1109's checks (held_prerelease's header), on e2e-final.
+unpinned_final() {
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder tool=$E2E_FINAL/echo said
+# listed <name>: the releases the palette (`GET /v1/tools`) lists e2e-final at on local, its answer in $OUT/<name>.json; up to 30 s for it to list it.
+listed() {
+  local _
+  for _ in 1 2 3 4 5 6; do
+    curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/tools?on=local" > "$OUT/$1.json" 2>&1 \
+      && J --arg id "$tool" '[.tools[] | select(.id == $id)] != []' "$OUT/$1.json" && break
+    sleep 5
+  done
+  jq -c --arg id "$tool" '[.tools[]? | select(.id == $id) | .release] | unique' "$OUT/$1.json" 2> /dev/null || head -c 300 "$OUT/$1.json"
+}
+said=$(listed final-palette)
+[ "$said" = '["0.1.0"]' ] || check "unpinned final: before an install, the palette lists $tool at $said, not 0.1.0"
+cozy --json package install "$E2E_FINAL" --on local > "$OUT/final-install.ndjson" 2> "$OUT/final-install.err" \
+  || check "unpinned final: package install $E2E_FINAL --on local failed: $(tail -c 300 "$OUT/final-install.err")"
+cozy --json package ls --on local > "$OUT/final-installed.json" 2>&1
+said=$(jq -c --arg p "$E2E_FINAL" '[.. | objects | select(.package? == $p) | .release] | unique' "$OUT/final-installed.json" 2> /dev/null)
+[ "$said" = '["0.1.0"]' ] || check "unpinned final: an unpinned install put $E2E_FINAL $said on local, not 0.1.0: $(tail -c 300 "$OUT/final-install.err")"
+said=$(listed final-palette-installed)
+[ "$said" = '["0.1.0"]' ] || check "unpinned final: after an unpinned install, the palette lists $tool at $said, not 0.1.0"
+# ran <name>: the release run <name>'s reply says ran (the package echoes its own).
+ran() { grep -o '"release": *"[^"]*"' "$OUT/$1.ndjson" | tail -1 | cut -d'"' -f4; }
+if cell final-unpinned "$tool" "text=unpinned"; then
+  [ "$(ran final-unpinned)" = 0.1.0 ] || check "unpinned final: an unpinned run ran $(ran final-unpinned) ($(run_get "$OUT" final-unpinned .target)), not 0.1.0"
+fi
+if cell final-pinned "$tool@0.2.0rc1" "text=pinned"; then
+  [ "$(ran final-pinned)" = 0.2.0rc1 ] || check "unpinned final: a run pinned to 0.2.0rc1 ran $(ran final-pinned) ($(run_get "$OUT" final-pinned .target))"
+fi
+said=$(listed final-palette-both)
+[ "$said" = '["0.1.0"]' ] || check "unpinned final: holding 0.1.0 and 0.2.0rc1, the palette lists $tool at $said, not 0.1.0"
 }
 
 # cl-952: a machine runs only a package release its Runtime can run. Publishing refused isolated.sh's e2e-lies, whose floor

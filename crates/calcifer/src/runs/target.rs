@@ -247,8 +247,6 @@ struct Held {
     machine: String,
     environments: Vec<api::machine::Environment>,
     hub: String,
-    /// It runs, or moves to before this run, the open RC's Runtime (cl-922): it takes packages built for it.
-    rc: bool,
     /// Its Runtime; empty for a machine still to come.
     runtime: String,
     /// The Runtimes it can move to for a release that needs one, and whether it does (cl-952).
@@ -275,7 +273,7 @@ impl Held {
             }
             None => (String::new(), vec![], api::release::Moves::No, None),
         };
-        Self { machine, environments, hub: canonical(hub), rc, runtime, runtimes, moves, newer }
+        Self { machine, environments, hub: canonical(hub), runtime, runtimes, moves, newer }
     }
 
     /// As `choose` reads it.
@@ -283,28 +281,6 @@ impl Held {
         api::release::Machine { runtime: &self.runtime, runtimes: &self.runtimes, moves: self.moves, newer: self.newer.as_ref() }
     }
 
-    /// Of `releases`, the newest this machine runs (`api::release::newest`: prereleases only on the RC).
-    fn newest<'a>(&self, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-        api::release::newest(releases, self.rc)
-    }
-
-    /// The Hub's releases of `read` this machine takes, newest first, never a yanked one: prereleases too on the RC's Runtime,
-    /// elsewhere finals, and with none, a refusal that says how to run the prerelease (cl-952).
-    fn candidates<'a>(&self, read: &'a cards::Releases, package: &str) -> Result<Vec<&'a str>, Error> {
-        let open = read.released.iter().map(String::as_str).filter(|release| !read.yanked.contains(*release));
-        let candidates = api::release::candidates(open, self.rc);
-        if !candidates.is_empty() {
-            return Ok(candidates);
-        }
-        let latest = read.newest(package)?;
-        let machine = if self.machine.is_empty() { "<machine>" } else { self.machine.as_str() };
-        Err(Error::new(
-            Kind::Conflict,
-            "package_rc_only",
-            format!("{package} only has {latest}, which needs the open RC's Runtime, and {machine} doesn't have it. Update {machine} first."),
-        )
-        .next(format!("cozy machine update {machine}")))
-    }
 
     /// The releases of `package` from this run's Hub.
     fn releases(&self, package: &str) -> Vec<&str> {
@@ -470,30 +446,35 @@ struct Unversioned {
     said: Option<Note>,
 }
 
-/// An unversioned run's releases on the machine that holds `held`: the Hub's its machine takes (finals off the RC,
-/// prereleases on it, never a yanked one), read at most a minute ago, for `choose` to pick from; installed there if it holds an
-/// older one, and the run says so ("minimax-h3 0.12.0rc2, newer than rabou's 0.11.1"). Unversioned means newest, so a fix
+/// An unversioned run's releases on the machine that holds `held`: the Hub's finals, or with none its prereleases, never a
+/// yanked one (`api::release::candidates`, cl-1109), read at most a minute ago, for `choose` to pick from; installed there if it
+/// holds another, and the run says so ("minimax-h3 0.12.0, newer than the 0.11.1 on rabou"). Unversioned means newest, so a fix
 /// reaches machines that already hold a release (se-128, cl-952). With the Hub unanswering, what the machine holds runs (`Ok`).
 async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> Result<Result<String, Unversioned>, Error> {
     let holds = held.releases(package);
     let read = match api.releases.fresh(api, hub, package).await {
         Ok(read) => read,
         Err(why) => {
-            return match held.newest(holds.iter().copied()) {
+            return match api::release::newest(holds.iter().copied()) {
                 Some(top) => Ok(Ok(top.to_owned())),
                 None => Err(why),
             };
         }
     };
-    let candidates: Vec<String> = held.candidates(&read, package)?.into_iter().map(str::to_owned).collect();
+    read.newest(package)?;
+    let candidates: Vec<String> = api::release::candidates(read.open()).into_iter().map(str::to_owned).collect();
     let newest = candidates.first().cloned().unwrap_or_default();
     let shown = package.trim_start_matches("_/");
     let machine = &held.machine;
     // What it holds that the Hub still has: an older one is said; a yanked one is said as moved off.
-    let had = held.newest(holds.iter().copied().filter(|release| read.released.contains(*release) && *release != newest));
-    let said = had.filter(|_| !holds.contains(&newest.as_str())).map(|had| match read.yanked.contains(had) {
-        true => Note { level: NoteLevel::Info, message: format!("{shown}@{had} on {machine} was yanked, so this run moves it to {newest}, the newest release.") },
-        false => Note { level: NoteLevel::Info, message: format!("Using {shown} {newest}, newer than the {had} on {machine}.") },
+    let had = api::release::newest(holds.iter().copied().filter(|release| read.released.contains(*release) && *release != newest));
+    let said = had.filter(|_| !holds.contains(&newest.as_str())).map(|had| {
+        let message = match (read.yanked.contains(had), api::release::prerelease(had) && !api::release::prerelease(&newest)) {
+            (true, _) => format!("{shown}@{had} on {machine} was yanked, so this run moves it to {newest}, the newest release."),
+            (false, true) => format!("Using {shown} {newest}, the newest release: the {had} on {machine} is a prerelease, which runs only when named."),
+            (false, false) => format!("Using {shown} {newest}, newer than the {had} on {machine}."),
+        };
+        Note { level: NoteLevel::Info, message }
     });
     Ok(Err(Unversioned { candidates, said }))
 }

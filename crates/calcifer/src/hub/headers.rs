@@ -247,7 +247,7 @@ pub(super) async fn show(
         family: checkpoints::family(card.model.family.clone(), lanes.first().and_then(|lane| lane.family.as_deref())).0,
         release: release.map(|r| r.version.clone()),
         visibility: release.map(|r| r.visibility),
-        resolves_to: release.and_then(|r| api::release::newest_fix(&r.version, public, false)).map(str::to_owned),
+        resolves_to: release.and_then(|r| api::release::newest_fix(&r.version, public)).map(str::to_owned),
         resolved: resolved.map(|(_, resolved)| resolved),
         lanes,
     }))
