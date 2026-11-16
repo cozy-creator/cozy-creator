@@ -9,7 +9,7 @@ const { camera, sameCamera } = require('./geometry');
 
 test.use({ projectOptions: { starter: true } });
 
-test('gone', async ({ context, project, api, signIn }) => {
+test('gone', async ({ context, project, api, signIn, guards }) => {
   await context.addInitScript(recordAddress);
   const page = await context.newPage();
   await signIn(page, project.url());
@@ -37,6 +37,8 @@ test('gone', async ({ context, project, api, signIn }) => {
   });
 
   await test.step('a reload finds no project by its code and says how to bring it back, and stays', async () => {
+    // Its address is asked and not found: the browser logs that 404 itself.
+    guards.allow(/status of 404\b.*\/v1\/projects\/[^/ ]+\/address\b/);
     await page.reload();
     await expect(page.locator('.gate h2', { hasText: "This project can't be opened yet" })).toBeVisible();
     await expect.soft(page.locator('.gate', { hasText: 'open the folder again where it is now' }), 'how to bring it back').toBeVisible();

@@ -2159,7 +2159,8 @@ pub(super) async fn privacy(
             let mut session = session.lock().expect("vault session");
             if !session.closing && !expired(&session) && session.timer.activity() {
                 session.active_ms = super::now_ms();
-                say(&root, "activity", || format!("its idle clock restarts on {} {}", request.method(), request.uri().path()));
+                // The method alone: a request's path names its project, which a locked project leaves nowhere (cl-1031).
+                say(&root, "activity", || format!("its idle clock restarts on a {} request", request.method()));
             }
         }
     }
