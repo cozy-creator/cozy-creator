@@ -265,6 +265,16 @@ vault_purge_due() (
   printf '%s\n' 'synthetic purge-due passphrase' > "$secrets/pass" && chmod 600 "$secrets/pass"
   # due_rows <id>: how many purge_due rows state.db holds of that project.
   due_rows() { state "SELECT count(*) FROM purge_due WHERE project = '$1'" | jq -r '.[0]'; }
+  # locked <name>: the project locked, its admitted work (a thumbnail, a measure) drained first if a lock found it busy.
+  locked() {
+    in_project "$P" --json vault lock > "$work/$1.json" && return 0
+    jq -e '.error.code == "project_busy"' "$work/$1.json" > /dev/null || return 1
+    for _ in $(seq 80); do
+      in_project "$P" --json vault status | jq -e '.state == "locked"' > /dev/null && return 0
+      sleep 0.25
+    done
+    return 1
+  }
   python3 -c '
 import struct, sys, zlib
 def chunk(kind: bytes, data: bytes) -> bytes:
@@ -294,7 +304,7 @@ open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", head) + chun
   deleted_at=$(date +%s)
   rows=$(due_rows "$id")
   [ "$rows" = 0 ] || check "vault purge due: state.db holds the unlocked encrypted project's next purge ($rows rows)"
-  in_project "$P" --json vault lock > "$work/lock.json" || fail "vault purge due: lock: $(head -c 300 "$work/lock.json")"
+  locked lock || fail "vault purge due: lock: $(head -c 300 "$work/lock.json")"
   rows=$(due_rows "$id")
   [ "$rows" = 0 ] || check "vault purge due: state.db holds the locked encrypted project's next purge ($rows rows)"
   # Its window ends while it's locked: nothing can read it then.
@@ -310,7 +320,7 @@ open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", head) + chun
   ! in_files "$view" "$pic" || check "vault purge due: unlocked past its window, the encrypted project's deleted box kept its file"
   rows=$(due_rows "$id")
   [ "$rows" = 0 ] || check "vault purge due: after its purge, state.db holds the encrypted project's next purge ($rows rows)"
-  in_project "$P" --json vault lock > "$work/relock.json" || check "vault purge due: lock after the purge: $(head -c 300 "$work/relock.json")"
+  locked relock || check "vault purge due: lock after the purge: $(head -c 300 "$work/relock.json")"
   trap - EXIT
   undo_window "$lock" ""
   rm -rf -- "$secrets" "$P"
