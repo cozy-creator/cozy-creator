@@ -931,18 +931,36 @@ fn stamp(path: &FsPath) -> String {
     format!("{file}-{}-{}", modified.map_or(0, |since| since.as_nanos()), meta.len())
 }
 
-/// Walks again each project an earlier Calcifer was walking.
+/// Takes up what an earlier Calcifer left in each plaintext project: runs not settled, outputs not exported, a walk that owes.
+/// Each project.db is read alone first, and only one with work left opens, which drives it. Nothing of it is kept outside the
+/// project. An encrypted project is locked after a restart: its runs go on on their machines and are taken up as it unlocks.
 pub(crate) fn resume(api: &Arc<Api>) {
     let known = api.calcifer.store().known_projects().unwrap_or_else(|e| {
-        warn!("the projects being walked: {e}");
+        warn!("the projects to resume: {e}");
         vec![]
     });
-    // Each stays open while its walk goes.
-    for dir in known.into_iter().filter(|entry| entry.walking).map(|entry| entry.path) {
-        if let Err(error) = api.projects.open(api, &dir) {
-            warn!("walking {} again: {}", dir.display(), error.message);
+    let api = api.clone();
+    tokio::spawn(async move {
+        for entry in known {
+            if vault::encrypted(&entry.path) || !tokio::task::block_in_place(|| owes_work(&entry.path)) { continue; }
+            if let Err(error) = api.projects.store(&api, &entry.id).await {
+                warn!("resuming {}: {}", entry.path.display(), error.message);
+            }
         }
-    }
+    });
+}
+
+/// Whether the project.db in `root` holds work an earlier Calcifer left: a run not settled, an output not exported, or a walk.
+fn owes_work(root: &FsPath) -> bool {
+    let read = || -> rusqlite::Result<bool> {
+        let conn = rusqlite::Connection::open_with_flags(root.join(db::DB), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        conn.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM runs WHERE state <> 'settled') OR EXISTS (SELECT 1 FROM outputs WHERE {}) OR EXISTS (SELECT 1 FROM walk)", crate::store::OWED),
+            [],
+            |row| row.get(0),
+        )
+    };
+    read().unwrap_or(false)
 }
 
 /// Starts the project's walker, or tells the one going that something was asked. Its board begins once the last walk's end is told.
@@ -969,14 +987,12 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
                 walk.project.jobs.end(walk.began.elapsed().as_millis() as u64, ended);
                 *walking = false;
                 drop(walking);
-                remember(&api);
                 vault::stir();
                 return;
             }
         };
         drop(access);
         let following = following(&api, &walk.project, active);
-        remember(&api);
         if let Err(error) = walk.go(&following).await {
             walk.measure_at_end();
             let mut walking = walk.project.walking.lock().expect("walking lock");
@@ -990,7 +1006,6 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
         }
         following.abort();
         let _ = following.await;
-        remember(&api);
         crate::events::project_settled(&walk.project.folder.dir);
         // Its work ended: its vault's clocks go on.
         vault::stir();
@@ -1340,14 +1355,6 @@ impl Project {
             };
             graph.add(&ask.id, &mut Now { reading, lock, ask }, &asked);
         }
-    }
-}
-
-/// Records which open projects are being walked, which the next start walks again.
-fn remember(api: &Api) {
-    let walking: Vec<(String, bool)> = (api.projects.now_open().iter()).map(|project| (project.id.clone(), *project.walking.lock().expect("walking lock"))).collect();
-    if let Err(e) = api.calcifer.store().projects_walking(&walking) {
-        warn!("recording the projects being walked: {e}");
     }
 }
 
