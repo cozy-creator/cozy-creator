@@ -17,10 +17,11 @@ RUN = [f"run-numbered{i:018d}" for i in range(1, 5)]
 # Made in this order; an old import numbered the second and third as the store did, after the first had its number here.
 RUNS = [(RUN[0], 47826, T), (RUN[1], 46550, T + 1), (RUN[2], 46551, T + 2), (RUN[3], 47827, T + 3)]
 SHA = "sha256:" + "0" * 64
+Json = dict[str, object]
 
 
-def file(run: int, run_id: str | None = None) -> dict:
-    held = {"run": run, "function": "legacy/runs", "output": "out", "sha256": SHA}
+def file(run: int, run_id: str | None = None) -> Json:
+    held: Json = {"run": run, "function": "legacy/runs", "output": "out", "sha256": SHA}
     return held | ({"run_id": run_id} if run_id else {})
 
 
@@ -63,25 +64,27 @@ def fixture(path: str, project: str, bad: bool) -> None:
     db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
-def read(path: str) -> dict:
+def read(path: str) -> Json:
     db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    one = lambda query: db.execute(query).fetchone()[0]
-    walk = json.loads(one("SELECT record FROM walk WHERE id = 1"))
+
+    def column(query: str) -> list[object]:
+        return [row[0] for row in db.execute(query)]
+
     return {
-        "version": one("PRAGMA user_version"),
+        "version": column("PRAGMA user_version")[0],
         "runs": dict(db.execute("SELECT id, number FROM runs ORDER BY id")),
-        "versions": {str(n): json.loads(record).get("run") for n, record in db.execute("SELECT number, record FROM versions WHERE key = 'pic' ORDER BY number")},
-        "lock_runs": [json.loads(record)["run"] for (record,) in db.execute("SELECT record FROM lock_runs ORDER BY ord")],
-        "run_files": [run for (run,) in db.execute("SELECT run FROM run_files ORDER BY ord")],
-        "pending": walk["pending"]["pic-6"]["run"],
-        "walk_runs": sorted(walk["walk"]["runs"]),
-        "landing": [held["run"] for held in walk["walk"]["landing"]],
-        "ended": [take.get("run") for take in json.loads(one("SELECT record FROM lock_assets WHERE key = 'pic'")).get("ended", [])],
-        "request_keys": one("SELECT count(*) FROM request_keys WHERE key = 'numbered'"),
+        "versions": {str(n): run for n, run in db.execute("SELECT number, json_extract(record, '$.run') FROM versions WHERE key = 'pic' ORDER BY number")},
+        "lock_runs": column("SELECT json_extract(record, '$.run') FROM lock_runs ORDER BY ord"),
+        "run_files": column("SELECT run FROM run_files ORDER BY ord"),
+        "pending": column("SELECT json_extract(record, '$.pending.\"pic-6\".run') FROM walk WHERE id = 1")[0],
+        "walk_runs": column("SELECT runs.key FROM walk, json_each(walk.record, '$.walk.runs') AS runs WHERE walk.id = 1 ORDER BY runs.key"),
+        "landing": column("SELECT json_extract(held.value, '$.run') FROM walk, json_each(walk.record, '$.walk.landing') AS held WHERE walk.id = 1"),
+        "ended": column("SELECT json_extract(take.value, '$.run') FROM lock_assets, json_each(lock_assets.record, '$.ended') AS take WHERE lock_assets.key = 'pic'"),
+        "request_keys": column("SELECT count(*) FROM request_keys WHERE key = 'numbered'")[0],
     }
 
 
-MOVED = {
+MOVED: Json = {
     "version": 7,
     "runs": {RUN[0]: 1, RUN[1]: 2, RUN[2]: 3, RUN[3]: 4},
     "versions": {"1": 2, "2": 1, "3": 28545, "4": None},
@@ -95,7 +98,7 @@ MOVED = {
 }
 
 
-def differs(now: dict, wanted: dict) -> dict:
+def differs(now: Json, wanted: Json) -> Json:
     return {key: {"is": now.get(key), "not": value} for key, value in wanted.items() if now.get(key) != value}
 
 
