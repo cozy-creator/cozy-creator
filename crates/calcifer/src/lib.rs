@@ -1499,13 +1499,16 @@ impl Calcifer {
 
     /// What a run of `target` of `size` takes on one GPU of `machine`'s kind where that machine ran none of it: a machine's estimate's
     /// `prior_ms`. This computer's runs of it on that GPU; else our measurement of it on that card, which for a release the estimator
-    /// reads itself (`estimate::reference`) but local code it knows only by its manifest; else `scaled_ms` (cl-1004). 0: none.
-    pub(crate) fn prior_ms(&self, target: &str, machine: &str, size: &v1::JobSize) -> u64 {
+    /// reads itself (`estimate::reference`) but local code it knows only by its manifest; else `scaled_ms` (cl-1004). 0: none. And how
+    /// many of that machine's own runs it is (cl-1047): a project's, which the machine doesn't time itself.
+    pub(crate) fn prior_ms(&self, target: &str, machine: &str, size: &v1::JobSize) -> (u64, u32) {
         let (history, gpu) = (self.history(target), self.gpu_of(machine));
-        let ms = (eta::one_gpu_ms(&history, machine, &gpu, size))
-            .or_else(|| (!target.contains('@')).then(|| ::api::estimate::reference(target, &gpu, size)).flatten())
+        if let Some((ms, here)) = eta::one_gpu(&history, machine, &gpu, size) {
+            return (ms as u64, here);
+        }
+        let ms = ((!target.contains('@')).then(|| ::api::estimate::reference(target, &gpu, size)).flatten())
             .or_else(|| self.scaled_ms(target, &gpu, size, &history).map(|(ms, _)| ms));
-        ms.map_or(0, |ms| ms as u64)
+        (ms.map_or(0, |ms| ms as u64), 0)
     }
 
     /// What a run of `target` of `size` takes on one GPU of `gpu` (as its driver or a Hub names it), by what's known here without asking

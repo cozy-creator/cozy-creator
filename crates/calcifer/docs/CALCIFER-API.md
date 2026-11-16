@@ -320,7 +320,8 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
   (`api::estimate::quote`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's
   lane commit, bytes and repository, from its Hub card), `size` (`JobSize::of` its payload), `gpu` and `prior_ms` (eta's time for it on one
   GPU of that kind, from runs at one width; with none and no measurement of ours on that card, ours or those runs on another card
-  scaled by the Hub's speeds). A machine that ran none of it and has no prior is timed by our measurement of its card
+  scaled by the Hub's speeds; `prior_runs`, how many of that machine's own runs it is: a project's, read in its scope, which the
+  machine never times itself, so its quote is `measured`, cl-1047). A machine that ran none of it and has no prior is timed by our measurement of its card
   (`api::estimate::reference`, cl-1004), else a minute. A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
   finishes soonest after those placed before it, then single moves while the whole ends sooner. A ready job goes when its planned machine
   has a GPU for it (one machine: at once); each machine is told its upcoming jobs (`PUT /v1/upcoming`) and, idle with nothing planned

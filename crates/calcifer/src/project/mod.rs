@@ -4182,7 +4182,7 @@ impl Walk {
                 priors.push(placement::prior(&api, &pictures[m], job).await);
             }
             planned.push(plan::Job {
-                ask: placement::asked(job, 0),
+                ask: placement::asked(job, placement::Prior::default()),
                 priors,
                 machines,
                 needs: unsent.needs.iter().filter_map(|need| position.get(need).copied()).collect(),

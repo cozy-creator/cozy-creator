@@ -155,16 +155,28 @@ pub(crate) async fn pictures(api: &Arc<Api>, machines: &[On], update: bool, now:
     .await
 }
 
-/// What a run of `job` takes on one GPU of `picture`'s kind, as runs like it took elsewhere: what it is timed by where none of it ran.
+/// A job's time on one GPU of a machine's kind where that machine's frame times none of it (`prior`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Prior {
+    pub ms: u64,
+    /// How many of that machine's own runs it is (a project's, which its frame never times, cl-1047): its quote is Measured. 0: runs
+    /// elsewhere.
+    pub runs: u32,
+}
+
+/// What a run of `job` takes on one GPU of `picture`'s kind, as runs like it took: what it is timed by where its frame times none of it.
 /// In its project's scope (`Job::scope`), whose runs here only it keeps (cl-1047).
-pub(crate) async fn prior(api: &Arc<Api>, picture: &Picture, job: &Job) -> u64 {
+pub(crate) async fn prior(api: &Arc<Api>, picture: &Picture, job: &Job) -> Prior {
     let timed = async {
         match &picture.ready_at_ms {
             Some(_) => match api.machines.coming(&picture.name, now_ms()) {
-                Some(coming) => crate::coming::card_time(api, &coming.way, &job.target, &job.size).0 as u64,
-                None => 0,
+                Some(coming) => Prior { ms: crate::coming::card_time(api, &coming.way, &job.target, &job.size).0 as u64, runs: 0 },
+                None => Prior::default(),
             },
-            None => api.calcifer.prior_ms(&job.target, &picture.name, &job.size),
+            None => {
+                let (ms, runs) = api.calcifer.prior_ms(&job.target, &picture.name, &job.size);
+                Prior { ms, runs }
+            }
         }
     };
     crate::private_io::context(job.scope.clone().or_else(crate::private_io::current), timed).await
@@ -184,8 +196,8 @@ pub(crate) async fn scoped_picture(api: &Arc<Api>, picture: &Picture, scope: Opt
     scoped
 }
 
-/// `job` as the estimator asks it, with its `prior_ms` there.
-pub(crate) fn asked(job: &Job, prior_ms: u64) -> v1::EstimateJob {
+/// `job` as the estimator asks it, with its `prior` there.
+pub(crate) fn asked(job: &Job, prior: Prior) -> v1::EstimateJob {
     v1::EstimateJob {
         key: job.key.clone(),
         function: job.function.clone(),
@@ -193,7 +205,8 @@ pub(crate) fn asked(job: &Job, prior_ms: u64) -> v1::EstimateJob {
         size: job.size,
         gpus: job.gpus,
         gpu: job.gpu,
-        prior_ms,
+        prior_ms: prior.ms,
+        prior_runs: prior.runs,
         after_ms: 0,
     }
 }
