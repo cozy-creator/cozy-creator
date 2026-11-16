@@ -807,7 +807,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | Verb | Calls |
 |---|---|
 | `cozy new [directory]` | `POST /v1/projects` with the selected absolute path |
-| `cozy open [--port PORT]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; starts a private window of the user's browser (`$BROWSER`'s, else the default's, else an installed one's: `--incognito`, `--inprivate`, `--private-window`) at the page's URL and prints it; with none, prints it and opens nothing; `--json` prints it and starts none |
+| `cozy open [--port PORT]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; starts a private window of the user's browser (`$BROWSER`'s, else the default's, else an installed one's: `--incognito`, `--inprivate`, `--private-window`) at the page's URL (`/p/<code>`) and prints it; with none, prints it and opens nothing; `--json` prints it and starts none |
 | `cozy status` | project health, warnings and suggested actions from `GET /v1/projects/{id}` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}`; `--previews DIR`, `GET /v1/runs/{id}/preview` each second while it runs |
