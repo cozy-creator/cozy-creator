@@ -142,6 +142,16 @@ class Arm:
                 "hedged": sum(int(m[1]) for l in lines for m in [re.search(r"hedged=(\d+)", l)] if m),
                 "streams_settled": settled[-1] if settled else None}
 
+    def landed(self):
+        """TensorD's own word of each object landed: [(t, job, bytes)], job = its order's high 32 bits (a run's job order)."""
+        p = self.d / "tensord.log"
+        out = []
+        for line in (p.read_text(errors="replace") if p.exists() else "").splitlines():
+            found = re.search(r": landed .*bytes=(\d+).*priority=(\d+)", line)
+            if found and stamp_ms(line) >= (self.at("began_ms") or 0):
+                out.append((stamp_ms(line), int(found[2]) >> 32, int(found[1])))
+        return out
+
     def facts(self):
         p50, p95, top, drops = self.queue_ms(self.at("began_ms") or 0, self.at("ended_ms") or 1 << 62)
         return {"form": self.at("form"), "cc": self.at("cc"), "mtu": self.at("mtu"), "ceiling_mb_s": round(self.ceiling / 1e6, 2),
@@ -426,25 +436,23 @@ def two(rec):
     if None not in r:
         rec.row("mean_ratio", round(sum(r) / 2, 3))
         rec.row("worst_ratio", max(r))
-    # Contended: both asked, neither done; each project's bytes as its own Status listed them.
+    # Contended: both asked, neither done. Each project's bytes as TensorD's log lands them (an object at a time: Status lists a
+    # project's downloads only to a page that names the project, not to `machine show`): the earlier job is a's.
     lo, hi = max(both.at("ask_a"), both.at("ask_b")), min(settled(both, "a") or 0, settled(both, "b") or 0)
-    pa = [(t, d) for t, d, _ in both.ops("download", "link-a", "status-link-two-p1")]
-    pb = [(t, d) for t, d, _ in both.ops("download", "link-b", "status-link-two-p2")]
-    at = lambda pts, t: max((d for s, d in pts if s <= t), default=0)
-    if hi > lo and pa and pb:
-        da, db = at(pa, hi) - at(pa, lo), at(pb, hi) - at(pb, lo)
+    jobs = sorted({j for _, j, _ in both.landed() if j})
+    if hi > lo and len(jobs) >= 2:
+        pa = [(t, b) for t, j, b in both.landed() if j == jobs[0]]
+        pb = [(t, b) for t, j, b in both.landed() if j == jobs[1]]
+        upto = lambda pts, t: sum(b for s, b in pts if lo < s <= t)
+        da, db = upto(pa, hi), upto(pb, hi)
         if da + db:
             rec.row("share_a", round(da / (da + db), 3))
             rec.row("jain", round((da + db) ** 2 / (2 * (da * da + db * db)), 3))
-            gaps = []
-            for t, _ in pa:
-                if lo < t <= hi:
-                    x, y = at(pa, t) - at(pa, lo), at(pb, t) - at(pb, lo)
-                    if x + y:
-                        gaps.append(abs(x - y) / (x + y))
+            gaps = [abs(upto(pa, t) - upto(pb, t)) / (upto(pa, t) + upto(pb, t)) for t, _ in sorted(pa + pb) if lo < t <= hi and upto(pa, t) + upto(pb, t)]
             rec.row("progress_gap", round(max(gaps), 3) if gaps else None)
+        rec.notes.append(f"projects' bytes from TensorD's landed lines, jobs {jobs[:2]}")
     else:
-        rec.notes.append("no contended window with both projects' Status bytes")
+        rec.notes.append(f"no contended window with both projects' landed bytes (jobs {jobs})")
     use, idle = both.use([(both.at("ask_a"), max(settled(both, "a") or 0, settled(both, "b") or 0))])
     rec.row("link_use", use)
 

@@ -5,10 +5,12 @@
 # bottleneck's queue and drops, TensorD's memory and writes; and what Status said of each download, read from the run's project.
 # e2e/link/judge.py turns an arm's files into a scenario's record ($OUT/link/<scenario>.json); e2e/link/table.py compares records.
 # Nothing here judges pass or fail but the yes/no guarantees the judge names; the bars are table.py's.
-#   forms   q60   60 Mbit, a FIFO of 1 s (tbf); the runner's congestion control, kept in each arm's meta
-#           q60c  q60 with cubic as the senders' congestion control (a loss-based sender fills the queue)
-#           p60   60 Mbit, one shared token bucket that drops, no queue (tc police; tfs-300 proof branch 4158e8650's)
-#           open  no limit
+#   forms   q60   60 Mbit, a FIFO of 1 s (tbf), and 20 ms more on the way back (netem on what goes to the servers): a round
+#                 trip as a pod's to its origin, so TCP's windows grow and a loss-based sender fills the queue, which loopback's
+#                 zero round trip never lets it (th-378's runs); the runner's congestion control is kept in each arm's meta
+#           q60c  q60 with cubic as the senders' congestion control, when the runner's isn't
+#           p60   60 Mbit, one shared token bucket that drops, no queue (tc police; tfs-300 proof branch 4158e8650's), the same 20 ms
+#           open  no limit, no delay
 here_link=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 LINK_TOOLS=$here_link/../link
 LINK_SCRIPT=$here_link/script/link.py
@@ -38,10 +40,12 @@ link_files() {
 # bytes were sent to).
 link_up() {
   local form=$1 spec name port dir match; shift
-  sudo iptables -w -N E2E_LINK 2> /dev/null; sudo iptables -w -F E2E_LINK
+  sudo iptables -w -N E2E_LINK 2> /dev/null || true
+  sudo iptables -w -F E2E_LINK || return 1
   sudo iptables -w -C INPUT -i lo -j E2E_LINK 2> /dev/null || sudo iptables -w -I INPUT -i lo -j E2E_LINK || return 1
   case $form in
-    q60 | q60c | p60) sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio || return 1 ;;
+    q60 | q60c | p60) sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio bands 4 \
+      && sudo tc qdisc add dev lo parent 1:4 handle 40: netem delay "${LINK_RTT_MS:-20}ms" limit 100000 || return 1 ;;
     open) ;;
     *) check "link: no form $form"; return 1 ;;
   esac
@@ -61,18 +65,20 @@ link_up() {
       q60 | q60c) sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip "$match" "$port" 0xffff flowid 1:3 || return 1 ;;
       p60) sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip "$match" "$port" 0xffff flowid 1:3 action police index 1 || return 1 ;;
     esac
+    [ "$form" = open ] || [ "$match" != sport ] \
+      || sudo tc filter add dev lo parent 1: protocol ip prio 2 u32 match ip dport "$port" 0xffff flowid 1:4 || return 1
   done
 }
 
 link_down() {
-  sudo tc qdisc del dev lo root 2> /dev/null
-  sudo tc actions flush action police 2> /dev/null
-  sudo ip link set dev lo mtu 65536
-  [ -z "$LINK_CC" ] || sudo sysctl -qw net.ipv4.tcp_congestion_control="$LINK_CC"
+  sudo tc qdisc del dev lo root 2> /dev/null || true
+  sudo tc actions flush action police 2> /dev/null || true
+  sudo ip link set dev lo mtu 65536 || true
+  [ -z "$LINK_CC" ] || sudo sysctl -qw net.ipv4.tcp_congestion_control="$LINK_CC" || true
   LINK_CC=''
-  sudo iptables -w -D INPUT -i lo -j E2E_LINK 2> /dev/null
-  sudo iptables -w -F E2E_LINK 2> /dev/null; sudo iptables -w -X E2E_LINK 2> /dev/null
-  true
+  sudo iptables -w -D INPUT -i lo -j E2E_LINK 2> /dev/null || true
+  sudo iptables -w -F E2E_LINK 2> /dev/null || true
+  sudo iptables -w -X E2E_LINK 2> /dev/null || true
 }
 
 # link_store <name> [dir]: the machine on an empty store (dir, else one of its own), restarted; the last arm's store removed.
@@ -114,6 +120,7 @@ link_arm() {
   link_up "$form" "files:$LINK_FILES_PORT" "$@" || { link_down; check "link $scenario/$arm: the $form link wasn't made"; return 1; }
   meta scenario "\"$scenario\""; meta arm "\"$arm\""; meta form "\"$form\""
   meta cc "\"$(sysctl -n net.ipv4.tcp_congestion_control)\""; meta mtu "$(cat /sys/class/net/lo/mtu)"
+  [ "$form" = open ] && meta rtt_ms 0 || meta rtt_ms "${LINK_RTT_MS:-20}"
   meta classes "$(printf '%s\n' "files:$LINK_FILES_PORT" "$@" | jq -R 'split(":") | {(.[0]): (.[1] | tonumber)}' | jq -s add)"
   meta runner "$(jq -n --arg k "$(uname -r)" --arg c "$(nproc)" --arg m "$(awk '/MemTotal/ {print $2}' /proc/meminfo)" '{kernel: $k, cpus: ($c | tonumber), mem_kib: ($m | tonumber)}')"
   sudo python3 "$LINK_TOOLS/watch.py" kernel "$LINK_ARM/kernel.ndjson" "$LINK_ARM/stop" "${LINK_INTERVAL:-1}" ${disk:+--disk "$disk"} 2> "$LINK_ARM/kernel.err" &
@@ -135,7 +142,7 @@ link_ceiling() {
   local i pids=()
   mark ceiling_from_ms
   for i in 1 2 3 4; do curl -s -o /dev/null --max-time 12 "http://127.0.0.1:$LINK_FILES_PORT/ceiling.bin" & pids+=($!); done
-  wait "${pids[@]}"
+  wait "${pids[@]}" || true
   mark ceiling_to_ms
   sleep 2
 }
@@ -183,7 +190,7 @@ link_judge() {
   python3 "$LINK_TOOLS/judge.py" "$1" "$OUT/link/$1" > "$OUT/link/$1.json" 2> "$OUT/link/$1.err" \
     || check "link $1: no record: $(tail -c 600 "$OUT/link/$1.err")"
   jq -c '{scenario, rows, guarantees}' "$OUT/link/$1.json" 2> /dev/null || true
-  jq -r '.failed[]? // empty' "$OUT/link/$1.json" 2> /dev/null | while read -r why; do check "link $1: $why"; done
+  { jq -r '.failed[]? // empty' "$OUT/link/$1.json" 2> /dev/null || true; } | while read -r why; do check "link $1: $why"; done
 }
 
 PAGEBOX=lilylilith/pagebox@0.1.0

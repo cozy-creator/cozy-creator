@@ -3,10 +3,11 @@
 # E2E_LINK_WWW) serves each package's own URL dependencies, so no cache of uv's serves another's:
 #   e2e-link-dl-<n>    a 30 MB wheel
 #   e2e-link-slow-<n>  an sdist whose build waits 30 s, fetches 60 MB (blob-<n>.bin), waits 60 s: a compile's quiet stretches
-# e2e-link-<n>/bare needs no weights; e2e-link-<n>/cold needs pagebox (`spare`). e2e-link-warm's build doesn't wait.
+# e2e-link-<n>/bare needs no weights; e2e-link-<n>/cold needs pagebox (`spare`). e2e-link-warm's build doesn't wait. The files
+# stay out of the published $OUT.
 link_packages() {
   local seed=$1 port n
-  E2E_LINK_WWW=$seed/link-www
+  E2E_LINK_WWW=${RUNNER_TEMP:-$seed}/link-www
   mkdir -p "$E2E_LINK_WWW"
   port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   (cd / && exec python3 -m http.server "$port" --bind 127.0.0.1 --directory "$E2E_LINK_WWW") > "$seed/link-files.log" 2>&1 &
