@@ -198,20 +198,35 @@ pub(crate) fn path() -> Vec<PathBuf> {
 static FETCHING_FFMPEG: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static FETCHING_UV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// An ffmpeg that encodes libx264 here, the pinned build first.
-fn usable_ffmpeg(home: &Home) -> Option<Ffmpeg> {
-    let (found, ffprobe) = tools::ffmpeg(&home.tools(), &path())?;
-    tools::ffmpeg_encodes(&found.path, "libx264").then_some(Ffmpeg { ffmpeg: found.path, ffprobe, build: found.version })
+/// The ffmpeg found usable, by the tools folder it was looked for in: finding it runs it twice (`-version`, `-encoders`), seconds on a
+/// Mac, so it's found once, not on every thumbnail and measure (cl-1054: that held up every request while 100 pictures were imported).
+static USABLE: std::sync::Mutex<Option<(PathBuf, Ffmpeg)>> = std::sync::Mutex::new(None);
+
+/// An ffmpeg that encodes libx264 here, the pinned build first: the one found before while its files are there, else found now, from
+/// the blocking pool.
+async fn usable_ffmpeg(home: &Home) -> Option<Ffmpeg> {
+    let tools = home.tools();
+    let kept = USABLE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some((_, found)) = kept.filter(|(at, found)| *at == tools && found.ffmpeg.is_file() && found.ffprobe.is_file()) {
+        return Some(found);
+    }
+    let found = tokio::task::spawn_blocking(move || {
+        let (found, ffprobe) = tools::ffmpeg(&tools, &path())?;
+        let usable = tools::ffmpeg_encodes(&found.path, "libx264").then_some(Ffmpeg { ffmpeg: found.path, ffprobe, build: found.version })?;
+        *USABLE.lock().unwrap_or_else(|e| e.into_inner()) = Some((tools, usable.clone()));
+        Some(usable)
+    });
+    found.await.ok().flatten()
 }
 
 /// ffmpeg for work that needs it: the pinned build, else PATH's when it encodes libx264, else the
 /// pinned build fetched now, on this first need.
 pub(crate) async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
-    if let Some(found) = usable_ffmpeg(home) {
+    if let Some(found) = usable_ffmpeg(home).await {
         return Ok(found);
     }
     let _one = FETCHING_FFMPEG.lock().await;
-    if let Some(found) = usable_ffmpeg(home) {
+    if let Some(found) = usable_ffmpeg(home).await {
         return Ok(found);
     }
     let archives = tools::ffmpeg_build();
@@ -220,7 +235,7 @@ pub(crate) async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
     }
     let dir = tools::ffmpeg_dir(&home.tools());
     fetch(say, "ffmpeg", archives, &dir).await?;
-    usable_ffmpeg(home).ok_or_else(|| {
+    usable_ffmpeg(home).await.ok_or_else(|| {
         Error::new(Kind::Internal, "ffmpeg_unavailable", format!("the pinned ffmpeg in {} does not answer", dir.display()))
     })
 }

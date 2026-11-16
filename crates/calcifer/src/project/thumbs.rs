@@ -236,7 +236,12 @@ pub(crate) fn previews(api: Arc<Api>) {
                         wait_for_project(drawing);
                         continue;
                     }
-                    Err(error) => Err(error),
+                    Err(error) => {
+                        // Said, as a page only hears it failed (cl-1054: a Mac stored none, and nothing said why). Not an encrypted
+                        // project's: what failed can name its files.
+                        if !drawing.private { warn!("thumbnail {} not made: {}: {}", drawing.name(), error.code, error.message); }
+                        Err(error)
+                    }
                 };
                 {
                     let mut queue = QUEUE.0.lock().expect("thumbnail queue");
@@ -319,11 +324,9 @@ async fn make(host: Host, mut drawing: Drawing) -> Result<Option<PathBuf>, Error
     tokio::task::spawn_blocking(move || {
         let _access = access;
         let _permit = permit;
-        crate::tools::quietly(|| draw(&ffmpeg, &ffprobe, &drawing, &dir, &name)).map_err(|why| {
-            // The source path can disappear while waiting for FFmpeg. Only a successful draw is kept.
-            if !drawing.private { warn!("thumbnail {name} can't be drawn: {why}"); }
-            Error::new(Kind::Validation, "thumb_failed", format!("ffmpeg can't draw this file: {why}"))
-        })
+        // The source path can disappear while waiting for FFmpeg. Only a successful draw is kept; a failed one is said by its drawer.
+        crate::tools::quietly(|| draw(&ffmpeg, &ffprobe, &drawing, &dir, &name))
+            .map_err(|why| Error::new(Kind::Validation, "thumb_failed", format!("ffmpeg can't draw this file: {why}")))
     })
     .await
     .map_err(|e| Error::new(Kind::Internal, "thumb_failed", e.to_string()))?
