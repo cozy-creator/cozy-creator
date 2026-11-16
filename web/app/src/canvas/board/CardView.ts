@@ -72,7 +72,7 @@ export class CardView {
   }
 
   get picture() { return this.pictures.get("main") }
-  get previewing() { return this.video ? { active: true, ready: Boolean(this.video.handle.texture) } : null }
+  get previewing() { return this.video ? { active: true, ready: Boolean(this.video.handle.texture), muted: true, loop: true } : null }
 
   update(node: SceneNode, show: Presentation, state: CardState, env: CardEnv) {
     this.input = { node, show, state, env }
