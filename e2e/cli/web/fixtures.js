@@ -431,6 +431,12 @@ const test = base.extend({
     await use(page);
     // Torn down before the context, which closes this page: the cell is over from here.
     guards.over();
+    // Which renderer drew the cell, and how many frames it drew in how long: read on every runner, kept with its result.
+    const drew = page.isClosed() ? null : await page.evaluate(() => {
+      const resources = document.querySelector('.canvas-root')?.canvasInspection?.resources();
+      return resources ? { graphics: resources.graphics, frames: resources.frames, ms: Math.round(performance.now()) } : null;
+    }).catch(() => null);
+    if (drew) testInfo.annotations.push({ type: 'renderer', description: JSON.stringify(drew) });
     if (testInfo.status !== testInfo.expectedStatus && !page.isClosed()) {
       const said = await page.evaluate(() => ({ url: location.href, log: window.boxLog?.slice(-60), focus: `${document.activeElement?.tagName}.${document.activeElement?.className}` }));
       await testInfo.attach('boxes', { body: JSON.stringify(said, null, 2), contentType: 'application/json' });
