@@ -3,8 +3,9 @@ from int8 -> bf16 ... please fix everything and make sure this never happens aga
 as well."
 
 Nothing runs. Each package of the checkout is described through cozy (`cozy run <dir> --describe`), and each slot that takes
-encoded weights (`encoded_leaves: accept`, not raw `weights`) and names a Hub default is resolved by `cozy model show <default>
---gpu <cc> [--components ...]` (dev-only): the Hub resolve TensorD asks for that slot, against tensorhub.com's releases. Memory
+encoded weights (`encoded_leaves: accept`, not raw `weights`) and names a Hub default that is no LoRA (its factors go on its base
+model's lane) is resolved by `cozy model show <default> --gpu <cc> [--components ...]` (dev-only): the Hub resolve TensorD asks
+for that slot, against tensorhub.com's releases. Memory
 is not asked: at the 8-bit floor it never lowers a lane (Paul 11-06, xs-154 Q1); a 4-bit-floor slot (`min_bits: 4`) may still
 go lower on a card short of memory, by design. A lane other than EXPECTED's, or OTHERWISE's for that default, fails: a default
 lane moves only with its line here changed on purpose, named in the PR.
@@ -34,6 +35,10 @@ EXPECTED = "int8 int8 int8 int8 int8 fp8|bf16 int8"
 OTHERWISE = {
     "lightricks/ltx-2.5@0.1.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "se-139: bf16 its only lane; int8 ConvRot coming"),
     "ifm/pan2@0.1.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "se-139: bf16 its only lane; int8 ConvRot coming"),
+    "kopper/relayvsr@0.2.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
+    "lbh-123-ai/h3-latent-upscaler@0.1.1": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
+    "qwen/qwen3.5-9b-mtp@0.2.0": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane, no 8-bit lane published"),
+    "tencent/hunyuan-image-3-instruct@0.1.1": ("bf16 bf16 bf16 bf16 bf16 bf16 bf16", "cl-1076: bf16 its only lane (its distil has int8)"),
 }
 PRODUCTION = "https://tensorhub.com"
 EIGHT = ("int8", "fp8")
@@ -138,13 +143,23 @@ def lanes_of(args: argparse.Namespace) -> int:
         passed += over
         work += [(package, entry, slot) for entry, slot in checked]
 
-    # Each default and the components its slot reads, once: its release's lanes, then the lane each family resolves.
-    asks = sorted({(slot["default"], tuple(slot.get("components") or [])) for _, _, slot in work})
+    # Each default's release: its lanes, and whether it is a LoRA, whose factors go on its base model's lane (passed over).
     lanes: dict[str, list[str]] = {}
+    loras: set[str] = set()
 
     def release_lanes(default: str) -> None:
         answer, said = cozy(args.cozy, ["model", "show", default], args.project, PRODUCTION)
-        lanes[default] = [lane["lane"] for lane in (answer or {}).get("lanes", [])] if answer else [f"unread: {said}"]
+        held = (answer or {}).get("lanes", [])
+        lanes[default] = [lane["lane"] for lane in held] if answer else [f"unread: {said}"]
+        if held and all(lane.get("kind") == "lora" for lane in held):
+            loras.add(default)
+
+    with concurrent.futures.ThreadPoolExecutor(4) as pool:
+        list(pool.map(release_lanes, sorted({slot["default"] for _, _, slot in work})))
+    passed += sum(1 for _, _, slot in work if slot["default"] in loras)
+    work = [(package, entry, slot) for package, entry, slot in work if slot["default"] not in loras]
+    # Each default and the components its slot reads, once: the lane each family resolves.
+    asks = sorted({(slot["default"], tuple(slot.get("components") or [])) for _, _, slot in work})
 
     def resolve(ask: tuple[str, tuple[str, ...]], family: str) -> tuple[str, float]:
         default, components = ask
@@ -157,7 +172,6 @@ def lanes_of(args: argparse.Namespace) -> int:
     resolved: dict[tuple[str, tuple[str, ...]], list[str]] = {}
     took: dict[tuple[str, tuple[str, ...]], float] = {}
     with concurrent.futures.ThreadPoolExecutor(4) as pool:
-        list(pool.map(release_lanes, sorted({default for default, _ in asks})))
         futures = {(ask, family): pool.submit(resolve, ask, family) for ask in asks for family in FAMILIES}
         for ask in asks:
             each = [futures[(ask, family)].result() for family in FAMILIES]
@@ -189,7 +203,7 @@ def lanes_of(args: argparse.Namespace) -> int:
 
     defaults = sorted({default for default, _ in asks})
     no_fp8 = [default for default in defaults if "fp8" not in lanes[default] and any(lane in EIGHT for lane in lanes[default])]
-    said = [f"lanes: {len(work)} slots of {len(described)} packages ({passed} with no Hub default or plain weights passed over), "
+    said = [f"lanes: {len(work)} slots of {len(described)} packages ({passed} with no Hub default, plain weights or a LoRA passed over), "
             f"{len(defaults)} defaults on {len(FAMILIES)} GPU families ({', '.join('sm' + f.replace('.', '') for f in FAMILIES)}) "
             f"resolved at {PRODUCTION} in {time.monotonic() - began:.0f} s; {failed} moved"]
     for default, (why, got, where) in sorted(known.items()):
