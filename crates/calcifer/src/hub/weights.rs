@@ -58,8 +58,8 @@ fn source(raw: &str, name: Option<&str>) -> Result<(ModelChoice, Option<StagedIn
 fn held_file(named: &str) -> Result<(PathBuf, Digest), Refusal> {
     let digest: Digest = named.parse().map_err(|why: &str| usage("file_name_invalid", format!("{named:?}: {why}")))?;
     let Some(path) = crate::runs::files::held(&digest) else {
-        let said = format!("Calcifer holds no file {named}");
-        return Err(Refusal(Error::new(Kind::NotFound, "file_not_held", said).remedy(format!("PUT its bytes to /v1/files/{named} first"))));
+        let said = format!("Cozy doesn't have the file {named}.");
+        return Err(Refusal(Error::new(Kind::NotFound, "file_not_held", said).remedy(format!("Upload it first (PUT its bytes to /v1/files/{named}), then try again."))));
     };
     Ok((path, digest))
 }

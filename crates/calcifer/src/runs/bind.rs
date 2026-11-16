@@ -324,8 +324,8 @@ impl Binder<'_> {
                 .find_map(|kind| row.get(kind).and_then(Value::as_str).map(|text| (kind, text)))
                 .ok_or_else(shape)?;
             let Some((path, digest)) = self.terms.file(text).await? else {
-                return Err(usage("reference_file_missing", format!("references: {name}'s {kind}, {text}, is no file sent with this run or held here"))
-                    .remedy("a relative path in an --input file starts at that file's folder, one on the command line at the working directory"));
+                return Err(usage("reference_file_missing", format!("references: {name}'s {kind}, {text}, isn't a file sent with this run or one Cozy has."))
+                    .remedy("A relative path in an --input file starts at that file's folder; one on the command line starts at the working directory."));
             };
             own.push((crate::project::Inline { name: name.to_owned(), kind: kind.to_owned(), file: digest.to_string() }, path));
         }
@@ -668,7 +668,7 @@ impl Binder<'_> {
             }
             // A file where the function takes none is left out, as any undeclared field is: never refused (cl-944).
             let Some(accepts) = self.accepts(&parts) else {
-                self.notes.push(Note { level: NoteLevel::Warning, message: format!("{}.{field} is no input file field of this function: {} is left out", self.callable.name, spec.source) });
+                self.notes.push(Note { level: NoteLevel::Warning, message: format!("{} has no file input called {field}, so Cozy left out {}.", self.callable.name, spec.source) });
                 continue;
             };
             let named = path_key(&spec.source).to_owned();
@@ -676,8 +676,8 @@ impl Binder<'_> {
                 (Some(found), _) => found,
                 (None, Some(Sent::Tree(_))) => return Err(invalid("asset_not_a_file", format!("{field}: {named} is a folder, not a file"))),
                 (None, Some(Sent::File(_))) | (None, None) if named.starts_with("sha256:") || self.terms.sent(&named).is_some() => {
-                    return Err(Error::new(Kind::NotFound, "file_not_held", format!("{field}: Calcifer holds no file {named}"))
-                        .remedy(format!("Attach the file again with --file {field}=<path>, then retry.")));
+                    return Err(Error::new(Kind::NotFound, "file_not_held", format!("{field}: Cozy doesn't have the file {named}."))
+                        .remedy(format!("Attach the file again (--file {field}=<path>), then try again.")));
                 }
                 (None, _) => return Err(not_sent(&field, &named)),
             };
@@ -695,7 +695,7 @@ impl Binder<'_> {
                     "video" => "videos",
                     other => other,
                 };
-                self.notes.push(Note { level: NoteLevel::Info, message: format!("{field}: {} is left out: {} can't use {kinds} there", spec.source, self.target) });
+                self.notes.push(Note { level: NoteLevel::Info, message: format!("{field}: Cozy left out {}, because {} can't use {kinds} there.", spec.source, self.target) });
                 continue;
             }
             let (kind_max, kinds) = accepts;
@@ -774,7 +774,7 @@ impl Binder<'_> {
                 (None, Err(_)) => return Err(not_sent(&field, &source)),
             };
             let not_held = |what: String| {
-                Error::new(Kind::NotFound, "file_not_held", format!("{field}: Calcifer holds no {what}")).remedy(format!("Attach the folder again with {field}=./path, then retry."))
+                Error::new(Kind::NotFound, "file_not_held", format!("{field}: Cozy doesn't have the {what}.")).remedy(format!("Attach the folder again ({field}=./path), then try again."))
             };
             let path = self.terms.held(&digest).ok_or_else(|| not_held(format!("tree document {digest}")))?;
             let document = std::fs::read(&path).map_err(|e| Error::new(Kind::Internal, "tree_unreadable", format!("{field}: {e}")))?;
@@ -1153,7 +1153,7 @@ impl Binder<'_> {
                 !gone.contains(&(at - 1))
             });
         }
-        self.cut.push(format!("{} takes {kept} of these files: {} left out", assets.parameter, left.join(", ")));
+        self.cut.push(format!("{} takes {kept} of these files, so Cozy left out {}.", assets.parameter, left.join(", ")));
     }
 
     /// What the input at `parts` accepts: the byte bound it declares, and each media-type set with
@@ -1225,8 +1225,8 @@ fn holds_file(ty: &Type) -> bool {
 /// The warning for a list of files cut to its limit.
 fn cut_list(function: &str, list: &str, max: u64, left: String) -> String {
     match max {
-        0 => format!("{function} takes no {list}: {left} left out"),
-        max => format!("{list} takes at most {max}: {left} left out"),
+        0 => format!("{function} takes no {list}, so Cozy left out {left}."),
+        max => format!("{list} takes at most {max}, so Cozy left out {left}."),
     }
 }
 
@@ -1551,7 +1551,7 @@ fn validate(
     if !missing.is_empty() {
         problems.insert(
             0,
-            format!("provide required arguments: [{}]", missing.join("; ")),
+            format!("missing required inputs: {}", missing.join("; ")),
         );
     }
     if problems.is_empty() {
@@ -1562,9 +1562,9 @@ fn validate(
         .map_or(target, |(package, _)| package);
     let mut lines = vec![match release {
         Some(release) => {
-            format!("{target} cannot take this request (checked against {package} {release}):")
+            format!("{target} can't take these inputs (checked against {package} {release}):")
         }
-        None => format!("{target} cannot take this request:"),
+        None => format!("{target} can't take these inputs:"),
     }];
     lines.extend(
         problems
@@ -1592,7 +1592,7 @@ fn ignored_warning(target: &str, ignored: &[String]) -> Option<String> {
     };
     (!ignored.is_empty()).then(|| {
         format!(
-            "ignored unknown {noun} {} — not in {target}'s interface",
+            "Cozy ignored the {noun} {}, which {target} doesn't have",
             ignored.join(", ")
         )
     })
@@ -1632,7 +1632,7 @@ fn check(ty: &Type, value: &mut Value, path: &str, ignored: &mut Vec<String>) ->
         (Type::Asset(_) | Type::Tree, Value::String(s)) if !s.is_empty() => vec![],
         (Type::Shape, Value::String(s)) if ratio(s) => vec![],
         (Type::Shape, value) if value.is_string() => {
-            vec![format!("{path}: {} names no ratio: write it as 16:9 or 2.39:1", shown(value))]
+            vec![format!("{path}: {} isn't a ratio. Write it as 16:9 or 2.39:1.", shown(value))]
         }
         (Type::Seed, Value::Number(n)) if n.is_u64() => vec![],
         // What the project's binder made of a prompt, a described file and a pickup.
@@ -1743,14 +1743,14 @@ fn check(ty: &Type, value: &mut Value, path: &str, ignored: &mut Vec<String>) ->
                         ignored,
                     )),
                     None if field.wire == Wire::Required => {
-                        problems.push(format!("{path} omits required {}", field.name));
+                        problems.push(format!("{path} is missing {}, which is required", field.name));
                     }
                     None => {}
                 }
             }
             problems
         }
-        _ => vec![format!("{path} is not {}", describe::phrase(ty))],
+        _ => vec![format!("{path} isn't {}", describe::phrase(ty))],
     }
 }
 
@@ -1807,14 +1807,14 @@ fn shown(value: &Value) -> String {
 
 /// What no value here can make good: too few. Over a limit goes on to Runtime, which clamps it.
 fn bounds(c: &Constraints, value: &Value, path: &str) -> Result<(), String> {
-    let length = match value {
-        Value::String(s) => s.chars().count() as u64,
-        Value::Array(a) => a.len() as u64,
-        Value::Object(o) => o.len() as u64,
+    let (length, unit) = match value {
+        Value::String(s) => (s.chars().count() as u64, "characters"),
+        Value::Array(a) => (a.len() as u64, "items"),
+        Value::Object(o) => (o.len() as u64, "items"),
         _ => return Ok(()),
     };
     match c.min_length.filter(|min| length < *min) {
-        Some(min) => Err(format!("{path} has length {length}; its minimum is {min}")),
+        Some(min) => Err(format!("{path} has {length} {unit}, and it needs at least {min}")),
         None => Ok(()),
     }
 }

@@ -1912,7 +1912,7 @@ macro_rules! journal_methods {
                     // Said plainly; asked again elsewhere by `cozy run retry` or the page's Retry (cl-1085). Why its machine ended is the machine's.
                     let run = run_name(tx, &row);
                     let message = match row.state {
-                        State::Accepted if reason == "released_by_pod" => format!("{machine} accepted {run}, but its result never reached Calcifer, and {machine} released itself after 15 idle minutes: the result is gone"),
+                        State::Accepted if reason == "released_by_pod" => format!("{machine} accepted {run}, but its result never reached Cozy, and {machine} ended itself after 15 idle minutes, so the result is lost."),
                         State::Accepted => format!("{machine} shut down, so {run} stopped"),
                         _ => format!("{machine} shut down before it took {run}"),
                     };

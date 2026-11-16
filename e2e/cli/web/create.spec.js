@@ -306,11 +306,13 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     await leave(page);
     let photo;
     await expect.poll(async () => JSON.stringify({ fields: (photo = await project.asset(PHOTO)).fields, unused: photo.unused ?? [] }),
-      { message: "Calcifer says SDXL can't use the picture its words start from" }).toMatch(/"mention":"self\.\d+"/);
+      { message: "Cozy says SDXL doesn't support the image its words start from" }).toMatch(/"mention":"self\.\d+"/);
     const self = photo.unused.find((one) => /^self\.\d+$/.test(one.mention));
+    // Paul, 11-16 (cl-1084): "does not support this reference".
+    expect.soft(self.why, 'said in plain words').toBe("SDXL doesn't support reference images");
     region = await writing();
     const chip = region.locator(`.in-frame .chip[data-mention=${JSON.stringify(self.mention)}]`).first();
-    await expect(chip, 'the picture SDXL can\'t use, marked').toHaveClass(/\bunsupported\b/);
+    await expect(chip, 'the image SDXL doesn\'t support, marked').toHaveClass(/\bunsupported\b/);
     const style = await chip.evaluate((el) => {
       const probe = document.body.appendChild(document.createElement('i'));
       probe.style.color = 'var(--bad)';

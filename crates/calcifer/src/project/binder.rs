@@ -187,7 +187,8 @@ impl Binder<'_> {
     }
 
     /// Why a mention of `kind`, written where `takes` is what's taken, isn't used: None, it is. Words take a text box's words; a slot
-    /// of `file` takes any file. What's said names the tool, and `here` when another of its fields would take it.
+    /// of `file` takes any file. What's said names the tool, and `here` when another of its fields would take it (Paul, 11-16: "does
+    /// not support this reference": `SDXL doesn't support reference images`).
     fn unusable(&self, takes: &[&str], kind: &str) -> Option<String> {
         if takes.contains(&kind) || (takes.contains(&"file") && MEDIA.contains(&kind)) {
             return None;
@@ -198,7 +199,7 @@ impl Binder<'_> {
             "video" => "videos",
             other => other,
         };
-        Some(format!("{} can't use {kinds}{here}", tool::title(self.call.package)))
+        Some(format!("{} doesn't support reference {kinds}{here}", tool::title(self.call.package)))
     }
 
     /// `inner`, written at `at`, left out for `why`.
@@ -266,7 +267,7 @@ impl Binder<'_> {
                         out.insert(key.clone(), value);
                     }
                 }
-                None => self.warn(format!("{}'s {at}: {} reads no {key}", self.call.name, self.call.tool)),
+                None => self.warn(format!("{}'s {at}: {} has no {key}, so Cozy ignored it.", self.call.name, self.call.tool)),
             }
         }
         Ok(out)
@@ -639,7 +640,7 @@ impl Binder<'_> {
             if let Some(given) = fields.remove(&key)
                 && self.call.own.is_none()
             {
-                self.warn(format!("{of}'s {key}: {given} is ignored: it applies {}, so it's its default", declared.said(&when)));
+                self.warn(format!("{of}'s {key} applies {}, so Cozy ignored {} and used the default.", declared.said(&when), shown(&given)));
             }
         }
         for field in &declared.fields {
@@ -660,19 +661,21 @@ impl Binder<'_> {
                     let at = value.as_f64().unwrap_or_default();
                     let held = at.clamp(low.unwrap_or(f64::NEG_INFINITY), high.unwrap_or(f64::INFINITY));
                     if held != at {
-                        self.warn(format!("{of}'s {key}: {at} is past what it takes, so it's {held}"));
+                        let bound = if at > held { "at most" } else { "at least" };
+                        self.warn(format!("{of}'s {key} takes {bound} {held}, not {at}, so Cozy used {held}."));
                         *value = if *field.ty.plain() == Type::Int { json!(held as i64) } else { json!(held) };
                     }
                 }
                 Type::Literal(members) if !value.is_null() && !members.contains(value) => {
-                    let offered: Vec<String> = members.iter().filter(|member| !member.is_null()).map(|member| member.as_str().map_or_else(|| member.to_string(), str::to_owned)).collect();
+                    let offered: Vec<String> = members.iter().filter(|member| !member.is_null()).map(shown).collect();
+                    let offered = either(&offered);
                     match nearest(members, value) {
                         Some(held) => {
-                            self.warn(format!("{of}'s {key}: {value} isn't one of {}, so it's {held}", offered.join(", ")));
+                            self.warn(format!("{of}'s {key} takes {offered}, not {}, so Cozy used {}.", shown(value), shown(&held)));
                             *value = held;
                         }
                         None => {
-                            self.warn(format!("{of}'s {key}: {value} isn't one of {}, so it's its default", offered.join(", ")));
+                            self.warn(format!("{of}'s {key} takes {offered}, not {}, so Cozy used the default.", shown(value)));
                             fields.remove(key);
                         }
                     }
@@ -681,14 +684,14 @@ impl Binder<'_> {
                     if let Some(held) = value.as_str().and_then(|ratio| shape(field, ratio))
                         && Some(held.as_str()) != value.as_str()
                     {
-                        self.warn(format!("{of}'s {key}: {value} isn't a shape it takes, so it's {held}"));
+                        self.warn(format!("{of}'s {key} doesn't take {}, so Cozy used {held}, the nearest shape it takes.", shown(value)));
                         *value = json!(held);
                     }
                 }
                 Type::List(item) => {
                     let Value::Array(rows) = value else { continue };
                     if let Some(most) = field.constraints.max_length.filter(|most| rows.len() as u64 > *most) {
-                        self.warn(format!("{of}'s {key}: {} given and it takes {most}, so it uses the first {most}", rows.len()));
+                        self.warn(format!("{of}'s {key} takes at most {most}, not {}, so Cozy used the first {most}.", rows.len()));
                         rows.truncate(most as usize);
                     }
                     if let Some(least) = field.constraints.min_length.filter(|least| (rows.len() as u64) < *least) {
@@ -735,10 +738,24 @@ fn takes(ty: &Type, kind: &str) -> bool {
     }
 }
 
-/// `a picture`, `a video`, `a sound`.
+/// A value as people read it: a word without its quotes.
+fn shown(value: &Value) -> String {
+    value.as_str().map_or_else(|| value.to_string(), str::to_owned)
+}
+
+/// `a`, `a or b`, `a, b or c`.
+fn either(words: &[String]) -> String {
+    match words {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+/// `an image`, `a video`, `a sound`.
 fn a(kind: &str) -> String {
     match kind {
-        "image" => "a picture".into(),
+        "image" => "an image".into(),
         "video" => "a video".into(),
         "audio" => "a sound".into(),
         other => format!("its {other}"),

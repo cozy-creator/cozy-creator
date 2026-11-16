@@ -26,7 +26,7 @@ pub(crate) fn daemon_birth() -> Result<String, Refusal> {
 /// The project storage protocol this Calcifer speaks, and who's asking: the account `admit` verified, whom project storage binds to.
 pub(crate) async fn project_storage(principal: Option<axum::Extension<Principal>>) -> Result<Json<Value>, Refusal> {
     let Some(axum::Extension(principal)) = principal else {
-        return Err(api::refuse(Kind::Forbidden, "private_browser_required", "Open project data in Calcifer's page or the native CLI"));
+        return Err(api::refuse(Kind::Forbidden, "private_browser_required", "Open the project's files in Cozy's own page."));
     };
     Ok(Json(json!({ "version": 3, "daemon_birth": daemon_birth()?, "principal": principal.to_string() })))
 }

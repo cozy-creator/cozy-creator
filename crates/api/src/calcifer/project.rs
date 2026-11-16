@@ -393,14 +393,14 @@ pub struct Unused {
     pub mention: String,
     /// Where: `instructions`, `beats.0.description`.
     pub at: String,
-    /// For people: `Moss Image can't use images`.
+    /// For people: `Moss Image doesn't support reference images`.
     pub why: String,
 }
 
 impl Unused {
     /// The one line said of it for `of`, a box or a run.
     pub fn line(&self, of: &str) -> String {
-        format!("{of}: <{}> is left out: {}", self.mention, self.why)
+        format!("{of}: <{}> was left out because {}", self.mention, self.why)
     }
 }
 

@@ -81,7 +81,7 @@ pub(crate) fn lanes<'c>(
                 None => match card.checkpoints.iter().find(|held| held.id == checkpoint) {
                     Some(held) => (None, vec![Lane { lane: held.lane.clone(), checkpoint: held.id.clone(), header: held.header.clone() }]),
                     None => {
-                        return Err(Error::not_found("model_checkpoint_not_found", format!("{model} has no checkpoint {checkpoint} you can read"))
+                        return Err(Error::not_found("model_checkpoint_not_found", format!("{model} has no checkpoint {checkpoint} that you can use."))
                             .next(format!("cozy model show {model}")));
                     }
                 },
@@ -90,7 +90,7 @@ pub(crate) fn lanes<'c>(
         (Some(version), None) => match card.releases.iter().find(|r| r.version == version) {
             Some(release) => (Some(release), of(release)),
             None => {
-                return Err(Error::not_found("model_release_not_found", format!("{model} has no release {version:?}"))
+                return Err(Error::not_found("model_release_not_found", format!("There's no release {version} of {model}."))
                     .next(format!("cozy model ls {model}")));
             }
         },
@@ -105,7 +105,7 @@ pub(crate) fn lanes<'c>(
                         .map(|held| Lane { lane: held.lane.clone(), checkpoint: held.id.clone(), header: held.header.clone() })
                         .collect();
                     if held.is_empty() {
-                        return Err(Error::not_found("model_unreleased", format!("{model} has no release or checkpoint you can read"))
+                        return Err(Error::not_found("model_unreleased", format!("{model} has no release or checkpoint that you can use."))
                             .next(format!("cozy model ls {model}")));
                     }
                     (None, held)
@@ -129,8 +129,8 @@ pub(crate) fn lanes<'c>(
 pub(crate) async fn header(endpoint: &Endpoint, object: &types::ObjectRef) -> Result<Header, Error> {
     let object = ObjectRef { sha256: object.sha256.clone(), length: object.length.max(0) as u64 };
     let bytes = (endpoint.document(&object).await)
-        .map_err(|why| Error::unavailable("header_unreadable", format!("header {}: {}", object.id(), why.detail)))?;
-    Header::from_cbor(&bytes).map_err(|why| Error::new(Kind::Unavailable, "header_invalid", format!("header {}: {why}", object.id())).next("cozy update"))
+        .map_err(|why| Error::unavailable("header_unreadable", format!("Couldn't read the model's header {} ({}).", object.id(), why.detail)))?;
+    Header::from_cbor(&bytes).map_err(|why| Error::new(Kind::Unavailable, "header_invalid", format!("This version of Cozy can't read the model's header {} ({why}). Update Cozy.", object.id())).next("cozy update"))
 }
 
 /// The chunks a slot's checkpoint is fetched as, by Hub, header and components: content-addressed, so read once and kept.

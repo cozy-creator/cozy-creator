@@ -90,7 +90,7 @@ test('mention', async ({ page, project, api, cli }) => {
     const walk = words.locator('.chip[data-mention="walk"]');
     await expect(walk).toHaveClass(/\bunsupported\b/);
     expect.soft(await walk.evaluate((el) => getComputedStyle(el).textDecorationLine), 'struck through').toContain('line-through');
-    await expect.soft(walk, 'why, on hover').toHaveAttribute('title', /can't use videos/);
+    await expect.soft(walk, 'why, on hover').toHaveAttribute('title', /doesn't support reference videos/);
     await expect.soft(words.locator('.chip[data-mention="amy"]').first(), 'a picture it uses').not.toHaveClass(/\bunsupported\b/);
   });
 
@@ -180,7 +180,7 @@ test('mention', async ({ page, project, api, cli }) => {
     expect.soft(prompt, 'and Walk by name only').not.toMatch(/<walk/);
     expect.soft(prompt).toMatch(/\bwalk\b/);
     const told = await cli('run', 'watch', String(run));
-    const lines = `${told.stdout}\n${told.stderr}`.split('\n').filter((line) => line.includes('<walk> is left out:'));
+    const lines = `${told.stdout}\n${told.stderr}`.split('\n').filter((line) => line.includes('<walk> was left out because'));
     expect.soft(told.code, 'cozy run watch').toBe(0);
     expect.soft(lines, 'said once, as a note').toHaveLength(1);
     expect.soft(lines[0] ?? '', 'a note, not a warning').toMatch(/note: /);
