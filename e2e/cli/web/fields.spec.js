@@ -8,7 +8,7 @@
 // (project/rounded.py sizes as H3: 16:9 at 1344x768, 1.37:1 at 1024x768, which is 4:3 in pixels), still once its box's shape is cleared;
 // a file its pixels' nearest standard ratio within about 2%, else the simplest whole one; a corner pulled near 4:3 sets 4:3, and far from
 // any sets the ratio as pulled and says it. Dark says the same.
-const { test, expect, canvasCard, canvasIdle, cornerPoint, focus, liveRatio, middle, newCanvas, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox } = require('./fixtures');
+const { test, expect, canvasCard, canvasIdle, cornerPoint, focus, liveRatio, middle, newCanvas, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox, zoomOf } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave } = require('./hands');
 
@@ -318,6 +318,11 @@ test('fields', async ({ page, project, api, cli }) => {
     await page.reload();
     await expect.poll(() => canvasVisible(page, 'pulled')).toBe(true);
     await fit(page);
+    // Under 45% a box is drawn with its name only, by design: its tool and shape are read once the canvas is at 45% or more.
+    for (let i = 0; i < 4 && (await zoomOf(page)) < 0.45; i++) {
+      await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+      await canvasIdle(page);
+    }
     const wanted = { wide: '16:9', tall: '9:16', square: '1:1', odd: '3:1', widescreen: '16:9', academy: '1.37:1', pulled: String(as) };
     for (const [name, want] of Object.entries(wanted)) await expect.configure({ soft: true }).poll(() => says(name), { message: `dark: ${name} says ${want}` }).toBe(want);
   });
