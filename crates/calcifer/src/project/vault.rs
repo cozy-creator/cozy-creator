@@ -1236,7 +1236,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
 struct Work { why: &'static str, told: bool, held: Hold }
 
 /// What holds an unlocked vault open now, if anything: a request, a private process, a run saving its outputs, a render, cut or file
-/// move, a reader, a run not settled or its driver, a client following a run.
+/// move, a reader, a run not settled or its driver, a client following a run, a run's submission.
 fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     let going = |why, told| Some(Work { why, told, held: Hold::Working });
     let waiting = Some(Work { why: "a run its machine hasn't begun", told: true, held: Hold::Waiting });
@@ -1244,8 +1244,9 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     if crate::local_code::private_process_active(root) { return going("a private process", true); }
     let following = FOLLOWING.lock().expect("vault followers").contains_key(root);
     let projects = api.projects.now_open();
+    let submitting = api.projects.submitting(root);
     let Some(project) = projects.iter().find(|project| project.root == root) else {
-        return if following { going("a client following a run", true) } else { None };
+        return if following { going("a client following a run", true) } else if submitting { waiting } else { None };
     };
     if api.calcifer.writing_into(&project.id).is_some() { return going("a run saving its outputs", false); }
     if *project.walking.lock().expect("walking lock") { return going("a render", true); }
@@ -1262,7 +1263,7 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     if !here.is_empty() || sent.len() > unstarted.len() { return going("runs not settled", true); }
     let driven = api.calcifer.driven_into(&project.id);
     if driven.iter().any(|id| !unstarted.contains(id)) { return going("a run not yet settled", false); }
-    if !unstarted.is_empty() || !driven.is_empty() || following { waiting } else { None }
+    if !unstarted.is_empty() || !driven.is_empty() || following || submitting { waiting } else { None }
 }
 
 /// A sweeper's reason, said at most every 10 seconds per project: a test's diagnostics name what kept a vault open.
