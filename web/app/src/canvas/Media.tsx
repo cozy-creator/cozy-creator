@@ -1019,7 +1019,9 @@ function Glimpse({ glimpse, failed, open, playhead, controller }: { glimpse: Non
     }
   }, [controller, drawn])
   const heard = (el: HTMLVideoElement) => {
-    playhead.current = open && !el.paused ? { run: glimpse.number, at: el.currentTime } : null
+    // While a newer revision loads, its element is paused at 0 s: it is where and as it was, and a take landing then plays on from there.
+    const now = resume.current ?? { at: el.currentTime, playing: !el.paused }
+    playhead.current = open && now.playing ? { run: glimpse.number, at: now.at } : null
     if (el.readyState >= 1 && !resume.current) glimpsedAt.set(key, { rev: playing.current, at: el.currentTime, playing: !el.paused })
   }
   return (
