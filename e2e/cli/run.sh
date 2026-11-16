@@ -755,6 +755,7 @@ case $SHARD in
     shared_scratch
     open_unlocks
     projectvault
+    restart_waits
     vault_leftovers
     vault_swapped
     ended_logs

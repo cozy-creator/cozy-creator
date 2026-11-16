@@ -456,10 +456,11 @@ async fn shutdown_after_signal(api: Arc<Api>) {
             warn!(code = %error.code, "SIGTERM: cannot finish closing encrypted views; shutdown remains blocked");
             return;
         }
-        if reported.as_ref().is_none_or(|(code, at)| code != &error.code || at.elapsed() >= Duration::from_secs(5)) {
+        // Which folder holds it and why (cl-1059): past systemd's stop timeout (90 s) it SIGKILLs the cgroup, and this says what it cut.
+        if reported.as_ref().is_none_or(|(said, at)| said != &error.message || at.elapsed() >= Duration::from_secs(5)) {
             info!(code = %error.code, elapsed_ms = began.elapsed().as_millis() as u64,
-                "SIGTERM: waiting for encrypted views to close");
-            reported = Some((error.code, Instant::now()));
+                "SIGTERM: waiting for encrypted views to close: {}", error.message);
+            reported = Some((error.message, Instant::now()));
         }
         tokio::select! {
             () = api.stopped() => return,

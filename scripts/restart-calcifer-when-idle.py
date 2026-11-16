@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Restarts this home's Calcifer (its systemd user unit) once it is idle, as `scripts/dev-local.sh` does after it installs a
 build (cl-962): while Calcifer serves a request (an upload, a publish, a run's submission, a page's write) or runs one of its own
-(`here`: an upload, a publish), it waits, asking `GET /v1/activity` every `--every` seconds, for at most `--wait` seconds; then it
-restarts it anyway and says so. `--wait inf`, as dev-local.sh asks (cl-1029), never restarts it busy. Each line goes to stdout,
+(`here`: an upload, a publish), or an unlocked encrypted project's work goes (a restart locks it, cl-1059), it waits, asking
+`GET /v1/activity` every `--every` seconds, for at most `--wait` seconds; then it restarts it anyway and says so. A plaintext
+project's run doesn't hold it: it resumes after (cl-1029). `--wait inf`, as dev-local.sh asks (cl-1029), never restarts it busy. Each line goes to stdout,
 which is the journal under systemd.
 
     restart-calcifer-when-idle.py [--wait 600|inf] [--every 2] [--service cozy-calcifer.service]
@@ -19,6 +20,10 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+
+
+# Whether an unlocked encrypted project holds a restart while idle too, not only while its work goes: Paul's call (cl-1059, asked).
+HOLD_IDLE_UNLOCKED = False
 
 
 def say(line: str) -> None:
@@ -50,6 +55,10 @@ def busy() -> str | None:
         uses.append(f"{activity['requests']} request(s) in flight")
     if activity.get("here"):
         uses.append(f"{activity['here']} of its own run(s) going (an upload, a publish)")
+    for project in activity.get("unlocked") or []:
+        if project.get("busy") or HOLD_IDLE_UNLOCKED:
+            busy = project.get("busy") or "unlocked"
+            uses.append(f"{project.get('folder')}: {busy} (an unlocked encrypted project, which a restart locks)")
     return ", ".join(uses) or None
 
 

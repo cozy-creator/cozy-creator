@@ -494,6 +494,64 @@ shared_scratch() (
     --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" || { cat "$work/proof.err"; check "shared scratch: $(tail -n 1 "$work/proof.err" | cut -c1-400)"; }
 )
 
+# An idle restart (the laptop's dev-local.sh: scripts/restart-calcifer-when-idle.py --wait inf) waits while an unlocked
+# encrypted project's work goes, and says which folder holds it: a restart locks the project, whose lock waits its work out,
+# past systemd's 90 s stop timeout into the cgroup SIGKILL (cl-1059, asked by the release coordinator; cl-1057). A plaintext
+# project's run doesn't hold it: it resumes after (cl-1029).
+restart_waits() (
+  step "an idle restart waits for an unlocked encrypted project's run and names its folder; a plaintext run doesn't hold it (cl-1059)"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "restart waits: Linux runners only"; return 0; }
+  local work secrets E Q restart holder pid t0 run state
+  work=$(mktemp -d "$OUT/restart-waits.XXXXXX") secrets=$(mktemp -d "$OUT/restart-waits-credentials.XXXXXX")
+  work=$(realpath "$work") E=$work/encrypted Q=$work/plain
+  restart=$E2E/../scripts/restart-calcifer-when-idle.py holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+  mounts() { awk '$0 ~ / - fuse\.securefs / {print $5}' /proc/self/mountinfo | grep -F -- "$work/" || true; }
+  trap 'kill $(jobs -p) 2> /dev/null || true; in_project "$E" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"
+    mounts | while IFS= read -r m; do fusermount3 -uz "$m" 2> /dev/null || fusermount -uz "$m" 2> /dev/null || true; done' EXIT
+  printf '%s\n' 'synthetic restart-waits passphrase' > "$secrets/pass" && chmod 600 "$secrets/pass"
+  cozy --json new "$E" --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" > "$work/e.json" 2> "$work/e.err" \
+    || fail "restart waits: cozy new (encrypted): $(tail -c 300 "$work/e.err")"
+  cozy --json new --unencrypted "$Q" > "$work/q.json" 2> "$work/q.err" || fail "restart waits: cozy new: $(tail -c 300 "$work/q.err")"
+  # going <project>: until a run of it is in progress, 120 s at most.
+  going() {
+    local _
+    for _ in $(seq 240); do
+      in_project "$1" --json run ls --limit 0 2> /dev/null | jq -e '[.runs[] | select(.status == "in_progress")] | length > 0' > /dev/null && return 0
+      sleep 0.5
+    done
+    return 1
+  }
+
+  # The unlocked encrypted project's run holds the restart, which names its folder; it goes once the run settles, and locks it.
+  (in_project "$E" --json run e2e-scratch/probe marker=cl1059e 'seconds:=40' --on local > "$work/e-run.json" 2> "$work/e-run.err") &
+  run=$!
+  going "$E" || fail "restart waits: the encrypted project's run never went: $(tail -c 300 "$work/e-run.err")"
+  pid=$(jq -r .pid "$holder") t0=$SECONDS
+  python3 "$restart" --wait 300 --every 1 > "$work/e-restart.txt" 2>&1 || check "restart waits: the restart failed: $(tail -c 300 "$work/e-restart.txt")"
+  sed 's/^/restart waits: /' "$work/e-restart.txt"
+  grep -F 'Calcifer restart waits: ' "$work/e-restart.txt" | grep -qF "$E: " \
+    || check "restart waits: it didn't wait for the unlocked encrypted project's run naming $E"
+  grep -q 'restarted idle' "$work/e-restart.txt" || check "restart waits: it restarted busy"
+  wait "$run" || check "restart waits: the encrypted project's run didn't finish before the restart: $(tail -c 300 "$work/e-run.err")"
+  [ "$(jq -r .pid "$holder")" != "$pid" ] || check "restart waits: Calcifer kept pid $pid"
+  state=$(in_project "$E" --json vault status 2> /dev/null | jq -r .state)
+  [ "$state" = locked ] || check "restart waits: the encrypted project is $state after the restart, not locked"
+  [ -z "$(mounts)" ] || check "restart waits: a view stays after the restart: $(mounts | tr '\n' ' ')"
+
+  # A plaintext project's run doesn't hold it.
+  (in_project "$Q" --json run e2e-scratch/probe marker=cl1059q 'seconds:=60' --on local > "$work/q-run.json" 2> "$work/q-run.err") &
+  run=$!
+  going "$Q" || fail "restart waits: the plaintext project's run never went: $(tail -c 300 "$work/q-run.err")"
+  pid=$(jq -r .pid "$holder") t0=$SECONDS
+  python3 "$restart" --wait 120 --every 1 > "$work/q-restart.txt" 2>&1 || check "restart waits: the restart failed: $(tail -c 300 "$work/q-restart.txt")"
+  sed 's/^/restart waits: /' "$work/q-restart.txt"
+  ! grep -qF "$Q" "$work/q-restart.txt" || check "restart waits: a plaintext project's run held the restart"
+  [ $((SECONDS - t0)) -lt 30 ] || check "restart waits: the restart took $((SECONDS - t0)) s beside a plaintext project's run"
+  [ "$(jq -r .pid "$holder")" != "$pid" ] || check "restart waits: Calcifer kept pid $pid beside a plaintext run"
+  kill "$run" 2> /dev/null || true
+  wait "$run" 2> /dev/null || true
+)
+
 vault_leftovers() (
   step "encryption leaves nothing behind: an interrupted conversion recovers; no leftover is listed; no plaintext outside the vault"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault leftovers: Linux runners only"; return 0; }
