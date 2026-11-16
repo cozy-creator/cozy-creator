@@ -20,7 +20,7 @@ import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
 import { ratioWords } from "./ratios"
 import { bare, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, makingShape, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { VideoEditor } from "./timeline/VideoEditor"
 import { AddOns } from "./AddOns"
@@ -207,6 +207,11 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
   const pending = takingOf(view)
   const making = (asset.making ?? []).filter((run) => !pending.some((take) => take.run === run))
   const waiting = !pending.length && !making.length && (view.queued || view.asked !== undefined)
+  // A picture's tile is its shape at a height of 100; one on its way is the shape its frame is (cl-1072), else its newest's.
+  const tileOf = (ratio: number) => ({ height: 100, width: Math.min(220, 100 * ratio), aspectRatio: "auto" })
+  const measured = versions.find((version) => version.main?.width && version.main.height)?.main
+  const coming = asset.kind === "image" ? makingShape(view) ?? (measured ? measured.width! / measured.height! : undefined) : undefined
+  const comingTile = coming ? tileOf(coming) : undefined
   const next = nextTake(store, view, name, tools)
   if (!next.adds && !versions.length && !view.joining && !pending.length && !making.length && !waiting) return null
   const pick = (number: number) => {
@@ -224,7 +229,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       {next.adds && !focused && <NewTake next={next} />}
       {waiting && (
         <span className="take-at">
-          <button type="button" className="take making" title="Queued">
+          <button type="button" className="take making" title="Queued" style={comingTile}>
             …
           </button>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
@@ -234,7 +239,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       )}
       {pending.map((take) => (
         <span key={take.id} className="take-at">
-          <button type="button" className={`take making ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} title={take.run !== undefined ? `Run ${store.runName(take.run)}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
+          <button type="button" className={`take making ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} title={take.run !== undefined ? `Run ${store.runName(take.run)}` : "Queued"} style={comingTile} onClick={() => store.watchTake(name, take.id)}>
             <span className={`state-dot ${take.run !== undefined ? "running" : "queued"}`} role="img" aria-label={take.run !== undefined ? "Rendering" : "Queued"} />
             {take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
           </button>
@@ -245,7 +250,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       ))}
       {making.map((run) => (
         <span key={run} className="take-at">
-          <button type="button" className="take making" data-run={run} title={`Run ${store.runName(run)}`}>
+          <button type="button" className="take making" data-run={run} title={`Run ${store.runName(run)}`} style={comingTile}>
             <TakeProgress view={view} run={run} />
           </button>
           <button type="button" className="take-off" aria-label={`Cancel run ${store.runName(run)}`} title={`Cancel run ${store.runName(run)}`} onClick={() => store.cancelTake(name, { id: "", run })}>
@@ -265,7 +270,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : "", asset.unseen?.includes(version.number) ? "not looked at yet" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
             data-take-id={version.id || undefined}
-            style={asset.kind === "image" ? { height: 100, width: Math.min(220, 100 * (version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5)), aspectRatio: "auto" } : undefined}
+            style={asset.kind === "image" ? tileOf(version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5) : undefined}
             onClick={() => pick(version.number)}
             onDoubleClick={() => store.toggleApproved(name, version.number)}
             onContextMenu={(event) => {
