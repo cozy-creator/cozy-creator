@@ -203,6 +203,15 @@ pub(crate) fn connect(path: &Path, read_only: bool) -> Result<Connection, Error>
     Ok(conn)
 }
 
+/// A connection that only reads a project.db already opened (and so migrated) here: a run journal's (`Folder::journal_read`). Opened
+/// read-only, with nothing checked or created, so a read that needs one more pays a file open, not an open's checks (cl-1010).
+pub(crate) fn reader(path: &Path) -> Result<Connection, Error> {
+    let conn = connect(path, true)?;
+    conn.pragma_update(None, "temp_store", "MEMORY").map_err(|error| sql(path, error))?;
+    crate::store::register_owner(&conn, path.parent().map(Path::to_owned)).map_err(|error| sql(path, error))?;
+    Ok(conn)
+}
+
 /// Whether another program holds the write lock this moment, asked with no wait: `conn` takes it, and lets it go at once.
 pub(crate) fn locked_elsewhere(conn: &Connection) -> bool {
     let busy = |e: rusqlite::Error| matches!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked));

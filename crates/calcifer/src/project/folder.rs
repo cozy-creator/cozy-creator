@@ -959,10 +959,12 @@ struct Shared {
 struct JournalReaders {
     idle: Vec<rusqlite::Connection>,
     reading: usize,
+    /// project.db was opened here (and migrated) once: a reader needs no more.
+    opened: bool,
 }
 
-/// How many idle journal readers a project keeps.
-const JOURNAL_READERS: usize = 4;
+/// How many idle journal readers a project keeps: as many as the reads a page and the CLI make at once.
+const JOURNAL_READERS: usize = 8;
 
 /// How many frames a film holds, as ffprobe said of it at its size and time.
 type Frames = ((u64, std::time::SystemTime), Option<u64>);
@@ -1619,6 +1621,11 @@ impl Folder {
     pub(crate) fn journal_read<T>(&self, read: impl FnOnce(&rusqlite::Connection) -> crate::store::Result<T>) -> crate::store::Result<T> {
         let protected = |error: Error| crate::store::StoreError::Protected(error.code.to_string());
         if !self.db().is_file() { return Err(protected(Self::not_a_project(&self.dir))); }
+        // Opened once as its reader opens it, migrated: a journal reader after that is a read-only file open (`db::reader`).
+        if !self.shared.journal.lock().unwrap_or_else(|e| e.into_inner()).opened {
+            drop(self.held().map_err(protected)?);
+            self.shared.journal.lock().unwrap_or_else(|e| e.into_inner()).opened = true;
+        }
         let idle = {
             let mut journal = self.shared.journal.lock().unwrap_or_else(|e| e.into_inner());
             journal.reading += 1;
@@ -1629,7 +1636,7 @@ impl Folder {
             journal.reading -= 1;
             if let Some(conn) = conn.filter(|_| journal.idle.len() < JOURNAL_READERS) { journal.idle.push(conn); }
         };
-        let conn = match idle.map_or_else(|| db::open(&self.db()), Ok) {
+        let conn = match idle.map_or_else(|| db::reader(&self.db()), Ok) {
             Ok(conn) => conn,
             Err(error) => { done(None); return Err(protected(error)); }
         };
