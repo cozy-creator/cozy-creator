@@ -545,15 +545,17 @@ def held(manifest: str, store: Path) -> list[str]:
     return list(tensorfs.open(manifest, cache_dir=store, local_files_only=True).components)
 
 
-def compose(store: Path, base: str, loras: list[tuple[str, str, float]]) -> str:
+def compose(store: Path, base: str, loras: list[tuple[str, str, float]], runs: list[str]) -> str:
     """A call's caller LoRAs (ref, checkpoint, strength) over its slot's model, as TensorD composes them
     (`tensord/src/adapter.rs` compose), written whole into the store: each adapted linear's `weight` and `bias` as
     `<path>.base_layer.*`, each LoRA's factors as `<path>.lora_{A,B}.adapter_<i>.weight`, and the graph as each adapted
-    component's `model_adapters.json`. A LoRA's factor component adapts the model's component of its name, at its
+    component's `model_adapters.json`. A LoRA's factor component adapts the model's component of its name when the call
+    `runs` it, else each it runs that its layers fit (H3's `transformer` LoRA on Ref2VA's `transformer_ref`), at its
     `lora_alpha` (else its rank)."""
     import tensorfs
 
     model = tensorfs.open(base, cache_dir=store, local_files_only=True)
+    parts = model.components
     renamed: dict[tuple[str, str], str] = {}
     grafts: dict[str, list[tuple[str, tensorfs.Component, str]]] = {}
     layers: list[Json] = []
@@ -561,33 +563,39 @@ def compose(store: Path, base: str, loras: list[tuple[str, str, float]]) -> str:
     for ref, checkpoint, strength in loras:
         lora = tensorfs.open(checkpoint, cache_dir=store, local_files_only=True)
         for name, factors in lora.components.items():
-            target = model.components.get(name)
-            if target is None:
-                raise Failed(f"{ref}'s {name} factors adapt no component of the model")
-            alias, alpha = f"adapter_{len(adapters)}", factors.config.get("lora_alpha")
+            alpha = factors.config.get("lora_alpha")
+            factored: list[tuple[str, str]] = []  # each factor's linear and its dtype
             for key, tensor in factors.tensors.items():
                 if key.endswith(".lora_B.weight"):
                     continue
                 if not key.endswith(".lora_A.weight"):
                     raise Failed(f"{ref}: {key} is not a plain LoRA factor, which this driver composes")
-                path = key.removesuffix(".lora_A.weight")
-                for suffix in ("weight", "bias"):
-                    if f"{path}.{suffix}" in target.tensors:
-                        renamed[(name, f"{path}.{suffix}")] = f"{path}.base_layer.{suffix}"
-                grafts.setdefault(name, []).extend(
-                    (f"{path}.{role}.weight", factors, f"{path}.{role}.{alias}.weight") for role in ("lora_A", "lora_B"))
-                rank = tensor.shape[0]
-                layers.append({"component": name, "target": path, "adapter": alias, "rank": rank,
-                               "alpha": float(alpha) if isinstance(alpha, (int, float)) else float(rank),
-                               "strength": strength, "dtype": tensor.dtype})
-            adapters.append({"ref": checkpoint, "scale": strength, "kind": "lora", "component": name,
-                             "source_component": name, "family": ""})
+                factored.append((key.removesuffix(".lora_A.weight"), tensor.dtype))
+            ran = [c for c in runs or parts if c in parts]
+            fit = [c for c in ran if all(f"{path}.weight" in parts[c].tensors for path, _ in factored)]
+            targets = [name] if name in ran else fit
+            if not targets:
+                raise Failed(f"{ref}'s {name} factors fit none of the components the call runs ({', '.join(ran)})")
+            for target in targets:
+                alias = f"adapter_{len(adapters)}"
+                for path, dtype in factored:
+                    rank = factors.tensors[f"{path}.lora_A.weight"].shape[0]
+                    for suffix in ("weight", "bias"):
+                        if f"{path}.{suffix}" in parts[target].tensors:
+                            renamed[(target, f"{path}.{suffix}")] = f"{path}.base_layer.{suffix}"
+                    grafts.setdefault(target, []).extend(
+                        (f"{path}.{role}.weight", factors, f"{path}.{role}.{alias}.weight") for role in ("lora_A", "lora_B"))
+                    layers.append({"component": target, "target": path, "adapter": alias, "rank": rank,
+                                   "alpha": float(alpha) if isinstance(alpha, (int, float)) else float(rank),
+                                   "strength": strength, "dtype": dtype})
+                adapters.append({"ref": checkpoint, "scale": strength, "kind": "lora", "component": target,
+                                 "source_component": name, "family": ""})
     graph = json.dumps({"format": "cozy.model.lora/1", "layers": layers, "adapters": adapters}, sort_keys=True,
                        separators=(",", ":")).encode()
     writer = tensorfs.Writer(cache_dir=store)
     if (pipeline := model.pipeline) is not None:
         writer.pipeline(pipeline.cls, pipeline.config)
-    for name, component in model.components.items():
+    for name, component in parts.items():
         out = writer.component(name, cls=component.cls, config=component.config, config_file=component.config_file)
         for key in component.tensors:
             out.copy(key, component, as_key=renamed.get((name, key)))
@@ -613,15 +621,15 @@ def bindings(interface: Interface, interface_path: str, entry: Entrypoint, manif
         manifest = manifests.get(slot["path"]) or manifests.get(ref)
         if manifest is None:
             raise Failed(f"the fixture builds no model for {slot['path']} ({ref})")
+        wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
         stacked = (loras or {}).get(slot["path"], [])
         if stacked:
             missing = [lora for lora, _ in stacked if lora not in manifests]
             if missing:
                 raise Failed(f"the fixture builds no LoRA {', '.join(missing)} for {slot['path']}")
-            manifest = compose(store, manifest, [(lora, manifests[lora], strength) for lora, strength in stacked])
+            manifest = compose(store, manifest, [(lora, manifests[lora], strength) for lora, strength in stacked], wanted)
             ref = "+".join([ref, *(lora for lora, _ in stacked)])
         components = held(manifest, store)
-        wanted = slot.get("components") or sorted({c for use in slot.get("component_use", {}).values() for c in use})
         missing = [c for c in wanted if c not in components]
         components = [c for c in components if not wanted or c in wanted]
         if missing or not components:
