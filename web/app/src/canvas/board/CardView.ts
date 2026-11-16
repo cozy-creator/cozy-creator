@@ -53,6 +53,7 @@ export class CardView {
   private name = ""
   private input?: { node: SceneNode; show: Presentation; state: CardState; env: CardEnv }
   private began = performance.now()
+  private pulsing = false
   /** For inspection: each label's full text, the chips and controls as drawn, in card-local units. */
   readonly drawn = { full: new Map<string, string>(), chips: [] as { text: string; struck: boolean; box: Box }[], controls: [] as { part: Part; box: Box }[], meter: null as Box | null, dot: null as Box | null }
 
@@ -465,7 +466,7 @@ export class CardView {
   /** Animations a card runs while in view; returns whether it needs another frame. */
   animate(now: number, env: CardEnv): boolean {
     const input = this.input
-    this.pulse.clear()
+    if (this.pulsing) { this.pulse.clear(); this.pulsing = false }
     if (!input) return false
     const { node, show } = input
     const view = node.view
@@ -475,6 +476,7 @@ export class CardView {
     const main = this.pictures.get("main")
     const loading = Boolean(main && !main.handle?.texture && main.next && !main.next.failed && !main.local)
     const still = env.reduced || env.software
+    this.pulsing = loading || rendering
     if (loading) this.pulse.rect(body.x, body.y, body.w, body.h).fill({ color: env.palette.ink, alpha: still ? 0.04 : 0.08 * (0.5 - 0.5 * Math.cos(((now - this.began) % 2800) / 2800 * Math.PI * 2)) })
     if (rendering) {
       const color = show.state === "queued" ? env.palette.queued : env.palette.running
