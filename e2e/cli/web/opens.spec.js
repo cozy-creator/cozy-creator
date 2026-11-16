@@ -481,6 +481,13 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     framed.push(result.all_frames_ms ?? Infinity);
     expect.soft(result.on_screen > 0 && result.on_screen_previews_ms !== null && result.on_screen_previews_ms <= bar, said(`every preview on screen within ${bar} ms`)).toBe(true);
     if (cold) expect.soft(made, said('a cold open makes no thumbnail')).toBe(0);
+    // In frames, as the canvas counts them (the coordinator's acceptance for cl-1048): every box in view built in the frame after the
+    // project's read, and every picture in view drawn, or said unavailable, within 3 frames. The old canvas counts no frames.
+    const counted = await page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.resources()?.open ?? null);
+    if (counted) {
+      expect.soft(counted.cards, said(`every box in view built one frame after the read: ${JSON.stringify(counted)}`)).toBe(1);
+      expect.soft(counted.previews, said(`every picture in view drawn within 3 frames: ${JSON.stringify(counted)}`)).toBeLessThanOrEqual(3);
+    } else test.info().annotations.push({ type: 'frames', description: `${label}: the canvas counts no open frames (resources().open)` });
     return result;
   };
 
