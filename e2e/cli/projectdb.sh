@@ -1276,7 +1276,7 @@ burst_died() {
 }
 db_legacy_burst() {
 step "a legacy import that fails is tried once per Calcifer, not by each of 20 requests at once; Calcifer stays up (cl-1003)"
-local D=$OUT/legacy-burst now=$OUT/cozy-now old P Q pid before after tried peak i failed=0 asked
+local D=$OUT/legacy-burst now=$OUT/cozy-now old P Q pid before after tried peak i failed=0 asked count
 old=$(cozy_0240) || { check "legacy burst: 0.24.0's archive"; return; }
 [ -f "$now" ] || cp "$COZY" "$now"
 in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "legacy burst: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
@@ -1335,7 +1335,9 @@ kill -0 "$pid" 2> /dev/null && [ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.
 [ "$tried" = 1 ] || check "legacy burst: the failing import was tried $tried times for 20 requests, not once"
 [ "$(sql1 "$P" "SELECT count(*) FROM runs WHERE machine = 'local' AND custody = 'legacy_pending'")" = 5 ] \
   || check "legacy burst: lab2's shape, its runs on local pending custody in project.db: $(sql1 "$P" "SELECT count(*) FROM runs WHERE machine = 'local'")"
-asked=$(( $(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null || echo 0) - asked ))
+# grep -c prints 0 and exits 1 when nothing matches: `|| echo 0` would make it "0 0".
+count=$(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || count=${count:-0}
+asked=$((count - asked))
 [ "$asked" = 0 ] || check "legacy burst: after its import failed, the worker's custody was still asked $asked times"
 grep -a "legacy history was not imported" "$HOME/.cozy/calcifer/health.log" | tail -1 | grep -q "project_input_migration_pending" \
   || check "legacy burst: the import failed otherwise: $(grep -a 'legacy history was not imported' "$HOME/.cozy/calcifer/health.log" | tail -1)"
@@ -1348,7 +1350,8 @@ in_project "$P" --json run minimax-h3-tools/echo "text=after the burst" > "$OUT/
 # lab2's other shape, with `local` running: its old runs on local import pending custody, and a burst asks the worker once.
 before=$(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || before=0
 burst "$Q" legacy-burst-local
-asked=$(( $(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null || echo 0) - before ))
+count=$(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || count=${count:-0}
+asked=$((count - before))
 peak=$(awk '/^VmHWM/ {print $2 " " $3}' "/proc/$pid/status" 2> /dev/null) || peak=
 echo "legacy burst (local): the worker was asked $asked time(s) for 20 requests; Calcifer's peak resident ${peak:-unread}"
 kill -0 "$pid" 2> /dev/null && [ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$pid" ] \
