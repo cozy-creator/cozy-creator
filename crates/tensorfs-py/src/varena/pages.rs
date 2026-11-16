@@ -423,8 +423,11 @@ impl Tier {
     /// pages go, the least worth first, while it is under the headroom. Unreadable: they all go.
     /// Clean page cache is room, active or not: the kernel takes it back before it kills, and
     /// pinned pages hold the bytes a cached copy would. In a request, short of the headroom: idle
-    /// peers are asked for their pages, and this tier's go only for what they do not hold; their
-    /// pages are worth less than any of a running call's.
+    /// peers are asked for their pages, past the number too, and this tier's go only for what is
+    /// past it and what they do not hold; their pages are worth less than any of a running call's.
+    /// Idle peers look again only when asked (no timer), so a call past the number that asked no one
+    /// kept nothing while an idle executor's pages held the host (tfs-299: Ideogram 4 read 40 GB a
+    /// request from disk beside an idle Flux-2's 29 GB, and Flux-2 let 27 GB of baked pages go).
     fn trim(&self, state: &mut State) -> Gone {
         let mut gone = Gone::new(self);
         if state.looked.is_some_and(|looked| looked.elapsed() < LOOK) {
@@ -438,10 +441,11 @@ impl Tier {
         if left >= state.headroom {
             return gone;
         }
-        let idle = if left >= 0 { super::host::short((state.headroom - left) as u64) } else { 0 };
+        let unreadable = budget.total <= 0;
+        let idle = if unreadable { 0 } else { super::host::short((state.headroom - left) as u64) };
         let idle = i64::try_from(idle).unwrap_or(i64::MAX);
         let headroom = state.headroom;
-        let enough = |left: i64| left >= 0 && left.saturating_add(idle) >= headroom;
+        let enough = |left: i64| !unreadable && left >= 0 && left.saturating_add(idle) >= headroom;
         while !enough(left) {
             let Some((page, _)) = state.spare.pop() else { break };
             left += page.len as i64;
@@ -453,9 +457,7 @@ impl Tier {
                 break;
             }
             if let Some(kept) = state.remove(&key, "short") {
-                if left >= 0 {
-                    left += kept.page.len as i64;
-                }
+                left += kept.page.len as i64;
                 gone.push(kept);
             }
         }
@@ -562,9 +564,10 @@ impl Tier {
         drop(gone);
     }
 
-    /// Short of the headroom for `bytes` more while the cap allows them: idle peers are asked.
+    /// Short of the headroom for `bytes` more while the cap allows them: idle peers are asked, past
+    /// the number too (`trim`).
     fn ask_room(&self, state: &State, bytes: i64) {
-        if state.room >= 0 && state.bytes as i64 + bytes <= self.cap as i64 {
+        if state.bytes as i64 + bytes <= self.cap as i64 {
             super::host::short((state.headroom + bytes - state.room).max(0) as u64);
         }
     }
