@@ -451,18 +451,25 @@ def main() -> None:
         second.cozy("lock-after-reading", "vault", "lock")
         if facts["going_locked_s"] is not None and not str(facts["going_run"]).startswith("canceled"):
             failures.append(f"going: the run going when local stopped is {facts['going_run']!r} once the vault locked, not canceled")
+    except BaseException:
+        for project in projects:
+            clock(project)
+        raise
     finally:
         go_on()
         (args.out / "lock-hung.json").write_text(json.dumps(facts, indent=2, default=str))
 
     print(f"lock hung: {json.dumps({k: v for k, v in facts.items() if not isinstance(v, dict)})}", flush=True)
+    if failures:
+        for project in projects:
+            clock(project)
     assert not failures, "lock hung: " + "; ".join(failures)
     print(f"lock hung: locked in {facts['lock_s']} s by hand, {facts['maximum_locked_s']} s and {facts['going_locked_s']} s at a "
           f"{MAXIMUM} s maximum, with local stopped; its clean-up done {facts['owed_paid_s']} s after it went on", flush=True)
 
 
 def clock(project: Path) -> None:
-    """What Calcifer's vault clock said of `project` (its diagnostics, on for this shard): why it stayed open."""
+    """What Calcifer said of `project` in its diagnostics (on for this shard): why its vault stayed open, what a lock met."""
     log = Path.home() / ".cozy/calcifer/diagnostics.log"
     lines = [line for line in log.read_text(errors="replace").splitlines() if str(project) in line] if log.is_file() else []
     print(f"lock hung: the clock on {project.name}: " + (" | ".join(lines[-30:]) or "nothing (no diagnostics log)"), flush=True)
@@ -474,7 +481,6 @@ def deadline(cell: Cell, label: str, scanner: Scanner, view: Path, projects: lis
     failures = []
     if facts[f"{label}_locked_s"] is None:
         failures.append(f"{label}: the vault is open {MAXIMUM + BOUND} s past unlocking with a {MAXIMUM} s maximum while local is stopped")
-        clock(cell.project)
         facts[f"{label}_workaround"] = cell.workaround(label, scanner, view)
     else:
         found = facts[label] = hung(cell, label, scanner, view, projects)

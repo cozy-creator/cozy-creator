@@ -831,5 +831,7 @@ lock_hung() (
   cat "$work/proof/lock-hung.json" 2> /dev/null || true
   # Locked, then gone: their 2 GB outputs aren't the job's to upload. Never across a mount a failed lock left.
   for folder in "$project" "$second"; do [ ! -d "$folder" ] || in_project "$folder" --json vault lock > /dev/null 2>&1 || true; done
+  # A view a failed lock left mounted is let go first, so nothing under $OUT is a dead mount when the job collects it.
+  awk -v work="$work/" 'index($5, work) == 1 { print $5 }' /proc/self/mountinfo | sort -r | while read -r view; do fusermount3 -u -z "$view" 2> /dev/null || fusermount -u -z "$view" 2> /dev/null || true; done
   rm -rf --one-file-system -- "$project" "$second" 2> /dev/null || true
 )

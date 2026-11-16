@@ -71,6 +71,24 @@ struct Session {
 
 fn error(code: &'static str, why: impl std::fmt::Display) -> Error { Error::new(Kind::Unavailable, code, why.to_string()) }
 fn io(e: std::io::Error) -> Error { error("vault_io", e) }
+/// A lock's `code`, `why`, for a refusal it met: said in its diagnostics with that refusal's code only, since its words may name the
+/// project (cl-984), and the operation's answer keeps only the code.
+fn refused(root: &FsPath, code: &'static str, why: &'static str) -> impl FnOnce(crate::Error) -> Error {
+    use crate::store::StoreError;
+    let root = root.to_owned();
+    move |met| {
+        let met = match &met {
+            crate::Error::Store(StoreError::Locked(code)) => code.clone(),
+            crate::Error::Store(StoreError::Protected(said)) => said.split(':').next().unwrap_or_default().to_owned(),
+            crate::Error::Store(StoreError::Sqlite(sqlite)) => format!("sqlite: {}", sqlite.sqlite_error_code().map_or_else(|| "other".into(), |code| format!("{code:?}"))),
+            crate::Error::Store(_) => "store".into(),
+            crate::Error::Refused(refused) => refused.code.clone(),
+            crate::Error::Invalid(_) | crate::Error::Input { .. } => "invalid".into(),
+        };
+        tracing::warn!("{}: {why}: {met}", root.display());
+        error(code, why)
+    }
+}
 fn provider(e: impl std::fmt::Display) -> Error { error("vault_provider", e) }
 /// The provider found and checked: what it needs that this computer lacks is a refusal naming its install command, never a 503
 /// (cl-1000).
@@ -808,12 +826,12 @@ fn unanswered_seal() -> Error {
 /// there. Whether it didn't answer.
 fn settle_unanswered(api: &Arc<Api>, root: &FsPath) -> Result<bool, Error> {
     let Some(id) = project_id(root).filter(|_| encrypted(root)) else { return Ok(false) };
-    if !api.calcifer.unsettled_on(&id, "local").map_err(|_| error("run_cancel", "the project's work could not be read"))?
+    if !api.calcifer.unsettled_on(&id, "local").map_err(refused(root, "run_cancel", "the project's work could not be read"))?
         || tokio::runtime::Handle::current().block_on(api.machines.answers("local"))
     {
         return Ok(false);
     }
-    api.calcifer.cancel_unanswered_for_lock(&id, "local").map_err(|_| error("run_cancel", "the project's work could not be cancelled"))?;
+    api.calcifer.cancel_unanswered_for_lock(&id, "local").map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?;
     Ok(true)
 }
 
@@ -1070,7 +1088,7 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, unanswered: bool) {
     // run can begin. An explicit lock (closing) has ended the project's runs its own way.
     let clocked = unanswered || held(root).is_some_and(|session| { let session = session.lock().expect("vault session"); !session.closing && expired(&session) });
     if let Some(id) = project_id(root).filter(|_| clocked) {
-        if let Err(failure) = api.calcifer.end_unstarted(&id).map_err(|_| error("run_cancel", "the project's runs not begun could not be ended")) {
+        if let Err(failure) = api.calcifer.end_unstarted(&id).map_err(refused(root, "run_cancel", "the project's runs not begun could not be ended")) {
             idle_lock_failed(root, &failure);
             return;
         }
@@ -1442,7 +1460,7 @@ fn end_work(api: &Arc<Api>, root: &FsPath) -> Result<Vec<u64>, Error> {
         ended.extend(cancelled.canceled);
     }
     if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) {
-        ended.extend(api.calcifer.cancel_for_lock(&id).map_err(|_| error("run_cancel", "the project's work could not be cancelled"))?);
+        ended.extend(api.calcifer.cancel_for_lock(&id).map_err(refused(root, "run_cancel", "the project's work could not be cancelled"))?);
     }
     Ok(ended.into_iter().collect())
 }
