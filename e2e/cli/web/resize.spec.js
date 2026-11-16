@@ -19,6 +19,9 @@ test('resize', async ({ page, project }) => {
   await canvasIdle(page);
   await expect.poll(async () => (await canvasCard(page, NAME))?.rendered?.media.ready ?? false, { message: 'its picture drawn' }).toBe(true);
   const sha = (await project.asset(NAME)).sha256.replace(/^sha256:/, '');
+  // The scene's texture for it, where the canvas says which (rendered.media.texture); null while its card is mounted over it.
+  const texture = async () => (await canvasCard(page, NAME))?.rendered?.media?.texture;
+  const unhovered = await texture();
   const fetched = [];
   page.on('request', (request) => { if (request.url().includes(sha)) fetched.push(new URL(request.url()).pathname); });
 
@@ -44,6 +47,15 @@ test('resize', async ({ page, project }) => {
   const width = () => page.evaluate(() => Math.round(window.__resize.frames.filter((one) => !one.mark).at(-1).width * 10) / 10);
 
   let before, grip;
+  await test.step('hovered and left: the same picture, not made again', async () => {
+    if (unhovered === undefined) return test.info().annotations.push({ type: 'skipped', description: 'the canvas names no texture (rendered.media.texture)' });
+    await hoverBox(page, NAME);
+    const away = await openPoint(page);
+    await page.mouse.move(away.x, away.y);
+    await expect(page.locator(`.canvas-node:has(.card[data-asset="${NAME}"])`)).toHaveCount(0);
+    await expect.poll(texture, { message: 'its texture back, the same one' }).toBe(unhovered);
+  });
+
   await test.step('hovered: its card, with its picture, in every frame, and nothing fetched', async () => {
     await mark('hover');
     const card = await hoverBox(page, NAME);
