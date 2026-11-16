@@ -328,6 +328,8 @@ impl Calcifer {
         }
         // Its own work, which stopped with the Calcifer that was doing it, is carried out again by `hub::jobs::resume`.
         self.export_outputs()?;
+        // Ended machines past 90 days that went while no machine ended here go now, beside the answers (`Store::prune_machines`).
+        while self.store.prune_machines(256).is_ok_and(|pruned| pruned > 0) {}
         Ok(resumed)
     }
 
@@ -558,19 +560,7 @@ impl Calcifer {
             Err(_) => { routes.remove(&minted); }
         }
         drop(routes);
-        // Each new run of no project takes a few past 90 days with it (`Store::prune`).
-        if matches!((journal, &submitted), (store::RunStore::Maintenance(_), Ok((_, true)))) {
-            self.pruned(self.store.prune(store::now_ms()));
-        }
         submitted
-    }
-
-    /// Runs the store took out: nothing of them stays routed or exported.
-    pub(crate) fn pruned(&self, ids: Vec<String>) {
-        if ids.is_empty() { return; }
-        let ids: HashSet<String> = ids.into_iter().collect();
-        lock(&self.run_owners).retain(|id, _| !ids.contains(id));
-        self.retire_exports(&ids);
     }
 
     /// Run `id`'s driver ended.
