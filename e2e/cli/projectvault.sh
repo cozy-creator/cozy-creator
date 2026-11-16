@@ -320,7 +320,7 @@ vault_queue() (
     || fail "vault queue: cozy new (encrypted): $(tail -c 300 "$work/a.err")"
   cozy --json new --unencrypted "$work/b" > "$work/b.json" 2> "$work/b.err" || fail "vault queue: cozy new: $(tail -c 300 "$work/b.err")"
   python3 "$E2E/cli/vault_queue.py" --project-a "$work/a" --project-b "$work/b" --cli "$COZY" > "$work/queue.json" 2> "$work/queue.err" \
-    || fail "vault queue: $(jq -c '{failed, lock, b_thumb, upload}' "$work/queue.json" 2> /dev/null || tail -c 600 "$work/queue.err")"
+    || fail "vault queue: $( { [ -s "$work/queue.json" ] && jq -c '{failed, lock, b_thumb, upload}' "$work/queue.json"; } 2> /dev/null || tail -c 600 "$work/queue.err")"
   jq -c '{lock_s: .lock.after_s, lock_state, b_thumb_s: .b_thumb.after_s, upload}' "$work/queue.json" | sed 's/^/vault queue: /'
 )
 

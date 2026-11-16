@@ -44,7 +44,7 @@ def headers(token: str, **more: str) -> dict:
 
 def png(i: int, side: int = 320) -> bytes:
     """A picture of its own: a gradient `i` tells from the others."""
-    rows = b"".join(b"\x00" + bytes(((x * 3 + i * 41) & 255, (y * 2 + i * 13) & 255, (x + y + i * 7) & 255) for x in range(side)) for y in range(side))
+    rows = b"".join(b"\x00" + bytes(v for x in range(side) for v in ((x * 3 + i * 41) & 255, (y * 2 + i * 13) & 255, (x + y + i * 7) & 255)) for y in range(side))
     def chunk(kind: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows, 1)) + chunk(b"IEND", b"")
