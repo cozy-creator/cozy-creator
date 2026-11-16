@@ -743,6 +743,8 @@ case $SHARD in
   projectdb-closes) parts="db_closes logs" ;;
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
+  # cl-1049: an encrypted project made, written, locked, unlocked and read back on this runner's OS (Windows: WinFsp by doctor --fix).
+  projectvault-native) parts="vault_native logs" ;;
   # cl-1000: the static provider timed beside the glibc build, then on FUSE 3 alone through cozy, then on fresh Ubuntu and Fedora
   # (e2e.yaml builds the probe and installs fuse3 and libfuse2t64 for it).
   projectvault-static) parts="vault_throughput vault_fuse3 vault_distros logs" ;;
@@ -846,7 +848,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | web-serves | notraces | fresh) ;;
+    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints

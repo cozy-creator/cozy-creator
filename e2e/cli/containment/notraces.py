@@ -120,17 +120,19 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     scanner = Scanner()
-    folder = args.root.resolve() / ("notraces-" + secrets.token_hex(12))
     credential = "proof-" + secrets.token_hex(32)
     scanner.add(credential)
+    folder = args.root.resolve() / ("notraces-" + secrets.token_hex(12))
     try:
         created = cozy(args.cli, "new", str(folder), "--passphrase-file", "-", stdin=(credential + "\n").encode())[-1]
     except Stop as stopped:
-        # A runner with no encrypted filesystem provider (Windows CI has none installed) can't make one: said, not passed.
-        if "'vault_provider'" not in str(stopped):
+        # A runner with no encrypted filesystem provider (Windows CI installs no WinFsp): `cozy doctor --fix` installs it, as an
+        # administrator's would, whatever it exits; then once more, in a new folder, and a second refusal fails the cell.
+        if "'vault_provider'" not in str(stopped) and "'vault_dependency_missing'" not in str(stopped):
             raise
-        print(json.dumps({"no_traces": "skipped", "os": sys.platform, "why": "no encrypted filesystem provider on this runner (vault_provider)"}))
-        return 0
+        subprocess.run([str(args.cli), "doctor", "--fix"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        folder = args.root.resolve() / ("notraces-" + secrets.token_hex(12))
+        created = cozy(args.cli, "new", str(folder), "--passphrase-file", "-", stdin=(credential + "\n").encode())[-1]
     require(isinstance(created.get("id"), str), "notraces_project_identity")
     project = cast(str, created["id"])
     recovery = created.get("recovery_secret")
