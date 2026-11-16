@@ -143,7 +143,7 @@ export class Scene {
     if (held.landing !== undefined) {
       const t = (now - held.landing) / 260
       if (t >= 1) { held.landing = undefined; if (store.get(name) === view && view.landing) store.patch(name, { landing: undefined }) }
-      else { scale *= t < 0.6 ? 0.82 + 0.22 * ease(t / 0.6) : 1.04 - 0.04 * ease((t - 0.6) / 0.4); alpha *= t < 0.6 ? ease(t / 0.6) : 1; animating = true }
+      else { scale *= t < 0.6 ? 0.82 + 0.22 * ease(t / 0.6) : 1.04 - 0.04 * ease((t - 0.6) / 0.4); alpha *= t < 0.6 ? 0.4 + 0.6 * ease(t / 0.6) : 1; animating = true }
     }
     card.root.scale.set(scale)
     card.root.position.set(x + node.bounds.w * (1 - scale) / 2, y + node.bounds.h * (1 - scale) / 2)
