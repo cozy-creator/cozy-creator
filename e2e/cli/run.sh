@@ -51,6 +51,7 @@ parse "$@"
 . "$(dirname "$0")/endedlogs.sh"
 . "$(dirname "$0")/fresh.sh"
 . "$(dirname "$0")/typedcalls.sh"
+. "$(dirname "$0")/harness.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -692,8 +693,11 @@ case $SHARD in
     orbit_metadata
     web_serves
     install_retries
+    harness_abort
     logs
   " ;;
+  # A part that ends on a shell error fails its shard (cl-1079), alone.
+  harness) parts="harness_abort" ;;
   project-stream) parts="project_stream logs" ;;
   # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path.
   slow) parts="
@@ -903,6 +907,6 @@ if [ -n "$PACKAGES" ]; then
   PACKAGES=$(cd "$PACKAGES" && pwd) || fail "package checkout is unavailable"
 fi
 cd "$RUN_PROJECT" || fail "project directory is unavailable"
-for part in $parts; do $part; done
+run_parts $parts
 [ -n "$SHARD" ] || [ -z "$LOCAL" ] || { step coverage; coverage "$OUT/cozy-under-test" pr; }
 finish "cli${SHARD:+ $SHARD}"
