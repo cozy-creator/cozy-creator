@@ -32,8 +32,13 @@ P=$home/plain E=$home/sealed F=$home/sealed2 pass=$home/pass
 mkdir -p "$OUT/cozy-cut"
 curl -fsSL --retry 3 -o "$OUT/cozy-cut.tgz" "https://github.com/cozy-creator/cozy-creator/releases/download/v$CUT_RELEASE/cozy-x86_64-unknown-linux-gnu.tar.gz" \
   && tar -xzf "$OUT/cozy-cut.tgz" -C "$OUT/cozy-cut" || { check "hard cut: no cozy $CUT_RELEASE"; return; }
+# Its tools as that release had them: its Runtime runs that author API, not this one's.
+for tool in draw shaped; do
+  curl -fsSL --retry 3 -o "$OUT/cut-$tool.py" "https://raw.githubusercontent.com/cozy-creator/cozy-creator/v$CUT_RELEASE/e2e/cli/project/$tool.py" \
+    || { check "hard cut: no $tool.py of $CUT_RELEASE"; return; }
+done
 sudo install -D -m 755 "$OUT/cozy-cut/cozy-x86_64-unknown-linux-gnu/cozy" /opt/cozy-cut/cozy-old && sudo install -D -m 755 "$COZY" /opt/cozy-cut/cozy-new \
-  && sudo install -D -m 644 "$here/project/draw.py" /opt/cozy-cut/draw.py && sudo install -D -m 644 "$here/project/shaped.py" /opt/cozy-cut/shaped.py \
+  && sudo install -D -m 644 "$OUT/cut-draw.py" /opt/cozy-cut/draw.py && sudo install -D -m 644 "$OUT/cut-shaped.py" /opt/cozy-cut/shaped.py \
   || { check "hard cut: not installed for its user"; return; }
 [ "$(cut_cozy old --version)" = "cozy $CUT_RELEASE" ] || { check "hard cut: it says $(cut_cozy old --version)"; return; }
 cut_cozy old --json machine update local --runtime "$CUT_RUNTIME" --tensorfs "$CUT_TENSORFS" -y > "$OUT/cut-update.json" \
