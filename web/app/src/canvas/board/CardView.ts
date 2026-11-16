@@ -14,6 +14,7 @@ export interface Palette {
   card: number; well: number; line: number; ink: number; mute: number; select: number; gap: number; glow: number; glowAlpha: number
   queued: number; running: number; unseen: number; failed: number; ember: number; ember2: number; check: string; check2: string
   box: number; edge: number; edgeAlpha: number; shade: number; shadeAlpha: number
+  line2: number; mark: number; markAlpha: number; mark2: number; mark2Alpha: number
 }
 export interface CardState { hover: Part | null; dragging: boolean; offering: boolean; resizing: string | null; dropTarget: boolean; broken: boolean }
 export interface CardEnv {
@@ -121,8 +122,11 @@ export class CardView {
       // A box stands off the sheet: a soft shadow and an edge; one with nothing in it is a lighter sheet, not a hole.
       const lift = 1 / Math.max(0.25, env.zoom)
       if (!far) for (const [grow, alpha] of [[6, 0.25], [3, 0.45], [1, 0.8]]) this.ground.rect(body.x - grow * lift, body.y - grow * lift + 2 * lift, body.w + grow * 2 * lift, body.h + grow * 2 * lift).fill({ color: colors.shade, alpha: colors.shadeAlpha * alpha * 0.35 })
-      this.ground.rect(body.x, body.y, body.w, body.h).fill(show.picture || show.note || show.error || show.references.length ? colors.well : colors.box)
+      const blank = !(show.picture || show.note || show.error || show.references.length)
+      this.ground.rect(body.x, body.y, body.w, body.h).fill(blank ? colors.box : colors.well)
         .stroke({ width: lift, color: colors.edge, alpha: colors.edgeAlpha, alignment: 1 })
+      // Nothing made yet: a viewfinder's marks, darker under the pointer.
+      if (blank) this.corners(this.ground, body, state.hover ? colors.mark2 : colors.mark, state.hover ? colors.mark2Alpha : colors.markAlpha)
       this.alphaBacking(show.picture?.alpha ? body : null, env)
       if (show.picture) this.picturePart("main", show.picture, body, true, false, pictures, env)
       if (show.references.length) this.references(show, body, pictures, colors, env)
@@ -150,7 +154,7 @@ export class CardView {
       this.ink.rect(meter.x, meter.y, meter.w, meter.h).fill(colors.running)
       this.drawn.meter = meter
     }
-    this.ring(node, state, body, far, colors, env)
+    this.ring(node, state, show, body, far, colors, env)
     if (state.dropTarget) this.dashed(this.ink, { x: body.x - 4, y: body.y - 4, w: body.w + 8, h: body.h + 8 }, colors.ember, 2 / Math.min(1, env.zoom))
     this.area("body", body)
     const canResize = Boolean(node.view.asset) && !node.view.placing && !far && !show.entity
@@ -454,7 +458,7 @@ export class CardView {
     sprite.position.set(body.x + (body.w - sprite.width) / 2, body.y + (body.h - sprite.height) / 2)
   }
 
-  private ring(node: SceneNode, state: CardState, body: Box, far: boolean, colors: Palette, env: CardEnv) {
+  private ring(node: SceneNode, state: CardState, show: Presentation, body: Box, far: boolean, colors: Palette, env: CardEnv) {
     if (node.selected) {
       const scale = env.ring
       const thick = 6 / scale
@@ -463,8 +467,11 @@ export class CardView {
       for (const [w, a] of [[48, 0.08], [32, 0.18], [20, 0.32]]) this.ink.rect(body.x, body.y, body.w, body.h).stroke({ width: w / scale, color: colors.glow, alpha: colors.glowAlpha * a, alignment: 0.5 })
       this.ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thick + 2 / scale, color: colors.gap, alignment: 0.5 })
       this.ink.rect(box.x, box.y, box.w, box.h).stroke({ width: thick, color: colors.select, alignment: 0.5 })
-    } else if (state.hover || node.view.hot) {
-      this.ink.rect(body.x - 3 / env.zoom, body.y - 3 / env.zoom, body.w + 6 / env.zoom, body.h + 6 / env.zoom).stroke({ width: 2 / env.zoom, color: colors.select, alpha: node.view.hot ? 1 : 0.45, alignment: 0.5 })
+    } else if (node.view.hot) {
+      this.ink.rect(body.x - 3, body.y - 3, body.w + 6, body.h + 6).stroke({ width: 2, color: colors.select, alignment: 0.5 })
+    } else if (state.hover && (show.picture || show.note || show.error || show.references.length)) {
+      // The page's hover: a 1px --line2 outline 2px off the picture (app.css .card:hover > .media).
+      this.ink.rect(body.x - 2.5, body.y - 2.5, body.w + 5, body.h + 5).stroke({ width: 1, color: colors.line2, alignment: 0.5 })
     }
   }
 
@@ -528,10 +535,10 @@ export class CardView {
     if (part === "delete" || part === "cancel") this.drawn.controls.push({ part, box })
   }
 
-  private corners(graphics: Graphics, box: Box, color: number) {
+  private corners(graphics: Graphics, box: Box, color: number, alpha = 0.65) {
     const length = Math.min(18, box.w / 4, box.h / 4)
     for (const [x, dx] of [[box.x, 1], [box.x + box.w, -1]]) for (const [y, dy] of [[box.y, 1], [box.y + box.h, -1]]) graphics.moveTo(x, y + dy * length).lineTo(x, y).lineTo(x + dx * length, y)
-    graphics.stroke({ width: 1.5, color, alpha: 0.65 })
+    graphics.stroke({ width: 1.5, color, alpha })
   }
 
   private dashed(graphics: Graphics, box: Box, color: number, thick: number) {
