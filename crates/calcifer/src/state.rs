@@ -26,6 +26,10 @@ pub(crate) const TABLES: &str = "
         current INTEGER NOT NULL DEFAULT 0
     ) STRICT;
     CREATE UNIQUE INDEX IF NOT EXISTS project_keys_current ON project_keys (id) WHERE current = 1;
+    CREATE TABLE IF NOT EXISTS project_handles (
+        handle TEXT PRIMARY KEY,
+        path TEXT NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS projects_gone (
         id TEXT PRIMARY KEY,
         code TEXT NOT NULL,
@@ -268,6 +272,8 @@ impl Store {
             return Ok(code);
         }
         self.write(|tx| {
+            // The handle it had while locked names it still, until its next lock (cl-1090): a page that opened it from the list goes on.
+            tx.execute("INSERT OR IGNORE INTO project_handles (handle, path) SELECT id, path FROM projects WHERE path = ?1 AND id LIKE 'locked-%'", [path.to_string_lossy()])?;
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
             tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
             let code = project_code(tx, id, preferred, crate::project::code::generate)?;
@@ -345,6 +351,11 @@ impl Store {
         })
     }
 
+    /// The folder a locked project's `handle` named before it was opened (cl-1090), until its next lock.
+    pub(crate) fn handle_path(&self, handle: &str) -> Result<Option<PathBuf>> {
+        self.read(|conn| Ok(conn.query_row("SELECT path FROM project_handles WHERE handle = ?1", [handle], |row| row.get::<_, String>(0)).optional()?.map(PathBuf::from)))
+    }
+
     /// The project `key` names here, now or before (cl-987).
     pub(crate) fn key_owner(&self, key: &str) -> Result<Option<String>> {
         self.read(|conn| Ok(conn.query_row("SELECT project_keys.id FROM project_keys JOIN projects ON projects.id = project_keys.id WHERE key = ?1",
@@ -372,6 +383,8 @@ impl Store {
             tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
             // Its keys too (cl-987): its project.db keeps them, its next open registers them again, and its KEY-N is unknown here meanwhile.
             tx.execute("DELETE FROM project_keys WHERE id = ?1", [id])?;
+            // The handles of its last lock go: each lock's is new.
+            tx.execute("DELETE FROM project_handles WHERE path = ?1", [path.to_string_lossy()])?;
             tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, '')", params![handle, path.to_string_lossy()])?;
             Ok(())
         })?;

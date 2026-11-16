@@ -647,10 +647,27 @@ fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject
 }
 
 /// The project the index knows by `text`, its id, public code or its name (in any case).
+/// A locked project's row as the project it is now (cl-1090): unlocked since, it's the project its own keybag names in that folder, so a
+/// page that opened it by its handle goes on to its own address. Any other row as it is.
+fn unlocked(entry: crate::state::KnownProject) -> crate::state::KnownProject {
+    if !entry.id.starts_with("locked-") || vault::require_path(&entry.path).is_err() { return entry; }
+    match vault::kept_in_keybag(&entry.path) {
+        Some((id, code)) => crate::state::KnownProject { id, code, ..entry },
+        None => entry,
+    }
+}
+
 fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
     let mut indexed = indexed(api)?;
     if let Some(at) = indexed.iter().position(|entry| entry.id == text) {
-        return Ok(indexed.swap_remove(at));
+        return Ok(unlocked(indexed.swap_remove(at)));
+    }
+    // A locked project's handle, the project opened since by its own id (cl-1090): the project now in that folder, until its next lock.
+    if text.starts_with("locked-") {
+        let path = api.calcifer.store().handle_path(text).map_err(|e| Error::internal("calcifer_store", e.to_string()))?;
+        if let Some(at) = path.and_then(|path| indexed.iter().position(|entry| entry.path == path && !entry.id.starts_with("locked-"))) {
+            return Ok(indexed.swap_remove(at));
+        }
     }
     // A locked project's id and code are no longer in the index (cl-984), only its folder: both are read from its own keybag.
     let code = code::parse(text);
@@ -1908,6 +1925,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
     let older = known.len().saturating_sub(limit) as u64;
     let open: HashMap<String, Arc<Project>> = api.projects.now_open().into_iter().map(|project| (project.id.clone(), project)).collect();
     let projects = (known.into_iter().take(limit))
+        .map(unlocked)
         .map(|entry| Known {
             name: entry.name,
             busy: open.get(&entry.id).is_some_and(|project| *project.walking.lock().expect("walking lock")),

@@ -84,6 +84,12 @@ export function ProjectRoute({ children }: { children: ReactNode }) {
   return <CurrentProject.Provider value={project}>{children}</CurrentProject.Provider>
 }
 
+/** Every project address the page has read, read again: an unlock turns a locked project's handle (`locked-…`, the Projects list's) into
+ *  the project's own address, which the page then goes on to (cl-1090). */
+export function readAddressesAgain(queries: QueryClient) {
+  return queries.invalidateQueries({ queryKey: ["project-reference"] })
+}
+
 /** A newly created project can be navigated to before the project list refetches. */
 export function rememberProject(queries: QueryClient, project: Pick<ProjectAddress, "id" | "code">) {
   queries.setQueryData(referenceKey(project.id), project)
