@@ -86,6 +86,8 @@ jobs:
             e2e/publish
             e2e/cli/project/boxed
             e2e/cli/web
+            scripts
+            crates/project-mount/helper
           path: creator
       - name: The Hub this session rents on
         run: |

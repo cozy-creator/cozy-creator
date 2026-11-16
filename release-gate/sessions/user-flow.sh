@@ -27,13 +27,26 @@ SKU_B=$(param sku_b "$SKU") GPUS_B=$(param gpus_b 2) PLATE_S=$(param plate_s 5) 
 [[ $GPUS_B =~ ^[1-8]$ && $PLATE_S =~ ^[0-9]+$ && $PLATE_S -ge 1 && $PLATE_S -le 15 ]] || fail "gpus_b $GPUS_B, plate_s $PLATE_S"
 FLOW=$OUT/flow
 mkdir -p "$FLOW"
+# Encryption's filesystem driver, as a person's computer has it: FUSE 3 beside libfuse.so.2 (the bundled provider's, and a release's).
+ROOT=$(cd "$HERE/../.." && pwd)
+bash "$ROOT/e2e/cli/install-vault-driver.sh" fuse3 > "$OUT/fuse.log" 2>&1 || fail "no FUSE: $(tail -c 300 "$OUT/fuse.log")"
+# And its provider: a release bundles securefs and puts it in the tools folder on first use; a dev build bundles none, so the pinned
+# one goes where a release puts it (crates/project-mount: the tools folder's copy before PATH).
+SECUREFS=$HOME/.cozy/tools/securefs/$(jq -r .version "$ROOT/crates/project-mount/helper/manifest.json")
+if [ ! -x "$SECUREFS/securefs" ]; then
+  archive=$(python3 -I "$ROOT/scripts/prepare-securefs.py" --target x86_64-unknown-linux-gnu --out-dir "$RUNNER_TEMP/securefs") || fail "no securefs"
+  mkdir -p "$SECUREFS" && chmod 700 "$SECUREFS" &&
+    python3 -I -c 'import sys, zipfile; open(sys.argv[2], "wb").write(zipfile.ZipFile(sys.argv[1]).read("securefs"))' "$archive" "$SECUREFS/securefs" &&
+    chmod 755 "$SECUREFS/securefs" || fail "securefs not put in $SECUREFS"
+fi
 V=$(cozy --version | awk '{print $2}')
 if [[ $V == *-dev* ]]; then
   cfg=$HOME/.cozy/config.toml
   grep -qxE 'dev *= *true' "$cfg" 2> /dev/null ||
     { mkdir -p "${cfg%/*}" && { echo 'dev = true'; [ ! -f "$cfg" ] || grep -v '^dev *=' "$cfg"; } > "$cfg.new" && mv "$cfg.new" "$cfg"; } || fail "dev = true not written"
-  cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 fi
+# Calcifer started before the driver and the dev home: started again, as after an install.
+cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 # What this runner's Calcifer ordered is this session's: the page orders it.
 trap 'code=$?; claim; (exit "$code"); finish' EXIT
