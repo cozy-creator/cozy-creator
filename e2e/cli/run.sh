@@ -563,6 +563,7 @@ case $SHARD in
     kept_preparing
     catalog
     basics
+    uninstall_on
     component_models
     lora_reads
     second_project
@@ -669,6 +670,7 @@ case $SHARD in
     open_slow
     catalog
     basics
+    uninstall_on
     component_models
     lora_reads
     second_project

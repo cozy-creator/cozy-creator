@@ -950,6 +950,23 @@ impl Machines {
         Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting:run.waiting})
     }
 
+    /// `text` with each run id this controller sent (`run-<hex>`, `~<attempt>` a resend's) as a person names that run (`KEY-N`);
+    /// another client's keeps its id.
+    fn runs_named(&self, text: &str) -> String {
+        let (mut named, mut rest) = (String::with_capacity(text.len()), text);
+        while let Some(at) = rest.find("run-") {
+            named.push_str(&rest[..at]);
+            let token = &rest[at..];
+            let id = &token[..token.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '~')).unwrap_or(token.len())];
+            match self.calcifer.active_run(crate::store::calcifer_id(id)) {
+                Some(row) => named.push_str(&self.calcifer.run_name(&row)),
+                None => named.push_str(id),
+            }
+            rest = &token[id.len()..];
+        }
+        named + rest
+    }
+
     /// What `operation` is waited on by, by run number: maintenance runs, and runs of `projects` that are open. An operation of a
     /// project's own is in its private scope (`resource_key`), so its runs are all that project's.
     fn operation(&self,operation:&v1::Operation,projects:&[String])->Option<wire::Operation> {
@@ -1803,20 +1820,33 @@ pub(crate) async fn models(
     Ok(Json(asked(&api, &name, query).await?.0.models()))
 }
 
-/// Removes cached releases and lanes only from this computer, never from a Hub or rental.
+/// `POST /v1/machines/{name}/models/remove`: a model's downloaded copies leave the machine (local, added or a rental), never the
+/// Hub. The machine refuses one a run there reads; the refusal names that run as a person does.
 pub(crate) async fn remove_model(
     State(api): State<Arc<Api>>,
     UrlPath(name): UrlPath<String>,
     body: Result<Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Json<wire::RemovedModel>, Refusal> {
-    if !name.eq_ignore_ascii_case("local") {
-        return Err(Refusal(Error::new(Kind::Usage, "model_remove_local_only", "Model removal is available only on local")));
-    }
     let asked: wire::RemoveModel = crate::api::parse(&body?)?;
-    api.machines.local_up().await.map_err(Refusal)?;
-    let (row, link) = api.machines.linked("local").map_err(Refusal)?;
-    let removed = link.remove_model(&asked).await.map_err(|error| Refusal(refusal(&row.name, error)))?;
-    Ok(Json(removed))
+    let row = api.machines.named_now(&name).await.map_err(Refusal)?;
+    let (row, link) = api.machines.linked(&row.name).map_err(Refusal)?;
+    match link.remove_model(&asked).await {
+        Ok(removed) => {
+            // `model ls --on` reads it gone at once.
+            if let Ok(frame) = link.status().await {
+                api.machines.observe(&row.name, frame);
+            }
+            Ok(Json(removed))
+        }
+        Err(error) => {
+            let mut error = refusal(&row.name, error);
+            if error.cause.as_deref() == Some("model_in_use") {
+                error.message = api.machines.runs_named(&error.message);
+                error.next = error.next.iter().map(|next| api.machines.runs_named(next)).collect();
+            }
+            Err(Refusal(error))
+        }
+    }
 }
 
 /// One of Calcifer's machines with the Status frame it answered now, recorded as its latest:

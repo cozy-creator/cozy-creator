@@ -34,7 +34,7 @@ enum LoraVerb {
     Show(Show),
     /// Install a LoRA on a machine.
     Install(Download),
-    /// Uninstall downloaded copies from this machine.
+    /// Uninstall downloaded copies from a machine.
     Uninstall(Remove),
     /// Update a LoRA's family, tags, trigger words or recommended strength.
     Edit(LoraEdit),
@@ -60,7 +60,7 @@ pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode,
         LoraVerb::Ls(args) => list(ctx, args, "lora").await,
         LoraVerb::Show(args) => show::show(ctx, args, "lora", None).await,
         LoraVerb::Install(args) => machine::download(ctx, args).await,
-        LoraVerb::Uninstall(args) => machine::remove(ctx, &args.model).await,
+        LoraVerb::Uninstall(args) => machine::remove(ctx, &args.model, &args.on).await,
         LoraVerb::Edit(mut args) => {
             args.edit.triggers = given(args.trigger);
             args.edit.strength = args.strength;
@@ -89,7 +89,7 @@ enum Verb {
     Edit(Edit),
     /// Install a model on a machine.
     Install(Download),
-    /// Uninstall downloaded copies from this machine.
+    /// Uninstall downloaded copies from a machine.
     Uninstall(Remove),
     /// Upload weights as a private model checkpoint.
     #[command(hide = true)]
@@ -190,6 +190,9 @@ pub(crate) struct Remove {
     /// org/name. Removes all downloaded releases and lanes, keeping the Hub model.
     #[arg(value_name = "MODEL")]
     model: String,
+    /// The machine to remove it from: local, an added machine or a rental.
+    #[arg(long, value_name = "MACHINE", default_value = "local")]
+    on: String,
 }
 
 /// `--strength`: a number, or `none`.
@@ -349,7 +352,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Unpublish(args) => releases::unpublish(ctx, args, "model").await,
         Verb::Delete(args) => releases::delete(ctx, args, "model").await,
         Verb::Install(args) => machine::download(ctx, args).await,
-        Verb::Uninstall(args) => machine::remove(ctx, &args.model).await,
+        Verb::Uninstall(args) => machine::remove(ctx, &args.model, &args.on).await,
         Verb::Upload(args) => machine::upload(ctx, args).await,
         Verb::Quantize(args) => quantize::quantize(ctx, args).await,
     }

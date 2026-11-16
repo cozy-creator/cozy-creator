@@ -239,7 +239,7 @@ case $key in
   cli:local-code) needs='packages birefnet scratch' ;;
   # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a
   # model of one component with another's (xs-190).
-  cli:commands) needs='packages birefnet loras fits parts lorabase' ;;
+  cli:commands) needs='packages birefnet loras fits parts lorabase uninstall' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
@@ -253,7 +253,7 @@ case $key in
   cli:env-cost) needs='packages birefnet' ;;
   # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
   cli:plan) needs='packages birefnet downloads composed' ;;
-  cli:) needs='packages birefnet downloads spare loras vaes fits parts composed lorabase calls' ;;
+  cli:) needs='packages birefnet downloads spare loras vaes fits parts composed lorabase calls uninstall' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
@@ -489,6 +489,12 @@ PYCALLS
     export E2E_CALLS_SEED=${E2E_CALLS_SEED:-}
     log "published e2e/calls-used, -unused, -other, -early, -late, -base and e2e/calls-lora${E2E_CALLS_SEED:+ (not all: $E2E_CALLS_SEED)}"
     rm -f "$seed"/calls-*.safetensors
+  fi
+  if [[ " $needs " == *" uninstall "* ]]; then
+    # uninstall_on's model (cl-1076): 32 MiB no other cell reads, so removing it takes nothing from them.
+    random_weights "$seed/uninstall.safetensors" 32 uninstall
+    mirror "$seed/uninstall.safetensors" e2e/uninstall bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+    rm -f "$seed/uninstall.safetensors"
   fi
   if [[ " $needs " == *" spare "* ]]; then
     # ondemand_share's weights (cl-1007): more than the 60 Mbit link moves while its install runs.
