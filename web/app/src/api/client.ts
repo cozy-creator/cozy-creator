@@ -8,6 +8,8 @@ import type {
   AssetPatch,
   AssetPatched,
   AssetVersions,
+  AssetsRead,
+  ReadAssets,
   Browsed,
   CalciferStatus,
   Canvas,
@@ -494,6 +496,11 @@ export class Client {
   /** One asset as it is now: what a change of it costs, whatever else the project holds. */
   asset(id: string, name: string, signal?: AbortSignal): Promise<AssetVersions> {
     return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { signal })
+  }
+
+  /** These boxes as they stand, at once: those gone said as gone, an answer, never a 404 a browser logs. */
+  readAssets(id: string, names: string[]): Promise<AssetsRead> {
+    return this.json(`${project(id)}/read`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ names } satisfies ReadAssets) })
   }
 
   projectAddress(reference: string): Promise<ProjectAddress> {

@@ -472,7 +472,9 @@ impl Calcifer {
     pub(crate) fn attach_project(self: &Arc<Self>, store: &project::ProjectStore) -> store::Result<bool> {
         let owner = store.owner();
         let ids:Vec<String>=store.read(|conn| {
-            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE owner=?1 AND custody='owned' AND (state<>'settled' OR EXISTS(SELECT 1 FROM outputs WHERE run=runs.id AND {}))",store::OWED))?;
+            // By `runs_owed` and `outputs_unexported`, never every run (cl-1010).
+            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE state<>'settled' AND owner=?1 AND custody='owned'
+                UNION SELECT id FROM runs WHERE id IN (SELECT outputs.run FROM outputs WHERE {}) AND owner=?1 AND custody='owned'",store::OWED))?;
             Ok(stmt.query_map([store.project_id()],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })?;
         let mut routes=lock(&self.run_owners);

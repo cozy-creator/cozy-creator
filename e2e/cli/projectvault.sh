@@ -225,6 +225,35 @@ PY_BACKING_SCAN
   printf '{"ordinary":true,"mounted_media":true,"lock":true,"recovery":true,"recovery_output_backing_refused":true,"recovery_output_view_refused":true,"rekey":true,"expiry":true,"decrypt":true,"reencrypt":true,"synthetic_only":true}\n' > "$work/receipt.json"
 )
 
+# cl-1000: on Linux with no FUSE (none of its packages, its device closed to this user), creating an encrypted project is a refusal
+# naming what to install with this computer's own package manager, never a 503, and an unencrypted project is still made. Its own
+# shard (projectvault-nofuse), on a runner that installs no vault driver.
+vault_no_fuse() (
+  step "an encrypted project with no FUSE here: a refusal naming apt's install, never a 503 (cl-1000)"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault no fuse: Linux runners only"; exit 0; }
+  local work secrets holder status code=0 install='sudo apt install fuse3 libfuse2'
+  work=$(mktemp -d "$OUT/vault-no-fuse.XXXXXX") secrets=$(mktemp -d "$OUT/vault-no-fuse-credentials.XXXXXX")
+  trap 'rm -rf -- "$secrets"' EXIT
+  # No FUSE at all: whatever of it the runner came with removed, and its device closed to this user.
+  sudo apt-get remove -y -qq fuse fuse3 libfuse2t64 libfuse2 libfuse3-3 > "$work/remove.log" 2>&1 || true
+  [ ! -e /dev/fuse ] || sudo chmod 000 /dev/fuse
+  printf '%s\n' 'synthetic no-fuse passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  cozy --json new "$work/p" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" 2> "$work/new.err" || code=$?
+  [ "$code" != 0 ] && jq -e --arg i "$install" '.error.code == "vault_dependency_missing" and .error.kind == "conflict"
+      and (.error.message | contains($i)) and ((.error.next | index($i)) != null) and ((.error.next | index("cozy new --unencrypted")) != null)' "$work/new.json" > /dev/null \
+    || check "no FUSE: cozy new --passphrase-file: exit $code, not the refusal naming \`$install\`: $(head -c 500 "$work/new.json") $(tail -c 200 "$work/new.err")"
+  # The page's ask, as the page sends it: a typed 409, never a 503.
+  holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+  status=$(curl -s -o "$work/http.json" -w '%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' \
+    -H 'Content-Type: application/json' --data "$(jq -nc --arg p "$work/q" '{path: $p, passphrase: "synthetic no-fuse passphrase"}')" \
+    "http://$(jq -r .address "$holder")/v1/projects")
+  [ "$status" = 409 ] && jq -e '.error.code == "vault_dependency_missing"' "$work/http.json" > /dev/null \
+    || check "no FUSE: POST /v1/projects, encrypted, answered $status, not 409 vault_dependency_missing: $(head -c 400 "$work/http.json")"
+  [ ! -e "$work/p/project.db" ] && [ ! -e "$work/q/project.db" ] || check "no FUSE: a refused encrypted create left a project behind"
+  cozy --json new --unencrypted "$work/plain" > "$work/plain.json" 2> "$work/plain.err" \
+    || check "no FUSE: cozy new --unencrypted failed: $(tail -c 300 "$work/plain.err")"
+)
+
 # cl-1002: `cozy open` in a locked encrypted project, on a real terminal (e2e/cli/open_unlock.py): it asks for the passphrase (a
 # wrong one again) or the recovery secret, unlocks and prints the page's URL; with --json, or from a pipe, it refuses, naming
 # `cozy vault unlock`. Linux: a pty and the runner's vault driver.

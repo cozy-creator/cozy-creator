@@ -1,0 +1,1 @@
+Calcifer's vaults wake on their deadlines again, not every second (cl-1005, restoring xs-189's clock that #2858 dropped): an open vault's idle and maximum limits wait on a wall-clock alarm, and on what ends its work (a request answered, a run settling, a render, a follower letting go, its mount's end).

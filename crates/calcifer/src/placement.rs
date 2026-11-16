@@ -39,6 +39,9 @@ pub(crate) struct Job {
     pub gpu: bool,
     /// The machines it may go to.
     pub on: Vec<On>,
+    /// Its project's scope: its history (`prior`) and what `local` holds of it (`scoped_picture`) are read in its project alone. None:
+    /// no project, or a locked one, read machine-wide only.
+    pub scope: Option<crate::private_io::Scope>,
 }
 
 /// When one machine would run one job, on this computer's clock.
@@ -153,14 +156,32 @@ pub(crate) async fn pictures(api: &Arc<Api>, machines: &[On], update: bool, now:
 }
 
 /// What a run of `job` takes on one GPU of `picture`'s kind, as runs like it took elsewhere: what it is timed by where none of it ran.
+/// In its project's scope (`Job::scope`), whose runs here only it keeps (cl-1047).
 pub(crate) async fn prior(api: &Arc<Api>, picture: &Picture, job: &Job) -> u64 {
-    match &picture.ready_at_ms {
-        Some(_) => match api.machines.coming(&picture.name, now_ms()) {
-            Some(coming) => crate::coming::card_time(api, &coming.hub, &coming.way, &job.target, &job.size).await.0 as u64,
-            None => 0,
-        },
-        None => api.calcifer.prior_ms(&job.target, &picture.name, &job.size),
+    let timed = async {
+        match &picture.ready_at_ms {
+            Some(_) => match api.machines.coming(&picture.name, now_ms()) {
+                Some(coming) => crate::coming::card_time(api, &coming.way, &job.target, &job.size).0 as u64,
+                None => 0,
+            },
+            None => api.calcifer.prior_ms(&job.target, &picture.name, &job.size),
+        }
+    };
+    crate::private_io::context(job.scope.clone().or_else(crate::private_io::current), timed).await
+}
+
+/// `picture` as `scope`'s project sees it (cl-1047): `local` with the installs its project's runs made in that project's own worker area,
+/// which the machine's frame never lists, so a job of its local code isn't quoted an install it has. Any other machine, one on its way, or
+/// no scope: as it is.
+pub(crate) async fn scoped_picture(api: &Arc<Api>, picture: &Picture, scope: Option<&crate::private_io::Scope>) -> Picture {
+    let mut scoped = picture.clone();
+    let Some(scope) = scope.filter(|_| picture.ready_at_ms.is_none() && picture.name.eq_ignore_ascii_case("local")) else { return scoped };
+    for held in api.machines.project_holds(scope.clone()).await {
+        if !scoped.frame.environments.iter().any(|listed| listed.installation == held.installation) {
+            scoped.frame.environments.push(held);
+        }
     }
+    scoped
 }
 
 /// `job` as the estimator asks it, with its `prior_ms` there.
@@ -215,16 +236,21 @@ pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<V
 }
 
 /// `offers` from what each machine last said, for a quote that changes nothing (cl-1004: an estimate shown before a render): a stopped
-/// `local` isn't started, a machine on another minor isn't updated, and none is asked; one on its way as it will picture itself.
+/// `local` isn't started, a machine on another minor isn't updated, and none is asked; one on its way as it will picture itself. `local`
+/// as the jobs' project sees it (`scoped_picture`).
 pub(crate) async fn offers_now(api: &Arc<Api>, jobs: &[Job]) -> (Vec<Vec<Offer>>, Vec<Result<Picture, String>>) {
     let now = now_ms();
     let machines = machines_of(jobs);
+    let scope = jobs.iter().find_map(|job| job.scope.clone());
     let mut pictured = vec![];
     for on in &machines {
         pictured.push(match on {
             On::Machine(name) => match api.machines.coming(name, now) {
                 Some(coming) => Ok(crate::coming::picture(api, &coming).await),
-                None => last_picture(api, on, name),
+                None => match last_picture(api, on, name) {
+                    Ok(picture) => Ok(scoped_picture(api, &picture, scope.as_ref()).await),
+                    unpictured => unpictured,
+                },
             },
             _ => Err("it isn't rented yet".into()),
         });

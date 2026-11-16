@@ -42,3 +42,20 @@ fi
 kill "$page" 2> /dev/null; wait "$page" 2> /dev/null
 in_project "$dir/encrypted" --json vault lock > "$dir/lock.json" 2>&1 || check "idle-page: the encrypted project doesn't lock: $(tail -c 300 "$dir/lock.json")"
 }
+
+# cl-1005: Calcifer holding an unlocked encrypted project open, nothing else asked of it, wakes on the vault's deadlines and what
+# it's told, not each second: under one wakeup a second over 60 s, after 30 to settle. With no page it woke 18 times a minute
+# (11-12, e2e 43334186069); a per-second vault sweep is at least two a second.
+idle_vault() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "Calcifer with an unlocked encrypted project open wakes on its deadlines, not each second (cl-1005)"
+local dir=$OUT/idle-vault
+mkdir -p "$dir" && printf '%s\n' 'synthetic idle vault passphrase' > "$dir/passphrase" && chmod 600 "$dir/passphrase"
+cozy --json new "$dir/project" --passphrase-file "$dir/passphrase" --recovery-out "$dir/recovery" > "$dir/new.json" 2>&1 \
+  || { check "idle-vault: new encrypted project: $(tail -c 300 "$dir/new.json")"; return; }
+in_project "$dir/project" --json vault status > "$dir/status.json" 2>&1
+grep -q '"state": *"unlocked"' "$dir/status.json" || { check "idle-vault: the new project isn't unlocked: $(tail -c 300 "$dir/status.json")"; return; }
+python3 "$here/idle.py" 30 60 "$OUT/idle-vault.json" calcifer=1 > "$dir/idle.out" 2> "$OUT/idle-vault.err" \
+  || check "idle-vault: $(tail -c 400 "$OUT/idle-vault.err")"
+in_project "$dir/project" --json vault lock > "$dir/lock.json" 2>&1 || check "idle-vault: the project doesn't lock: $(tail -c 300 "$dir/lock.json")"
+}

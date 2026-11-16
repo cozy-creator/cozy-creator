@@ -1,5 +1,4 @@
-/* In place, under the tool it sets (Paul 11-05: no pop-ups over the canvas; cl-958): the tool line widens to hold it, and Focus gives it the
-   fields' room while it's open (FocusedViewport.css). */
+/* Under the tool it sets (cl-958); in Focus it opens in front of the picture instead (FocusedViewport.css, Paul 11-15). */
 .model-picker {
   display: flex;
   flex-direction: column;

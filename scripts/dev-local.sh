@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Watch this checkout and install successful incremental builds into the local Cozy.
-# Requires watchexec, pnpm, Python 3, and the pinned Rust toolchain.
-# Run with --once for one build. The default watches until stopped.
+# Keep the local Cozy on this checkout's RC branch (cl-1029): follow the branch's head, build, install the CLI, restart Calcifer
+# once it is idle, and say when local's TensorD (which Calcifer moves to the installed cozy once this computer is at rest) runs
+# it too. Local edits to the checkout build the same way. Requires watchexec, pnpm, Python 3, and the pinned Rust toolchain.
+# Run with --once for one build, --follow for the follower alone. The default follows and watches until stopped.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -12,7 +13,57 @@ export CARGO_INCREMENTAL=1
 mkdir -p "$CARGO_TARGET_DIR"
 cd "$root"
 
+say() { printf '%s %s\n' "$(date -Is)" "$*"; }
+
+# One look at the branch's head (git can't tell us it moved: one fetch a minute): true when the checkout fast-forwarded to it.
+# Only on an rc/* branch, only when clean, never past a local commit. Merges in quick succession land as one: it waits for the
+# branch to hold still for COZY_DEV_FOLLOW_SETTLE_S, then takes the newest head. A release renames the RC (rc/0.25.0 ->
+# rc/0.26.0): it follows the newest rc/X.Y.Z that contains its commit.
+skipped=
+skip() { [[ $1 == "$skipped" ]] || say "follow: $1"; skipped=$1; return 1; }
+follow_once() {
+    local branch head next newest
+    branch=$(git symbolic-ref --short -q HEAD) || { skip "not on a branch"; return 1; }
+    [[ $branch == rc/* ]] || { skip "on $branch, not an rc/* branch"; return 1; }
+    if ! git fetch -q origin "$branch" 2> /dev/null; then
+        newest=$(git ls-remote --heads origin 'rc/*' | sed -n 's#.*refs/heads/\(rc/[0-9]*\.[0-9]*\.[0-9]*\)$#\1#p' | sort -V | tail -1)
+        [[ -n $newest && $newest != "$branch" ]] && git fetch -q origin "$newest" && git merge-base --is-ancestor HEAD "origin/$newest" \
+            || { skip "origin has no $branch, and no newer RC holds this commit"; return 1; }
+        git branch -m "$branch" "$newest" && git branch -q -u "origin/$newest" || return 1
+        say "follow: $branch was released; following $newest"
+        branch=$newest
+    fi
+    head=$(git rev-parse "origin/$branch")
+    [[ $head != "$(git rev-parse HEAD)" ]] || { skipped=; return 1; }
+    [[ -z $(git status --porcelain) ]] || { skip "the checkout has uncommitted changes; it follows $branch once they're gone"; return 1; }
+    git merge-base --is-ancestor HEAD "$head" || { skip "the checkout has commits origin/$branch lacks"; return 1; }
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        sleep "${COZY_DEV_FOLLOW_SETTLE_S:-30}"
+        git fetch -q origin "$branch" 2> /dev/null || break
+        next=$(git rev-parse "origin/$branch")
+        [[ $next != "$head" ]] || break
+        head=$next
+    done
+    # Never under a build reading the tree.
+    exec 7>"$CARGO_TARGET_DIR/build.lock"
+    flock 7
+    local was
+    was=$(git rev-parse --short HEAD)
+    git merge -q --ff-only "$head" || { exec 7>&-; skip "origin/$branch doesn't fast-forward"; return 1; }
+    exec 7>&-
+    skipped=
+    say "follow: $branch $was -> $(git rev-parse --short HEAD) ($(git rev-list --count "$was..HEAD") commits)"
+}
+
+if [[ ${1:-} == --follow ]]; then
+    while :; do
+        if follow_once; then "$root/scripts/dev-local.sh" --once || say "follow: the build failed; the next move or edit tries again"; fi
+        sleep "${COZY_DEV_FOLLOW_EVERY_S:-60}"
+    done
+fi
+
 if [[ ${1:-} != --once ]]; then
+    "$root/scripts/dev-local.sh" --follow &
     exec watchexec --debounce 500ms --on-busy-update queue --shell none \
         --watch crates --watch web --watch vendor --watch scripts/dev-local.sh \
         --watch scripts/prepare-securefs.py --watch scripts/restart-calcifer-when-idle.py \
@@ -111,18 +162,81 @@ else:
 PYTHON
 }
 
-restart() { python3 "$root/scripts/restart-calcifer-when-idle.py" --wait "${COZY_DEV_RESTART_WAIT_S:-600}"; }
+# Calcifer restarts only once it serves nothing: an upload, a publish or a page's write in flight is never cut (cl-1029).
+restart() { python3 "$root/scripts/restart-calcifer-when-idle.py" --wait "${COZY_DEV_RESTART_WAIT_S:-inf}"; }
+
+# What runs now, in one line: the checkout's commit, the CLI, Calcifer, and local's TensorD. Calcifer moves local's TensorD to the
+# installed cozy once this computer has been at rest (crates/calcifer/src/rc.rs); this waits for its machine.updated at most
+# COZY_DEV_TENSORD_WAIT_S, then says what it waits on instead.
+versions() {
+exec 9>&-
+python3 - "$installed" "${COZY_DEV_TENSORD_WAIT_S:-300}" "$(git rev-parse --short HEAD)" "$1" <<'PYTHON'
+import json
+import subprocess
+import sys
+import time
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+
+installed, wait, commit, what = sys.argv[1], float(sys.argv[2]), sys.argv[3], sys.argv[4]
+cli = subprocess.check_output([installed, "--version"], text=True).strip().removeprefix("cozy ")
+holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
+
+
+def local() -> dict:
+    shown = subprocess.run([installed, "--json", "machine", "show", "local"], capture_output=True, text=True, timeout=60)
+    return json.loads(shown.stdout) if shown.returncode == 0 else {}
+
+
+def tensord(machine: dict) -> str:
+    return (machine.get("status") or {}).get("version") or "not running"
+
+
+machine = local()
+waits = tensord(machine) not in (cli, "not running") and not machine.get("held") and machine.get("rc")
+if waits and wait > 0:
+    deadline = time.monotonic() + wait
+    request = urllib.request.Request(
+        f"http://{holder['address']}/v1/events",
+        headers={"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3"},
+    )
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30) as stream:
+            for raw in stream:
+                if time.monotonic() > deadline:
+                    break
+                line = raw.decode(errors="replace").strip()
+                if not line.startswith("data: "):
+                    continue
+                event = json.loads(line[6:])
+                if event.get("type") == "machine.updated" and event.get("machine", {}).get("name") == "local":
+                    machine = event["machine"]
+                    if tensord(machine) == cli or machine.get("held"):
+                        break
+    except (OSError, ValueError):
+        machine = local() or machine
+running = tensord(machine)
+said = f"local TensorD {running}"
+if machine.get("held"):
+    said += f" (held by hand on {machine['held']}: `cozy machine update local` lets it follow again)"
+elif running not in (cli, "not running"):
+    said += f" ({(machine.get('rc') or {}).get('detail') or 'it moves to the installed cozy at its next update'})"
+stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+print(f"{stamp} local Cozy {what} at {commit}: CLI {cli} · Calcifer {holder.get('version', '?')} · {said}", flush=True)
+PYTHON
+}
+
 if cmp --silent "$staged" "$installed"; then
     if ! ready; then
         restart
         ready
     fi
-    printf '%s installed Cozy already matches this build\n' "$(date -Is)"
+    versions "already matched this build"
     exit 0
 fi
 cp --reflink=auto -p "$installed" "$HOME/.cozy/bin/.cozy-previous"
 mv -f "$staged" "$installed"
 restart
 ready
-printf '%s local CLI and Calcifer updated in %ss\n' "$(date -Is)" "$((SECONDS - started))"
-"$installed" --version
+versions "updated in $((SECONDS - started))s"

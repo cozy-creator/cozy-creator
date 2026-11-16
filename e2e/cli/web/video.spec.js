@@ -1,12 +1,13 @@
 // video (cl-973 core cell 19): videos at rest and in Focus, and one rendered in segments (project/segments.py, H3's stand-in). At rest each
 // shows its poster, not black for a clip that opens dark, then a muted looping preview. In Focus a video plays on the transport, its sound
-// on, and its stop is a square. Two segments rendered: segment 1 plays on its take's tile while segment 2 renders, the run has reached its
+// on; a click pauses its sharp current frame and another resumes, with no corner Stop. Two segments rendered: segment 1 plays on its take's tile while segment 2 renders, the run has reached its
 // frames and its beat is done on the box (cl-885); played in Focus as the
 // take lands, the joined take, one video with its sound, takes its place within 2 px and plays on. Its segments are blocks under the
-// player and a block seeks; Redo says what it keeps and asks for segment 2 alone.
+// player and a block seeks; Redo says what it keeps and asks for segment 2 alone. Another box continues the take from its end (cl-951): chosen
+// in its draft, said there, and sent as the take and its last frame.
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, focus, fixtureTool, DARK_OPEN, canvasCard, canvasVisible, hoverBox } = require('./fixtures');
+const { test, expect, box, focus, fixtureTool, DARK_OPEN, canvasCard, canvasVisible, hoverBox, screenshotPixels } = require('./fixtures');
 const { ffmpeg, fit, leave, rest, posterSpread } = require('./hands');
 
 const SEGMENTS = fixtureTool('segments.py/segments');
@@ -24,16 +25,22 @@ function clip(path) {
   return readFileSync(path);
 }
 
+// A hybrid desktop/touch context exercises real mouse clicks and taps on the same focused player.
+test.use({ hasTouch: true });
+
 const playing = (video) => video.evaluate((el) => ({ at: el.currentTime, paused: el.paused, muted: el.muted, volume: el.volume, loop: el.loop, controls: el.controls, ready: el.readyState, duration: el.duration }));
 
-test('video', async ({ page, project, api, guards }) => {
+test('video', async ({ page, project, api, guards, cli }) => {
+  await cli.json('machine', 'use', 'local');
   // Held on purpose: the Redo's render is asked, and answered here.
   guards.allow(/status of 409\b.*\/runs$/);
   await project.import(clip(test.info().outputPath('walk.mp4')), { name: 'walk', at: { x: 0, y: 0 } });
   await project.import(DARK_OPEN, { name: 'dark', at: { x: 360, y: 0 } });
   await project.add({ name: 'shot', tool: SEGMENTS, kind: 'video', fields: { summary: 'Along the coast, segment after segment.', beats: [{ description: 'The cliffs.', duration: SECONDS }, { description: 'The harbour.', duration: SECONDS }], wait: WAIT }, at: { x: 0, y: 320 } });
+  // cl-951's continuation: another box of the same tool, no take of its own yet.
+  await project.add({ name: 'next', tool: SEGMENTS, kind: 'video', fields: { summary: 'On past the harbour.', beats: [{ description: 'The lighthouse.', duration: SECONDS }] }, at: { x: 360, y: 320 } });
   await expect.poll(async () => (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.some((tool) => tool.local && tool.id === SEGMENTS), { message: 'the project lists its local tool' }).toBe(true);
-  for (const name of ['walk', 'dark', 'shot']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
+  for (const name of ['walk', 'dark', 'shot', 'next']) await expect.poll(() => canvasVisible(page, name)).toBe(true);
   await fit(page);
   const region = page.getByRole('region', { name: 'Focused asset' });
 
@@ -52,7 +59,7 @@ test('video', async ({ page, project, api, guards }) => {
     }
   });
 
-  await test.step('in Focus it plays on the transport with its sound, and stops by a square', async () => {
+  await test.step('in Focus video clicks pause the sharp current frame and resume, with no corner Stop', async () => {
     await focus(page, 'walk');
     await region.locator('.tl-transport').getByRole('button', { name: 'Play', exact: true }).click();
     const live = region.locator('video.live');
@@ -60,12 +67,41 @@ test('video', async ({ page, project, api, guards }) => {
     expect.soft(await playing(live), 'its sound on, the transport its control').toMatchObject({ paused: false, muted: false, controls: false });
     expect.soft((await playing(live)).volume, 'its volume').toBeGreaterThan(0);
     await expect.soft(region.locator('.tl-transport').getByRole('button', { name: 'Pause', exact: true }), 'the transport says Pause').toBeVisible();
-    const stop = region.getByRole('button', { name: 'Stop', exact: true });
-    await expect.soft(stop, 'its stop').toHaveAttribute('title', 'Stop');
-    await expect.soft(stop.locator('svg'), 'a square, not ✕').toHaveAttribute('data-icon', 'stop');
-    await stop.click();
-    await expect(live, 'stopped').toHaveCount(0);
+    await expect.soft(region.getByRole('button', { name: 'Stop', exact: true }), 'no corner Stop on the video').toHaveCount(0);
+    const held = await live.elementHandle();
+    const point = await live.boundingBox();
+    await page.mouse.click(point.x + point.width / 2, point.y + point.height / 2);
+    await expect.poll(async () => (await playing(live)).paused, { message: 'clicking the video pauses once' }).toBe(true);
+    await expect(live, 'the decoded video remains visible while paused').toBeVisible();
+    const paused = await playing(live);
+    expect.soft(await held.evaluate(el => ({ connected: el.isConnected, originalSize: [el.videoWidth, el.videoHeight], decoded: el.readyState >= 2 && Boolean(el.currentSrc), filter: getComputedStyle(el).filter })),
+      'pause keeps the original decoded player, not a thumbnail replacement').toEqual({ connected: true, originalSize: [320, 180], decoded: true, filter: 'none' });
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    const first = screenshotPixels(await live.screenshot({ path: test.info().outputPath('video-paused-first.png'), scale: 'css' }));
+    // A declared 12-frame observation window: no playing clock, lower-resolution swap or changing pixels after pause.
+    await page.evaluate(() => new Promise(done => { let left = 12; const tick = () => --left ? requestAnimationFrame(tick) : done(); requestAnimationFrame(tick); }));
+    expect.soft((await playing(live)).at, 'the paused playhead holds its frame').toBeCloseTo(paused.at, 3);
+    const still = screenshotPixels(await live.screenshot({ path: test.info().outputPath('video-paused-held.png'), scale: 'css' }));
+    expect.soft([still.width, still.height], 'pause keeps the same displayed size').toEqual([first.width, first.height]);
+    let changed = 0;
+    for (let y = 2; y < Math.min(first.height, still.height) - 2; y += 4) for (let x = 2; x < Math.min(first.width, still.width) - 2; x += 4) {
+      if (first(x, y).some((value, channel) => value !== still(x, y)[channel])) changed++;
+    }
+    expect.soft(changed, 'the paused decoded frame keeps identical screenshot pixels').toBe(0);
+    await page.touchscreen.tap(point.x + point.width / 2, point.y + point.height / 2);
+    await expect.poll(async () => { const now = await playing(live); return !now.paused && now.at > paused.at + 0.1; }, { message: 'tapping the paused video resumes once' }).toBe(true);
+    // The bottom transport still controls pause/seek/play, and natural end keeps the final decoded frame too.
+    await region.locator('.tl-transport').getByRole('button', { name: 'Pause', exact: true }).click();
+    await expect.poll(async () => (await playing(live)).paused).toBe(true);
+    await region.getByRole('slider', { name: 'Scrub', exact: true }).focus();
+    await page.keyboard.press('End');
+    await expect.poll(async () => (await playing(live)).at, { message: 'the native scrubber seeks near the end while paused' }).toBeGreaterThan(9.8);
+    await region.locator('.tl-transport').getByRole('button', { name: 'Play', exact: true }).click();
+    await expect.poll(() => live.evaluate(el => el.ended && el.paused && el.readyState >= 2), { message: 'natural end retains its decoded final frame' }).toBe(true);
+    await expect(live).toBeVisible();
     await leave(page);
+    expect.soft(await held.evaluate(el => !el.isConnected && !el.getAttribute('src') && el.paused), 'leaving Focus still releases the video source').toBe(true);
+    await held.dispose();
   });
 
   let run;
@@ -151,5 +187,28 @@ test('video', async ({ page, project, api, guards }) => {
     await expect.poll(() => asked.length, { message: 'its render asked' }).toBe(1);
     expect.soft(asked[0].pickup, 'segment 1 kept, segment 2 asked for').toMatchObject({ take: '<shot.1>', out_frame: SEAM });
     expect.soft((await project.asset('shot')).versions, 'no take made').toBe(1);
+  });
+
+  await test.step('another box continues the take from its end: chosen in its draft, said there, and sent', async () => {
+    // cl-951 (Paul, 11-12: "it has to be obvious that we're continuing another video").
+    const main = (await project.asset('shot')).prefixes[0].main;
+    const last = Math.round((main.duration_ms / 1000) * (main.fps || FPS));
+    // Its end on the tool's pickup grid, as H3's takes end on theirs (ranges.ts pickupAt).
+    const snap = (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`)).tools.find((tool) => tool.id === SEGMENTS)?.pickup;
+    const end = snap ? Math.max(snap.first, snap.offset + Math.floor((last - snap.offset) / snap.every) * snap.every) : last;
+    await page.unrouteAll({ behavior: 'wait' });
+    const asked = [];
+    await page.route((url) => /\/v1\/projects\/[^/]+\/runs$/.test(url.pathname), (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      asked.push(route.request().postDataJSON());
+      return route.fulfill({ status: 409, json: { error: { kind: 'conflict', code: 'e2e_held', message: 'held by the cell' } } });
+    });
+    await focus(page, 'next');
+    await region.getByRole('combobox', { name: 'Continue a video from its end', exact: true }).selectOption({ label: '<shot.1>' });
+    await expect(region.locator('.lead-in .lead-in-words b')).toHaveText(/^Continues <shot\.1> from its end · /);
+    expect.soft(asked, 'choosing renders nothing until Render').toEqual([]);
+    await region.getByRole('button', { name: 'Render', exact: true }).click();
+    await expect.poll(() => asked.length, { message: 'its render asked' }).toBe(1);
+    expect.soft(asked[0].pickup, `from <shot.1>'s end, frame ${end} of ${last}`).toMatchObject({ take: '<shot.1>', out_frame: end, beats_from: 0 });
   });
 });

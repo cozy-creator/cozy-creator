@@ -121,7 +121,7 @@ pub(crate) async fn serve(
         let stream = match listener.accept().await {
             Ok((stream, _)) => {
                 if failed > 0 {
-                    tracing::warn!("the listener accepts connections again, after {failed} failed accepts");
+                    tracing::warn!(target: crate::config::MACHINE, "the listener accepts connections again, after {failed} failed accepts");
                     failed = 0;
                 }
                 stream
@@ -130,7 +130,7 @@ pub(crate) async fn serve(
             // once a streak: while it lasts no client or Hub reaches this machine (th-373).
             Err(error) => {
                 if failed == 0 {
-                    tracing::warn!("the listener cannot accept connections, so nothing reaches this machine: {error}");
+                    tracing::warn!(target: crate::config::MACHINE, "the listener cannot accept connections, so nothing reaches this machine: {error}");
                 }
                 failed += 1;
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -314,13 +314,13 @@ async fn prove_readiness(port: u16, readiness: Arc<Readiness>, id: MeasuredIdent
         .payload(),
     );
     match result {
-        Ok(true) => tracing::info!("readiness sealed (listener {listener_bound}, foreign capability refused {foreign_credential_refused})"),
-        Ok(false) => tracing::info!("this boot's retained readiness still holds"),
+        Ok(true) => tracing::info!(target: crate::config::MACHINE, "readiness sealed (listener {listener_bound}, foreign capability refused {foreign_credential_refused})"),
+        Ok(false) => tracing::info!(target: crate::config::MACHINE, "this boot's retained readiness still holds"),
         Err(error) => {
             // A service that cannot prove its boot ends, so its parent restarts or rolls it back
             // and whoever launched it hears the reason, instead of waiting on a machine that
             // will never be ready.
-            tracing::error!("readiness not proved: {error}");
+            tracing::error!(target: crate::config::MACHINE, "readiness not proved: {error}");
             crate::machine::supervise::leave(78);
         }
     }

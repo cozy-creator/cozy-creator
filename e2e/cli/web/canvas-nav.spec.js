@@ -1,6 +1,6 @@
 // canvas-nav (cl-973 core cell 15), on 300 boxes made by one API batch: − and + step along the zooms about the middle of what's visible; the
-// zoom menu's Zoom to fit shows every box and its 100% is scale 1; Shift+1 and Shift+0 do what they do; at 11% a pan by the wheel keeps all 300
-// present when in view. The dots follow the canvas's scale and are never over a picture. A box's name as the canvas zooms (Paul, 11-13: "the text size
+// zoom menu's Zoom to fit shows every box and its 100% is scale 1; Shift+1 and Shift+0 do what they do; at 11% each wheel pans and all 300
+// stay present when in view. The dots follow the canvas's scale and are never over a picture. A box's name as the canvas zooms (Paul, 11-13: "the text size
 // should be limited ... rather than just truncating"): pictures and words with short and long names, stacked and side by side as close as
 // the layout keeps them, zoomed by − from 100% to the farthest and back by +, then by the wheel: each box where it was, each name one line,
 // cut with an ellipsis where its box ends and whole under the pointer, on no box, no other name and not its own picture; so too at 100%,
@@ -85,7 +85,9 @@ function audit(names) {
 }
 
 async function passive(page) {
-  await page.mouse.move(2, 500);
+  // On open canvas, so no box is under the pointer at any zoom and none mounts its card.
+  const { x, y } = await openPoint(page);
+  await page.mouse.move(x, y);
   await expect(page.locator('.canvas-node')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.resources()?.scheduledFrame), { message: 'the passive scene is presented and idle' }).toBe(false);
 }
@@ -278,15 +280,20 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
       };
       requestAnimationFrame(step);
     }));
-    const end = Date.now() + 2000;
-    let count = 0, sign = 1;
-    while (Date.now() < end) {
-      if (++count % 40 === 0) sign = -sign;
+    // A wheel's sideways pan, 40 one way then back, through the window and for at least 12: each wheel moves the canvas, one way for one
+    // sign. How many fit in the window is the runner's pace, not the page's.
+    const end = Date.now() + 2000, moves = [];
+    let x = (await camera(page)).x, sign = 1;
+    while (Date.now() < end || moves.length < 12) {
+      if (moves.length && moves.length % 40 === 0) sign = -sign;
       await page.mouse.wheel(sign * 12, 0);
-      await page.evaluate(() => new Promise(done => requestAnimationFrame(done)));
+      const now = await page.evaluate(() => new Promise(done => requestAnimationFrame(() => done(document.querySelector('.canvas-root').canvasInspection.camera().x))));
+      moves.push({ sign, by: x - now });
+      x = now;
     }
     const panned = await sampling;
-    expect.soft(panned.places, 'the wheel pans the canvas').toBeGreaterThan(10);
+    const way = Math.sign(moves[0].by * moves[0].sign);
+    expect.soft(moves.flatMap((move, i) => (way && Math.sign(move.by * move.sign) === way ? [] : [{ wheel: i + 1, ...move }])), `each of the ${moves.length} wheels pans the canvas, one way for one sign`).toEqual([]);
     expect.soft(panned.fewestNames, `all ${COUNT} boxes stay on the canvas while it pans`).toBe(COUNT);
     expect.soft(panned.missing, `every box in view stays presented while it pans; fewest retained: ${panned.fewestSceneCards}`).toEqual([]);
     await canvasIdle(page);

@@ -71,7 +71,7 @@ interface Drawn {
   pictures: Map<string, Picture>
   texts: Map<string, Text>
   fullTexts: Map<string, string>
-  chips: { text: string; box: Box; missing: boolean }[]
+  chips: { text: string; box: Box; missing: boolean; unused: boolean }[]
   checker?: TilingSprite
   hits: { box: Box; part: HitPart }[]
   presentation: Presentation
@@ -89,6 +89,10 @@ interface Drawn {
   stateDot?: Box
   meterBox?: Box
   alive: boolean
+  /** Its native card stands over it: kept, unseen, with its pictures, so leaving it shows the same pixels at once. */
+  hidden?: boolean
+  /** Its last paint threw: drawn as a broken tile until a paint succeeds. */
+  broken?: boolean
 }
 
 const inside = (point: { x: number; y: number }, box: Box) => point.x >= box.x && point.y >= box.y && point.x <= box.x + box.w && point.y <= box.y + box.h
@@ -113,6 +117,8 @@ export class PixiScene {
   /** Method-call diagnostics, not renderer frames or GPU draw calls. */
   private sceneUpdates = 0
   private cardPaints = 0
+  /** What each card's failed paint said, said once per card and message. */
+  private faults = new Map<string, string>()
   private clock?: ReturnType<typeof setTimeout>
   private fontEpoch = 0
   private paintZoom = 1
@@ -123,7 +129,7 @@ export class PixiScene {
   private selectionScale = 1
   private viewBounds: Box = { x: 0, y: 0, w: 0, h: 0 }
   private checkers = new Map<string, Texture>()
-  private palette?: { theme: SceneUpdate["theme"]; colors: Palette; glow: number; alpha: number; chip: number; chipInk: number }
+  private palette?: { theme: SceneUpdate["theme"]; colors: Palette; glow: number; alpha: number; chip: number; chipInk: number; unused: number }
   private measure = document.createElement("canvas").getContext("2d")!
   private segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
   private reducedMotion = matchMedia("(prefers-reduced-motion: reduce)")
@@ -165,7 +171,8 @@ export class PixiScene {
       const gap = new Color(css.getPropertyValue("--select-gap").trim() || base.gap)
       const glow = new Color(css.getPropertyValue("--select-glow").trim() || base.select)
       this.palette = { theme: input.theme, colors: { ...base, select: select.toNumber(), gap: gap.toNumber() }, glow: glow.toNumber(), alpha: glow.alpha,
-        chip: new Color(css.getPropertyValue("--ember").trim() || base.select).toNumber(), chipInk: new Color(css.getPropertyValue("--ember2").trim() || base.ink).toNumber() }
+        chip: new Color(css.getPropertyValue("--ember").trim() || base.select).toNumber(), chipInk: new Color(css.getPropertyValue("--ember2").trim() || base.ink).toNumber(),
+        unused: new Color(css.getPropertyValue("--ood").trim() || base.failed).toNumber() }
     }
     const margin = 96 / zoom
     const screen: Box = { x: -input.camera.x / zoom - margin, y: -input.camera.y / zoom - margin, w: input.screen.width / zoom + margin * 2, h: input.screen.height / zoom + margin * 2 }
@@ -175,8 +182,9 @@ export class PixiScene {
     const inView = (box: Box) => intersects({ ...box, y: box.y - 40, h: box.h + 160 }, screen)
     for (const node of input.nodes) {
       let drawn = this.records.get(node.id)
+      try {
       // A target outside the viewport must not remove a card while its visible pixels are still sliding there.
-      if (input.hiddenNames?.has(node.name) || (!inView(node.box) && !((node.gliding || drawn?.glide) && drawn && inView(this.glidedBox(drawn, now))))) continue
+      if (!inView(node.box) && !((node.gliding || drawn?.glide) && drawn && inView(this.glidedBox(drawn, now)))) continue
       live.add(node.id)
       if (!drawn) {
         const container = new Container({ eventMode: "none" })
@@ -186,6 +194,10 @@ export class PixiScene {
         drawn = { node, container, ground, pixels, ink, labels, pictures: new Map(), texts: new Map(), fullTexts: new Map(), chips: [], hits: [], presentation: present(this.options.store, node), signature: "", tools, context: node.runContext, fontEpoch: this.fontEpoch, alive: true }
         this.records.set(node.id, drawn)
       }
+      // Under its native card it is only hidden, never dropped: re-made on leaving, its picture was decoded again and flashed.
+      const hidden = Boolean(input.hiddenNames?.has(node.name))
+      if (Boolean(drawn.hidden) !== hidden) { drawn.hidden = hidden; drawn.container.visible = !hidden }
+      if (hidden) continue
       const previous = drawn.node
       const moved = previous.box.x !== node.box.x || previous.box.y !== node.box.y || previous.box.w !== node.box.w || previous.box.h !== node.box.h
       if (node.dragging || this.reducedMotion.matches || !this.visible || (moved && !node.gliding)) drawn.glide = undefined
@@ -214,6 +226,12 @@ export class PixiScene {
       this.waveFor(drawn)
       this.loadingFor(drawn)
       this.landingFor(drawn)
+      } catch (error) {
+        // One card's failure never costs the others their paint (B1: one throw dropped the whole update and blanked the canvas).
+        live.add(node.id)
+        if (drawn) this.fault(drawn, error)
+        else this.said(node.id, node.name, error)
+      }
     }
     for (const [id, drawn] of this.records) if (!live.has(id)) { this.remove(drawn); this.records.delete(id) }
     this.scheduleClock()
@@ -297,6 +315,7 @@ export class PixiScene {
     body.x -= node.box.x; body.y -= node.box.y
     const { ground, ink } = drawn
     ground.clear(); ink.clear()
+    if (drawn.broken) { drawn.broken = false; drawn.pixels.visible = drawn.labels.visible = true }
     drawn.chips = []
     drawn.stateDot = undefined; drawn.meterBox = undefined
     drawn.hits = []
@@ -387,9 +406,9 @@ export class PixiScene {
 
   /** Native text shaping with actual chip geometry; it owns no editor, HTML snapshot or additional interaction model. */
   private words(drawn: Drawn, labels: Set<string>, x: number, y: number, width: number, lines: number, colors: Palette) {
-    const runs: { text: string; chip: boolean; missing: boolean; x: number; row: number; width: number }[] = []
+    const runs: { text: string; chip: boolean; missing: boolean; unused: boolean; x: number; row: number; width: number }[] = []
     let row = 0, cursor = 0, cut = false
-    const add = (text: string, chip: boolean, missing: boolean) => {
+    const add = (text: string, chip: boolean, missing = false, unused = false) => {
       const font = chip ? BODY * 0.9 : BODY
       let length = this.textWidth(text, font, chip ? MONO : SANS, chip) + (chip ? 10 : 0)
       if (cursor && cursor + length > width) { row++; cursor = 0 }
@@ -398,7 +417,7 @@ export class PixiScene {
       if (length > width) { text = this.truncate(text, width - (chip ? 10 : 0), font, chip ? MONO : SANS, chip); length = Math.min(width, this.textWidth(text, font, chip ? MONO : SANS, chip) + (chip ? 10 : 0)) }
       const prior = runs.at(-1)
       if (!chip && prior && !prior.chip && prior.row === row) { prior.text += text; prior.width += length }
-      else runs.push({ text, chip, missing, x: cursor, row, width: length })
+      else runs.push({ text, chip, missing, unused, x: cursor, row, width: length })
       cursor += length
       return true
     }
@@ -407,17 +426,17 @@ export class PixiScene {
       if (part.mention) {
         const mention = part.text.slice(1, -1)
         const missing = Boolean(drawn.node.view.asset?.missing?.includes(mention) || this.options.store.mentionOf(mention, drawn.node.name)?.gone)
-        add(chipWords(mention), true, missing)
+        add(chipWords(mention), true, missing, !missing && drawn.presentation.unused.includes(mention))
       } else for (const token of part.text.split(/(\s+)/)) {
         if (cut) break
         if (token.includes("\n")) { row++; cursor = 0; if (row >= lines) cut = true; continue }
-        if (this.textWidth(token, BODY, SANS) <= width) { add(token, false, false); continue }
+        if (this.textWidth(token, BODY, SANS) <= width) { add(token, false); continue }
         let piece = ""
         for (const { segment } of this.segmenter.segment(token)) {
-          if (piece && this.textWidth(piece + segment, BODY, SANS) > width) { if (!add(piece, false, false)) break; piece = "" }
+          if (piece && this.textWidth(piece + segment, BODY, SANS) > width) { if (!add(piece, false)) break; piece = "" }
           piece += segment
         }
-        if (!cut && piece) add(piece, false, false)
+        if (!cut && piece) add(piece, false)
       }
     }
     if (cut && runs.length) {
@@ -429,10 +448,12 @@ export class PixiScene {
       const top = y + run.row * BODY * 1.35 + (run.chip ? BODY * 0.05 : 0)
       if (run.chip) {
         const box = { x: x + run.x, y: top, w: run.width, h: size * 1.25 }
-        drawn.ink.roundRect(box.x, box.y, box.w, box.h, 4).fill({ color: run.missing ? colors.failed : this.palette!.chip, alpha: 0.13 })
-        this.label(drawn, labels, `words-chip-${index}`, run.text, box.x + 5, top, Math.max(0, box.w - 10), size, run.missing ? colors.failed : this.palette!.chipInk, true, true)
-        if (run.missing) drawn.ink.moveTo(box.x + 5, box.y + box.h / 2).lineTo(box.x + box.w - 5, box.y + box.h / 2).stroke({ width: 1, color: colors.failed })
-        drawn.chips.push({ text: run.text, box, missing: run.missing })
+        // Gone, or its tool can't use it here: struck through, as Focus's `.chip.missing` and `.chip.unused` are.
+        const struck = run.missing ? colors.failed : run.unused ? this.palette!.unused : undefined
+        drawn.ink.roundRect(box.x, box.y, box.w, box.h, 4).fill({ color: struck ?? this.palette!.chip, alpha: 0.13 })
+        this.label(drawn, labels, `words-chip-${index}`, run.text, box.x + 5, top, Math.max(0, box.w - 10), size, struck ?? this.palette!.chipInk, true, true)
+        if (struck !== undefined) drawn.ink.moveTo(box.x + 5, box.y + box.h / 2).lineTo(box.x + box.w - 5, box.y + box.h / 2).stroke({ width: 1, color: struck })
+        drawn.chips.push({ text: run.text, box, missing: run.missing, unused: run.unused })
       } else this.label(drawn, labels, index ? `words-${index}` : "words", run.text, x + run.x, top, Math.min(width - run.x, run.width + 1), size, colors.ink)
     })
   }
@@ -584,7 +605,7 @@ export class PixiScene {
       held.local = Boolean(request.local)
       held.content = hash ?? source.url ?? request.path
       held.failed = false
-      if (held.current?.key !== key) held.pending = this.cache.acquire(request, () => this.showPicture(drawn, held, true))
+      if (held.current?.key !== key) held.pending = this.cache.acquire(request, () => this.guard(drawn, () => this.showPicture(drawn, held, true)))
     }
     this.showPicture(drawn, held)
   }
@@ -755,6 +776,8 @@ export class PixiScene {
     let animated = false
     const zoom = Math.max(0.0001, this.input.camera.zoom)
     for (const drawn of this.records.values()) {
+      if (drawn.hidden) continue
+      try {
       if (drawn.glide) {
         if (this.reducedMotion.matches || now - drawn.glide.began >= GLIDE_MS) drawn.glide = undefined
         else animated = true
@@ -812,6 +835,7 @@ export class PixiScene {
           pulse(spread, alpha)
         }
       }
+      } catch (error) { this.fault(drawn, error) }
     }
     return animated
   }
@@ -872,18 +896,44 @@ export class PixiScene {
     latent.bitmap?.close()
   }
 
+  /** One card's work outside `update`: a throw is that card's alone (`fault`). */
+  private guard(drawn: Drawn, work: () => void) {
+    try { work() } catch (error) { this.fault(drawn, error) }
+  }
+
+  /** A card whose paint threw: said once, drawn as a broken tile (its frame crossed out, still selectable, its native card on hover). */
+  private fault(drawn: Drawn, error: unknown) {
+    this.said(drawn.node.id, drawn.node.name, error)
+    drawn.broken = true
+    try {
+      const { w, h } = drawn.node.box, colors = this.palette?.colors ?? COLORS.paper
+      drawn.pixels.visible = drawn.labels.visible = false
+      drawn.ground.clear().rect(0, 0, w, h).fill(colors.card).stroke({ width: 1, color: colors.failed })
+      drawn.ink.clear().moveTo(0, 0).lineTo(w, h).moveTo(w, 0).lineTo(0, h).stroke({ width: 1, color: colors.failed, alpha: 0.4 })
+      drawn.hits = [{ box: { x: 0, y: 0, w, h }, part: "body" }]
+    } catch { /* the tile itself can't be drawn: its space stays empty */ }
+    this.options.invalidate()
+  }
+
+  private said(id: string, name: string, error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (this.faults.get(id) === message) return
+    this.faults.set(id, message)
+    console.error(`The canvas couldn't draw ${name}:`, error)
+  }
+
   private scheduleClock() {
     if (this.clock || !this.visible || this.stopped) return
-    const ticking = (drawn: Drawn) => Boolean(drawn.presentation.progress?.time) && this.onScreen(drawn)
+    const ticking = (drawn: Drawn) => !drawn.hidden && Boolean(drawn.presentation.progress?.time) && this.onScreen(drawn)
     let needed = false
     for (const drawn of this.records.values()) if (ticking(drawn)) { needed = true; break }
     if (!needed) return
     this.clock = setTimeout(() => {
       this.clock = undefined
-      for (const drawn of this.records.values()) if (ticking(drawn)) {
+      for (const drawn of this.records.values()) if (ticking(drawn)) this.guard(drawn, () => {
         drawn.presentation = present(this.options.store, drawn.node)
         this.draw(drawn)
-      }
+      })
       this.options.invalidate()
       this.scheduleClock()
     }, 1000)
@@ -903,7 +953,7 @@ export class PixiScene {
     for (const drawn of this.records.values()) {
       const view = drawn.node.view
       const unseen = view.asset?.unseen
-      if (!unseen?.length || drawn.container.alpha <= 0 || this.options.store.get(drawn.node.name) !== view) continue
+      if (drawn.hidden || !unseen?.length || drawn.container.alpha <= 0 || this.options.store.get(drawn.node.name) !== view) continue
       const shown = shownOf(view)
       if (!shown || shown.number === undefined || !unseen.includes(shown.number)) continue
       const world = (box: Box): Box => ({ x: drawn.container.x + box.x * drawn.container.scale.x, y: drawn.container.y + box.y * drawn.container.scale.y, w: box.w * drawn.container.scale.x, h: box.h * drawn.container.scale.y })
@@ -922,7 +972,7 @@ export class PixiScene {
     const records = [...this.records.values()]
     for (const selected of [true, false]) for (let i = records.length - 1; i >= 0; i--) {
       const drawn = records[i]
-      if (drawn.node.selected !== selected || excluded?.has(drawn.node.id)) continue
+      if (drawn.hidden || drawn.node.selected !== selected || excluded?.has(drawn.node.id)) continue
       const local = { x: (point.x - drawn.container.x) / drawn.container.scale.x, y: (point.y - drawn.container.y) / drawn.container.scale.y }
       for (let n = drawn.hits.length - 1; n >= 0; n--) if (inside(local, drawn.hits[n].box)) return { name: drawn.node.name, part: drawn.hits[n].part }
     }
@@ -942,21 +992,24 @@ export class PixiScene {
   }
 
   resourceStats() {
-    let labels = 0, labelBytes = 0, loadedCards = 0, latentBytes = 0, activeLatents = 0
+    let labels = 0, labelBytes = 0, loadedCards = 0, latentBytes = 0, activeLatents = 0, visibleCards = 0, brokenCards = 0
     for (const drawn of this.records.values()) {
+      if (drawn.hidden) continue
+      visibleCards++
+      if (drawn.broken) brokenCards++
       labels += drawn.texts.size
       for (const label of drawn.texts.values()) labelBytes += Math.ceil(label.width) * Math.ceil(label.height) * (label.resolution ?? 1) ** 2 * 4
       if (drawn.pictures.get("main")?.current?.texture) loadedCards++
       if (drawn.latent) activeLatents++
       if (drawn.latent?.bitmap) latentBytes += drawn.latent.bitmap.width * drawn.latent.bitmap.height * 4
     }
-    return { ...this.cache.resourceStats(), totalCards: this.input?.nodes.length ?? 0, visibleCards: this.records.size, loadedCards, labels, estimatedLabelBytes: labelBytes, latentBytes, activeLatents, activeDecoders: 0, sceneUpdates: this.sceneUpdates, cardPaints: this.cardPaints }
+    return { ...this.cache.resourceStats(), totalCards: this.input?.nodes.length ?? 0, visibleCards, loadedCards, labels, estimatedLabelBytes: labelBytes, latentBytes, activeLatents, activeDecoders: 0, sceneUpdates: this.sceneUpdates, cardPaints: this.cardPaints, brokenCards }
   }
 
   /** Read-only geometry of actual retained display objects. This is diagnostics, never proof that the GPU presented their pixels. */
   inspect(name: string) {
     const drawn = [...this.records.values()].find((record) => record.node.name === name)
-    if (!drawn || !this.visible) return null
+    if (!drawn || !this.visible || drawn.hidden) return null
     const body = pictureBox(drawn.node)
     const main = drawn.pictures.get("main")
     const texture = main?.current?.texture
@@ -971,6 +1024,7 @@ export class PixiScene {
     return {
       body: paintedBody,
       transform: { x: drawn.container.x, y: drawn.container.y, scaleX, scaleY, alpha: drawn.container.alpha },
+      broken: Boolean(drawn.broken),
       glide: drawn.glide ? { active: true, durationMs: GLIDE_MS } : null,
       dragging: Boolean(drawn.node.dragging), offering: Boolean(drawn.node.dragging && drawn.node.offering),
       labels: Object.fromEntries([...drawn.texts].map(([key, label]) => [key, {
@@ -987,9 +1041,9 @@ export class PixiScene {
       landing: drawn.landing ? { active: true, scale: drawn.landing.scale, alpha: drawn.landing.alpha, durationMs: 260 } : null,
       references: [...drawn.pictures].filter(([key]) => key.startsWith("reference-")).map(([key, picture]) => ({ key, ready: picture.sprite.visible, ...world({ x: picture.sprite.x, y: picture.sprite.y, w: picture.sprite.width, h: picture.sprite.height })!, ...(/^(sha256:)?[0-9a-f]{64}$/i.test(picture.displayed ?? "") ? { sha: picture.displayed!.replace(/^sha256:/, "") } : {}) })),
       words: drawn.presentation.words,
-      chips: drawn.chips.map(chip => ({ text: chip.text, missing: chip.missing, ...world(chip.box)! })),
+      chips: drawn.chips.map(chip => ({ text: chip.text, missing: chip.missing, unused: chip.unused, ...world(chip.box)! })),
       media: {
-        ready: Boolean(texture), failed: Boolean(main?.failed), local, width: texture?.width ?? 0, height: texture?.height ?? 0,
+        ready: Boolean(texture), failed: Boolean(main?.failed), local, width: texture?.width ?? 0, height: texture?.height ?? 0, texture: texture?.uid ?? null,
         requestedWidth: this.resolution(body.w), resolution: local ? "local" : path.includes("/thumbs/") ? String(width) : "original",
         ...(sha ? { sha: sha.replace(/^sha256:/, "") } : {}),
       },

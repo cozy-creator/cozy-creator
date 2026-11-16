@@ -395,6 +395,8 @@ struct Listed {
     read_at: Option<SystemTime>,
     /// The last read that didn't answer: when, and why.
     failed: Option<(Instant, String)>,
+    /// A read going behind the list kept.
+    asking: bool,
 }
 
 impl Listed {
@@ -413,11 +415,23 @@ impl Listing {
             Some(read) => read,
             None => {
                 let kept = kept_listing(api, hub);
-                self.0.lock().expect("listing lock").entry(key).or_insert(kept).clone()
+                self.0.lock().expect("listing lock").entry(key.clone()).or_insert(kept).clone()
             }
         };
         if kept.age().is_some_and(|age| age < LISTED_FOR) {
             return (kept.tools, None);
+        }
+        // An older list is the answer at once, its read going behind it: a list waits on the Hub only when it has none (cl-1010).
+        if let Some(age) = kept.age() {
+            let failed = kept.failed.as_ref().filter(|(at, _)| at.elapsed() < ASK_AGAIN).map(|(_, why)| why.clone());
+            if failed.is_none() && self.begin_asking(&key) {
+                let (api, origin) = (api.clone(), hub.to_owned());
+                tokio::spawn(async move {
+                    let read = every_tool(&api, &origin).await;
+                    api.listing.keep(&origin, read.map_err(|why| format!("the Hub said {}", why.message)));
+                });
+            }
+            return (kept.tools, failed.map(|why| format!("the Hub's tools as read {} s ago: {why}", age.as_secs())));
         }
         let why = match &kept.failed {
             Some((at, why)) if at.elapsed() < ASK_AGAIN => why.clone(),
@@ -450,9 +464,16 @@ impl Listing {
         let mut held = self.0.lock().expect("listing lock");
         let listed = held.entry(canonical(hub)).or_default();
         match read {
-            Ok(tools) => *listed = Listed { tools, read_at: Some(SystemTime::now()), failed: None },
-            Err(why) => listed.failed = Some((Instant::now(), why)),
+            Ok(tools) => *listed = Listed { tools, read_at: Some(SystemTime::now()), failed: None, asking: false },
+            Err(why) => (listed.failed, listed.asking) = (Some((Instant::now(), why)), false),
         }
+    }
+
+    /// Whether this list starts the read behind it: none is going.
+    fn begin_asking(&self, key: &str) -> bool {
+        let mut held = self.0.lock().expect("listing lock");
+        let listed = held.entry(key.to_owned()).or_default();
+        !std::mem::replace(&mut listed.asking, true)
     }
 }
 
@@ -489,7 +510,7 @@ fn kept_listing(api: &Api, hub: &str) -> Listed {
     let root = api.machines.hubs.home().root();
     let Some((at, listed)) = cards::kept_listed(root, hub) else { return Listed::default() };
     let tools = (listed.iter()).filter_map(|(package, release)| Some(offered(package, &cards::kept(root, hub, package, release)?))).flatten().collect();
-    Listed { tools: Arc::new(tools), read_at: Some(at), failed: None }
+    Listed { tools: Arc::new(tools), read_at: Some(at), ..Listed::default() }
 }
 
 /// `package`'s tools at `card`'s release, each with what the release requires of the Runtime pair.

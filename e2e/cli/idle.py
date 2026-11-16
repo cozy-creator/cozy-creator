@@ -1,8 +1,9 @@
 """xs-189: what an idle cozy costs. After a settle, each cozy process's CPU time and wakeups (its threads' context
 switches, voluntary and not) over a window, and its threads by name: a line a process, the whole as JSON to <out>. No
-Calcifer or TensorD to measure says so on stderr and exits 1.
+Calcifer or TensorD to measure says so on stderr and exits 1, as does a <role>=<n> bound one of that role's processes meets:
+n wakeups a second or more.
 
-    idle.py <settle s> <window s> <out>
+    idle.py <settle s> <window s> <out> [<role>=<wakeups a second> ...]
 """
 
 import json
@@ -14,6 +15,7 @@ from pathlib import Path
 
 TICK = os.sysconf("SC_CLK_TCK")
 settle, window, out = float(sys.argv[1]), float(sys.argv[2]), Path(sys.argv[3])
+bounds = {role: float(most) for role, _, most in (arg.partition("=") for arg in sys.argv[4:])}
 
 
 @dataclass
@@ -162,3 +164,11 @@ missing = {"calcifer", "tensord"} - {r.role for r in reports}
 if missing:
     print(f"no {' or '.join(sorted(missing))} process to measure", file=sys.stderr)
     sys.exit(1)
+over = [r for r in reports if r.role in bounds and r.wakeups_per_s >= bounds[r.role]]
+for r in over:
+    top = ", ".join(f"{n.name} x{n.threads} {n.wakeups}" for n in r.by_thread[:6])
+    print(f"{r.role} woke {r.wakeups_per_s} times a second over {window:g} s, bound {bounds[r.role]:g}: {top}", file=sys.stderr)
+unbounded = set(bounds) - {r.role for r in reports}
+if unbounded:
+    print(f"no {' or '.join(sorted(unbounded))} process to bound", file=sys.stderr)
+sys.exit(1 if over or unbounded else 0)
