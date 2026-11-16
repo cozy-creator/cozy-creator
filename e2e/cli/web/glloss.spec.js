@@ -35,6 +35,8 @@ async function unpainted(page) {
 const lost = (page) => page.getByRole('region', { name: 'Project canvas' }).getByRole('alert');
 
 test('glloss', { tag: '@engines' }, async ({ page, project }) => {
+  // ANGLE on SwiftShader has a major performance caveat, so on a Windows runner the canvas draws in 2D with no WebGL to lose (aa315b64).
+  test.skip(process.platform === 'win32', 'no WebGL context on a Windows runner: the canvas draws in 2D');
   for (const [i, [name, colour]] of Object.entries(PICTURES).entries()) {
     await project.import(png(0, 320, 200, false, () => colour), { name, at: { x: (i % 4) * 300, y: Math.floor(i / 4) * 300 } });
   }

@@ -219,9 +219,9 @@ async function removeFolder(folder) {
 
 /** In every page of a guarded context: CSP violations and modal dialogs, said to the fixture as they happen. */
 /** Test-only, in this file and nowhere in the product (no setting or URL reaches it; coordinator, 11-16): a runner has no GPU, and the canvas
- *  draws in 2D when WebGL is only software (cl-1048). Every lane but web-2d names the runner's software WebGL as a hardware GPU, so the canvas
- *  takes the WebGL path most people's computers take, still drawn by the runner's software GL; web-2d (WEB_RENDERER=2d, web.sh) leaves the
- *  browser as it is, the path of a computer with no GPU. */
+ *  draws in 2D when WebGL is only software (cl-1048). Every lane but web-2d and web-2d-solo names the runner's software WebGL as a hardware GPU, so the
+ *  canvas takes the WebGL path most people's computers take, still drawn by the runner's software GL; those two (WEB_RENDERER=2d, run.sh)
+ *  leave the browser as it is, the path of a computer with no GPU. */
 function hardwareGl() {
   for (const Context of [globalThis.WebGLRenderingContext, globalThis.WebGL2RenderingContext].filter(Boolean)) {
     const read = Context.prototype.getParameter;

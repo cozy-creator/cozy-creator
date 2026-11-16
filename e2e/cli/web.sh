@@ -48,8 +48,10 @@ web_suite() {
         Xvfb :97 -screen 0 1920x1080x24 -nolisten tcp > "$OUT/web-xvfb.log" 2>&1 & xvfb=$!
       fi ;;
     solo) projects=(solo) workers=(--workers=1) ;;
-    # A computer with no GPU: the browser left as it is, so the canvas draws in 2D (fixtures.js names software WebGL as hardware elsewhere).
+    # A computer with no GPU (run.sh sets WEB_RENDERER=2d): the browser left as it is, so the canvas draws in 2D (fixtures.js names software
+    # WebGL as hardware elsewhere).
     2d) projects=(chrome) ;;
+    2d-solo) projects=(solo) workers=(--workers=1) ;;
     # Native and by hand, one test at a time: a `@solo` test stops the Calcifer the others share.
     native) projects=(chrome solo) workers=(--workers=1); [ "${RUNNER_OS:-}" != macOS ] || projects+=(webkit) ;;
     *) projects=(chrome vault solo) workers=(--workers=1) ;;
@@ -69,7 +71,6 @@ web_suite() {
   fi
   {
     [ -z "$xvfb" ] || export FIREFOX_DISPLAY=:97
-    [ "$lane" != 2d ] || export WEB_RENDERER=2d
     HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") COZY=$(web_path "$COZY") CHROME=$chrome OUT=$(web_path "$OUT") ARGV_LOG=$(web_path "$OUT/argv.log") \
       NODE_PATH=$(web_path "$pw/node_modules") node "$(web_path "$pw/node_modules/@playwright/test/cli.js")" test -c "$(web_path "$here/web/playwright.config.js")" \
       "${projects[@]/#/--project=}" ${workers[@]+"${workers[@]}"} "${filters[@]}" 2>&1 && echo 0 > "$web/$lane.code" || echo $? > "$web/$lane.code"

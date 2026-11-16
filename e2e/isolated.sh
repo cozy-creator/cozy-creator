@@ -192,7 +192,7 @@ PY
 # The web suite's jobs (cl-973) and one of its cells by hand (web-<cell>, web/<cell>.spec.js) take one seed.
 key=$suite:$shard
 case $shard in
-  web-1 | web-2 | web-3 | web-2d | web-engines | web-solo | web-native | web-opens-busy) key=cli:web-suite ;;
+  web-1 | web-2 | web-3 | web-2d | web-2d-solo | web-engines | web-solo | web-native | web-opens-busy) key=cli:web-suite ;;
   web-*) [ ! -f "$here/cli/web/${shard#web-}.spec.js" ] || key=cli:web-suite ;;
 esac
 case $key in

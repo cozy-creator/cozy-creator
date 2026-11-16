@@ -534,10 +534,15 @@ WEB_ENGINES=(
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
-  opens
   open
   account-rent
   offline
+)
+# The timing and memory cells, `@solo`, in 2D: a runner's software GL drawing the WebGL path with MSAA is no computer's path, and the 2D
+# path is a computer with no GPU's (aa315b64, 11-16: large in 2D found a 1.1 MB-a-cycle heap leak).
+WEB_2D_SOLO=(
+  large
+  opens
 )
 # macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout, and what the old native cells durable, see and undo
 # checked (instant, canvas-nav, delete-undo).
@@ -714,10 +719,11 @@ case $SHARD in
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
   web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
-  web-2d) web_cells=(${WEB_2D[@]+"${WEB_2D[@]}"}); parts="web_lane logs" ;;
+  web-2d) export WEB_RENDERER=2d; web_cells=(${WEB_2D[@]+"${WEB_2D[@]}"}); parts="web_lane logs" ;;
+  web-2d-solo) export WEB_RENDERER=2d; web_cells=(${WEB_2D_SOLO[@]+"${WEB_2D_SOLO[@]}"}); parts="web_lane logs" ;;
   web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
   # cl-982's opens on a busy computer: 3,000 other loopback connections open (web/busy.js), as the gate's lookups meet them (cl-985).
-  web-opens-busy) export BUSY_SOCKETS=3000; web_cells=(opens); parts="web_lane logs" ;;
+  web-opens-busy) export BUSY_SOCKETS=3000 WEB_RENDERER=2d; web_cells=(opens); parts="web_lane logs" ;;
   # The page as Calcifer's own and what the access rule refuses (cl-985), alone.
   web-serves) parts="tools_read web_serves logs" ;;
   # A project cozy 0.24.0 made keeps every take under this cozy, and a take asked by id lands as that version (cl-945).
