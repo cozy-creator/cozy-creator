@@ -153,6 +153,8 @@ pub(crate) struct Project {
     /// Cache ownership follows the physical mount, not a replaceable viewer authorization.
     mount_id: Option<vault::MountIdentity>,
     folder: Folder,
+    /// Which file its project.db was as it opened (`db_file`): another there is another project's, or a restored copy, never this one.
+    db_file: Option<(u64, u64)>,
     /// What its files say, as last read.
     model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
     /// What streams were last told of it.
@@ -342,10 +344,20 @@ impl Projects {
     fn let_go_replaced(&self, dir: &FsPath) {
         let now = db_file(dir);
         let mut lingering = self.lingering.lock().expect("lingering lock");
-        let stale: Vec<String> = lingering.iter().filter(|(_, held)| held.project.folder.dir == dir && held.file != now).map(|(id, _)| id.clone()).collect();
+        let stale: Vec<String> = lingering.iter().filter(|(_, held)| held.project.folder.dir == dir && held.project.db_file != now).map(|(id, _)| id.clone()).collect();
         let gone: Vec<Lingering> = stale.iter().filter_map(|id| lingering.remove(id)).collect();
         drop(lingering);
         drop(gone);
+    }
+
+    /// Every project held after its last request let go, its connections closed and its WAL emptied first: Calcifer stops.
+    pub(crate) fn close_lingering(&self) {
+        let lingering: Vec<Lingering> = self.lingering.lock().expect("lingering lock").drain().map(|(_, held)| held).collect();
+        for held in lingering {
+            if let Err(error) = held.project.folder.close_connections(true) {
+                warn!(code = %error.code, "a project held after its request didn't close as Calcifer stopped");
+            }
+        }
     }
 
     /// `project`, a plaintext one a request used, held open until `LINGER` after this, its last use: one task a project lets it go.
@@ -354,7 +366,7 @@ impl Projects {
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
-        let held = Lingering { project: project.clone(), until: Instant::now() + LINGER, file: db_file(&project.folder.dir) };
+        let held = Lingering { project: project.clone(), until: Instant::now() + LINGER };
         let fresh = self.lingering.lock().expect("lingering lock").insert(project.id.clone(), held).is_none();
         if !fresh {
             return;
@@ -407,8 +419,9 @@ impl Projects {
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
+        let file = db_file(dir);
         let project = match open.get(&id).and_then(Weak::upgrade)
-            .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir) {
+            .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir && project.db_file == file) {
             Some(project) => {
                 *project.key.lock().expect("key lock") = key;
                 project
@@ -423,6 +436,7 @@ impl Projects {
                     root,
                     mount_id,
                     folder,
+                    db_file: file,
                     jobs: Jobs::new(id.clone()),
                     model: tokio::sync::Mutex::default(),
                     told: Mutex::default(),
@@ -490,7 +504,6 @@ const LINGER: std::time::Duration = std::time::Duration::from_secs(2);
 struct Lingering {
     project: Arc<Project>,
     until: Instant,
-    file: Option<(u64, u64)>,
 }
 
 /// Which file `dir`'s project.db is: its device and inode. Elsewhere none: Windows can't delete a database a process has open.
@@ -1566,7 +1579,7 @@ fn current_view(root: &FsPath) -> Result<PathBuf, Error> {
 impl Project {
     /// Old references are bound to their original physical view, never a recycled drive.
     fn require_view(&self) -> Result<(), Error> {
-        if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir {
+        if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir || db_file(&self.folder.dir) != self.db_file {
             return Err(Error::new(Kind::Conflict, "project_view_changed", "This project's folder changed while it was open. Open the project again."));
         }
         Ok(())

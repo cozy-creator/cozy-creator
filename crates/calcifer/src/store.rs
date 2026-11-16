@@ -559,6 +559,25 @@ impl Drop for Reader<'_> {
 /// Group commit. A commit only writes the WAL, under the writer lock; one flush of the WAL then
 /// makes every commit before it durable. Writes waiting together share a flush, so on a disk
 /// whose flush takes seconds a write waits one or two of them, not one per write queued ahead.
+/// The purger's due times are kept from the first start with `purge_due` on: that once, every known plaintext project is due, as each
+/// was at every start before; an encrypted one's never is (`project::purge`). Marked done by its own row, in the transaction that makes
+/// them due, so a store rebuilt with the table (the 0.25 hard cut) still takes them up once.
+fn due_once(writer: &mut Connection) -> Result<()> {
+    const STEP: &str = "purge_due";
+    if writer.query_row("SELECT EXISTS (SELECT 1 FROM steps_done WHERE step = ?1)", [STEP], |row| row.get::<_, bool>(0))? {
+        return Ok(());
+    }
+    let tx = writer.transaction()?;
+    let known: Vec<(String, String)> =
+        tx.prepare("SELECT id, path FROM projects")?.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    for (id, _) in known.iter().filter(|(_, path)| !vault::encrypted(Path::new(path))) {
+        tx.execute("INSERT OR IGNORE INTO purge_due (project, at_ms) VALUES (?1, 0)", [id])?;
+    }
+    tx.execute("INSERT INTO steps_done (step) VALUES (?1)", [STEP])?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// The WAL's pages that start a checkpoint beside the writer: SQLite's own autocheckpoint size.
 const CHECKPOINT_PAGES: std::ffi::c_int = 1000;
 
@@ -568,10 +587,10 @@ const CHECKPOINT_PAGES: std::ffi::c_int = 1000;
 /// (cl-1010).
 fn checkpoint_beside(writer: &mut Connection, path: &Path) -> rusqlite::Result<()> {
     let (path, going) = (path.to_owned(), std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
-    writer.wal_hook(Some(move |_: &mut rusqlite::hooks::Wal, pages: std::ffi::c_int| {
+    writer.wal_hook(Some(move |wal: &mut rusqlite::hooks::Wal, pages: std::ffi::c_int| {
         if pages >= CHECKPOINT_PAGES && !going.swap(true, Ordering::AcqRel) {
-            let (path, going) = (path.clone(), going.clone());
-            std::thread::spawn(move || {
+            let (path, beside) = (path.clone(), going.clone());
+            let started = std::thread::Builder::new().name("state-checkpoint".into()).spawn(move || {
                 let done = Connection::open(&path).and_then(|conn| {
                     register_owner(&conn, None)?;
                     conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))
@@ -579,8 +598,13 @@ fn checkpoint_beside(writer: &mut Connection, path: &Path) -> rusqlite::Result<(
                 if let Err(e) = done {
                     tracing::warn!("state.db: a checkpoint beside the writer: {e}");
                 }
-                going.store(false, Ordering::Release);
+                beside.store(false, Ordering::Release);
             });
+            // No thread to run it on: in the commit, as SQLite's own was, never not at all (the WAL would grow without end).
+            if started.is_err() {
+                going.store(false, Ordering::Release);
+                wal.checkpoint()?;
+            }
         }
         Ok(())
     }))
@@ -1864,17 +1888,8 @@ impl Store {
         writer.execute_batch(crate::project::journal::PLACEMENTS)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
-        // The purger's due times are kept from this start on: this once, every known plaintext project is due, as each was at every
-        // start before. An encrypted one's never is (`project::purge`).
-        let first_due = !has_table(&writer, "purge_due")?;
         writer.execute_batch(crate::state::TABLES)?;
-        if first_due {
-            let known: Vec<(String, String)> =
-                writer.prepare("SELECT id, path FROM projects")?.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
-            for (id, _) in known.iter().filter(|(_, path)| !vault::encrypted(Path::new(path))) {
-                writer.execute("INSERT OR IGNORE INTO purge_due (project, at_ms) VALUES (?1, 0)", [id])?;
-            }
-        }
+        due_once(&mut writer)?;
         writer.execute_batch(MACHINE_LOGS)?;
         // The store step's parts, in the closed health log: a slow start names its slow part (cl-1010).
         let said = |part: &'static str, since: std::time::Instant| tracing::info!(target: "cozy.service_health", step = part, ms = since.elapsed().as_millis() as u64, "started");

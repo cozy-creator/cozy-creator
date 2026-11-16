@@ -811,19 +811,23 @@ impl Lock {
             .chain(self.walk.asks.iter().flat_map(|ask| ask.takes.iter().map(|take| name_key(&take.asset))))
             .collect();
         let lost: Vec<String> = self.assets.keys().filter(|key| !key.contains(TOMBSTONE) && !named(key) && !going.contains(*key)).cloned().collect();
-        lost.iter().for_each(|key| self.bury(key));
+        lost.iter().for_each(|key| {
+            self.bury(key);
+        });
         !lost.is_empty()
     }
 
     /// The row under `key` set aside, deleted now: what it holds stays, for Undo, until its window ends (`purge`), and that name starts with none.
-    pub(crate) fn bury(&mut self, key: &str) {
-        let Some(mut held) = self.assets.remove(key).filter(|held| held.files().next().is_some()) else { return };
+    /// Whether it held a file, set aside so: its project's purge is due once the window ends.
+    pub(crate) fn bury(&mut self, key: &str) -> bool {
+        let Some(mut held) = self.assets.remove(key).filter(|held| held.files().next().is_some()) else { return false };
         if held.name.is_empty() {
             held.name = key.to_owned();
         }
         held.deleted_ms = Some(super::now_ms());
         let free = (1..).map(|n| format!("{key}{TOMBSTONE}{n}")).find(|at| !self.assets.contains_key(at)).expect("a free key");
         self.assets.insert(free, held);
+        true
     }
 
     /// Every sha256 a version or a run has on record here, of any asset, discarded too: all `reclaim` may delete, once nothing uses it.

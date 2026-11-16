@@ -68,12 +68,14 @@ fn keep(id: &str) {
     }
 }
 
-/// Project `id` let go (locked, its folder gone, its storage converted): nothing of its deleted boxes is held for it. Its next open
-/// reads them again.
+/// Project `id` let go (locked, its folder away, its storage converted): nothing of its deleted boxes is held for it here, and its next
+/// open reads them again. Its kept due time stays, unless it's an encrypted project's now (an encrypt conversion): a plaintext one whose
+/// folder is away (moved, its drive unmounted) is purged at the next start once it's back, opened or not.
 pub(crate) fn forget(store: &crate::store::Store, id: &str) {
     DUE.lock().expect("purge due lock").remove(id);
     let mut persisted = PERSISTED.lock().expect("purge persisted lock");
-    if persisted.contains_key(id) {
+    let encrypted = || matches!(store.known_project(id), Ok(Some(project)) if vault::encrypted(&project.path));
+    if persisted.contains_key(id) && encrypted() {
         match store.keep_purge_due(id, None) {
             Ok(()) => {
                 persisted.remove(id);
@@ -163,7 +165,12 @@ pub(crate) fn start(api: Arc<Api>) {
             for (id, was) in ready {
                 let again = Some(now + AGAIN.as_millis() as i64);
                 let next = match api.calcifer.store().known_project(&id) {
-                    Ok(Some(project)) if !vault::logical(&project.path).exists() => None,
+                    // Its folder away (moved, its drive unmounted): not looked at again here until it opens, and its kept due time
+                    // stays for the next start, so what it deleted is purged once it's back, opened or not.
+                    Ok(Some(project)) if !vault::logical(&project.path).exists() => {
+                        DUE.lock().expect("purge due lock").remove(&id);
+                        continue;
+                    }
                     // Locked: nothing can read it, and nothing of it is held until its unlock's open looks again.
                     Ok(Some(project)) if vault::locked_now(&project.path) => None,
                     // Held as any reader's: a lock or a move of the project waits for it.

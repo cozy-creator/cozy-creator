@@ -431,6 +431,9 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     {
         warn!("the API server on ::1 ended: {e}");
     }
+    // Projects held after their last request close now, their WAL emptied, no request left to hold one again: a stop just after a
+    // request leaves no -wal or -shm in a person's folder, nor commits only there.
+    tokio::task::block_in_place(|| api.projects.close_lingering());
     machines.close();
     calcifer.close();
     drop(held);

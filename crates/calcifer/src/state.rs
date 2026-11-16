@@ -37,6 +37,7 @@ pub(crate) const TABLES: &str = "
         project TEXT PRIMARY KEY,
         at_ms INTEGER NOT NULL
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS steps_done (step TEXT PRIMARY KEY) STRICT;
     CREATE TABLE IF NOT EXISTS tool_list (
         ord INTEGER PRIMARY KEY,
         package TEXT NOT NULL UNIQUE
