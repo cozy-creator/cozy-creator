@@ -31,7 +31,7 @@ pub(super) fn refresh(project:&Project)->Result<(),Error> {
 }
 
 /// Version `number` of `name` landed unapproved beside an approved one: unseen until it's looked at. Kept as its landing is, with no
-/// admission of its own: a nested try of the project refuses while a lock is queued, and the mark was lost (cl-1007).
+/// admission of its own: a nested try of the project refuses while a lock is queued, and the mark was lost (cl-1025).
 pub(super) fn landed(project:&Project,name:&str,number:u32) {
     let held=project.folder.reading_boxes(|written|written.get(name).filter(|held|held.get("approved").is_some_and(|value|!value.is_null())).map(id_of));
     let Ok(Some(held))=held else {return};

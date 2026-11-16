@@ -106,7 +106,7 @@ impl fmt::Display for Cut {
 impl Clips {
     /// `range` of `source`, whose rate is `fps`, as a clip or a picture: the one cut before for this version of the file, else
     /// cut now. What it did is said in `notes`.
-    /// ffmpeg, found or fetched: before the project's gate is taken for a cut, so a lock queued on it never waits for a download (cl-1007).
+    /// ffmpeg, found or fetched: before the project's gate is taken for a cut, so a lock queued on it never waits for a download (cl-1025).
     pub(crate) async fn ffmpeg(&self) -> Result<crate::tools::Ffmpeg, Error> {
         crate::tools::ffmpeg(&self.home, &|line| tracing::info!("{line}")).await
     }

@@ -538,7 +538,7 @@ impl Calcifer {
         let store = match owner.store() {
             Ok(store) => store,
             // A lock queued on the project holds every new read until it has the project or gives up: this waits its turn, then looks
-            // again. Dropped, the route would hold its project open, which can hold the very lock (cl-1007). Locked, the project's routes
+            // again. Dropped, the route would hold its project open, which can hold the very lock (cl-1025). Locked, the project's routes
             // went with it.
             Err(StoreError::Locked(code)) if code == "project_busy" => {
                 let Some(calcifer) = self.api.get().and_then(Weak::upgrade).map(|api| api.calcifer.clone()) else { return };

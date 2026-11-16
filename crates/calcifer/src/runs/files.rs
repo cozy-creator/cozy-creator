@@ -252,7 +252,7 @@ pub(crate) async fn put(UrlPath(name): UrlPath<String>, headers: HeaderMap, body
 }
 
 /// A project upload's hold on its project's gate: let go while a lock waits for the project, and asked for again, so a long body never
-/// holds the lock up (cl-1007). The lock has the project first; locked, the upload ends, and resumes from what's held once it's unlocked.
+/// holds the lock up (cl-1025). The lock has the project first; locked, the upload ends, and resumes from what's held once it's unlocked.
 struct Gate {
     root: PathBuf,
     held: tokio::sync::OwnedRwLockReadGuard<()>,

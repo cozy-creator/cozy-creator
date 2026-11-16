@@ -459,10 +459,10 @@ vault_times() (
   grep 'task="vault' "$HOME/.cozy/calcifer/health.log" 2> /dev/null | tail -n 12 || echo "vault times: no vault phase took a second"
 )
 
-# A lock queued on an encrypted project waits for nothing long, and holds up no other project (cl-1007): `cozy vault lock` beside a
+# A lock queued on an encrypted project waits for nothing long, and holds up no other project (cl-1025): `cozy vault lock` beside a
 # slow upload to it locks, and a plain project's thumbnails come meanwhile (e2e/cli/vault_queue.py).
 vault_queue() (
-  step "a lock beside a slow upload locks at once, and another project's thumbnails go on (cl-1007)"
+  step "a lock beside a slow upload locks at once, and another project's thumbnails go on (cl-1025)"
   [ -n "$LOCAL" ] || exit 0
   local work secrets
   work=$(mktemp -d "$OUT/vault-queue.XXXXXX") secrets=$(mktemp -d "$OUT/vault-queue-credentials.XXXXXX")

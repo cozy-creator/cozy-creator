@@ -109,7 +109,7 @@ struct Queue {
     /// What ffmpeg couldn't draw, for as long as this Calcifer runs: asked again, it's refused, not drawn again.
     failed: HashSet<String>,
     /// By project: what waits for a lock queued on it, or holding it, to let go. Drawn then, or forgotten if it locked: no drawer waits
-    /// on one project's lock, so the others' thumbnails go on (cl-1007).
+    /// on one project's lock, so the others' thumbnails go on (cl-1025).
     waiting: HashMap<PathBuf, Vec<Drawing>>,
 }
 
@@ -310,7 +310,7 @@ async fn make(host: Host, mut drawing: Drawing) -> Result<Option<PathBuf>, Error
         }
     }
     // Its turn and ffmpeg first, holding nothing of the project: finding ffmpeg runs it, and blocks, so that too is a few at a time,
-    // and a lock queued on the project waits for neither (cl-1007).
+    // and a lock queued on the project waits for neither (cl-1025).
     let permit = FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
     let (ffmpeg, ffprobe) = host.ffmpeg().await?;
     let Some(access) = admitted(&drawing)? else { return Ok(None) };

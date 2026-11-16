@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A lock queued on an encrypted project waits for nothing long, and holds up no other project (cl-1007).
+"""A lock queued on an encrypted project waits for nothing long, and holds up no other project (cl-1025).
 
 On this computer's Calcifer, through its HTTP API as a client sends it:
 1. Project A, encrypted and unlocked, takes a slow upload: one body sent over about 20 s.

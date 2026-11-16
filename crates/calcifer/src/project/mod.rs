@@ -3004,7 +3004,7 @@ fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
             if !unmeasured() { return; }
         }
         // Its turn and ffmpeg first, holding nothing of the project, then the project, holding no turn: a lock queued on it waits for
-        // neither, and while it waits no other project's thumbnails or measures wait for it (cl-1007).
+        // neither, and while it waits no other project's thumbnails or measures wait for it (cl-1025).
         let (access, permit) = loop {
             let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
             if let Err(error) = host.ffmpeg().await {
