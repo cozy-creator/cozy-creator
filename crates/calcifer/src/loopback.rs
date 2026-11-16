@@ -106,7 +106,7 @@ pub(crate) enum Client {
 }
 
 /// The account Calcifer runs as, read once.
-fn own() -> Option<&'static User> {
+pub(crate) fn own() -> Option<&'static User> {
     static OWN: std::sync::OnceLock<Option<User>> = std::sync::OnceLock::new();
     OWN.get_or_init(User::current).as_ref()
 }

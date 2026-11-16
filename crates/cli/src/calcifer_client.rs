@@ -253,10 +253,20 @@ impl Client {
         self.exchange(Ask::Unkeyed, |c, base| json(c.post(format!("{base}{path}")), &body)).await
     }
 
+    /// Before a passphrase or recovery secret leaves (cl-1066): the Calcifer answering is this OS account's. That secret reaching another
+    /// account's process is the harm; this account's Calcifer, restarted, is still its own.
+    pub(crate) async fn own_account(&self) -> Result<(), Error> {
+        let status: api::calcifer::CalciferStatus = self.get("/v1/status").await?;
+        match platform::net::User::current() {
+            Some(own) if own.to_string() == status.os_user => Ok(()),
+            _ => Err(Error::new(Kind::Forbidden, "secret_other_account",
+                "The Cozy answering here runs as another account on this computer, so nothing secret was sent to it.")),
+        }
+    }
+
     /// One vault operation ID for the command's lifetime. Reconnecting the same PUT attaches to
     /// that operation; the server acknowledges receipt immediately and records admission before
     /// changing storage, so an accepted operation is never run twice.
-    /// Protocol 3 is negotiated before each wire attempt; older vault routes are never used.
     pub(crate) async fn vault(
         &self,
         path: &str,
@@ -268,7 +278,9 @@ impl Client {
         let mut reconnects = Backoff::transfer();
         let mut accepted = false;
         let mut last_progress = None;
+        let secret = request.passphrase.is_some() || request.recovery_secret.is_some();
         loop {
+            if secret { self.own_account().await?; }
             let mut answer = self.send(Ask::Write, |c, base| {
                 json(c.put(format!("{base}{operation}")), &body).header(header::ACCEPT, "text/event-stream")
             }).await.map_err(vault_uncertain)?;

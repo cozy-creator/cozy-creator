@@ -726,6 +726,7 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
         signed_in: hub.device_key(api.machines.hubs.home()).exists(),
         heap_bytes: platform::heap::held(),
         home: api.machines.user_home.clone(),
+        os_user: crate::loopback::own().map(ToString::to_string).unwrap_or_default(),
     }))
 }
 

@@ -160,6 +160,7 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
     });
     let request = Open { path: directory.clone(), unencrypted: args.unencrypted, passphrase, ..Open::default() };
     let key = args.unencrypted.then(mint_key);
+    if existing.is_none() && request.passphrase.is_some() { client.own_account().await?; }
     let (id, code, key, path, created, mut recovery_secret) = if let Some(address) = existing {
         (address.id, address.code, address.key, directory.clone(), false, None)
     } else { match if args.unencrypted {

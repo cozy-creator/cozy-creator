@@ -20,6 +20,10 @@ export interface Transport {
 /** This tab, as a project's history says who made an edit. */
 export const TAB = crypto.randomUUID().slice(0, 4)
 
+/** An answer as Calcifer gives a refusal, made here. */
+const refusal = (status: number, kind: string, code: string, message: string) =>
+  new Response(JSON.stringify({ error: { kind, code, message } }), { status, headers: { "Content-Type": "application/json" } })
+
 /** This origin's Calcifer. Only a relative API path is ever followed. */
 export function sameOrigin(): Transport {
   const resolve = (path: string) => {
@@ -48,6 +52,17 @@ export function sameOrigin(): Transport {
     const epoch = state.epoch
     return { signal: state.active.signal, check: () => { if (state!.blocked || state!.epoch !== epoch) throw new DOMException("Project view retired", "AbortError") } }
   }
+  // The OS account Calcifer runs as, read as the page opens: a passphrase or recovery secret goes only to that account's Calcifer, read
+  // again right before it leaves (cl-1066). Another account's process at this address may refuse it, but it would have it by then.
+  // Nothing answering throws, as the request itself would.
+  const account = async (signal?: AbortSignal | null) => {
+    const answer = await fetch(resolve("/v1/status"), { signal, cache: "no-store" })
+    const status = answer.ok ? await answer.json().catch(() => null) : null
+    return typeof status?.os_user === "string" && status.os_user ? status.os_user : null
+  }
+  let opened: string | null = null
+  account().then((own) => { opened ??= own }, () => {})
+  const secret = (body: RequestInit["body"]) => typeof body === "string" && /"(passphrase|recovery_secret)"\s*:\s*"/.test(body)
   return {
     channel: false,
     retireProject(project) {
@@ -62,6 +77,12 @@ export function sameOrigin(): Transport {
     async fetch(path, init = {}) {
       const project = guard(path)
       const signal = project ? (init.signal ? AbortSignal.any([init.signal, project.signal]) : project.signal) : init.signal
+      if (secret(init.body)) {
+        const now = await account(signal)
+        if (!now || now !== (opened ??= now)) {
+          return refusal(403, "forbidden", "secret_other_account", "The Cozy answering this page runs as another account on this computer, so nothing secret was sent to it.")
+        }
+      }
       const headers = new Headers(init.headers)
       headers.set("Cozy-Client", `page ${TAB}`)
       const response = await fetch(resolve(path), { ...init, signal, headers })

@@ -483,7 +483,12 @@ heap_bytes: number,
 /**
  * This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
  */
-home: string, };
+home: string,
+/**
+ * The OS account Calcifer runs as (uid, or SID on Windows): the CLI and the page read it before a passphrase or recovery secret
+ * leaves, which goes only to their own account's Calcifer (cl-1066).
+ */
+os_user: string, };
 
 /**
  * One settled call of a run (the run's own function or a child call).
