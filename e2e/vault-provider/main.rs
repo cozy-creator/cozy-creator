@@ -136,12 +136,18 @@ fn run() -> Result<(), Failure> {
 
     #[cfg(target_os = "linux")]
     {
+        // The supervisor holds the key and is non-dumpable (`disable_project_parent_dumps`), so its environ reads only as root:
+        // refused is the protection, not a failure. Its cmdline is anyone's to read and must not hold the secret.
         let pid = mounted.provider_pid();
         for path in [
             format!("/proc/{pid}/cmdline"),
             format!("/proc/{pid}/environ"),
         ] {
-            let bytes = fs::read(path)?;
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) if path.ends_with("environ") && error.kind() == std::io::ErrorKind::PermissionDenied => continue,
+                Err(error) => return Err(format!("{path}: {error}").into()),
+            };
             assert!(
                 !bytes
                     .windows(secret.len())
@@ -564,10 +570,7 @@ fn new_secret() -> Result<Zeroizing<String>, Failure> {
     Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(*randomness)))
 }
 
-/// Writes `bytes` through a new encrypted view in 4 MiB chunks of a deterministic pattern, fsyncs, locks, unlocks and reads them
-/// back, checking every byte. Prints MB/s (10^6 bytes) of the I/O alone: making and checking the pattern is off the clock.
-/// Create, mount, write a file and fsync it, and lock: what a Docker container proves, where its FUSE sandbox refuses the read back
-/// that a computer's passes (cl-1000, runs 43785258153 and 43789239440).
+/// Create, mount, write a file, fsync it, read it back through a new descriptor, and lock: what a distro's container proves (cl-1000).
 fn mount_only(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
     let backing = artifacts.join("encrypted");
     let view = project_mount::view_path(&artifacts.join("runtime"))?;
@@ -581,9 +584,13 @@ fn mount_only(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
     output.write_all(&content)?;
     output.sync_all()?;
     drop(output);
+    eprintln!("provider fixture: read back");
+    if fs::read(view.join("mounted.bin"))? != content {
+        return Err("the file read back differs from what was written".into());
+    }
     eprintln!("provider fixture: lock");
     mounted.try_unmount()?;
-    println!("{}", json!({"result":"mounted","wrote":content.len(),"provider":provider.storage_format()}));
+    println!("{}", json!({"result":"mounted","wrote":content.len(),"read_back":true,"provider":provider.storage_format()}));
     Ok(())
 }
 
@@ -662,6 +669,8 @@ fn controls(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
     }
 }
 
+/// Writes `bytes` through a new encrypted view in 4 MiB chunks of a deterministic pattern, fsyncs, locks, unlocks and reads them
+/// back, checking every byte. Prints MB/s (10^6 bytes) of the I/O alone: making and checking the pattern is off the clock.
 fn throughput(provider: &Provider, artifacts: &Path, bytes: u64) -> Result<(), Failure> {
     const CHUNK: u64 = 4 << 20;
     // splitmix64 of each 8-byte word's index in the file: no two chunks alike.

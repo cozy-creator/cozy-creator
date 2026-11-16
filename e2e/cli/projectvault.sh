@@ -392,14 +392,14 @@ vault_distros() (
     fusermount3=$("${as[@]}" sh -c 'command -v fusermount3' || true) fusermount=$("${as[@]}" sh -c 'command -v fusermount' || true)
     [ -n "$fusermount3" ] || { check "vault $name: fuse3 gave no fusermount3"; return; }
     [ "$name" != fedora ] || [ -z "$fusermount" ] || { check "vault fedora: fuse3 alone has a fusermount ($fusermount): the link is not what this proves"; return; }
-    # Mount, write, fsync, lock: no read back. Inside Docker it's refused (EACCES) right after a write, privileged or not, while the
-    # runner itself reads back (vault_fuse3, projectvault): Docker's FUSE sandbox; a real Fedora reads back at the release gate.
+    # Mount, write, fsync, read back, lock. (The EACCES once blamed on Docker was the probe's read of the non-dumpable supervisor's
+    # /proc environ, run 43795226170; reads themselves pass.)
     timeout 900 "${as[@]}" /usr/local/bin/vault-provider mount /opt/securefs/securefs /home/prover/proof > "$work/$name.out" 2> "$work/$name.err" \
       || { check "vault $name: the probe's mount as uid $uid (home $(docker exec "$c" stat -c %u:%g /home/prover 2>&1)): $(tail -c 500 "$work/$name.err") provider: $(tail -c 800 "$home/provider.log" 2> /dev/null)"; return; }
     shim=$(docker exec "$c" readlink /home/prover/proof/tools/securefs/2.0.0/bin/fusermount 2> /dev/null || true)
     [ -n "$fusermount" ] || [[ $shim == */fusermount3 ]] || { check "vault $name: no fusermount, and the provider made no fusermount link to fusermount3 (${shim:-none})"; return; }
     tail -n 1 "$work/$name.out" | jq -c --arg image "$image" --arg fusermount "$fusermount" --arg fusermount3 "$fusermount3" --arg shim "$shim" \
-      '{image: $image, result: .result, wrote: .wrote, fusermount: $fusermount, fusermount3: $fusermount3, shim: $shim, libfuse_so_2: false}' \
+      '{image: $image, result: .result, wrote: .wrote, read_back: .read_back, fusermount: $fusermount, fusermount3: $fusermount3, shim: $shim, libfuse_so_2: false}' \
       | tee "$OUT/vault-distro-$name.json" | sed "s/^/vault $name: /" || check "vault $name: the probe printed no result: $(tail -c 300 "$work/$name.out")"
     cp "$home/provider.log" "$work/$name-provider.log" 2> /dev/null || true
     docker rm -f "$c" > /dev/null 2>&1 || true
