@@ -30,7 +30,10 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   through cozy's CLI (`cli.sh`): its code uploaded with an empty file and described as the executor's interface says,
   Calcifer's private lock API leaving its lock as committed, and every cell's request bound by Calcifer's binder against the
   published release (`--estimate`: nothing runs). Also a strict typecheck, `describe` (the static reader), and
-  `surface.py` (static: every TensorFS name the Runtime reads exists). One line per cell, `PASS|FAIL|SKIP <package>
+  `surface.py` (static: every TensorFS name the Runtime reads exists). With `--cozy`, first `lanes.py` (cl-1076; alone:
+  `--cells lanes`, e2e.yaml's `cpu_cells=lanes`): every slot that takes encoded weights and names a Hub default, resolved on
+  each GPU family by `cozy model show <default> --gpu <cc> --components …` (dev-only) against tensorhub.com's releases, as
+  TensorD asks for it, and held to its expectation there: int8 where int8 tensor cores run, fp8 on sm103. One line per cell, `PASS|FAIL|SKIP <package>
   <entry> <cell>`. No GPU, rental or sign-in. `e2e/cpu/run.sh --out DIR --packages DIR --runtime <wheel|dir|version|lock> --tensorfs <wheel|version|lock> [--cozy BIN --project DIR --stage-code BIN] [--only pkg,..] [--cells entry/cell,..] [--record]`;
   `--cozy` uses the API `stage-code` example, supplied by candidates or built once when not supplied.
   a fixture's `WAIVE` names the release-geometry checks a tiny model cannot meet, and `PATCH` the geometry constants it

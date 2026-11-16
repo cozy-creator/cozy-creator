@@ -517,7 +517,9 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   named: the newest; `checkpoint=sha256:…`: that one) holds, read from its header alone, never a weight: each component's
   class, config keys (`full`: the config), run data with sizes, tensor count and a LoRA's modules with their α; and the
   header's records of where it came from (`inherited`, `composed`, `added`, `provenance`, `family`, `adapter`). `resolves_to`
-  is the release a run naming this one takes, its series' newest fix.
+  is the release a run naming this one takes, its series' newest fix. `gpus=8.9[,…]` (dev-only `--gpu`), with `components=`:
+  only the lane the Hub resolves the release to for those GPUs and a slot reading those components, memory unasked, as
+  TensorD asks for a slot that takes encoded weights; `resolved` says it and why a better lane was passed over.
 - `PATCH /v1/models/{org}/{name}` `{hub, family, tags, add_tags, remove_tags, triggers, strength}`:
   `ModelEdited {model, warnings}`, the model as `GET` reads it. Each field given is set, an absent one
   kept: `family` empty or `none` clears the label (its weights' family shows then); `tags` replaces them
