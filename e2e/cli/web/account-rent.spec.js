@@ -378,10 +378,8 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await run('git', ['-C', co, 'init', '-q', '-b', 'rc/e2e']);
       await run('git', ['-C', co, 'add', '-A']);
       await run('git', ['-C', co, '-c', 'user.name=e2e', '-c', 'user.email=e2e@localhost', 'commit', '-qm', 'checkout']);
-      // local held on its software by hand, as e2e/cli/source.sh holds it: a dev home's local would follow the RC's builds at rest.
-      const held = (await cli.json('machine', 'show', 'local')).status ?? {};
-      const hold = ['machine', 'update', 'local', '--runtime', process.env.CAND_RT || held.runtime, ...(process.env.CAND_TFS ? ['--tensorfs', process.env.CAND_TFS] : []), '-y'];
-      expect((await cli(...hold)).code, 'local held on its software').toBe(0);
+      // local stays on the candidates the suite put on it by hand (e2e/lib.sh's `candidates`), which hold it: a dev home's local would
+      // otherwise follow the RC's builds at rest.
       const config = calciferControl.config;
       const before = readFileSync(config, 'utf8');
       const lines = before.split('\n').filter((line) => !/^dev\s*=/.test(line));
