@@ -742,6 +742,7 @@ case $SHARD in
     idle_vault
     vault_times
     shared_scratch
+    kept_latents
     open_unlocks
     projectvault
     vault_leftovers

@@ -325,6 +325,23 @@ shared_scratch() (
     --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" || { cat "$work/proof.err"; check "shared scratch: $(tail -n 1 "$work/proof.err" | cut -c1-400)"; }
 )
 
+# A local run's latents are an ordinary file of its take, in its project: read from files/ once the machine's copy aged out and the
+# machine restarted, and gone with the take when its undo window ends (cl-1046; e2e/cli/kept_latents.py). Plain and encrypted.
+kept_latents() (
+  step "a local run's latents are a file of its take in its project, read after the machine's copy is gone, gone with the take (cl-1046)"
+  [ -n "$LOCAL" ] || exit 0
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "kept latents: Linux runners only"; exit 0; }
+  local work secrets lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  work=$(mktemp -d "$OUT/kept-latents.XXXXXX") secrets=$(mktemp -d "$OUT/kept-latents-credentials.XXXXXX")
+  trap 'undo_window "$lock" ""; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic kept latents passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  # A short undo window before any project opens: Calcifer restarts for it, which would lock an open encrypted project.
+  undo_window "$lock" 20
+  python3 "$E2E/cli/kept_latents.py" --work "$work" --passphrase "$secrets/passphrase" --out "$work/proof" --cli "$COZY" 2> "$work/proof.err" \
+    || { cat "$work/proof.err"; check "kept latents: $(tail -n 1 "$work/proof.err" | cut -c1-600)"; }
+  cat "$work/proof/kept-latents.json" 2> /dev/null || true
+)
+
 vault_leftovers() (
   step "encryption leaves nothing behind: an interrupted conversion recovers; no leftover is listed; no plaintext outside the vault"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault leftovers: Linux runners only"; return 0; }
