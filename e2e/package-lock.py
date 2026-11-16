@@ -38,7 +38,7 @@ def main() -> int:
         staged = json.loads(subprocess.check_output([args.stage_code, str(directory)], text=True))
         for left in staged["left"]:
             print("left out of code: " + left, file=sys.stderr)
-        headers = {**headers, "cozy-project-storage": "3"}
+        headers = headers
         for file in staged["files"]:
             upload_project(base, headers, project, file["digest"], Path(file["path"]).read_bytes())
         upload_project(base, headers, project, staged["code"]["tree"], staged["document"].encode())
@@ -83,7 +83,7 @@ def project_of(base: str, headers: dict[str, str], directory: Path) -> str | Non
     """The id of the project holding `directory`, as Calcifer resolves it; None outside one."""
     url = base + "/v1/projects/" + quote(str(directory), safe="") + "/address"
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={**headers, "cozy-project-storage": "3"})) as response:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as response:
             project: str = json.load(response)["id"]
             return project
     except urllib.error.HTTPError as error:

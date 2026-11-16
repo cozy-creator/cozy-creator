@@ -36,7 +36,7 @@ def main() -> int:
     args = parser.parse_args()
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     base = "http://" + holder["address"]
-    headers = {"Authorization": "Bearer " + holder["token"], "cozy-project-storage": "3"}
+    headers = {"Authorization": "Bearer " + holder["token"]}
     files: list[dict[str, str]] = []
     paths: dict[str, dict[str, str]] = {}
     for attached in args.file:

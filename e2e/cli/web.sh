@@ -148,6 +148,7 @@ HOLDER=$(web_path "$lock") ARGV_LOG=$(web_path "$OUT/argv.log") CHROME=$chrome P
 [ "$code" = 0 ] || check "web-serves: the browser failed: $(tail -c 500 "$OUT/web.err")"
 J '(.minted | length) == 0 and (.authorization | length) == 0 and .gate == 0' "$OUT/web.json" \
   || check "web-serves: the page asked for or sent a credential, or wasn't answered: $(jq -c '{minted, authorization, gate}' "$OUT/web.json")"
+J '(.proofs | length) == 0' "$OUT/web.json" || check "web-serves: the page asked Calcifer for a storage proof first (cl-1066): $(jq -c .proofs "$OUT/web.json")"
 
 J '.document.status == 200 and .document.referrer_policy == "no-referrer"' "$OUT/web.json" || check "web-serves: GET /: $(jq -c .document "$OUT/web.json")"
 for directive in "default-src 'none'" "script-src 'self' 'wasm-unsafe-eval'" "style-src 'self'" "img-src 'self' blob: data:" "media-src 'self' blob:" "font-src 'self'" "connect-src 'self'" "base-uri 'none'" "form-action 'none'" "frame-ancestors 'none'"; do
@@ -162,11 +163,6 @@ J '.page_stream.status == 200 and (.page_stream.content_type // "" | startswith(
   || check "web-serves: the page did not open GET /v1/events as its own page: $(jq -c .page_stream "$OUT/web.json")"
 J --arg id "$id" '.stream_status == 200 and .streamed[0].type == "hello" and (.streamed | any(.type == "project.changed" and .id == $id))' "$OUT/web.json" \
   || check "web-serves: no hello then project.changed on GET /v1/events: $(jq -c '{stream_status, streamed}' "$OUT/web.json")"
-if [ "${RUNNER_OS:-}" = Windows ]; then
-  J '.storage.version == 3 and (.storage.principal | startswith("user:S-1-"))' "$OUT/web.json" || check "web-serves: project storage isn't this account's: $(jq -c .storage "$OUT/web.json")"
-else
-  J --arg p "user:$(id -u)" '.storage.version == 3 and .storage.principal == $p' "$OUT/web.json" || check "web-serves: project storage isn't this account's: $(jq -c .storage "$OUT/web.json")"
-fi
 J '.typed.status == 403 and .typed.site == "none" and .typed.page == 200' "$OUT/web.json" || check "web-serves: a /v1 URL opened in the address bar isn't refused, or the page's is: $(jq -c .typed "$OUT/web.json")"
 
 # What isn't Calcifer's own page, or this computer's cozy with its bearer, is refused in one line.
@@ -206,7 +202,7 @@ if [ -n "$file" ]; then
   answers "the page's HEAD of a file" 200 - -I -H 'Sec-Fetch-Site: same-origin' "${img[@]}" "$base/v1/projects/$id/files/$file"
   answers "another site's <img> of a file" 403 not_own_page -H 'Sec-Fetch-Site: cross-site' "${img[@]}" "$base/v1/projects/$id/files/$file"
   answers "another port's <img> of a file" 403 not_own_page -H 'Sec-Fetch-Site: same-site' "${img[@]}" "$base/v1/projects/$id/files/$file"
-  answers "the CLI's read of a file" 200 - "${B[@]}" -H 'cozy-project-storage: 3' "$base/v1/projects/$id/files/$file"
+  answers "the CLI's read of a file" 200 - "${B[@]}" "$base/v1/projects/$id/files/$file"
   answers "a file read with neither" 401 unauthenticated "$base/v1/projects/$id/files/$file"
 else
   check "web-serves: the import named no file: $(jq -c .imported "$OUT/web.json")"

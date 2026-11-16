@@ -34,7 +34,7 @@ module.exports = async () => {
   const ask = async (method, path, body) => {
     const answer = await fetch(origin + path, {
       method,
-      headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${holder.token}`, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(60_000),
     });

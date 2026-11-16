@@ -15,7 +15,7 @@ const bounded = (what, promise) => {
   const late = new Promise((_, no) => { timer = setTimeout(() => no(new Error(`no ${what} in ${STEP_MS / 1000} s`)), STEP_MS); });
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 };
-const out = { violations: [], console_errors: [], page_errors: [], assets: [], minted: [], authorization: [], page_stream: null, opened: {} };
+const out = { violations: [], console_errors: [], page_errors: [], assets: [], minted: [], authorization: [], proofs: [], page_stream: null, opened: {} };
 let mine = false;
 
 (async () => {
@@ -48,6 +48,8 @@ let mine = false;
     if (!path.startsWith('/v1/')) return;
     // Nothing the page sends is a credential, and it asks for none.
     if (/^\/v1\/session/.test(path)) out.minted.push(`${q.method()} ${path}`);
+    // Nor a storage-protocol proof before its requests (cl-1066).
+    if (path.startsWith('/v1/project-storage')) out.proofs.push(path);
     // A request of a page closed since has no headers to read: it sent none of the page's.
     const authorization = (await q.allHeaders().catch(() => ({}))).authorization;
     if (authorization) out.authorization.push(path);
@@ -76,7 +78,7 @@ let mine = false;
   mine = true;
   out.stream_status = await bounded('answer on GET /v1/events', page.evaluate(async () => {
     window.streamed = [];
-    const r = await fetch('/v1/events', { headers: { 'cozy-project-storage': '3' } });
+    const r = await fetch('/v1/events');
     if (!r.ok) return r.status;
     const reader = r.body.getReader(), decode = new TextDecoder();
     window.endStream = () => reader.cancel();
@@ -97,7 +99,7 @@ let mine = false;
   out.stream_interest = await page.evaluate(async (id) => {
     const stream = window.streamed.find((event) => event.type === 'hello').stream;
     const response = await fetch(`/v1/events/${encodeURIComponent(stream)}`, {
-      method: 'PUT', headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json' }, body: JSON.stringify({ projects: [id] }),
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projects: [id] }),
     });
     const reply = await response.json();
     if (!response.ok || !reply.held.includes(id)) throw new Error(`project interest refused: ${response.status}`);
@@ -107,8 +109,6 @@ let mine = false;
   await until('project.changed on the stream', (id) => window.streamed.some((e) => e.type === 'project.changed' && e.id === id && e.rev), id);
   out.streamed = await page.evaluate(() => { window.endStream(); return window.streamed; });
   out.violations.push(...await page.evaluate(() => window.__violations));
-  // The project storage the page proved: bound to this OS account, not a token.
-  out.storage = await page.evaluate(async () => (await fetch('/v1/project-storage', { headers: { 'cozy-project-storage': '3' } })).json());
   // The address bar (and an agent's browser told to go there): the page opens, /v1 doesn't.
   const typed = await context.newPage();
   const status = await typed.goto(`${origin}/v1/status`);

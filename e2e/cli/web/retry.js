@@ -29,7 +29,7 @@ async function died(why) {
 }
 const shot = (page, name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : null);
 const api = async (suffix) => {
-  const answer = await fetch(`${calcifer()}/v1/projects/${encodeURIComponent(folder)}${suffix}`, { headers: { Authorization: `Bearer ${holderToken()}`, 'cozy-project-storage': '3' } });
+  const answer = await fetch(`${calcifer()}/v1/projects/${encodeURIComponent(folder)}${suffix}`, { headers: { Authorization: `Bearer ${holderToken()}` } });
   if (!answer.ok) throw new Error(`GET ${suffix}: ${answer.status} ${await answer.text()}`);
   return answer.json();
 };

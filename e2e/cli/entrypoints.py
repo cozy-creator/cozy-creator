@@ -202,7 +202,7 @@ def main() -> None:
         def calcifer(method: str, path: str, body: object = None) -> tuple[int, str]:
             request = urllib.request.Request(f"http://{holder['address']}{path}", method=method,
                 data=None if body is None else json.dumps(body).encode(),
-                headers={"Authorization": f"Bearer {holder['token']}", "Content-Type": "application/json", "cozy-project-storage": "3"})
+                headers={"Authorization": f"Bearer {holder['token']}", "Content-Type": "application/json"})
             try:
                 with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30) as answer:
                     return answer.status, answer.read().decode()

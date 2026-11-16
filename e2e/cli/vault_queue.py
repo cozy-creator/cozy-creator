@@ -40,7 +40,7 @@ def holder() -> dict[str, str]:
 
 
 def headers(token: str, **more: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}", "cozy-project-storage": "3", **more}
+    return {"Authorization": f"Bearer {token}", **more}
 
 
 def png(i: int, side: int = 320) -> bytes:

@@ -89,7 +89,7 @@ async function candidate(context, origin, directory) {
     if (now.pid !== holder.pid || now.address !== holder.address) throw new Error('Calcifer changed during the cell');
   };
   const api = async path => {
-    const response = await fetch(origin + path, { headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3' }, signal: AbortSignal.timeout(STEP) });
+    const response = await fetch(origin + path, { headers: { Authorization: `Bearer ${holder.token}` }, signal: AbortSignal.timeout(STEP) });
     if (!response.ok) throw new Error(`GET ${path}: ${response.status}`);
     return response.json();
   };
@@ -116,8 +116,6 @@ async function candidate(context, origin, directory) {
   const placed = async name => (await api(`${at}/canvas`)).cards[name];
   if (typeof made.code !== 'string' || !made.code) throw new Error('cozy new did not return the project code');
   const link = new URL(`/p/${encodeURIComponent(made.code)}`, origin);
-  const nativeStorage = await api('/v1/project-storage');
-  if (nativeStorage.version !== 3 || typeof nativeStorage.daemon_birth !== 'string' || !nativeStorage.daemon_birth || !String(nativeStorage.principal ?? '').startsWith('user:')) throw new Error('Calcifer did not prove the native project-storage principal');
   const extra = JSON.parse(process.env.CHROME_ARGS ?? '[]');
   if (!Array.isArray(extra) || extra.some(arg => typeof arg !== 'string' || /swiftshader|llvmpipe|lavapipe|disable-gpu(?:$|=)/i.test(arg))) throw new Error('CHROME_ARGS must select a hardware renderer');
   seen.browser_args = ['--enable-gpu', '--disable-software-rasterizer', ...extra];
@@ -152,14 +150,7 @@ async function candidate(context, origin, directory) {
     };
   });
   await candidate(context, origin, process.env.CANDIDATE_DIST);
-  // Observe the page's own transport proof. No header, credential, or synthetic response is injected into its API requests.
-  const proving = page.waitForResponse(response => { const url = new URL(response.url()); return url.origin === origin && url.pathname === '/v1/project-storage' && response.request().method() === 'GET'; });
   const document = await page.goto(link.href);
-  const proof = await proving, storage = proof.ok() ? await proof.json() : null;
-  const proven = proof.ok() && !proof.request().headers().authorization && storage?.version === 3 && storage.principal === nativeStorage.principal && storage.daemon_birth === nativeStorage.daemon_birth;
-  seen.page_storage = { status: proof.status(), version: storage?.version, principal: storage?.principal, daemon_birth: storage?.daemon_birth, credential_free: !proof.request().headers().authorization };
-  check('real_page_storage_proven', proven, seen.page_storage);
-  if (!proven) throw new Error('the page did not prove project storage for this Calcifer user and process');
   check('document_keeps_csp', Boolean(document.headers()['content-security-policy']) && document.headers()['referrer-policy'] === 'no-referrer');
   await page.getByRole('region', { name: 'Project canvas', exact: true }).waitFor();
   const canvas = page.getByRole('region', { name: 'Project canvas', exact: true });

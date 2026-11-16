@@ -1,0 +1,1 @@
+The CLI and the page no longer ask Calcifer to prove "project storage protocol 3" before project requests, and send no `cozy-project-storage` header: one round trip fewer per CLI project command. `GET /v1/project-storage` is gone. Calcifer still answers only its own OS account, checked on every connection.

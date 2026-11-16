@@ -241,7 +241,7 @@ test('open, alone on its Calcifer', { tag: '@solo' }, async ({ context, page, pr
     await killed();
     await kept(project, 'only_a');
     // The page's own read, as it asks: no Authorization.
-    const read = await page.evaluate((id) => fetch(`/v1/projects/${encodeURIComponent(id)}?assets=false`, { headers: { 'cozy-project-storage': '3' } }).then((answer) => answer.status), project.id);
+    const read = await page.evaluate((id) => fetch(`/v1/projects/${encodeURIComponent(id)}?assets=false`).then((answer) => answer.status), project.id);
     expect.soft(read, "the new Calcifer answers the page's read").toBe(200);
   });
 

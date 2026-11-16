@@ -4,7 +4,8 @@
 #   given to another group is a share its owner chose, and keeps that group. Before, every read warned "other accounts on this computer
 #   can open <dir>: chmod 700 <dir>" and left it open.
 # protocol_free: a project route answers a client that sends no `cozy-project-storage: 3` header; before, it refused it
-#   `project_storage_protocol_required`, "update this client".
+#   `project_storage_protocol_required`, "update this client". And `GET /v1/project-storage`, which the CLI and the page asked before
+#   each project request, is gone (404).
 folder_private() {
 step "a project folder others may open is shut to them, a chosen group's share kept, said nothing of (cl-1066)"
 [ "${RUNNER_OS:-}" != Windows ] || { echo "folder_private: Unix modes, read on Linux and macOS"; return; }
@@ -34,7 +35,7 @@ fi
 }
 
 protocol_free() {
-step "a project route answers a client sending no protocol header (cl-1066)"
+step "a project route answers a client sending no protocol header, and there's no protocol proof to ask (cl-1066)"
 local dir=$OUT/standing-plain holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded code
 cozy --json new --unencrypted "$dir" > "$OUT/standing-plain-new.json" 2>&1 || { check "protocol_free: cozy new: $(tail -c 300 "$OUT/standing-plain-new.json")"; return; }
 encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$dir")
@@ -42,4 +43,7 @@ code=$(curl -sS -o "$OUT/standing-plain-state.json" -w '%{http_code}' -H "Author
   "http://$(jq -r .address "$holder")/v1/projects/$encoded/address") || code=none
 [ "$code" = 200 ] && J '.id | length > 0' "$OUT/standing-plain-state.json" \
   || check "protocol_free: GET its address with no protocol header answered $code: $(head -c 300 "$OUT/standing-plain-state.json")"
+code=$(curl -sS -o "$OUT/standing-proof.json" -w '%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" \
+  "http://$(jq -r .address "$holder")/v1/project-storage") || code=none
+[ "$code" = 404 ] || check "protocol_free: GET /v1/project-storage answered $code, not 404: $(head -c 300 "$OUT/standing-proof.json")"
 }

@@ -56,7 +56,7 @@ def main() -> int:
 
     def raw(method: str, path: str, body: bytes, key: str | None, content_type: str = "application/json") -> bytes:
         head = [f"{method} {path} HTTP/1.1", f"Host: {host}:{port}", f"Authorization: Bearer {holder['token']}", "Cozy-Client: page e2e-keyed",
-                "cozy-project-storage: 3", f"Content-Type: {content_type}", f"Content-Length: {len(body)}", "Connection: close"]
+                f"Content-Type: {content_type}", f"Content-Length: {len(body)}", "Connection: close"]
         if key:
             head.append(f"Idempotency-Key: {key}")
         return ("\r\n".join(head) + "\r\n\r\n").encode() + body

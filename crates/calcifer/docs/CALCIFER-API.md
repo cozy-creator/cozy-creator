@@ -60,10 +60,8 @@ each request is judged alone (`crates/calcifer/src/loopback.rs`). Every request 
 
 Every `/v1` answer carries `Content-Security-Policy: sandbox`, so nothing under it (a
 package's preview, a project's file) runs script on Calcifer's origin; a run's preview is a raster picture or nothing (no SVG: the page shows previews as blob URLs, which carry its own CSP). There are no
-cookies, and nothing of Calcifer's is kept in the browser: a tab outlives a restart. Project storage's principal is the verified
-account (`GET /v1/project-storage`: `principal: user:<uid or SID>`). The page's restart guard pins the first one and that
-Calcifer's `daemon_birth`, proves them again right before sending a passphrase or recovery secret, and after a restart sends
-neither until it's reloaded. Calcifer runs with umask 077: what it makes is its
+cookies, and nothing of Calcifer's is kept in the browser: a tab outlives a restart. Every `/v1` request is checked against the
+kernel's word for its socket's account (`other_user` otherwise). Calcifer runs with umask 077: what it makes is its
 account's alone.
 
 ## Conventions

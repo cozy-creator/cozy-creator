@@ -87,7 +87,7 @@ def calcifer(method: str, path: str, body: bytes | Json | None = None) -> tuple[
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_bytes())
     endpoint = urlsplit("http://" + holder["address"])
     require(endpoint.hostname in {"127.0.0.1", "::1", "localhost"} and endpoint.port is not None, "holder_loopback")
-    headers = {"Authorization": "Bearer " + holder["token"], "cozy-project-storage": "3", "Cozy-Client": "cli"}
+    headers = {"Authorization": "Bearer " + holder["token"], "Cozy-Client": "cli"}
     data = None
     if isinstance(body, dict):
         data, headers["Content-Type"] = json.dumps(body).encode(), "application/json"
