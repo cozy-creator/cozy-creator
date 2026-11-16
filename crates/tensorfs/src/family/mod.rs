@@ -261,8 +261,10 @@ pub(crate) fn fitting(targets: &BTreeMap<&str, Factors>) -> Vec<(&'static Family
         .collect()
 }
 
-fn is_lora(component: &Component) -> bool {
-    component.tensors.iter().all(|t| lora_key(&t.key))
+/// Whether every tensor of a component is a LoRA's ([`lora_key`]) or in a whole module its adapter config carries
+/// (PEFT's `modules_to_save`).
+pub(crate) fn is_lora(component: &Component) -> bool {
+    component.tensors.iter().all(|t| lora_key(&t.key) || crate::import::lora::saved(&t.key, &component.config))
 }
 
 /// What a checkpoint is, from its header alone.
