@@ -83,7 +83,7 @@ function Update({ machine }: { machine: Machine }) {
           </button>
         </div>
       </form>
-      {machine.kind === "local" && tensord.trim() && <p className="muted">Cozy switches to that version the next time you run a `cozy` command in a terminal.</p>}
+      {machine.kind === "local" && tensord.trim() && <p className="muted">Cozy switches to that version the next time you use it from a terminal.</p>}
       {said && <p className="muted">{said}</p>}
       <Failure error={ask.error} lead="Couldn't update this machine" />
     </details>

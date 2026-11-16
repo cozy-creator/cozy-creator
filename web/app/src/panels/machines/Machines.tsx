@@ -72,7 +72,7 @@ function AddMachine() {
         </label>
         <label>
           Fingerprint
-          <input className="field" spellCheck={false} placeholder="sha256:… (run `cozy machine show local` on that computer)" value={fingerprint} onChange={(event) => setFingerprint(event.target.value)} />
+          <input className="field" spellCheck={false} placeholder="sha256:… (ask that computer's owner)" value={fingerprint} onChange={(event) => setFingerprint(event.target.value)} />
         </label>
         <div className="row end">
           <button type="submit" className="tb" disabled={ask.busy || !name.trim() || !address.trim() || !fingerprint.trim()}>
