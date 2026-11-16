@@ -197,6 +197,8 @@ struct Live {
     width: u32,
     slow_said: bool,
     slow_asked: Option<Instant>,
+    /// The last wait its machine named that its log kept (`wait_said`).
+    said_wait: Option<String>,
 }
 
 /// A log line at a level its followers are warned at, as `cozy run` says it.
@@ -1371,6 +1373,18 @@ impl Calcifer {
         }
     }
 
+    /// A wait its machine names, kept in the run's log once as it begins, at the machine's time: whether it is news there
+    /// (cl-1086: a wait no line names was a hang to whoever read the logs).
+    fn wait_said(&self, id: &RunId, reason: &str) -> bool {
+        let mut live = lock(&self.live);
+        let said = &mut live.entry(id.clone()).or_default().said_wait;
+        let news = said.as_deref() != Some(reason);
+        if news {
+            *said = Some(reason.to_owned());
+        }
+        news
+    }
+
     /// Records the run's progress, with how far it is, at what rate its bytes move and its time
     /// left; whether it entered a stage it was not in.
     fn progress(&self, id: &RunId, mut progress: Progress) -> bool {
@@ -2324,7 +2338,11 @@ impl Calcifer {
                         Ok(Some(holder)) => format!("run {}", self.run_name(&holder)),
                         _ => "another run".to_owned(),
                     };
-                    self.waiting(id, format!("waiting for {gpus}, held by {holder}"));
+                    let reason = format!("waiting for {gpus}, held by {holder}");
+                    if self.wait_said(id, &reason) {
+                        batch.logs.push((frame.at_ms, "stage".into(), reason.clone()));
+                    }
+                    self.waiting(id, reason);
                 }
                 Frame::Gpu(gpu) => {
                     if gpu.state == "grant" {
@@ -2356,8 +2374,11 @@ impl Calcifer {
                             batch.logs.push((frame.at_ms, "stage".into(), stage));
                         }
                         self.not_waiting(id);
-                    } else {
-                        self.machine_waiting(id, state.clone());
+                    } else if let Some(reason) = self.machine_waiting(id, state.clone())
+                        && self.wait_said(id, &reason)
+                    {
+                        // What it waits for, kept with the run as its stages are: `cozy run show` and its cells read when it began.
+                        batch.logs.push((frame.at_ms, "stage".into(), reason));
                     }
                     if state.started_at_ms > 0 {
                         batch.started_at_ms = Some(state.started_at_ms as i64);
@@ -2415,13 +2436,20 @@ impl Calcifer {
 
     /// What the run waits on by its machine's word. A reason that only repeats the machine's
     /// state (`preparing`) says nothing more.
-    fn machine_waiting(&self, id: &RunId, mut state: v1::RunState) {
+    fn machine_waiting(&self, id: &RunId, mut state: v1::RunState) -> Option<String> {
         if let Some(waiting) = self.waiting_for(&state.waiting_for) {
             state.waiting = waiting;
         }
         match state.waiting.as_str() {
-            waiting if waiting.is_empty() || waiting == state.state => self.not_waiting(id),
-            waiting => self.waiting(id, format!("{}: {waiting}", state.state)),
+            waiting if waiting.is_empty() || waiting == state.state => {
+                self.not_waiting(id);
+                None
+            }
+            waiting => {
+                let reason = format!("{}: {waiting}", state.state);
+                self.waiting(id, reason.clone());
+                Some(reason)
+            }
         }
     }
 

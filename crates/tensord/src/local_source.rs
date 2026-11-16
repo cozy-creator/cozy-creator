@@ -509,8 +509,11 @@ impl LocalSources {
                     true => Ok(()),
                     false => service.engine.waiting(run, reason),
                 };
+                let caller = service.engine.caller_id(run);
+                tracing::info!(run = %caller, "local install: {reason}");
                 tell(Some(reason))?;
                 let installing = installer.turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                tracing::info!(run = %caller, "local install: its turn");
                 tell(None)?;
                 installing
             }
