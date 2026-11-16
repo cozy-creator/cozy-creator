@@ -412,13 +412,14 @@ const box = (page, name) => page.locator(`.canvas-node .card[data-asset=${JSON.s
 
 /** Read-only product geometry and logical names. Neither is evidence that the GPU presented the expected pixels.
  *  A file still on its way to Calcifer is drawn under the name it was given while the scene and its card key it `placing:N` (place.ts):
- *  these helpers take and give the name a person sees, from its drawn title or its mounted card's. */
+ *  these helpers take and give the name a person sees, from its drawn title or, mounted under the pointer, its card's. */
 const SHOWN = `(inspection, key) => {
   if (!key.startsWith('placing:')) return key;
   const title = inspection.card(key)?.rendered?.labels?.title?.title;
   if (title) return title;
-  const nm = document.querySelector('.canvas-node .card[data-asset=' + JSON.stringify(key) + '] .head .nm');
-  return nm?.value || nm?.textContent?.trim() || key;
+  // Mounted under the pointer, its card says the name it's drawn under (Card.tsx data-asset is the view's name).
+  const native = inspection.interaction().nativeHover === key && document.querySelector('.canvas-node .card[data-asset]');
+  return native?.dataset.asset || key;
 }`;
 const KEY = `(inspection, name) => inspection.card(name) ? name : inspection.names().find((key) => key.startsWith('placing:') && (${SHOWN})(inspection, key) === name)`;
 const canvasCard = (page, name) => page.evaluate(`((name) => {
@@ -435,7 +436,7 @@ const canvasVisible = (page, name) => page.evaluate(`((name) => {
   const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection;
   const key = inspection && (${KEY})(inspection, name);
   const card = key && inspection.card(key);
-  const native = key && document.querySelector('.canvas-node .card[data-asset=' + JSON.stringify(key) + ']');
+  const native = key && document.querySelector('.canvas-node .card[data-asset=' + JSON.stringify(name) + ']');
   if (!root || !card || (!card.rendered && !native?.checkVisibility())) return false;
   const r = native?.getBoundingClientRect() ?? card.bounds, view = root.getBoundingClientRect();
   return r.width > 0 && r.height > 0 && r.x + r.width > view.left && r.y + r.height > view.top && r.x < view.right && r.y < view.bottom;
