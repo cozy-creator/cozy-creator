@@ -196,19 +196,14 @@ local going
 for _ in $(seq 120); do going=$(state1 "SELECT count(*) FROM runs WHERE id LIKE 'run-cl1010u%' AND state <> 'settled'") && [ "$going" = 0 ] && break; sleep 0.5; done
 [ "$going" = 0 ] || check "restart: $going of the runs left going weren't taken up 60 s after the restart"
 echo "restart: reads slowed $(tail -1 "$S/busy-disk.log" 2> /dev/null)"
-# Kept 90 days (Paul 11-15): a new run of no project, here the candidates again, takes out 16 runs and 16 ended machines past them.
-local cut old_runs old_machines runs_after machines_after
+# Ended machines are kept 90 days (Paul 11-15): those older went as Calcifer took up what it left; the rest stayed.
+local cut gone kept
 cut="(CAST(strftime('%s', 'now') AS INTEGER) - 90 * 86400) * 1000"
-old_runs=$(state1 "SELECT count(*) FROM runs WHERE state = 'settled' AND settled_at < $cut")
-old_machines=$(state1 "SELECT count(*) FROM machines WHERE state = 'ended' AND coalesce(ended_at, created_at) < $cut")
-if [ -n "${CAND_RT:-}${CAND_TFS:-}" ]; then
-  cozy --json machine update local ${CAND_TFS:+--tensorfs "$CAND_TFS"} ${CAND_RT:+--runtime "$CAND_RT"} -y > "$S/update.json" 2>&1 || check "restart: the candidates again: $(tail -c 300 "$S/update.json")"
-  runs_after=$(state1 "SELECT count(*) FROM runs WHERE state = 'settled' AND settled_at < $cut")
-  machines_after=$(state1 "SELECT count(*) FROM machines WHERE state = 'ended' AND coalesce(ended_at, created_at) < $cut")
-  echo "restart: past 90 days, runs $old_runs → $runs_after, ended machines $old_machines → $machines_after"
-  [ "$((old_runs - runs_after))" -ge 16 ] || check "restart: a new run took out $((old_runs - runs_after)) runs past 90 days, not 16"
-  [ "$((old_machines - machines_after))" -ge 16 ] || check "restart: a new run took out $((old_machines - machines_after)) ended machines past 90 days, not 16"
-fi
+gone=$(state1 "SELECT count(*) FROM machines WHERE name LIKE 'cl1010-gone-%' AND coalesce(ended_at, created_at) < $cut")
+kept=$(state1 "SELECT count(*) FROM machines WHERE name LIKE 'cl1010-gone-%'")
+echo "restart: ended machines past 90 days left $gone, of $kept kept"
+[ "$gone" = 0 ] || check "restart: $gone ended machines past 90 days are still kept"
+[ "$kept" -ge 1400 ] || check "restart: only $kept of the ended machines within 90 days are kept"
 # The store as it was for what follows: its rows out, and Calcifer on its own disk again.
 rm -f "$dropin" && systemctl --user daemon-reload
 calcifer_halt || return

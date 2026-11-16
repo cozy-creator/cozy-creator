@@ -574,10 +574,10 @@ const ANSWERS: &str = "
         body BLOB NOT NULL,
         at_ms INTEGER NOT NULL
     ) STRICT;";
-/// How long a settled run of no project, and an ended machine's row, are kept (Paul 11-15: "keep other rental data for like 90
-/// days or so, so that users can go back and see what they did").
+/// How long an ended machine's row is kept (Paul 11-15: "keep other rental data for like 90 days or so, so that users can go back
+/// and see what they did").
 const KEPT_FOR_MS: i64 = 90 * 24 * 3600 * 1000;
-/// How many of each a prune takes: more than are recorded meanwhile, few enough to hold the writer briefly.
+/// How many a machine's end takes out: more than end meanwhile, few enough to hold the writer briefly.
 const PRUNED_EACH: i64 = 16;
 /// A run this much older than the measurements kept, still not settled, never will be: `drop_measurements` goes past it.
 const GIVEN_UP_MS: i64 = 30 * 24 * 3600 * 1000;
@@ -2156,39 +2156,26 @@ impl Store {
             tx.execute("UPDATE machines SET state = 'ended', reason = ?2, ended_at = coalesce(ended_at, ?3) WHERE name = ?1", params![machine, reason, now_ms()])?;
             Ok(())
         })?;
-        self.runs_on_ended_machine(machine, row.served, reason)
+        let ended = self.runs_on_ended_machine(machine, row.served, reason);
+        // A machine that ends takes out a few ended past 90 days.
+        if let Err(e) = self.prune_machines(PRUNED_EACH) { tracing::warn!("ended machines past 90 days: {e}"); }
+        ended
     }
 
-    /// Takes out a few settled runs of no project and ended machines older than [`KEPT_FOR_MS`], as each new run is recorded: the
-    /// store holds about its last 90 days, with no timer (Paul 11-15). Never a project's run: those are in its
-    /// project.db. Machines wait for the legacy history's cut (cl-1003): its rows name them. A failure is said and changes nothing.
-    pub(crate) fn prune(&self, now: i64) -> Vec<String> {
-        let before = now - KEPT_FOR_MS;
-        let pruned = self.write(|tx| {
-            let ids: Vec<String> = {
-                let mut old = tx.prepare("SELECT id FROM runs WHERE state = 'settled' AND settled_at < ?1 AND custody = 'owned' ORDER BY settled_at LIMIT ?2")?;
-                old.query_map(params![before, PRUNED_EACH], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
-            };
-            if !ids.is_empty() {
-                let ids = serde_json::to_string(&ids).expect("serializes");
-                for table in ["outputs", "run_logs", "asks", "run_placements"] {
-                    tx.execute(&format!("DELETE FROM {table} WHERE run IN (SELECT value FROM json_each(?1))"), [&ids])?;
-                }
-                tx.execute("DELETE FROM runs WHERE id IN (SELECT value FROM json_each(?1))", [&ids])?;
-            }
-            if !has_table(tx, "legacy_project_runs")? {
-                tx.execute(
-                    "DELETE FROM machines WHERE name IN (SELECT name FROM machines m WHERE state = 'ended' AND coalesce(ended_at, created_at) < ?1
-                         AND NOT EXISTS (SELECT 1 FROM runs WHERE machine = m.name) LIMIT ?2)",
-                    params![before, PRUNED_EACH],
-                )?;
-            }
-            tx.execute_batch("PRAGMA incremental_vacuum(256)")?;
-            Ok(ids)
-        });
-        pruned.unwrap_or_else(|e| {
-            tracing::warn!("pruning runs and machines older than 90 days: {e}");
-            vec![]
+    /// Takes out ended machines older than [`KEPT_FOR_MS`] that no kept run names, at most `limit`, and gives the pages back (a new store
+    /// vacuums incrementally): the store keeps 90 days of them, with no timer (Paul 11-15). Not while the legacy history's rows can still
+    /// name them (cl-1003). How many went.
+    pub(crate) fn prune_machines(&self, limit: i64) -> Result<usize> {
+        let before = now_ms() - KEPT_FOR_MS;
+        self.write(|tx| {
+            if has_table(tx, "legacy_project_runs")? { return Ok(0); }
+            let pruned = tx.execute(
+                "DELETE FROM machines WHERE name IN (SELECT name FROM machines m WHERE state = 'ended' AND coalesce(ended_at, created_at) < ?1
+                     AND NOT EXISTS (SELECT 1 FROM runs WHERE machine = m.name) LIMIT ?2)",
+                params![before, limit],
+            )?;
+            if pruned > 0 { tx.execute_batch("PRAGMA incremental_vacuum(256)")?; }
+            Ok(pruned)
         })
     }
 
@@ -3124,7 +3111,6 @@ fn run_list_indexes(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS runs_list_metadata ON runs(number,target,state,status,machine,out_dir,id,{private});
          DROP INDEX IF EXISTS runs_settled_at;
          CREATE INDEX IF NOT EXISTS runs_warm ON runs(machine) WHERE kind = 'warm';
-         CREATE INDEX IF NOT EXISTS runs_settled ON runs(settled_at) WHERE state = 'settled';
          CREATE INDEX IF NOT EXISTS runs_machine ON runs(machine) WHERE machine IS NOT NULL;
          CREATE INDEX IF NOT EXISTS runs_warm_set ON runs(machine) WHERE kind = 'warm' AND instr(spec, CAST('\"set\":{{' AS BLOB)) > 0;"
     ))?;
