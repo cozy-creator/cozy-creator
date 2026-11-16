@@ -195,42 +195,34 @@ function NumberField({ field, bound, label }: Drawn) {
   )
 }
 
-/** Options that each say what they are: a dropdown of their words and a line on each, showing the chosen one's words shut. */
+/** Options that each say what they are: a menu of their words and, under it, what the chosen one does. The browser's own menu, which
+ *  nothing clips: the list this drew itself opened inside the box it sits at the bottom of and was cut off by it (Paul, 11-16, on H3
+ *  Edit's Edit: "clipped by the bounding box it's inside of, so it's impossible (almost) to do anything with it"). */
 function Described({ field, bound, label }: Drawn) {
   const options = field.options ?? []
   const automatic = options.find((option) => typeof option === "string" && option.toLowerCase() === "auto")
   const held = bound.value ?? field.default ?? (field.auto ? automatic : undefined)
   const at = options.findIndex((option) => JSON.stringify(option) === JSON.stringify(held))
-  const [open, setOpen] = useState(false)
-  const choose = (option: unknown) => {
-    setOpen(false)
-    bound.write(option)
-  }
+  const says = at < 0 ? undefined : field.descriptions?.[String(options[at])]
+  const unset = field.auto && automatic === undefined
   return (
-    <div className="slide described" onBlur={(event) => !event.currentTarget.contains(event.relatedTarget as Node | null) && setOpen(false)}>
+    <div className="slide described">
       <span className="ctl-name">{field.label}</span>
-      <button type="button" className="field dropdown canvas-control" aria-label={label} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(!open)} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
-        {at < 0 ? (field.placeholder ?? "Choose") : optionWord(field, options[at])}
-      </button>
-      {open && (
-        <ul className="dropdown-list canvas-control" role="listbox" aria-label={label}>
-          {field.auto && automatic === undefined && <li><button type="button" role="option" aria-selected={at < 0} onClick={() => { bound.unset(); setOpen(false) }}>Auto</button></li>}
-          {options.map((option, i) => (
-            <li key={i}>
-              <button type="button" role="option" aria-selected={i === at} className={i === at ? "on" : ""} onClick={() => choose(option)}>
-                <b>{optionWord(field, option)}</b>
-                {field.descriptions?.[String(option)] && <span className="muted">{field.descriptions[String(option)]}</span>}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <select className="field canvas-control" aria-label={label} value={at} onChange={(event) => Number(event.target.value) < 0 ? bound.unset() : bound.write(options[Number(event.target.value)])}>
+        <option value={-1} disabled={!unset} hidden={!unset}>{unset ? "Auto" : (field.placeholder ?? "Choose…")}</option>
+        {options.map((option, i) => (
+          <option key={i} value={i} title={field.descriptions?.[String(option)]}>
+            {optionWord(field, option)}
+          </option>
+        ))}
+      </select>
       <Reset field={field} bound={bound} />
+      {says && <span className="described-says muted">{says}</span>}
     </div>
   )
 }
 
-/** Up to four options side by side, more in a menu; options that say what they are, a dropdown. */
+/** Up to four options side by side, more in a menu; options that say what they are, a menu with the chosen one's line under it. */
 function ChoiceField(props: Drawn) {
   const { field, bound, label } = props
   if (field.descriptions && Object.keys(field.descriptions).length) return <Described {...props} />

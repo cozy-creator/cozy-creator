@@ -394,13 +394,12 @@ impl Calcifer {
         Ok(Submitted { run: self.record(&row)?, replay: !fresh, notes: vec![], preparing: false, lock: None })
     }
 
-    /// Carries out Calcifer's own run `id` again, as an earlier Calcifer left it (`hub::jobs::resume`): said in its log.
+    /// Carries out Calcifer's own run `id` again, as an earlier Calcifer left it (`hub::jobs::resume`).
     pub(crate) fn here_again<F, Fut>(self: &Arc<Self>, id: RunId, work: F)
     where
         F: FnOnce(Here) -> Fut + Send + 'static,
         Fut: Future<Output = Result<serde_json::Value, ::api::error::Error>> + Send + 'static,
     {
-        Here { calcifer: self.clone(), id: id.clone() }.say("Calcifer restarted under this; it starts again");
         self.start_here(id, work);
     }
 
@@ -2170,14 +2169,6 @@ impl Calcifer {
                     true => return Ok(None),
                     false => continue,
                 }
-            }
-            // Which RC builds it runs on, said with the run once (cl-922).
-            if row.state == State::Queued
-                && row.kind != ::api::calcifer::Kind::Update
-                && let Some(line) = self.machines().and_then(|machines| machines.rc_line(machine))
-                && let Ok(events) = self.row_store(&row)?.note(row.id.as_str(), "machine", &line)
-            {
-                self.publish(&row.id, events);
             }
             sent.push((own, v1::RunRequest { id: row.sent_id(), spec }));
         }

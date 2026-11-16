@@ -23,7 +23,7 @@ export const gpusWords = (machine: Machine) => {
 
 export function stateWords(machine: Machine, now: number): string {
   if (machine.offline) return `offline: ${machine.offline}`
-  if (machine.broken && machine.state !== "ended") return `broken: ${machine.broken.code}`
+  if (machine.broken && machine.state !== "ended") return `broken: ${machine.broken.message}`
   const unverified = machine.unverified ? " (unverified)" : ""
   switch (machine.state) {
     case "booting":

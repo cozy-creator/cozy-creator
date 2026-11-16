@@ -47,9 +47,8 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 
 /// `cozy update [wanted]`: the binary it put in place; none when this is the newest release.
 async fn update(ctx: &Context, wanted: Option<&str>) -> Result<Option<PathBuf>, Error> {
-    if let Err(e) = crate::completion::install(&ctx.user_home) {
-        crate::output::warn(&format!("shell completion not installed: {e}"));
-    }
+    // Completion is a convenience: one that can't be written is left out.
+    let _ = crate::completion::install(&ctx.user_home);
     let current = ::api::VERSION;
     let binary = installed()?;
     let wanted = wanted.map(|v| v.trim_start_matches('v'));
@@ -97,10 +96,8 @@ async fn update(ctx: &Context, wanted: Option<&str>) -> Result<Option<PathBuf>, 
         Adopted::MovesWhenIdle => match crate::machine::activate(ctx, &version).await {
             Ok(Some(run)) => Adopted::Moves { run },
             Ok(None) => Adopted::MovesWhenIdle,
-            Err(e) => {
-                crate::output::warn(&format!("local did not take the update to cozy {version}: {}", e.message));
-                Adopted::MovesWhenIdle
-            }
+            // It moves once idle all the same.
+            Err(_) => Adopted::MovesWhenIdle,
         },
         adopted => adopted,
     };

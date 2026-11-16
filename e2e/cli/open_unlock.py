@@ -1,6 +1,7 @@
 """`cozy open` in a locked encrypted project (cl-1002). At a terminal it asks for the passphrase or the recovery secret, unlocks,
 and opens: the page's URL printed, through Cozy's private browser or, with no display, as an address any browser opens. `--json`
-and a pipe never ask: they refuse `project_locked`, naming `cozy vault unlock`.
+and a pipe never ask: they refuse `project_locked`, naming `cozy vault unlock`. `cozy status` at a terminal unlocks as open does
+(cl-1066): every verb shares that path.
 
 open_unlock.py --cozy BIN --project DIR --passphrase FILE --recovery FILE --out DIR
 """
@@ -143,6 +144,17 @@ def main() -> None:
     code, stdout, stderr, asked = on_terminal(["open"], [recovery])
     assert asked == 1, f"open by recovery secret: asked {asked} times: {stderr[-600:]}"
     opened("recovery", code, stdout, stderr)
+
+    # Every verb, not only `open`, unlocks a locked project at a terminal and goes on (cl-1066): `cozy status` asks once, says the
+    # project, and leaves it unlocked. From a pipe it still refuses, asking nothing.
+    lock()
+    piped = cozy("status")
+    assert piped.returncode != 0 and "cozy vault unlock" in piped.stdout + piped.stderr, f"status from a pipe: {piped.stdout}{piped.stderr}"
+    assert "passphrase" not in (piped.stdout + piped.stderr).lower(), "status from a pipe asked for a credential"
+    code, stdout, stderr, asked = on_terminal(["status"], [passphrase])
+    assert code == 0 and asked == 1, f"status at a terminal: exit {code}, asked {asked}: {stdout}{stderr[-600:]}"
+    assert state() == "unlocked", "status at a terminal left the project locked"
+    receipt["status"] = {"asked": asked}
 
     (args.out / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt))

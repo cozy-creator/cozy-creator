@@ -1443,8 +1443,15 @@ impl Machines {
         if text.eq_ignore_ascii_case("local") {
             return self.local_row().map(|_| "local".to_owned());
         }
-        let Some(row) = self.named(text)? else {
-            return Ok(text.to_owned());
+        let row = match self.named(text) {
+            Ok(Some(row)) => row,
+            Ok(None) => return Ok(text.to_owned()),
+            // A name only ended machines had is the newest of them, refused as ended: a render places its job again (`project::GONE`).
+            Err(e) if e.code == "machine_name_ended" => match self.store().machines_named(text).map_err(internal)?.into_iter().next() {
+                Some(row) => row,
+                None => return Err(e),
+            },
+            Err(e) => return Err(e),
         };
         self.reachable(&row).await.map(|()| row.name)
     }

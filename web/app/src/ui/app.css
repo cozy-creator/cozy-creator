@@ -4211,43 +4211,18 @@ input[type="checkbox"] {
 .field.seed {
   width: 110px;
 }
+/* A choice whose options say what they are: its menu, and what the chosen one does on a line of its own under it. */
 .described {
-  position: relative;
+  flex-wrap: wrap;
 }
-.dropdown {
+.described > select {
   flex: 1;
   min-width: 0;
-  text-align: left;
 }
-.dropdown-list {
-  position: absolute;
-  z-index: 5;
-  top: 100%;
-  left: 68px;
-  right: 0;
-  margin: 2px 0 0;
-  padding: 4px;
-  list-style: none;
-  background: var(--panel);
-  border: 1px solid var(--line2);
-  border-radius: 6px;
-}
-.dropdown-list button {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  width: 100%;
-  padding: 4px 6px;
-  border-radius: 4px;
-  text-align: left;
-  font-size: 12px;
-}
-.dropdown-list button.on,
-.dropdown-list button:hover {
-  background: var(--tint2);
-}
-.dropdown-list .muted {
+.described-says {
+  flex-basis: 100%;
   font-size: 11px;
+  line-height: 1.35;
 }
 /* Groups: a block of fields, rows dragged by their grip, and the sum of what adds up. */
 .group-block {

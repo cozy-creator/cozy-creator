@@ -20,7 +20,7 @@ from project_http import project_path, request
 
 Json = dict[str, object]
 HERE = Path(__file__).resolve().parent
-SHOTS, SHAPED = HERE / "project" / "shots.py", HERE / "project" / "shaped.py"
+SHOTS, SHAPED, REQUIRED = HERE / "project" / "shots.py", HERE / "project" / "shaped.py", HERE / "project" / "required.py"
 # The first render here installs its tools' environments.
 RUN_S = 900
 # shots.py's takes start their second segment here (se-130).
@@ -219,6 +219,15 @@ def main() -> int:
           and last.get("pickup") == {"take": "<shot_2.1>", "out_frame": SEAM, "beats_from": SEAM / 24}, {"said": repr(pickup), "version": last})
     two = cozy("render", "shot_1", "shot_2", "--pickup", "<shot_2.1>@6")
     check("pickup_is_for_one", two.code == 2 and "--pickup is for one node" in two.err, two)
+
+    # A required choice left empty (cl-1066): refused before any machine, in the box's words: choose, its label, its options as the box
+    # shows them; never the field's wire name, nor "write".
+    node("pick", REQUIRED, "pick", {}, "image")
+    unchosen = cozy("render", "pick", "--on", "local")
+    said = unchosen.out + unchosen.err
+    seen["unchosen"] = repr(unchosen)
+    check("required_choice_says_choose", unchosen.code != 0 and "can't run: choose its Edit (Character swap, Head swap or Style transfer)" in said
+          and "choose pick's Edit" in said and "needs its edit" not in said and "write pick" not in said and not versions("pick"), unchosen)
 
     print(json.dumps({"failures": failures, "seen": seen}, indent=1, default=str))
     return 1 if failures else 0

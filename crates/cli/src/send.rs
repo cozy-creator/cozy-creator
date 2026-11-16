@@ -124,7 +124,6 @@ impl<'a> Sender<'a> {
             return Err(Error::new(Kind::Forbidden, "project_source_scope", "This input belongs to a Cozy project and cannot be staged as independent maintenance data")
                 .remedy("Use it in a project-scoped run, or explicitly export an independent copy first"));
         }
-        if owned { crate::output::warn("this copy leaves its project's protection: what it makes is this machine's, outside the project"); }
         Ok(!owned)
     }
 

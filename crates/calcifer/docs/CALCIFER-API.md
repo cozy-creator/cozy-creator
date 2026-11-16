@@ -181,7 +181,7 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 `Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
 
 ### Status
-- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, encrypted_project_creation, home}`. `home` is this person's home folder, where the page suggests a first project's folder. Clients must require `encrypted_project_creation: true` before sending encrypted-creation credentials or requests; older controllers omit it. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
+- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, home}`. `home` is this person's home folder, where the page suggests a first project's folder. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
 - `GET /v1/settings`: `{send_performance_data}`, this computer's settings Calcifer holds (config.toml's `[calcifer]`); `PUT` sends them
   whole, written to config.toml first. `send_performance_data` (default true, cl-1006): each published function's run on any
   machine is reported to the Hub (`POST /v1/run-reports`) with no credential, for troubleshooting and usage, never estimates: its

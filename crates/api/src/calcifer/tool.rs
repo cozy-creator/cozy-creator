@@ -472,6 +472,29 @@ fn field_of(field: &Field, default: Option<Value>) -> Option<ToolField> {
     Some(out)
 }
 
+/// What a box asks of a required `field` it has nothing in, in the words the box draws it with: the step (`choose`, `write`, …), its
+/// label, and a choice's options as it shows them, `Character swap, Head swap or Style transfer`.
+pub fn asked(field: &Field) -> (&'static str, String, Option<String>) {
+    let Some(drawn) = field_of(field, None) else { return ("write", capitalized(&words(&field.name)), None) };
+    let step = match drawn.ty {
+        FieldType::Choice => "choose",
+        FieldType::Slot => "add",
+        FieldType::Number | FieldType::Toggle | FieldType::Shape | FieldType::Seed => "set",
+        FieldType::Group => "fill in",
+        FieldType::Words | FieldType::Prompt | FieldType::Timeline => "write",
+    };
+    let key = |value: &Value| value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+    let shown: Vec<String> = (drawn.options.iter().flatten())
+        .map(|value| drawn.words.as_ref().and_then(|words| words.get(&key(value))).cloned().unwrap_or_else(|| key(value)))
+        .collect();
+    let options = match shown.split_last() {
+        None => None,
+        Some((only, [])) => Some(only.clone()),
+        Some((last, rest)) => Some(format!("{} or {last}", rest.join(", "))),
+    };
+    (step, drawn.label, options)
+}
+
 /// A group's members as the box draws them.
 fn members(row: &Struct) -> Vec<ToolField> {
     row.fields.iter().filter_map(|member| field_of(member, member.default.clone())).collect()

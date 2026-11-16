@@ -2099,8 +2099,6 @@ pub struct Updating {
     pub run: Option<Run>,
     /// What it asks for, in words: `runtime 0.33.1 (prerelease), cozy 0.16.2 (installed)`.
     pub target: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
 }
 
 /// `PUT` or `DELETE /v1/machines/local/authorized-keys/{key}`: whether the file changed, and
@@ -2323,9 +2321,6 @@ pub struct CalciferStatus {
     /// allocator keeps of what was freed.
     #[serde(default)]
     pub heap_bytes: u64,
-    /// Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
-    #[serde(default)]
-    pub encrypted_project_creation: bool,
     /// This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
     #[serde(default)]
     pub home: PathBuf,

@@ -108,12 +108,10 @@ pub(crate) async fn run(api: &Arc<Api>, ask: CozyUpdate, here: &Here) -> Result<
     })?;
     let binary = installed(&api.machines.home)?;
     let installed = api::update::install(&dir, download.is_some(), &latest, &binary, &mut |_| {}).await.map_err(by_hand)?;
-    let mut said = false;
     loop {
         let mut tail = api.calcifer.subscribe();
-        let Some(why) = api.busy_but(here.id.as_str())? else { break };
-        if !std::mem::replace(&mut said, true) {
-            here.say(&format!("cozy {} is installed: Calcifer restarts on it once nothing else is going ({why})", installed.to));
+        if api.busy_but(here.id.as_str())?.is_none() {
+            break;
         }
         tokio::select! {
             _ = tail.recv() => {}

@@ -54,7 +54,6 @@ pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -
             NoteLevel::Warning => output::warn(&note.message),
         }
     }
-    replayed(ctx, &submitted);
     Ok(submitted)
 }
 
@@ -90,19 +89,6 @@ pub(crate) async fn done<T: serde::de::DeserializeOwned>(ctx: &Context, run: Run
             Error::new(Kind::Unavailable, "run_failed", format!("{}: {}", run.target, reason.message)).next(&show)
         })),
         _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("Stopped watching run {}; it is still running", handle(&run))).next(&show)),
-    }
-}
-
-/// Says that the key named a run submitted before.
-fn replayed(ctx: &Context, submitted: &Submitted) {
-    if submitted.replay {
-        output::say(
-            ctx,
-            &format!(
-                "this key names run {}, submitted before",
-                handle(&submitted.run)
-            ),
-        );
     }
 }
 
@@ -313,7 +299,6 @@ async fn watch(
                 return Err(error);
             }
             Some(Ok(event)) if events.restarted() && !events_out => {
-                view.line(&format!("  Calcifer restarted; following run {} again", view.number));
                 let before = view.machine.clone();
                 view.on(&event);
                 if let Some(name) = view.machine.as_deref().filter(|_| view.machine != before) {

@@ -3357,7 +3357,7 @@ struct Walk {
 /// How often what's landing tries a project that won't take it.
 const HELD_UP: std::time::Duration = std::time::Duration::from_secs(1);
 /// What a send refused for a machine that went meanwhile says (`Machines::reach`): the job is placed again (cl-920), this many times.
-pub(crate) const GONE: [&str; 3] = ["machine_ended", "machine_offline", "machine_ending"];
+pub(crate) const GONE: [&str; 4] = ["machine_ended", "machine_name_ended", "machine_offline", "machine_ending"];
 const PLACED_AGAIN: u32 = 3;
 
 /// How a job's quote reads its package (`Walk::quotable`).
@@ -3559,14 +3559,15 @@ impl Walk {
             n => format!(", {n} not sent"),
         };
         let said = format!("rendered {made} of {total}; {} failed{unsent}: {}", missed.failed, first.message);
+        // What renders the rest again, from where it was asked.
         let what = match missed.whole || missed.names.is_empty() {
-            true if missed.outdated => "all missing and outdated assets".to_owned(),
-            true => "all missing assets".to_owned(),
+            true if missed.outdated => "all --outdated".to_owned(),
+            true => "all".to_owned(),
             false => missed.names.iter().cloned().collect::<Vec<_>>().join(" "),
         };
         let on = missed.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
-        let mut error = Error::new(first.kind, "render_incomplete", said).cause(first.code)
-            .remedy(format!("retry rendering {what} on {on} in the browser opened by cozy open")).next("cozy open");
+        let on = if on.is_empty() { String::new() } else { format!(" --on {on}") };
+        let mut error = Error::new(first.kind, "render_incomplete", said).cause(first.code).next(format!("cozy render {what}{on}"));
         error.next.extend(first.next.into_iter().take(1));
         error
     }
