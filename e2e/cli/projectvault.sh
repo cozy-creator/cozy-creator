@@ -360,10 +360,9 @@ vault_fuse3() (
     | tee "$OUT/vault-fuse3.json" | sed 's/^/vault fuse3: /'
 )
 
-# The static provider on fresh distributions with FUSE 3 alone, through the probe's normal mode (create, mount, write, media, lock,
-# remount, read back, crash cleanup, read-only, idle lock) as a user: as root, libfuse mounts without fusermount. ubuntu:24.04 has
-# fuse3's fusermount link; fedora:45 has fusermount3 alone, so the provider runs with its own `fusermount` link. Each container gets
-# ffmpeg too, for the probe's media step, and no other FUSE package.
+# The static provider on fresh distributions with FUSE 3 alone, through the probe's mount mode (create, mount, write, fsync, lock) as
+# a user: as root, libfuse mounts without fusermount. ubuntu:24.04 has fuse3's fusermount link; fedora:45 has fusermount3 alone, so
+# the provider runs with its own `fusermount` link. Read back is the runner's (vault_fuse3) and a real Fedora's, at the release gate.
 vault_distros() (
   step "the static provider on Ubuntu 24.04 and Fedora 45 with FUSE 3 alone, as a user (cl-1000)"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault distros: Linux runners only"; exit 0; }
@@ -372,7 +371,7 @@ vault_distros() (
   work=$(mktemp -d "$OUT/vault-distros.XXXXXX") uid=$(id -u) gid=$(id -g)
   helper=$(vault_helper musl-static "${RUNNER_TEMP:-$OUT}/vault-throughput/musl-static" 2> "$work/helper.log") || fail "vault distros: no pinned securefs: $(tail -c 300 "$work/helper.log")"
   trap 'for c in "${containers[@]}"; do docker rm -f "$c" > /dev/null 2>&1 || true; done' EXIT
-  # distro <name> <image> <install>: the probe's normal mode in that image, as uid $uid.
+  # distro <name> <image> <install>: the probe's mount mode in that image, as uid $uid.
   distro() {
     local name=$1 image=$2 install=$3 c=cozy-vault-$1-$$ as fusermount fusermount3 shim
     containers+=("$c")
@@ -392,17 +391,19 @@ vault_distros() (
     fusermount3=$("${as[@]}" sh -c 'command -v fusermount3' || true) fusermount=$("${as[@]}" sh -c 'command -v fusermount' || true)
     [ -n "$fusermount3" ] || { check "vault $name: fuse3 gave no fusermount3"; return; }
     [ "$name" != fedora ] || [ -z "$fusermount" ] || { check "vault fedora: fuse3 alone has a fusermount ($fusermount): the link is not what this proves"; return; }
-    timeout 900 "${as[@]}" /usr/local/bin/vault-provider normal /opt/securefs/securefs /home/prover/proof > "$work/$name.out" 2> "$work/$name.err" \
-      || { check "vault $name: the probe's normal mode as uid $uid (home $(docker exec "$c" stat -c %u:%g /home/prover 2>&1)): $(tail -c 500 "$work/$name.err") provider: $(tail -c 800 "$work/$name-home/provider.log" 2> /dev/null)"; return; }
+    # Mount, write, fsync, lock: no read back. Inside Docker it's refused (EACCES) right after a write, privileged or not, while the
+    # runner itself reads back (vault_fuse3, projectvault): Docker's FUSE sandbox; a real Fedora reads back at the release gate.
+    timeout 900 "${as[@]}" /usr/local/bin/vault-provider mount /opt/securefs/securefs /home/prover/proof > "$work/$name.out" 2> "$work/$name.err" \
+      || { check "vault $name: the probe's mount as uid $uid (home $(docker exec "$c" stat -c %u:%g /home/prover 2>&1)): $(tail -c 500 "$work/$name.err") provider: $(tail -c 800 "$work/$name-home/provider.log" 2> /dev/null)"; return; }
     shim=$(docker exec "$c" readlink /home/prover/proof/tools/securefs/2.0.0/bin/fusermount 2> /dev/null || true)
     [ -n "$fusermount" ] || [[ $shim == */fusermount3 ]] || { check "vault $name: no fusermount, and the provider made no fusermount link to fusermount3 (${shim:-none})"; return; }
     tail -n 1 "$work/$name.out" | jq -c --arg image "$image" --arg fusermount "$fusermount" --arg fusermount3 "$fusermount3" --arg shim "$shim" \
-      '{image: $image, result: .result, fusermount: $fusermount, fusermount3: $fusermount3, shim: $shim, libfuse_so_2: false, normal_io, remount_parity, idle_lock, read_only}' \
+      '{image: $image, result: .result, wrote: .wrote, fusermount: $fusermount, fusermount3: $fusermount3, shim: $shim, libfuse_so_2: false}' \
       | tee "$OUT/vault-distro-$name.json" | sed "s/^/vault $name: /" || check "vault $name: the probe printed no result: $(tail -c 300 "$work/$name.out")"
     docker rm -f "$c" > /dev/null 2>&1 || true
   }
-  distro ubuntu ubuntu:24.04 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends fuse3 ffmpeg'
-  distro fedora fedora:45 'dnf install -y -q --setopt=install_weak_deps=False fuse3 ffmpeg-free'
+  distro ubuntu ubuntu:24.04 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends fuse3'
+  distro fedora fedora:45 'dnf install -y -q --setopt=install_weak_deps=False fuse3'
 )
 
 # cl-1002: `cozy open` in a locked encrypted project, on a real terminal (e2e/cli/open_unlock.py): it asks for the passphrase (a

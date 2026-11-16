@@ -30,7 +30,7 @@ fn run() -> Result<(), Failure> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     let mode = arguments.first().map(|mode| mode.to_string_lossy().into_owned()).unwrap_or_default();
     let bytes = match (mode.as_str(), arguments.len()) {
-        ("normal" | "crash-host", 3) => None,
+        ("normal" | "crash-host" | "mount", 3) => None,
         ("throughput", 4) => Some(
             arguments[3]
                 .to_str()
@@ -39,7 +39,7 @@ fn run() -> Result<(), Failure> {
                 .ok_or("throughput takes a positive byte count")?,
         ),
         _ => {
-            return Err("usage: vault-provider normal|crash-host <securefs> <artifacts> | throughput <securefs> <artifacts> <bytes>".into());
+            return Err("usage: vault-provider normal|crash-host|mount <securefs> <artifacts> | throughput <securefs> <artifacts> <bytes>".into());
         }
     };
     let expected_helper = PathBuf::from(&arguments[1]);
@@ -48,6 +48,9 @@ fn run() -> Result<(), Failure> {
     let provider = provider(&expected_helper, &artifacts)?;
     if let Some(bytes) = bytes {
         return throughput(&provider, &artifacts, bytes);
+    }
+    if mode == "mount" {
+        return mount_only(&provider, &artifacts);
     }
     let backing = artifacts.join("encrypted");
     let view = project_mount::view_path(&artifacts.join("runtime"))?;
@@ -555,6 +558,27 @@ fn new_secret() -> Result<Zeroizing<String>, Failure> {
 
 /// Writes `bytes` through a new encrypted view in 4 MiB chunks of a deterministic pattern, fsyncs, locks, unlocks and reads them
 /// back, checking every byte. Prints MB/s (10^6 bytes) of the I/O alone: making and checking the pattern is off the clock.
+/// Create, mount, write a file and fsync it, and lock: what a Docker container proves, where its FUSE sandbox refuses the read back
+/// that a computer's passes (cl-1000, runs 43785258153 and 43789239440).
+fn mount_only(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
+    let backing = artifacts.join("encrypted");
+    let view = project_mount::view_path(&artifacts.join("runtime"))?;
+    let secret = new_secret()?;
+    eprintln!("provider fixture: create and mount");
+    provider.create(&backing, secret.as_bytes())?;
+    let mut mounted = provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+    let content = b"COZY_CL1000_MOUNTED".repeat(4096);
+    eprintln!("provider fixture: write and fsync");
+    let mut output = fs::File::create(view.join("mounted.bin"))?;
+    output.write_all(&content)?;
+    output.sync_all()?;
+    drop(output);
+    eprintln!("provider fixture: lock");
+    mounted.try_unmount()?;
+    println!("{}", json!({"result":"mounted","wrote":content.len(),"provider":provider.storage_format()}));
+    Ok(())
+}
+
 fn throughput(provider: &Provider, artifacts: &Path, bytes: u64) -> Result<(), Failure> {
     const CHUNK: u64 = 4 << 20;
     // splitmix64 of each 8-byte word's index in the file: no two chunks alike.
