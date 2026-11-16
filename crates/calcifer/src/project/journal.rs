@@ -167,16 +167,20 @@ impl Projects {
                         let owner=store.owner();
                         let _activity=self.track_request(api,store.execution_scope().1);
                         drop(store);
-                        if let Ok(receipt)=super::legacy_worker::migrate(api,scope,&selectors).await {
+                        // On the heap: its TensorD calls' futures, built inline in every request's poll chain, overflowed a dev
+                        // build's 2 MiB worker stack opening lab2 (cl-1003).
+                        match Box::pin(super::legacy_worker::migrate(api,scope,&selectors)).await {
                             // Each step that fails leaves the legacy history as it is (cl-1003): the project opens all the same.
-                            match owner.store() {
+                            Ok(receipt) => match owner.store() {
                                 Err(_) => tracing::warn!(target: "cozy.service_health", code = "legacy_worker_view_changed", "a project's legacy history was not imported; the project opens without it"),
                                 Ok(work) => {
                                     if let Err(error) = work.keep_worker_migration_receipt("local",&receipt) { crate::store::legacy_not_imported("worker_receipt", &error); }
                                     else if let Err(error) = api.calcifer.maintenance_store().migrate_project(&work,&api.calcifer.inputs) { crate::store::legacy_not_imported("worker", &error); }
                                     else if let Ok(true) = api.calcifer.attach_project(&work) { tokio::spawn(crate::hub::jobs::resume_project(api.clone(),work.project_id().into())); }
                                 }
-                            }
+                            },
+                            // Said once, by its code: the worker's custody is asked for once in a Calcifer.
+                            Err(error) => tracing::warn!(target: "cozy.service_health", code = %error.code, "a project's old runs on local keep their custody pending; the project opens without it"),
                         }
                         let view=vault::admit_project(api,named).await?;
                         let project=self.get(api,named).map_err(|error|error.0)?;
