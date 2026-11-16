@@ -328,10 +328,10 @@ def main() -> int:
             phase = "development_start"
             development = Development()
             # The page under test is the candidate's own web: its commit in the receipt, and the same as the one cozy was built from.
-            served = development.commit()
-            receipt.web(served)
+            web_commit = development.commit()
+            receipt.web(web_commit)
             built = re.search(r"\+g([0-9a-f]{7,40})\b", subprocess.run([str(cli), "--version"], check=True, capture_output=True, text=True).stdout)
-            require(built is None or served.startswith(built.group(1)), "development_web_not_candidate")
+            require(built is None or web_commit.startswith(built.group(1)), "development_web_not_candidate")
             development.start()
             # Before any project or browser: a Calcifer with `[calcifer] development_web` and no top-level `dev = true` ignores it.
             phase = "development_needs_dev"
