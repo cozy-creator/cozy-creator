@@ -504,6 +504,7 @@ WEB_2=(
   isolation
   input
   hover
+  notes
   fullscreen
 )
 WEB_3=(
