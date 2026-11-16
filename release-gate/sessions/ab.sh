@@ -16,6 +16,9 @@
 #              which the open RC's Runtime needs, `rc_runtime_needs_rc_cozy`), and "gpu_memory_limit" (`10GiB`,
 #              `off`: the development VRAM cap); the pod's `machine update` before this cell, so cells before and
 #              after compare two pairs)}];
+#              "wait_s" (optional: seconds the machine is left idle before the cell); "until_idle" (optional:
+#              {"region", "step_s", "max"}: while the cell's record shows the idle queue hadn't reached the region before it,
+#              wait step_s more and run it again with the next seed, as <cell>-w<i>, up to max);
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
 #              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
@@ -196,6 +199,9 @@ for k in "${names[@]}"; do
     mapfile -t dl < <(jq -r '.[]' <<<"${downloads[$i]}")
     step "download-$k-$i" model install "${dl[@]}" --on "$NAME" < /dev/null || fail "$k: the download of ${dl[0]}"
   done
+  # wait_s: the executor left idle this long before the cell (an idle period's work runs); its record says whether it did
+  w=$(jq -r '.wait_s // 0' <<<"$c"); [[ $w =~ ^[0-9]+$ ]] || fail "cell $k: wait_s $w"
+  [ "$w" = 0 ] || { say "$k: the machine left idle ${w}s"; sleep "$w"; }
   echo "$k" > "$OUT/current"
   say "$k: GPU before: $(gpu | paste -sd';')"
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
@@ -210,6 +216,25 @@ for k in "${names[@]}"; do
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
   MADE[$k]=$(ls "$OUT/$k.out"/* 2> /dev/null | grep -E '[.](png|webp|jpg|mp4)$' | sort | head -1)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
+  # until_idle {region, step_s, max}: while this request's record says the idle queue hadn't reached `region` before it
+  # (`graphs.<region>.idle.queued` > 0), wait step_s more and ask again with the next seed (`<cell>-w<i>`), up to max
+  ui=$(jq -c '.until_idle // empty' <<<"$c")
+  if [ -n "$ui" ]; then
+    reg=$(jq -r .region <<<"$ui") stp=$(jq -r '.step_s // 30' <<<"$ui") most=$(jq -r '.max // 4' <<<"$ui") i=0 kk=$k waited=$(jq -r '.wait_s // 0' <<<"$c")
+    while q=$(jq -r --arg r "$reg" '.measurements.residency.graphs[$r].idle.queued // "none"' "$OUT/$kk.json" 2>/dev/null); [ "$q" != 0 ] && [ "$q" != none ] && [ "$i" -lt "$most" ]; do
+      i=$((i + 1)); kk=$k-w$i; waited=$((waited + stp))
+      say "$k: $reg's idle queue held $q before it; the machine left idle ${stp}s more (${waited}s in all), then $kk"
+      sleep "$stp"; mapfile -t again < <(printf '%s\n' "${args[@]}" | awk -v i="$i" '/^seed:=[0-9]+$/ {split($0, a, "="); print "seed:=" a[2] + i; next} {print}')
+      cd "$PACKAGES/$tree" || fail "no tree for $kk"
+      step "$kk" run "$target" "${again[@]}" --on "$NAME"; NN=$(runno "$kk"); [ -n "$NN" ] || NN=$(current "$kk")
+      cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
+      [ -z "$NN" ] || { cozy run watch "$NN" --once --json --full > "$OUT/$kk.json" 2>/dev/null; cozy run watch "$NN" --once -o "$OUT/$kk.out" > /dev/null 2>&1; }
+      cd "$OUT" || fail "no $OUT"
+      say "$kk run ${NN:-none} $(jq -r '.status // "none"' "$OUT/$kk.json" 2>/dev/null): $(summary "$kk")"
+    done
+    [ "$q" != none ] || say "$k: the record has no region $reg (graphs: $(jq -r '.measurements.residency.graphs // {} | keys | join(", ")' "$OUT/$kk.json" 2>/dev/null))"
+    say "$k: $reg's idle queue before the last request: $q (after ${waited}s idle; the last request is $kk)"
+  fi
   say "$k weights: $(weights "$k")"
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then
