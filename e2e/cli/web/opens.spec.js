@@ -265,6 +265,8 @@ const test = base.extend({
 
 // Its trace keeps no DOM snapshots: taking one walks the whole page on its thread, ~20 ms inside the very frames this cell times.
 test.use({ trace: { mode: 'retain-on-failure', snapshots: false } });
+// As #3432 has it (Linux only here): composited in software, as when the bars were set.
+if (process.platform === 'linux') test.use({ launchOptions: { executablePath: process.env.CHROME, args: ['--enable-unsafe-swiftshader', '--disable-gpu-compositing'] } });
 
 test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signIn }, testInfo) => {
   const speed = runnerSpeed();
