@@ -95,6 +95,7 @@ export function Stage(props: StageProps) {
 
     // Run context for a card's progress line: its machine, what it waits on, an install for its tool (RunFace's inputs).
     const asked = new Set<number>()
+    const merged = new WeakMap<object, { full: object; run: NonNullable<ReturnType<CanvasStore["get"]>>["run"] }>()
     const contextOf = (view: NonNullable<ReturnType<CanvasStore["get"]>>): RunContext | undefined => {
       const machines = queries.getQueryData(machinesQuery(client).queryKey)?.machines ?? []
       let run = view.run
@@ -103,7 +104,11 @@ export function Stage(props: StageProps) {
         const query = runFullQuery(client, store.projectId, run.number, 0)
         const full = queries.getQueryData(query.queryKey)
         // Only what the live run lacks: its request. The live run's own fields (queue position, stage) always win.
-        if (full) run = { ...run, request: full.request }
+        if (full) {
+          const held = merged.get(run)
+          if (held?.full === full) run = held.run
+          else { const live = run; run = { ...live, request: full.request }; merged.set(live, { full, run }) }
+        }
         else if (!asked.has(run.number)) { asked.add(run.number); void queries.ensureQueryData(query).then(invalidate, () => {}) }
       }
       const machine = run?.machine ? machines.find((m) => m.name === run.machine) : undefined
