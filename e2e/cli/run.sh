@@ -579,6 +579,7 @@ case $SHARD in
     old_runtime
     hostile_media
     egress
+    token_scope
     hostile_inputs
     private_weights
     unseen
@@ -675,6 +676,7 @@ case $SHARD in
     old_runtime
     hostile_media
     egress
+    token_scope
     hostile_inputs
     private_weights
     machine_show_runs
