@@ -1,10 +1,10 @@
 # group-disk (cl-1076): an idle 2-GPU group's model goes for room a render needs. Each rank opens what it loads under its own
 # pid (Runtime's `_follower_load` -> `_prepare` -> `tensorfs.open`), and TensorD counted only a group's leader as the idle
 # executor (`Pool::idle_executors`), so an idle group's model was never evictable. One 2-GPU rental with SSH, red then green,
-# each the same: H3 int8 over both GPUs leaves its group idle, a file leaves the disk short of Qwen-Image 2.1 int8 past its
-# reserve, and that model is installed.
-#   red    the TensorD of dev-build `red` (the RC without the fix): nothing ends or is evicted, the install is refused
-#   green  the session's cozy: the group ends, H3 is evicted, Qwen-Image 2.1 lands
+# each the same: H3 int8 over both GPUs leaves its group idle (and its Turbo LoRA's bake on disk), a file leaves 1 GiB free past
+# the reserve, and LTX 2.5 (71.5 GB, more than the bake and every unheld model can free) is installed.
+#   red    the TensorD of dev-build `red` (the RC without the fix): H3's group is never ended, the install is refused
+#   green  the session's cozy: the group ends, H3 is evicted, LTX 2.5 lands
 # params:
 #   red      a cozy-creator dev-build run id: red's TensorD
 #   need_s   seconds the guard must buy (default 3600)
@@ -35,12 +35,12 @@ phase() {
   step "$p-h3" run minimax-h3/generate --input "$OUT/$p-h3.req.json" --gpus 2 --lane int8 --on "$NAME" || fail "$p: H3 over both GPUs"
   read -r free total < <(show | jq -r '.status | "\(.disk_free_bytes) \(.disk_total_bytes)"')
   reserve=$((total / 50)); [ "$reserve" -ge $((1 << 30)) ] || reserve=$((1 << 30)); [ "$reserve" -le $((10 << 30)) ] || reserve=$((10 << 30))
-  # Qwen-Image 2.1 int8 is about 12 GB: the disk is left half of it short past the reserve, which only H3 can make.
-  ballast=$((free - reserve - (6 << 30)))
+  # 1 GiB free past the reserve: LTX's 71.5 GB needs H3's room, beyond the bake's and the LoRAs'.
+  ballast=$((free - reserve - (1 << 30)))
   [ "$ballast" -gt 0 ] && { cozy machine ssh "$NAME" "fallocate -l $ballast /var/lib/cozy/cl1076-ballast" > "$OUT/$p-ballast.txt" 2>&1 \
     || fail "$p: the ballast: $(tail -c 300 "$OUT/$p-ballast.txt")"; }
   say "$p: installed $(installed); ballast $((ballast >> 20)) MiB, free $(( $(show | jq -r .status.disk_free_bytes) >> 20 )) MiB"
-  step "$p-qwen" model install qwen/qwen-image-2.1 --lane int8 --on "$NAME" -y; LANDED=$?
+  step "$p-ltx" model install lightricks/ltx-2.5 --on "$NAME" -y; LANDED=$?
   cozy machine ssh "$NAME" "rm -f /var/lib/cozy/cl1076-ballast" > /dev/null 2>&1 || fail "$p: removing the ballast"
   cozy machine logs "$NAME" tensord -n 0 --since 30m > "$OUT/$p-tensord.log" 2>&1
   ENDED=$(grep -c 'ended the idle executors holding .*minimax-h3' "$OUT/$p-tensord.log")
@@ -53,4 +53,4 @@ phase red "$OUT/red-cozy"
 phase green "$(command -v cozy)"
 [ "$LANDED" = 0 ] && [ "$ENDED" -gt 0 ] && [[ " $(installed) " != *" minimaxai/minimax-h3 "* ]] \
   || fail "green: the install $LANDED, H3's group ended $ENDED times, installed $(installed)"
-say "PASS: red refused with H3's idle group kept; green ended the group, evicted H3 and landed Qwen-Image 2.1"
+say "PASS: red refused with H3's idle group kept; green ended the group, evicted H3 and landed LTX 2.5"
