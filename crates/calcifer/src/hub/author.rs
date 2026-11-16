@@ -508,8 +508,8 @@ async fn rc_reader(api: &Api, version: &str) -> Result<Option<String>, Error> {
     if !(api.machines.dev || crate::update::dev_build()) || !prerelease {
         return Ok(None);
     }
-    // Its pure wheel, which any platform reads; the RC's prerelease keeps a wheel an hour after the push that replaced it, so a
-    // SHA256SUMS read a moment before the RC moved still names one that's there (e2e 43206615800 read a 404).
+    // Its pure wheel, which any platform reads; the RC's prerelease keeps its newest 20 builds, so a SHA256SUMS read a
+    // moment before the RC moved still names one that's there (e2e 43206615800 read a 404).
     let sums = api.machines.rc.now().await?;
     let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
     Ok(sums.pure_runtime().or_else(|| sums.build("runtime", &platform)).map(|(_, url)| url))
