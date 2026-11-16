@@ -1524,9 +1524,13 @@ export type MainFile = {
  */
 output: string, path: string, sha256: string,
 /**
- * The field that names one of its type: `image`, `video`, `audio`.
+ * The field that names one of its type: `image`, `video`, `audio`, `text`.
  */
-field: string, width?: number | null, height?: number | null, duration_ms?: number | null,
+field: string,
+/**
+ * A box of words' version: its words, as its file holds them (xs-204).
+ */
+text?: string | null, width?: number | null, height?: number | null, duration_ms?: number | null,
 /**
  * A video's frames per second, for timecode.
  */
@@ -1897,6 +1901,11 @@ exact?: boolean,
  * What the tool makes, or image/video/audio for an empty-tool container. Calcifer persists this as reserved `fields.node_kind`; intrinsic cozy/edit uses video_edit. Absent: infer the tool or text kind.
  */
 kind?: string | null,
+/**
+ * A box of another kind its tool was let go on (xs-204): its mention goes where the tool reads that kind, its first required slot of it,
+ * else the start of its first prompt that takes it. Refused where the tool can't read that kind.
+ */
+reads?: string | null,
 /**
  * What its drop pushed aside, written with it, each only if no other client wrote it after the revision in `placed`.
  */

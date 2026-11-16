@@ -37,7 +37,7 @@ fn rename_updates_saved_and_pending_authoring_references() {
     lock.asset_mut("video", "video").discarded.push(folder::Version { number: 8, ..version.clone() });
     lock.pending.insert("pending".into(), folder::Pending {
         kind: "video".into(), job: "pending".into(), ask: "ask".into(), asset: "video".into(),
-        version, run: 0, approve: false, unpin: None, target: folder::Target::default(),
+        version, run: 0, approve: false, unpin: None, words: None, target: folder::Target::default(),
     });
     super::super::renamed(&mut lock, "image", "renamed_image");
     let held = lock.asset("video").unwrap();

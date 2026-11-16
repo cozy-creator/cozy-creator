@@ -1338,6 +1338,20 @@ video.preview.on {
   flex-direction: column;
   z-index: 1;
 }
+/* What a tool wrote (xs-204): all of it, at the size the box's words are, to read, scroll and select. */
+.media .answer {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 12px 16px;
+  color: var(--ink);
+  font-size: calc(var(--t-title) * var(--ui));
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  pointer-events: auto;
+}
 /* A draft that goes on from a take says so across the top of its frame (cl-951): the kept part's last frame, what's kept and redone, and Cancel. */
 .lead-in {
   position: absolute;
@@ -2101,6 +2115,20 @@ video.preview.on {
   position: absolute;
   inset: 0;
   overflow: hidden;
+}
+/* A version of words: its first ones, as its tile, clear of its trash can. */
+.take-words {
+  position: absolute;
+  inset: 0;
+  padding: 6px 36px 6px 8px;
+  overflow: hidden;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: var(--small);
+  line-height: 1.3;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .take.add:hover {
   color: var(--ink);

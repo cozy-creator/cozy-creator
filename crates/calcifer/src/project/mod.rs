@@ -2227,10 +2227,18 @@ fn whereabouts(file: &folder::File) -> (bool, Option<String>) {
     (absent, (absent && file.stays()).then(|| file.machine.clone()))
 }
 
+/// The most of a box of words' version a read of it says: the rest is in its file.
+const WORDS_MAX: usize = 64 * 1024;
+
 /// The file people mean by `files`, as a version lists it.
-fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
+fn main_file(folder: &Folder, lock: &Lock, version: &Version) -> Option<MainFile> {
     let sha256 = version.main()?;
     let file = lock.files.get(sha256)?;
+    let text = (file.field() == format::TEXT && file.here).then(|| {
+        let words = std::fs::read(folder.path(&file.path)).ok()?;
+        let cut = String::from_utf8_lossy(&words[..words.len().min(WORDS_MAX)]).into_owned();
+        Some(cut)
+    }).flatten();
     let output = version.main_output()?.clone();
     let metadata = version.metadata.get(&output).cloned().unwrap_or_default();
     let (absent, machine) = whereabouts(file);
@@ -2240,6 +2248,7 @@ fn main_file(lock: &Lock, version: &Version) -> Option<MainFile> {
         path: file.path.clone(),
         sha256: sha256.clone(),
         field: file.field().to_owned(),
+        text,
         width: measured(file.width),
         height: measured(file.height),
         duration_ms: measured(file.lasts_ms()),
@@ -2381,7 +2390,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                     latents: version.files.get("latents").and_then(|sha256| lock.files.get(sha256)).filter(|file| file.stays()).map(|file| file.machine.clone()),
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.run,
-                    main: main_file(lock, version),
+                    main: main_file(folder, lock, version),
                     aspect_ratio: version.fields.as_ref().and_then(|fields| fields.get("aspect_ratio")?.as_str()).map(str::to_owned),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
@@ -5540,7 +5549,8 @@ impl Walk {
                 number.set(*last);
             })?;
             version.number = number.get();
-            let pending = Pending { job: key.clone(), kind: asset.kind.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone() };
+            let words = (asset.kind == format::TEXT).then(|| api::calcifer::tool::text_field(&callable).map(str::to_owned)).flatten();
+            let pending = Pending { job: key.clone(), kind: asset.kind.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), words, target: target.clone() };
             let settling = |walk: &mut folder::WalkFile| settle(&mut walk.walk);
             if now.asset(&name).is_some_and(|held| held.failed.is_some()) {
                 self.folder().update_lock(|lock| {
@@ -6118,6 +6128,10 @@ impl Walk {
                 None => continue,
             };
             saved.insert(file, sha256);
+        }
+        // A box of words keeps what its tool answered as its version's file, as a picture is kept (xs-204).
+        if let Some(words) = pending.words.as_deref().zip(run.result.as_ref()).and_then(|(field, result)| api::calcifer::tool::text_in(result, field)) {
+            saved.insert(format::TEXT.to_owned(), folder.keep_words(&words)?);
         }
         if saved.is_empty() && version.files.is_empty() {
             let said = format!("{name}: run {} finished without saving a file.", run.number);
