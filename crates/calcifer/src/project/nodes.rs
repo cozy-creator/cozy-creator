@@ -108,7 +108,7 @@ impl Take {
     }
 }
 
-/// Asset `name`'s takes: each version that landed, its main file whole, then what failed, what runs and what waits.
+/// Asset `name`'s takes: each version that landed, its main file whole, then what runs and what waits.
 pub(super) fn takes(name: &str, lock: &Lock, dir: &FsPath, going: &[TakeNow]) -> Vec<Take> {
     let held = lock.asset(name);
     let file = |sha256: &String| lock.files.get(sha256).map(|file| {
@@ -118,8 +118,7 @@ pub(super) fn takes(name: &str, lock: &Lock, dir: &FsPath, going: &[TakeNow]) ->
     let mut takes: Vec<Take> = held.into_iter().flat_map(|held| &held.versions)
         .map(|version| Take { number: Some(version.number), state: "done", file: version.main().and_then(file), run: version.run })
         .collect();
-    takes.extend(held.into_iter().flat_map(|held| &held.ended).map(|ended| Take { number: None, state: "failed", file: None, run: ended.run }));
-    let (running, queued): (Vec<&TakeNow>, Vec<&TakeNow>) = going.iter().filter(|take| take.failure.is_none()).partition(|take| !take.queued);
+    let (running, queued): (Vec<&TakeNow>, Vec<&TakeNow>) = going.iter().partition(|take| !take.queued);
     takes.extend(running.into_iter().map(|take| Take { number: None, state: "running", file: None, run: take.run }));
     takes.extend(queued.into_iter().map(|_| Take { number: None, state: "queued", file: None, run: None }));
     takes

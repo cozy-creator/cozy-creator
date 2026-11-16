@@ -5,7 +5,7 @@ import { fieldsOf } from "../controls"
 import { ratioWords } from "../ratios"
 import { faceOf as runFace, short, type Face } from "../RunFace"
 import { type NodeState, viewState } from "../StateDot"
-import { aspectOf, failureOf, HEAD, hexOf, isPicture, makes, ratioOf, shownOf, toolName, valueIn, valuesOf } from "../shown"
+import { aspectOf, HEAD, hexOf, isPicture, makes, ratioOf, shownOf, toolName, valueIn, valuesOf } from "../shown"
 import { clock, lineAt, mentionsIn } from "../text"
 
 export interface RunContext {
@@ -135,7 +135,7 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
   const line = asset ? lineAt(valuesOf(view), fieldsOf(asset, tools)) : null
   let words = line?.words ?? "", at = line?.at
   const tool = asset?.tool ? tools.get(asset.tool) : undefined
-  const failed = failureOf(view) ?? (viewState(view) === "failed" ? asset?.failure : undefined)
+  const failed = viewState(view) === "failed" ? asset?.failure : undefined
   const output = pictureOf(view)
   const run = node.runContext?.run ?? view.run
   const onItsWay = asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
