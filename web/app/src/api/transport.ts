@@ -1,5 +1,3 @@
-import { PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION } from "./calcifer"
-
 export interface Playback {
   stop(): void
 }
@@ -22,20 +20,11 @@ export interface Transport {
 /** This tab, as a project's history says who made an edit. */
 export const TAB = crypto.randomUUID().slice(0, 4)
 
-/** This origin's Calcifer. Only a relative API path is ever followed. */
-/** The storage proof's refusal: Calcifer won't answer this page, said as it said it. */
-class Refused extends Error {
-  readonly response: Response
-  constructor(response: Response) {
-    super("Cozy won't open this page")
-    this.response = response
-  }
-}
-
 /** An answer as Calcifer gives a refusal, made here. */
 const refusal = (status: number, kind: string, code: string, message: string) =>
   new Response(JSON.stringify({ error: { kind, code, message } }), { status, headers: { "Content-Type": "application/json" } })
 
+/** This origin's Calcifer. Only a relative API path is ever followed. */
 export function sameOrigin(): Transport {
   const resolve = (path: string) => {
     const url = new URL(path, location.origin)
@@ -63,30 +52,17 @@ export function sameOrigin(): Transport {
     const epoch = state.epoch
     return { signal: state.active.signal, check: () => { if (state!.blocked || state!.epoch !== epoch) throw new DOMException("Project view retired", "AbortError") } }
   }
-  // Whether Calcifer has said it speaks project storage protocol 3 to this page's user: said once, not before each request. An
-  // unreachable Calcifer is asked again. What's written as the page goes (`keepalive`) leaves at once on the proof this page made: it
-  // has no later turn, and Firefox fails what's in flight as soon as the page navigates, before `pagehide`, which drops the standing
-  // proof (cl-973).
-  let proven = false
-  let provenOnce = false
-  const unproven = (keepalive?: boolean) => !proven && !(keepalive && provenOnce)
-  // The account this page first proved. Another account answering is refused; a restarted Calcifer is the same Calcifer.
-  let pinned: string | null = null
-  const storage = async (signal?: AbortSignal | null) => {
-    if (proven) return
-    const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { [PROJECT_STORAGE_HEADER]: PROJECT_STORAGE_VERSION } })
-    if (response.status === 403) throw new Refused(response)
-    const capability = response.ok ? await response.json() : null
-    if (capability?.version !== 3 || !String(capability?.principal ?? "").startsWith("user:")) {
-      throw new Error("This page doesn't match the version of Cozy on this computer. Reload the page.")
-    }
-    pinned ??= capability.principal
-    if (capability.principal !== pinned) throw new Refused(refusal(403, "forbidden", "other_user", "A different user's Cozy is running at this page's address"))
-    proven = provenOnce = true
+  // The OS account Calcifer runs as, read as the page opens: a passphrase or recovery secret goes only to that account's Calcifer, read
+  // again right before it leaves (cl-1066). Another account's process at this address may refuse it, but it would have it by then.
+  // Nothing answering throws, as the request itself would.
+  const account = async (signal?: AbortSignal | null) => {
+    const answer = await fetch(resolve("/v1/status"), { signal, cache: "no-store" })
+    const status = answer.ok ? await answer.json().catch(() => null) : null
+    return typeof status?.os_user === "string" && status.os_user ? status.os_user : null
   }
-  // What carries a passphrase or a recovery secret: an encrypted project's creation, a vault unlock or recovery.
+  let opened: string | null = null
+  account().then((own) => { opened ??= own }, () => {})
   const secret = (body: RequestInit["body"]) => typeof body === "string" && /"(passphrase|recovery_secret)"\s*:\s*"/.test(body)
-  const needsStorage = (path: string) => ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/events"].some((prefix) => path.startsWith(prefix))
   return {
     channel: false,
     retireProject(project) {
@@ -101,29 +77,22 @@ export function sameOrigin(): Transport {
     async fetch(path, init = {}) {
       const project = guard(path)
       const signal = project ? (init.signal ? AbortSignal.any([init.signal, project.signal]) : project.signal) : init.signal
-      if (needsStorage(path) && unproven(init.keepalive)) {
-        try { await storage(signal) } catch (error) { if (error instanceof Refused) return error.response; throw error }
-      }
       if (secret(init.body)) {
-        // Proven again right before a secret leaves: the account it goes to is the one this page opened on.
-        proven = false
-        try { await storage(signal) } catch (error) { if (error instanceof Refused) return error.response; throw error }
+        const now = await account(signal)
+        if (!now || now !== (opened ??= now)) {
+          return refusal(403, "forbidden", "secret_other_account", "The Cozy answering this page runs as another account on this computer, so nothing secret was sent to it.")
+        }
       }
-      project?.check()
       const headers = new Headers(init.headers)
       headers.set("Cozy-Client", `page ${TAB}`)
-      headers.set(PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION)
-      let response: Response
-      try { response = await fetch(resolve(path), { ...init, signal, headers }) } catch (error) { proven = false; throw error }
+      const response = await fetch(resolve(path), { ...init, signal, headers })
       try { project?.check() } catch (error) { void response.body?.cancel(); throw error }
       return response
     },
-    src: async (path) => { const project = guard(path); await storage(project?.signal); project?.check(); return media(path) },
+    src: async (path) => { guard(path); return media(path) },
     save(path) {
       void (async () => {
-        const project = guard(path)
-        await storage(project?.signal)
-        project?.check()
+        guard(path)
         const link = document.createElement("a")
         link.href = media(path)
         link.download = ""
@@ -137,10 +106,8 @@ export function sameOrigin(): Transport {
       const project = guard(path)
       const load = () => { project?.check(); if (live) el.src = media(path) }
       const failed = () => { if (live) el.dispatchEvent(new Event("error")) }
-      // Its storage proven, the file is asked for now: the caller seeks and plays it at once, as it did before the proof.
-      if (!unproven()) {
-        try { load() } catch { failed() }
-      } else void storage(project?.signal).then(load).catch(failed)
+      // Asked for now: the caller seeks and plays it at once.
+      try { load() } catch { failed() }
       return {
         stop() {
           live = false

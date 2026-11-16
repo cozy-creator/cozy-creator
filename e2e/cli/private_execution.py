@@ -130,7 +130,7 @@ def history(path: str, query: dict[str, object]) -> tuple[int, dict[str, object]
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     request = urllib.request.Request(
         f"http://{holder['address']}{path}?{urllib.parse.urlencode(query)}",
-        headers={"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3"},
+        headers={"Authorization": f"Bearer {holder['token']}"},
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:

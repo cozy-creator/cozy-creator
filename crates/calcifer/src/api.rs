@@ -234,7 +234,6 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/events", get(crate::events::stream))
         .route("/v1/events/{stream}", put(crate::events::show))
         .route("/v1/events/{stream}/saved", post(crate::events::saved))
-        .route("/v1/project-storage", get(project_storage))
         .route("/v1/maintenance/source", post(crate::maintenance_source::capture))
         .route("/v1/runs", post(crate::runs::submit).get(list))
         .route("/v1/runs/{id}", get(show))
@@ -326,14 +325,6 @@ impl IntoResponse for Refusal {
 
 pub(crate) fn refuse(kind: Kind, code: &str, message: impl Into<String>) -> Refusal {
     Refusal(Error::new(kind, code, message))
-}
-
-/// `GET /v1/project-storage`: the protocol this Calcifer speaks, this process (a client keeps talking to the one it proved), and the account
-/// `admit` verified.
-async fn project_storage(axum::Extension(principal): axum::Extension<crate::loopback::Principal>) -> Result<Json<serde_json::Value>, Refusal> {
-    let birth = platform::process::Birth::own().map_err(|e| refuse(Kind::Internal, "process_birth", e.to_string()))?;
-    let birth = hex::encode(Sha256::digest(serde_json::to_vec(&birth).map_err(|e| refuse(Kind::Internal, "process_birth", e.to_string()))?));
-    Ok(Json(serde_json::json!({ "version": 3, "daemon_birth": birth, "principal": principal.to_string() })))
 }
 
 impl Refusal {
@@ -465,7 +456,7 @@ async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>
     if let Some(timing) = request.extensions().get::<crate::loopback::Timing>() {
         timing.admitted(began.elapsed());
     }
-    let (principal, client) = match admitted {
+    let client = match admitted {
         Ok(admitted) => admitted,
         Err(refusal) => {
             warn!(code = refusal.0.code, "refused {} {}", request.method(), request.uri().path());
@@ -473,7 +464,6 @@ async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>
         }
     };
     let page = client == crate::loopback::Client::Page;
-    request.extensions_mut().insert(principal);
     request.extensions_mut().insert(client);
     let process = request.headers().get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
     api.activity.note(if page { "page" } else { process });
@@ -736,6 +726,7 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
         signed_in: hub.device_key(api.machines.hubs.home()).exists(),
         heap_bytes: platform::heap::held(),
         home: api.machines.user_home.clone(),
+        os_user: crate::loopback::own().map(ToString::to_string).unwrap_or_default(),
     }))
 }
 

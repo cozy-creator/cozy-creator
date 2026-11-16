@@ -23,7 +23,7 @@ from typing import NotRequired, TypedDict, cast
 from urllib.parse import quote
 
 from common import (HMR, Calcifer, Failure, Native, OtherAccount, Project, Receipt, Reply, RunDetail, VaultStatus, alive, birth,
-                    daemon_birth, kill_exact, principal, project_route, require, sha, until, upgrade_headers)
+                    kill_exact, project_route, require, sha, until, upgrade_headers)
 from scan import Scanner, places
 from native_execution import qualify as qualify_native
 from development import Development
@@ -71,10 +71,7 @@ def as_page(native: Native, path: str, extra: dict[str, str] | None = None) -> R
 
 
 def page_headers(native: Native, receipt: Receipt, project: Project, name: str) -> None:
-    """What the page gets of an encrypted project, as any browser fetches it: never stored (200, 206, conditional), and its capability
-    names this account and this Calcifer."""
-    capability = as_page(native, "/v1/project-storage").json()
-    require(capability.get("principal") == principal() and capability.get("daemon_birth") == daemon_birth(native.holder()["pid"]), "page_capability")
+    """What the page gets of an encrypted project, as any browser fetches it: never stored (200, 206, conditional)."""
     base = project_route(project["id"])
     paths = [base + "/" + project["text_file"], base + "/" + project["path"], base + "/thumbs/" + project["digest"].removeprefix("sha256:") + "?w=128"]
     for number, path in enumerate(paths):
@@ -124,7 +121,7 @@ def access_rule(native: Native, receipt: Receipt, project: Project, hmr: bool) -
         # This account's page opens its hot reload socket by its exact Origin, with no bearer.
         note("hmr_own_page", native.raw("GET", HMR, auth=False, extra=upgrade).status == 101, "hmr_websocket_page")
     # Another Unix account, made for this: Calcifer's exact Host, the bearer (stdin only) on the routes, the page's upgrade on HMR.
-    asks: dict[str, dict[str, object]] = {route: {"path": path, "headers": {"cozy-project-storage": "3", "Cozy-Client": "cli"}, "bearer": True} for route, path in routes.items()}
+    asks: dict[str, dict[str, object]] = {route: {"path": path, "headers": {"Cozy-Client": "cli"}, "bearer": True} for route, path in routes.items()}
     if hmr:
         asks["hmr"] = {"path": HMR, "headers": upgrade, "bearer": False}
     other = OtherAccount()
@@ -212,7 +209,7 @@ def main() -> int:
         calcifer = Calcifer(cli)
         caf_pid = calcifer.process.pid
         until(lambda: native.holder(), lambda holder: holder.get("pid") == caf_pid, "holder_ready")
-        receipt.add("native_capability", accepted=native.call("GET", "/v1/project-storage").get("version") == 3)
+        receipt.add("native_capability", accepted=bool(native.call("GET", "/v1/status")))
         for slot in ("a", "b"):
             phase = "create_" + slot
             credential = "proof-" + secrets.token_hex(32)
@@ -289,7 +286,7 @@ def main() -> int:
         calcifer = Calcifer(cli)
         caf_pid = calcifer.process.pid
         until(lambda: native.holder(), lambda value: value.get("pid") == caf_pid, "restart_holder_ready")
-        rejected = native.raw("GET", "/v1/project-storage", extra={"Authorization": "Bearer " + previous["token"]}, preflight=False)
+        rejected = native.raw("GET", "/v1/status", extra={"Authorization": "Bearer " + previous["token"]})
         require(rejected.refused(401, "unauthenticated"), "old_holder_authority_survived")
         receipt.add("caf_crash_recovery", old_authority_refused=True)
         phase = "cold_restart"
@@ -300,7 +297,7 @@ def main() -> int:
         calcifer = Calcifer(cli)
         caf_pid = calcifer.process.pid
         until(lambda: native.holder(), lambda value: value.get("pid") == caf_pid, "restart_holder_ready")
-        rejected = native.raw("GET", "/v1/project-storage", extra={"Authorization": "Bearer " + previous["token"]}, preflight=False)
+        rejected = native.raw("GET", "/v1/status", extra={"Authorization": "Bearer " + previous["token"]})
         require(rejected.refused(401, "unauthenticated"), "old_holder_authority_survived")
         native.document("vault", "unlock", "--passphrase-file", "-", "--idle", "0", cwd=b["folder"], stdin=(b["credential"] + "\n").encode())
         if a.get("native_run_id"):

@@ -12,14 +12,13 @@ const { basename, join } = require('path');
 const { DARK_OPEN, MP4, photo, png, wav } = require('./media');
 const { screenshotPixels } = require('./page');
 
-const STORAGE = { 'cozy-project-storage': '3' };
 // What a cell may remove: only what this suite made.
 const MADE = 'web-';
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite sets it`); })();
 const slug = (title) => title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24);
 
-/** Calcifer's HTTP API as the holder (its lock record's bearer), on project storage protocol 3. */
+/** Calcifer's HTTP API as the holder (its lock record's bearer). */
 class Api {
   constructor(origin, token) {
     this.origin = origin;
@@ -31,7 +30,7 @@ class Api {
     const sent = body === undefined || typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body);
     return fetch(this.origin + path, {
       method,
-      headers: { Authorization: `Bearer ${this.token}`, ...STORAGE, ...(sent === undefined ? {} : { 'Content-Type': type }), ...headers },
+      headers: { Authorization: `Bearer ${this.token}`, ...(sent === undefined ? {} : { 'Content-Type': type }), ...headers },
       body: sent,
       signal: AbortSignal.timeout(60_000),
     });
@@ -92,7 +91,7 @@ function holderNow() {
 }
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
 /** Whether `holder`'s Calcifer answers its status, as its bearer. */
-const answers = (holder) => fetch(`http://${holder.address}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}`, ...STORAGE }, signal: AbortSignal.timeout(2_000) })
+const answers = (holder) => fetch(`http://${holder.address}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}` }, signal: AbortSignal.timeout(2_000) })
   .then((answer) => answer.ok, () => false);
 /** Whether anything listens at `address`. */
 const listens = (address) => fetch(`http://${address}/v1/status`, { signal: AbortSignal.timeout(2_000) }).then(() => true, () => false);

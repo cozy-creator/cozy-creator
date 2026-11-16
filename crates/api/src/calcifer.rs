@@ -2317,6 +2317,10 @@ pub struct CalciferStatus {
     /// This person's home folder on Calcifer's computer: where the page's New suggests a first project's folder (cl-980).
     #[serde(default)]
     pub home: PathBuf,
+    /// The OS account Calcifer runs as (uid, or SID on Windows): the CLI and the page read it before a passphrase or recovery secret
+    /// leaves, which goes only to their own account's Calcifer (cl-1066).
+    #[serde(default)]
+    pub os_user: String,
 }
 
 /// `GET /v1/cut`: what the legacy cut (cl-1003) still keeps for projects on this computer, for `cozy doctor`.

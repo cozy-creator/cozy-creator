@@ -80,7 +80,6 @@ import type {
   VaultChanged,
   VaultEvent,
 } from "./calcifer"
-import { PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION } from "./calcifer"
 import { readEvents } from "./events"
 import type { MachineLogName, Rent } from "../types"
 import type { Transport } from "./transport"
@@ -200,9 +199,6 @@ export class Client {
 
   /** What can't reach Calcifer tries again where that's safe, saying each attempt, then gives up. */
   private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
-    const headers = new Headers(init.headers)
-    headers.set(PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION)
-    init = { ...init, headers }
     const safe = init.method !== "POST" || asks(path) || new Headers(init.headers).has("Idempotency-Key")
     const say = (attempt: number) => {
       this.hooks.attempt(attempt)

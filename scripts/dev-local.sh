@@ -199,7 +199,7 @@ if waits and wait > 0:
     deadline = time.monotonic() + wait
     request = urllib.request.Request(
         f"http://{holder['address']}/v1/events",
-        headers={"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3"},
+        headers={"Authorization": f"Bearer {holder['token']}"},
     )
     try:
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30) as stream:

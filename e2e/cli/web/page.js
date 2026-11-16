@@ -155,7 +155,7 @@ async function upload(token, path, project) {
   const bytes = readFileSync(path);
   const digest = `sha256:${require('crypto').createHash('sha256').update(bytes).digest('hex')}`;
   const at = `/v1/project-files/${digest}?project=${encodeURIComponent(project)}`;
-  const answer = await fetch(`${calcifer()}${at}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' }, body: bytes });
+  const answer = await fetch(`${calcifer()}${at}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}` }, body: bytes });
   if (!answer.ok) throw new Error(`PUT ${at}: ${answer.status} ${await answer.text()}`);
   const held = await answer.json();
   if (held.digest !== digest || held.length !== bytes.length) throw new Error(`PUT ${at}: the reply names another file or length`);
@@ -208,7 +208,7 @@ const projectPath = (folder, suffix = '') => `/v1/projects/${encodeURIComponent(
 const projectAddresses = new Map();
 async function projectRecord(reference) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
-  const response = await fetch(`http://${holder.address}${projectPath(reference)}?assets=false`, { headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3' } });
+  const response = await fetch(`http://${holder.address}${projectPath(reference)}?assets=false`, { headers: { Authorization: `Bearer ${holder.token}` } });
   if (!response.ok) throw new Error(`project ${reference}: ${response.status} ${await response.text()}`);
   const project = await response.json();
   if (!/^[0-9A-HJKMNP-TV-Z]{9}$/.test(project.code ?? '')) throw new Error(`project ${project.id} has no canonical compact code`);
@@ -242,7 +242,7 @@ async function projectAction(folder, action, ...args) {
   const request = async (method, suffix = '', body) => {
     const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
     const response = await fetch(`http://${holder.address}${path}${suffix}`, {
-      method, headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
+      method, headers: { Authorization: `Bearer ${holder.token}`, 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(STEP_MS),
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -340,7 +340,6 @@ const body = fs.readFileSync(0);
 const url = new URL(process.argv[2], 'http://' + holder.address);
 const request = http.request(url, { method: process.argv[1], headers: {
   Authorization: 'Bearer ' + holder.token,
-  'cozy-project-storage': '3',
   'Content-Type': process.argv[3],
   'Content-Length': body.length,
 }}, (response) => {
@@ -381,7 +380,7 @@ async function newProject(folder) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
   const answer = await fetch(`http://${holder.address}/v1/projects`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${holder.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: folder, starter: true, unencrypted: true }),
   });
   const opened = await answer.json();

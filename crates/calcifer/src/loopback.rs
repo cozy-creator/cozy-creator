@@ -6,7 +6,6 @@
 //! never `/v1`: an agent's browser told to go there reads nothing. The page's own files need only the Host: they hold no secret,
 //! and go out with `frame-ancestors 'none'`.
 use std::{
-    fmt,
     net::SocketAddr,
     sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}},
     time::{Duration, Instant, SystemTime},
@@ -99,20 +98,6 @@ static LOOKUPS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 /// and answer `localhost` (browsers try ::1 first). Where ::1 can't be had, only `127.0.0.1` names Calcifer.
 pub(crate) static LOCALHOST: AtomicBool = AtomicBool::new(false);
 
-/// Who a request acts as: the OS account Calcifer runs as, verified for its connection. A public key, for remote access (cl-986).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Principal {
-    User(User),
-}
-
-impl fmt::Display for Principal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Principal::User(user) => write!(f, "user:{user}"),
-        }
-    }
-}
-
 /// What sent a `/v1` request: Calcifer's own page, or a program with the lock record's bearer (this computer's cozy).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Client {
@@ -121,7 +106,7 @@ pub(crate) enum Client {
 }
 
 /// The account Calcifer runs as, read once.
-fn own() -> Option<&'static User> {
+pub(crate) fn own() -> Option<&'static User> {
     static OWN: std::sync::OnceLock<Option<User>> = std::sync::OnceLock::new();
     OWN.get_or_init(User::current).as_ref()
 }
@@ -166,10 +151,10 @@ pub(crate) fn refusal(peer: &Peer, headers: &HeaderMap) -> Option<Refusal> {
 
 /// The peer is Calcifer's own OS account, by the kernel's word for its socket: another account on this computer reads nothing
 /// through Calcifer, an unlocked encrypted project included. Where the kernel can't say, nothing is let in.
-pub(crate) async fn own_user(peer: &Peer) -> Result<Principal, Refusal> {
+pub(crate) async fn own_user(peer: &Peer) -> Result<(), Refusal> {
     let said = "Calcifer answers only the account it runs as on this computer";
     match (peer.user().await, own()) {
-        (Ok(user), Some(own)) if user == own => Ok(Principal::User(own.clone())),
+        (Ok(user), Some(own)) if user == own => Ok(()),
         // Which it was, as a code: what the kernel couldn't say of this connection, or that it's another account's.
         (Err(why), _) => Err(Refusal(Error::new(Kind::Forbidden, "other_user", said).cause(format!("peer_{why}")))),
         _ => Err(Refusal(Error::new(Kind::Forbidden, "other_user", said).cause("peer_other_account"))),
@@ -190,13 +175,13 @@ fn browser(method: &Method, path: &str, headers: &HeaderMap) -> Option<Option<Cl
 }
 
 /// `/v1`'s rule: Calcifer's account, then its own page or this computer's cozy with the bearer.
-pub(crate) async fn admitted(api: &Api, peer: &Peer, method: &Method, path: &str, headers: &HeaderMap) -> Result<(Principal, Client), Refusal> {
-    let principal = own_user(peer).await?;
+pub(crate) async fn admitted(api: &Api, peer: &Peer, method: &Method, path: &str, headers: &HeaderMap) -> Result<Client, Refusal> {
+    own_user(peer).await?;
     let (code, said) = match (browser(method, path, headers), bearer(headers)) {
         (Some(None), _) => ("not_own_page", "Calcifer's API answers its own page only: not another site, another port, an extension, or a URL opened directly"),
         (_, Some(token)) if !api.admits(token) => ("unauthenticated", "this isn't the bearer in Calcifer's lock record"),
-        (Some(Some(client)), _) => return Ok((principal, client)),
-        (None, Some(_)) => return Ok((principal, Client::Native)),
+        (Some(Some(client)), _) => return Ok(client),
+        (None, Some(_)) => return Ok(Client::Native),
         (None, None) => ("unauthenticated", "Calcifer answers its own page, and this computer's cozy with the bearer in its lock record"),
     };
     let kind = if code == "unauthenticated" { Kind::Credential } else { Kind::Forbidden };

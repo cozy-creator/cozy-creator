@@ -60,10 +60,10 @@ each request is judged alone (`crates/calcifer/src/loopback.rs`). Every request 
 
 Every `/v1` answer carries `Content-Security-Policy: sandbox`, so nothing under it (a
 package's preview, a project's file) runs script on Calcifer's origin; a run's preview is a raster picture or nothing (no SVG: the page shows previews as blob URLs, which carry its own CSP). There are no
-cookies, and nothing of Calcifer's is kept in the browser: a tab outlives a restart. Project storage's principal is the verified
-account (`GET /v1/project-storage`: `principal: user:<uid or SID>`). The page's restart guard pins the first one and that
-Calcifer's `daemon_birth`, proves them again right before sending a passphrase or recovery secret, and after a restart sends
-neither until it's reloaded. Calcifer runs with umask 077: what it makes is its
+cookies, and nothing of Calcifer's is kept in the browser: a tab outlives a restart. Every `/v1` request is checked against the
+kernel's word for its socket's account (`other_user` otherwise). A passphrase or recovery secret leaves the CLI or the page only after
+`GET /v1/status`'s `os_user` names their own account (the page's: the one it opened on); otherwise `secret_other_account`, and nothing
+is sent. Calcifer runs with umask 077: what it makes is its
 account's alone.
 
 ## Conventions
@@ -187,7 +187,7 @@ media-src 'self' blob:; font-src 'self'; connect-src 'self'; base-uri 'none'; fo
 `Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
 
 ### Status
-- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, home}`. `home` is this person's home folder, where the page suggests a first project's folder. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
+- `GET /v1/status`: `{version, os, local_usable, signed_in, heap_bytes, home, os_user}`. `os_user` is the OS account Calcifer runs as (uid, or SID on Windows). `home` is this person's home folder, where the page suggests a first project's folder. `heap_bytes` is what Calcifer's code has allocated and not freed: what it holds, without what its allocator keeps of what was freed, which its resident memory counts too. `os` is `linux`, `macos` or `windows`; `local_usable` is
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
   without asking the Hub (`GET /v1/account` does).
 - `GET /v1/settings`: `{send_performance_data}`, this computer's settings Calcifer holds (config.toml's `[calcifer]`); `PUT` sends them
@@ -664,8 +664,8 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `POST /v1/projects` `{path, starter?, passphrase?, unencrypted?}`: new projects are encrypted by default.
   A nonempty user-supplied `passphrase` is required unless `unencrypted: true` explicitly opts out; opt-out and
   passphrase cannot be combined. Encrypted creation requires a new/empty directory and initializes its first
-  database inside the native encrypted mount. The client first checks the encrypted-creation capability from
-  `GET /v1/status`; absent/false refuses before sending credentials or creating files.
+  database inside the native encrypted mount. The client first checks that `GET /v1/status`'s `os_user` is its own
+  account; otherwise it sends nothing.
   Credentials and the one-time `recovery_secret` response have no
   Debug representation, outbox or persistent response cache. Encrypted creation refuses `Idempotency-Key` and
   returns `Cache-Control: private, no-store`; ordinary opt-out creation retains the existing idempotency behavior.

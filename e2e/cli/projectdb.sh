@@ -87,7 +87,7 @@ box_kept() { asset_of "$1" "$2" | J '(.sha256 // null) == null and ((.versions /
 # One deleted while Calcifer is stopped across its window is gone once Calcifer starts. The page's own half is the delete-undo cell.
 # closes_busy <id a> <id b>: whether each project's render is going, `true false`, by the projects' list, which opens none.
 closes_busy() {
-  curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$lock")/v1/projects?limit=1000" \
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/projects?limit=1000" \
     | jq -r --arg a "$1" --arg b "$2" '[([.projects[] | select(.id == $a)][0].busy // false), ([.projects[] | select(.id == $b)][0].busy // false)] | map(tostring) | join(" ")' || true
 }
 db_deleted_gc() {
@@ -274,7 +274,7 @@ db_closes() {
 step "projects closed once nothing reads them: by the CLI and a page's stream, memory back, a reopen as quick, a render holding its own (cl-823)"
 [ "${RUNNER_OS:-}" = Linux ] || { echo "closes: Calcifer's open files are read on Linux"; return 0; }
 CLOSES=$OUT/closes CLOSES_PREV='' CLOSES_OPENS=() CLOSES_REOPENS=() CLOSES_OPEN=() CLOSES_HELD=()
-CLOSES_PAGE=(-H "Host: $(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder")" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' -H 'cozy-project-storage: 3')
+CLOSES_PAGE=(-H "Host: $(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder")" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty')
 local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later pid first second update run_first look queued=0 held_first=0 held_second=0 P a b h1 h2 busy again=0
   local dropped=() looks=()
 mkdir -p "$CLOSES"
