@@ -16,11 +16,46 @@ const PROC_FLAG_INEXIT: u32 = 4;
 pub(super) struct Handle(pub(super) OwnedFd);
 
 pub(super) fn birth(pid: u32) -> io::Result<Birth> {
+    let start_ticks = match info(pid) {
+        Ok(info) => start(&info),
+        Err(error) if gone(&error) => exited_start(pid)?,
+        Err(error) => return Err(error),
+    };
     Ok(Birth {
         pid,
         boot_id: String::new(),
-        start_ticks: start(&info(pid)?),
+        start_ticks,
     })
+}
+
+/// An exited, unreaped process's start: `proc_pidinfo` can't read a zombie, sysctl's `kinfo_proc` can (as Linux's `/proc`
+/// does), so a child that exited before its spawner reads its birth has one (cl-1050). Its first field is the start time.
+fn exited_start(pid: u32) -> io::Result<u64> {
+    let mut name = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid as libc::c_int];
+    // `kinfo_proc` is 648 bytes on 64-bit macOS.
+    let mut buffer = [0u8; 1024];
+    let mut size = buffer.len();
+    // SAFETY: a writable buffer of `size` bytes; the kernel writes at most that and sets `size` to what it wrote.
+    let read = unsafe {
+        libc::sysctl(
+            name.as_mut_ptr(),
+            name.len() as libc::c_uint,
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if read < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // No such process: nothing written.
+    if size < mem::size_of::<libc::timeval>() {
+        return Err(io::Error::from_raw_os_error(libc::ESRCH));
+    }
+    // SAFETY: at least a `timeval`'s bytes were written, and `read_unaligned` takes any alignment.
+    let start: libc::timeval = unsafe { ptr::read_unaligned(buffer.as_ptr().cast()) };
+    Ok(start.tv_sec as u64 * 1_000_000 + start.tv_usec as u64)
 }
 
 pub(super) fn state(birth: &Birth) -> io::Result<State> {

@@ -29,6 +29,14 @@ def main() -> None:
     environment = os.environ.copy()
     environment.pop('COZY_SECUREFS_PROVIDER', None)
     environment['COZY_VAULT_PROVIDER_DIAGNOSTICS'] = str(args.artifacts / 'provider.log')
+    # Status reads at once: a control command that exits before its waiter reads its birth is no error (cl-1050).
+    controls = subprocess.run([str(args.probe), 'controls', str(args.securefs), str(args.artifacts / 'controls')], capture_output=True, text=True, env=environment)
+    (args.artifacts / 'controls.log').write_text(controls.stdout + controls.stderr)
+    if controls.returncode:
+        print((controls.stdout + controls.stderr)[-65536:], file=sys.stderr)
+        (args.artifacts / 'results.json').write_text(json.dumps({'controls': {'result': 'failed', 'exit_code': controls.returncode}}, indent=2) + '\n')
+        raise SystemExit(controls.returncode)
+    controlled = json.loads(controls.stdout.strip().splitlines()[-1])
     normal = subprocess.run([str(args.probe), 'normal', str(args.securefs), str(args.artifacts / 'normal')], capture_output=True, text=True, env=environment)
     (args.artifacts / 'normal.log').write_text(normal.stdout + normal.stderr)
     if normal.returncode:
@@ -38,7 +46,7 @@ def main() -> None:
             print(diagnostics.read_text(errors='replace')[-32768:], file=sys.stderr)
         (args.artifacts / 'results.json').write_text(json.dumps({'normal': {'result': 'failed', 'exit_code': normal.returncode}}, indent=2) + '\n')
         raise SystemExit(normal.returncode)
-    result = {'normal': json.loads(normal.stdout.strip().splitlines()[-1])}
+    result = {'controls': controlled, 'normal': json.loads(normal.stdout.strip().splitlines()[-1])}
     crash = args.artifacts / 'crash'
     with (args.artifacts / 'crash.log').open('w') as log:
         host = subprocess.Popen([str(args.probe), 'crash-host', str(args.securefs), str(crash)], stdout=log, stderr=log, env=environment, **cast(_Session, {'start_new_session': True} if os.name != 'nt' else {}))  # cast: Popen's one option it may add
