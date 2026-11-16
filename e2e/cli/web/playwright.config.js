@@ -8,7 +8,7 @@ const { tmpdir } = require('os');
 const { join } = require('path');
 
 const out = join(process.env.OUT || tmpdir(), 'web');
-const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME } };
+const chrome = { browserName: 'chromium', launchOptions: { executablePath: process.env.CHROME, args: process.platform === 'linux' ? ['--enable-unsafe-swiftshader'] : [] } };
 
 module.exports = defineConfig({
   testDir: __dirname,
