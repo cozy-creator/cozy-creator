@@ -129,6 +129,7 @@ def main() -> None:
 
     # 2. Unlock, a run on `local`, lock.
     view = unlock(args, "unlock-2", 0)
+    script = view / "vault-reattach" / "sleeper.py"
     receipt["unlock_2"] = marker(view, args.project)
     run, waited = ran(args, "between", script, 0, 300)
     assert run.get("status") == "completed", f"the run after the ending lock: {run.get('status')}, waiting {waited!r}: {receipt}"
@@ -137,6 +138,7 @@ def main() -> None:
 
     # 3. Unlock with a maximum: a run on `local` attaches and completes.
     view = unlock(args, "unlock-3", 0, MAXIMUM)
+    script = view / "vault-reattach" / "sleeper.py"
     unlocked = time.monotonic()
     receipt["unlock_3"] = marker(view, args.project)
     run, waited = ran(args, "after", script, 0, 120)
