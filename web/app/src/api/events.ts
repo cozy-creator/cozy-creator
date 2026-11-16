@@ -83,7 +83,7 @@ export class EventStream {
   private telling = false
   /** Lock drops server Readers even when the displayed project set later returns to the same IDs. */
   private readers = 0
-  /** The holding tab's: each project Calcifer asked to save before it closes (`project.vault saving`), and the tabs showing it that
+  /** The holding tab's: each project Calcifer asked to save before it closes (`project.saving`), and the tabs showing it that
    *  haven't said they sent what they typed of it. */
   private saving = new Map<string, Set<string>>()
 
@@ -277,7 +277,7 @@ export class EventStream {
       this.acknowledged = null
       this.saving.clear()
     }
-    if (event.type === "project.vault" && event.state === "saving") {
+    if (event.type === "project.saving") {
       // Nothing it shows changes: each tab sends what it typed of the project, and says so.
       if (this.holding) {
         this.saving.set(event.id, new Set([...this.shown.values()].filter((shown) => shown.project === event.id).map((shown) => shown.tab)))

@@ -141,8 +141,9 @@ impl Api {
     }
 
     async fn down_inner(self: &Arc<Self>, keep_admission_closed: bool) -> Result<Vec<String>, Error> {
-        // What a page typed in an encrypted project goes in before it locks: asked while edits are still admitted.
-        crate::project::vault::save_open().await;
+        // What a page typed in an encrypted project goes in before it locks, asked only while edits are admitted: a stop retried after a
+        // busy close keeps admission shut, and its pages' writes and answers would be refused.
+        if !*self.stopping.read().await { crate::project::vault::save_open().await; }
         let mut stopping = self.stopping.write().await;
         let was_stopping = *stopping;
         *stopping = true;

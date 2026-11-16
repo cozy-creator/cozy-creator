@@ -853,8 +853,8 @@ fn wait(at: Option<SystemTime>) {
 
 /// How long an explicit lock, its view revoked, waits for what still holds its project to finish before it refuses.
 const LOCK_DRAIN: Duration = Duration::from_secs(10);
-/// How long past an idle or maximum deadline a vault waits for its pages to send what they typed before it
-/// locks anyway: the deadline is a security one.
+/// How long past an idle or maximum deadline a lock that failed waits out its retry backoff: after it, each look tries again, as the
+/// deadline is a security one.
 const SAVE_GRACE: Duration = Duration::from_secs(30);
 /// When each open vault was first seen past its deadline and not yet locked.
 static DUE: LazyLock<Mutex<BTreeMap<PathBuf, std::time::Instant>>> = LazyLock::new(Mutex::default);

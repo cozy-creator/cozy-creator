@@ -278,13 +278,13 @@ export class Client {
     return this.transport.fetch("/v1/events", { signal, headers: { Accept: "text/event-stream" } })
   }
 
-  /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts, and whether one shows a machine's view: the stream
-   *  hears runs only of these. One that ended is told again on the next. */
-  /** The page on `stream` sent what it typed of `project`, as `project.vault saving` asked before it closes. */
+  /** The page on `stream` sent what it typed of `project`, as `project.saving` asked before it closes. */
   async saved(stream: string, project: string): Promise<void> {
     await this.send(`/v1/events/${encodeURIComponent(stream)}/saved`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }) })
   }
 
+  /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts, and whether one shows a machine's view: the stream
+   *  hears runs only of these. One that ended is told again on the next. */
   async show(stream: string, projects: string[], machines: boolean, signal: AbortSignal): Promise<ProjectShowReply | null> {
     const body = JSON.stringify({ projects, machines })
     const response = await this.send(`/v1/events/${encodeURIComponent(stream)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body }, { once: signal })
