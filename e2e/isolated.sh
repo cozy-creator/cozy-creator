@@ -248,6 +248,7 @@ case $key in
   # pagebox's 1.6 GB (`spare`) beside the install (cl-1007).
   cli:ondemand-share) needs='packages birefnet downloads spare' ;;
   cli:ondemand-ramp) needs='packages spare' ;;
+  cli:ondemand-enhancers) needs='packages enhancers' ;;
   cli:disk) needs='packages disk' ;;
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
@@ -410,7 +411,7 @@ if [ -n "$needs" ]; then
       rc_floor ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* || " $needs " == *" disk "* || " $needs " == *" lorabase "* \
-    || " $needs " == *" ltxlora "* ]]; then
+    || " $needs " == *" ltxlora "* || " $needs " == *" enhancers "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -501,6 +502,16 @@ PYCALLS
     export E2E_CALLS_SEED=${E2E_CALLS_SEED:-}
     log "published e2e/calls-used, -unused, -other, -early, -late, -base and e2e/calls-lora${E2E_CALLS_SEED:+ (not all: $E2E_CALLS_SEED)}"
     rm -f "$seed"/calls-*.safetensors
+  fi
+  if [[ " $needs " == *" enhancers "* ]]; then
+    # ondemand_enhancers' (cl-1101): each request's own model (16 MiB) and two prompt enhancers (96 MiB each), none sharing a chunk.
+    for request in words edit plain; do
+      for slot in model:16 expander:96 rewriter:96; do
+        random_weights "$seed/enhance.safetensors" "${slot#*:}" "enhance-$request-${slot%:*}"
+        mirror "$seed/enhance.safetensors" "e2e/enhance-$request-${slot%:*}" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+        rm -f "$seed/enhance.safetensors"
+      done
+    done
   fi
   if [[ " $needs " == *" uninstall "* ]]; then
     # uninstall_on's model (cl-1076): 32 MiB no other cell reads, so removing it takes nothing from them.
