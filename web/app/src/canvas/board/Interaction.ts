@@ -313,44 +313,56 @@ export function createInteraction(o: InteractionOptions): Interaction {
     o.invalidate()
   }
 
-  const typing = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest("button,input,select,textarea,[contenteditable]"))
+  /** Where typed keys belong to what has the focus: text being written, and the canvas's own native controls. A plain button doesn't
+   *  stop Space from panning: the pan's press takes the focus to the canvas, so the button never sees Space let go. */
+  const writing = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest("input,select,textarea,[contenteditable]:not([contenteditable=false]),.canvas-control"))
   const keyDown = (event: KeyboardEvent) => {
-    if (event.key === "Escape" && press && !typing(event.target)) { event.preventDefault(); cancel(); return }
+    if (writing(event.target)) return
+    if (event.key === "Escape" && press) { event.preventDefault(); cancel(); return }
     const props = o.props()
-    if (!props.active || props.disabled || typing(event.target)) return
-    if (event.code === "Space" && !event.repeat) { space = true; root.style.cursor = "grab"; event.preventDefault() }
+    if (!props.active || props.disabled) return
+    if (event.code === "Space") {
+      space = true
+      root.style.cursor = "grab"
+      if (event.target === root || event.target === document.body) event.preventDefault()
+      return
+    }
     if (event.target !== root) return
+    const anchor = anchorNode()
     if (event.key === "Enter") {
-      const anchor = anchorNode()
       if (anchor) { event.preventDefault(); event.stopImmediatePropagation(); store.openHere(anchor.data.name) }
       return
     }
-    const way = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, [number, number]>)[event.key]
-    if (!way) return
+    // The menu key, or Shift+F10, opens the chosen box's menu where it is drawn.
+    if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+      if (!anchor) return
+      event.preventDefault(); event.stopImmediatePropagation()
+      const at = camera.worldToScreen({ x: anchor.bounds.x + anchor.bounds.w / 2, y: anchor.bounds.y + anchor.bounds.h / 2 })
+      props.onNodeContextMenu(new MouseEvent("contextmenu", { clientX: at.x, clientY: at.y, cancelable: true }), anchor)
+      return
+    }
+    const step = ({ ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 } as Record<string, number>)[event.key]
+    if (!step) return
     event.preventDefault(); event.stopImmediatePropagation()
-    const next = nearest(anchorNode(), way)
+    const order = reading(board.getNodes())
+    const at = anchor ? order.findIndex((node) => node.id === anchor.id) : -1
+    const next = at < 0 ? order[0] : order[Math.max(0, Math.min(order.length - 1, at + step))]
     if (next) { board.select([next.id]); void camera.fitView({ bounds: [next.bounds], maxZoom: camera.getViewport().zoom }) }
   }
   const keyUp = (event: KeyboardEvent) => { if (event.code === "Space") { space = false; root.style.cursor = "" } }
 
   const anchorNode = () => board.getNodes().find((node) => node.selected)
 
-  /** The card nearest the anchor's middle that way: distance along it, with sideways distance counted twice. None selected: the first. */
-  const nearest = (anchor: ElementNode | undefined, [wx, wy]: [number, number]) => {
-    const nodes = board.getNodes()
-    if (!anchor) return nodes[0]
-    const middle = (box: Box) => ({ x: box.x + box.w / 2, y: box.y + box.h / 2 })
-    const from = middle(anchor.bounds)
-    let best: ElementNode | undefined, score = Infinity
-    for (const node of nodes) {
-      if (node.id === anchor.id) continue
-      const to = middle(node.bounds), dx = to.x - from.x, dy = to.y - from.y
-      const along = dx * wx + dy * wy
-      if (along <= 0) continue
-      const value = along + 2 * Math.abs(wx ? dy : dx)
-      if (value < score) { score = value; best = node }
+  /** Every box in reading order, which the arrows walk: rows top to bottom, each left to right. A box starting above the middle of a row's
+   *  first box is in that row. Right and Down go on, Left and Up back, so every box is reached and the way back is the way there. */
+  const reading = (nodes: readonly ElementNode[]) => {
+    const rows: ElementNode[][] = []
+    for (const node of [...nodes].sort((a, b) => a.bounds.y - b.bounds.y || a.bounds.x - b.bounds.x)) {
+      const row = rows.at(-1)
+      if (row && node.bounds.y < row[0].bounds.y + row[0].bounds.h / 2) row.push(node)
+      else rows.push([node])
     }
-    return best
+    return rows.flatMap((row) => row.sort((a, b) => a.bounds.x - b.bounds.x))
   }
 
   const menu = (event: MouseEvent) => {
