@@ -456,7 +456,8 @@ fi
 # so, never at a default larger than asked (cr-299's `to: 768p` ran at 1440p); a word that names none goes as its default.
 choice_clamp() {
 step "a choice given a value it doesn't offer: the nearest, said"
-if cell choice "$here/project/choice.py/size" to=768p megapixels:=3 mode=slow; then
+# `to=768p` is typed by `cozy run` as a resolution (runs/bind.rs `tiers`); a word it doesn't offer is refused there, so `mode` goes as JSON.
+if cell choice "$here/project/choice.py/size" to=768p megapixels:=3 'mode:="slow"'; then
   grep -q 'to=1080p megapixels=2 mode=full' "$OUT/choice.ndjson" \
     || check "choice: 768p and 3 didn't run as 1080p and 2, or slow not as full: $(grep -oE '"given": *"[^"]*"' "$OUT/choice.ndjson" | head -1)"
   cozy --json --full run watch "$(cat "$OUT/choice.number")" --once > "$OUT/choice.json" 2>&1

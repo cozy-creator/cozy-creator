@@ -770,7 +770,8 @@ fn limits(field: &Field) -> (Option<f64>, Option<f64>) {
 }
 
 /// The choice nearest `value` when it and the choices are numbers in the same words (`768p` among `1080p`, `1440p`: `1080p`;
-/// 3 among 2 and 4: 2, the smaller on a tie). None: they aren't, and it goes as its default.
+/// 3 among 2 and 4: 2, the smaller on a tie). A resolution as people say it, which `cozy run` lets through for a choice of
+/// them (`runs/bind.rs` `tiers`), is one: 1080 is 1080p, 4k is 2160p. None: they aren't, and it goes as its default.
 fn nearest(members: &[Value], value: &Value) -> Option<Value> {
     let number = |value: &Value| -> Option<(f64, String)> {
         match value {
@@ -778,12 +779,16 @@ fn nearest(members: &[Value], value: &Value) -> Option<Value> {
             Value::String(text) => {
                 let text = text.trim();
                 let digits = text.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(text.len());
-                Some((text[..digits].parse().ok()?, text[digits..].to_owned()))
+                Some((text[..digits].parse().ok()?, text[digits..].to_ascii_lowercase()))
             }
             _ => None,
         }
     };
-    let (at, words) = number(value)?;
+    let (mut at, mut words) = number(value)?;
+    if members.iter().any(|member| number(member).is_some_and(|(_, said)| said == "p")) && matches!(words.as_str(), "" | "k") {
+        at *= if words == "k" { 540.0 } else { 1.0 };
+        words = "p".to_owned();
+    }
     members
         .iter()
         .filter_map(|member| number(member).filter(|(_, said)| *said == words).map(|(n, _)| (n, member)))
