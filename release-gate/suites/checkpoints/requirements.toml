@@ -232,7 +232,7 @@ processor = { files = [
 ] }
 
 [[checkpoint]]
-reads = "qwen-image-2 expander, rewriter"
+reads = "qwen-image-2 expander_t2i, expander_i2i"
 models = [
   "qwen/qwen-image-2.1-pe-t2i",
   "qwen/qwen-image-2.1-pe-i2i",
