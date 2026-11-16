@@ -470,7 +470,7 @@ impl Service {
             Ok(free) if free >= missing => return Ok(()),
             Ok(_) => {}
             Err(error) => {
-                warn(format!("its weights' {} were not judged against the disk: {error}", size(missing)));
+                warn(format!("Cozy couldn't check whether this render's models ({}) fit on the disk: {error}", size(missing)));
                 return Ok(());
             }
         }
@@ -480,7 +480,7 @@ impl Service {
         let room = match store.room() {
             Ok(room) => room,
             Err(error) => {
-                warn(format!("its weights' {} were not judged against the disk: {error}", size(missing)));
+                warn(format!("Cozy couldn't check whether this render's models ({}) fit on the disk: {error}", size(missing)));
                 return Ok(());
             }
         };
@@ -491,23 +491,26 @@ impl Service {
         let short = missing + below - now.min(missing);
         if evictable < short {
             let past = match below {
-                0 => format!("{} free past its reserve", size(now)),
-                below => format!("the disk {} below its reserve", size(below)),
+                0 => format!("{} free", size(now)),
+                below => format!("the disk is {} short of the space Cozy keeps free", size(below)),
             };
             return Err(format!(
-                "machine_disk_full: its weights need {} more on this disk, and it can make only {} free ({past}, {} in models no queued or running job holds){}",
+                "machine_disk_full: This machine's disk doesn't have room for this render's models. They need {} more, and Cozy can free only {} \
+                 ({past}, plus {} in models nothing queued or running needs).{}",
                 size(missing), size((now + evictable).saturating_sub(below)), size(evictable), crate::reclaim::advice(store.root(), missing)
             ));
         }
         let ended = self.end_idle_for_disk(&store, missing);
         match store.make_room(missing) {
             Ok(made) if !made.evicted.is_empty() => {
-                let each: Vec<String> = made.evicted.iter().map(|e| format!("{} ({}, unused {} min)", e.name, size(e.bytes), e.idle.as_secs() / 60)).collect();
-                let idle = if ended.is_empty() { String::new() } else { "; their idle executors ended first".into() };
-                warn(format!("the disk was short {} for its weights: evicted {}{idle}", size(short), each.join(", ")));
+                let each: Vec<String> = made.evicted.iter()
+                    .map(|e| format!("{} ({}, unused for {})", e.name, size(e.bytes), api::calcifer::clock(e.idle.as_millis() as i64)))
+                    .collect();
+                let idle = if ended.is_empty() { "" } else { ", after closing the idle processes that had them open" };
+                warn(format!("The disk was {} short for this render's models, so Cozy removed {}{idle}.", size(short), each.join(", ")));
             }
             Ok(_) => {}
-            Err(error) => warn(format!("making room for its weights' {}: {error}", size(missing))),
+            Err(error) => warn(format!("Cozy couldn't make room on the disk for this render's models ({}): {error}", size(missing))),
         }
         Ok(())
     }
@@ -660,24 +663,21 @@ impl Service {
                     // child must be able to reenter it once its required source arrives.
                     pool.release_for_fetch(&self.engine, record.root_seq());
                     let reason = match on.is_empty() {
-                        true => "waiting for required model inputs".to_owned(),
-                        false => format!("waiting for required model inputs: {on}"),
+                        true => crate::access::WAITING_FOR_MODELS.to_owned(),
+                        false => format!("{}: {on}", crate::access::WAITING_FOR_MODELS),
                     };
                     // A private run's models aren't named in this machine's log.
                     let said = match record.invocation.local_private {
-                        Some(_) => "for required model inputs",
-                        None => reason.trim_start_matches("waiting "),
+                        Some(_) => crate::access::WAITING_FOR_MODELS,
+                        None => reason.as_str(),
                     };
                     self.waits_for(&record, said, &mut waiting);
                     self.engine.waiting(&record.id, Some(reason))?;
                     continue;
                 }
                 crate::access::Ready::Failed(error) => {
-                    let (code, reason) = match error.strip_prefix("machine_disk_full: ") {
-                        Some(why) => ("machine_disk_full", why.to_string()),
-                        None => ("model_fetch_failed", error),
-                    };
-                    self.engine.fail_unstarted(&record.id, code, reason)?;
+                    let (code, reason) = crate::access::code_of(&error);
+                    self.engine.fail_unstarted(&record.id, code, reason.to_owned())?;
                     if let Some(calls) = &calls { calls.ended(&record.id); }
                     continue;
                 }
@@ -733,18 +733,18 @@ impl Service {
                         _ => holders.len() > self.parallelism,
                     };
                     let why = if held {
-                        "after the machine's update".to_owned()
+                        "waiting for this machine to finish updating".to_owned()
                     } else if invocation.degree > 0 && gpu_fenced {
-                        "for the GPUs an earlier process holds".to_owned()
+                        "waiting for an earlier process to let go of the GPUs".to_owned()
                     } else if cpu_full {
                         self.cpu_wait(&holders)
                     } else if invocation.degree > 0 {
-                        "for a GPU".to_owned()
+                        "waiting for a free GPU".to_owned()
                     } else {
-                        "for its turn".to_owned()
+                        "waiting for its turn".to_owned()
                     };
                     self.waits_for(&record, &why, &mut waiting);
-                    let shown = self.engine.waiting(&record.id, Some(format!("position {place} in the queue, {why}")));
+                    let shown = self.engine.in_line(&record.id, place, why);
                     shown.unwrap_or_else(|error| tracing::warn!("run {}: its place was not shown: {error}", record.id));
                 }
             }
@@ -754,17 +754,14 @@ impl Service {
         pool.lookahead(&self.engine, next_gpu.as_ref().map(|(record, plan)| (record, plan)));
         Ok(())
     }
-    /// What a deviceless run waits for while this machine's CPU slots are full: the runs holding them.
+    /// What a deviceless run waits for while this machine's CPU slots are full: the runs holding them, by their callers' ids,
+    /// which each caller names as people know them (`waiting for LAB2-12 to finish with this machine's CPU`).
     fn cpu_wait(&self, holders: &[Execution]) -> String {
-        let slots = match self.parallelism {
-            1 => "its one CPU slot".to_owned(),
-            n => format!("its {n} CPU slots"),
-        };
         let named: Vec<String> = holders.iter().map(|holder| self.engine.caller_id(&holder.id)).collect();
         match named.as_slice() {
-            [] => format!("for {slots}"),
-            [one] => format!("for this machine's CPU: {one} holds {slots}"),
-            many => format!("for this machine's CPU: {} hold {slots}", many.join(", ")),
+            [] => "waiting for this machine's CPU to free up".to_owned(),
+            [one] => format!("waiting for {one} to finish with this machine's CPU"),
+            [rest @ .., last] => format!("waiting for {} or {last} to finish with this machine's CPU", rest.join(", ")),
         }
     }
     /// Run `record` left waiting `why` this pass: this machine's log says so when what it waits for changes.
@@ -775,13 +772,13 @@ impl Service {
         if said.as_str() != why {
             why.clone_into(said);
             drop(waits);
-            tracing::info!(run = %self.engine.caller_id(&record.id), "queue: waits {why}");
+            tracing::info!(run = %self.engine.caller_id(&record.id), "queue: {why}");
         }
     }
     /// Run `record` went: if it waited, this machine's log says how long, and for what last.
     fn went(&self, record: &Execution) {
         let Some((since, why)) = self.waits.lock().unwrap().remove(&record.id) else { return };
-        tracing::info!(run = %self.engine.caller_id(&record.id), "queue: goes after {:.1} s waiting {why}", since.elapsed().as_secs_f64());
+        tracing::info!(run = %self.engine.caller_id(&record.id), "queue: goes after {:.1} s {why}", since.elapsed().as_secs_f64());
     }
     /// The plan `record` runs: its journaled preparation's, else a weightless call's.
     fn plan(&self, pool: &Pool, record: &Execution) -> io::Result<Plan> {
@@ -808,13 +805,13 @@ impl Service {
             Ok(held) => held,
             Err(error) => {
                 self.engine.fail_unstarted(&record.id, "environment_unavailable",
-                    format!("held generation unavailable: {error}"))?;
+                    format!("The package's install on this machine is gone ({error}). Run it again to reinstall it."))?;
                 return Ok(false);
             }
         };
         if !held.record.owns(&record.invocation.module, &record.invocation.package) {
             self.engine.fail_unstarted(&record.id, "environment_unavailable",
-                "held package identity differs from accepted invocation")?;
+                "The package installed on this machine isn't the one this run was prepared with. Run it again.")?;
             return Ok(false);
         }
         let plan = self.plan(pool, record)?;

@@ -13,7 +13,7 @@
 #   disk-listed (cl-774, valentino 11-05) past those evictions every byte of the store is a model `model ls` names: a
 #              lane goes whole (its commit and its header), so none is unlisted while its chunks stay (within 1%)
 #   disk-room  a render that needs more than the disk can make free (H3 bf16 here) fails `machine_disk_full` while it
-#              prepares, naming the sizes and `--disk-gb`, with nothing downloaded; SDXL again, which fits only by
+#              prepares, naming the sizes and the disk to rent, with nothing downloaded; SDXL again, which fits only by
 #              evicting, runs and its warnings name what was evicted
 #   disk-held-output (cl-843) a weights output made before the fill is read after it: held outputs go after models
 # DISK_INSTALLS=no (the `disk` session) leaves out disk-envs and torch-layer: their installs are most of the suite's time.
@@ -99,13 +99,13 @@ big=$(step h3-bf16-render run "$(pkg minimax-h3 generate)" --on "$M" --lane bf16
 code=$(run_get "$T" h3-bf16-render .reason.code); why=$(run_get "$T" h3-bf16-render .reason.message)
 after=$(tail -1 "$T/use.tsv" | cut -f3); grew=$(( after > before ? after - before : 0 ))
 fits=$(step sdxl-room run "$(pkg sdxl generate)" --on "$M" prompt="$OBJECT, after a full disk" steps:=1 seed:=$((R + 703)))
-said=$("$CLI" --json --full run watch "$(cat "$T/sdxl-room.number")" --once 2>/dev/null | jq -r '[.warnings[]?, .result.warnings[]?] | map(if type == "object" then .message else . end) | .[]' | grep -m1 'evicted' || true)
+said=$("$CLI" --json --full run watch "$(cat "$T/sdxl-room.number")" --once 2>/dev/null | jq -r '[.warnings[]?, .result.warnings[]?] | map(if type == "object" then .message else . end) | .[]' | grep -m1 'Cozy removed' || true)
 evicted_sdxl=$(logs 'tensorfs: evicted stabilityai/sdxl')
 # H3 bf16 is 130 GiB: a disk that could hold it whole once all else is evicted (a CPU pod gets 160 GB for 100) judges SDXL's half only.
 if [ "$total" -gt $((135 << 30)) ]; then
   [ "$fits" = completed ] && expect disk-room PASS "a $((total >> 30)) GiB disk holds H3 bf16 (not judged); SDXL ran: ${said:-no eviction needed}" \
     || expect disk-room FAIL "SDXL $fits: $(run_get "$T" sdxl-room .reason.message)"
-elif [ "$big$code" = failedmachine_disk_full ] && [[ $why == *--disk-gb* ]] && [ "$grew" -lt $((1 << 30)) ] && [ "$fits" = completed ] \
+elif [ "$big$code" = failedmachine_disk_full ] && [[ $why == *"GB disk"* ]] && [ "$grew" -lt $((1 << 30)) ] && [ "$fits" = completed ] \
   && { [ "$evicted_sdxl" = 0 ] || [ -n "$said" ]; }; then
   expect disk-room PASS "H3 bf16 refused while it prepared ($why), its store grew $((grew >> 20)) MiB; SDXL ran: ${said:-no eviction needed}"
 else

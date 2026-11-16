@@ -297,10 +297,10 @@ impl Calls {
         let (application, entrypoint, files) = parent.callable(&call.module, &call.export)?;
         let callable = (call.module.clone(), call.export.clone());
         if parent.pure && !parent.pure_callables.contains(&callable) {
-            let why = format!("it called {}.{}, which is not memoized", call.module, call.export);
+            let why = format!("it called {}.{}, which isn't memoized", call.module, call.export);
             let news = service.engine.unmemoize(&parent.id, &why).map_err(|e| ("child_call_refused", e.to_string()))?;
             if news {
-                let warning = format!("a memoized function's result isn't kept for later calls: {why}");
+                let warning = format!("This function's result won't be reused by later runs: {why}.");
                 if let Err(error) = service.engine.append_warning(&parent.id, &warning) {
                     crate::private_io::warning(&service.engine, &parent.id, format_args!("{warning} ({error})"));
                 }

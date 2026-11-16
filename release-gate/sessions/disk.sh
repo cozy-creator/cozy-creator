@@ -30,7 +30,7 @@ RESULTS=$R
 )
 
 cozy machine logs "$NAME" tensord -n 0 > "$OUT/tensord.log" 2>&1
-grep -E 'tensorfs: evicted|ended the idle executors|the disk was short' "$OUT/tensord.log" | cut -c1-300 >> "$R"
+grep -E 'tensorfs: evicted|ended the idle executors|short for this render' "$OUT/tensord.log" | cut -c1-300 >> "$R"
 failed=$(awk -F'\t' '$2 == "FAIL" {print $1}' "$OUT/expect.tsv" | paste -sd' ')
 [ -s "$OUT/expect.tsv" ] || fail "no cell recorded a verdict"
 [ -z "$failed" ] || fail "cells failed: $failed"

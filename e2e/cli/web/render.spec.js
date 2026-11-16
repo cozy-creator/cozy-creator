@@ -513,13 +513,13 @@ test('render', async ({ page, project, api, cli }) => {
     // Built, the install gives up the machine's install line and describes what it built (said, not judged: a warm uv cache builds in 0.7 s).
     const built = building.find((line) => line.text.startsWith('describing '))?.at;
     // Ready: queued for what it waits on, or else starting.
-    const queued = waited.filter((line) => / in the queue\b/.test(line.text));
+    const queued = waited.filter((line) => /this machine's CPU/.test(line.text));
     const ready = queued[0]?.at ?? waited.find((line) => /^(importing |starting the executor)/.test(line.text))?.at ?? eager?.started_at_ms;
     const times = (run) => run && { number: run.number, status: run.status, created: run.created_at_ms, started: run.started_at_ms, ended: run.settled_at_ms };
-    const told = JSON.stringify({ hold: hold.id, built, ready, eager: { ...times(eager), log: waited }, install: times(install), fresh: times(fresh) });
+    const told = JSON.stringify({ hold: hold.name, built, ready, eager: { ...times(eager), log: waited }, install: times(install), fresh: times(fresh) });
     expect.soft([install, eager, fresh].map((run) => run?.status), `fresh's install, eager's call, fresh's call: ${told}`).toEqual(['completed', 'completed', 'completed']);
     expect.soft(ready < install?.settled_at_ms, `eager is ready, waiting only for the CPU, before fresh's install ends: ${told}`).toBe(true);
-    expect.soft(queued.map((line) => line.text).join('\n'), `eager's wait names the run holding the CPU: ${told}`).toContain(hold.id);
+    expect.soft(queued.map((line) => line.text).join('\n'), `eager's wait names the run holding the CPU, as people know it: ${told}`).toContain(`waiting for ${hold.name} to finish with this machine's CPU`);
     const theirs = waited.filter((line) => /install/.test(line.text) || [install?.id, fresh?.id].some((id) => id && line.text.includes(id)));
     expect.soft(theirs, `eager waits for nothing of fresh's: ${told}`).toEqual([]);
     expect.soft(eager?.started_at_ms < fresh?.started_at_ms, `the CPU free, eager goes before fresh: ${told}`).toBe(true);

@@ -949,24 +949,12 @@ impl Machines {
     fn held(&self, run:v1::RunState)->Option<wire::LiveRun> {
         // A run sent again (cl-935) is `<id>~<attempt>` there.
         let row=self.calcifer.active_run(crate::store::calcifer_id(&run.id))?;
-        Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting:run.waiting})
+        Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting:self.calcifer.runs_named(&run.waiting)})
     }
 
-    /// `text` with each run id this controller sent (`run-<hex>`, `~<attempt>` a resend's) as a person names that run (`KEY-N`);
-    /// another client's keeps its id.
+    /// `text` with each run it names as people know it (`Calcifer::runs_named`).
     fn runs_named(&self, text: &str) -> String {
-        let (mut named, mut rest) = (String::with_capacity(text.len()), text);
-        while let Some(at) = rest.find("run-") {
-            named.push_str(&rest[..at]);
-            let token = &rest[at..];
-            let id = &token[..token.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '~')).unwrap_or(token.len())];
-            match self.calcifer.active_run(crate::store::calcifer_id(id)) {
-                Some(row) => named.push_str(&self.calcifer.run_name(&row)),
-                None => named.push_str(id),
-            }
-            rest = &token[id.len()..];
-        }
-        named + rest
+        self.calcifer.runs_named(text)
     }
 
     /// What `operation` is waited on by, by run number: maintenance runs, and runs of `projects` that are open. An operation of a

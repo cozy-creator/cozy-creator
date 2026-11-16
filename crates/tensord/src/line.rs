@@ -73,7 +73,7 @@ impl Line {
             }
             let place = ordinal(state.waiting.range(..key).count() + 1);
             let text = match &state.holder {
-                Some((holder, doing, _)) => format!("{place} in line to install, behind run {holder}'s {doing}"),
+                Some((holder, doing, _)) => format!("{place} in line to install, after {holder} installs {doing}"),
                 None => format!("{place} in line to install"),
             };
             if shown.as_ref() != Some(&text) {

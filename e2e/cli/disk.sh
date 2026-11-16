@@ -65,12 +65,12 @@ before=$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')
 ALLOW=machine_disk_full cell disk-big "$script" --model "weights=e2e/disk-big@0.1.0" text=big || true
 said=$(run_get "$OUT" disk-big '.reason.message')
 echo "disk-big: $(run_get "$OUT" disk-big .status): ${said:0:400}"
-{ [ -f "$OUT/disk-big.refused" ] && grep -qE '[0-9.]+ (GiB|MiB)' <<< "$said"; } \
+{ [ -f "$OUT/disk-big.refused" ] && grep -qE '[0-9.]+(GB|MB)' <<< "$said"; } \
   || check "disk: e2e/disk-big (2 GiB on a 2.5 GiB disk) was not refused machine_disk_full naming the sizes: ${said:0:300}"
 [ "$(df -B1 --output=used "$mnt" | tail -1 | tr -d ' ')" -le $((before + (64 << 20))) ] || check "disk: the refused e2e/disk-big left bytes on the disk"
 df -B1 --output=used,avail "$mnt" | tail -1 | sed "s/^/after: used, free: /"
 cozy machine logs local --lines 0 --since 1h > "$OUT/disk.tensord.log" 2>&1 || check "disk: machine logs local failed"
-grep -E "evicted|freed|fetch refused .*CAPACITY|disk is full|making room|disk was short|ended the idle|doesn't fit|held it" "$OUT/disk.tensord.log" | cut -c1-300 | head -60 || true
+grep -E "evicted|freed|fetch refused .*CAPACITY|disk is full|making room|short for this render|ended the idle|doesn't fit|held it" "$OUT/disk.tensord.log" | cut -c1-300 | head -60 || true
 for name in disk-4 disk-5 disk-6 disk-1-again; do
   jq -r --arg n "$name" '.warnings[]? | "\($n) warning: \(.message)"' "$OUT/$name.json" 2> /dev/null | cut -c1-300 || true
   ! jq -e '[.warnings[]?.message] | any(test("model data is in use"))' "$OUT/$name.json" > /dev/null 2>&1 \

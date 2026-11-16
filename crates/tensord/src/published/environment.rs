@@ -102,7 +102,7 @@ impl Publisher {
             built => return built,
         };
         let torch = layer.as_ref().and_then(|l| l.version("torch")).unwrap_or_default();
-        let warning = format!("requires {missed}; this machine's torch is {torch}: its environment installs its own");
+        let warning = format!("This package needs {missed}, but this machine has torch {torch}, so it installs its own.");
         if crate::private_io::current().is_none() {
             tracing::warn!("package {} {warning}", project.label);
         }
@@ -127,7 +127,7 @@ impl Publisher {
             job.stage(format!("{}: {doing} ({} of {total})", project.stage, step.get()));
         };
         if let Some(fetch) = project.fetch {
-            next("fetching its files");
+            next("getting the package's files");
             fetch()?;
         }
         let carried = carried(project.wheels).map_err(io_failure)?;
@@ -136,7 +136,7 @@ impl Publisher {
         }
         let (dir, envs, py) = (project.dir.to_string_lossy(), env.to_string_lossy(), platform::paths::venv_python(env));
         let py = py.to_string_lossy();
-        next("creating its environment");
+        next("creating the environment");
         self.uv(&["venv", "--no-project", "--python", minor(project.python), &envs], &[], job)?;
         // uv never installs what the layer provides: a lock's Torch rows stay out (`Locked::torch`).
         let provided: Vec<&str> = layer.map(|l| l.provided().collect()).unwrap_or_default();
@@ -170,7 +170,7 @@ impl Publisher {
             }
             Ok(())
         };
-        next("installing its dependencies");
+        next("installing dependencies");
         let mut sdk = if over { "machine" } else { "locked" };
         let mut fallback = vec![];
         // Why this machine's own pair isn't what it runs on.
@@ -217,7 +217,7 @@ impl Publisher {
             }
         }
         if let Some(wheels) = project.wheels.filter(|_| steps[1]) {
-            next("adding the wheels it brought");
+            next("adding the package's own wheels");
             let pins: Vec<String> = carried.iter().map(|(name, version)| format!("{name}=={version}")).collect();
             let mut args = vec!["pip", "install", "--python", &py, "--no-deps", "--no-index", "--link-mode", "copy",
                 "--find-links", wheels.to_str().unwrap_or_default()];
@@ -225,7 +225,7 @@ impl Publisher {
             self.uv(&args, &[], job)?;
         }
         if editable_after {
-            next("installing its code");
+            next("installing the package");
             // Its dependencies are in place: the project alone, whatever indexes its sources name.
             self.uv(&["pip", "install", "--python", &py, "--no-deps", "--no-sources", "--editable", &dir], &[], job)?;
         }
@@ -241,7 +241,7 @@ impl Publisher {
         }
         if let Some(locked) = project.locked {
             let build = &self.sdk.runtime_build;
-            next("fitting this machine's Runtime");
+            next("matching this machine's Runtime");
             // A lock's pair of another series can't speak this machine's executor protocol: this
             // machine's goes over it where every declared range admits it, else nothing runs.
             let theirs = pair_of(&locked.packages);
@@ -481,7 +481,8 @@ impl Publisher {
                 let said = stderr_tail(&stderr);
                 Err(match (network(&said), full(&said)) {
                     (true, _) => (super::UNREACHABLE, format!("uv {step}: {}", said.split_whitespace().collect::<Vec<_>>().join(" "))),
-                    (_, true) => ("machine_disk_full", format!("uv {step} ran out of disk{}", crate::reclaim::advice(self.store.root(), 0))),
+                    (_, true) => ("machine_disk_full", format!("This machine's disk ran out of space while installing the package (uv {step}).{}",
+                        crate::reclaim::advice(self.store.root(), 0))),
                     _ => ("package_installation_uv_failed", format!("uv {step}:\n{said}")),
                 })
             }

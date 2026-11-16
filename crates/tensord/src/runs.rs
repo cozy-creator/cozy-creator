@@ -897,7 +897,7 @@ impl Runs {
         let hub = spec.hub.clone().or_else(|| self.own_hub.clone());
         let hub_access = || {
             hub.as_ref().ok_or_else(|| {
-                refused("hub_access_absent", "this needs the run's Hub access, and it carries none: `cozy login <email>` on the computer that sent it, then run it again")
+                refused("hub_access_absent", "This run uses the Hub, and the computer that sent it isn't signed in. Sign in to the Hub there, then run it again.")
             })
         };
         let folder = model_folder::prepare(self, actor, spec, choice, stoppable)?;
@@ -928,7 +928,7 @@ impl Runs {
             let local = crate::storage::local(publisher.store(), &choice.model)
                 .map_err(|e| refused("checkpoint_absent", e.to_string()))?
                 .filter(|local| publisher.store().holds(&local.header))
-                .ok_or_else(|| refused("checkpoint_absent", format!("this machine holds no local/{name}: `cozy model download <source> local/{name} --on <machine>` puts it there")))?;
+                .ok_or_else(|| refused("checkpoint_absent", format!("This machine doesn't have the model local/{name}. Download it to this machine as local/{name} first.")))?;
             let row = json!({"parameter": choice.parameter,
                 "repository": choice.model, "checkpoint": local.header.id()});
             (local.header, Some(local.tree), row)
@@ -939,7 +939,7 @@ impl Runs {
             })?;
             let sha256 = tensorfs::sha256::hex(&header.digest);
             let held = crate::storage::held(publisher.store(), &sha256)
-                .map_err(|_| refused("checkpoint_absent", format!("this machine holds no checkpoint sha256:{sha256}: run what made it on this machine, or name a model of the Hub's")))?;
+                .map_err(|_| refused("checkpoint_absent", format!("This machine doesn't have the model sha256:{sha256}. Run what made it on this machine, or choose a model from the Hub.")))?;
             publisher.held_for(&self.service, hub_access().ok(), &held, self.order(id, spec, 0)).map_err(|(code, message)| refused(code, message))?;
             let row = json!({"parameter": choice.parameter, "checkpoint": format!("sha256:{sha256}")});
             (held, None, row)
@@ -1184,7 +1184,7 @@ impl Runs {
         if declared.is_none() && !install_only {
             return Err(refused(
                 "invalid_entrypoint",
-                format!("{0} declares no entrypoint {1:?}: `cozy run {0}` lists its functions", installation.package, spec.entrypoint),
+                format!("{} has no function called {:?}.", installation.package, spec.entrypoint),
             ));
         }
         if spec.parent.is_empty() {
@@ -1201,7 +1201,7 @@ impl Runs {
                 });
             if !declared {
                 let warning = format!(
-                    "model choice {:?} names no model slot of this function or the packages it calls; it is ignored",
+                    "The model choice {:?} doesn't match a model slot of this function or the packages it calls, so Cozy ignored it.",
                     choice.parameter
                 );
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
@@ -1215,7 +1215,7 @@ impl Runs {
                 observe("importing it", 0, 0);
             }
             if let Some((code, said)) = self.service.gpu().filter(|_| install_only).and_then(|gpu| gpu.import_verdict(&generation, &stoppable.stop)) {
-                let warning = format!("{code}: {said}. Its calls will fail the same way");
+                let warning = format!("{} can't be imported ({code}: {said}). Running it will fail the same way.", installation.package);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
                     crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }
@@ -1243,7 +1243,8 @@ impl Runs {
                 let fits = |absent: u64| {
                     let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
                     match absent > free {
-                        true => Err(refused("machine_disk_full", format!("its weights' {absent} bytes don't fit in the {free} free"))),
+                        true => Err(refused("machine_disk_full", format!("This render's models ({}) don't fit in the {} free on this machine's disk.{}",
+                            crate::reclaim::size(absent), crate::reclaim::size(free), crate::reclaim::advice(self.publisher.store().root(), absent)))),
                         false => Ok(()),
                     }
                 };
@@ -1369,12 +1370,12 @@ impl Runs {
             observe("downloading its weights", done, total)
         };
         fetch.download(lined, &caller, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
-            true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
+            true => refused(crate::published::CANCELED, "The run was canceled while its models downloaded."),
             false => {
                 let text = e.to_string();
-                match text.starts_with("machine_disk_full") {
-                    true => refused("machine_disk_full", text + &crate::reclaim::advice(self.publisher.store().root(), 0)),
-                    false => refused("model_fetch_failed", text),
+                match crate::access::code_of(&text) {
+                    ("machine_disk_full", why) => refused("machine_disk_full", crate::reclaim::advised(why, self.publisher.store().root(), 0)),
+                    (code, why) => refused(code, why),
                 }
             }
         })
@@ -1442,11 +1443,12 @@ impl Runs {
         let sure = fetch.absent(&reads.sure)?;
         let free = || crate::reclaim::Disk::measure(self.publisher.store().root()).map(|disk| disk.free());
         match ahead {
-            false => self.service.room_for(id, sure).map_err(|why| refused("machine_disk_full", why))?,
+            false => self.service.room_for(id, sure).map_err(|why| refused("machine_disk_full", why.trim_start_matches("machine_disk_full: ")))?,
             true => {
                 let free = free()?;
                 if sure > free {
-                    return Err(refused("machine_disk_full", format!("its weights' {sure} bytes don't fit in the {free} free")));
+                    return Err(refused("machine_disk_full", format!("This render's models ({}) don't fit in the {} free on this machine's disk.{}",
+                        crate::reclaim::size(sure), crate::reclaim::size(free), crate::reclaim::advice(self.publisher.store().root(), sure))));
                 }
             }
         }
@@ -1578,13 +1580,13 @@ impl Runs {
             if item.level > Level::Installed && !declares(&installation, &item.entrypoint)? {
                 return Err(refused(
                     "invalid_entrypoint",
-                    format!("{0} declares no entrypoint {1:?}: `cozy run {0}` lists its functions", installation.package, item.entrypoint),
+                    format!("{} has no function called {:?}.", installation.package, item.entrypoint),
                 ));
             }
             // A request prepares a function's own GPU model; one with none warms what it calls, as ever.
             let unbound = item.payload.is_some() && plan.is_none();
             if unbound {
-                let warning = format!("{} binds no GPU model of its own: its inputs are not warmed, only the models it calls", item.entrypoint);
+                let warning = format!("{} loads no GPU model of its own, so Cozy warmed only the models it calls, not its inputs.", item.entrypoint);
                 if let Err(error) = self.service.engine.append_warning(id, &warning) {
                     crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }

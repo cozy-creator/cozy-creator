@@ -713,6 +713,7 @@ impl Engine {
                     completed_units: bound.completed_units,
                     detail: arriving.over(&own),
                     waiting: bound.waiting.clone(),
+                    place: bound.place,
                     weights: Some((arriving, own)),
                     revision: bound.revision.saturating_add(1),
                     at_ms: crate::machine::lifecycle::now_ms() as u64,
@@ -939,7 +940,7 @@ impl Engine {
         if let Err(error) = launched {
             owned.remove(&id);
             drop(owned);
-            self.fail_unstarted(&id, "executor_launch_failed", format!("supervisor launch failed: {error}"))?;
+            self.fail_unstarted(&id, "executor_launch_failed", format!("Couldn't start the process that runs this ({error})."))?;
             return Err(error);
         }
         Ok(true)
@@ -1017,12 +1018,21 @@ impl Engine {
             .unwrap_or_else(|| id.to_string())
     }
 
-    /// Why queued run `id` waits, for people (another run's install, its place in the queue); `None`
+    /// Why queued run `id` waits, for people (another run's install, its models' download); `None`
     /// once it no longer does. Shown in the run's state while it is queued; nothing durable is
     /// written.
     pub(crate) fn waiting(&self, id: &str, reason: Option<String>) -> io::Result<()> {
+        self.set_waiting(id, reason, None)
+    }
+
+    /// Queued run `id` waits `reason` at `place` in this machine's line (1 is next), as `waiting`.
+    pub(crate) fn in_line(&self, id: &str, place: u32, reason: String) -> io::Result<()> {
+        self.set_waiting(id, Some(reason), Some(place))
+    }
+
+    fn set_waiting(&self, id: &str, reason: Option<String>, place: Option<u32>) -> io::Result<()> {
         let mut progress = self.progress.lock().unwrap();
-        if progress.get(id).map_or(reason.is_none(), |held| held.waiting == reason) {
+        if progress.get(id).map_or(reason.is_none(), |held| held.waiting == reason && held.place == place) {
             return Ok(());
         }
         let mut journal = self.journal.lock().unwrap();
@@ -1043,6 +1053,7 @@ impl Engine {
                 completed_units: record.completed_units,
                 detail: record.progress.clone().unwrap_or_default(),
                 waiting: reason,
+                place,
                 weights,
                 revision: record
                     .revision
@@ -1105,6 +1116,7 @@ impl Engine {
                 completed_units,
                 detail,
                 waiting: None,
+                place: None,
                 weights,
                 revision: record
                     .revision
@@ -1250,6 +1262,7 @@ impl Engine {
                 completed_units: record.completed_units,
                 detail,
                 waiting: record.waiting.clone(),
+                place: record.place,
                 weights,
                 revision: record
                     .revision
