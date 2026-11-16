@@ -169,18 +169,49 @@ while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.fa
 # install is no slower than alone. share.json keeps both series. The loopback's 64 KiB packets would leave a few dozen in the
 # bottleneck's queue, where a paced flow's one or two in flight lose to drop-tail and wait out TCP's retransmission timer; a
 # real link's are 1500 bytes, as here for the cell.
+# SHARE_LINK (tfs-300's variants of the shipped behaviour, by shard): `queue` (the default) the 60 Mbit FIFO above; `police` the
+# same rate as one token bucket that drops what it can't pass, no queue (a provider's policer); `open` no limit (TensorFS's
+# fast-link gate). SHARE_NETLINK=closed: Calcifer, and TensorD its child, start with netlink refused (systemd
+# RestrictAddressFamilies, as a seccomp sandbox does), so an install's socket bytes can't be read.
 share_link() {
-local minio=$1 wheels=$2
-sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio && sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate 60mbit burst 1mb latency 200ms \
-  && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$minio" 0xffff flowid 1:3 \
-  && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$wheels" 0xffff flowid 1:3 \
-  && sudo iptables -w -N E2E_SHARE && sudo iptables -w -I INPUT -i lo -j E2E_SHARE \
+local minio=$1 wheels=$2 port
+case ${SHARE_LINK:-queue} in
+  queue)
+    sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio && sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate 60mbit burst 1mb latency 200ms \
+      && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$minio" 0xffff flowid 1:3 \
+      && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$wheels" 0xffff flowid 1:3 || { share_unlink; check "ondemand-share: the shared link wasn't made"; return 1; } ;;
+  police)
+    sudo ip link set dev lo mtu 1500 && sudo tc qdisc add dev lo root handle 1: prio && sudo tc actions add action police rate 60mbit burst 128k drop index 1 \
+      || { share_unlink; check "ondemand-share: the policed link wasn't made"; return 1; }
+    for port in "$minio" "$wheels"; do
+      sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:3 action police index 1 \
+        || { share_unlink; check "ondemand-share: the policed link wasn't made"; return 1; }
+    done ;;
+  open) ;;
+  *) check "ondemand-share: SHARE_LINK ${SHARE_LINK} is none of queue, police, open"; return 1 ;;
+esac
+sudo iptables -w -N E2E_SHARE && sudo iptables -w -I INPUT -i lo -j E2E_SHARE \
   && sudo iptables -w -A E2E_SHARE -p tcp --sport "$minio" && sudo iptables -w -A E2E_SHARE -p tcp --sport "$wheels" \
-  || { share_unlink; check "ondemand-share: the shared link wasn't made"; return 1; }
+  || { share_unlink; check "ondemand-share: the counters weren't made"; return 1; }
+}
+
+# share_netlink closed|open: Calcifer restarted with netlink refused (or as it was), and TensorD, which outlives it, ended so
+# the next run starts it as Calcifer's child under the same filter.
+share_netlink() {
+local dropin=$HOME/.config/systemd/user/cozy-calcifer.service.d pid
+case $1 in
+  closed) mkdir -p "$dropin" && printf '[Service]\nRestrictAddressFamilies=~AF_NETLINK\n' > "$dropin/tfs-300-no-netlink.conf" ;;
+  open) rm -f "$dropin/tfs-300-no-netlink.conf" ;;
+esac
+systemctl --user daemon-reload && systemctl --user restart cozy-calcifer || { check "ondemand-share: Calcifer didn't restart (netlink $1)"; return 1; }
+for pid in $(pgrep -u "$(id -u)" -f 'machine serve'); do kill "$pid"; done
+for _ in $(seq 100); do pgrep -u "$(id -u)" -f 'machine serve' > /dev/null || break; sleep 0.2; done
+cozy --json doctor > "$OUT/ondemand-share/doctor-netlink-$1.json" 2>&1 || true
 }
 
 share_unlink() {
 sudo tc qdisc del dev lo root 2> /dev/null
+sudo tc actions flush action police 2> /dev/null
 sudo ip link set dev lo mtu 65536
 sudo iptables -w -D INPUT -i lo -j E2E_SHARE 2> /dev/null
 sudo iptables -w -F E2E_SHARE 2> /dev/null; sudo iptables -w -X E2E_SHARE 2> /dev/null
@@ -259,6 +290,7 @@ share_package "$dir" a "$wheels" && share_package "$dir" c "$wheels" || { check 
 python3 -m http.server "$wheels" --bind 127.0.0.1 --directory "$dir/www" > "$dir/server.log" 2>&1 &
 server=$!
 share_link "$minio" "$wheels" || { kill "$server"; return 0; }
+[ "${SHARE_NETLINK:-open}" != closed ] || share_netlink closed || { kill "$server"; share_unlink; return 0; }
 # Each second: the weights' bytes (from MinIO) and the install's (from the wheel server), as the bottleneck delivered them.
 ( while :; do
     printf '%s %s\n' "$(date +%s%3N)" "$(sudo iptables -w -nvxL E2E_SHARE | awk 'NR > 2 { printf "%s ", $2 }')"
@@ -282,6 +314,9 @@ for name in share-a share-c share-weights; do
   [ "$(run_get "$OUT" "$name" .status)" = completed ] || check "ondemand-share: $name $(run_get "$OUT" "$name" .status): $(run_get "$OUT" "$name" .reason.message | head -c 300)"
 done
 kill "$sampler" "$server" 2> /dev/null
+# What sandbox TensorD ran in (seccomp mode and filters) and which of the share's paths it took.
+pgrep -u "$(id -u)" -f 'machine serve' | head -1 | xargs -I{} grep -E '^Seccomp' /proc/{}/status > "$dir/tensord-seccomp.txt" 2>&1 || true
+[ "${SHARE_NETLINK:-open}" != closed ] || share_netlink open
 share_unlink
 rm -rf "$dir/www"
 cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-share.tensord.log" 2>&1 || check "ondemand-share: machine logs local failed"
@@ -290,7 +325,9 @@ import json, re, sys
 from datetime import datetime
 from pathlib import Path
 out, began = Path(sys.argv[1]), int(sys.argv[2])
-LINK = 60e6 / 8  # the bottleneck, bytes/s
+import os
+MODE = os.environ.get("SHARE_LINK", "queue")
+LINK = None if MODE == "open" else 60e6 / 8  # the bottleneck, bytes/s (none when open)
 samples = []
 for line in (out / "ondemand-share/samples.txt").read_text(errors="replace").splitlines():
     f = line.split()
@@ -301,27 +338,36 @@ rates = [(b[0], (b[1] - a[1]) / ((b[0] - a[0]) / 1e3), (b[2] - a[2]) / ((b[0] - 
 installed = lambda arm: tuple(int(x) for x in (out / f"ondemand-share/install-{arm}.ms").read_text().split())
 (a0, a1), (c0, c1) = installed("a"), installed("c")
 w0 = json.loads((out / "share-weights.json").read_text()).get("accepted_at_ms") or 0
-weights = [t for t, w, _ in rates if w > 0.005 * LINK]
+# Open, the link is whatever the weights' best second moved.
+REF = LINK or max((w for _, w, _ in rates), default=1.0)
+weights = [t for t, w, _ in rates if w > 0.005 * REF]
 w_first, w_last = (min(weights), max(weights)) if weights else (0, 0)
 # The install with the weights beside it: from the weights' first second (asked once the install began) to either's end.
 during = [(t, w, i) for t, w, i in rates if max(c0, w_first) + 3000 <= t <= min(c1, w_last)]
 # The install downloads in a second it moves a tenth of the link or more; the seconds either side are its edges, judged as neither.
-busy = {t for t, _, i in rates if i > 0.1 * LINK}
+busy = {t for t, _, i in rates if i > 0.1 * REF}
 edge = lambda t: any(abs(t - b) <= 2000 for b in busy)
 inside = [w for t, w, _ in during if t in busy]
 outside = [w for t, w, _ in during if not edge(t)]
 mean = lambda xs: sum(xs) / len(xs) if xs else 0.0
-stalls, run = [], []
+stalls, run, zeros, still = [], [], [], []
 for t, w, _ in during:
-    run = run + [t] if w < 0.02 * LINK else []
+    run = run + [t] if w < 0.02 * REF else []
     if len(run) == 5:
         stalls.append(run[0] - began)
-shares = []
+    still = still + [t] if w == 0 else []
+    if len(still) == 5:
+        zeros.append(still[0] - began)
+shares, paths = [], {"precise": 0, "blind": 0, "whole": 0}
 for line in (out / "ondemand-share.tensord.log").read_text(errors="replace").splitlines():
-    if "link shared with an install" in line or "weights take the whole link" in line:
+    if "link shared with an install" in line or "weights take the whole link" in line or "can't be read here" in line:
         shares.append(line.split(" ", 1)[0] + " " + " ".join(re.findall(r"\w+=\S+", line)))
+        paths["precise" if "link shared" in line else "blind" if "can't be read" in line else "whole"] += 1
+moved = sum(w for t, w, _ in rates if w_first <= t <= w_last)
 series = [[t - began, round(w / 1e6, 2), round(i / 1e6, 2)] for t, w, i in rates]
-summary = {"link_mb_s": LINK / 1e6, "install_alone_s": (a1 - a0) / 1e3, "install_with_weights_s": (c1 - c0) / 1e3,
+summary = {"mode": MODE, "netlink": os.environ.get("SHARE_NETLINK", "open"), "share_paths": paths,
+           "weights_mb_s_first_to_last": round(moved / max(1, len(weights)) / 1e6, 2), "zero_5s_from_s": [z / 1e3 for z in zeros],
+           "link_mb_s": REF / 1e6, "install_alone_s": (a1 - a0) / 1e3, "install_with_weights_s": (c1 - c0) / 1e3,
            "weights_asked_s": (w0 - began) / 1e3, "weights_first_s": (w_first - began) / 1e3, "weights_last_s": (w_last - began) / 1e3,
            "weights_inside_mb_s": round(mean(inside) / 1e6, 2), "weights_outside_mb_s": round(mean(outside) / 1e6, 2),
            "install_download_s": len([t for t in busy if c0 <= t <= c1]), "stalls_from_s": [s / 1e3 for s in stalls]}
@@ -339,10 +385,10 @@ if not during or not inside:
 else:
     if stalls:
         fail(f"the weights stopped for 5 s or more during the install, from {summary['stalls_from_s']} s")
-    if mean(outside) < 0.75 * LINK:
-        fail(f"outside the install's downloads the weights moved {mean(outside) / 1e6:.2f} MB/s of the {LINK / 1e6:.2f} MB/s link")
-    if not 0 < mean(inside) <= 0.35 * LINK:
-        fail(f"during the install's downloads the weights moved {mean(inside) / 1e6:.2f} MB/s of the {LINK / 1e6:.2f} MB/s link: not a share")
+    if mean(outside) < 0.75 * REF:
+        fail(f"outside the install's downloads the weights moved {mean(outside) / 1e6:.2f} MB/s of the {REF / 1e6:.2f} MB/s link")
+    if not 0 < mean(inside) <= 0.35 * REF:
+        fail(f"during the install's downloads the weights moved {mean(inside) / 1e6:.2f} MB/s of the {REF / 1e6:.2f} MB/s link: not a share")
 if (c1 - c0) > 1.1 * (a1 - a0):
     fail(f"beside the weights the install took {(c1 - c0) / 1e3:.1f} s, alone {(a1 - a0) / 1e3:.1f} s")
 JUDGE

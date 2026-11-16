@@ -644,6 +644,10 @@ case $SHARD in
   ondemand) parts="ondemand_ahead ondemand_need logs" ;;
   # The install's share of the link beside 1.6 GB of weights (cl-1007): about 8 min on its own, so its own shard.
   ondemand-share) parts="ondemand_share logs" ;;
+  # tfs-300: the same cell on a policed link, an open one, and with netlink refused (an install's socket bytes unreadable).
+  ondemand-police) export SHARE_LINK=police; parts="ondemand_share logs" ;;
+  ondemand-open) export SHARE_LINK=open; parts="ondemand_share logs" ;;
+  ondemand-sealed) export SHARE_NETLINK=closed; parts="ondemand_share logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
   ondemand-ramp) parts="ondemand_ramp logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
