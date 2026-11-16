@@ -85,6 +85,12 @@ async function start(width: number, height: number): Promise<Chosen> {
 let early: Promise<Chosen> | null = start(innerWidth, innerHeight)
 early.catch(() => {})
 
+/** A project left (not locked): the page keeps its one renderer and GL context for the next project's canvas. */
+export function parkRenderer(chosen: Chosen) {
+  chosen.renderer.canvas.remove()
+  early = Promise.resolve(chosen)
+}
+
 /** The page's early renderer the first time, sized to the canvas; a new one after that, or if the early one failed. */
 export async function takeRenderer(width: number, height: number): Promise<Chosen> {
   const taken = early
