@@ -5,7 +5,7 @@
 // the layout keeps them, zoomed by − from 100% to the farthest and back by +, then by the wheel: each box where it was, each name one line,
 // cut with an ellipsis where its box ends and whole under the pointer, on no box, no other name and not its own picture; so too at 100%,
 // 45%, 25% and the farthest, at 1440×900 and 1920×1080, paper and dark.
-const { test, expect, canvasNames, canvasIdle, hoverBox, middle: middleOf, openPoint, png, screenshotPixels } = require('./fixtures');
+const { test, expect, canvasNames, canvasIdle, hoverBox, middle: middleOf, nameUnderPointer, openPoint, png, screenshotPixels } = require('./fixtures');
 const { camera, colours, sameCamera } = require('./geometry');
 
 const COUNT = 300;
@@ -422,13 +422,8 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
     // A long name cut short says itself whole under the pointer: its title, on what the pointer finds there.
     const hover = [];
     for (const name of LONG) {
-      const native = await hoverBox(page, name), nm = native.locator('.head .nm');
-      const point = await middleOf(nm);
-      await page.mouse.move(point.x, point.y);
-      hover.push(await nm.evaluate((nm, name) => {
-        const r = nm.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-        return { name, cut: nm.scrollWidth > nm.clientWidth, title: nm.title, under_pointer: hit === nm || nm.contains(hit) };
-      }, name));
+      const { cut, title, under_pointer } = await nameUnderPointer(page, name);
+      hover.push({ name, cut, title, under_pointer });
       await passive(page);
     }
     expect.soft(hover, 'a long name is cut, and says itself under the pointer').toEqual(LONG.map((name) => ({ name, cut: true, title: name, under_pointer: true })));

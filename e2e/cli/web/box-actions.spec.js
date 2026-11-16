@@ -154,7 +154,8 @@ test('box-actions', async ({ page, project, api }) => {
     await expect(page.locator('aside.drawer')).toHaveCount(0);
 
     await menuItem('other', 'Rename');
-    const input = box(page, 'other').locator('input[aria-label="Name"]');
+    // Its NameField: in its hover card on the old canvas, over its drawn title on the new.
+    const input = page.getByRole('textbox', { name: 'Name', exact: true });
     await input.fill('harbour');
     await input.press('Enter');
     await expect.poll(async () => (await names()).includes('harbour') && !(await names()).includes('other'), { message: 'renamed in the API' }).toBe(true);

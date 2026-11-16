@@ -2,7 +2,7 @@
 // picture as its reference while it runs, the imported pixels in the crop, and again after a pan; repainting the crop never throws (the
 // guards), and Cancel still works after the cropped references redraw.
 const { createHash } = require('crypto');
-const { test, expect, canvasCard, canvasIdle, focus, hoverBox, openPoint, fixtureTool, png, screenshotPixels } = require('./fixtures');
+const { test, expect, canvasCard, canvasIdle, focus, hoverBox, newCanvas, openPoint, partPoint, fixtureTool, png, screenshotPixels } = require('./fixtures');
 
 test('references', async ({ page, project, api, cli }) => {
   await cli.json('machine', 'use', 'local');
@@ -49,8 +49,14 @@ test('references', async ({ page, project, api, cli }) => {
     await page.mouse.wheel(80, 0);
     await canvasIdle(page);
     await checkPicture('reference-after-pan');
-    await hoverBox(page, 'preview');
-    await page.getByRole('button', { name: "Cancel preview's render", exact: true }).click();
+    // Its Cancel: the old canvas's hover card's button, the new canvas's drawn one.
+    if (await newCanvas(page)) {
+      const at = await partPoint(page, 'preview', 'cancel');
+      await page.mouse.click(at.x, at.y);
+    } else {
+      await hoverBox(page, 'preview');
+      await page.getByRole('button', { name: "Cancel preview's render", exact: true }).click();
+    }
     await expect.poll(async () => (await api.get(project.at(`/runs/${run}`))).status, { message: 'Cancel still works after cropped references redraw', timeout: 30000 }).toBe('canceled');
   } finally {
     if (run) {

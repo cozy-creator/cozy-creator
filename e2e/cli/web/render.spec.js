@@ -8,7 +8,7 @@
 // starts before the other's install ends.
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasIdle, focus, middle, openPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, newCanvas, openPoint, partPoint, fixtureTool, png, canvasCard, hoverBox, screenshotPixels } = require('./fixtures');
 
 const TOOL = fixtureTool('tool.py');
 const STILL = `${TOOL}/still`;
@@ -88,6 +88,16 @@ const hex = (sha) => String(sha ?? '').replace(/^sha256:/, '');
 const shaOf = (asset, number) => hex(asset?.prefixes?.find((version) => version.number === number)?.main?.sha256);
 /** A render on its way, on its box at rest or over it in Focus: its two lines and Cancel. */
 const face = (page, name) => page.getByRole('status', { name: `${name}'s render`, exact: true });
+/** Its render canceled as a person cancels it: the old canvas's hover card's Cancel, the new canvas's drawn one. */
+async function cancelRender(page, name) {
+  if (await newCanvas(page)) {
+    const at = await partPoint(page, name, 'cancel');
+    await page.mouse.click(at.x, at.y);
+    return;
+  }
+  await hoverBox(page, name);
+  await face(page, name).getByRole('button', { name: `Cancel ${name}'s render`, exact: true }).click();
+}
 const focused = (page) => page.getByRole('region', { name: 'Focused asset' });
 /** The take a picture's frame draws, once its pixels are in. */
 const drawn = (scope) => scope.locator('.media-pixels .buffered-image').evaluateAll(([host]) => {
@@ -346,8 +356,7 @@ test('render', async ({ page, project, api, cli }) => {
   });
 
   await test.step('Cancel one box while it waits for its input and another while it renders', async () => {
-    await hoverBox(page, 'after');
-    await face(page, 'after').getByRole('button', { name: "Cancel after's render", exact: true }).click();
+    await cancelRender(page, 'after');
     await page.mouse.move(2, 500);
     await expect.poll(() => settled(project, 'after'), { message: 'after canceled, its take gone' }).toEqual({ takes: 0, making: 0, versions: 0 });
     await softly.poll(() => renderState(page, 'after')).toBeNull();
@@ -371,8 +380,7 @@ test('render', async ({ page, project, api, cli }) => {
     await softly.poll(firstStep, { message: "slow's time left once its first step is done, s", timeout: 15_000 }).toBeGreaterThanOrEqual(10);
     const [run] = (await project.asset('slow'))?.making ?? [];
     expect(run, "slow's run").toBeTruthy();
-    await hoverBox(page, 'slow');
-    await face(page, 'slow').getByRole('button', { name: "Cancel slow's render", exact: true }).click();
+    await cancelRender(page, 'slow');
     await page.mouse.move(2, 500);
     await expect.poll(() => settled(project, 'slow'), { message: 'slow canceled, its take gone', timeout: 30_000 }).toEqual({ takes: 0, making: 0, versions: 0 });
     await softly.poll(async () => (await api.get(project.at(`/runs/${run}`))).status, { message: `run ${run}` }).toBe('canceled');

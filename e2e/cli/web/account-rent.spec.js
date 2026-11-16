@@ -428,18 +428,20 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await region.getByRole('button', { name: 'Render', exact: true }).click();
       await expect(asking, 'it asks on the box itself').toBeVisible({ timeout: 60_000 });
       expect.soft(await asking.getByRole('button').allInnerTexts(), 'Rent a GPU first, Run here anyway second').toEqual(['Rent an RTX 4090', 'Run here anyway']);
-      // At rest too (cl-1028 acceptance row 17): out of Focus with nothing under the pointer, the box still asks on its own tile, as the
-      // canvas draws it, not only on the card a hover mounts. Its words, whatever role the canvas files them under.
+      // At rest too (cl-1028 acceptance row 17): out of Focus with nothing under the pointer, the box still asks, not only on the card a hover
+      // mounts: drawn on its tile (its words, whatever role the canvas files them under), or the new canvas's asking under its box at rest.
       await region.getByRole('button', { name: 'Back to canvas', exact: true }).click();
       await expect(region).toHaveCount(0);
       await canvasIdle(page);
       const open = await openPoint(page);
       await page.mouse.move(open.x, open.y);
       await expect(page.locator('.canvas-node')).toHaveCount(0);
-      await expect.configure({ soft: true }).poll(async () => {
-        const shown = (await canvasCard(page, 'kite'))?.rendered;
-        return shown ? Object.values(shown.labels ?? {}).map((label) => label.fullText ?? label.text).join(' | ') : 'not drawn';
-      }, { message: 'kite asks on its tile at rest: Rent an RTX 4090, or Run here anyway' }).toMatch(/Rent an RTX 4090|Run here anyway/);
+      await expect.configure({ soft: true }).poll(() => page.evaluate(() => {
+        const shown = document.querySelector('.canvas-root')?.canvasInspection?.card('kite')?.rendered;
+        const drawn = shown ? Object.values(shown.labels ?? {}).map((label) => label.fullText ?? label.text) : ['not drawn'];
+        const resting = [...document.querySelectorAll('.rest-asking')].filter((el) => el.checkVisibility() && !el.closest('.canvas-node, [data-focused-asset]')).map((el) => el.textContent);
+        return [...drawn, ...resting].join(' | ');
+      }), { message: 'kite asks on its tile at rest: Rent an RTX 4090, or Run here anyway' }).toMatch(/Rent an RTX 4090|Run here anyway/);
       region = await focus(page, 'kite');
       asking = region.getByRole('group', { name: 'Render here?' });
       await expect(asking, 'still asking in Focus').toBeVisible();

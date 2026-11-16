@@ -6,7 +6,7 @@
 const { spawn } = require('child_process');
 const { join } = require('path');
 const { createInterface } = require('readline');
-const { test, expect, canvasIdle, focus, middle, zoomOf, canvasPoint, canvasText, selectedNames, hoverBox, screenshotPixels } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, zoomOf, canvasPoint, canvasText, selectedNames, hoverBox, titlePoint, screenshotPixels } = require('./fixtures');
 
 /** Polls whose miss leaves the cell going, as `expect.soft` does. */
 const softly = expect.configure({ soft: true });
@@ -208,7 +208,7 @@ test('instant', async ({ page, project, api, guards }) => {
     // Carried by its name, as a hand moves a box: a drag where it draws nothing (its name row past its name) pans the canvas (Paul, 11-06).
     const zoom = await zoomOf(page);
     const was = await placeOf(page, first);
-    const grip = await middle((await hoverBox(page, first)).locator('.nm'));
+    const grip = await titlePoint(page, first);
     // Cross the click threshold; the canvas retains the original press as the drag anchor.
     const began = { x: grip.x + 4, y: grip.y + 2 };
     const to = { x: grip.x + 120, y: grip.y + 80 };
@@ -261,7 +261,7 @@ test('instant', async ({ page, project, api, guards }) => {
 
     // Another writer takes the name while this rename is on its way: it's refused, and the box is as it was.
     const renames = await hold(page, 'POST', project.at('/rename'));
-    const name = await middle((await hoverBox(page, first)).locator('.nm'));
+    const name = await titlePoint(page, first);
     await page.mouse.click(name.x, name.y);
     const field = page.getByRole('textbox', { name: 'Name', exact: true });
     await field.fill('taken');
@@ -309,7 +309,7 @@ test('instant', async ({ page, project, api, guards }) => {
     // The page's rename lands; its Undo shows at once and is held while another writer takes the old name, so Calcifer refuses it (that 409
     // is this cell's doing). The box goes back to the name Calcifer has for it, and the other writer's box shows under the name it took.
     guards.allow(/status of 409\b.*\/v1\/projects\/[^/ ]+\/history\/undo\b/);
-    const name = await middle((await hoverBox(page, first)).locator('.nm'));
+    const name = await titlePoint(page, first);
     await page.mouse.click(name.x, name.y);
     const field = page.getByRole('textbox', { name: 'Name', exact: true });
     await field.fill('renamed');

@@ -7,7 +7,7 @@
 const { execFileSync } = require('child_process');
 const { createHash, randomBytes } = require('crypto');
 const { dirname, join } = require('path');
-const { test, expect, canvasIdle, fixtureTool, focus, middle, openPoint, png, canvasCard, canvasNames, canvasPoint, canvasVisible, canvasText, canvasLabel, hoverBox } = require('./fixtures');
+const { test, expect, canvasIdle, fixtureTool, focus, middle, openPoint, png, canvasCard, canvasNames, canvasPoint, canvasVisible, canvasText, canvasLabel, hoverBox, titlePoint, trashPoint } = require('./fixtures');
 
 const PLACES = { shot: { x: 0, y: 0 }, named: { x: 0, y: 420 }, spare: { x: 360, y: 420 }, words: { x: 720, y: 420 }, still: { x: 1080, y: 420 } };
 const STILL = `${fixtureTool('tool.py')}/still`;
@@ -56,7 +56,7 @@ async function fitAll(page) {
 
 /** `name` dragged by its name, as a hand does. */
 async function drag(page, name, dx, dy) {
-  const { x, y } = await middle((await hoverBox(page, name)).locator('.nm'));
+  const { x, y } = await titlePoint(page, name);
   await page.mouse.move(x, y);
   await page.mouse.down();
   await page.mouse.move(x + 8, y + 2);
@@ -163,7 +163,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     expect.soft(moved, 'the second move shows at once').not.toEqual(once);
 
     // A tap on its name at rest renames it.
-    const name = await middle((await hoverBox(page, 'named')).locator('.nm'));
+    const name = await titlePoint(page, 'named');
     await page.mouse.click(name.x, name.y);
     await expect(page.getByRole('textbox', { name: 'Name' })).toBeFocused();
     await page.keyboard.press('ControlOrMeta+a');
@@ -188,9 +188,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await drop(page, 'joined.png', JOINED, await canvasPoint(page, 'renamed'));
 
     // Deleted last, so Undo takes back the delete.
-    const head = await middle((await hoverBox(page, 'spare')).locator('.nm'));
-    await page.mouse.move(head.x, head.y);
-    const trash = await middle((await hoverBox(page, 'spare')).getByRole('button', { name: 'Delete', exact: true }));
+    const trash = await trashPoint(page, 'spare');
     await page.mouse.click(trash.x, trash.y);
     await expect.configure({ soft: true }).poll(async () => (await canvasNames(page)).includes('spare'), { message: 'the delete shows at once', ...AT_ONCE }).toBe(false);
     const clear = await openPoint(page);

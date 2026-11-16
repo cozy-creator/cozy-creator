@@ -8,7 +8,7 @@
 // (project/rounded.py sizes as H3: 16:9 at 1344x768, 1.37:1 at 1024x768, which is 4:3 in pixels), still once its box's shape is cleared;
 // a file its pixels' nearest standard ratio within about 2%, else the simplest whole one; a corner pulled near 4:3 sets 4:3, and far from
 // any sets the ratio as pulled and says it. Dark says the same.
-const { test, expect, canvasIdle, focus, middle, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox } = require('./fixtures');
+const { test, expect, canvasCard, canvasIdle, cornerPoint, focus, liveRatio, middle, newCanvas, fixtureTool, MP4, png, canvasVisible, canvasLabel, hoverBox } = require('./fixtures');
 const { carry } = require('./geometry');
 const { fit, leave } = require('./hands');
 
@@ -236,18 +236,24 @@ test('fields', async ({ page, project, api, cli }) => {
 
     /** `pulled`'s corner pulled until its picture is `ratio` wide to 1 tall: what it said as it was held, and what it saved. */
     const pull = async (ratio) => {
-      const node = await hoverBox(page, 'pulled');
-      const corner = await node.locator('.corner').first().boundingBox();
-      const media = await node.locator('.media').first().boundingBox();
+      // Its corner and picture: the old canvas's hover card's, the new canvas's drawn ones.
+      let from, media;
+      if (await newCanvas(page)) {
+        from = await cornerPoint(page, 'pulled');
+        media = (await canvasCard(page, 'pulled')).body;
+      } else {
+        const node = await hoverBox(page, 'pulled');
+        const corner = await node.locator('.corner').first().boundingBox();
+        media = await node.locator('.media').first().boundingBox();
+        from = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
+      }
       const before = (await fieldsOf('pulled')).aspect_ratio;
-      const from = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
       const by = 80;
       await page.mouse.move(from.x, from.y);
       await page.mouse.down();
       await page.mouse.move(from.x + by, from.y + ((media.width + by) / ratio - media.height), { steps: 20 });
-      const said = page.locator('.ratio-live');
-      await expect.soft(said, `its shape said as it's pulled to ${ratio}`).toHaveCount(1);
-      const live = (await said.count()) ? (await said.first().innerText()).trim() : null;
+      await expect.configure({ soft: true }).poll(() => liveRatio(page), { message: `its shape said as it's pulled to ${ratio}` }).not.toBeNull();
+      const live = await liveRatio(page);
       await page.mouse.up();
       let saved;
       await expect.poll(async () => (saved = (await fieldsOf('pulled')).aspect_ratio) !== before, { message: `its shape saved, pulled to ${ratio}` }).toBe(true);

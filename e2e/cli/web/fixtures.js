@@ -498,7 +498,8 @@ async function canvasPoint(page, name, part = 'body') {
     point = await page.evaluate(({ name, part }) => {
       const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection, card = inspection?.card(name);
       const nativeTitle = part === 'title' && document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] .head .nm`);
-      const rect = part === 'title' ? nativeTitle?.getBoundingClientRect() ?? card?.rendered?.labels.title ?? card?.title : card?.[part];
+      // The new canvas (cl-1028) says where each of a card's parts is drawn; the old one, its title label and its body.
+      const rect = card?.rendered?.parts?.[part] ?? (part === 'title' ? nativeTitle?.getBoundingClientRect() ?? card?.rendered?.labels.title ?? card?.title : card?.[part]);
       if (!rect || !rect.width || !rect.height) return null;
       const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
       const target = document.elementFromPoint(point.x, point.y);
@@ -509,15 +510,136 @@ async function canvasPoint(page, name, part = 'body') {
   return point;
 }
 
-/** Hover mounts the real card. An existing Focus stays open so another card can be carried into it. */
+/** Whether the page draws the new canvas (cl-1028): every card drawn by the scene, none mounted as a DOM card under the pointer. */
+const newCanvas = (page) => page.evaluate(() => typeof document.querySelector('.canvas-root')?.canvasInspection?.cards === 'function');
+
+/** The pointer on a box. The old canvas mounts its DOM card there (returned); the new draws it hovered, and has no DOM card: act on it with
+ *  partPoint, renameField, cornerPoint and previewState. An existing Focus stays open so another card can be carried into it. */
 async function hoverBox(page, name) {
   const focused = page.locator(`[data-focused-asset=${JSON.stringify(name)}]`);
   if (await focused.count()) return box(page, name);
   const point = await canvasPoint(page, name);
   await page.mouse.move(point.x, point.y);
+  if (await newCanvas(page)) {
+    await expect.poll(() => page.evaluate((name) => {
+      const card = document.querySelector('.canvas-root').canvasInspection.cards().find((one) => one.name === name);
+      return Boolean(card) && card.hovered !== false;
+    }, name), { message: `${name} hovered` }).toBe(true);
+    return box(page, name);
+  }
   await expect(box(page, name)).toBeVisible();
   return box(page, name);
 }
+
+/** Where a box's drawn part is on the screen (body, title, delete, cancel, corner), read with nothing under the pointer. */
+async function partPoint(page, name, part) {
+  const away = await openPoint(page);
+  await page.mouse.move(away.x, away.y);
+  let point = null;
+  await expect.poll(async () => {
+    point = await page.evaluate(({ name, part }) => {
+      const card = document.querySelector('.canvas-root')?.canvasInspection?.card(name), shown = card?.rendered;
+      const rect = shown?.parts?.[part]
+        ?? (part === 'delete' || part === 'cancel' ? shown?.controls?.find((one) => one.part === part) : part === 'title' ? shown?.labels?.title ?? card?.title : part === 'body' ? shown?.body ?? card?.body : null);
+      return rect && rect.width && rect.height ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : null;
+    }, { name, part });
+    return Boolean(point);
+  }, { message: `${name}'s ${part} drawn` }).toBe(true);
+  return point;
+}
+
+/** Its name where a hand takes it, to drag it by or click to rename it: the old canvas's hover card's name, the new canvas's drawn title. */
+async function titlePoint(page, name) {
+  if (await newCanvas(page)) return partPoint(page, name, 'title');
+  return middle((await hoverBox(page, name)).locator('.nm'));
+}
+
+/** Its name field, opened as a person opens it, a click on its name, and focused. The same NameField on both canvases. */
+async function renameField(page, name) {
+  const at = await titlePoint(page, name);
+  await page.mouse.click(at.x, at.y);
+  const field = page.getByRole('textbox', { name: 'Name', exact: true });
+  await expect(field).toBeFocused();
+  return field;
+}
+
+/** Its trash where a hand presses it: the old canvas's hover card's Delete, the new canvas's drawn one. */
+async function trashPoint(page, name) {
+  if (await newCanvas(page)) return partPoint(page, name, 'delete');
+  const head = await middle((await hoverBox(page, name)).locator('.nm'));
+  await page.mouse.move(head.x, head.y);
+  return middle((await hoverBox(page, name)).getByRole('button', { name: 'Delete', exact: true }));
+}
+
+/** Its corner, shown with the pointer on it: the old canvas's hover card's grip, the new canvas's drawn one. */
+async function cornerPoint(page, name) {
+  if (!(await newCanvas(page))) return middle((await hoverBox(page, name)).locator('.corner').first());
+  await hoverBox(page, name);
+  let point = null;
+  await expect.poll(async () => {
+    point = await page.evaluate((name) => {
+      const rect = document.querySelector('.canvas-root').canvasInspection.card(name)?.rendered?.parts?.corner;
+      return rect && rect.width && rect.height ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : null;
+    }, name);
+    return Boolean(point);
+  }, { message: `${name}'s corner drawn as it's hovered` }).toBe(true);
+  return point;
+}
+
+/** The shape said as a corner is pulled: the old canvas's `.ratio-live`, the new canvas's ratio label on the card being pulled. Null when none. */
+const liveRatio = (page) => page.evaluate(() => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (typeof inspection?.cards === 'function') {
+    const name = inspection.interaction().resizing;
+    return name ? inspection.card(name)?.rendered?.labels?.ratio?.text ?? null : null;
+  }
+  const said = document.querySelector('.ratio-live');
+  return said ? said.innerText.trim() : null;
+});
+
+/** Its hover preview as a person sees it. Old canvas: the hover card's `<video>`, its time, muted and loop. New: the canvas's preview texture,
+ *  up once its first frame is (no `<video>`: muted and loop are the scene's, null here). */
+const previewState = (page, name) => page.evaluate((name) => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (typeof inspection?.cards === 'function') {
+    const preview = inspection.card(name)?.rendered?.preview;
+    return { canvas: 'new', mounted: Boolean(preview?.active), playing: Boolean(preview?.active && preview?.ready), at: null, muted: null, loop: null };
+  }
+  const video = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] video.preview.on`);
+  return { canvas: 'old', mounted: Boolean(video), playing: Boolean(video && video.currentTime > 0.3), at: video?.currentTime ?? null, muted: video?.muted ?? null, loop: video?.loop ?? null };
+}, name);
+
+/** A long name with the pointer on it: whether it's cut at rest, what it says of itself under the pointer (the old canvas's hover card's
+ *  title attribute; the new canvas's drawn title, or another label saying it whole), and whether the pointer is on the name. */
+async function nameUnderPointer(page, name) {
+  if (!(await newCanvas(page))) {
+    const nm = (await hoverBox(page, name)).locator('.head .nm');
+    const point = await middle(nm);
+    await page.mouse.move(point.x, point.y);
+    return nm.evaluate((nm, name) => {
+      const r = nm.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { name, cut: nm.scrollWidth > nm.clientWidth, title: nm.title, whole: nm.scrollWidth <= nm.clientWidth + 1, text: nm.textContent.trim(), under_pointer: hit === nm || nm.contains(hit) };
+    }, name);
+  }
+  const point = await partPoint(page, name, 'title');
+  const rest = await page.evaluate((name) => document.querySelector('.canvas-root').canvasInspection.card(name)?.rendered?.labels?.title ?? null, name);
+  await page.mouse.move(point.x, point.y);
+  await hoverBox(page, name);
+  return page.evaluate(({ name, point, rest }) => {
+    const inspection = document.querySelector('.canvas-root').canvasInspection, labels = inspection.card(name)?.rendered?.labels ?? {};
+    const title = labels.title, full = title?.fullText ?? rest?.fullText ?? name;
+    const said = title?.text === full || Object.entries(labels).some(([key, label]) => key !== 'title' && label?.text === full);
+    const hit = inspection.hitTest(point);
+    return { name, cut: Boolean(rest) && rest.text !== rest.fullText, title: said ? full : title?.text ?? '', whole: title?.text === full, text: title?.text ?? '', under_pointer: hit?.name === name && hit?.part === 'title' };
+  }, { name, point, rest });
+}
+
+/** How many hover previews play anywhere on the canvas. */
+const previewsPlaying = (page) => page.evaluate(() => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (typeof inspection?.cards === 'function') return inspection.cards().filter((one) => inspection.card(one.name)?.rendered?.preview?.active).length;
+  return document.querySelectorAll('video.preview.on').length;
+});
 
 /** The canvas's scale now. */
 const zoomOf = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.camera().zoom ?? null);
@@ -633,4 +755,5 @@ const TEXT_END = process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End
 /** A local fixture tool (e2e/cli/project/<file>/<function>), as a box or `cozy run` names it. */
 const fixtureTool = (path) => join(__dirname, '..', 'project', path);
 
-module.exports = { test, expect, canvasCard, canvasNames, canvasText, canvasLabel, canvasPoint, canvasVisible, selectedNames, hoverBox, screenshotPixels, box, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, TEXT_END, TEXT_START, DARK_OPEN, MP4, photo, png, wav };
+module.exports = { test, expect, canvasCard, canvasNames, canvasText, canvasLabel, canvasPoint, canvasVisible, selectedNames, hoverBox, screenshotPixels, box,
+  newCanvas, partPoint, titlePoint, renameField, trashPoint, cornerPoint, liveRatio, previewState, previewsPlaying, nameUnderPointer, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, TEXT_END, TEXT_START, DARK_OPEN, MP4, photo, png, wav };

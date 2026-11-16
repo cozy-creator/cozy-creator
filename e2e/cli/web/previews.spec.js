@@ -6,7 +6,7 @@
 // SVG with a script is web/svg.spec.js's.
 const { readdirSync, readFileSync, rmSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasCard, canvasIdle, canvasPoint, canvasVisible, hoverBox, openPoint, png, selectedNames } = require('./fixtures');
+const { test, expect, box, canvasCard, canvasIdle, canvasPoint, canvasVisible, hoverBox, newCanvas, openPoint, png, previewState, previewsPlaying, selectedNames } = require('./fixtures');
 const { ffmpeg, fit, posterSpread, rest } = require('./hands');
 
 const CLIPS = 12;
@@ -20,8 +20,10 @@ function clip(path, seconds) {
   return readFileSync(path);
 }
 /** Videos in the page decoding now: playing, a frame at hand. */
-const decoding = (page) => page.evaluate(() => [...document.querySelectorAll('video')].filter((video) => !video.paused && !video.ended && video.readyState >= 2).length);
-const at = (page, name) => page.evaluate((name) => document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] video.preview.on`)?.currentTime ?? null, name);
+const decodingVideos = (page) => page.evaluate(() => [...document.querySelectorAll('video')].filter((video) => !video.paused && !video.ended && video.readyState >= 2).length);
+/** Videos playing on the canvas now: the old canvas's decoding `<video>`s; the new canvas's previews (textures, no `<video>` in the page). */
+const decoding = async (page) => ((await newCanvas(page)) ? previewsPlaying(page) : decodingVideos(page));
+const playing = async (page, name) => (await previewState(page, name)).playing;
 
 test('previews', async ({ page, project }) => {
   const names = Array.from({ length: CLIPS }, (_, i) => `clip_${String(i + 1).padStart(2, '0')}`);
@@ -47,19 +49,19 @@ test('previews', async ({ page, project }) => {
   await test.step('a hover preview stops as the canvas pans under it, its poster drawn; it plays again once the pointer rests', async () => {
     const name = names[5];
     await hoverBox(page, name);
-    await rest(page, box(page, name).locator('.media'));
-    await expect.poll(async () => (await at(page, name)) ?? 0, { message: 'its preview plays', timeout: 45_000 }).toBeGreaterThan(0.3);
+    await rest(page, (await newCanvas(page)) ? (await canvasCard(page, name)).body : box(page, name).locator('.media'));
+    await expect.poll(() => playing(page, name), { message: 'its preview plays', timeout: 45_000 }).toBe(true);
     expect.soft(await decoding(page), 'one video decoding, the one under the pointer').toBe(1);
     // The wheel pans while the pointer stays where it was: the box slides from under it (CanvasSurface's wheel stops the hover preview).
     for (let i = 0; i < 6; i++) await page.mouse.wheel(0, 24);
     await canvasIdle(page);
     await expect.poll(() => decoding(page), { message: 'nothing left playing once it has panned' }).toBe(0);
-    await expect.soft(page.locator('video.preview.on'), 'no preview left mounted').toHaveCount(0);
+    expect.soft(await previewsPlaying(page), 'no preview left mounted').toBe(0);
     expect.soft((await canvasCard(page, name))?.rendered?.media.ready, 'its poster drawn').toBe(true);
     const back = await canvasPoint(page, name);
     await page.mouse.move(back.x - 12, back.y, { steps: 2 });
     await page.mouse.move(back.x, back.y, { steps: 4 });
-    await expect.poll(async () => (await at(page, name)) ?? 0, { message: 'it plays again at rest', timeout: 45_000 }).toBeGreaterThan(0.3);
+    await expect.poll(() => playing(page, name), { message: 'it plays again at rest', timeout: 45_000 }).toBe(true);
     const away = await openPoint(page);
     await page.mouse.move(away.x, away.y);
     await expect.poll(() => decoding(page), { message: 'and stops once the pointer leaves' }).toBe(0);

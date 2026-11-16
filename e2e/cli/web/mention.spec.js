@@ -3,7 +3,7 @@
 // never lands in a chip; a video it can't use is struck through, saying why on hover, and so on its box at rest (Paul, 11-12: universally);
 // a rename is the chip's and the stored field's; a selection of three let go on it appends three. Rendered, its prompt holds Amy's file and
 // only Walk's name, and `cozy run watch` says so once.
-const { test, expect, canvasIdle, focus, fixtureTool, MP4, png, canvasCard, canvasPoint, canvasVisible, screenshotPixels, selectedNames, hoverBox } = require('./fixtures');
+const { test, expect, canvasIdle, focus, fixtureTool, MP4, png, canvasCard, canvasPoint, canvasVisible, renameField, screenshotPixels, selectedNames, hoverBox } = require('./fixtures');
 const { carry } = require('./geometry');
 const { backAfter, carryBox, fit, leave } = require('./hands');
 
@@ -111,8 +111,7 @@ test('mention', async ({ page, project, api, cli }) => {
 
   await test.step('Amy renamed Ann: the chip and the stored field', async () => {
     await leave(page);
-    await (await hoverBox(page, 'amy')).locator('.nm').click();
-    const field = page.getByRole('textbox', { name: 'Name', exact: true });
+    const field = await renameField(page, 'amy');
     await field.fill('ann');
     await field.press('Enter');
     await expect.poll(() => canvasVisible(page, 'ann')).toBe(true);
