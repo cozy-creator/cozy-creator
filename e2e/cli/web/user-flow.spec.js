@@ -309,6 +309,16 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     // The page opens its drawer as it orders: preferred there while it boots.
     await page.waitForURL(/\/machines\/.+/, { timeout: 60_000 }).catch(() => {});
     await prefer(m).catch((error) => failed(`${label} preferred as it boots`, error));
+    // Its Hub names its host a moment after the order (rent-… becomes its name, cl-1089). Still preferred under that name before the
+    // next request is placed: its loss is said and it's checked again, so the request's placement is judged with both preferred.
+    if (/^rent-[0-9a-f]+$/.test(m.name ?? '')) {
+      const named = await expect.poll(() => { const it = machineOf(m); return it && it.name !== m.name ? it.name : null; }, { timeout: 60_000 }).not.toBeNull().then(() => machineOf(m)?.name ?? null, () => null);
+      if (named) {
+        Object.assign(m, { ordered_as: m.name, name: named });
+        await goto(`${project.url()}/machines/${encodeURIComponent(named)}`);
+        await prefer(m).catch((error) => failed(`${label} preferred under its Hub's name`, error));
+      }
+    }
     await shot(`${label}-ordered`);
     return m;
   };
@@ -319,7 +329,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     await expect(box, `${m.label} can be preferred`).toBeEnabled({ timeout: 60_000 });
     if (await box.isChecked()) return;
     // Checked as it booted, under the handle its order gave it: still checked once its Hub names its host (cl-1089's rename).
-    if (m.preferred_at) failed(`${m.label}'s Prefer, checked as it booted, held through its rename`, `unchecked in ${m.name}'s drawer once ready`);
+    if (m.preferred_at) failed(`${m.label}'s Prefer, checked as it booted, held through its rename`, `unchecked in ${m.name}'s drawer${m.ready_at ? ' once ready' : ', as its Hub named it'}`);
     await box.check();
     await expect(box).toBeChecked();
     m.preferred_at = m.preferred_at ?? Date.now();
