@@ -741,6 +741,7 @@ case $SHARD in
     db_migrate
     db_legacy
     db_remote_custody
+    db_legacy_unimportable
     db_opens
     db_migrate_large
     db_waits
@@ -792,6 +793,8 @@ case $SHARD in
   lock-platforms) parts="lock_platforms logs" ;;
   # Old runs an ended rental made import as the project's own, and the project takes new work (cl-1003).
   projectdb-remote-custody) parts="db_remote_custody logs" ;;
+  # A project whose old run can't be imported opens and runs anyway (cl-1003).
+  projectdb-unimportable) parts="db_legacy_unimportable logs" ;;
   # A 5,000-box project of schema 3 opened here: migrated with nothing lost, its rows read (cl-885).
   projectdb-migrate-large) parts="db_migrate_large logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).

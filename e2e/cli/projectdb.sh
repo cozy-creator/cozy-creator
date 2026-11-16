@@ -1245,6 +1245,49 @@ echo "remote custody: $(jq -r .legacy_history "$OUT/remote-custody-again-status.
 in_cozy "$now" || check "remote custody: this cozy back on its own store"
 }
 
+# db_legacy_unimportable (cl-1003): a project whose old run can't be imported (its input's bytes are gone from this computer) opens,
+# says what failed in Calcifer's health log by its code alone, and takes new work; the old rows stay in Calcifer's store as they
+# were, for the hard cut. Paul's lab2 refused to open on the RC this way (11-16).
+db_legacy_unimportable() {
+step "legacy history that can't be imported: the project opens and runs anyway (cl-1003)"
+local D=$OUT/unimportable now=$OUT/cozy-now old P pid
+old=$(cozy_0240) || { check "unimportable: 0.24.0's archive"; return; }
+[ -f "$now" ] || cp "$COZY" "$now"
+in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "unimportable: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
+P=$D/here
+mkdir -p "$P"
+boxes_in "$P" <<< '[{"name": "notes", "fields": {"text": "A project whose old run lost its input."}}]' || { check "unimportable: 0.24.0 made no project"; in_cozy "$now"; return; }
+pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null) || pid=''
+[ -z "$pid" ] || term_calcifer "$pid" || { in_cozy "$now"; return; }
+python3 - "$HOME/.cozy/calcifer/state.db" "$P" <<'PY' || { check "unimportable: a run into 0.24.0's store"; in_cozy "$now"; return; }
+import hashlib, json, os, sqlite3, sys
+path, here = sys.argv[1:3]
+db = sqlite3.connect(path, isolation_level=None)
+assert db.execute("PRAGMA user_version").fetchone()[0] == 7, "not a 0.24 store"
+db.execute("INSERT OR IGNORE INTO machines (name, kind, key, state, created_at) VALUES ('gone-rental', 'rental', '', 'ended', 1700000000000)")
+done = json.dumps({"status": "succeeded", "result": {}, "outputs": [], "execution_ms": 1000, "measurements": {"observations": []}})
+lost = json.dumps([["sha256:" + hashlib.sha256(os.urandom(32)).hexdigest(), 10]])
+first = (db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1
+db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, inputs, created_at, settled_at) "
+           "VALUES ('run-lostinput0000000000000', ?, 'lost-input', 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', 'gone-rental', 0, X'7B7D', ?, 'settled', 'completed', CAST(? AS BLOB), ?, 1700000000000, 1700000000000)",
+           (first, here + "/.runs", done, lost))
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+PY
+# This cozy fences that store at its first start, then opens the project, whose import of that run fails.
+cp "$now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer \
+  || { check "unimportable: this cozy on 0.24.0's store"; in_cozy "$now"; return; }
+in_project "$P" --json status > "$OUT/unimportable-status.json" 2> "$OUT/unimportable-status.err" \
+  || check "unimportable: the project doesn't open: $(tail -c 300 "$OUT/unimportable-status.err")"
+in_project "$P" --json run minimax-h3-tools/echo "text=after an old run that can't be imported" > "$OUT/unimportable-run.ndjson" 2> "$OUT/unimportable-run.err" \
+  || check "unimportable: a new run refused: $(tail -c 300 "$OUT/unimportable-run.ndjson") $(tail -c 300 "$OUT/unimportable-run.err")"
+grep 'legacy history was not imported' "$HOME/.cozy/calcifer/health.log" | grep -q 'code=project_input_migration_pending' \
+  || check "unimportable: health.log doesn't say the import's code: $(grep -i legacy "$HOME/.cozy/calcifer/health.log" | tail -n 3)"
+! grep -qF "$P" "$HOME/.cozy/calcifer/health.log" || check "unimportable: health.log names the project"
+[ "$(python3 -c 'import sqlite3,sys; print(sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True).execute("SELECT count(*) FROM legacy_project_runs WHERE id = ?", ("run-lostinput0000000000000",)).fetchone()[0])' "$HOME/.cozy/calcifer/state.db")" = 1 ] \
+  || check "unimportable: the old run's row is no longer in Calcifer's store"
+in_cozy "$now" || check "unimportable: this cozy back on its own store"
+}
+
 db_migrate_large() {
 step "project.db: a 5,000-box project of schema 3 migrates with nothing lost"
 local L=$OUT/migrate-large K=$OUT/migrate-large-kept n=5000 pid was began
