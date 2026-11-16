@@ -1,0 +1,1 @@
+While a package installs, weight downloads beside it no longer sink to a trickle on a lossy or policed link, or where the install's own downloads can't be read: their share is judged against the link's real speed, not against the slowed rate the share itself caused.
