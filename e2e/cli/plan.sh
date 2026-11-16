@@ -70,23 +70,25 @@ coming_go warm_w '["stand-w"]'
 coming_done warm_w 900
 coming_go warm_l '["local"]'
 coming_done warm_l 900
-# stand-w's copy goes (its user's cozy, whose machine it is): a job there downloads BiRefNet again.
-stand_as stand-w --json model uninstall zhengpeng7/birefnet > "$OUT/plan-uninstall.json" || { check "plan: stand-w's model uninstall: $(tail -c 300 "$OUT/stand-w.err")"; return; }
-# warm_w's executor may still hold BiRefNet in memory, which a quote rightly counts as held (`resident`): then both finish together and
-# the tie isn't local's (rc-e2e 43807131201). stand-w's machine stops, as machine_stop stops local, and its user's cozy starts it again;
-# near waits until this computer sees stand-w holding BiRefNet nowhere.
+# stand-w's copy goes (its user's cozy, whose machine it is): a job there downloads BiRefNet again. Its machine stops first, as
+# machine_stop stops local, and its user's cozy starts it again: warm_w's executor would still hold BiRefNet, in memory and on its disk,
+# so the uninstall would keep its bytes (rc-e2e 43807131201: near quoted 5 s on both, a tie that isn't local's). near waits until this
+# computer sees stand-w holding BiRefNet nowhere and missing its bytes.
 stand_holder=$(sudo find "/home/cozy-stand-w/.cozy/machine" -name agent.lock.holder 2> /dev/null | head -1)
 stand_pid=$([ -z "$stand_holder" ] || sudo grep -o '"pid": *[0-9]*' "$stand_holder" | grep -o '[0-9]*$' || true)
 [ -n "$stand_pid" ] || { check "plan: stand-w's machine has no lock holder"; return; }
 sudo kill "$stand_pid"
 for _ in $(seq 60); do case $(ps -o stat= -p "$stand_pid" 2> /dev/null || true) in '' | Z*) break ;; esac; sleep 1; done
 stand_as stand-w --json machine show local > "$OUT/plan-stand-w-again.json" || { check "plan: stand-w didn't start again: $(tail -c 300 "$OUT/stand-w.err")"; return; }
+stand_as stand-w --json model uninstall zhengpeng7/birefnet > "$OUT/plan-uninstall.json" || { check "plan: stand-w's model uninstall: $(tail -c 300 "$OUT/stand-w.err")"; return; }
 for _ in $(seq 120); do
   cozy --json machine show stand-w > "$OUT/plan-stand-w.json" 2> /dev/null || true
   J '.state == "ready" and ([.status.resident[]?.checkpoints[]?] | length) == 0
-     and ([.status.models[]? | select(.repository == "zhengpeng7/birefnet")] | length) == 0' "$OUT/plan-stand-w.json" && break
+     and ([.status.models[]? | select(.repository == "zhengpeng7/birefnet")] | length) == 0
+     and ([.status.times[]?.reads[]? | select(.model == "zhengpeng7/birefnet") | .missing] | length == 0 or max > 0)' "$OUT/plan-stand-w.json" && break
   sleep 1
 done
+echo "plan: stand-w after the uninstall: $(jq -c '{uninstall: input, state, resident: [.status.resident[]?.checkpoints[]?] | length, reads: [.status.times[]?.reads[]? | select(.model == "zhengpeng7/birefnet") | {bytes, missing}]}' "$OUT/plan-stand-w.json" "$OUT/plan-uninstall.json" 2> /dev/null)"
 J '.state == "ready"' "$OUT/plan-stand-w.json" || { check "plan: stand-w isn't ready again: $(jq -c '{state, resident: .status.resident}' "$OUT/plan-stand-w.json")"; return; }
 in_project "$P" --json machine use "local,stand-w" > "$OUT/plan-use.json" 2>&1 || { check "plan: machine use: $(tail -c 300 "$OUT/plan-use.json")"; return; }
 
