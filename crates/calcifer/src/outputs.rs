@@ -240,6 +240,13 @@ impl Calcifer {
         };
         let (me, run) = (self.clone(), id.clone());
         let mut tasks = lock(&self.tasks);
+        // Closed (asked under the lock `close` aborts under, #3456): no exporter, and its entries go, so none holds a vault as work.
+        if self.closed() {
+            drop(tasks);
+            lock(&self.exports.runs).remove(id);
+            lock(&self.exports.seen).remove(id);
+            return;
+        }
         while tasks.try_join_next().is_some() {}
         let task = tasks.spawn(async move { me.export_run(&run, &wake).await });
         lock(&self.exports.tasks).insert(id.clone(), task);
