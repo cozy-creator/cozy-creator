@@ -727,14 +727,14 @@ vault_reattach() (
 )
 
 # A run its machine hasn't begun never holds a vault past its maximum: it fails vault_locked and the vault locks (cl-1082; coordinator
-# 11-16: "a vault past its maximum is the privacy promise"). The local machine is stopped meanwhile (e2e/cli/vault_unstarted.py).
+# 11-16: "a vault past its maximum is the privacy promise"). The local machine's service is stopped meanwhile (e2e/cli/vault_unstarted.py).
 vault_unstarted() (
   step "a run its machine hasn't begun never holds a vault past its maximum (cl-1082)"
   [ -n "$LOCAL" ] || exit 0
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault unstarted: Linux runners only"; exit 0; }
   local work secrets project
   work=$(mktemp -d "$OUT/vault-unstarted.XXXXXX") secrets=$(mktemp -d "$OUT/vault-unstarted-credentials.XXXXXX")
-  trap 'pid=$(jq -r ".pid // empty" "$HOME/.cozy/machine/var/lib/cozy/machine/agent.lock.holder" 2> /dev/null) || pid=; [ -z "$pid" ] || kill -CONT "$pid" 2> /dev/null; rm -rf -- "$secrets"' EXIT
+  trap 'pid=$(jq -r ".pid // empty" "$HOME/.cozy/machine/var/lib/cozy/machine/agent.lock.holder" 2> /dev/null) || pid=; for child in $([ -z "$pid" ] || ps -o pid= --ppid "$pid"); do kill -CONT "$child" 2> /dev/null; done; rm -rf -- "$secrets"' EXIT
   printf '%s\n' 'synthetic vault unstarted passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
   project=$work/unstarted-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')
   cozy --json new "$project" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" \
