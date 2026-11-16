@@ -96,7 +96,7 @@ pub(crate) fn check_project_placement(
     on: &[api::calcifer::On],
 ) -> Result<Vec<api::calcifer::On>, Error> {
     if project_id.is_empty() || !project_root.is_absolute() {
-        return Err(error("The project storage owner is unavailable."));
+        return Err(error("This project isn't open right now. Open it, then try again."));
     }
     Ok(on.to_vec())
 }
@@ -106,18 +106,18 @@ pub(crate) fn check_project_placement(
 pub(crate) fn scope_for_project(project_id: &str, project_root: &Path) -> Result<Scope, Error> {
     let logical = crate::project::vault::logical(project_root);
     let scope = if crate::project::vault::encrypted(&logical) {
-        of_output(&crate::project::landing(&logical))?.ok_or_else(|| error("The encrypted project storage is unavailable."))?
+        of_output(&crate::project::landing(&logical))?.ok_or_else(|| error("This encrypted project's files aren't available. Unlock it, then try again."))?
     } else {
-        let view = platform::durable::canonical(project_root).map_err(|_| error("The project storage is unavailable."))?;
+        let view = platform::durable::canonical(project_root).map_err(|_| error("This project's files aren't available right now. Try again in a moment."))?;
         if crate::project::vault::plain_project_id(&view).as_deref() != Some(project_id) {
-            return Err(error("The project storage owner changed before execution."));
+            return Err(error("The project changed while the run was being sent. Try again."));
         }
         match retained_scope(&view, project_id)? {
             Some(scope) => scope,
             None => descriptor_for_mounted(&view, project_id, 1)?,
         }
     };
-    if scope.storage.project_id != project_id { return Err(error("The execution storage belongs to another project.")); }
+    if scope.storage.project_id != project_id { return Err(error("This run's files belong to another project.")); }
     Ok(scope)
 }
 
@@ -229,7 +229,7 @@ pub(crate) fn retained_scope(root: &Path, project_id: &str) -> Result<Option<Sco
     validate_retained(&marker, project_id)?;
     let view = platform::durable::canonical(root).map_err(|_| error("the retained project is unavailable"))?;
     if marker.storage.view_root != view {
-        return Err(error("close the existing execution namespace before relocating its project storage"));
+        return Err(error("This project moved while its runs were open on this computer's machine. Let them finish, then open it again."));
     }
     let scope = Scope { storage: marker.storage, token: marker.token };
     SCOPES.lock().unwrap().insert(view, scope.clone());
@@ -275,7 +275,7 @@ pub(crate) fn of_output(out_dir: &Path) -> Result<Option<Scope>, Error> {
     };
     let logical = crate::project::vault::logical(project);
     if !crate::project::vault::encrypted(&logical) {
-        let id = crate::project::vault::plain_project_id(&logical).ok_or_else(|| error("The project storage owner is unavailable."))?;
+        let id = crate::project::vault::plain_project_id(&logical).ok_or_else(|| error("This project isn't open right now. Open it, then try again."))?;
         return scope_for_project(&id, &logical).map(Some);
     }
     let view = crate::project::vault::resolve_path(&logical)?;
@@ -340,22 +340,22 @@ pub(crate) async fn close_private_project(
             let marker = read_marker(&view)?;
             let logical = crate::project::vault::logical(root);
             let id = if crate::project::vault::encrypted(&logical) {
-                let info = Keybag::load(&logical.join(KEYBAG_FILE)).map_err(|_| error("The project owner is unavailable."))?.info();
-                if marker.storage.generation != info.generation { return Err(error("The retained execution generation changed before seal.")); }
+                let info = Keybag::load(&logical.join(KEYBAG_FILE)).map_err(|_| error("This project isn't open right now. Open it, then try again."))?.info();
+                if marker.storage.generation != info.generation { return Err(error("The project's encryption changed while Cozy was locking it. Try again.")); }
                 info.project_id
-            } else { crate::project::vault::plain_project_id(&view).ok_or_else(|| error("The project owner is unavailable."))? };
+            } else { crate::project::vault::plain_project_id(&view).ok_or_else(|| error("This project isn't open right now. Open it, then try again."))? };
             validate_retained(&marker, &id)?;
-            if marker.storage.view_root != view { return Err(error("The retained execution owner changed before seal.")); }
+            if marker.storage.view_root != view { return Err(error("The project moved while Cozy was locking it. Try again.")); }
             Scope { storage: marker.storage, token: marker.token }
         }
     };
     let Some(link) = api
         .calcifer
         .link("local")
-        .map_err(|_| error("the local execution service is unavailable"))?
+        .map_err(|_| error("This computer's machine isn't running, so Cozy can't lock the project yet. Try again in a moment."))?
     else {
         return Err(error(
-            "the local execution service is not ready to close its private namespace",
+            "This computer's machine isn't ready to lock the project yet. Try again in a moment.",
         ));
     };
     link.with_private(scope.clone())
@@ -363,7 +363,7 @@ pub(crate) async fn close_private_project(
         .await
         .map_err(|failure| match failure {
             crate::link::LinkError::Refused { code, message, remedy, next } => Error { remedy, next, ..Error::new(Kind::Conflict, code, message) },
-            _ => error("The worker could not prove project migration and quiescent seal; locking remains pending."),
+            _ => error("This computer's machine couldn't confirm the project's work has stopped, so the project isn't locked yet. Try again in a moment."),
         })?;
     descriptor_for_mounted(&scope.storage.view_root, &scope.storage.project_id, scope.storage.generation)?;
     let mut scopes = SCOPES.lock().unwrap();

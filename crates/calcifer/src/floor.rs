@@ -82,7 +82,7 @@ pub(crate) async fn released() -> Result<Arc<Vec<Released>>, Error> {
         }
     }
     let read = async {
-        let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "release_unreachable", format!("PyPI's cozy-runtime releases: {e}"));
+        let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "release_unreachable", format!("Couldn't read cozy-runtime's releases on PyPI: {e}"));
         let answer = http()?.get("https://pypi.org/pypi/cozy-runtime/json").send().await.and_then(reqwest::Response::error_for_status).map_err(failed)?;
         let project: Project = answer.json().await.map_err(failed)?;
         let released: Vec<Released> = (project.releases.into_iter())
@@ -426,7 +426,7 @@ fn locked(lock: &str) -> Option<Wheel> {
 
 /// `wheel` fetched into `dir`, held to its sha256.
 async fn fetched(wheel: &Wheel, dir: &Path) -> Result<PathBuf, Error> {
-    let failed = |why: String| Error::new(Kind::Unavailable, "runtime_unfetched", format!("cozy-runtime {} ({}): {why}", wheel.version, wheel.url));
+    let failed = |why: String| Error::new(Kind::Unavailable, "runtime_unfetched", format!("Couldn't download cozy-runtime {} from {}: {why}", wheel.version, wheel.url));
     // A selected wheel may be at the same private origin uv trusts (the isolated Hub's ingress).
     // Match TensorD's wheel fetch: this trust applies to package bytes, not Hub clients or release discovery.
     let roots = api::config::environment().get("SSL_CERT_FILE")
@@ -438,7 +438,7 @@ async fn fetched(wheel: &Wheel, dir: &Path) -> Result<PathBuf, Error> {
     let bytes = answer.bytes().await.map_err(|e| failed(e.to_string()))?;
     let found = hex::encode(Sha256::digest(&bytes));
     if !wheel.sha256.is_empty() && found != wheel.sha256 {
-        return Err(failed(format!("its sha256 is {found}, not {}", wheel.sha256)));
+        return Err(failed(format!("the file's sha256 is {found}, not {}", wheel.sha256)));
     }
     let path = dir.join(format!("cozy-runtime-{}.whl", &found[..16]));
     tokio::fs::write(&path, &bytes).await.map_err(|e| failed(e.to_string()))?;
@@ -458,7 +458,7 @@ fn lacks(uv: &Path, dir: &Path, python: &str, runtime: &Path, package: &Path) ->
     let mut command = crate::local_code::uv(uv, dir);
     command.args(["run", "--no-project", "--no-config", "--python", python, "python", "-I", "-c", READER]).arg(runtime).arg(package);
     let said = tokio::task::block_in_place(|| crate::local_code::run(&mut command, "runtime_floor_unread", "the Runtime floor check"))?;
-    let read: Read = serde_json::from_str(said.trim()).map_err(|e| Error::new(Kind::Unavailable, "runtime_floor_unread", format!("the Runtime floor check: {e}")))?;
+    let read: Read = serde_json::from_str(said.trim()).map_err(|e| Error::new(Kind::Unavailable, "runtime_floor_unread", format!("Couldn't read the check of the package's Runtime: {e}")))?;
     Ok(read.missing)
 }
 
@@ -480,7 +480,7 @@ pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, p
                 .filter(|(version, _)| requirement.contains(version))
                 .min_by(|(a, _), (b, _)| a.cmp(b));
             let Some((_, release)) = oldest else {
-                return Err(refuse("runtime_floor_unreleased", format!("no cozy-runtime release, nor the open RC's newest build, meets {label}'s cozy-runtime{requirement}")));
+                return Err(refuse("runtime_floor_unreleased", format!("{label} needs cozy-runtime{requirement}, and no release or release-candidate build meets it.")));
             };
             let Some((url, sha256)) = release.pure.clone() else { return Ok(()) };
             Wheel { version: release.version.clone(), url, sha256 }

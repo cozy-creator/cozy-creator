@@ -151,7 +151,7 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
         let document = held(&code.tree).ok_or_else(|| not_held(format!("tree document {}", code.tree)))?;
         let document = fs::read(&document).map_err(|e| refuse("code_unreadable", e))?;
         if Digest::of(&document) != code.tree {
-            return Err(refuse("code_invalid", format!("the file held as {} is not that tree", code.tree)));
+            return Err(refuse("code_invalid", format!("The file Cozy has as {} isn't that code's file list.", code.tree)));
         }
         let members = api::tree::parse(&document).map_err(|e| refuse("code_invalid", e))?;
         if let Some((name, member)) = members.iter().find(|(_, member)| held(&digest_of(member)).is_none()) {
@@ -204,7 +204,7 @@ pub(crate) fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String,
     durable::private_dir(&root).map_err(|e| refuse("code_unwritable", format!("{}: {e}", root.display())))?;
     for (name, member) in members {
         let to = part.join("tree").join(name);
-        let source = from(&digest_of(member)).ok_or_else(|| refuse("code_unreadable", format!("{name}: its bytes are gone")))?;
+        let source = from(&digest_of(member)).ok_or_else(|| refuse("code_unreadable", format!("Cozy no longer has the contents of {name}.")))?;
         fs::create_dir_all(to.parent().expect("a member's folder")).map_err(failed)?;
         fs::copy(source, &to).map_err(failed)?;
         mode(&to, member.executable).map_err(failed)?;
@@ -916,7 +916,7 @@ pub(crate) fn package_of(target: &str) -> &str {
 pub(crate) fn installed(run: Run) -> Result<Installed, Error> {
     if run.status != Status::Completed {
         let (code, message, next) = run.reason.map_or_else(
-            || ("local_install_unfinished".to_owned(), format!("its install is {:?}", run.status).to_lowercase(), vec![]),
+            || ("local_install_unfinished".to_owned(), format!("the install was {}", format!("{:?}", run.status).to_lowercase()), vec![]),
             |r| (r.code, r.message, r.next),
         );
         // Its machine ended before it accepted the install: a machine gone, which a render places again (`project::GONE`).

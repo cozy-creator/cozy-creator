@@ -73,7 +73,7 @@ pub(super) async fn search(
     let wanted = ask.offset.saturating_add(limit);
     let role = ask.role.as_deref().map(str::trim).filter(|role| !role.is_empty());
     if role.is_some_and(|role| !matches!(role, "model" | "lora")) {
-        return Err(Refusal(Error::new(Kind::Usage, "catalog_role_invalid", "role must be model or lora")));
+        return Err(Refusal(Error::new(Kind::Usage, "catalog_role_invalid", "The role must be model or lora.")));
     }
     let q = ask.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let family = ask.family.as_deref().map(str::trim).filter(|family| !family.is_empty());
@@ -312,7 +312,7 @@ async fn detail(api: &Api, hub: &Origin, model_id: &ModelId, release: Option<Str
         .collect();
     if let Some(release) = release.filter(|_| releases.is_empty()) {
         return Err(Refusal(
-            Error::not_found("model_release_not_found", format!("{model_id} has no release {release:?}"))
+            Error::not_found("model_release_not_found", format!("There's no release {release} of {model_id}."))
                 .next(format!("cozy model ls {model_id}")),
         ));
     }

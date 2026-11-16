@@ -559,7 +559,7 @@ if cell choice "$here/project/choice.py/size" to=768p megapixels:=3 'mode:="slow
     || check "choice: 768p and 3 didn't run as 1080p and 2, or slow not as full: $(grep -oE '"given": *"[^"]*"' "$OUT/choice.ndjson" | head -1)"
   cozy --json --full run watch "$(cat "$OUT/choice.number")" --once > "$OUT/choice.json" 2>&1
   local said
-  for said in "\"768p\" isn't one of 1080p, 1440p, 2160p, so it's \"1080p\"" "3 isn't one of 2, 4, so it's 2" "\"slow\" isn't one of fast, full, so it's its default"; do
+  for said in "takes 1080p, 1440p or 2160p, not 768p, so Cozy used 1080p." "takes 2 or 4, not 3, so Cozy used 2." "takes fast or full, not slow, so Cozy used the default."; do
     grep -qF "$(jq -Rr '@json' <<< "$said" | sed 's/^"//; s/"$//')" "$OUT/choice.json" "$OUT/choice.ndjson" "$OUT/choice.err" 2> /dev/null \
       || grep -qF "$said" "$OUT/choice.err" 2> /dev/null || check "choice: the run didn't say: $said"
   done

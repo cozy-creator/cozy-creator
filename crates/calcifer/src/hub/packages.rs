@@ -95,7 +95,7 @@ pub(super) async fn info(
         releases.retain(|r| r.release == *release);
         if releases.is_empty() {
             return Err(Refusal(
-                Error::not_found("release_not_found", format!("{package} has no release {release} on {hub}"))
+                Error::not_found("release_not_found", format!("There's no release {release} of {package} on {hub}."))
                     .next(format!("cozy package ls {package}")),
             ));
         }
@@ -130,8 +130,8 @@ fn missing(error: Error, package: &str, name: &str, hub: &Origin) -> Refusal {
     }
     let cause = error.cause.clone().unwrap_or(error.code);
     Refusal(
-        Error::not_found("package_not_found", format!("no package {package} on {hub}"))
-            .remedy("check the name")
+        Error::not_found("package_not_found", format!("There's no package called {package} on {hub}."))
+            .remedy("Check the name.")
             .next(format!("cozy package ls {name}"))
             .cause(cause),
     )
@@ -229,7 +229,7 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
     }
     let package = ask.package.trim().to_ascii_lowercase();
     if package.split('/').count() != 2 {
-        return Err(Refusal(Error::new(Kind::Usage, "package_ref_invalid", format!("{package:?} is not org/name"))));
+        return Err(Refusal(Error::new(Kind::Usage, "package_ref_invalid", format!("{package:?} isn't a package name. Write it as org/name."))));
     }
     let reader = reader(api, hub)?;
     let root = home.root().to_owned();
@@ -300,7 +300,7 @@ pub(super) async fn removal(api: &Arc<Api>, hub: &Origin, on: &On, ask: PackageR
     let envs: Vec<&Environment> = held.status.iter().flat_map(|s| &s.environments).collect();
     if let Some(name) = ask.packages.iter().find(|name| !envs.iter().any(|env| &&env.package == name)) {
         return Err(Refusal(
-            Error::not_found("package_not_installed", format!("{name} is not installed on {}", held.name))
+            Error::not_found("package_not_installed", format!("{name} isn't installed on {}.", held.name))
                 .next(format!("cozy package ls --on {}", held.name)),
         ));
     }
@@ -365,15 +365,15 @@ impl Removal {
             && let Some((name, _)) = self.targets.iter().find(|(name, _)| !done.removed.iter().any(|gone| &gone.package == name))
             && done.failed.is_empty()
         {
-            return Err(Error::not_found("package_not_installed", format!("{name} is not installed in this project on {}", done.machine))
+            return Err(Error::not_found("package_not_installed", format!("{name} isn't installed in this project on {}.", done.machine))
                 .next(format!("cozy package ls --on {}", done.machine)));
         }
         if done.failed.is_empty() {
             return Ok(done);
         }
         let went: Vec<String> = done.removed.iter().map(|gone| format!("{}@{}", gone.package, gone.release)).collect();
-        let went = if went.is_empty() { String::new() } else { format!("removed {}; ", went.join(", ")) };
-        let said = format!("{went}not removed: {}", done.failed.join("; "));
+        let went = if went.is_empty() { String::new() } else { format!("Removed {}, but couldn't ", went.join(", ")) };
+        let said = format!("{}remove {}.", if went.is_empty() { "Couldn't " } else { went.as_str() }, done.failed.join("; "));
         Err(Error::new(Kind::Unavailable, "package_remove_incomplete", said).next(format!("cozy package ls --on {}", done.machine)))
     }
 }

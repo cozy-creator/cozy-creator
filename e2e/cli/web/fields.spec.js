@@ -143,7 +143,7 @@ test('fields', async ({ page, project, api, cli }) => {
     const before = await runs();
     const ran = await cli('--json', 'run', WHEN, 'instructions=a lighthouse', 'prompt_upsampling=false', 'creativity=wild', '--on', 'local');
     expect.soft(ran.code, 'cozy run').toBe(0);
-    expect.soft(ran.stderr, 'cozy run says it ignores it').toContain('creativity: "wild" is ignored: it applies only with prompt_upsampling on');
+    expect.soft(ran.stderr, 'cozy run says it ignores it').toContain('creativity applies only with prompt_upsampling on, so Cozy ignored wild and used the default.');
     let made;
     await expect.poll(async () => (made = (await runs()).find((number) => !before.includes(number))), { message: 'its run', timeout: RUN_MS }).toBeTruthy();
     expect.soft((await api.get(project.at(`/runs/${made}`))).result?.given, 'the function got its default').toBe('creativity=balanced temporal_overlap=0');
