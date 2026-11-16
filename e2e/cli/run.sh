@@ -77,7 +77,7 @@ step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
-case $SHARD in projectvault | plan | stuck | coming) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | plan | stuck | coming) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -696,6 +696,9 @@ case $SHARD in
   projectdb-closes) parts="db_closes logs" ;;
   # cl-1000: a runner with no FUSE (e2e.yaml installs no vault driver for it).
   projectvault-nofuse) parts="vault_no_fuse logs" ;;
+  # cl-1000: the static provider timed beside the glibc build, then on FUSE 3 alone through cozy, then on fresh Ubuntu and Fedora
+  # (e2e.yaml builds the probe and installs fuse3 and libfuse2t64 for it).
+  projectvault-static) parts="vault_throughput vault_fuse3 vault_distros logs" ;;
   projectvault) parts="
     idle_vault
     vault_times

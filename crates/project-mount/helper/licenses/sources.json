@@ -30,5 +30,13 @@
   "tclap.txt": {
     "source": "https://raw.githubusercontent.com/mirror/tclap/master/COPYING",
     "sha256": "cd81a61d47aeb1ed63036ca260baee37719923bbd7ebd988ec4edae128f3b6eb"
+  },
+  "musl.txt": {
+    "source": "https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT?h=v1.2.5",
+    "sha256": "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af"
+  },
+  "libfuse.txt": {
+    "source": "https://raw.githubusercontent.com/libfuse/libfuse/fuse-2.9.9/COPYING.LIB",
+    "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
   }
 }

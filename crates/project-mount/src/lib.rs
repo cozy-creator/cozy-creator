@@ -68,6 +68,14 @@ const NOTICES: &[(&str, &str)] = &[
         include_str!("../helper/licenses/tclap.txt"),
     ),
     (
+        "licenses/musl.txt",
+        include_str!("../helper/licenses/musl.txt"),
+    ),
+    (
+        "licenses/libfuse.txt",
+        include_str!("../helper/licenses/libfuse.txt"),
+    ),
+    (
         "licenses/sources.json",
         include_str!("../helper/licenses/sources.json"),
     ),
@@ -148,16 +156,15 @@ fn io_error(operation: &'static str) -> impl FnOnce(io::Error) -> Error {
 /// The driver is an explicit prerequisite only for encrypted projects.
 pub fn requirements() -> &'static str {
     match std::env::consts::OS {
-        "linux" => {
-            "FUSE2 (/dev/fuse and fusermount); the bundled provider also requires glibc 2.34 or newer"
-        }
+        "linux" => "FUSE (/dev/fuse and fusermount3 or fusermount)",
         "macos" => "macOS with its built-in hdiutil encrypted APFS support",
         "windows" => "WinFsp and the Microsoft Visual C++ x64 runtime",
         _ => "a supported encrypted filesystem driver",
     }
 }
 
-/// What a Linux computer lacks for the bundled provider: FUSE itself, or the FUSE library the provider loads.
+/// What a Linux computer lacks: FUSE itself, or the FUSE 2 library a custom dynamically linked provider loads (the bundled one
+/// links libfuse in).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Missing {
     Fuse,
@@ -170,12 +177,12 @@ pub fn install_command(missing: Missing) -> Option<String> {
     if std::env::consts::OS != "linux" {
         return None;
     }
-    // Each manager's install verb, then FUSE (the kernel's userspace half and the library) and the library alone.
+    // Each manager's install verb, then FUSE (fusermount3) and the FUSE 2 library alone.
     const MANAGERS: [(&str, &str, &str, &str); 4] = [
-        ("apt-get", "sudo apt install", "fuse3 libfuse2", "libfuse2"),
-        ("dnf", "sudo dnf install", "fuse fuse-libs", "fuse-libs"),
-        ("pacman", "sudo pacman -S", "fuse2 fuse3", "fuse2"),
-        ("zypper", "sudo zypper install", "fuse libfuse2", "libfuse2"),
+        ("apt-get", "sudo apt install", "fuse3", "libfuse2"),
+        ("dnf", "sudo dnf install", "fuse3", "fuse-libs"),
+        ("pacman", "sudo pacman -S", "fuse3", "fuse2"),
+        ("zypper", "sudo zypper install", "fuse3", "libfuse2"),
     ];
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
     dirs.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(PathBuf::from));
@@ -184,12 +191,49 @@ pub fn install_command(missing: Missing) -> Option<String> {
     })
 }
 
-/// FUSE as a Linux computer provides it to the bundled provider.
-const FUSE: &str = "FUSE (/dev/fuse, fusermount and the FUSE 2 library)";
+/// FUSE as a Linux computer provides it to the bundled provider, which links libfuse 2.9.9 in.
+const FUSE: &str = "FUSE (/dev/fuse and fusermount3)";
 
 /// Whether this process may open `/dev/fuse` to serve a filesystem (Linux).
 fn fuse_device() -> bool {
     OpenOptions::new().read(true).write(true).open("/dev/fuse").is_ok()
+}
+
+/// Where libfuse 2 looks for its mount helper: `/bin`, then this process's PATH, which securefs inherits. Relative PATH entries
+/// name nothing stable and are skipped.
+#[cfg(target_os = "linux")]
+fn fuse_program(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::iter::once(PathBuf::from("/bin"))
+        .chain(std::env::split_paths(&path).filter(|dir| dir.is_absolute()))
+        .map(|dir| dir.join(name))
+        .find(|program| program.is_file())
+}
+
+/// The PATH every securefs process gets, or None for this process's own. libfuse 2 runs `fusermount`; a computer with FUSE 3
+/// alone has only `fusermount3`, which takes the same arguments (Debian's fuse3 links one to the other). There, `shims` (a
+/// private folder of cozy's tools) holds a `fusermount` link to it and leads the PATH.
+#[cfg(target_os = "linux")]
+fn fusermount_path(shims: &Path) -> Result<Option<OsString>> {
+    if fuse_program("fusermount").is_some() {
+        return Ok(None);
+    }
+    let Some(target) = fuse_program("fusermount3").and_then(|found| fs::canonicalize(found).ok()) else {
+        return Ok(None);
+    };
+    platform::durable::private_dir(shims)?;
+    let link = shims.join("fusermount");
+    if fs::read_link(&link).ok().as_ref() != Some(&target) {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let staged = shims.join(format!(".fusermount-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let _ = fs::remove_file(&staged);
+        std::os::unix::fs::symlink(&target, &staged).map_err(io_error("link fusermount to fusermount3"))?;
+        fs::rename(&staged, &link).map_err(io_error("link fusermount to fusermount3"))?;
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(shims.to_path_buf()).chain(std::env::split_paths(&path)))
+        .map(Some)
+        .map_err(|_| Error::Invalid("cozy's tools folder path cannot lead PATH"))
 }
 
 /// A release must embed its pinned provider; ordinary development builds need not.
@@ -201,6 +245,9 @@ pub fn is_bundled() -> bool {
 #[derive(Clone, Debug)]
 pub struct Provider {
     executable: PathBuf,
+    /// The PATH its securefs processes get, where it differs from this process's (`fusermount_path`).
+    #[cfg(target_os = "linux")]
+    path: Option<OsString>,
     #[cfg(target_os = "macos")]
     native: bool,
 }
@@ -209,6 +256,17 @@ impl Provider {
     /// Installs the bundled helper without networking, else looks for an explicitly installed
     /// securefs. Nothing calls this for an ordinary project.
     pub fn discover(tools: &Path) -> Result<Self> {
+        let directory = tools.join("securefs").join(PROVIDER_VERSION);
+        #[allow(unused_mut)]
+        let mut provider = Self::locate(&directory)?;
+        #[cfg(target_os = "linux")]
+        {
+            provider.path = fusermount_path(&directory.join("bin"))?;
+        }
+        Ok(provider)
+    }
+
+    fn locate(directory: &Path) -> Result<Self> {
         // An explicit local override permits rebuilding the independently licensed provider,
         // including relinking modified LGPL components. It is never supplied by the Hub.
         if let Some(path) = std::env::var_os("COZY_SECUREFS_PROVIDER") {
@@ -219,8 +277,7 @@ impl Provider {
             return Self::from_path(PathBuf::from("/usr/bin/hdiutil"));
         }
         if is_bundled() {
-            let directory = tools.join("securefs").join(PROVIDER_VERSION);
-            platform::durable::private_dir(&directory)?;
+            platform::durable::private_dir(directory)?;
             let name = if cfg!(windows) {
                 "securefs.exe"
             } else {
@@ -258,7 +315,7 @@ impl Provider {
         } else {
             "securefs"
         };
-        let cached = tools.join("securefs").join(PROVIDER_VERSION).join(name);
+        let cached = directory.join(name);
         if cached.is_file() {
             return Self::from_path(cached);
         }
@@ -285,6 +342,8 @@ impl Provider {
         }
         let provider = Self {
             executable,
+            #[cfg(target_os = "linux")]
+            path: None,
             #[cfg(target_os = "macos")]
             native: false,
         };
@@ -293,8 +352,8 @@ impl Provider {
             .output()
             .map_err(io_error("run securefs"))?;
         let first = String::from_utf8_lossy(&output.stdout);
-        // A provider that can't load its FUSE library never starts: the loader says so and exits 127. With no FUSE at all, that's
-        // what to install.
+        // A custom dynamically linked provider (COZY_SECUREFS_PROVIDER) that can't load its FUSE library never starts: the loader
+        // says so and exits 127. With no FUSE at all, that's what to install. The bundled one links libfuse in.
         if cfg!(target_os = "linux") && output.status.code() == Some(127) && String::from_utf8_lossy(&output.stderr).contains("libfuse") {
             return Err(match fuse_device() {
                 true => Error::DependencyMissing { needs: "the FUSE 2 library (libfuse.so.2)", install: install_command(Missing::Library) },
@@ -461,6 +520,11 @@ impl Provider {
         let parent = platform::process::Birth::own()?;
         // This very build, which an update can't take away (cl-981): `current_exe()` then names `<path> (deleted)`.
         let mut command = clean_command(&platform::exe::running()?);
+        // The supervisor's securefs inherits its PATH, and with it any `fusermount` link.
+        #[cfg(target_os = "linux")]
+        if let Some(path) = &self.path {
+            command.env("PATH", path);
+        }
         command
             .arg(ROLE)
             .arg(&self.executable)
@@ -642,6 +706,10 @@ impl Provider {
 
     fn command(&self, operation: &str) -> Command {
         let mut command = clean_command(&self.executable);
+        #[cfg(target_os = "linux")]
+        if let Some(path) = &self.path {
+            command.env("PATH", path);
+        }
         command.arg(operation);
         command
     }
@@ -701,7 +769,7 @@ impl Provider {
             return Ok(());
         }
         #[cfg(target_os = "linux")]
-        if !fuse_device() {
+        if !fuse_device() || (fuse_program("fusermount3").is_none() && fuse_program("fusermount").is_none()) {
             return Err(Error::DependencyMissing { needs: FUSE, install: install_command(Missing::Fuse) });
         }
         #[cfg(target_os = "macos")]

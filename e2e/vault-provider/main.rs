@@ -1,4 +1,6 @@
 //! Real provider fixture: FUSE/WinFsp and ordinary file/media I/O, without a mock filesystem.
+//!   vault-provider normal|crash-host <securefs> <artifacts>
+//!   vault-provider throughput <securefs> <artifacts> <bytes>   write, lock, unlock, read back: {write_MBps, read_MBps}
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use project_mount::{MountOptions, Provider};
 use serde_json::json;
@@ -6,9 +8,9 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Seek, SeekFrom, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use zeroize::Zeroizing;
 
@@ -22,36 +24,34 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+type Failure = Box<dyn std::error::Error>;
+
+fn run() -> Result<(), Failure> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if arguments.len() != 3 {
-        return Err("usage: vault-provider normal|crash-host <securefs> <artifacts>".into());
-    }
-    let mode = arguments[0].to_string_lossy();
+    let mode = arguments.first().map(|mode| mode.to_string_lossy().into_owned()).unwrap_or_default();
+    let bytes = match (mode.as_str(), arguments.len()) {
+        ("normal" | "crash-host", 3) => None,
+        ("throughput", 4) => Some(
+            arguments[3]
+                .to_str()
+                .and_then(|bytes| bytes.parse::<u64>().ok())
+                .filter(|bytes| *bytes > 0)
+                .ok_or("throughput takes a positive byte count")?,
+        ),
+        _ => {
+            return Err("usage: vault-provider normal|crash-host <securefs> <artifacts> | throughput <securefs> <artifacts> <bytes>".into());
+        }
+    };
     let expected_helper = PathBuf::from(&arguments[1]);
     let artifacts = PathBuf::from(&arguments[2]);
     fs::create_dir_all(&artifacts)?;
-    let provider = if project_mount::is_bundled() {
-        let installed = Provider::discover(&artifacts.join("tools"))?;
-        assert_eq!(
-            Sha256::digest(fs::read(installed.executable())?),
-            Sha256::digest(fs::read(&expected_helper)?),
-            "the embedded provider must match its pinned executable"
-        );
-        assert!(
-            artifacts
-                .join("tools/securefs/2.0.0/LICENSE.securefs.md")
-                .is_file()
-        );
-        installed
-    } else {
-        Provider::from_path(expected_helper)?
-    };
+    let provider = provider(&expected_helper, &artifacts)?;
+    if let Some(bytes) = bytes {
+        return throughput(&provider, &artifacts, bytes);
+    }
     let backing = artifacts.join("encrypted");
     let view = project_mount::view_path(&artifacts.join("runtime"))?;
-    let mut randomness = Zeroizing::new([0u8; 32]);
-    getrandom::fill(&mut *randomness).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let secret = Zeroizing::new(URL_SAFE_NO_PAD.encode(*randomness));
+    let secret = new_secret()?;
     eprintln!("provider fixture: create and mount");
     provider.create(&backing, secret.as_bytes())?;
     #[cfg(target_os = "macos")]
@@ -520,6 +520,100 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         json!({"result":"pass","provider":provider.storage_format(),"bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":read_only,"idle_lock":idle,"sqlite_durable_commit":true,"backing_marker_absent":true,"view":view})
+    );
+    Ok(())
+}
+
+/// The provider every mode runs: the embedded one, installed as a release installs it; else, on Linux, the given helper where a
+/// release installs its own, which `discover` finds as it does that one (with any `fusermount` link); elsewhere the given executable.
+fn provider(helper: &Path, artifacts: &Path) -> Result<Provider, Failure> {
+    let tools = artifacts.join("tools");
+    if project_mount::is_bundled() {
+        let installed = Provider::discover(&tools)?;
+        assert_eq!(
+            Sha256::digest(fs::read(installed.executable())?),
+            Sha256::digest(fs::read(helper)?),
+            "the embedded provider must match its pinned executable"
+        );
+        assert!(tools.join("securefs/2.0.0/LICENSE.securefs.md").is_file());
+        return Ok(installed);
+    }
+    if cfg!(target_os = "linux") {
+        let installed = tools.join("securefs").join(project_mount::PROVIDER_VERSION);
+        fs::create_dir_all(&installed)?;
+        fs::copy(helper, installed.join("securefs"))?;
+        return Ok(Provider::discover(&tools)?);
+    }
+    Ok(Provider::from_path(helper)?)
+}
+
+fn new_secret() -> Result<Zeroizing<String>, Failure> {
+    let mut randomness = Zeroizing::new([0u8; 32]);
+    getrandom::fill(&mut *randomness).map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(*randomness)))
+}
+
+/// Writes `bytes` through a new encrypted view in 4 MiB chunks of a deterministic pattern, fsyncs, locks, unlocks and reads them
+/// back, checking every byte. Prints MB/s (10^6 bytes) of the I/O alone: making and checking the pattern is off the clock.
+fn throughput(provider: &Provider, artifacts: &Path, bytes: u64) -> Result<(), Failure> {
+    const CHUNK: u64 = 4 << 20;
+    // splitmix64 of each 8-byte word's index in the file: no two chunks alike.
+    fn pattern(chunk: u64, buffer: &mut [u8]) {
+        for (word, out) in buffer.chunks_mut(8).enumerate() {
+            let mut z = (chunk * (CHUNK / 8) + word as u64).wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            out.copy_from_slice(&z.to_le_bytes()[..out.len()]);
+        }
+    }
+    let backing = artifacts.join("encrypted");
+    let view = project_mount::view_path(&artifacts.join("runtime"))?;
+    let secret = new_secret()?;
+    let file = view.join("throughput.bin");
+    let chunks = bytes.div_ceil(CHUNK);
+    let length = |index: u64| (bytes - index * CHUNK).min(CHUNK) as usize;
+    let mut buffer = vec![0u8; CHUNK as usize];
+    let mut expected = vec![0u8; CHUNK as usize];
+    eprintln!("provider fixture: throughput: create, mount, write {bytes} bytes");
+    provider.create(&backing, secret.as_bytes())?;
+    let mut mounted = provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+    let mut output = fs::File::create(&file)?;
+    let mut writing = Duration::ZERO;
+    for index in 0..chunks {
+        let part = &mut buffer[..length(index)];
+        pattern(index, part);
+        let started = Instant::now();
+        output.write_all(part)?;
+        writing += started.elapsed();
+    }
+    let started = Instant::now();
+    output.sync_all()?;
+    drop(output);
+    writing += started.elapsed();
+    eprintln!("provider fixture: throughput: lock, unlock, read back");
+    mounted.try_unmount()?;
+    let mut mounted = provider.mount(&backing, &view, secret.as_bytes(), MountOptions::default())?;
+    let mut input = fs::File::open(&file)?;
+    let mut reading = Duration::ZERO;
+    for index in 0..chunks {
+        let part = &mut buffer[..length(index)];
+        let started = Instant::now();
+        input.read_exact(part)?;
+        reading += started.elapsed();
+        let want = &mut expected[..part.len()];
+        pattern(index, want);
+        if part != want {
+            return Err(format!("throughput: chunk {index} read back differs from what was written").into());
+        }
+    }
+    assert_eq!(input.read(&mut [0])?, 0, "the file must end where the writes did");
+    drop(input);
+    mounted.try_unmount()?;
+    let rate = |time: Duration| (bytes as f64 / 1e6 / time.as_secs_f64() * 10.0).round() / 10.0;
+    println!(
+        "{}",
+        json!({"bytes":bytes,"chunk_bytes":CHUNK,"write_MBps":rate(writing),"read_MBps":rate(reading),"provider":provider.storage_format(),"verified":true})
     );
     Ok(())
 }
