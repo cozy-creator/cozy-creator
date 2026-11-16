@@ -160,6 +160,7 @@ class Held:
     free: float | None
     speed: str
     ops: list[Obj]
+    software: str
 
 
 flow = obj(load('flow.json'))
@@ -388,7 +389,9 @@ for label, m in sorted(machines.items()):
     disk_gb = num(rental.get('disk_gb')) or num(m.record.get('disk_gb'))
     h = Held(label, m, held, fetched, (max(stamps) - min(stamps)) if len(stamps) > 1 else None, twice, unused, disk_gb,
              num(status.get('disk_free_bytes')) or num(disk.get('free_bytes')),
-             speed[-1] if speed else '', list(ops.values()))
+             speed[-1] if speed else '', list(ops.values()),
+             ', '.join(f"{what} {text(status.get(key))}" for what, key in (('cozy', 'version'), ('Runtime', 'runtime'), ('TensorFS', 'tensorfs')) if status.get(key))
+             + (f" ({text(status.get('commit'))[:8]})" if status.get('commit') else ''))
     held_rows.append(h)
     if not landed:
         check(f'{label} fetched nothing twice', None, 'no TensorD log of its downloads read')
@@ -662,18 +665,24 @@ for r in rows:
                f"{fmt(r.to_step1_s, ' s')} | {stepped} | {fmt(r.work_s, ' s')} ({r.stored.get('cold_exec_s', '-')} / {r.stored.get('warm_exec_s', '-')}) | {fmt(secs(r.sent_at, r.last_at), ' s')} | "
                f"{lanes} | {gemm} | {r.gpus or '?'} | {peak} | {r.status} |")
 out += ['\n#### Each machine\n',
-        '| machine | SKU x GPUs | stated | ordered → ready | disk | holds | landed | fetched twice | unused | link | ended |',
-        '|---|---|---|---|---|---|---|---|---|---|---|']
+        '| machine | SKU x GPUs | software | stated | ordered → ready | disk | holds | landed | fetched twice | unused | link | ended |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|']
 for h in held_rows:
     rec = h.m.record
     pace = f" ({h.fetched / h.span / 1e6:.0f} MB/s)" if h.span else ''
     holds = '; '.join(f"{model} {size / GB:.1f} GB {'/'.join(lanes)}" for model, size, lanes in h.held) or '?'
-    out.append(f"| {h.label} {h.m.name} | {h.m.sku} x{h.m.gpus} | {text(rec.get('stated')) or '?'} | {fmt(secs(num(rec.get('ordered_at')), num(rec.get('ready_at'))), ' s')} | "
+    out.append(f"| {h.label} {h.m.name} | {h.m.sku} x{h.m.gpus} | {h.software or '?'} | {text(rec.get('stated')) or '?'} | {fmt(secs(num(rec.get('ordered_at')), num(rec.get('ready_at'))), ' s')} | "
                f"{fmt(h.disk_gb, ' GB')}, {fmt((h.free or 0.0) / GB, ' GB free')} | {holds} | {h.fetched / GB:.1f} GB in {fmt(h.span, ' s')}{pace} | "
                f"{len(h.twice)} | {', '.join(x for x, _ in h.unused) or '-'} | {h.speed or '?'} | "
                + (f"by itself, {datetime.fromtimestamp((gone_at(h.m) or 0.0) / 1000, timezone.utc):%H:%M:%S} |" if gone_at(h.m) else f"{fmt(secs(num(rec.get('end_pressed_at')), num(rec.get('ended_at'))), ' s after End')} |"))
-out += ["\n#### Download events: each machine's weights, as the page read them\n",
+out += ["\n#### Download events: each request's weights, then each machine's fetches ahead, as the page read them\n",
         '| machine | what | fetched | already there | started | stage | rate |', '|---|---|---|---|---|---|---|']
+for r in rows:
+    if r.dl_bytes:
+        began = r.first.get('downloading')
+        clock = datetime.fromtimestamp(began / 1000, timezone.utc).strftime('%H:%M:%S') if began else '?'
+        out.append(f"| {r.label} | request {r.request}'s weights ({r.target.split('/')[-1] or '?'}) | {r.dl_bytes / GB:.2f} GB in {fmt(r.dl_s, ' s')} | - | {clock} | | "
+                   f"{fmt(r.dl_bytes / r.dl_s / 1e6 if r.dl_s else None, ' MB/s')} |")
 for h in held_rows:
     for op in h.ops:
         started = num(op.get('started_at_ms'))
