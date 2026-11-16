@@ -21,6 +21,7 @@ type Shared =
   | { shows: Presence }
   | { shown: Acknowledged }
   | { who: true }
+  | { saved: { tab: string; project: string } }
 
 /** Three missed comments: the connection is dead, whatever the socket says. */
 const SILENT_MS = 45_000
@@ -82,6 +83,9 @@ export class EventStream {
   private telling = false
   /** Lock drops server Readers even when the displayed project set later returns to the same IDs. */
   private readers = 0
+  /** The holding tab's: each project Calcifer asked to save before it closes (`project.vault saving`), and the tabs showing it that
+   *  haven't said they sent what they typed of it. */
+  private saving = new Map<string, Set<string>>()
 
   constructor(client: Client) {
     this.client = client
@@ -92,6 +96,7 @@ export class EventStream {
       else if ("shows" in data) this.heard(data.shows)
       else if ("shown" in data) this.heardAcknowledgement(data.shown)
       else if ("who" in data) this.announce()
+      else if ("saved" in data) this.heardSaved(data.saved)
       else if (this.holding) this.channel.postMessage({ health: this.health.get(), stream: this.stream } satisfies Shared)
     }
     this.alive = new Promise((held) => {
@@ -115,6 +120,29 @@ export class EventStream {
     }
     if (this.holding) this.heard(this.presence())
     else this.announce()
+  }
+
+  /** This tab sent what it typed of `project`: the holding tab answers Calcifer once every tab showing it has. */
+  saved(project: string) {
+    const said = { tab: this.tab, project }
+    if (this.holding) this.heardSaved(said)
+    else void this.alive.then(() => this.channel.postMessage({ saved: said } satisfies Shared))
+  }
+
+  private heardSaved({ tab, project }: { tab: string; project: string }) {
+    if (!this.holding) return
+    this.saving.get(project)?.delete(tab)
+    this.answerSaved()
+  }
+
+  /** Calcifer told of each project every tab showing it has sent what it typed of; a tab that went sends nothing more. */
+  private answerSaved() {
+    for (const [project, tabs] of this.saving) {
+      for (const tab of tabs) if (!this.shown.has(tab)) tabs.delete(tab)
+      if (tabs.size || !this.stream) continue
+      this.saving.delete(project)
+      void this.client.saved(this.stream, project).catch(() => {})
+    }
   }
 
   /** This tab shows a machine's view, or not: only then does Calcifer send it runs of no project. */
@@ -160,6 +188,7 @@ export class EventStream {
     if (tab !== this.tab && !this.shown.has(tab)) {
       void navigator.locks.request(`cozy-tab:${tab}`, () => {
         this.shown.delete(tab)
+        this.answerSaved()
         void this.tell()
       })
     }
@@ -246,6 +275,16 @@ export class EventStream {
     if (event.type === "hello" && this.epoch !== event.stream) {
       this.epoch = event.stream
       this.acknowledged = null
+      this.saving.clear()
+    }
+    if (event.type === "project.vault" && event.state === "saving") {
+      // Nothing it shows changes: each tab sends what it typed of the project, and says so.
+      if (this.holding) {
+        this.saving.set(event.id, new Set([...this.shown.values()].filter((shown) => shown.project === event.id).map((shown) => shown.tab)))
+        this.answerSaved()
+      }
+      for (const listener of this.listeners) listener(event)
+      return
     }
     if (event.type === "project.vault") {
       this.readers++

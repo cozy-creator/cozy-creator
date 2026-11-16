@@ -1,7 +1,7 @@
 """`cozy open` in a locked encrypted project (cl-1002). At a terminal it asks for the passphrase or the recovery secret, unlocks,
-and opens: the page's URL printed, through Cozy's private browser or, with no display, as an address any browser opens. `--json`
-and a pipe never ask: they refuse `project_locked`, naming `cozy vault unlock`. `cozy status` at a terminal unlocks as open does
-(cl-1066): every verb shares that path.
+and opens: the default browser started at the page's URL, which it prints (cl-1067). `--json` and a pipe never ask: they refuse
+`project_locked`, naming `cozy vault unlock`, and start no browser. `cozy status` at a terminal unlocks as open does (cl-1066): every
+verb shares that path.
 
 open_unlock.py --cozy BIN --project DIR --passphrase FILE --recovery FILE --out DIR
 """
@@ -37,14 +37,12 @@ def main() -> None:
     passphrase = args.passphrase.read_text().strip()
     recovery = args.recovery.read_text().strip()
 
-    # Any browser open goes here, not to the runner's: `cozy open` never starts the default browser.
-    browser_bin = args.out / "browser-bin"
-    browser_bin.mkdir(exist_ok=True)
+    # The default browser, as the user set it: $BROWSER, which writes down the address it was given.
+    browser = args.out / "browser"
     browser_log = args.out / "browser-opened.txt"
-    for name in ("xdg-open", "open"):
-        (browser_bin / name).write_text('#!/bin/sh\nprintf \'%s\\n\' "$1" >> "$COZY_TEST_BROWSER_LOG"\n')
-        (browser_bin / name).chmod(0o755)
-    env = dict(os.environ, PATH=f"{browser_bin}{os.pathsep}{os.environ.get('PATH', '')}", COZY_TEST_BROWSER_LOG=str(browser_log))
+    browser.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{browser_log}'\n")
+    browser.chmod(0o755)
+    env = dict(os.environ, BROWSER=str(browser))
     receipt: dict[str, object] = {}
 
     def logged(words: list[str]) -> None:
@@ -117,10 +115,9 @@ def main() -> None:
         assert found, f"{name}: no URL printed: {stdout}"
         here = json.loads(cozy("--json", "--full", "status").stdout)["project"]["id"]
         assert re.fullmatch(rf"http://(127\.0\.0\.1|localhost|\[::1\]):\d+/projects/{re.escape(here)}", found.group(1)), f"{name}: {found.group(1)}"
-        if "private: true" not in stdout:
-            assert "isn't private" in stderr, f"{name}: no private browser, and it didn't say the address isn't private: {stderr[-600:]}"
-        assert not browser_log.exists(), f"{name}: open started the default browser"
-        receipt[name] = {"url": found.group(1), "private": "private: true" in stdout}
+        opens = browser_log.read_text().split() if browser_log.exists() else []
+        assert opens and opens[-1] == found.group(1), f"{name}: the default browser wasn't started at {found.group(1)}: {opens}"
+        receipt[name] = {"url": found.group(1), "browser": True}
 
     if state() != "locked":
         lock()
@@ -134,6 +131,7 @@ def main() -> None:
     code, stdout, stderr, asked = on_terminal(["--json", "open"], [])
     assert code != 0 and asked == 0 and json.loads(stdout)["error"]["code"] == "project_locked", f"--json open at a terminal: {stdout}{stderr[-600:]}"
     assert state() == "locked", "a refused open unlocked the project"
+    assert not browser_log.exists(), "a refused open started the default browser"
     receipt["refused"] = {"pipe": True, "json": True, "json_terminal": True}
 
     code, stdout, stderr, asked = on_terminal(["open"], ["deliberately wrong credential", passphrase])

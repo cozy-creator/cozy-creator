@@ -254,7 +254,7 @@ function Canvas({
   const flow = useBoard()
   const navigate = useNavigate()
   const to = useTo()
-  const { client, stream, bridge, outbox, canvases, closeBlockers } = connection
+  const { client, stream, bridge, outbox, canvases } = connection
   const [saved] = useState(() => loadViewport(projectId))
   // One per project for as long as the tab is open: a tab gone to and back finds what it showed, and what's still waiting for Calcifer shows as done.
   // One a code reload left is another class's, and is made again.
@@ -287,13 +287,8 @@ function Canvas({
   })
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
-  // A first drop asks for its project in place, as the strip's + does (`making`), and waits for it; nothing closes this canvas meanwhile.
+  // A first drop asks for its project in place, as the strip's + does (`making`), and waits for it.
   const creating = useRef<Ask | null>(null)
-  useEffect(() => {
-    const blocked = () => creating.current !== null && asked.get() === creating.current
-    closeBlockers.add(blocked)
-    return () => { closeBlockers.delete(blocked) }
-  }, [closeBlockers])
   const [placer] = useState(() => new Placer(store, client, {
     adopt: (id, code) => adopt.current(id, code),
     create: () => new Promise<Opened>((resolve, reject) => {

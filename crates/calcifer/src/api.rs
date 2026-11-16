@@ -79,7 +79,6 @@ pub(crate) struct Api {
     pub(crate) listing: crate::toolbox::Listing,
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
-    pub(crate) browser: crate::browser::OwnedBrowser,
     pub(crate) browser_address: std::sync::OnceLock<std::net::SocketAddr>,
     pub(crate) development_web: std::sync::OnceLock<std::net::SocketAddr>,
     /// Who uses this Calcifer (`GET /v1/activity`).
@@ -109,7 +108,6 @@ impl Api {
         token: &str,
     ) -> Arc<Self> {
         let api = Arc::new(Self {
-            browser: crate::browser::OwnedBrowser::new(),
             browser_address: std::sync::OnceLock::new(),
             development_web: std::sync::OnceLock::new(),
             calcifer,
@@ -143,13 +141,12 @@ impl Api {
     }
 
     async fn down_inner(self: &Arc<Self>, keep_admission_closed: bool) -> Result<Vec<String>, Error> {
-        // Draft flushes need ordinary mutation admission. Freeze and drain the exact
-        // owned session before taking the global writer that closes that admission.
-        let mut browser = Some(self.browser.prepare_close().await.map_err(|error| error.0)?);
+        // What a page typed in an encrypted project goes in before it locks: asked while edits are still admitted.
+        crate::project::vault::save_open().await;
         let mut stopping = self.stopping.write().await;
         let was_stopping = *stopping;
         *stopping = true;
-        if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all_prepared(self, &mut browser)) {
+        if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all(self)) {
             *stopping = was_stopping || keep_admission_closed;
             return Err(error);
         }
@@ -235,8 +232,8 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
     Router::new()
         .route("/v1/events", get(crate::events::stream))
         .route("/v1/events/{stream}", put(crate::events::show))
-        .route("/v1/project-storage", get(crate::browser::project_storage))
-        .route("/v1/browser/open", post(crate::browser::open))
+        .route("/v1/events/{stream}/saved", post(crate::events::saved))
+        .route("/v1/project-storage", get(project_storage))
         .route("/v1/maintenance/source", post(crate::maintenance_source::capture))
         .route("/v1/runs", post(crate::runs::submit).get(list))
         .route("/v1/runs/{id}", get(show))
@@ -330,6 +327,13 @@ pub(crate) fn refuse(kind: Kind, code: &str, message: impl Into<String>) -> Refu
     Refusal(Error::new(kind, code, message))
 }
 
+/// `GET /v1/project-storage`: the protocol this Calcifer speaks, this process (a client keeps talking to the one it proved), and the account
+/// `admit` verified.
+async fn project_storage(axum::Extension(principal): axum::Extension<crate::loopback::Principal>) -> Result<Json<serde_json::Value>, Refusal> {
+    let birth = platform::process::Birth::own().map_err(|e| refuse(Kind::Internal, "process_birth", e.to_string()))?;
+    let birth = hex::encode(Sha256::digest(serde_json::to_vec(&birth).map_err(|e| refuse(Kind::Internal, "process_birth", e.to_string()))?));
+    Ok(Json(serde_json::json!({ "version": 3, "daemon_birth": birth, "principal": principal.to_string() })))
+}
 
 impl Refusal {
     pub(crate) fn remedy(self, remedy: &str) -> Self {
