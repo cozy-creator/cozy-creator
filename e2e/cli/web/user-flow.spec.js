@@ -209,8 +209,9 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
   const goto = async (url) => { flow.loads.push({ at: Date.now(), url, asked: true }); await page.goto(url); };
   /** Beat `n`'s words in Focus `r`, its section opened first (a closed one is inert), typed as a person types them. */
   const typeBeat = async (r, n, words) => {
+    const toggle = r.locator(`.beat-toggle[aria-controls$="-${n}"]`).first();
+    if ((await toggle.count()) && (await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
     const beat = r.locator(`.mention-text[data-field="beats.${n}.description"]`);
-    if (!(await beat.isVisible())) await r.locator('.beat-toggle').filter({ hasText: new RegExp(`^\\s*Beat ${n + 1}\\b`) }).first().click();
     await beat.click();
     await page.keyboard.type(words);
   };
