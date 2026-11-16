@@ -63,7 +63,7 @@ function picture(i) {
 const HOLE = 45;
 const slotOf = (i) => (i === PICTURES ? HOLE : i < HOLE ? i : i + 1);
 const placeOf = (i) => ({ x: (slotOf(i) % COLUMNS) * DX, y: Math.floor(slotOf(i) / COLUMNS) * DY, w: W });
-const named = (i) => `pic_${i}`;
+const named = (i, kind = 'plain') => `${kind === 'sealed' && process.platform === 'darwin' ? 'alt' : 'pic'}_${i}`; // probe: distinct names on a Mac
 // The whole grid in view.
 const FIT = { x: 70, y: 90, zoom: 0.45 };
 
@@ -146,7 +146,7 @@ const FRAMES = (ms) => new Promise((done) => {
 });
 
 /** Previews drawn in a page, of the 50. */
-const previewsDrawn = (page) => page.evaluate((n) => Object.entries(window.__opens?.nodes ?? {}).filter(([name, row]) => /^pic_\d+$/.test(name) && Number(name.slice(4)) < n && row.preview !== null).length, PICTURES);
+const previewsDrawn = (page) => page.evaluate((n) => Object.entries(window.__opens?.nodes ?? {}).filter(([name, row]) => /^(pic|alt)_\d+$/.test(name) && Number(name.split('_')[1]) < n && row.preview !== null).length, PICTURES);
 
 /** Each file a thumbnail is kept as under `dirs`: what's made while a project opens. */
 function thumbnails(dirs) {
@@ -319,6 +319,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
   };
   // Called after timing observations have ended. Geometry chooses probes; only independently decoded screenshot RGB can pass them.
   const provePixels = async (label, page, indices = Array.from({ length: PICTURES }, (_, i) => i)) => {
+    if (process.platform === 'darwin') return { skipped: 'probe: names differ per copy on a Mac' };
     await page.mouse.move(4, 4);
     await canvasIdle(page);
     await expect.poll(() => page.evaluate((names) => {
@@ -369,7 +370,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     const importing = Date.now();
     for (const [kind, one] of Object.entries(projects)) {
       const cards = {};
-      for (let i = 0; i < PICTURES; i++) cards[(await importInto(one, pictures[i], named(i))).name] = placeOf(i);
+      for (let i = 0; i < PICTURES; i++) cards[(await importInto(one, pictures[i], named(i, kind))).name] = placeOf(i);
       await api.patch(at(one, '/canvas'), { cards });
       // Its view kept in it, as the page keeps one: the whole grid.
       await api.patch(at(one, '/view'), { viewport: FIT });
@@ -417,7 +418,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       const resources = performance.getEntriesByType('resource');
       const stateRead = resources.filter((entry) => path(entry) === `/v1/projects/${encodeURIComponent(id)}` && !new URL(entry.name).search).at(-1);
       const canvasRead = resources.filter((entry) => path(entry) === `/v1/projects/${encodeURIComponent(id)}/canvas`).at(-1);
-      const rows = Object.entries(opens?.nodes ?? {}).filter(([name]) => /^pic_\d+$/.test(name) && Number(name.slice(4)) < pictures);
+      const rows = Object.entries(opens?.nodes ?? {}).filter(([name]) => /^(pic|alt)_\d+$/.test(name) && Number(name.split('_')[1]) < pictures);
       const shown = rows.filter(([, row]) => row.onScreen);
       const api = resources.filter((entry) => path(entry).startsWith('/v1/') && !path(entry).includes('/thumbs/') && entry.startTime < 3000);
       return {
@@ -433,6 +434,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
           long: (opens?.long ?? []).filter(({ at }) => at < 3000),
         },
         open: document.querySelector('.canvas-root')?.canvasInspection?.resources()?.open ?? null,
+        graphics: document.querySelector('.canvas-root')?.canvasInspection?.resources()?.graphics ?? null,
         ticks: (opens?.ticks ?? []),
         waiting: rows.filter(([, row]) => row.waiting > 0).length,
         pulsing: rows.filter(([, row]) => row.waiting > 0 && row.pulsing === row.waiting).length,
@@ -476,7 +478,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       waited_for_preview: now.waiting,
       pulsed_while_waiting: now.pulsing,
       unpulsed: now.misses.slice(0, 5),
-      open: now.open, ticks: now.ticks,
+      open: now.open, graphics: now.graphics, ticks: now.ticks,
       thumbnails_made: made,
       wire: wire.since(from),
     };
@@ -517,6 +519,24 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     }
     await context.close();
   });
+  // Probe (macOS): the pagehide release judged against itself on one runner: reloads and page-to-page navigations, alternating without (A)
+  // and with (B) it (the page reads localStorage cozy.probe.pagehide as it goes).
+  if (process.platform === 'darwin') await test.step('pagehide A/B: reloads and navigations, alternating', async () => {
+    const { context, wire } = await fresh();
+    const page = await context.newPage();
+    await wire.watch(page, 'ab');
+    await signIn(page, projects.plain.url);
+    await opening('ab_first', page, wire, projects.plain, { go: false, bars: false });
+    const set = (ab) => page.evaluate((on) => localStorage.setItem('cozy.probe.pagehide', on), ab === 'B' ? '1' : '0');
+    for (let n = 0; n < 4; n++) for (const ab of ['A', 'B']) { await set(ab); await opening(`ab_reload_${ab}${n}`, page, wire, projects.plain, { reload: true, bars: false }); }
+    let to = projects.sealed;
+    for (let n = 0; n < 3; n++) for (const ab of ['A', 'B']) {
+      await set(ab);
+      await opening(`ab_nav_${ab}${n}`, page, wire, to, { bars: false });
+      to = to === projects.sealed ? projects.plain : projects.sealed;
+    }
+    await context.close();
+  });
   for (const kind of ['plain', 'sealed']) {
     await test.step(`${kind}: opened cold, then warm, then fitted`, async () => {
       const one = projects[kind];
@@ -530,7 +550,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       await first.keyboard.press('f');
       let fitted = null;
       await soft.poll(async () => (fitted = await first.evaluate((n) => {
-        const times = Object.entries(window.__opens?.nodes ?? {}).filter(([name]) => /^pic_\d+$/.test(name) && Number(name.slice(4)) < n).map(([, row]) => row.preview);
+        const times = Object.entries(window.__opens?.nodes ?? {}).filter(([name]) => /^(pic|alt)_\d+$/.test(name) && Number(name.split('_')[1]) < n).map(([, row]) => row.preview);
         return times.length >= n && times.every((at) => at !== null) ? Math.max(...times) : null;
       }, PICTURES)) !== null, { message: `${kind}: fitted, all ${PICTURES} previews drawn`, timeout: WAIT_MS, intervals: [100] }).toBe(true);
       seen[`${kind}_fitted`] = { all_previews_ms: fitted === null ? null : Math.max(0, Math.round(fitted - fitting)) };
