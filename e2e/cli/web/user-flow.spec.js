@@ -215,6 +215,14 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     await beat.click();
     await page.keyboard.type(words);
   };
+  /** Focus `r` on a new take's words: a box showing a take (the plate's own file) offers its fields under New (takes.spec.js). */
+  const draft = async (r) => {
+    const take = r.getByLabel('Take', { exact: true });
+    if ((await take.count()) && (await take.textContent()) !== 'New take') {
+      await r.locator('.focus-actions .focus-new').click();
+      await expect(take).toHaveText('New take');
+    }
+  };
   /** Box `name` in Focus, as a person finds it: out of any other's Focus, the canvas fitted, a double-click on it. */
   const look = async (name) => {
     const open = page.getByRole('region', { name: 'Focused asset' });
@@ -394,6 +402,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       await carry(page, row, await canvasPoint(page, 'plate'));
       await expect.poll(async () => (await project.asset('plate'))?.tool ?? null, { message: 'the plate takes the Edit tool', timeout: 60_000 }).toBe(edit.id);
       const r = await look('plate');
+      await draft(r);
       await r.getByRole('combobox', { name: 'Edit', exact: true }).selectOption({ label: 'VFX edit' });
       await typeBeat(r, 0, GUIDE);
       // Its beat as long as the plate, where the page offers a beat's length; an edit is as long as its plate either way.
