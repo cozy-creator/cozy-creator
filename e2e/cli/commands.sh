@@ -11,6 +11,51 @@ entrypoints() {
     || check "entrypoints: see $OUT/entrypoints/results.json"
 }
 
+# cl-1063, the release coordinator: "`cozy open` must fail with a typed error when its browser doesn't start, carrying Chrome's
+# exit code and its first stderr line". A google-chrome that exits at once, ahead of the real one on Calcifer's PATH.
+open_fails() {
+step "cozy open fails, saying why, when Cozy's Chrome exits as it starts"
+[ "$RUNNER_OS" = Linux ] || return 0
+local stub=/usr/local/bin/google-chrome code=0
+[ ! -e "$stub" ] || { check "open_fails: $stub already exists"; return; }
+printf '#!/bin/sh\necho "e2e stub: this Chrome exits as it starts" >&2\nexit 7\n' | sudo tee "$stub" > /dev/null && sudo chmod 755 "$stub"
+in_project "$OUT/project" open > "$OUT/open-fails.out" 2> "$OUT/open-fails.err" || code=$?
+sudo rm -f "$stub"
+local said; said=$(tail -c 400 "$OUT/open-fails.err")
+[ "$code" != 0 ] && grep -q '^error\[private_browser_failed\]' "$OUT/open-fails.err" \
+  || check "cozy open: exit $code, not private_browser_failed, though Cozy's Chrome exited as it started: $said"
+grep -q 'exited with code 7' "$OUT/open-fails.err" || check "cozy open: doesn't name Chrome's exit code 7: $said"
+grep -q 'e2e stub: this Chrome exits as it starts' "$OUT/open-fails.err" || check "cozy open: doesn't name Chrome's stderr line: $said"
+grep -qE '^cause: browser_[a-z_]+$' "$OUT/open-fails.err" || check "cozy open: doesn't name the launch step that failed: $said"
+}
+
+# cl-1063: a cold Chrome start (10.4 s seen on a runner) is waited on while Chrome lives. A google-chrome that sleeps 12 s, then
+# runs the real one on its own display: `cozy open` opens Cozy's private browser. It then lives on: Chrome's parent-death
+# signal follows the thread that forked it, and Calcifer's store reads hand tokio threads on to the blocking pool, which ends
+# them after 10 s idle.
+open_slow() {
+step "cozy open waits for a slow Chrome start, and the browser lives on"
+[ "$RUNNER_OS" = Linux ] || return 0
+local stub=/usr/local/bin/google-chrome code=0 xvfb took leader
+[ ! -e "$stub" ] || { check "open_slow: $stub already exists"; return; }
+Xvfb :98 -screen 0 1280x800x24 -nolisten tcp > "$OUT/open-slow-xvfb.log" 2>&1 & xvfb=$!
+printf '#!/bin/sh\nsleep 12\nDISPLAY=:98 exec /usr/bin/google-chrome "$@"\n' | sudo tee "$stub" > /dev/null && sudo chmod 755 "$stub"
+SECONDS=0
+in_project "$OUT/project" open > "$OUT/open-slow.out" 2> "$OUT/open-slow.err" || code=$?
+took=$SECONDS
+sudo rm -f "$stub"
+[ "$code" = 0 ] && grep -q 'private: true' "$OUT/open-slow.out" \
+  || check "cozy open: a 12 s Chrome start didn't open Cozy's private browser (exit $code after ${took}s): $(tail -c 400 "$OUT/open-slow.err")"
+leader=$(pgrep -o -f -- '--user-data-dir=[^ ]*cozy-private-' || true)
+if [ -n "$leader" ]; then
+  for _ in $(seq 20); do cozy --json status > /dev/null || true; in_project "$OUT/project" --json run ls > /dev/null || true; done
+  sleep 25
+  kill -0 "$leader" 2> /dev/null || check "Cozy's Chrome (pid $leader) died within 25 s of opening, with nothing closing it"
+fi
+# Its display gone, Cozy's Chrome exits and Calcifer retires it.
+kill "$xvfb" 2> /dev/null || true; wait "$xvfb" 2> /dev/null || true
+}
+
 # What needs no machine: Calcifer, the Hub setting, signing out, the Hub's packages and models.
 catalog() {
 step status
