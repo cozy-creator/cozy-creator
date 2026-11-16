@@ -40,7 +40,6 @@ export function ToolPanel({ project, machine, waiting, shut, setShut }: { projec
   }, [store, data, isPlaceholderData])
   const entries = paletteEntries(data?.tools ?? [])
   // A dev home's first-party tools come from its packages checkout (xs-195): said once, over the list.
-  const source = data?.tools.find((tool) => tool.source)?.source
   const list = useDragScroll({
     lift(pressed) {
       const from = pressed.closest<HTMLElement>("li[data-node], li[data-implementation]")
@@ -76,7 +75,6 @@ export function ToolPanel({ project, machine, waiting, shut, setShut }: { projec
           </section>
           <section data-palette="tools">
             <h4>Tools</h4>
-            {source && <p className="muted tool-source">First-party tools from source: {source}</p>}
             {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
             <ul>{entries.map((entry) => <ToolGroup key={entry.key} entry={entry} open={open === entry.key} toggle={() => setOpen(open === entry.key ? null : entry.key)} />)}</ul>
             {data?.note && <p className="muted">{data.note}</p>}
