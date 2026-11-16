@@ -55,6 +55,27 @@ cat "$OUT/ondemand-ahead.timeline.json"
 while read -r why; do check "ondemand-ahead: $why"; done < "$OUT/ondemand-ahead.failed"
 }
 
+# cl-1077 (Paul, 11-16): "why would it download those other two? we don't need those other two for this workflow." H3's `edit`
+# calls its segments, never `upscale`'s regenerate, yet the upscaler and regenerate-2k came as its guesses: an orchestrator's prefetch
+# took every internal function of its package. calls.py's `edit` calls `used` (e2e/calls-used) and never `unused`
+# (e2e/calls-unused): it holds 10 s while its prefetch runs, and this machine never resolves e2e/calls-unused.
+ondemand_calls() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "an orchestrator's prefetch brings what the functions it calls read, never another's (cl-1077)"
+local began
+began=$(date -u +%s)
+cell ondemand-calls "$here/script/calls.py/edit" seconds:=10 || return 0
+cozy --json machine show local > "$OUT/ondemand-calls.machine.json" 2>&1 || { check "ondemand-calls: machine show local failed"; return 0; }
+cozy machine logs local tensorfs --lines 0 --since 1h > "$OUT/ondemand-calls.tensorfs.log" 2>&1 || check "ondemand-calls: machine logs local tensorfs failed"
+local held pulled
+held=$(jq -r '[.status.models[]?.repository] | join(" ")' "$OUT/ondemand-calls.machine.json")
+pulled=$(awk -v t="$began" '$1 >= t && /e2e\/calls-unused/' "$OUT/ondemand-calls.tensorfs.log" | head -3)
+echo "ondemand-calls: the machine holds $held"
+[[ " $held " == *" e2e/calls-used "* ]] || check "ondemand-calls: e2e/calls-used, which the call read, isn't on the machine: $held"
+[[ " $held " != *" e2e/calls-unused "* ]] || check "ondemand-calls: e2e/calls-unused came ahead, and no function edit calls reads it: $held"
+[ -z "$pulled" ] || check "ondemand-calls: e2e/calls-unused was pulled: $pulled"
+}
+
 # A call holds (resolved, its on-demand BiRefNet guessed behind every run's needs, so part of it may land first), then `cozy model
 # install` downloads Qwen3.5 0.8B's 1.6 GB, and while it does the call reads its on-demand BiRefNet (446 MB): its executor asks
 # TensorD for it (`model_need`), which fetches what of it is absent before every other download (order 0) and answers once it's
