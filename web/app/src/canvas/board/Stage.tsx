@@ -344,7 +344,7 @@ export function Stage(props: StageProps) {
     stops.push(() => { store.canvasAt = () => null })
     Object.defineProperty(element, "canvasInspection", {
       configurable: true,
-      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, open: () => open, ticking: () => ticker.started, renderer: () => renderer, software: () => software.value }),
+      value: inspection({ board, store, scene: () => scene, interaction: () => interaction, media, frames: () => frames, open: () => open, ticking: () => ticker.started, renderer: () => renderer, software: () => software.value, retired: () => stopped }),
     })
     return () => {
       stopped = true
@@ -355,6 +355,8 @@ export function Stage(props: StageProps) {
       scene?.destroy()
       media.destroy()
       stage.destroy({ children: true })
+      // Its GPU context goes with it: nothing of a closed or locked project's pictures stays on the card.
+      if (renderer && "gl" in renderer) (renderer as unknown as { gl: WebGLRenderingContext }).gl.getExtension("WEBGL_lose_context")?.loseContext()
       renderer?.destroy({ removeView: true })
       forgetMeasurements()
       delete (element as HTMLDivElement & { canvasInspection?: unknown }).canvasInspection

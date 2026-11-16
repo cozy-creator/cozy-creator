@@ -12,7 +12,7 @@ interface Sources {
   board: Board; store: CanvasStore; media: Media
   scene(): Scene | null; renderer(): Renderer | null
   interaction(): { state(): { pointerDown: boolean; dragging: boolean; marquee: boolean; resizing: string | null; hover: { name: string; part: Part } | null; locked: boolean } } | null
-  frames(): number; open(): { read: number; cards: number; previews: number; log: number[][] }; ticking(): boolean; software(): boolean
+  frames(): number; open(): { read: number; cards: number; previews: number; log: number[][] }; ticking(): boolean; software(): boolean; retired(): boolean
 }
 
 /** The canvas as tests read it, in screen pixels and by meaning: what each card says, where its parts are, whether the canvas is still. */
@@ -114,10 +114,17 @@ export function inspection(o: Sources) {
     idleNow,
     idle: () => new Promise<void>((resolve) => { const check = () => (idleNow() ? resolve() : requestAnimationFrame(check)); requestAnimationFrame(check) }),
     resources: () => {
-      const scene = o.scene()
+      // A retired canvas (project closed or locked) holds nothing of the project: every count is zero.
+      const retired = o.retired()
+      const scene = retired ? null : o.scene()
       const views = scene ? [...scene.views()] : []
-      const renderer = o.renderer()
-      return { ...o.media.stats(), frames: o.frames(), open: o.open(), scheduledFrame: o.ticking(), automaticTicker: false, totalCards: o.board.getNodes().length, visibleCards: views.length,
+      const renderer = retired ? null : o.renderer()
+      const media = retired ? { textures: 0, pinnedTextures: 0, textureBytes: 0, pinnedBytes: 0, unusedBytes: 0, unusedTargetBytes: 0, loading: 0, failed: 0, queued: 0 } : o.media.stats()
+      const labels = views.reduce((sum, [, held]) => sum + held.view.labelViews().size, 0)
+      const latents = views.filter(([, held]) => held.view.latentShown)
+      return { ...media, decodedBytes: media.textureBytes, sourceBlobBytes: 0, labels, estimatedLabelBytes: labels * 4096,
+        latentBytes: latents.reduce((sum, [, held]) => sum + (held.view.latentShown?.width ?? 0) ** 2 * 4, 0), activeLatents: latents.length,
+        activeDecoders: views.filter(([, held]) => held.view.previewing).length, frames: o.frames(), open: o.open(), scheduledFrame: o.ticking(), automaticTicker: false, totalCards: retired ? 0 : o.board.getNodes().length, visibleCards: views.length,
         loadedCards: views.filter(([, held]) => held.view.picture?.handle?.texture).length,
         graphics: renderer ? { backend: "gl" in renderer ? "webgl" : "canvas", software: o.software() } : null }
     },
