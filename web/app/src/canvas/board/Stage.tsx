@@ -1,7 +1,7 @@
 // CSP-safe shader uniforms (no eval), and Pixi's optional math methods, which its typings declare whether or not they're installed.
 import "pixi.js/unsafe-eval"
 import "pixi.js/math-extras"
-import { autoDetectRenderer, Container, Rectangle, type Renderer, Ticker } from "pixi.js"
+import { autoDetectRenderer, Container, Graphics, Rectangle, type Renderer, Sprite, Text, Texture, Ticker } from "pixi.js"
 import { Viewport as PixiViewport } from "pixi-viewport"
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
@@ -29,9 +29,28 @@ import { forgetMeasurements, onFontsLoaded } from "./text"
 
 type Pointer = MouseEvent | PointerEvent
 
-function startRenderer(width: number, height: number): Promise<Renderer> {
-  const options = { width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias: true, failIfMajorPerformanceCaveat: false }
-  return autoDetectRenderer({ ...options, preference: ["webgl", "canvas"] }).catch(() => autoDetectRenderer({ ...options, preference: ["canvas"] }))
+/** Drawn on the CPU: WebGL in software (SwiftShader, llvmpipe), or Pixi's canvas renderer. */
+function softwareOf(renderer: Renderer): boolean {
+  if (!("gl" in renderer)) return true
+  const gl = (renderer as unknown as { gl: WebGLRenderingContext }).gl
+  const info = gl.getExtension("WEBGL_debug_renderer_info")
+  return /swiftshader|llvmpipe|lavapipe|softpipe|swrast|software/i.test(String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)))
+}
+
+async function startRenderer(width: number, height: number): Promise<Renderer> {
+  const make = (antialias: boolean) => {
+    const options = { width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias, failIfMajorPerformanceCaveat: false }
+    return autoDetectRenderer({ ...options, preference: ["webgl", "canvas"] }).catch(() => autoDetectRenderer({ ...options, preference: ["canvas"] }))
+  }
+  let made = await make(true)
+  // A CPU rasterizes every sample of a multisampled frame (cl-1018: a third of each frame's time in CI's SwiftShader).
+  if ("gl" in made && softwareOf(made)) { made.destroy({ removeView: true }); made = await make(false) }
+  // Its shaders compiled now, while nothing waits on it: the first frame with cards stalled ~150 ms on them in software (cl-1018).
+  const warm = new Container()
+  warm.addChild(new Graphics().rect(0, 0, 2, 2).fill(0x808080), new Sprite(Texture.WHITE), new Text({ text: "a" }))
+  made.render(warm)
+  warm.destroy({ children: true })
+  return made
 }
 /** A renderer begun as the page loads, before any project is read (cl-1018: one begun as the canvas mounts held the open's first frame
  *  60–90 ms past its state): the first canvas takes it. It holds nothing of any project until then. */
@@ -168,11 +187,7 @@ export function Stage(props: StageProps) {
       if (stopped) { made.destroy({ removeView: true }); return }
       if (taken) made.resize(Math.max(1, width), Math.max(1, height), devicePixelRatio || 1)
       renderer = made
-      if ("gl" in made) {
-        const gl = (made as unknown as { gl: WebGLRenderingContext }).gl
-        const info = gl.getExtension("WEBGL_debug_renderer_info")
-        software.value = /swiftshader|llvmpipe|lavapipe|softpipe|swrast|software/i.test(String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)))
-      } else software.value = true
+      software.value = softwareOf(made)
       // No global move walks every card on every pointer move: Interaction listens to the window while it holds a press.
       made.events.features.globalMove = false
       made.canvas.className = "canvas-pixels canvas-pane"
