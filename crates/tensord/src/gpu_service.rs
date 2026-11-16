@@ -1850,11 +1850,22 @@ impl Pool {
             }
         }
     }
-    /// Each idle executor's process and when it last came back idle, least recently used first:
-    /// what a full disk may end to let the models it holds open go (`Service::room_for`).
-    pub(crate) fn idle_executors(&self) -> Vec<(u32, Instant)> {
-        let mut idle: Vec<(u32, Instant)> = self.sessions.lock().unwrap().values().map(|s| (s.executor.birth.pid, s.used)).collect();
-        idle.extend(self.deviceless.lock().unwrap().iter().map(|s| (s.executor.birth.pid, s.used)));
+    /// Each idle executor's processes, its leader first, and when it last came back idle, least
+    /// recently used first: what a full disk may end to let the models they hold open go
+    /// (`Service::room_for`). Each rank of a group opens what it loads under its own pid
+    /// (Runtime's `_follower_load`), so its followers' holds are the group's.
+    pub(crate) fn idle_executors(&self) -> Vec<(Vec<u32>, Instant)> {
+        let each = |s: &Session| {
+            let mut pids = vec![s.executor.birth.pid];
+            for birth in executor_births(&s.executor.birth, &s.followers) {
+                if !pids.contains(&birth.pid) {
+                    pids.push(birth.pid);
+                }
+            }
+            (pids, s.used)
+        };
+        let mut idle: Vec<(Vec<u32>, Instant)> = self.sessions.lock().unwrap().values().map(each).collect();
+        idle.extend(self.deviceless.lock().unwrap().iter().map(each));
         idle.sort_by_key(|(_, used)| *used);
         idle
     }

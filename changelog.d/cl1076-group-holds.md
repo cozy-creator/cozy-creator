@@ -1,0 +1,1 @@
+TensorD: an idle multi-GPU executor's models can be evicted. Each rank opens what it loads under its own process, and TensorD counted only the group's first, so a group left idle kept its model through any render's need for room. Now every process of an idle executor counts as its holder, and ending it ends the whole group (cl-1076).
