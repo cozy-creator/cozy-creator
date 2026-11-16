@@ -92,7 +92,7 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     let installed: BTreeSet<&str> = held.iter().map(|tool| tool.package.as_str()).collect();
     // What its machine can't run, on its Runtime or one a run of it moves to (cl-952), isn't offered (run 46790: flux-3-klein@0.7.0,
     // locked to Runtime 0.44). A release that needs a newer Runtime is (cl-975: every 0.25 release, on a machine still on 0.45.0).
-    let runner = Runner::of(api, &on).await;
+    let runner = Runner::of(api, &on);
     let runs = |offered: &&Offered| runner.as_ref().is_none_or(|runner| runner.takes(&offered.pair));
     let listed: Vec<Tool> = (listed.iter())
         .filter(|offered| !installed.contains(offered.tool.package.as_str()) && !checkout::holds(&offered.tool.package))
@@ -114,7 +114,7 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
         }
     }
     // A Hub that's late leaves them unsaid, and a later list says what's been read by then.
-    let _ = tokio::time::timeout(HUB_LATE, crate::hub::checkpoints::families(api, &hub, &mut tools)).await;
+    crate::hub::checkpoints::families(api, &hub, &mut tools);
     Ok(Json(Tools { tools, note }))
 }
 
@@ -190,6 +190,28 @@ pub(crate) async fn browse(State(api): State<Arc<Api>>, query: Result<Query<Brow
 async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, listed: &[Tool]) -> (Vec<Tool>, Option<String>) {
     let root = api.machines.hubs.home().root();
     let newest = async |package: &String| {
+        // One kept is the answer at once; the Hub's newest is read behind it, at most each [`LISTED_FOR`], for a later list (cl-1010).
+        if let Some(release) = newest_by(cards::kept_releases(root, hub, package), |release| release) {
+            static ASKED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Mutex::default);
+            let key = format!("{} {package}", canonical(hub));
+            let ask = {
+                let mut asked = ASKED.lock().expect("asked lock");
+                let due = asked.get(&key).is_none_or(|at| at.elapsed() >= LISTED_FOR);
+                if due { asked.insert(key, Instant::now()); }
+                due
+            };
+            if ask {
+                let (api, hub, package) = (api.clone(), hub.to_owned(), package.clone());
+                tokio::spawn(async move {
+                    let root = api.machines.hubs.home().root();
+                    let newest = async { cards::releases(&api.machines.hubs.reader(&hub)?, &package).await?.newest(&package) };
+                    if let Ok(Ok(newest)) = tokio::time::timeout(Duration::from_secs(60), newest).await {
+                        let _ = cards::card(|| api.machines.hubs.reader(&hub), root, &hub, &package, &newest).await;
+                    }
+                });
+            }
+            return (Some((package.clone(), release)), None);
+        }
         let asked = async { cards::releases(&api.machines.hubs.reader(hub)?, package).await?.newest(package) };
         let why = match tokio::time::timeout(HUB_LATE, asked).await {
             Ok(Ok(release)) => return (Some((package.clone(), release)), None),
@@ -540,14 +562,42 @@ struct Runner {
     newer: Option<api::release::Newer>,
 }
 
+/// Each machine's [`Runner`] as last worked out, by what it runs and whether it takes the RC: when, it, and whether it's being worked out.
+type Runners = HashMap<(String, String, String, bool), (Option<Instant>, Option<Arc<Runner>>, bool)>;
+static RUNNERS: LazyLock<Mutex<Runners>> = LazyLock::new(Mutex::default);
+/// A machine's Runner worked out this recently is current.
+const RUNNER_FOR: Duration = Duration::from_secs(60);
+
 impl Runner {
-    /// `on` as it last said what it runs, asking it nothing. None: it hasn't said since Calcifer started, or what it moves to isn't
-    /// read in [`HUB_LATE`], and nothing is held back, as a run on a machine that hasn't said holds nothing back.
-    async fn of(api: &Arc<Api>, on: &On) -> Option<Self> {
+    /// `on` as it last said what it runs, asking it nothing, with the Runtimes it moves to as last worked out: a list never waits on
+    /// PyPI or the Hub for them (cl-1010). One older than [`RUNNER_FOR`] is worked out again behind it. None: it hasn't said since
+    /// Calcifer started, or what it moves to isn't worked out yet, and nothing is held back, as a run on a machine that hasn't said
+    /// holds nothing back.
+    fn of(api: &Arc<Api>, on: &On) -> Option<Arc<Self>> {
         let On::Machine(name) = on else { return None };
         let frame = api.machines.frame(name).filter(|frame| !frame.runtime.is_empty())?;
-        let (runtimes, moves, newer) = tokio::time::timeout(HUB_LATE, api.machines.runtimes(name, &frame, api.machines.takes_rc(name, on))).await.ok()?;
-        Some(Self { runtime: frame.runtime, tensorfs: frame.tensorfs, runtimes, moves, newer })
+        let rc = api.machines.takes_rc(name, on);
+        let key = (name.clone(), frame.runtime.clone(), frame.tensorfs.clone(), rc);
+        let (held, ask) = {
+            let mut runners = RUNNERS.lock().expect("runners lock");
+            let (at, held, asking) = runners.entry(key.clone()).or_default();
+            let ask = !*asking && at.is_none_or(|at| at.elapsed() >= RUNNER_FOR);
+            *asking |= ask;
+            (held.clone(), ask)
+        };
+        if ask {
+            let (api, name) = (api.clone(), name.clone());
+            tokio::spawn(async move {
+                let worked = tokio::time::timeout(Duration::from_secs(60), api.machines.runtimes(&name, &frame, rc)).await.ok();
+                let mut runners = RUNNERS.lock().expect("runners lock");
+                let (at, held, asking) = runners.entry(key).or_default();
+                if let Some((runtimes, moves, newer)) = worked {
+                    (*at, *held) = (Some(Instant::now()), Some(Arc::new(Self { runtime: frame.runtime, tensorfs: frame.tensorfs, runtimes, moves, newer })));
+                }
+                *asking = false;
+            });
+        }
+        held
     }
 
     /// Whether a run here takes a release whose wheel requires `pair`, as a run decides (`api::release::takes`): its Runtime runs it

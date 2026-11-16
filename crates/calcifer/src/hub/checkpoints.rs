@@ -310,31 +310,39 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, slots: &[(&str, &Slot)],
     result
 }
 
-/// Each declared slot says the family and kind of its default checkpoint.
-pub(crate) async fn families(api: &Api, hub: &str, tools: &mut [Tool]) {
+/// Each declared slot says the family and kind of its default checkpoint, as read so far: a list never waits on the Hub for them.
+/// Those not read, or read more than [`NAMED_FOR`] ago, are read behind it, one read at a time, for the next list (cl-1010).
+pub(crate) fn families(api: &std::sync::Arc<Api>, hub: &str, tools: &mut [Tool]) {
+    static READING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let defaults: BTreeSet<String> = tools.iter().flat_map(|tool| tool.models.iter().chain(tool.model.iter())).filter_map(|model| model.default.clone()).collect();
     let Ok(origin) = Origin::parse(hub) else { return };
-    let fresh = |default: &String| {
+    let (found, unread): (HashMap<String, DefaultModel>, Vec<String>) = {
         let held = named_so_far().lock().expect("named lock");
-        held.get(&format!("{origin} {default}")).filter(|(at, _)| at.elapsed() < NAMED_FOR).map(|(_, model)| model.clone())
+        let found = defaults.iter().filter_map(|default| Some((default.clone(), held.get(&format!("{origin} {default}"))?.1.clone()))).collect();
+        let fresh = |default: &&String| held.get(&format!("{origin} {default}")).is_some_and(|(at, _)| at.elapsed() < NAMED_FOR);
+        (found, defaults.iter().filter(|default| !fresh(default)).cloned().collect())
     };
-    let mut found: HashMap<String, DefaultModel> = defaults.iter().filter_map(|default| Some((default.clone(), fresh(default)?))).collect();
-    if found.len() < defaults.len() {
-        let Ok(client) = reader(api, &origin) else { return };
-        let Ok(endpoint) = distribution(&client, &origin).await else { return };
-        let (client, endpoint, origin) = (&client, &endpoint, &origin);
-        let unread: Vec<String> = defaults.iter().filter(|default| !found.contains_key(*default)).cloned().collect();
-        let reads = unread.into_iter().map(|default| async move {
-            let model = named(api, client, endpoint, origin, &default).await.unwrap_or_default();
-            (default, model)
+    if !unread.is_empty() && !READING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        let api = api.clone();
+        tokio::spawn(async move {
+            let read = async {
+                let Ok(client) = reader(&api, &origin) else { return };
+                let Ok(endpoint) = distribution(&client, &origin).await else { return };
+                let (api, client, endpoint, origin) = (&api, &client, &endpoint, &origin);
+                let reads = unread.into_iter().map(|default| async move {
+                    let model = named(api, client, endpoint, origin, &default).await.unwrap_or_default();
+                    (default, model)
+                });
+                let reads: Vec<(String, DefaultModel)> = stream::iter(reads).buffered(READS).collect().await;
+                save(api);
+                let mut held = named_so_far().lock().expect("named lock");
+                for (default, model) in reads {
+                    held.insert(format!("{origin} {default}"), (Instant::now(), model));
+                }
+            };
+            let _ = tokio::time::timeout(Duration::from_secs(60), read).await;
+            READING.store(false, std::sync::atomic::Ordering::Release);
         });
-        let reads: Vec<(String, DefaultModel)> = stream::iter(reads).buffered(READS).collect().await;
-        save(api);
-        let mut held = named_so_far().lock().expect("named lock");
-        for (default, model) in reads {
-            held.insert(format!("{origin} {default}"), (Instant::now(), model.clone()));
-            found.insert(default, model);
-        }
     }
     for tool in tools {
         for model in tool.models.iter_mut().chain(tool.model.iter_mut()) {
