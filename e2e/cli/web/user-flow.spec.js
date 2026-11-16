@@ -299,6 +299,16 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       flow.code = new URL(page.url()).pathname;
       mark('unlocked');
       await shot('unlocked');
+      // Unlocked where it was opened, it's the project: its canvas, not a page about its locked handle (43852897461: "This project can't
+      // be opened yet", its uploads sent to `locked-…`). Said, then opened at its own address so the flow goes on.
+      const stuck = page.getByText("This project can't be opened yet", { exact: true });
+      if (await stuck.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)) {
+        failed('the project opens where it was unlocked, from the Projects list', (await page.locator('main, .stage').first().innerText()).replace(/\s+/g, ' ').slice(0, 300));
+        await goto(project.url());
+        await expect(page.locator('.stage')).toBeVisible({ timeout: 60_000 });
+        await expect(stuck).toHaveCount(0, { timeout: 30_000 });
+        await shot('opened-at-its-address');
+      }
     });
 
     await test.step('a plate dropped on the canvas: its box', async () => {

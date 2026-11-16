@@ -551,7 +551,7 @@ check('the page says rates in MB/s, never MBps (cl-1074)', not rates, '; '.join(
 zeros = [text(s.get('text')) for s in seen if s.get('key') == '0 of 0']
 check('the page never says "0 of 0" (cl-1074)', not zeros, '; '.join(zeros[:3]) or 'never')
 toasts = [text(s.get('text')) for s in seen if text(s.get('key')).startswith('note ')]
-commands = [t for t in toasts if re.search(r'\bcozy (run|machine|model|package|vault) ', t)]
+commands = [t for t in toasts if re.search(r'\bcozy (open|run|machine|model|package|vault|login|update|restart|new|status)\b', t)]
 check('no toast shows a CLI command (cl-1085)', not commands, '; '.join(commands[:3]) or f"{len(toasts)} toasts")
 
 # ---- Tables.
