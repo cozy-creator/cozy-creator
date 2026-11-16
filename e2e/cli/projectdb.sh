@@ -1249,21 +1249,25 @@ in_cozy "$now" || check "remote custody: this cozy back on its own store"
 # `project_input_migration_pending` 13 times in 0.75 s and Calcifer reached 3.4 GB). A project whose old history can't be imported
 # (an old run's input bytes are nowhere) has it tried once in a Calcifer's life, not by each of a burst of its requests, and each
 # check of what is left reads one old run at a time. The 0.24.0 store's 200 runs land in the project, each with a 256 KiB spec.
+# A second project has lab2's other shape: 5 old runs on `local` that import, pending a custody only `local` can verify. Its
+# requests ask the worker once (`legacy_worker::migrate`, whose future overflowed a dev build's worker stack on the laptop).
+# The candidate is a release build (e2e/candidates/build.sh): the overflow itself is the laptop's dev build to show.
 db_legacy_burst() {
 step "a legacy import that fails is tried once per Calcifer, not by each of 20 requests at once; Calcifer stays up (cl-1003)"
-local D=$OUT/legacy-burst now=$OUT/cozy-now old P pid before after tried peak i failed=0
+local D=$OUT/legacy-burst now=$OUT/cozy-now old P Q pid before after tried peak i failed=0 asked
 old=$(cozy_0240) || { check "legacy burst: 0.24.0's archive"; return; }
 [ -f "$now" ] || cp "$COZY" "$now"
 in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "legacy burst: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
-P=$D/here
-mkdir -p "$P"
+P=$D/here Q=$D/local
+mkdir -p "$P" "$Q"
 boxes_in "$P" <<< '[{"name": "notes", "fields": {"text": "A project whose old runs input bytes that are gone."}}]' \
+  && boxes_in "$Q" <<< '[{"name": "notes", "fields": {"text": "A project whose old runs ran on local."}}]' \
   || { check "legacy burst: 0.24.0 made no project"; in_cozy "$now"; return; }
 pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null) || pid=''
 [ -z "$pid" ] || term_calcifer "$pid" || { in_cozy "$now"; return; }
-python3 - "$HOME/.cozy/calcifer/state.db" "$P" <<'PY2' || { check "legacy burst: runs into 0.24.0's store"; in_cozy "$now"; return; }
+python3 - "$HOME/.cozy/calcifer/state.db" "$P" "$Q" <<'PY2' || { check "legacy burst: runs into 0.24.0's store"; in_cozy "$now"; return; }
 import json, os, sqlite3, sys
-path, here = sys.argv[1:3]
+path, here, local = sys.argv[1:4]
 db = sqlite3.connect(path, isolation_level=None)
 assert db.execute("PRAGMA user_version").fetchone()[0] == 7, "not a 0.24 store"
 done = json.dumps({"status": "succeeded", "result": {}, "outputs": [], "execution_ms": 1000, "measurements": {"observations": []}})
@@ -1276,6 +1280,10 @@ for i in range(200):
     db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, inputs, created_at, settled_at) "
                "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', NULL, 0, ?, ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?, ?)",
                (f"run-burst{i:021d}", first + i, f"burst-{i}", spec, here + "/.runs", done, gone, 1700000000000 + i, 1700000000000 + i))
+for i in range(5):
+    db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, created_at, settled_at) "
+               "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', 'local', 0, X'7B7D', ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?)",
+               (f"run-onlocal{i:019d}", first + 200 + i, f"onlocal-{i}", local + "/.runs", done, 1700000001000 + i, 1700000001000 + i))
 db.execute("COMMIT")
 db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 PY2
@@ -1300,9 +1308,28 @@ grep -a "legacy history was not imported" "$HOME/.cozy/calcifer/health.log" | ta
   || check "legacy burst: the import failed otherwise: $(grep -a 'legacy history was not imported' "$HOME/.cozy/calcifer/health.log" | tail -1)"
 for i in $(seq 20); do [ "$(cat "$OUT/legacy-burst-$i.code" 2> /dev/null)" = 0 ] || failed=$((failed + 1)); done
 [ "$failed" = 0 ] || check "legacy burst: $failed of 20 run lists failed: $(tail -c 300 "$OUT/legacy-burst-1.err")"
-# The project opens and takes new work, its old history left for the hard cut.
+# The project opens and takes new work, its old history left for the hard cut. That run starts `local`.
 in_project "$P" --json run minimax-h3-tools/echo "text=after the burst" > "$OUT/legacy-burst-run.ndjson" 2> "$OUT/legacy-burst-run.err" \
   || check "legacy burst: a new run refused: $(tail -c 300 "$OUT/legacy-burst-run.ndjson") $(tail -c 300 "$OUT/legacy-burst-run.err")"
+# lab2's other shape, with `local` running: its old runs on local import pending custody, and a burst asks the worker once.
+before=$(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || before=0
+for i in $(seq 20); do
+  ( in_project "$Q" --json run list > "$OUT/legacy-burst-local-$i.json" 2> "$OUT/legacy-burst-local-$i.err"; echo $? > "$OUT/legacy-burst-local-$i.code" ) &
+done
+wait
+asked=$(( $(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null || echo 0) - before ))
+peak=$(awk '/^VmHWM/ {print $2 " " $3}' "/proc/$pid/status" 2> /dev/null) || peak=
+echo "legacy burst (local): the worker was asked $asked time(s) for 20 requests; Calcifer's peak resident ${peak:-unread}"
+kill -0 "$pid" 2> /dev/null && [ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$pid" ] \
+  || check "legacy burst (local): Calcifer $pid didn't live through the burst"
+[ "$(sql1 "$Q" "SELECT count(*) FROM runs WHERE machine = 'local' AND custody = 'legacy_pending'")" = 5 ] \
+  || check "legacy burst (local): its old runs on local in project.db: $(sql "$Q" "SELECT id, custody FROM runs WHERE machine = 'local'" | tr '\n' ' ')"
+[ "$asked" = 1 ] || check "legacy burst (local): the worker's custody was asked $asked times for 20 requests, not once"
+failed=0
+for i in $(seq 20); do [ "$(cat "$OUT/legacy-burst-local-$i.code" 2> /dev/null)" = 0 ] || failed=$((failed + 1)); done
+[ "$failed" = 0 ] || check "legacy burst (local): $failed of 20 run lists failed: $(tail -c 300 "$OUT/legacy-burst-local-1.err")"
+in_project "$Q" --json run minimax-h3-tools/echo "text=after the local burst" > "$OUT/legacy-burst-local-run.ndjson" 2> "$OUT/legacy-burst-local-run.err" \
+  || check "legacy burst (local): a new run refused: $(tail -c 300 "$OUT/legacy-burst-local-run.ndjson") $(tail -c 300 "$OUT/legacy-burst-local-run.err")"
 in_cozy "$now" || check "legacy burst: this cozy back on its own store"
 }
 
