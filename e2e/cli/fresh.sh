@@ -98,7 +98,9 @@ fresh_no_terminal() {
 # `local` (cl-1030), `machine show local` says it, and the first run installs none. A container has no Runtime for a run.
 fresh_torch() {
   step "fresh: the installer installs the machine's PyTorch; the first run installs none"
-  local engine=$HOME/.cozy/machine/var/lib/cozy/tensord base torch
+  local engine=$HOME/.cozy/machine/var/lib/cozy/tensord base torch before
+  # A first run's install is quick from a warm uv cache, too quick for its stage to reach the run's events: its machine's log says it.
+  installs() { cat "$HOME"/.cozy/machine/var/lib/cozy/machine/logs/tensord.*.log 2> /dev/null | grep -c "installed this machine's PyTorch" || true; }
   [ -z "$(ls -d "$engine"/torch-*/pyvenv.cfg 2> /dev/null)" ] || { check "fresh: PyTorch: a base was here before the install, so it proves nothing"; return 0; }
   COZY_DOWNLOAD_URL="$FRESH_URL" sh "$OUT/fresh-release/cozy-installer.sh" < /dev/null > "$OUT/fresh-torch.txt" 2>&1 \
     || check "fresh: PyTorch: the installer failed: $(tail -c 400 "$OUT/fresh-torch.txt")"
@@ -109,8 +111,9 @@ fresh_torch() {
   cozy --json machine show local > "$OUT/fresh-torch-machine.json" 2>&1 || true
   torch=$(jq -r '.status.torch // empty' "$OUT/fresh-torch-machine.json" 2> /dev/null || true)
   [ -n "$torch" ] && [ "torch-$torch" = "${base##*/}" ] || check "fresh: PyTorch: machine show local says '$torch', the base is '${base##*/}'"
+  before=$(installs)
   cell fresh-first "$fresh_here/weightless/reverse" "text=fresh$RANDOM" || return 0
-  ! grep -q "installing this machine's PyTorch" "$OUT/fresh-first.ndjson" || check "fresh: PyTorch: the first run installed it"
+  [ "$(installs)" = "$before" ] || check "fresh: PyTorch: the first run installed it"
 }
 
 # Windows with no WinFsp: the installer, as an administrator runs it here, installs it from its pinned MSI with every feature, and
