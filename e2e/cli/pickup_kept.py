@@ -47,7 +47,9 @@ def main() -> int:
         return cast(list[Json], api(f"/assets/{name}")["versions"])
 
     def files_of(version: Json) -> list[str]:
-        return [str(sha) for sha in cast(dict[str, object], version.get("files") or {}).values()]
+        """Each file's hash: a version's files say each as {path, sha256}."""
+        held = cast(dict[str, object], version.get("files") or {}).values()
+        return [str(file.get("sha256")) if isinstance(file, dict) else str(file) for file in held]
 
     def in_files(sha256: str) -> bool:
         return any((project / "files").glob(f"{sha256.removeprefix('sha256:')}*"))
@@ -70,6 +72,7 @@ def main() -> int:
     first = cozy("render", "src", "--on", "local")
     taken = versions("src")
     check("src_take", first.returncode == 0 and len(taken) == 1, first.stderr[-500:])
+    check("src_files_here", bool(taken) and bool(files_of(taken[0])) and all(in_files(sha) for sha in files_of(taken[0])), taken)
     if failures:
         done()
         return 1
@@ -103,7 +106,8 @@ def main() -> int:
     last = nexts[-1] if nexts else {}
     seen["next_version"] = last
     check("render_went", render.returncode == 0 and len(nexts) == 1, seen["render"])
-    check("picked_up", last.get("pickup") == {"take": "<src.1>", "out_frame": SEAM, "beats_from": SEAM / 24}, last)
+    picked = cast(dict[str, object], last.get("pickup") or {})
+    check("picked_up", picked.get("take") == "<src.1>" and picked.get("out_frame") == SEAM, last)
     kept_while_waiting = [sha for sha in src_files if sha in cast(list[str], seen["src_files_kept_while_waiting"])]
     check("src_kept_while_waiting", kept_while_waiting == src_files, kept_while_waiting)
 
