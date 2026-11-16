@@ -752,6 +752,7 @@ case $SHARD in
     idle_vault
     vault_times
     vault_queue
+    vault_restart
     shared_scratch
     open_unlocks
     projectvault

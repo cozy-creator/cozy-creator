@@ -476,6 +476,82 @@ vault_queue() (
   jq -c '{lock_s: .lock.after_s, lock_state, b_thumb_s: .b_thumb.after_s, upload}' "$work/queue.json" | sed 's/^/vault queue: /'
 )
 
+# A killed Calcifer's encrypted views never stay mounted dead (cl-1057; the release coordinator found three on Paul's laptop
+# after the RC follower's restarts). The unit is KillMode=mixed: when Calcifer ends unclosed, systemd SIGKILLs its vault
+# supervisors and securefs with it, so the view stays mounted with no provider ("Transport endpoint is not connected"). Its
+# next start detaches every dead view of this user's, a project it knows or a folder it never saw; the project is locked
+# (its key died with it) and unlocks again.
+vault_restart() (
+  step "a killed Calcifer leaves no dead encrypted view: its next start detaches them, known project or not (cl-1057)"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault restart: Linux runners only"; return 0; }
+  local work secrets P U sec key id old_view old_runtime u_view u_runtime pid mpid marker view state
+  work=$(mktemp -d "$OUT/vault-restart.XXXXXX") secrets=$(mktemp -d "$OUT/vault-restart-credentials.XXXXXX")
+  work=$(realpath "$work") P=$work/p U=$work/unknown
+  # Views mounted under the fixture, live or dead.
+  mounts() { awk '$0 ~ / - fuse\.securefs / {print $5}' /proc/self/mountinfo | grep -F -- "$work/" || true; }
+  mounted() { mounts | grep -qxF -- "$1"; }
+  dead() { stat -- "$1" 2>&1 | grep -q 'not connected'; }
+  # A dead mount left at the end would break the artifact upload.
+  trap 'in_project "$P" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"
+    mounts | while IFS= read -r m; do fusermount3 -uz "$m" 2> /dev/null || fusermount -uz "$m" 2> /dev/null || true; done' EXIT
+  printf '%s\n' 'synthetic restart passphrase' > "$secrets/pass" && chmod 600 "$secrets/pass"
+  cozy --json new "$P" --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" > "$work/created.json" 2> "$work/created.err" \
+    || fail "vault restart: new encrypted project: $(tail -c 300 "$work/created.err")"
+  in_project "$P" --json vault status > "$work/before.json"
+  if ! J '.state == "unlocked"' "$work/before.json"; then
+    in_project "$P" --json vault unlock --passphrase-file "$secrets/pass" --idle 0 > "$work/unlocked.json" 2>&1 \
+      || fail "vault restart: unlock: $(head -c 300 "$work/unlocked.json")"
+  fi
+  old_view=$(mounts | grep -F -- "$P/.vault-runtime/" | head -1)
+  [ -n "$old_view" ] || fail "vault restart: the unlocked project has no view: $(mounts | tr '\n' ' ')"
+  old_runtime=$(dirname -- "$old_view")
+  marker=cl1057-$(python3 -c 'import secrets; print(secrets.token_hex(8))')
+  printf '%s\n' "$marker" > "$old_view/cl1057.txt" && sync || fail "vault restart: write into the view"
+
+  # A dead view under a folder Calcifer has no record of: the bundled provider mounted by hand, then SIGKILLed.
+  sec=$(find "$HOME/.cozy" -type f -name securefs -perm -u+x 2> /dev/null | head -1)
+  [ -n "$sec" ] || fail "vault restart: no bundled securefs under ~/.cozy"
+  id=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+  key=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+  u_runtime=$U/.vault-runtime/$id u_view=$U/.vault-runtime/$id/view
+  mkdir -p "$U/backing" "$u_view" && chmod 700 "$U/backing" "$u_runtime"
+  printf '%s\n%s\n' "$key" "$key" | PATH="$(dirname -- "$sec")/bin:$PATH" "$sec" create --format lite --argon2-t 1 --argon2-m 8 --argon2-p 1 \
+    "$U/backing" > "$work/unknown-create.log" 2>&1 || fail "vault restart: securefs create: $(tail -c 300 "$work/unknown-create.log")"
+  printf '%s\n' "$key" | PATH="$(dirname -- "$sec")/bin:$PATH" "$sec" mount "$U/backing" "$u_view" > "$work/unknown-mount.log" 2>&1 &
+  mpid=$!
+  for _ in $(seq 100); do mounted "$u_view" && break; sleep 0.1; done
+  mounted "$u_view" || fail "vault restart: securefs didn't mount the unknown folder: $(tail -c 300 "$work/unknown-mount.log")"
+  kill -9 "$mpid"; wait "$mpid" 2> /dev/null || true
+  dead "$u_view" || fail "vault restart: the unknown folder's view isn't dead after its provider's SIGKILL"
+
+  # Calcifer's whole cgroup SIGKILLed, as systemd does at a stop timeout; Restart=on-failure starts it again.
+  pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
+  systemctl --user kill --signal=SIGKILL cozy-calcifer.service || fail "vault restart: systemctl --user kill failed"
+  for _ in $(seq 120); do
+    [ "$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null)" != "$pid" ] \
+      && in_project "$P" --json vault status > "$work/after.json" 2> /dev/null && break
+    sleep 0.5
+  done
+  [ "$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null)" != "$pid" ] || fail "vault restart: Calcifer ($pid) didn't start again"
+  for view in "$old_view" "$u_view"; do
+    ! mounted "$view" || check "vault restart: $view stays mounted after the restart$(dead "$view" && echo ', dead')"
+    ! dead "$view" || check "vault restart: $view answers 'Transport endpoint is not connected'"
+  done
+  [ ! -e "$old_runtime" ] || check "vault restart: the project's dead runtime folder stays: $old_runtime"
+  [ ! -e "$u_runtime" ] || check "vault restart: the unknown folder's runtime folder stays: $u_runtime"
+  state=$(jq -r .state "$work/after.json" 2> /dev/null)
+  [ "$state" = locked ] || check "vault restart: the project is $state after Calcifer's restart, not locked"
+
+  # It unlocks again, and reads what it wrote before the kill.
+  in_project "$P" --json vault unlock --passphrase-file "$secrets/pass" --idle 0 > "$work/reunlocked.json" 2>&1 \
+    || fail "vault restart: unlock after the restart: $(head -c 300 "$work/reunlocked.json")"
+  J '.vault.state == "unlocked"' "$work/reunlocked.json" || check "vault restart: not unlocked: $(head -c 300 "$work/reunlocked.json")"
+  view=$(mounts | grep -F -- "$P/.vault-runtime/" | grep -vxF -- "$old_view" | head -1)
+  [ -n "$view" ] && grep -qxF "$marker" "$view/cl1057.txt" || check "vault restart: the unlocked project doesn't read its file: ${view:-no view}"
+  in_project "$P" --json vault lock > "$work/locked.json" || check "vault restart: lock: $(head -c 300 "$work/locked.json")"
+  echo "vault restart: views $(mounts | wc -l) left; project $state after the restart"
+)
+
 # An ordinary and an unlocked encrypted project run on the machine's executors, one code path, each call in its own scratch
 # inside its project; BiRefNet stays warm across them; locked, nothing of the encrypted one is outside it (cl-984;
 # e2e/cli/shared_scratch.py). isolated.sh published e2e-scratch and BiRefNet's model.
