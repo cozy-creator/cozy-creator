@@ -371,6 +371,8 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
   await test.step('opened from the list while locked: Unlock shows, and the page is still', async () => {
     const listed = (await api.get('/v1/projects?limit=1000')).projects.find((row) => row.path === made.path);
     expect(listed?.id, 'listed under its locked handle').toMatch(/^locked-/);
+    // Refused on purpose, as under its id above: what the tab asks of it before it has read that it's locked.
+    guards.allow(new RegExp(`status of 409\\b.*/v1/projects/${listed.id}\\b`));
     const tab = await page.context().newPage();
     let asked = 0;
     tab.on('request', (request) => { if (new URL(request.url()).pathname.startsWith('/v1/')) asked++; });
