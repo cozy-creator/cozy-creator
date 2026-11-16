@@ -220,8 +220,20 @@ def main() -> None:
         started, number = time.monotonic(), number_of(stdout)
         os.kill(pid, signal.SIGSTOP)
         began = time.monotonic()
-        locked = cell.cozy("lock-stopped", "vault", "lock", timeout=BOUND * 3)
+        done = subprocess.run([str(cell.cli), "--json", "vault", "lock"], cwd=cell.project, capture_output=True, timeout=BOUND * 3)
+        (cell.out / "lock-stopped.json").write_bytes(done.stdout)
+        (cell.out / "lock-stopped.stderr").write_bytes(done.stderr)
         facts["lock_s"] = round(time.monotonic() - began, 1)
+        if done.returncode != 0:
+            # The release notes' workaround, as a person does it: the hung machine ended, then the lock asked again.
+            facts["lock_failed"] = (done.stdout[-400:] + done.stderr[-400:]).decode(errors="replace")
+            os.kill(pid, signal.SIGKILL)
+            again = subprocess.run([str(cell.cli), "--json", "vault", "lock"], cwd=cell.project, capture_output=True, timeout=BOUND * 3)
+            facts["workaround"] = {"lock_exit": again.returncode, "state": cell.state(), "mounted": mounted(view),
+                                   "scan": traces(scanner, cell.out, "workaround", [cell.project.resolve()])}
+            raise AssertionError(f"the lock failed while local was stopped: {facts['lock_failed']}; the workaround: {facts['workaround']}")
+        lines = [line for line in done.stdout.splitlines() if line.strip()]
+        locked = cast(dict[str, object], json.loads(lines[-1])) if lines else {}
         facts["lock_said"] = locked.get("owed")
         assert cell.state() == "locked", "the vault isn't locked after its lock answered"
         facts["lock"] = hung(cell, "lock", scanner, view, locked)
@@ -266,7 +278,10 @@ def main() -> None:
         process.wait(timeout=60)
         facts["after_maximum"] = traces(scanner, cell.out, "maximum-after", [cell.project.resolve()])
     finally:
-        os.kill(pid, signal.SIGCONT)
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
         (args.out / "lock-hung.json").write_text(json.dumps(facts, indent=2, default=str))
 
     print(f"lock hung: {json.dumps({k: v for k, v in facts.items() if not isinstance(v, dict)})}", flush=True)
