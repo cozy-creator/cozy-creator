@@ -101,8 +101,17 @@ pub(crate) fn block<T: Send>(call: impl Future<Output = T> + Send) -> T {
 }
 
 /// HTTPS to one Hub (`api::hub::http`): the public roots and its granted CA. For calls on the Hub
-/// runtime (`block`).
+/// runtime (`block`) only. A pooled client belongs to one runtime: hyper drives each connection on the
+/// runtime that opened it, and this one runs only inside `block_on`, so a connection it left idle in a
+/// pool another runtime draws from is never driven for that runtime's request, which waits out its
+/// whole bound (th-378: a pod's speed reports, 30 s each, never reached the Hub).
 pub(crate) fn http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
+    static CLIENTS: Mutex<Vec<(Option<Vec<u8>>, reqwest::Client)>> = Mutex::new(Vec::new());
+    pooled(&CLIENTS, ca_der)
+}
+
+/// `http` for the machine's own Hub calls (`machine::hub::Hub`: its speed reports and its release), on the machine's runtime.
+pub(crate) fn rental_http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, Refusal> {
     static CLIENTS: Mutex<Vec<(Option<Vec<u8>>, reqwest::Client)>> = Mutex::new(Vec::new());
     pooled(&CLIENTS, ca_der)
 }
