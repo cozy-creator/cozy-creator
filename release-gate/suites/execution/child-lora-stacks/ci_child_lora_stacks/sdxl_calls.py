@@ -47,24 +47,20 @@ class UpscaleInput(msgspec.Struct, kw_only=True, frozen=True):
 
 generate: Operation[GenerateInput, ImageResult] = Operation(
     distribution='sdxl', module='sdxl', export='generate',
-    request=GenerateInput, result=ImageResult,
-    models=('model',),
+    request=GenerateInput, result=ImageResult, models=('model',),
 )
 
 image: Operation[ImageBox, ImageResult] = Operation(
     distribution='sdxl', module='sdxl', export='image',
-    request=ImageBox, result=ImageResult,
-    models=('model',),
+    request=ImageBox, result=ImageResult, models=('model',),
 )
 
 quantize: Operation[quantizeRequest, ModelArtifact] = Operation(
     distribution='sdxl', module='cozy_runtime.derive.recipes', export='quantize',
-    request=quantizeRequest, result=ModelArtifact,
-    models=('source',),
+    request=quantizeRequest, result=ModelArtifact, models=('source',),
 )
 
 upscale: Operation[UpscaleInput, ImageResult] = Operation(
     distribution='sdxl', module='sdxl', export='upscale',
-    request=UpscaleInput, result=ImageResult,
-    models=('model',),
+    request=UpscaleInput, result=ImageResult, models=('model',),
 )

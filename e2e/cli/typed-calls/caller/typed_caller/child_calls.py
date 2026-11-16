@@ -36,18 +36,15 @@ class WeightResult(msgspec.Struct, kw_only=True, frozen=True):
 
 shade: Operation[Request, Result] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='shade',
-    request=Request, result=Result,
-    models=(),
+    request=Request, result=Result, models=(),
 )
 
 shade_assets: Operation[shade_assetsRequest, Result] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='shade_assets',
-    request=shade_assetsRequest, result=Result,
-    models=(),
+    request=shade_assetsRequest, result=Result, models=(),
 )
 
 weighted: Operation[WeightRequest, WeightResult] = Operation(
     distribution='xs198-typed-child', module='typed_child', export='weighted',
-    request=WeightRequest, result=WeightResult,
-    models=('weights',),
+    request=WeightRequest, result=WeightResult, models=('weights',),
 )

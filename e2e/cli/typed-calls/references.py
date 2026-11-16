@@ -198,10 +198,13 @@ def main() -> None:
     )
     run("describe", reader("3.12", "--json", "--dir", fixture / "caller", "describe"))
 
+    # A reference goes stale when the callee no longer takes the call (a field's type, a new required field); a changed
+    # default or bound still takes it.
     declaration = "number: Annotated[int, msgspec.Meta(ge=0, le=1000)] = 17"
-    for label, version, changed in (
-        ("default", "0.1.1", declaration.replace("= 17", "= 19")),
-        ("bound", "0.1.2", declaration.replace("ge=0", "ge=1")),
+    for label, version, changed, stale in (
+        ("type", "0.1.1", 'number: str = "19"', True),
+        ("required", "0.1.2", declaration + "\n    scale: int", True),
+        ("default", "0.1.3", declaration.replace("= 17", "= 19"), False),
     ):
         at = out / ("stale-" + label)
         shutil.copytree(
@@ -218,9 +221,9 @@ def main() -> None:
         build_leaf(at, "build-stale-" + label)
         run("lock-stale-" + label, ["uv", "lock", "--project", str(at / "caller")])
         run(
-            "refuse-stale-" + label,
+            ("refuse-stale-" if stale else "accept-") + label,
             reader("3.12", "--json", "--dir", at / "caller", "describe"),
-            stale=True,
+            stale=stale,
         )
 
     (out / "qualified.json").write_text(
@@ -229,8 +232,9 @@ def main() -> None:
                 "leaf_wheel": expected["xs198-typed-leaf"],
                 "python_312_313_equal": True,
                 "wheel_source_interface_equal": True,
-                "stale_default_refused": True,
-                "stale_bound_refused": True,
+                "stale_type_refused": True,
+                "stale_required_field_refused": True,
+                "changed_default_accepted": True,
                 "scope": (
                     "real builds, locks and public SDK source commands; "
                     "execution is run.py's separate proof"

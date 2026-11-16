@@ -26,12 +26,10 @@ class SquareResult(msgspec.Struct, kw_only=True, frozen=True):
 
 judge: Operation[PrimeRequest, PrimeResult] = Operation(
     distribution='xs198-typed-leaf', module='typed_leaf', export='judge',
-    request=PrimeRequest, result=PrimeResult,
-    models=(),
+    request=PrimeRequest, result=PrimeResult, models=(),
 )
 
 square: Operation[SquareRequest, SquareResult] = Operation(
     distribution='xs198-typed-leaf', module='typed_leaf', export='square',
-    request=SquareRequest, result=SquareResult,
-    models=(),
+    request=SquareRequest, result=SquareResult, models=(),
 )

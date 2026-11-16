@@ -9,7 +9,8 @@ and TensorFS wheels, and runs:
 
 - `references.py`: builds the leaf wheel, locks the caller, checks the locked hashes, regenerates both reference
   modules (Python 3.12 and 3.13 must agree, as must the leaf's wheel and source interfaces), and requires
-  `stale_call_reference` for a leaf whose request default or bound changed.
+  `stale_call_reference` for a leaf whose request field changed type or gained a required field (a changed default
+  still describes).
 - `run.py`: the cases below, keeping every command, watch record and export under `$OUT/typed-calls`.
 
 | Case | Expected |

@@ -4,8 +4,8 @@
 mypy
 cryptography
 h2
-cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/releases/download/xs-198-runtime-0.48.0.dev0-aec95482/cozy_runtime-0.48.0.dev0%2Bdev.gaec95482-py3-none-any.whl#sha256=84e9156307fedf65fb4695626e5b155b9f1d197e08836310a920f71ad03f864b
-tensorfs @ https://github.com/cozy-creator/cozy-creator/releases/download/xs-198-tensorfs-0.27.0-95d567d3/tensorfs-0.27.0%2Bdev.g95d567d3-cp311-abi3-manylinux_2_28_x86_64.whl#sha256=650a72ddda60622966c0053129f61dd0270fe5df2c3cba21e1aa9887e6e56a2a
+# The Runtime of the open RC with the author API the fixtures use: its pure wheel, built from this commit.
+cozy-runtime @ https://github.com/cozy-creator/cozy-runtime/archive/6d33e63c67d4ef21b6f989c38be13412b6f3fb4f.tar.gz
 msgspec
 numpy
 pillow

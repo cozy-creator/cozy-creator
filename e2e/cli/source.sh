@@ -18,7 +18,7 @@ step "a dev home's packages checkout: first-party packages run from source, on l
 [ -n "$LOCAL" ] || return 0
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "from source: its stand-in is another user of a fresh GitHub runner"; return; }
 case $("$COZY" --version) in *-dev+g*) ;; *) echo "from source: $("$COZY" --version) is no RC build, which reads no checkout"; return ;; esac
-local co=$OUT/packages-rc cfg=$HOME/.cozy/config.toml holder=$HOME/.cozy/calcifer/calcifer.lock.holder sha short said callee args=()
+local co=$OUT/packages-rc cfg=$HOME/.cozy/config.toml holder=$HOME/.cozy/calcifer/calcifer.lock.holder sha short said callee lock args=()
 rm -rf "$co" && mkdir -p "$co"
 # minimax-h3-tools as isolated.sh publishes it at the root, its echo saying it's the source.
 cp -r "$here/../../release-gate/suites/hub/pkg" "$co/minimax-h3-tools" && mv "$co/minimax-h3-tools/ci_hub_pkg" "$co/minimax-h3-tools/minimax_h3_tools"
@@ -55,6 +55,12 @@ cp "$here/relay/e2e_relay/echo_calls.py" "$co/e2e-source-relay/e2e_source_relay_
 sed -i 's/only-include = \["e2e_source_relay.py"\]/only-include = ["e2e_source_relay.py", "e2e_source_relay_calls.py"]/' "$co/e2e-source-relay/pyproject.toml"
 # Tools a box is made of, for the page's list.
 cp -r "$here/project/boxed" "$co/e2e-boxed"
+# The real Orbit and the H3 it calls (xs-198): after the hard cut Orbit needs the checkout's H3, never the Hub's.
+if [ -n "$PACKAGES" ]; then
+  cp -r "$PACKAGES/orbit" "$PACKAGES/minimax-h3" "$co/" || { check "from source: $PACKAGES holds no orbit and minimax-h3"; return; }
+  # It reads with the run's candidate Runtime, as the machine runs it (cl-994): until a set lands, the RC's newest build is another.
+  [ ! -f "${CAND_RT:-}" ] || sed -i "/^\[tool.uv.sources\]/a cozy-runtime = { path = \"$CAND_RT\" }" "$co/orbit/pyproject.toml"
+fi
 git -C "$co" init -q -b rc/e2e && git -C "$co" add -A && git -C "$co" -c user.name=e2e -c user.email=e2e@localhost commit -qm checkout \
   || { check "from source: the checkout's commit failed"; return; }
 sha=$(git -C "$co" rev-parse HEAD) short=${sha:0:8} said="rc/e2e @ ${sha:0:8}"
@@ -101,6 +107,20 @@ if cell source-callee e2e-source-relay/relay "text=called from the checkout"; th
     {} + 2> /dev/null | sort -u | paste -sd, -)
   echo "from source: e2e-source-relay's environment names its callee ${callee:-nothing}"
   [ "$callee" = _/minimax-h3-tools ] || check "from source: e2e-source-relay's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
+fi
+
+# The real Orbit from source: its contract says the checkout, and its lock takes minimax-h3 from the checkout's folder (its
+# `{ index = "tensorhub" }` source staged as a path): the Hub's published H3 has the old call syntax and would not describe it.
+if [ -d "$co/orbit" ]; then
+  in_project "$RUN_PROJECT" run orbit/orbit --describe > "$OUT/source-orbit.txt" 2>&1 && grep -qF "from source: $said" "$OUT/source-orbit.txt" \
+    || check "from source: orbit's contract doesn't say 'from source: $said': $(head -c 600 "$OUT/source-orbit.txt")"
+  in_project "$RUN_PROJECT" --json run orbit/orbit --describe > "$OUT/source-orbit.json" 2> "$OUT/source-orbit.err" \
+    && J '[.interface.entrypoints[]? | select(.name == "orbit") | .calls[]? | select(.package == "minimax-h3")] != []' "$OUT/source-orbit.json" \
+    || check "from source: orbit's interface calls no minimax-h3: $(jq -c '[.interface.entrypoints[]? | {name, calls}]' "$OUT/source-orbit.json" 2> /dev/null) $(tail -c 300 "$OUT/source-orbit.err")"
+  lock=$(grep -l '^name = "orbit"$' $(find "$HOME/.cozy" "$RUN_PROJECT" -path '*/locked-*/lock' -newer "$co/orbit/pyproject.toml" 2> /dev/null) /dev/null 2> /dev/null | head -1)
+  echo "from source: orbit's lock ${lock:-was not made}: $(grep -A2 '^name = "minimax-h3"$' "${lock:-/dev/null}" 2> /dev/null | tr '\n' ' ')"
+  grep -A2 '^name = "minimax-h3"$' "${lock:-/dev/null}" 2> /dev/null | grep -q 'source = { directory = "../minimax-h3" }' \
+    || check "from source: orbit's lock doesn't take minimax-h3 from the checkout's folder: ${lock:-no lock made}"
 fi
 
 # A release named, and an account's package, are the Hub's.
