@@ -784,7 +784,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | web-serves) ;;
+    entrypoints | projectvault | web-serves | fresh) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints
