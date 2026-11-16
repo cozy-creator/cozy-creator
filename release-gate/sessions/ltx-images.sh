@@ -13,6 +13,9 @@
 #   sound       now: <beat> mentioned, a synthetic two-beats-a-second drum: the soundtrack, returned as given
 #   pickup      now: text's take picked up at frame 72: the take's first 72 frames kept, 96 new (5 s less the 25 carried)
 #   text-up, first-up, ref-up   text, first and ref with prompt_upsampling on (Lightricks' Gemma 4 E2B enhancer)
+#   video       now: <clip> (was-text's take, else text's) mentioned: the Union Control reference, by its edges; the
+#               output's edges held against the clip's (ffmpeg edgedetect, SSIM) beside text's, which had none
+#   keys        now: first_frame=<lighthouse>, a keyframe <lantern> at 2.5 s (frame 60): it lands on frame 60
 # The `now` cells render with prompt_upsampling off unless named `-up`; each keeps the text the model read
 # ($OUT/sheets/<cell>.txt, the result's `prompt`) beside its sheet.
 # Each cell keeps its run record, its video, a contact sheet ($OUT/sheets/<cell>.jpg: the first picture, frames 0, 30, 60, 90 and
@@ -28,7 +31,7 @@ RAM=$(param ram_gb 96) NEED=$(param need_s 5400)
 WAS=$PACKAGES/was/ltx-2.5 NOW=$PACKAGES/now/ltx-2.5 FIX=$(cd "$(dirname "$0")" && pwd)/fixtures/ltx-images
 for t in "$WAS" "$NOW"; do [ -f "$t/pyproject.toml" ] || fail "no packages_refs checkout ${t#"$PACKAGES"/}"; done
 grep -q 'last_frame' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 takes no last_frame"
-for c in ref ref-up ref-first sound pickup text-up first-up; do
+for c in ref ref-up ref-first sound pickup text-up first-up video keys; do
   [[ ",$CELLS," != *",$c,"* ]] || grep -q 'Prompt\[Image | Audio\]' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 is older than references (cell $c)"
 done
 [ -f "$FIX/pearl.jpg" ] && [ -f "$FIX/teapot.jpg" ] && [ -f "$REF/seed.jpg" ] || fail "no fixtures"
@@ -170,6 +173,31 @@ if has pickup && has text && [ -s "$OUT/videos/text.mp4" ]; then
     ffmpeg -v error -y -i "$OUT/videos/pickup.mp4" -vf "select='between(n,66,78)',scale=-2:256,tile=13x1:padding=4" -frames:v 1 "$OUT/sheets/pickup-join.jpg"
     sheet pickup "$OUT/videos/pickup.mp4"
   }
+fi
+# edged <video> <frames>: its edges (ffmpeg's Canny), first <frames> frames, for holding structure against structure.
+edged() { ffmpeg -v error -y -i "$1" -vf "scale=640:-2,edgedetect=low=0.1:high=0.3,trim=end_frame=$2" -an "$OUT/edges-$(basename "$1")"; }
+edge_ssim() {
+  ffmpeg -v error -i "$OUT/edges-$(basename "$1")" -i "$OUT/edges-$(basename "$2")" -lavfi "[0:v]setpts=N/FRAME_RATE/TB[a];[1:v]setpts=N/FRAME_RATE/TB,scale=640:-2[b];[a][b]ssim=stats_file=$OUT/ssim-edges.txt" -f null - &&
+    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^All:/) { s += substr($i, 5); n++ } } END { printf "%.4f", s / n }' "$OUT/ssim-edges.txt"
+}
+if has video; then
+  src=$OUT/videos/was-text.mp4; [ -s "$src" ] || src=$OUT/videos/text.mp4
+  if [ -s "$src" ]; then
+    cp "$src" "$OUT/clip.mp4"
+    run_page import "$OUT/clip.mp4" --name clip > "$OUT/import-clip.txt" 2>&1 || fail "import clip: $(cat "$OUT/import-clip.txt")"
+    cell video "$NOW" "$(now "A watercolor painting comes to life: a fox in a red scarf walks through an autumn forest the way <clip> moves, turns its head toward the camera. Rustling leaves.")"
+    if [ -s "$OUT/videos/video.mp4" ]; then
+      edged "$OUT/clip.mp4" 121; edged "$OUT/videos/video.mp4" 121; edged "$OUT/videos/text.mp4" 121
+      say "video: edges against the clip's, SSIM $(edge_ssim "$OUT/videos/video.mp4" "$OUT/clip.mp4"); text's (no reference) $(edge_ssim "$OUT/videos/text.mp4" "$OUT/clip.mp4")"
+      ffmpeg -v error -y -i "$OUT/clip.mp4" -i "$OUT/videos/video.mp4" -filter_complex "[0:v]select='eq(n,0)+eq(n,60)+eq(n,120)',scale=-2:256,tile=3x1[a];[1:v]select='eq(n,0)+eq(n,60)+eq(n,120)',scale=-2:256,tile=3x1[b];[a][b]vstack" -frames:v 1 "$OUT/sheets/video-vs-clip.jpg" || true
+    fi
+  else
+    say "MISS video: no take to reference"; bad+=(video)
+  fi
+fi
+if has keys; then
+  cell keys "$NOW" "$(now "The camera rises from the snowy sea cliff to the lantern room at the top of the lighthouse and holds there while snow falls. Howling wind." | jq -c '. + {first_frame: "<lighthouse>", keyframes: [{picture: "<lantern>", at_s: 2.5}]}')" "$OUT/lighthouse.jpg"
+  [ -s "$OUT/videos/keys.mp4" ] && say "keys: the lantern keyframe (frame 60): $(matched "$OUT/videos/keys.mp4" "$OUT/lantern.jpg" keys-key)"
 fi
 [ "${#bad[@]}" = 0 ] || fail "missed: ${bad[*]}"
 say "PASS: every cell rendered; judge $OUT/sheets (each picture beside the frames it should be) and the SSIM lines above"
