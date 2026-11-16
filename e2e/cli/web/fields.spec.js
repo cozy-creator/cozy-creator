@@ -169,8 +169,8 @@ test('fields', async ({ page, project, api, cli }) => {
     let from;
     await expect.poll(async () => (from = await reach(page, 'walk')), { message: 'walk in reach beside Focus' }).toBeTruthy();
     const said = await carry(page, from, await middle(slot), async () => ({ refuses: /\brefuses\b/.test(await slot.getAttribute('class')), why: await slot.locator('.refusal').textContent() }));
-    expect.soft(said, 'said as it is carried over').toMatchObject({ refuses: true, why: expect.stringContaining('takes a picture') });
-    await expect.soft(page.locator('.notes .note .line', { hasText: 'takes a picture' }), 'and said once let go').toHaveCount(1);
+    expect.soft(said, 'said as it is carried over').toMatchObject({ refuses: true, why: expect.stringContaining('takes an image') });
+    await expect.soft(page.locator('.notes .note .line', { hasText: 'takes an image' }), 'and said once let go').toHaveCount(1);
     expect.soft(await fieldsOf('every'), 'refused').not.toHaveProperty('first_frame');
     expect.soft(await stood(), 'refused, walk stays where it was: a drop is no move').toEqual(strip);
 

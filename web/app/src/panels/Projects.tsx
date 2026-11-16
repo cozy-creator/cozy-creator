@@ -56,7 +56,7 @@ export function Projects() {
         <input
           className="field wide find"
           aria-label="Search projects"
-          placeholder="Search projects, or a folder"
+          placeholder="Search by name or folder"
           spellCheck={false}
           value={find}
           onChange={(event) => setFind(event.target.value)}
@@ -72,8 +72,8 @@ export function Projects() {
           </li>
         ))}
       </ul>
-      {data && !all.length && <p className="muted">Drop a file on the canvas to start one.</p>}
-      {words && !listed.length && <p className="muted">No project's name or folder has that.</p>}
+      {data && !all.length && <p className="muted">No projects yet. Create one above, or drop a file on the canvas.</p>}
+      {words && !listed.length && <p className="muted">No project matches that name or folder.</p>}
     </DrawerFrame>
   )
 }

@@ -86,8 +86,8 @@ const asset = async (name) => (await api('')).assets?.find((row) => row.name ===
     return runs.find((one) => /\/held(@|$)/.test(one.target) && one.number > Math.max(Number(pagedRun), Number(cutRun))) ?? null;
   }, (one) => Boolean(one), 120_000);
 
-  // Its take landing is said, and goes by itself, untouched.
-  const finished = page.locator('.notes .note').filter({ hasText: 'paged finished' });
+  // Its take landing is said ("Version 2 of paged is ready"), and goes by itself, untouched.
+  const finished = page.locator('.notes .note').filter({ hasText: 'of paged is ready' });
   const landed = await finished.waitFor({ timeout: 120_000 }).then(() => Date.now(), () => 0);
   check('the_take_landing_is_said', landed > 0, await page.locator('.notes').allInnerTexts());
   if (landed) {

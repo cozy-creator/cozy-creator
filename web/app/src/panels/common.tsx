@@ -4,7 +4,8 @@ import { ApiError } from "../api/client"
 import { statusQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 
-/** A refusal as Calcifer said it: its message and its remedy, never a command (Paul, 11-16). With `plain`, only what went wrong. */
+/** A refusal as Calcifer said it: its message and its remedy. Never `next`: the page shows no commands to paste (Paul, 11-16). */
+/** With `plain`, only what went wrong. */
 export function Failure({ error, lead, plain }: { error: unknown; lead?: string; plain?: boolean }) {
   if (!error) return null
   const body = error instanceof ApiError ? error.body : undefined

@@ -107,7 +107,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         <button type="button" className="tb" aria-label="Back to canvas" onClick={onClose}><Icon name="back" />Back to canvas</button>
         <div className="focus-title">
           {view.draft === undefined && <StateDot state={viewState(view)} unseen={view.asset?.unseen?.length ?? 0} noun={view.asset?.noun ?? "take"} />}
-          {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename node" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
+          {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename box" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
           {/* Which take it is, a picture's or a video's: being written, "New take", unmistakably; none with no takes (cl-925). */}
           {(view.asset?.kind === "image" || view.asset?.kind === "video") && (version !== undefined || Boolean(view.asset.prefixes?.length) || Boolean(view.asset.sha256) || Boolean(view.asset.making?.length)) && <span className={`focus-version-label ${writing ? "writing" : ""}`} aria-label="Take">{writing ? "New take" : version === undefined ? "Rendering" : `v${version}`}</span>}
           {warnings.length > 0 && (

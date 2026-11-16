@@ -70,7 +70,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut }: { projec
       <div className="tool-shelf">
         <div ref={list} className={`tool-groups ${isPlaceholderData ? "stale" : ""}`}>
           <section data-palette="nodes">
-            <h4>Nodes</h4>
+            <h4>Boxes</h4>
             <ul>{BASIC_NODES.map((node) => <li key={node.kind} className={`tool tool-node ${selected === node.kind ? "selected" : ""}`} data-node={node.kind} data-kind={node.kind} onClick={() => setSelected(node.kind)}><b>{node.label}</b></li>)}</ul>
           </section>
           <section data-palette="tools">

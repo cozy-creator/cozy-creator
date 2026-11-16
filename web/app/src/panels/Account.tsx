@@ -33,7 +33,7 @@ function CodeEntry({ sent, onDone, onAgain }: { sent: Code; onDone: (code: strin
       }}
     >
       <p className="muted">
-        {sent.id != null ? `A code is on its way to ${sent.email}.` : left > 0 ? `The Hub sends ${sent.email} its next code in ${left} s.` : `You can ask for a code to ${sent.email} again.`}
+        {sent.id != null ? `We sent a code to ${sent.email}.` : left > 0 ? `You can ask for a new code for ${sent.email} in ${left}s.` : `You can ask for a new code for ${sent.email} now.`}
       </p>
       <label>
         Code
@@ -41,13 +41,13 @@ function CodeEntry({ sent, onDone, onAgain }: { sent: Code; onDone: (code: strin
       </label>
       <div className="row end">
         <button type="button" className="tb" onClick={onAgain} disabled={left > 0}>
-          {left > 0 ? `Ask again in ${left} s` : "Start over"}
+          {left > 0 ? `Ask again in ${left}s` : "Start over"}
         </button>
         <button type="submit" className="tb primary" disabled={ask.busy || !code.trim() || sent.id == null}>
-          Go on
+          Continue
         </button>
       </div>
-      <Failure error={ask.error} lead="That didn't work" plain />
+      <Failure error={ask.error} lead="That code didn't work" plain />
     </form>
   )
 }
@@ -59,7 +59,7 @@ function SignIn({ onSignedIn, keyRefused }: { onSignedIn: () => void; keyRefused
   const now = useSignal(theme)
   return (
     <>
-      {keyRefused && <p className="warn">The Hub no longer accepts this computer's key: it was revoked from another computer.</p>}
+      {keyRefused && <p className="warn">This computer was signed out from another computer, so the Hub no longer accepts its key. Sign in again.</p>}
       <AuthProvider client={auth} autoStart={false}>
         <AuthUiProvider appearance={appearance(now)} messages={messages}>
           <ContactSignIn hideProviders onSignedIn={onSignedIn} />
@@ -84,17 +84,17 @@ function NameAccount({ onNamed }: { onNamed: () => void }) {
         })
       }}
     >
-      <p className="muted">You're signed in. Your account needs a name, which your packages and models go under.</p>
+      <p className="muted">You're signed in. Now choose a name for your account: your packages and models are published under it.</p>
       <label>
         Name
         <input className="field" autoFocus spellCheck={false} value={name} onChange={(event) => setName(event.target.value)} />
       </label>
       <div className="row end">
         <button type="submit" className="tb primary" disabled={naming.busy || !name.trim()}>
-          Name it
+          Save name
         </button>
       </div>
-      <Failure error={naming.error} lead="That name won't do" plain />
+      <Failure error={naming.error} lead="Couldn't use that name" plain />
     </form>
   )
 }
@@ -106,9 +106,9 @@ function Orgs({ who }: { who: Who }) {
   const [claim, setClaim] = useState<OrgClaim | null>(null)
   return (
     <Section title="Orgs">
-      {who.orgs.length ? <p>{who.orgs.join(", ")}</p> : <p className="muted">None yet.</p>}
+      {who.orgs.length ? <p>{who.orgs.join(", ")}</p> : <p className="muted">You don't have any orgs yet.</p>}
       <details className="sect">
-        <summary>Claim one</summary>
+        <summary>Claim an org</summary>
         <form
           className="row"
           onSubmit={(event) => {
@@ -116,16 +116,16 @@ function Orgs({ who }: { who: Who }) {
             void ask.run(async () => setClaim(await client.claimOrg(org.trim())))
           }}
         >
-          <input className="field" aria-label="An org's name" placeholder="An org's name" spellCheck={false} value={org} onChange={(event) => setOrg(event.target.value)} />
+          <input className="field" aria-label="Org name" placeholder="Org name" spellCheck={false} value={org} onChange={(event) => setOrg(event.target.value)} />
           <button type="submit" className="tb" disabled={ask.busy || !org.trim()}>
             Claim
           </button>
         </form>
-        <Failure error={ask.error} lead="Couldn't claim it" />
-        {claim?.claimed && <p>{claim.org} is yours{claim.proven_by ? `, proven by ${claim.proven_by}` : ""}.</p>}
+        <Failure error={ask.error} lead="Couldn't claim the org" />
+        {claim?.claimed && <p>{claim.org} is yours{claim.proven_by ? ` (verified through ${claim.proven_by})` : ""}.</p>}
         {claim && !claim.claimed && (
           <>
-            <p className="muted">Post this code in one of these places, then claim it again:</p>
+            <p className="muted">To show it's yours, post this code in one of these places, then click Claim again:</p>
             {claim.code && <Copyable text={claim.code} />}
             <ul className="rows">
               {claim.proofs.map((proof) => (
@@ -167,7 +167,7 @@ function SignOut({ who, onDone }: { who: Who; onDone: () => void }) {
       <Confirm
         label="Sign out"
         disabled={ask.busy}
-        says={`Sign this computer out${who.email ? ` of ${who.email}` : ""}? Its key is revoked at the Hub and erased here. Rentals go on billing until they end, and it can't rent or end them until it signs in again.`}
+        says={`Sign this computer out${who.email ? ` of ${who.email}` : ""}? The Hub revokes this computer's key, and Cozy deletes it here. Your rentals keep running and costing money until they end, and you can't rent or end one from this computer until you sign in again.`}
         yes="Sign out"
         onYes={() =>
           void ask.run(async () => {
@@ -180,8 +180,8 @@ function SignOut({ who, onDone }: { who: Who; onDone: () => void }) {
       <Confirm
         label="Sign out everywhere"
         disabled={ask.busy}
-        says="Email a code that signs every computer out of this account, this one too? Rentals go on billing until they end."
-        yes="Email the code"
+        says="Sign every computer out of this account, including this one? We'll email you a code to confirm. Your rentals keep running and costing money until they end."
+        yes="Email me the code"
         onYes={() => void ask.run(async () => setSent(await client.sendCode("sign_out_everywhere")))}
       />
       <Failure error={ask.error} lead="Couldn't sign out" />
@@ -210,7 +210,7 @@ function Settings() {
   return (
     <Section title="Settings">
       <ShowNsfw shown={showNsfw} onChange={setShowNsfw} />
-      <p className="muted">Applies to model and LoRA lists throughout Creator.</p>
+      <p className="muted">This applies to every model and LoRA list in Cozy.</p>
       <label className="row center">
         <input
           type="checkbox"
@@ -220,8 +220,8 @@ function Settings() {
         />
         Send anonymous performance data
       </label>
-      <p className="muted">Each run's package, models, versions, GPU, size, times and errors, under a random install ID. Never prompts, images, names or your account.</p>
-      <Failure error={ask.error} lead="Couldn't change it" />
+      <p className="muted">Cozy sends each run's package, models, versions, GPU, size, timings and errors, under a random install ID. It never sends your prompts, images, names or account.</p>
+      <Failure error={ask.error} lead="Couldn't save the setting" />
     </Section>
   )
 }
@@ -252,7 +252,7 @@ export function Account() {
   return (
     <DrawerFrame title="Account">
       <Settings />
-      <Failure error={error} lead="The Hub didn't say who this is" />
+      <Failure error={error} lead="Couldn't get your account from the Hub" />
       {who && !who.logged_in && <SignIn keyRefused={Boolean(who.key_refused)} onSignedIn={changed} />}
       {who?.logged_in && !who.account && <NameAccount onNamed={changed} />}
       {signedIn && (

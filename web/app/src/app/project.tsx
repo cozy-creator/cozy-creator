@@ -107,7 +107,7 @@ export function Unopened({ error, gone }: { error?: unknown; gone?: string }) {
   const folderGone = body?.code === "project_folder_gone"
   return (
     <div>
-      <h2>{folderGone ? sentence(message) : "This project can't be opened yet"}</h2>
+      <h2>{folderGone ? sentence(message) : "Couldn't open this project"}</h2>
       {!folderGone && <p>{noHash(sentence(message))}</p>}
       {body?.remedy && <p>{noHash(sentence(body.remedy))}</p>}
     </div>

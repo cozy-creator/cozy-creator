@@ -110,7 +110,7 @@ const failureStatus: Record<ErrorBody["kind"], number> = {
 }
 
 const unreachable = () =>
-  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering" })
+  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Cozy isn't responding", remedy: "If it doesn't come back, start Cozy again on this computer." })
 
 /** Calcifer won't answer this page: it isn't Calcifer's own page, or not its account's (design/calcifer-access.md). Any other 401
  *  or 403 is a Hub's word on a code or a key, which belongs where it happened. */
@@ -120,7 +120,7 @@ async function refusal(response: Response): Promise<ApiError> {
   const body = await response.json().catch(() => null)
   const error = body?.error
   if (typeof error?.message === "string") return new ApiError(response.status, error)
-  return new ApiError(response.status, { kind: "internal", code: `http_${response.status}`, message: `Calcifer answered ${response.status}` })
+  return new ApiError(response.status, { kind: "internal", code: `http_${response.status}`, message: `Cozy returned an error (HTTP ${response.status})` })
 }
 
 const aborted = (error: unknown) => error instanceof DOMException && error.name === "AbortError"
@@ -215,7 +215,7 @@ export class Client {
     const [, , root] = path.split("?")[0].split("/")
     const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && !(root === "down" && path.split("/").length === 3) && !asks(path)
     if (writing && this.frozen && !options.action && root !== "events") {
-      throw new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving its edits before closing" })
+      throw new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving your edits before the page closes" })
     }
     if (writing) this.writes++
     try { return await this.exchange(path, init, options) }
@@ -365,7 +365,7 @@ export class Client {
 
   async newProject(body: Open): Promise<Opened> {
     if (body.unencrypted) return this.write("POST", "/v1/projects", body, `project-${crypto.randomUUID()}`)
-    if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open Cozy on this computer to enter encryption credentials" }))
+    if (this.transport.channel) return Promise.reject(new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "To make an encrypted project, open Cozy on the computer the project will be on" }))
     return this.json("/v1/projects", { method: "POST", headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(body), cache: "no-store" })
   }
 
@@ -375,7 +375,7 @@ export class Client {
 
   /** One operation ID survives connection loss; credentials and final secrets stay in this caller's memory. */
   async vaultChange(id: string, body: Partial<VaultAsk> & Pick<VaultAsk, "action">, onProgress?: (event: VaultProgress) => void, signal?: AbortSignal): Promise<VaultChanged> {
-    if (this.transport.channel) throw new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "Open this project on its computer to enter encryption credentials" })
+    if (this.transport.channel) throw new ApiError(403, { kind: "forbidden", code: "vault_local_only", message: "To enter a passphrase or recovery secret, open this project on the computer it's on" })
     signal?.throwIfAborted()
     // Activity is a frequent, best-effort clock update, not a durable operation.
     if (body.action === "activity") {
@@ -385,9 +385,9 @@ export class Client {
     const serialized = JSON.stringify(body)
     const incomplete = () => new ApiError(0, {
       kind: "unavailable", code: "vault_stream_incomplete",
-      message: "The connection ended before the project operation finished. It may still be running; check project protection before trying again.",
+      message: "The connection dropped before the change finished, and it may still be running. Check the project's encryption before you try again.",
     })
-    const invalid = () => new ApiError(502, { kind: "internal", code: "vault_stream_invalid", message: "The project operation response could not be read. Check project protection before trying again." })
+    const invalid = () => new ApiError(502, { kind: "internal", code: "vault_stream_invalid", message: "Couldn't read Cozy's reply about the change. Check the project's encryption before you try again." })
     const terminal: { changed?: VaultChanged; failure?: ApiError } = {}
     let attempt = 0
     let acknowledged = false

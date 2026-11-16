@@ -1074,7 +1074,7 @@ export class CanvasStore {
       readSeq = read.seq
       cards = read.cards
     } catch (error) {
-      if (!lost(error)) say("Couldn't read where things sit", error)
+      if (!lost(error)) say("Couldn't load where the boxes are", error)
     }
     const rows = this.rows!
     const state = this.state!
@@ -1418,7 +1418,7 @@ export class CanvasStore {
     this.patch(key, { viewed: undefined, watch: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
     if (asset.pinned && asset.approved === number) return
     const edit = this.step(`Selected version ${number} of ${key}`, [key])
-    this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select version", edit)
+    this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select that version of", edit)
     if (view?.hereWords && asset.tool) {
       const field = this.promptOf(asset.tool)
       const words = this.valueOf(key, field)
@@ -1481,7 +1481,7 @@ export class CanvasStore {
     const last = framesIn(file.duration_ms, fps)
     // H3's takes end on its grid: one that doesn't goes on from the grid's last frame in it.
     const end = pickupAt(last, last, snap)
-    if (end === null) return say(`${from}'s take ${number} is shorter than this tool picks up from`)
+    if (end === null) return say(`Take ${number} of ${from} is too short for this tool to continue from`)
     this.patch(key, { hereWords: true, watch: undefined, continuing: { take: `<${mentionFrom(key, from, number)}>`, out_frame: end, beats_from: 0 }, continuingFps: fps })
     this.openHere(key)
   }
@@ -1620,7 +1620,7 @@ export class CanvasStore {
       },
       refused: (error) => {
         settle()
-        say(`Couldn't join ${name}`, error)
+        say(`Couldn't put ${name}'s video together`, error)
       },
     })
   }
@@ -1802,7 +1802,7 @@ export class CanvasStore {
           this.own.set(held.name, (this.own.get(held.name) ?? new Set()).add(answer.etag))
           this.patch(held.name, { known: answer.etag })
         }
-        if (answer.stale?.length) say(`That puts ${answer.stale.join(", ")} out of date`)
+        if (answer.stale?.length) say(`${answer.stale.join(", ")} ${answer.stale.length === 1 ? "is" : "are"} now out of date`)
         then?.done?.(answer)
       },
       refused: (error) => {
@@ -1830,9 +1830,9 @@ export class CanvasStore {
     const edit = this.step(`Discarded ${asset.noun} ${number} of ${key}`, [key])
     let note = 0
     this.dropTake(key, number, edit, () => dismiss(note))
-    const stands = asset.approved === number ? ` It was approved: ${name} now shows its newest.` : ""
+    const stands = asset.approved === number ? ` It was the approved one, so ${name} now shows its newest.` : ""
     const readers = (this.state?.assets ?? []).filter((other) => other.name !== key && other.reads?.some((read) => read.name === key && read.version === number)).map((other) => other.name)
-    const read = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} it, and can't render until it's back.` : ""
+    const read = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "uses" : "use"} it and can't render until it's back.` : ""
     note = this.offer(edit, `Discarded ${asset.noun} ${number} of ${name}.${stands}${read}`)
   }
 
@@ -1878,10 +1878,10 @@ export class CanvasStore {
     this.joinStep(edit, [key, ...readers.map((one) => one.name)])
     let note = 0
     this.dropTake(key, number, edit, () => dismiss(note))
-    for (const one of readers) void this.write(one.name, one.next, `set ${one.name}'s words`, { edit })
-    const stands = asset.pinned && asset.approved === number ? ` It was approved: ${from} now follows its inputs.` : ""
-    const read = readers.length ? ` ${readers.map((one) => one.name).join(", ")} ${readers.length === 1 ? "names" : "name"} ${to} now.` : ""
-    note = this.offer(edit, `Moved ${asset.noun} ${number} of ${from} out as ${to}.${stands}${read}`)
+    for (const one of readers) void this.write(one.name, one.next, `update the prompt in ${one.name}`, { edit })
+    const stands = asset.pinned && asset.approved === number ? ` It was the approved one, so ${from} now follows its inputs.` : ""
+    const read = readers.length ? ` ${readers.map((one) => one.name).join(", ")} now ${readers.length === 1 ? "uses" : "use"} ${to}.` : ""
+    note = this.offer(edit, `Moved ${asset.noun} ${number} of ${from} into its own box, ${to}.${stands}${read}`)
   }
   /** Whether a picture dropped here joins it: a box of pictures with no tool. */
   joins(name: string): boolean {
@@ -1906,7 +1906,7 @@ export class CanvasStore {
     if (!asset) return false
     const next = nextVersion(asset, file)
     if (!next) {
-      say(`${name} has that picture already`)
+      say(`${name} already has that image`)
       return false
     }
     const edit = merged ?? this.step(`Added ${what} to ${key}`, [key])
@@ -1919,7 +1919,7 @@ export class CanvasStore {
       refused: () => dismiss(note),
     })
     this.view(key, next.number)
-    if (merged === undefined) note = this.offer(edit, `${what} joined ${name}`)
+    if (merged === undefined) note = this.offer(edit, `Added ${what} to ${name}`)
     return true
   }
 
@@ -1947,12 +1947,12 @@ export class CanvasStore {
         const view = this.views.get(this.namesById.get(id ?? "") ?? "")
         const next = view?.asset && nextVersion(view.asset, { sha256: source.slice("sha256:".length), field })
         if (!view || !next) {
-          if (view) say(`${view.name} has that picture already`)
+          if (view) say(`${view.name} already has that image`)
           return null
         }
         show(next.row)
         this.view(view.name, next.number)
-        note = this.offer(edit, `${what} joined ${view.name}`)
+        note = this.offer(edit, `Added ${what} to ${view.name}`)
         asked = source
       }
       return this.client.addVersion(this.projectId!, served, asked, write)
@@ -1975,7 +1975,7 @@ export class CanvasStore {
     const asset = this.views.get(key)?.asset
     if (!asset || asset.timeline || madeHere(asset.tool)) return false
     if (!asset.tool && asset.kind !== file.field) {
-      say(`${key} is a ${asset.kind} node and cannot take ${file.field}`)
+      say(`${key} is ${an(asset.kind)} ${asset.kind} box, so it can't take ${an(file.field)} ${file.field}`)
       return true
     }
     const own = file.from !== undefined && nameKey(file.from) === nameKey(key)
@@ -2005,7 +2005,7 @@ export class CanvasStore {
     if (wont) return void say(wont)
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
-    this.retool(key, step, step.lost.length ? `${name} runs ${toolName(tool)} now, which can't take ${step.lost.join(" or ")}` : undefined)
+    this.retool(key, step, step.lost.length ? `${name} now uses ${toolName(tool)}, which doesn't take ${step.lost.join(" or ")}` : undefined)
     if (tool.makes === "image" && holdsPictures(view.asset)) this.patch(key, { hereWords: undefined })
   }
 
@@ -2016,15 +2016,15 @@ export class CanvasStore {
     if (!view?.asset) return
     void this.save(key)
     const known = this.tools.get().get(view.asset.tool ?? "")
-    const word = known ? toolName(known) : "Its tool"
-    const words = holdsPictures(view.asset) ? `Its pictures stay.` : `It stays a ${view.asset.kind} node.`
-    this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `${word} is off ${name}. ${words}`)
+    const word = known ? toolName(known) : "the tool"
+    const words = holdsPictures(view.asset) ? "Its images stay." : `It's still ${an(view.asset.kind)} ${view.asset.kind} box.`
+    this.retool(key, comingOff(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }), `Took ${word} off ${name}. ${words}`)
   }
 
   private retool(key: string, step: ToolStep, said?: string) {
-    const edit = this.step(said ?? `Changed what makes ${key}`, [key])
+    const edit = this.step(said ?? `Changed ${key}'s tool`, [key])
     let note = 0
-    this.over(key, step.row, (served, write) => this.client.patchAsset(this.projectId!, served, { tool: step.tool, fields: step.fields }, write), "change what makes", edit, {
+    this.over(key, step.row, (served, write) => this.client.patchAsset(this.projectId!, served, { tool: step.tool, fields: step.fields }, write), "change the tool on", edit, {
       done: (answer) => answer.warnings?.forEach((line) => say(line)),
       refused: () => dismiss(note),
     })
@@ -2073,7 +2073,7 @@ export class CanvasStore {
   markSeen(name: string, number: number) {
     const asset = this.get(name)?.asset
     if (!asset?.unseen?.includes(number)) return
-    this.over(name, { unseen: asset.unseen.filter((held) => held !== number) }, (served, write) => this.client.seen(this.projectId!, served, number, write).then(() => ({})), `mark ${asset.noun} ${number} seen on`, undefined)
+    this.over(name, { unseen: asset.unseen.filter((held) => held !== number) }, (served, write) => this.client.seen(this.projectId!, served, number, write).then(() => ({})), `mark ${asset.noun} ${number} as seen on`, undefined)
   }
 
   /** Takes landed and not said yet: said together once none has landed for a moment (cl-937). */
@@ -2103,9 +2103,9 @@ export class CanvasStore {
       this.openHere(name)
       this.pickTake(name, this.get(name)?.asset?.prefixes?.find((held) => id && held.id === id)?.number ?? number)
     } }
-    if (landed.length > 1) return void say(`${landed.length} renders finished: ${[...new Set(landed.map((one) => one.name))].join(", ")}`, undefined, { action: view })
+    if (landed.length > 1) return void say(`${landed.length} renders are ready: ${[...new Set(landed.map((one) => one.name))].join(", ")}`, undefined, { action: view })
     const noun = this.get(name)?.asset?.noun ?? "take"
-    say(`${name} finished: ${noun} ${number}`, undefined, { action: view, picture: sha256 && this.projectId ? this.client.thumb(this.projectId, sha256) : undefined })
+    say(`${noun.charAt(0).toUpperCase()}${noun.slice(1)} ${number} of ${name} is ready`, undefined, { action: view, picture: sha256 && this.projectId ? this.client.thumb(this.projectId, sha256) : undefined })
   }
 
   /** Stops one of its takes, by its id (cl-945), gone from the box at once, and its others go on: one sent, its run; one queued, that take. */
@@ -2388,7 +2388,7 @@ export class CanvasStore {
         done: () => keepLastWord(project, null, word.action),
         refused: (error) => {
           keepLastWord(project, null, word.action)
-          say(`Couldn't save what was typed in ${word.name}`, error)
+          say(`Couldn't save what you typed in ${word.name}`, error)
         },
       })
     }
@@ -2505,7 +2505,7 @@ export class CanvasStore {
     const known = this.tools.get().get(tool)
     const label = known ? toolName(known) : tool.split(/[/\\]/).at(-1)
     const edit = this.step(`Switched ${key} to ${label}`, [key])
-    this.over(key, { tool }, (served, write) => this.client.patchAsset(this.projectId!, served, { tool }, write), "change what makes", edit, { done: (answer) => answer.warnings?.forEach((line) => say(line)) })
+    this.over(key, { tool }, (served, write) => this.client.patchAsset(this.projectId!, served, { tool }, write), "change the tool on", edit, { done: (answer) => answer.warnings?.forEach((line) => say(line)) })
     this.reshape(key)
   }
 
@@ -2680,7 +2680,7 @@ export class CanvasStore {
     if (asset.timeline) {
       const clips = asset.timeline.tracks[0]?.clips ?? []
       const taken = given.flatMap((name) => clipOf(this, name, asset.timeline?.fps ?? 24) ?? [])
-      if (taken.length < given.length) say("Only video and stills go in an Edit for now")
+      if (taken.length < given.length) say("Only videos and images can go in an Edit for now")
       if (!taken.length) return
       void this.setFields(key, { timeline: wire([...clips, ...taken]) })
       // The cut changed: its film joined after the write, as the editor does (cl-957).
@@ -2700,7 +2700,7 @@ export class CanvasStore {
     const slot = fields.find((field) => field.type === "slot" && (field.multiple || !this.valueOf(key, field.field)))
     if (!slot) return
     const wrong = given.find((name) => slot.accept && this.kindOf(name, key) !== slot.accept)
-    if (wrong) return void say(`${slot.label} takes ${slot.accept === "image" ? "a picture" : slot.accept === "video" ? "a video" : "a sound"}, and ${wrong} isn't one`)
+    if (wrong) return void say(`${slot.label} takes ${slot.accept === "image" ? "an image" : slot.accept === "video" ? "a video" : "audio"}, and ${wrong} isn't ${slot.accept === "audio" ? "audio" : "one"}`)
     const held = this.valueOf(key, slot.field)
     void this.setFields(key, { [slot.field]: slot.multiple ? [...(Array.isArray(held) ? held : []), ...tags] : tags.at(-1) })
   }
@@ -2722,7 +2722,7 @@ export class CanvasStore {
     const going = names.map((name) => this.resolveName(name)).filter((name) => (this.views.get(name)?.asset || this.views.get(name)?.landed) && !this.views.get(name)?.placing)
     if (!going.length) return
     const readers = this.readers(going)
-    const what = going.length === 1 ? going[0] : `${going.length} assets`
+    const what = going.length === 1 ? going[0] : `${going.length} boxes`
     const edit = merged?.edit ?? this.step(`Deleted ${what}`, going)
     let note = 0
     for (const name of going) {
@@ -2754,7 +2754,7 @@ export class CanvasStore {
         },
       })
     }
-    const said = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} this and ${readers.length === 1 ? "isn't" : "aren't"} approved yet.` : ""
+    const said = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "uses" : "use"} it and ${readers.length === 1 ? "isn't" : "aren't"} approved yet.` : ""
     note = this.offer(edit, merged ? `${what} merged into ${merged.into}.${said}` : `Deleted ${what}.${said}`)
   }
 
@@ -3573,7 +3573,7 @@ export class CanvasStore {
       },
       refused: (error) => {
         this.movesOwed = false
-        say("A move didn't save", error)
+        say("Couldn't save that move", error)
         for (const id of sent.keys()) {
           this.moving.delete(id)
           this.movingFrom.delete(id)
@@ -3643,4 +3643,9 @@ export class CanvasStore {
       },
     })
   }
+}
+
+/** `a` or `an`, as `kind` is said. */
+function an(kind: string): string {
+  return /^[aeiou]/i.test(kind) ? "an" : "a"
 }

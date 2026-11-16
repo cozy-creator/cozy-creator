@@ -40,7 +40,7 @@ test('gone', async ({ context, project, api, signIn, guards }) => {
     // Its address is asked and not found: the browser logs that 404 itself.
     guards.allow(/status of 404\b.*\/v1\/projects\/[^/ ]+\/address\b/);
     await page.reload();
-    await expect(page.locator('.gate h2', { hasText: "This project can't be opened yet" })).toBeVisible();
+    await expect(page.locator('.gate h2', { hasText: "Couldn't open this project" })).toBeVisible();
     await expect.soft(page.locator('.gate', { hasText: 'open the folder again where it is now' }), 'how to bring it back').toBeVisible();
     expect.soft(await stays(page), 'it stays where it is').toEqual(here);
   });

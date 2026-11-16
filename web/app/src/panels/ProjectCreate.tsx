@@ -118,7 +118,7 @@ export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = fals
         <label className="said-beside">
           Confirm passphrase
           <input className="field" type="password" autoComplete="new-password" maxLength={4096} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} disabled={busy} />
-          {mismatch && <span className="beside" role="alert">The passphrases differ.</span>}
+          {mismatch && <span className="beside" role="alert">The passphrases don't match.</span>}
         </label>
       </>}
       {!ofFolder && <Failure error={error} plain />}

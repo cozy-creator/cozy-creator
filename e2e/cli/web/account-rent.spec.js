@@ -191,7 +191,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await drawer.getByRole('button', { name: 'Sign out', exact: true }).click();
       const confirm = drawer.locator('.confirm');
       await expect(confirm, 'Sign out asks in the drawer').toBeVisible();
-      await expect.soft(confirm.locator('.says')).toHaveText(`Sign this computer out of ${email}? Its key is revoked at the Hub and erased here. Rentals go on billing until they end, and it can't rent or end them until it signs in again.`);
+      await expect.soft(confirm.locator('.says')).toHaveText(`Sign this computer out of ${email}? The Hub revokes this computer's key, and Cozy deletes it here. Your rentals keep running and costing money until they end, and you can't rent or end one from this computer until you sign in again.`);
       await confirm.getByRole('button', { name: 'Sign out', exact: true }).click();
       const address = drawer.getByLabel('Email', { exact: true });
       await expect(address, "AuthKit's form, signed out").toBeVisible();
@@ -212,7 +212,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect(field).toBeVisible();
       // cozy login's code went out moments ago, and the Hub spaces codes to one email: the page says how long, and Resend opens once it
       // may ask again.
-      await expect.soft(drawer.getByText(/^Check your email\. You can ask for another code in \d+ s\.$/), 'the wait, said in words').toBeVisible();
+      await expect.soft(drawer.getByText(/^Check your email\. You can ask for another code in \d+s\.$/), 'the wait, said in words').toBeVisible();
       const resend = drawer.getByRole('button', { name: 'Resend', exact: true });
       await expect(resend).toBeEnabled({ timeout: 75_000 });
       const before = codesFor(email).length;

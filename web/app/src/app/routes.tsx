@@ -18,7 +18,7 @@ import { ProjectRoute } from "./project"
 function Broke() {
   return (
     <main className="gate">
-      <h1>That broke this page</h1>
+      <h1>Something went wrong on this page</h1>
       <button type="button" className="tb" onClick={() => location.reload()}>
         Reload
       </button>
