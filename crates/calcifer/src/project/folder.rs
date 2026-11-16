@@ -60,7 +60,7 @@ pub(crate) struct Kept {
 const PREFIX: usize = 12;
 
 /// Each kind of file a project keeps by what it is: its extension, its media type, and the field that names one.
-const MEDIA: [(&str, &str, &str); 40] = [
+const MEDIA: [(&str, &str, &str); 41] = [
     ("png", "image/png", "image"),
     ("jpg", "image/jpeg", "image"),
     ("jpeg", "image/jpeg", "image"),
@@ -101,8 +101,10 @@ const MEDIA: [(&str, &str, &str); 40] = [
     ("amr", "audio/amr", "audio"),
     ("dsf", "audio/x-dsf", "audio"),
     ("ape", "audio/x-ape", "audio"),
+    // A text tool's answer (xs-204).
+    ("txt", "text/plain; charset=utf-8", "text"),
 ];
-/// The media type and field of an extension, in any case, if it is a picture, video or sound.
+/// The media type and field of an extension, in any case, if it is a picture, video, sound or words.
 pub(crate) fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
     let extension = extension.to_ascii_lowercase();
     MEDIA.iter().find(|(known, ..)| *known == extension).map(|(_, media, field)| (*media, *field))
@@ -221,6 +223,7 @@ impl File {
     pub(crate) fn unmeasured(&self) -> bool {
         match media_of(&self.extension()) {
             Some((_, "audio")) => self.duration_ms == 0,
+            Some((_, "text")) => false,
             Some(_) => self.width == 0 || self.shape_only,
             None => false,
         }
@@ -351,6 +354,9 @@ pub(crate) struct Pending {
     /// Its pin, by the field holding it, goes when it lands (`--outdated`): if it never does, the pin stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpin: Option<String>,
+    /// A box of words: the field of its result they're in, which it lands as its version's file (xs-204).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<String>,
     /// Where it goes.
     pub target: Target,
 }
@@ -1932,6 +1938,14 @@ impl Folder {
         let path = file_of(&sha256, source);
         self.store(&path, |part| std::fs::copy(source, part).map(drop))?;
         Ok(sha256)
+    }
+
+    /// Words a tool answered, kept as `keep` keeps a file it saved: a box of words' version (xs-204).
+    pub(crate) fn keep_words(&self, words: &str) -> Result<String, Error> {
+        use std::io::Write as _;
+        let mut part = tempfile::Builder::new().suffix(".txt").tempfile_in(&self.dir).map_err(|e| io_at(&self.dir, e))?;
+        part.write_all(words.as_bytes()).map_err(|e| io_at(part.path(), e))?;
+        self.keep(part.path())
     }
 
     /// A file a run is given, of `sha256`, kept in `files/` unless it's here, and in the lock's table, under what its bytes say it is

@@ -286,7 +286,9 @@ export class CardView {
   /** Words with their mentions as chips; a mention the tool can't use, or that's gone, is struck through (Paul, 11-12). */
   private words(show: Presentation, body: Box, colors: Palette, used: Set<string>, env: CardEnv) {
     const x0 = body.x + 12, y0 = body.y + 12, room = body.w - 24
-    const lines = Math.max(1, Math.floor(Math.min(body.h - 16, BODY * 1.35 * 4) / (BODY * 1.35)))
+    // Over a picture, four lines; a box of words is its words, as many lines as it holds (xs-204: an LLM's answer, readable at rest).
+    const over = show.picture || show.references.length
+    const lines = Math.max(1, Math.floor(Math.min(body.h - 16, over ? BODY * 1.35 * 4 : Infinity) / (BODY * 1.35)))
     if (show.picture || show.references.length) this.ink.roundRect(body.x + 6, y0 - 6, body.w - 12, lines * BODY * 1.35 + 12, 5).fill({ color: colors.card, alpha: 0.86 })
     const runs: { text: string; chip: boolean; struck: boolean; x: number; row: number }[] = []
     let row = 0, cursor = 0, cut = false

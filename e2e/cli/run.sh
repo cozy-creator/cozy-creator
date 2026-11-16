@@ -512,6 +512,7 @@ WEB_3=(
   move
   dblclick-text
   svg
+  llm
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(

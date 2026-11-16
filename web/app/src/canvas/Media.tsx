@@ -915,7 +915,9 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children, 
         {/* In Focus its frame is the video's own (Player): no strip's small frames under it. */}
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.here && !focused ? view.scrub : undefined} previewing={previewing} />}
         {nearImage && field === "image" && !own && <BufferedImage sha256={drawnImage?.sha256 ?? null} originalPath={drawnImage?.path} neighborPaths={neighborPaths} neighbors={nearImage.absent || nearImage === drawnImage ? neighbors : [nearImage.sha256, ...neighbors]} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
-        {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {here && field !== "video" && field !== "image" && field !== "text" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {/* What a tool wrote, whole, to read and select (xs-204). */}
+        {here && field === "text" && asset?.tool && <div className="answer" data-version={here.number}>{here.text ?? ""}</div>}
         {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Stored on ${shown.machine}` : "Stored on another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       </div>

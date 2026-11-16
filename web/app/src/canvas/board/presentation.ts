@@ -137,6 +137,8 @@ export function present(store: CanvasStore, node: SceneNode, now = Date.now()): 
   const kind = view.entity?.kind ?? shown?.field ?? view.placing?.media ?? asset?.kind ?? "file"
   const line = asset ? lineAt(valuesOf(view), fieldsOf(asset, tools)) : null
   let words = line?.words ?? "", at = line?.at
+  // A box of words a tool wrote shows what it wrote, as a picture shows its picture (xs-204).
+  if (shown?.field === "text" && asset?.tool) { words = shown.text ?? ""; at = undefined }
   const tool = asset?.tool ? tools.get(asset.tool) : undefined
   const output = pictureOf(view)
   const run = node.runContext?.run ?? view.run

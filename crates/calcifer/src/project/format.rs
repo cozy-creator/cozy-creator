@@ -345,8 +345,9 @@ impl Doc {
         let made = held.and_then(|version| KINDS.iter().copied().find(|kind| version.files.contains_key(*kind)));
         let of_file = pin.as_ref().and_then(|sha256| lock.files.get(sha256)).and_then(folder::File::media);
         let makes = tool.as_ref().and_then(|tool| lock.makes.get(tool)).and_then(|kind| KINDS.iter().copied().find(|known| known == kind));
-        // No tool and no images: it's words, in whichever field they stayed.
-        let text = (tool.is_none() && pin.is_none() && held.is_none() && node_kind.as_deref().is_none_or(|kind| kind == TEXT)).then(|| body.get(TEXT).or_else(|| LEADS.iter().find_map(|field| body.get(*field)))).flatten().map(|words| text_of(Some(words)).trim_end().to_owned());
+        // No tool and no images: it's words, in whichever field they stayed. A Text box keeps what a tool wrote on it once it's off (xs-204).
+        let words = match node_kind.as_deref() { Some(TEXT) => true, Some(_) => false, None => held.is_none() };
+        let text = (tool.is_none() && pin.is_none() && words).then(|| body.get(TEXT).or_else(|| LEADS.iter().find_map(|field| body.get(*field)))).flatten().map(|words| text_of(Some(words)).trim_end().to_owned());
         let said = tool.as_deref().and_then(kind_made_here).or(node_kind.as_deref().map(node_media)).or(of_file).or(made).or(makes).or(text.as_ref().map(|_| TEXT));
         let kind = said.unwrap_or("image").to_owned();
         let description = text_of(body.get("description")).trim().to_owned();
@@ -381,7 +382,7 @@ impl Doc {
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
         let starred = body.get(STARRED).and_then(Value::as_bool).unwrap_or(false);
-        self.assets.push(Asset { name: name.to_owned(), kind, node_kind, selected_version, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, starred, hollow, reads: vec![] });
+        self.assets.push(Asset { name: name.to_owned(), kind, node_kind, selected_version, tool_makes: tool.as_ref().is_some_and(|tool| lock.makes.contains_key(tool)), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, starred, hollow, reads: vec![] });
     }
 
     /// Each mention of a text asset in what a tool is given replaced by its words, and theirs in turn. Only here: what's read, what's sent and
