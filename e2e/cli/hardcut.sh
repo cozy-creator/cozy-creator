@@ -135,7 +135,7 @@ record=$(cut_naming uses "$solo" | head -1)
 [ -n "$record" ] || check "hard cut: no use names the third project's own latents after the collection"
 manifests=$([ -z "$record" ] || sudo grep -vx "$solo" "$record")
 for m in $manifests; do echo "hard cut: the run's manifest ${m:0:12}: $(sudo cat "$home/.cache/tensorfs/blobs/${m:0:2}/${m:2:2}/$m" | head -c 400)"; done
-paths=$(for m in $manifests; do sudo cat "$home/.cache/tensorfs/blobs/${m:0:2}/${m:2:2}/$m" | jq -r '.files // {} | keys[]' 2> /dev/null; done)
+paths=$(for m in $manifests; do sudo cat "$home/.cache/tensorfs/blobs/${m:0:2}/${m:2:2}/$m" | jq -r '(.entries // [])[].path, (.files // {} | keys[])' 2> /dev/null; done)
 [ -z "$record" ] || [ -n "$paths" ] || check "hard cut: the run's manifest names no file"
 
 cut_unlock "$E" sealed "$pin"
@@ -148,9 +148,10 @@ sudo test ! -e "$blob" || cut_still_held
 for m in $manifests; do sudo test ! -e "$home/.cache/tensorfs/blobs/${m:0:2}/${m:2:2}/$m" || check "hard cut: the run's manifest ${m:0:12} is still in the machine's store"; done
 [ -z "$(sudo grep -rlF "$solo" "$home/.cache/tensorfs" 2> /dev/null)" ] \
   || check "hard cut: the machine's store still mentions the third project's own latents: $(sudo grep -rlF "$solo" "$home/.cache/tensorfs" | tr '\n' ' ')"
+# The path as a manifest names it (`"path":"payload"`): a word alone is also in the store's code.
 for path in $paths; do
-  [ -z "$(sudo grep -rlF "$path" "$home/.cache/tensorfs" 2> /dev/null)" ] \
-    || check "hard cut: the machine's store still names the run's file $path: $(sudo grep -rlF "$path" "$home/.cache/tensorfs" | tr '\n' ' ')"
+  [ -z "$(sudo grep -rlF "\"path\":\"$path\"" "$home/.cache/tensorfs" 2> /dev/null)" ] \
+    || check "hard cut: the machine's store still names the run's file $path: $(sudo grep -rlF "\"path\":\"$path\"" "$home/.cache/tensorfs" | tr '\n' ' ')"
 done
 # What a copy couldn't let go of is let go of at the next start: none is left once nothing holds them.
 sudo pkill -KILL -u "$CUT_USER" || true

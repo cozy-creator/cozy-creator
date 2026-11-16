@@ -300,10 +300,26 @@ impl Store {
         Ok(retired)
     }
 
-    /// Whether `digest` is a tree listing files, every one of them in `files`.
+    /// Whether `digest` is a small JSON document listing files by their digests (a tree, or a machine's manifest of a run's held
+    /// files), every one of them in `files`.
     fn lists_only(&self, digest: &str, files: &BTreeSet<String>) -> bool {
-        let object = ObjectRef { sha256: digest.to_owned(), length: 0 };
-        matches!(self.document(&object), Ok(Some(Document::Tree(tree))) if !tree.files.is_empty() && tree.files.values().all(|file| files.contains(&file.sha256)))
+        fn named(value: &serde_json::Value, found: &mut BTreeSet<String>) {
+            match value {
+                serde_json::Value::Object(map) => map.iter().for_each(|(key, value)| match (key.as_str(), value) {
+                    ("sha256", serde_json::Value::String(digest)) => { found.insert(digest.trim_start_matches("sha256:").to_owned()); }
+                    _ => named(value, found),
+                }),
+                serde_json::Value::Array(items) => items.iter().for_each(|item| named(item, found)),
+                _ => {}
+            }
+        }
+        let Ok(path) = self.blob(digest) else { return false };
+        let Ok(bytes) = fs::read(&path) else { return false };
+        if bytes.len() > 1 << 16 || bytes.first() != Some(&b'{') { return false; }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false };
+        let mut found = BTreeSet::new();
+        named(&value, &mut found);
+        !found.is_empty() && found.is_subset(files)
     }
 
     /// What `root` keeps alive, each once: `root`, and for a tree its files and its header's
