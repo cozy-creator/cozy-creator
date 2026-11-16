@@ -350,7 +350,9 @@ if [ -n "$needs" ]; then
   for f in pyproject.toml package.toml; do
     sed -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$tools/$f" > "$tools/$f.next" && mv "$tools/$f.next" "$tools/$f"
   done
-  publish "$tools" cohort
+  # Weightless (App only) and on a stable floor, as on the RC: published for every platform, so a consumer's universal lock
+  # resolves it on each (hub_away's Windows-only dependency). A cohort pin would lock it to this runner alone.
+  publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p" cohort; done
   [[ " $needs " != *" scratch "* ]] || publish "$here/cli/scratch"
   # MOSS Image, which takes words only: a mention it can't use is crossed out (cl-944).
