@@ -2091,12 +2091,16 @@ impl Store {
 
     fn owner_id(&self)->Option<&str> { None }
 
-    /// Calcifer's own journal only: its table is in state.db. Drops the measurements of the next runs that settled before `before_ms`, past the last one done (kept, so a start never
-    /// reads the old ones again: cl-1010), in one short write. False: no run past it is that old.
+    /// Calcifer's own journal only: its table is in state.db. Drops the measurements of the next runs that settled before `before_ms`,
+    /// past the last one done (kept, so a start never reads the old ones again: cl-1010), in one short write. False: none past it is
+    /// that old.
     pub(crate) fn drop_measurements(&self, before_ms: i64) -> Result<bool> {
-        self.write(|tx| {
-            let after: i64 = tx.query_row("SELECT coalesce(max(through), 0) FROM measurements_dropped", [], |row| row.get(0))?;
-            let mut next = tx.prepare("SELECT number, created_at, state = 'settled' AND settled_at < ?2 FROM runs WHERE number > ?1 ORDER BY number LIMIT 64")?;
+        // What changes is worked out on a reader, the writer held only to put it: one batch read and rewrote under the writer for
+        // 5.5 s on Paul's laptop (outcomes of megabytes), and every write waited (cl-1010). Only this walk moves its place.
+        type Found = (i64, Vec<(String, Vec<u8>)>, Vec<(String, i64, String)>);
+        let found: Option<Found> = self.read(|conn| {
+            let after: i64 = conn.query_row("SELECT coalesce(max(through), 0) FROM measurements_dropped", [], |row| row.get(0))?;
+            let mut next = conn.prepare("SELECT number, created_at, state = 'settled' AND settled_at < ?2 FROM runs WHERE number > ?1 ORDER BY number LIMIT 16")?;
             let next = next
                 .query_map([after, before_ms], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2104,47 +2108,56 @@ impl Store {
             // run still going (or settled since), to drop its measurements once it's old too; one a month older still never will be.
             let past = |(_, created, done): &&(i64, i64, bool)| *created < before_ms && (*done || *created < before_ms - GIVEN_UP_MS);
             let Some(through) = next.iter().take_while(past).last().map(|(n, ..)| *n) else {
-                return Ok(false);
+                return Ok(None);
             };
             let ids: Vec<String> = {
-                let mut rows = tx.prepare("SELECT id FROM runs WHERE number > ?1 AND number <= ?2 AND settled_at < ?3")?;
+                let mut rows = conn.prepare("SELECT id FROM runs WHERE number > ?1 AND number <= ?2 AND settled_at < ?3")?;
                 rows.query_map(params![after, through, before_ms], |row| row.get(0))?
                     .collect::<rusqlite::Result<_>>()?
             };
+            let (mut outcomes, mut calls) = (vec![], vec![]);
             for id in ids {
-                let outcome: Option<Vec<u8>> = tx.query_row("SELECT outcome FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
-                if let Some(bytes) = outcome {
-                    if let Some(plain) = vault::open_payload(&run_context(&id, "outcome"), &bytes).map_err(private_error)? {
-                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
-                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
-                                let bytes = seal_run(
-                                    tx,
-                                    &id,
-                                    &run_context(&id, "outcome"),
-                                    &serde_json::to_vec(&value).expect("serializes"),
-                                )?;
-                                tx.execute("UPDATE runs SET outcome = ?2 WHERE id = ?1", params![id, bytes])?;
-                            }
-                        }
-                    }
+                let outcome: Option<Vec<u8>> = conn.query_row("SELECT outcome FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
+                if let Some(bytes) = outcome
+                    && let Some(plain) = vault::open_payload(&run_context(&id, "outcome"), &bytes).map_err(private_error)?
+                    && let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain)
+                    && value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some())
+                {
+                    let sealed = seal_run(conn, &id, &run_context(&id, "outcome"), &serde_json::to_vec(&value).expect("serializes"))?;
+                    outcomes.push((id.clone(), sealed));
                 }
-                let calls: Vec<(i64, String)> = {
-                    let mut rows = tx.prepare("SELECT seq, text FROM run_logs WHERE run = ?1 AND level = 'call'")?;
+                let lines: Vec<(i64, String)> = {
+                    let mut rows = conn.prepare("SELECT seq, text FROM run_logs WHERE run = ?1 AND level = 'call'")?;
                     rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?)))?
                         .collect::<rusqlite::Result<_>>()?
                 };
-                for (seq, text) in calls {
+                for (seq, text) in lines {
                     let context = log_context(&id, seq as u64);
-                    if let Some(plain) = vault::open_payload(&context, text.as_bytes()).map_err(private_error)? {
-                        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain) {
-                            if value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some()) {
-                                let text = seal_run_text(tx, &id, &context, &value.to_string())?;
-                                tx.execute("UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2", params![id, seq, text])?;
-                            }
-                        }
+                    if let Some(plain) = vault::open_payload(&context, text.as_bytes()).map_err(private_error)?
+                        && let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&plain)
+                        && value.as_object_mut().is_some_and(|value| value.remove("measurements").is_some())
+                    {
+                        calls.push((id.clone(), seq, seal_run_text(conn, &id, &context, &value.to_string())?));
                     }
                 }
             }
+            Ok(Some((through, outcomes, calls)))
+        })?;
+        let Some((through, outcomes, calls)) = found else { return Ok(false) };
+        // A run's rewrite a write of its own: a megabyte outcome holds the writer for itself alone. Dropping is the same done twice.
+        let ids: std::collections::BTreeSet<&String> = outcomes.iter().map(|(id, _)| id).chain(calls.iter().map(|(id, ..)| id)).collect();
+        for id in ids {
+            self.write(|tx| {
+                for (_, bytes) in outcomes.iter().filter(|(of, _)| of == id) {
+                    tx.execute("UPDATE runs SET outcome = ?2 WHERE id = ?1", params![id, bytes])?;
+                }
+                for (_, seq, text) in calls.iter().filter(|(of, ..)| of == id) {
+                    tx.execute("UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2", params![id, seq, text])?;
+                }
+                Ok(())
+            })?;
+        }
+        self.write(|tx| {
             tx.execute("DELETE FROM measurements_dropped", [])?;
             tx.execute("INSERT INTO measurements_dropped (through) VALUES (?1)", [through])?;
             Ok(true)
@@ -2276,11 +2289,13 @@ impl Store {
         migrate_maintenance_asks(&mut writer)?;
         migrate_maintenance_runs(&mut writer)?;
         said("store_legacy", legacy);
+        let rest = std::time::Instant::now();
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;
         writer.pragma_update(None,"synchronous",if wal {"NORMAL"} else {"FULL"})?;
         private(path);
         let readers = Readers::open(path)?;
+        said("store_readers", rest);
         let mut journal = path.as_os_str().to_owned();
         journal.push("-wal");
         Ok(Self {

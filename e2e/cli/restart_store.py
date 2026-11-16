@@ -52,6 +52,12 @@ def fill(args: argparse.Namespace) -> None:
     db.execute("INSERT INTO outputs (run, name, idx, rev, length, digest, media_type, done, path, exported_rev, created_seq, seq) "
                "SELECT id, 'image', 0, 1, 1000, 'sha256:' || printf('%064d', number), 'image/png', 1, out_dir || '/image.png', 1, 1, 1 "
                f"FROM runs WHERE id LIKE '{PREFIX}%' AND kind = 'call'")
+    # The oldest 64 as a laptop's are: megabyte outcomes and two 300 KB call lines each, measurements and all, which the start's
+    # measurement walk rewrites first (on Paul's laptop one batch held the writer 5.5 s).
+    db.execute("UPDATE runs SET outcome = CAST(:big AS BLOB) WHERE number BETWEEN :first AND :first + 63", {"big": outcome(1_000_000), "first": first})
+    call = json.dumps({"run": "", "measurements": {"observations": [step(i) for i in range(300_000 // len(json.dumps(step(300_000))))]}})
+    db.execute("INSERT INTO run_logs (run, seq, at_ms, level, text) SELECT id, k, created_at, 'call', :call FROM runs, "
+               "(SELECT 100 AS k UNION ALL SELECT 101) WHERE number BETWEEN :first AND :first + 63", {"call": call, "first": first})
     # Runs an earlier Calcifer left going on `local`, which the machine no longer has: resume takes each up, and each settles lost.
     unsettled = db.execute("SELECT max(number) FROM runs").fetchone()[0] + 1
     db.execute(

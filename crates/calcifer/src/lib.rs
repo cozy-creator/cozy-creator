@@ -280,9 +280,11 @@ impl Calcifer {
     /// each package's folder, where a run's outputs land unless it names its own directory.
     pub(crate) fn open(home: &Path, outputs: &Path) -> Result<Arc<Self>, Error> {
         let store = Store::open(&home.join("state.db"))?;
+        let projects = Instant::now();
         state::import(&store, home);
         project::vault::sweep_runtime(home);
         project::vault::restore_plain_roots(&store);
+        tracing::info!(target: "cozy.service_health", step = "store_projects", ms = projects.elapsed().as_millis() as u64, "started");
         // Before 0.23 Calcifer kept uploaded files here; they are objects of this computer's TensorFS store now
         // (`runs::files`). A run recorded since staged its own (`inputs/`), and a sender still has the rest.
         // Existing controller files are retained until their owning migration verifies retirement.

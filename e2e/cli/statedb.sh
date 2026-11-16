@@ -179,6 +179,23 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC -o "$S/busy-disk.so" "$here/
 cozy --json machine ls > /dev/null && db_calcifer && id=$(id_of "$RUN_PROJECT") && [ -n "$id" ] || { check "restart: no project to ask about"; return; }
 # Its tools listed once, as a computer's page has: the list a restart answers from is kept.
 api -fsS -o /dev/null "http://$ADDR/v1/tools" || check "restart: GET /v1/tools before the restart failed"
+# A dev home, as Paul's laptop is: a packages checkout (`dev = true`, `[calcifer] packages`) whose first-party package a list reads
+# from source with uv (from_source), `local` held on its candidates by hand so following the RC moves nothing (source.sh does so too).
+local co=$S/packages cfg=$HOME/.cozy/config.toml dev=
+case $("$COZY" --version) in *-dev+g*) dev=1 ;; esac
+if [ -n "$dev" ]; then
+  rm -rf "$co" && mkdir -p "$co"
+  cp -r "$here/../../release-gate/suites/hub/pkg" "$co/minimax-h3-tools" && mv "$co/minimax-h3-tools/ci_hub_pkg" "$co/minimax-h3-tools/minimax_h3_tools"
+  sed -i -e 's/^name = "ci-hub-pkg"/name = "minimax-h3-tools"/' -e 's/ci_hub_pkg/minimax_h3_tools/g' "$co/minimax-h3-tools/pyproject.toml" "$co/minimax-h3-tools/package.toml"
+  git -C "$co" init -q -b rc/e2e && git -C "$co" add -A && git -C "$co" -c user.name=e2e -c user.email=e2e@localhost commit -qm checkout \
+    || check "restart: the checkout's commit failed"
+  [ -z "${CAND_RT:-}" ] || cozy --json machine update local ${CAND_TFS:+--tensorfs "$CAND_TFS"} --runtime "$CAND_RT" -y > "$S/hold.json" 2>&1 \
+    || check "restart: local refused its candidates by hand: $(tail -c 300 "$S/hold.json")"
+  cp "$cfg" "$S/config.toml"
+  { echo 'dev = true'; grep -v '^dev *=' "$S/config.toml"; } > "$cfg.next"
+  if grep -q '^\[calcifer\]' "$cfg.next"; then sed -i "/^\[calcifer\]/a packages = \"$co\"" "$cfg.next"; else printf '\n[calcifer]\npackages = "%s"\n' "$co" >> "$cfg.next"; fi
+  mv "$cfg.next" "$cfg"
+fi
 pid=$(jq -r .pid "$holder")
 calcifer_halt || return
 python3 "$here/restart_store.py" fill "$db" "$HOME/.cozy/outputs/e2e-restart" --runs 40000 --machines 3000 > "$S/fill.json" 2>&1 \
@@ -215,8 +232,9 @@ echo "restart: ended machines past 90 days left $gone, of $kept kept; $unended o
 [ "$kept" -ge 1400 ] || check "restart: only $kept of the ended machines within 90 days are kept"
 # Ended before their end was kept, made 101 days ago: their 90 days count from this start (cl-1010, #3424's review).
 [ "$unended" = 20 ] || check "restart: $((20 - unended)) machines that ended before their end was kept went at once, counted from when they were made"
-# The store as it was for what follows: its rows out, and Calcifer on its own disk again.
+# The store as it was for what follows: its rows out, and Calcifer on its own disk and config again.
 rm -f "$dropin" && systemctl --user daemon-reload
+[ -z "$dev" ] || cp "$S/config.toml" "$cfg"
 kill "$proxy" 2> /dev/null || true
 calcifer_halt || return
 python3 "$here/restart_store.py" empty "$db" || check "restart: the store's rows weren't taken out"
