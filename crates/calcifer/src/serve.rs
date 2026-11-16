@@ -178,6 +178,8 @@ fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
     }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        // A dev build overflowed tokio's 2 MiB worker stack opening lab2 (cl-1003); the laptop has run 16 MiB since.
+        .thread_stack_size(16 << 20)
         .on_thread_park(platform::heap::parked)
         .build()
         .map_err(|e| Error::new(Kind::Internal, "calcifer_runtime", e.to_string()))
