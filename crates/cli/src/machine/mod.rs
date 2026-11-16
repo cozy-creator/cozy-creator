@@ -16,7 +16,7 @@ mod history;
 pub(crate) mod list;
 pub(crate) mod live;
 mod local;
-pub(crate) use end::activate;
+pub(crate) use end::{activate, torch};
 pub(crate) use local::{Adopted, adopt};
 mod rent;
 

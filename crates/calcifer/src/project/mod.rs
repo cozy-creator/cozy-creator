@@ -160,6 +160,8 @@ pub(crate) struct Project {
     walker: Mutex<Walker>,
     /// Whether its one walker is going. Admission and the terminal board share this lock.
     walking: Mutex<bool>,
+    /// Whether its files are being measured (`measure_soon`), and if so whether more landed meanwhile, measured once it ends.
+    measuring: Mutex<Option<bool>>,
     /// The installs its walk's jobs wait on (`host::Installs`).
     installs: Arc<host::Installs>,
     /// Tells the walker something was asked.
@@ -379,6 +381,7 @@ impl Projects {
                     told: Mutex::default(),
                     walker: Mutex::default(),
                     walking: Mutex::new(false),
+                    measuring: Mutex::new(None),
                     installs: Arc::default(),
                     asked: Notify::new(),
                     cutting: Arc::default(),
@@ -3003,43 +3006,71 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::
     Ok(Imported { name, sha256: file.file.sha256, field: file.field.to_owned(), path: file.file.path, already: file.already, kept })
 }
 
-/// What a project's files are measured as, once its ffprobe is here, from a task of its own: a read waits for neither.
+/// What measures project files, one ffprobe at a time beside the thumbnails' own turns (`thumbs::FFMPEGS`): what a page shows never
+/// waits behind a bulk import's measuring (cl-1054: 100 pictures imported on a Mac drew none until every import had ended).
+static MEASURES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+/// What a project's files are measured as, once its ffprobe is here, from a task of its own: a read waits for neither. One task a project:
+/// each import asks, and what lands while it measures is measured once it ends, never by a task of each import's measuring them all again.
 fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
+    {
+        let mut measuring = project.measuring.lock().expect("measuring lock");
+        if let Some(again) = measuring.as_mut() {
+            *again = true;
+            return;
+        }
+        *measuring = Some(false);
+    }
     let (host, project) = (Host::new(api), project.clone());
     tokio::spawn(async move {
-        let unmeasured = || project.require_view().is_ok() && project.folder.lock().is_ok_and(|lock| lock.files.values().any(folder::File::unmeasured));
-        {
-            let Ok(_access) = vault::admit_root(&project.root).await else { return; };
-            if !unmeasured() { return; }
-        }
-        // Its turn and ffmpeg first, holding nothing of the project, then the project, holding no turn: a lock queued on it waits for
-        // neither, and while it waits no other project's thumbnails or measures wait for it (cl-1025).
-        let (access, permit) = loop {
-            let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
-            if let Err(error) = host.ffmpeg().await {
-                return warn!("measuring a project's files: {}", error.message);
+        loop {
+            measure_once(&host, &project).await;
+            let mut measuring = project.measuring.lock().expect("measuring lock");
+            match *measuring {
+                Some(true) => *measuring = Some(false),
+                _ => {
+                    *measuring = None;
+                    return;
+                }
             }
-            if let Ok(access) = vault::try_admit_root(&project.root) {
-                break (access, permit);
-            }
-            drop(permit);
-            let Ok(_access) = vault::admit_root(&project.root).await else { return; };
-        };
-        if !unmeasured() { return; }
-        let dir = project.folder.dir.clone();
-        let measuring = tokio::task::spawn_blocking(move || {
-            // This task can outlive its importer and must drain before storage is replaced.
-            let _access = access;
-            let _permit = permit;
-            let measured = crate::tools::quietly(|| project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock)));
-            // What was read before this finished said nothing of how long a clip is.
-            crate::events::project_settled(&dir);
-            measured
-        });
-        if let Ok(Err(error)) = measuring.await {
-            warn!("measuring a project's files: {}", error.message);
         }
     });
+}
+
+/// `project`'s files measured that aren't yet.
+async fn measure_once(host: &Host, project: &Arc<Project>) {
+    let unmeasured = || project.require_view().is_ok() && project.folder.lock().is_ok_and(|lock| lock.files.values().any(folder::File::unmeasured));
+    {
+        let Ok(_access) = vault::admit_root(&project.root).await else { return; };
+        if !unmeasured() { return; }
+    }
+    // Its turn and ffmpeg first, holding nothing of the project, then the project, holding no turn: a lock queued on it waits for
+    // neither, and while it waits no other project's thumbnails or measures wait for it (cl-1025).
+    let (access, permit) = loop {
+        let permit = MEASURES.acquire().await.expect("measuring's turn never closes");
+        if let Err(error) = host.ffmpeg().await {
+            return warn!("measuring a project's files: {}", error.message);
+        }
+        if let Ok(access) = vault::try_admit_root(&project.root) {
+            break (access, permit);
+        }
+        drop(permit);
+        let Ok(_access) = vault::admit_root(&project.root).await else { return; };
+    };
+    if !unmeasured() { return; }
+    let (dir, project) = (project.folder.dir.clone(), project.clone());
+    let measuring = tokio::task::spawn_blocking(move || {
+        // This task can outlive its importer and must drain before storage is replaced.
+        let _access = access;
+        let _permit = permit;
+        let measured = crate::tools::quietly(|| project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock)));
+        // What was read before this finished said nothing of how long a clip is.
+        crate::events::project_settled(&dir);
+        measured
+    });
+    if let Ok(Err(error)) = measuring.await {
+        warn!("measuring a project's files: {}", error.message);
+    }
 }
 
 /// `POST /v1/projects/{id}/imports`: `source` kept in the project as an element, in one call.

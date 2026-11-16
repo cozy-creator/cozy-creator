@@ -10,7 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs, io,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex},
 };
 
 /// What the layer is built from: what these require, transitively, as the base holds it.
@@ -22,10 +22,14 @@ pub(crate) enum Torch {
     /// An image's base interpreter, which moves with its image.
     Image(PathBuf),
     /// The machine's own bases beside its engine's state (`torch-<version>`), each a venv. The
-    /// active one is at the version its Hub names (`wanted`, asked once per start), else the
-    /// newest held; the others go once no environment links them (`reclaim`).
-    Own { engine: PathBuf, wanted: Arc<OnceLock<Option<String>>> },
+    /// active one is at the version its Hub names (`wanted`), else the newest held; the others go
+    /// once no environment links them (`reclaim`).
+    Own { engine: PathBuf, wanted: Wanted },
 }
+
+/// The version a machine's Hub names for its own base, once asked (none: an older Hub's answer): asked at
+/// its first package once per start, or told by an update that prepares the base (`Publisher::prepare_torch`).
+pub(crate) type Wanted = Arc<Mutex<Option<Option<String>>>>;
 
 impl Torch {
     /// The base packages build on now; none while a machine's own is not installed.
@@ -41,16 +45,28 @@ impl Torch {
     }
 
     /// The version a machine's Hub names for its own base; none from an older Hub, or not asked yet.
-    pub(crate) fn wanted(&self) -> Option<&str> {
+    pub(crate) fn wanted(&self) -> Option<String> {
         match self {
-            Torch::Own { wanted, .. } => wanted.get()?.as_deref(),
+            Torch::Own { wanted, .. } => wanted.lock().unwrap().clone().flatten(),
             Torch::Image(_) => None,
         }
     }
 
-    /// Its version: the base's, else the one a machine installs at its next package.
+    /// Whether a machine with its own base still has to ask its Hub which version it wants.
+    pub(crate) fn unasked(&self) -> bool {
+        matches!(self, Torch::Own { wanted, .. } if wanted.lock().unwrap().is_none())
+    }
+
+    /// Its Hub's answer: `version`, or none.
+    pub(crate) fn want(&self, version: Option<String>) {
+        if let Torch::Own { wanted, .. } = self {
+            *wanted.lock().unwrap() = Some(version);
+        }
+    }
+
+    /// Its version: the base's; empty while a machine with no image holds none.
     pub(crate) fn version(&self) -> String {
-        self.base().and_then(|base| torch_version(&base)).or_else(|| self.wanted().map(String::from)).unwrap_or_default()
+        self.base().and_then(|base| torch_version(&base)).unwrap_or_default()
     }
 }
 
@@ -70,7 +86,7 @@ pub(crate) fn torch_version(base: &Path) -> Option<String> {
 }
 
 /// A version without its local label: `2.15.0+cu132` is `2.15.0`.
-fn public(version: &str) -> &str {
+pub(crate) fn public(version: &str) -> &str {
     version.split('+').next().unwrap_or_default()
 }
 

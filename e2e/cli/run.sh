@@ -47,6 +47,7 @@ parse "$@"
 . "$(dirname "$0")/stuck.sh"
 . "$(dirname "$0")/rentalself.sh"
 . "$(dirname "$0")/reports.sh"
+. "$(dirname "$0")/thumbs.sh"
 . "$(dirname "$0")/endedlogs.sh"
 . "$(dirname "$0")/fresh.sh"
 . "$(dirname "$0")/typedcalls.sh"
@@ -83,7 +84,7 @@ step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
-case $SHARD in projectvault | projectvault-static | plan | stuck | coming) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | plan | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -699,6 +700,8 @@ case $SHARD in
   web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
   web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
+  # Pictures imported into a plain project get their thumbnails stored (cl-1054: none on macOS).
+  thumbs) parts="thumbs_stored logs" ;;
   # cl-982's opens on a busy computer: 3,000 other loopback connections open (web/busy.js), as the gate's lookups meet them (cl-985).
   web-opens-busy) export BUSY_SOCKETS=3000; web_cells=(opens); parts="web_lane logs" ;;
   # The page as Calcifer's own and what the access rule refuses (cl-985), alone.
@@ -863,7 +866,7 @@ esac
 # is the same lane there.
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
-    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh | typed-calls) ;;
+    entrypoints | projectvault | projectvault-native | web-serves | notraces | fresh | thumbs | typed-calls) ;;
     web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints

@@ -193,6 +193,8 @@ impl Calcifer {
     /// A task of Calcifer's that ends with it (`close`).
     pub(crate) fn spawn_task(&self, task: impl Future<Output = ()> + Send + 'static) {
         let mut tasks = lock(&self.tasks);
+        // Asked under the lock `close` aborts under: one closed spawns nothing a close wouldn't end.
+        if self.closed() { return; }
         while tasks.try_join_next().is_some() {}
         tasks.spawn(task);
     }

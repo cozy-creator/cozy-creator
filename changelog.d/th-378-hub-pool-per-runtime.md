@@ -1,0 +1,1 @@
+A rented machine's speed reports and its own release no longer wait 30 s and fail: they could draw a Hub connection left idle by another part of the machine, whose runtime wasn't running to send them (two pods' download speed reports never reached the Hub).

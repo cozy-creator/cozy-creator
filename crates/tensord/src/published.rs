@@ -341,6 +341,8 @@ pub(crate) struct Publisher {
     building: Mutex<HashMap<String, String>>,
     /// This machine's PyTorch layer once read (`layer`).
     layer: Mutex<Option<Arc<layer::Layer>>>,
+    /// One ask of the Hub for its PyTorch at a time (`follow`).
+    following: Mutex<()>,
     /// The held names being read again at their Hub (`resolve`).
     refreshing: Arc<Mutex<BTreeSet<String>>>,
 }
@@ -388,6 +390,7 @@ impl Publisher {
             making: Mutex::new(HashMap::new()),
             building: Mutex::new(HashMap::new()),
             layer: Mutex::default(),
+            following: Mutex::default(),
             refreshing: Arc::default(),
         })
     }
@@ -400,25 +403,55 @@ impl Publisher {
         self.follow(hub);
         let mut held = self.layer.lock().unwrap();
         if held.is_none() {
-            let base = match (self.sdk.torch.base(), &self.sdk.torch) {
-                (Some(base), _) => base,
-                (None, layer::Torch::Own { engine, .. }) => match self.install_torch(engine, self.sdk.torch.wanted(), job) {
-                    Ok(base) => base,
-                    Err((code, why)) => {
-                        tracing::warn!("this machine's PyTorch could not be installed ({code}): packages install their own: {why}");
-                        return Ok(None);
-                    }
-                },
-                (None, layer::Torch::Image(_)) => return Ok(None),
+            let base = match self.base(job) {
+                Ok(base) => base,
+                Err((code, why)) => {
+                    tracing::warn!("this machine's PyTorch could not be installed ({code}): packages install their own: {why}");
+                    return Ok(None);
+                }
             };
-            *held = layer::Layer::read(&base).map_err(io_failure)?.map(Arc::new);
-            if let Some(layer) = held.as_ref() {
-                tracing::info!("this machine's PyTorch layer: {}", layer.pins().join(" "));
-                // Compiled once here, so an environment's imports write nothing into the base.
-                environment::compile_bytecode(&platform::paths::venv_python(&base));
-            }
+            *held = base.as_deref().map(Self::read_layer).transpose()?.flatten();
         }
         Ok(held.clone())
+    }
+
+    /// An update's PyTorch member (`cozy doctor --fix`, `cozy update`; cl-1030): a machine with no image holds its own
+    /// base at `version`, its Hub's (empty: an older Hub's, the newest held), installed as a package's first run installs
+    /// it, under the same lock. Packages build on it from their next run. Its version; an image's moves with its image.
+    pub(crate) fn prepare_torch(&self, version: &str, job: &Job) -> Result<String, Failure> {
+        if let layer::Torch::Image(_) = self.sdk.torch {
+            return Ok(self.sdk.torch.version());
+        }
+        let mut held = self.layer.lock().unwrap();
+        if !version.is_empty() {
+            self.sdk.torch.want(Some(version.to_owned()));
+            if held.as_ref().is_some_and(|layer| layer.version("torch").map(layer::public) != Some(version)) {
+                *held = None;
+            }
+        }
+        if held.is_none() {
+            *held = self.base(job)?.as_deref().map(Self::read_layer).transpose()?.flatten();
+        }
+        Ok(self.sdk.torch.version())
+    }
+
+    /// The base packages build on now: a machine's own, installed at the version it wants when none holds it.
+    fn base(&self, job: &Job) -> Result<Option<PathBuf>, Failure> {
+        match (self.sdk.torch.base(), &self.sdk.torch) {
+            (Some(base), _) => Ok(Some(base)),
+            (None, layer::Torch::Own { engine, .. }) => self.install_torch(engine, self.sdk.torch.wanted().as_deref(), job).map(Some),
+            (None, layer::Torch::Image(_)) => Ok(None),
+        }
+    }
+
+    fn read_layer(base: &Path) -> Result<Option<Arc<layer::Layer>>, Failure> {
+        let layer = layer::Layer::read(base).map_err(io_failure)?.map(Arc::new);
+        if let Some(layer) = &layer {
+            tracing::info!("this machine's PyTorch layer: {}", layer.pins().join(" "));
+            // Compiled once here, so an environment's imports write nothing into the base.
+            environment::compile_bytecode(&platform::paths::venv_python(base));
+        }
+        Ok(layer)
     }
 
     /// A machine's own base, `torch-<version>` under `engine`: staged, then renamed once it
@@ -446,13 +479,17 @@ impl Publisher {
     }
 
     /// A machine with no image takes the PyTorch its Hub names (`/v1/software`), asked once per
-    /// start, at its first package: one built on another goes to it at its next use, so a moved
-    /// Hub moves every machine as it restarts. An older Hub, or none answering, names none.
+    /// start, at its first package, unless an update said it first (`prepare_torch`): one built on another goes to it at
+    /// its next use, so a moved Hub moves every machine as it restarts. An older Hub, or none answering, names none.
     fn follow(&self, hub: Option<&hub::Source>) {
-        let (layer::Torch::Own { wanted, .. }, Some(hub)) = (&self.sdk.torch, hub) else {
+        let Some(hub) = hub.filter(|_| self.sdk.torch.unasked()) else {
             return;
         };
-        wanted.get_or_init(|| match hub::Catalog::new(hub).map_err(|e| e.0).and_then(|c| c.software().map_err(|e| e.to_string())) {
+        let _one = self.following.lock().unwrap();
+        if !self.sdk.torch.unasked() {
+            return;
+        }
+        self.sdk.torch.want(match hub::Catalog::new(hub).map_err(|e| e.0).and_then(|c| c.software().map_err(|e| e.to_string())) {
             Ok(software) => {
                 tracing::info!("{} names PyTorch {}", hub.origin, software.torch.as_deref().unwrap_or("none: the newest held is used"));
                 software.torch
