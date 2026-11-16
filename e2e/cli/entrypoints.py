@@ -279,8 +279,8 @@ def main() -> None:
                 finally:
                     environment.clear()
                     environment.update(saved)
-                said = [line for line in without.stderr.splitlines() if line.strip()]
-                assert opened["url"] in without.stdout and len(said) == 1 and "no browser with a private window" in said[0], \
+                lines = [line for line in without.stderr.splitlines() if line.strip()]
+                assert opened["url"] in without.stdout and len(lines) == 1 and "no browser with a private window" in lines[0], \
                     f"open with {name}: {without.stdout}{without.stderr}"
         assert browser_log.read_text().split() == ["--incognito", opened["url"]], "an open with no private window started a browser"
         for flag in ("--no-open", "--print-url"):
