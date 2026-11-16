@@ -331,8 +331,9 @@ timeline: dict[str, Json] = {
     },
     "install_turns": {run: {"what": t.what, "start": since(t.start), "end": since(t.end), "said": cast(Json, t.said)} for run, t in turns.items()},
     "picture_stages": cast(Json, stages(picture)),
-    # Each stand of a downloader's floor: at 0 an emergency, at a job's order its install's build, while the rest waited.
-    "floors": [{"order": cast(int, f["order"]), "class": "emergency" if f["order"] == 0 else "install", "from": since(num(f["from_ms"])),
+    # Each stand of a downloader's floor: at 0 an emergency, at the last need's order a run's needs (cl-1101), at a job's order its
+    # install's build, while the rest waited.
+    "floors": [{"order": cast(int, f["order"]), "class": "emergency" if f["order"] == 0 else "needs" if f["order"] == (1 << 62) + 1 else "install", "from": since(num(f["from_ms"])),
                 "to": since(num(f["to_ms"])), "seconds": round((cast(int, f["to_ms"]) - cast(int, f["from_ms"])) / 1000, 1), "bytes": f["bytes"],
                 "mb_s": f["mb_s"], "others_started_during": sum(1 for seen in objects.values() for at in seen.fetching
                                                                  if cast(int, f["from_ms"]) < at < cast(int, f["to_ms"]))} for f in floors],
