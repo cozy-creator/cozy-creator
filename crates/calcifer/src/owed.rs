@@ -1,0 +1,134 @@
+//! A lock never waits on a machine that doesn't answer (cl-1064; Paul: "lock must succeed when asked"). While a lock waits on
+//! `local`, its status is asked every second, given two to answer; three misses in a row and the lock goes on without it. The
+//! project's runs there settle here as canceled, its view is ended, and the machine's clean-up is owed: the view's path (new at each
+//! unlock) and the project's folder, in state.db, nothing else of the project. Calcifer pays it when the machine next answers, and
+//! before any new work goes to it: everything the machine ran in that view is cancelled, then retired. A slow machine judged wrongly
+//! costs nothing but that deferred clean-up: its runs were ended by the lock, and it is told the rest when it answers.
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
+use tracing::{info, warn};
+
+use crate::machines::Machines;
+
+/// How often a lock asks a machine it waits on whether it answers, how long it gives it, and how many misses in a row mean it doesn't.
+const ASK_EVERY: Duration = Duration::from_secs(1);
+const ASK_WITHIN: Duration = Duration::from_secs(2);
+const MISSES: u32 = 3;
+
+/// Whether state.db may hold an owed clean-up: true at start, so the first answer looks; false once a look finds none.
+static MAYBE_OWED: AtomicBool = AtomicBool::new(true);
+/// One payer at a time.
+static PAYING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+impl Machines {
+    /// Whether `name` answers its status now: asked up to three times, a second apart, two seconds each.
+    pub(crate) async fn answers(&self, name: &str) -> bool {
+        for ask in 0..MISSES {
+            if ask > 0 {
+                tokio::time::sleep(ASK_EVERY).await;
+            }
+            if self.asked(name).await {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `work`, which waits on `name`, while `name` answers: its status asked every second meanwhile; None once it missed three in
+    /// a row, and `work` is dropped.
+    pub(crate) async fn while_answering<T>(&self, name: &str, work: impl Future<Output = T>) -> Option<T> {
+        let watch = async {
+            let mut misses = 0;
+            loop {
+                tokio::time::sleep(ASK_EVERY).await;
+                misses = if self.asked(name).await { 0 } else { misses + 1 };
+                if misses >= MISSES {
+                    return;
+                }
+            }
+        };
+        tokio::select! {
+            done = work => Some(done),
+            () = watch => None,
+        }
+    }
+
+    async fn asked(&self, name: &str) -> bool {
+        let Ok(Some(link)) = self.calcifer.link(name) else { return false };
+        matches!(tokio::time::timeout(ASK_WITHIN, link.status()).await, Ok(Ok(_)))
+    }
+
+    /// A lock that couldn't reach `local` owes it the clean-up of the project at `folder`, mounted at `view`.
+    pub(crate) fn owe(&self, view: &Path, folder: &Path) -> crate::store::Result<()> {
+        self.store().owe("local", view, folder)?;
+        MAYBE_OWED.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Whether `local` may still be owed a clean-up (cheap: no read once one found none).
+    pub(crate) fn maybe_owed(&self) -> bool {
+        MAYBE_OWED.load(Ordering::Relaxed)
+    }
+
+    /// Pays what locks owe `local`, now that it answers: each view's runs cancelled and its records retired. True once nothing is
+    /// owed; false when it didn't take it (not answering, or refusing), and it's asked again when it next answers.
+    pub(crate) async fn pay_owed(self: &Arc<Self>) -> bool {
+        if !self.maybe_owed() {
+            return true;
+        }
+        let _paying = PAYING.lock().await;
+        let owed: Vec<(PathBuf, PathBuf)> = match self.store().owed_to("local") {
+            Ok(owed) => owed,
+            Err(e) => {
+                warn!("the clean-ups locks owe local could not be read: {e}");
+                return false;
+            }
+        };
+        if owed.is_empty() {
+            MAYBE_OWED.store(false, Ordering::Relaxed);
+            return true;
+        }
+        let Ok(Some(link)) = self.calcifer.link("local") else { return false };
+        for (view, folder) in owed {
+            match tokio::time::timeout(ASK_WITHIN * 5, link.project_gone_at(&view)).await {
+                Ok(Ok(())) => {
+                    if let Err(e) = self.store().paid("local", &view) {
+                        warn!(folder = %folder.display(), "local did a locked project's clean-up, not yet recorded: {e}");
+                        return false;
+                    }
+                    info!(folder = %folder.display(), "local did the clean-up a lock owed it for this project");
+                }
+                Ok(Err(e)) => {
+                    let code = match &e {
+                        crate::link::LinkError::Refused { code, .. } => code.as_str(),
+                        _ => "machine_unreachable",
+                    };
+                    warn!(folder = %folder.display(), code, "local didn't take the clean-up a lock owes it for this project; asked again when it next answers");
+                    return false;
+                }
+                Err(_) => return false,
+            }
+        }
+        true
+    }
+
+    /// `local` answered: what locks owe it is paid now, before anything else is sent to it.
+    pub(crate) fn answered_local(&self) {
+        if !self.maybe_owed() {
+            return;
+        }
+        if let Some(machines) = self.calcifer.machines() {
+            tokio::spawn(async move {
+                machines.pay_owed().await;
+            });
+        }
+    }
+}

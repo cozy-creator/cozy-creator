@@ -36,6 +36,7 @@ mod machines;
 mod machine_client;
 mod old_outputs;
 mod outputs;
+mod owed;
 mod page;
 mod placement;
 mod plan;
@@ -886,6 +887,34 @@ impl Calcifer {
             let Some(row)=store.run(id.as_str())? else {continue;};
             let events=store.request_cancel(id.as_str())?;
             self.publish(&id,events); self.wake(&id); canceled.push(row.number);
+        }
+        Ok(canceled)
+    }
+
+    /// Whether `project` has a run on `machine` not yet settled.
+    pub(crate) fn unsettled_on(&self, project: &str, machine: &str) -> Result<bool, Error> {
+        let Some(owner) = self.owner_of(project) else { return Ok(false) };
+        let store = owner.store()?;
+        for id in store.unsettled()? {
+            if store.run(id.as_str())?.is_some_and(|row| row.machine.as_deref() == Some(machine)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// A lock ends `project`'s runs on `machine`, which doesn't answer (cl-1064): each settles here as canceled, never waiting for
+    /// it; the machine cancels them when it next answers, before anything else is sent to it.
+    pub(crate) fn cancel_unanswered_for_lock(&self, project: &str, machine: &str) -> Result<Vec<u64>, Error> {
+        let Some(owner) = self.owner_of(project) else { return Ok(vec![]) };
+        let store = owner.store()?;
+        let mut canceled = vec![];
+        for id in store.unsettled()? {
+            let Some(row) = store.run(id.as_str())? else { continue };
+            if row.machine.as_deref() != Some(machine) { continue; }
+            let mut events = store.request_cancel(id.as_str())?;
+            events.extend(store.cancel_unanswered(id.as_str(), machine, "machine_not_answering", "the project was locked")?);
+            self.publish(&id, events); self.wake(&id); canceled.push(row.number);
         }
         Ok(canceled)
     }
@@ -2016,6 +2045,21 @@ impl Calcifer {
                 }
                 continue;
             };
+            // Nothing new goes to local before what a lock owes it is done (cl-1064): the runs it held in a view the lock ended are
+            // cancelled and retired first, so none of them writes again, least of all into the project unlocked anew.
+            if run.state == State::Queued
+                && name == "local"
+                && let Some(machines) = self.machines()
+                && machines.maybe_owed()
+                && !machines.pay_owed().await
+            {
+                self.waiting(id, "waiting for local to finish a locked project's clean-up".into());
+                tokio::select! {
+                    _ = changed.changed() => {}
+                    _ = wake.notified() => {}
+                }
+                continue;
+            }
             // Work goes to a machine of any version; one on an older minor this computer may move is updated first (cl-1069).
             if run.state == State::Queued
                 && run.kind != ::api::calcifer::Kind::Update

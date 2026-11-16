@@ -337,6 +337,11 @@ impl Engine {
         }
         self.retire_if_gone(project_id)
     }
+    /// The projects journaled here as having run in vault view `view` (cl-1064).
+    pub(crate) fn projects_at(&self, view: &std::path::Path) -> io::Result<Vec<String>> {
+        let projects = self.journal.lock().unwrap().project_roots()?;
+        Ok(projects.into_iter().filter(|(_, roots)| roots.iter().any(|root| root == view)).map(|(project, _)| project).collect())
+    }
     /// A project `forget_project` was told is gone goes once none of its runs is active. Answers whether it went.
     fn retire_if_gone(&self, project_id: &str) -> io::Result<bool> {
         if !self.gone.lock().unwrap().contains(project_id) || self.journal.lock().unwrap().private_active(project_id)? {

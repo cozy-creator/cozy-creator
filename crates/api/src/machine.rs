@@ -130,6 +130,9 @@ pub mod path {
     /// `POST` by this computer's controller: a project whose folder is gone (cl-1031). Every record of it here goes, as a lock's
     /// does: 204 once nothing of it is here, 409 while a folder it ran in still holds it or its runs are active.
     pub const PROJECT_GONE: &str = "/v1/project-gone/{project_id}";
+    /// `POST` a [`super::ViewGone`] by this computer's controller: what a lock that couldn't reach this machine owes it (cl-1064).
+    /// Every project it ran in that vault view has its runs cancelled and its records retired, as a lock's close would have. 204.
+    pub const PROJECT_GONE_AT: &str = "/v1/project-gone";
     /// `POST` a [`super::RunRequest`] of [`super::RunKind::Update`], the one request a controller of
     /// another release sends; `GET` a [`super::RunList`], `?before=<number>&limit=`.
     pub const RUNS: &str = "/v1/runs";
@@ -162,6 +165,13 @@ pub mod path {
 
 /// A preview's step, `<position>/<total>` (`path::PREVIEW`).
 pub const PREVIEW_STEP: &str = "cozy-preview-step";
+
+/// A vault view a lock ended while this machine didn't answer (cl-1064): the path it was mounted at, new at each unlock.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ViewGone {
+    pub view: std::path::PathBuf,
+}
 
 /// Remove all locally cached releases and lanes of one model repository.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
