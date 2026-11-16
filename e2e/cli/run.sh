@@ -924,6 +924,7 @@ case $SHARD in
     ended_logs
     vault_reattach
     vault_unstarted
+    lock_hung
     logs
   " ;;
   # A run on local after a lock that ended one, a run and a lock, attaches (cl-1082), alone. Named projectvault-* for its driver.
@@ -934,6 +935,8 @@ case $SHARD in
   projectvault-folder-gone) parts="folder_gone logs" ;;
   # cozy's process trees never take a process that started before its supposed parent (Windows' stale parent ids), alone; every OS.
   stale-parent) parts="stale_parent logs" ;;
+  # An encrypted project locks while its local machine is stopped (cl-1064), alone. Named projectvault-* for its driver.
+  projectvault-lock-hung) parts="lock_hung logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
   # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.
