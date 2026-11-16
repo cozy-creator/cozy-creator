@@ -4,7 +4,7 @@
 // drawn at the canvas's scale, cl-890); a prompt over a picture is bold, 4.5:1 or more against its surface (cl-901). A render's Cancel shows at
 // 1 and at 0.5, and the Focus frame fits the window. Each finding names its rule, where, and what (layout.js's rules, measured).
 const { randomUUID } = require('crypto');
-const { test, expect, canvasCard, canvasNames, canvasIdle, hoverBox, focus, fixtureTool, observeStill, screenshotPixels, MP4, png } = require('./fixtures');
+const { test, expect, canvasCard, canvasNames, canvasIdle, hoverBox, focus, fixtureTool, observeStill, openPoint, screenshotPixels, MP4, png } = require('./fixtures');
 
 test.use({
   launchOptions: {
@@ -86,6 +86,8 @@ function audit({ floor, focused }) {
   const norm = text => text.replace(/\s+/g, ' ').trim();
   const pixels = [];
   const boxes = [];
+  // What floats over the canvas covers a label whether or not it takes the pointer (a note is pointer-events: none).
+  const covers = [...document.querySelectorAll('.notes .note, .tools, .zoom, .zoom-menu, .top, .drawer, .activity')].filter(visible).map(R);
   const inspectFailure = (rule, asset, part, what) => found.push(`${rule}: <${asset}> ${part}: ${what}`);
   for (const asset of inspection?.names() ?? []) {
     const card = inspection.card(asset);
@@ -114,16 +116,22 @@ function audit({ floor, focused }) {
       // Labels intentionally above/below the body stay outside it. Text that starts inside may not have a partial last line outside it.
       if (at.top >= body.top && at.top < body.bottom && at.bottom > body.bottom + 1) inspectFailure('line-cut', asset, key, `${round(at)} past the picture/text body's bottom ${Math.round(body.bottom)}`);
       if ((key === 'title' || key === 'cancel' || key.startsWith('words')) && label.fontSize * zoom >= 8
-        && within(at, { left: 0, top: 0, right: innerWidth, bottom: innerHeight }, 0)
+        && within(at, { left: 0, top: 0, right: innerWidth, bottom: innerHeight }, 0) && !covers.some((over) => meet(at, over, 0))
         && root.contains(document.elementFromPoint(at.left + at.width / 2, at.top + at.height / 2))) pixels.push({ name: asset, key, ...label });
     }
     for (let i = 0; i < painted.controls.length; i++) for (let j = i + 1; j < painted.controls.length; j++) {
       const [a, b] = [painted.controls[i], painted.controls[j]];
       if (meet(rect(a), rect(b))) inspectFailure('overlap', asset, a.part, `on ${b.part}: ${round(rect(a))} and ${round(rect(b))}`);
     }
+    // A box's own Delete and Cancel: within its width (Cancel hangs under it, with the render's line), and a press on one is that control of
+    // that box. Where its hit area ends is the scene's choice.
     for (const control of painted.controls) {
-      const at = rect(control);
-      if (at.left < bounds.left - 1 || at.right > bounds.right + 1) inspectFailure('outside', asset, control.part, `${round(at)} past the box's width ${round(bounds)}`);
+      const at = rect(control), middle = { x: at.left + at.width / 2, y: at.top + at.height / 2 };
+      if (middle.x < bounds.left || middle.x > bounds.right) inspectFailure('outside', asset, control.part, `its middle ${Math.round(middle.x)},${Math.round(middle.y)} past the box's width ${round(bounds)}`);
+      else if (within(at, { left: 0, top: 0, right: innerWidth, bottom: innerHeight }, 0) && !covers.some((over) => meet(at, over, 0))) {
+        const hit = inspection.hitTest(middle);
+        if (hit?.name !== asset || hit?.part !== control.part) inspectFailure('unreachable', asset, control.part, `a press on its middle is ${JSON.stringify(hit)}`);
+      }
     }
   }
   // At rest, no box on another, including its title, metadata, errors and render controls hanging above/below it.
@@ -192,7 +200,9 @@ function textPixels(read, labels, ink, dpr) {
 }
 
 async function passive(page) {
-  await page.mouse.move(2, 500);
+  // On open canvas, so no box is under the pointer at any zoom and none mounts its card; in Focus the canvas takes no hover.
+  const { x, y } = (await page.locator('[data-focused-asset]').count()) ? { x: 2, y: 500 } : await openPoint(page);
+  await page.mouse.move(x, y);
   await expect(page.locator('.canvas-node')).toHaveCount(0);
   // Runs/loading may animate forever. Only finite arrival/movement must settle before measuring geometry.
   await expect.poll(() => page.evaluate(() => {

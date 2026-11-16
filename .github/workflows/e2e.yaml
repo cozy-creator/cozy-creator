@@ -709,7 +709,7 @@ jobs:
         # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
         # web-1, web-2, web-3, web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once. Manual shard selections
         # remain available.
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","local-code"]') }}
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","stuck","web-1","web-2","web-3","web-engines","web-solo","projectdb","projectvault","projectvault-nofuse","projectvault-static","local-code"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
@@ -754,8 +754,21 @@ jobs:
         working-directory: .creator/web/app
         run: pnpm install --frozen-lockfile
       - name: Install the optional project-encryption filesystem driver
-        if: (startsWith(matrix.shard, 'projectvault') && !startsWith(matrix.shard, 'projectvault-nofuse')) || (matrix.shard == 'web-engines' || startsWith(matrix.shard, 'web-engines@')) || (matrix.shard == 'web-vault' || startsWith(matrix.shard, 'web-vault@')) || (matrix.shard == 'web-solo' || startsWith(matrix.shard, 'web-solo@')) || startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-opens')
+        if: (startsWith(matrix.shard, 'projectvault') && !startsWith(matrix.shard, 'projectvault-nofuse') && !startsWith(matrix.shard, 'projectvault-static')) || (matrix.shard == 'web-engines' || startsWith(matrix.shard, 'web-engines@')) || (matrix.shard == 'web-vault' || startsWith(matrix.shard, 'web-vault@')) || (matrix.shard == 'web-solo' || startsWith(matrix.shard, 'web-solo@')) || startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-opens')
         run: bash .creator/e2e/cli/install-vault-driver.sh
+      # cl-1000: the provider probe (e2e/vault-provider) projectvault-static's cells run, not embedding the provider, and FUSE 3 beside
+      # libfuse.so.2, which the glibc securefs build it times the static one against loads.
+      - name: Build the provider probe and install FUSE 3 beside libfuse.so.2
+        if: startsWith(matrix.shard, 'projectvault-static')
+        working-directory: .creator
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: |
+          toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$toolchain" --profile minimal
+          cargo "+$toolchain" build --release --locked -p project-mount --example vault-provider --target-dir "$RUNNER_TEMP/vault-probe"
+          echo "VAULT_PROBE=$RUNNER_TEMP/vault-probe/release/examples/vault-provider" >> "$GITHUB_ENV"
+          bash e2e/cli/install-vault-driver.sh fuse3
       - uses: actions/download-artifact@v4
         with:
           name: fixture-hub

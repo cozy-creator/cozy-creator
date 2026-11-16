@@ -91,6 +91,8 @@ interface Drawn {
   alive: boolean
   /** Its native card stands over it: kept, unseen, with its pictures, so leaving it shows the same pixels at once. */
   hidden?: boolean
+  /** Its last paint threw: drawn as a broken tile until a paint succeeds. */
+  broken?: boolean
 }
 
 const inside = (point: { x: number; y: number }, box: Box) => point.x >= box.x && point.y >= box.y && point.x <= box.x + box.w && point.y <= box.y + box.h
@@ -115,6 +117,8 @@ export class PixiScene {
   /** Method-call diagnostics, not renderer frames or GPU draw calls. */
   private sceneUpdates = 0
   private cardPaints = 0
+  /** What each card's failed paint said, said once per card and message. */
+  private faults = new Map<string, string>()
   private clock?: ReturnType<typeof setTimeout>
   private fontEpoch = 0
   private paintZoom = 1
@@ -178,6 +182,7 @@ export class PixiScene {
     const inView = (box: Box) => intersects({ ...box, y: box.y - 40, h: box.h + 160 }, screen)
     for (const node of input.nodes) {
       let drawn = this.records.get(node.id)
+      try {
       // A target outside the viewport must not remove a card while its visible pixels are still sliding there.
       if (!inView(node.box) && !((node.gliding || drawn?.glide) && drawn && inView(this.glidedBox(drawn, now)))) continue
       live.add(node.id)
@@ -221,6 +226,12 @@ export class PixiScene {
       this.waveFor(drawn)
       this.loadingFor(drawn)
       this.landingFor(drawn)
+      } catch (error) {
+        // One card's failure never costs the others their paint (B1: one throw dropped the whole update and blanked the canvas).
+        live.add(node.id)
+        if (drawn) this.fault(drawn, error)
+        else this.said(node.id, node.name, error)
+      }
     }
     for (const [id, drawn] of this.records) if (!live.has(id)) { this.remove(drawn); this.records.delete(id) }
     this.scheduleClock()
@@ -304,6 +315,7 @@ export class PixiScene {
     body.x -= node.box.x; body.y -= node.box.y
     const { ground, ink } = drawn
     ground.clear(); ink.clear()
+    if (drawn.broken) { drawn.broken = false; drawn.pixels.visible = drawn.labels.visible = true }
     drawn.chips = []
     drawn.stateDot = undefined; drawn.meterBox = undefined
     drawn.hits = []
@@ -593,7 +605,7 @@ export class PixiScene {
       held.local = Boolean(request.local)
       held.content = hash ?? source.url ?? request.path
       held.failed = false
-      if (held.current?.key !== key) held.pending = this.cache.acquire(request, () => this.showPicture(drawn, held, true))
+      if (held.current?.key !== key) held.pending = this.cache.acquire(request, () => this.guard(drawn, () => this.showPicture(drawn, held, true)))
     }
     this.showPicture(drawn, held)
   }
@@ -765,6 +777,7 @@ export class PixiScene {
     const zoom = Math.max(0.0001, this.input.camera.zoom)
     for (const drawn of this.records.values()) {
       if (drawn.hidden) continue
+      try {
       if (drawn.glide) {
         if (this.reducedMotion.matches || now - drawn.glide.began >= GLIDE_MS) drawn.glide = undefined
         else animated = true
@@ -822,6 +835,7 @@ export class PixiScene {
           pulse(spread, alpha)
         }
       }
+      } catch (error) { this.fault(drawn, error) }
     }
     return animated
   }
@@ -882,6 +896,32 @@ export class PixiScene {
     latent.bitmap?.close()
   }
 
+  /** One card's work outside `update`: a throw is that card's alone (`fault`). */
+  private guard(drawn: Drawn, work: () => void) {
+    try { work() } catch (error) { this.fault(drawn, error) }
+  }
+
+  /** A card whose paint threw: said once, drawn as a broken tile (its frame crossed out, still selectable, its native card on hover). */
+  private fault(drawn: Drawn, error: unknown) {
+    this.said(drawn.node.id, drawn.node.name, error)
+    drawn.broken = true
+    try {
+      const { w, h } = drawn.node.box, colors = this.palette?.colors ?? COLORS.paper
+      drawn.pixels.visible = drawn.labels.visible = false
+      drawn.ground.clear().rect(0, 0, w, h).fill(colors.card).stroke({ width: 1, color: colors.failed })
+      drawn.ink.clear().moveTo(0, 0).lineTo(w, h).moveTo(w, 0).lineTo(0, h).stroke({ width: 1, color: colors.failed, alpha: 0.4 })
+      drawn.hits = [{ box: { x: 0, y: 0, w, h }, part: "body" }]
+    } catch { /* the tile itself can't be drawn: its space stays empty */ }
+    this.options.invalidate()
+  }
+
+  private said(id: string, name: string, error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (this.faults.get(id) === message) return
+    this.faults.set(id, message)
+    console.error(`The canvas couldn't draw ${name}:`, error)
+  }
+
   private scheduleClock() {
     if (this.clock || !this.visible || this.stopped) return
     const ticking = (drawn: Drawn) => !drawn.hidden && Boolean(drawn.presentation.progress?.time) && this.onScreen(drawn)
@@ -890,10 +930,10 @@ export class PixiScene {
     if (!needed) return
     this.clock = setTimeout(() => {
       this.clock = undefined
-      for (const drawn of this.records.values()) if (ticking(drawn)) {
+      for (const drawn of this.records.values()) if (ticking(drawn)) this.guard(drawn, () => {
         drawn.presentation = present(this.options.store, drawn.node)
         this.draw(drawn)
-      }
+      })
       this.options.invalidate()
       this.scheduleClock()
     }, 1000)
@@ -952,17 +992,18 @@ export class PixiScene {
   }
 
   resourceStats() {
-    let labels = 0, labelBytes = 0, loadedCards = 0, latentBytes = 0, activeLatents = 0, visibleCards = 0
+    let labels = 0, labelBytes = 0, loadedCards = 0, latentBytes = 0, activeLatents = 0, visibleCards = 0, brokenCards = 0
     for (const drawn of this.records.values()) {
       if (drawn.hidden) continue
       visibleCards++
+      if (drawn.broken) brokenCards++
       labels += drawn.texts.size
       for (const label of drawn.texts.values()) labelBytes += Math.ceil(label.width) * Math.ceil(label.height) * (label.resolution ?? 1) ** 2 * 4
       if (drawn.pictures.get("main")?.current?.texture) loadedCards++
       if (drawn.latent) activeLatents++
       if (drawn.latent?.bitmap) latentBytes += drawn.latent.bitmap.width * drawn.latent.bitmap.height * 4
     }
-    return { ...this.cache.resourceStats(), totalCards: this.input?.nodes.length ?? 0, visibleCards, loadedCards, labels, estimatedLabelBytes: labelBytes, latentBytes, activeLatents, activeDecoders: 0, sceneUpdates: this.sceneUpdates, cardPaints: this.cardPaints }
+    return { ...this.cache.resourceStats(), totalCards: this.input?.nodes.length ?? 0, visibleCards, loadedCards, labels, estimatedLabelBytes: labelBytes, latentBytes, activeLatents, activeDecoders: 0, sceneUpdates: this.sceneUpdates, cardPaints: this.cardPaints, brokenCards }
   }
 
   /** Read-only geometry of actual retained display objects. This is diagnostics, never proof that the GPU presented their pixels. */
@@ -983,6 +1024,7 @@ export class PixiScene {
     return {
       body: paintedBody,
       transform: { x: drawn.container.x, y: drawn.container.y, scaleX, scaleY, alpha: drawn.container.alpha },
+      broken: Boolean(drawn.broken),
       glide: drawn.glide ? { active: true, durationMs: GLIDE_MS } : null,
       dragging: Boolean(drawn.node.dragging), offering: Boolean(drawn.node.dragging && drawn.node.offering),
       labels: Object.fromEntries([...drawn.texts].map(([key, label]) => [key, {

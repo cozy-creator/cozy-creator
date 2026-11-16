@@ -973,7 +973,7 @@ impl Updates {
             }
             return Err(error);
         }
-        tracing::info!(
+        tracing::info!(target: crate::config::MACHINE, 
             "update {}: restarting on cozy {}, Runtime {} / TensorFS {}",
             request.operation, to.cozy, to.runtime, to.tensorfs
         );

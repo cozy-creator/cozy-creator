@@ -67,6 +67,12 @@ pub(crate) struct Scope {
     token: String,
 }
 
+impl std::fmt::Debug for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Scope").field("project_id", &self.storage.project_id).finish_non_exhaustive()
+    }
+}
+
 impl Scope {
     pub(crate) fn descriptor_header(&self) -> String {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};

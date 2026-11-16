@@ -231,7 +231,7 @@ PY_BACKING_SCAN
 vault_no_fuse() (
   step "an encrypted project with no FUSE here: a refusal naming apt's install, never a 503 (cl-1000)"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault no fuse: Linux runners only"; exit 0; }
-  local work secrets holder status code=0 install='sudo apt install fuse3 libfuse2'
+  local work secrets holder status code=0 install='sudo apt install fuse3'
   work=$(mktemp -d "$OUT/vault-no-fuse.XXXXXX") secrets=$(mktemp -d "$OUT/vault-no-fuse-credentials.XXXXXX")
   trap 'rm -rf -- "$secrets"' EXIT
   # No FUSE at all: whatever of it the runner came with removed, and its device closed to this user.
@@ -252,6 +252,158 @@ vault_no_fuse() (
   [ ! -e "$work/p/project.db" ] && [ ! -e "$work/q/project.db" ] || check "no FUSE: a refused encrypted create left a project behind"
   cozy --json new --unencrypted "$work/plain" > "$work/plain.json" 2> "$work/plain.err" \
     || check "no FUSE: cozy new --unencrypted failed: $(tail -c 300 "$work/plain.err")"
+)
+
+# cl-1000: the bundled Linux provider is upstream's musl-static securefs (musl and libfuse 2.9.9 linked in). Its own shard,
+# projectvault-static, whose e2e.yaml step builds the probe ($VAULT_PROBE, e2e/vault-provider) and installs fuse3 and libfuse2t64.
+# vault_helper <glibc|musl-static> <dir>: that securefs 2.0.0 build for this CPU, its archive's digest checked, unpacked into <dir>;
+# musl-static is the pin (scripts/prepare-securefs.py), glibc the dynamic build it replaced. Prints the executable.
+vault_helper() {
+  local build=$1 dir=$2 arch target archive digest
+  case $(uname -m) in
+    x86_64) arch=amd64 target=x86_64-unknown-linux-gnu digest=ebb8fbe8fec36b51c8c8edde12bf4fb45d1a289f3f08c196ee29f6d5c1bdc2c2 ;;
+    aarch64) arch=arm64 target=aarch64-unknown-linux-gnu digest=3a272fe9d090611513b9df97053a2b5a87bf38c4dc31eb12e0a86f9d972ee91e ;;
+    *) echo "no securefs build for $(uname -m)" >&2; return 1 ;;
+  esac
+  mkdir -p "$dir"
+  if [ "$build" = musl-static ]; then
+    archive=$(python3 "$E2E/../scripts/prepare-securefs.py" --target "$target" --out-dir "$dir") || return 1
+  else
+    archive=$dir/securefs-linux-$arch-release.zip
+    curl -fsSL --retry 3 -o "$archive" "https://github.com/netheril96/securefs/releases/download/v2.0.0/securefs-linux-$arch-release.zip" || return 1
+    [ "$(sha256sum "$archive" | cut -d ' ' -f 1)" = "$digest" ] || { echo "$archive: not the glibc pin's digest" >&2; return 1; }
+  fi
+  python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract("securefs", sys.argv[2])' "$archive" "$dir" && chmod 755 "$dir/securefs" || return 1
+  echo "$dir/securefs"
+}
+
+# Write and read rates of the static build beside the glibc one, each through the probe's throughput mode on this runner: 1 GiB
+# in 4 MiB chunks, fsynced, locked, unlocked, read back and checked. Recorded to compare (vault-throughput.json), no threshold.
+vault_throughput() (
+  step "securefs throughput: the static build beside the glibc one (cl-1000)"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault throughput: Linux runners only"; exit 0; }
+  [ -x "${VAULT_PROBE:-}" ] || fail "vault throughput: VAULT_PROBE names no built e2e/vault-provider probe"
+  local root=${RUNNER_TEMP:-$OUT}/vault-throughput bytes=$((1 << 30)) build helper run
+  ldconfig -p > "$OUT/vault-throughput-ldconfig.txt"
+  grep -q 'libfuse\.so\.2' "$OUT/vault-throughput-ldconfig.txt" && command -v fusermount3 > /dev/null || fail "vault throughput: this runner needs fuse3 and libfuse2t64"
+  for build in glibc musl-static; do
+    helper=$(vault_helper "$build" "$root/$build" 2> "$OUT/vault-throughput-$build.log") || fail "vault throughput: no $build securefs: $(tail -c 300 "$OUT/vault-throughput-$build.log")"
+    "$helper" version > "$OUT/vault-throughput-$build-version.txt" 2>&1 || fail "vault throughput: $build securefs version: $(head -c 300 "$OUT/vault-throughput-$build-version.txt")"
+    run=$root/$build-run
+    "$VAULT_PROBE" throughput "$helper" "$run" "$bytes" > "$OUT/vault-throughput-$build.out" 2>> "$OUT/vault-throughput-$build.log" \
+      || fail "vault throughput: $build: $(tail -c 400 "$OUT/vault-throughput-$build.log")"
+    tail -n 1 "$OUT/vault-throughput-$build.out" | jq -c --arg version "$(head -n 1 "$OUT/vault-throughput-$build-version.txt")" \
+      --arg sha256 "$(sha256sum "$helper" | cut -d ' ' -f 1)" '. + {securefs: $version, sha256: $sha256}' > "$OUT/vault-throughput-$build.json" \
+      || fail "vault throughput: $build: no result: $(tail -c 300 "$OUT/vault-throughput-$build.out")"
+    chmod -R u+rwX "$run" 2> /dev/null || true
+    rm -rf -- "$run" || true
+  done
+  jq -n --slurpfile glibc "$OUT/vault-throughput-glibc.json" --slurpfile static "$OUT/vault-throughput-musl-static.json" \
+    --arg kernel "$(uname -r)" --argjson cpus "$(nproc)" '{glibc: $glibc[0], musl_static: $static[0], kernel: $kernel, cpus: $cpus}' \
+    | tee "$OUT/vault-throughput.json" | sed 's/^/vault throughput: /'
+)
+
+# FUSE 3 alone: every FUSE 2 package purged, no libfuse.so.2. An encrypted project is created through cozy, a file written into its
+# view, locked, unlocked by passphrase and by recovery secret, its file read back each time; its provider is the pinned static one.
+vault_fuse3() (
+  step "an encrypted project on FUSE 3 alone, no libfuse.so.2: the static provider (cl-1000)"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault fuse3: Linux runners only"; exit 0; }
+  local work secrets P provider pinned view shim sentinel=SYNTHETIC_FUSE3_VAULT_CONTENT_1763200000
+  work=$(mktemp -d "$OUT/vault-fuse3.XXXXXX") secrets=$(mktemp -d "$OUT/vault-fuse3-credentials.XXXXXX")
+  P=$work/p
+  trap 'in_project "$P" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  bash "$here/install-vault-driver.sh" fuse3-only > "$work/driver.log" 2>&1 || fail "vault fuse3: FUSE 3 alone: $(tail -c 300 "$work/driver.log")"
+  ldconfig -p > "$work/ldconfig.txt"
+  ! grep -q 'libfuse\.so\.2' "$work/ldconfig.txt" || fail "vault fuse3: this runner has libfuse.so.2: $(grep 'libfuse\.so\.2' "$work/ldconfig.txt")"
+  command -v fusermount3 > /dev/null || fail "vault fuse3: this runner has no fusermount3"
+  locked() {
+    in_project "$P" --json vault lock > "$work/lock-$1.json" 2>&1 || true
+    for _ in $(seq 60); do [ "$(in_project "$P" --json vault status | jq -r .state)" = locked ] && break; sleep 0.5; done
+    [ "$(in_project "$P" --json vault status | jq -r .state)" = locked ] || fail "vault fuse3: $1: the project did not lock: $(tail -c 300 "$work/lock-$1.json")"
+    [ ! -e "$view/files/fuse3.txt" ] || fail "vault fuse3: $1: locked, its file is still readable at $view"
+  }
+  # unlocked <how>: unlocked, its view a fuse.securefs mount.
+  unlocked() {
+    in_project "$P" --json vault status > "$work/status-$1.json"
+    jq -e '.encrypted == true and .state == "unlocked"' "$work/status-$1.json" > /dev/null || fail "vault fuse3: $1: not unlocked: $(head -c 300 "$work/status-$1.json")"
+    view=$(jq -r '.view // empty' "$work/status-$1.json")
+    [ -n "$view" ] && [ -d "$view" ] || fail "vault fuse3: $1: no mounted view"
+    grep -q " - fuse\.securefs " /proc/self/mountinfo || fail "vault fuse3: $1: no fuse.securefs mount"
+  }
+  printf '%s\n' 'synthetic fuse3 passphrase' > "$secrets/passphrase" && chmod 600 "$secrets/passphrase"
+  cozy --json new "$P" --passphrase-file "$secrets/passphrase" --recovery-out "$secrets/recovery" > "$work/new.json" 2> "$work/new.err" \
+    || fail "vault fuse3: cozy new --passphrase-file: $(head -c 400 "$work/new.json") $(tail -c 300 "$work/new.err")"
+  provider=$(find "$HOME/.cozy" -path '*/securefs/2.0.0/securefs' -type f 2> /dev/null | head -n 1)
+  [ -n "$provider" ] || fail "vault fuse3: no bundled provider under ~/.cozy"
+  pinned=$(vault_helper musl-static "${RUNNER_TEMP:-$OUT}/vault-throughput/musl-static" 2> "$work/pinned.log") || fail "vault fuse3: no pinned securefs: $(tail -c 300 "$work/pinned.log")"
+  cmp -s "$provider" "$pinned" || fail "vault fuse3: the bundled provider is not the pinned musl-static securefs"
+  "$provider" version > "$work/provider-version.txt" 2>&1 || fail "vault fuse3: securefs version: $(head -c 300 "$work/provider-version.txt")"
+  grep -qx 'libfuse 29' "$work/provider-version.txt" || fail "vault fuse3: the provider is not on libfuse 2.9: $(tr '\n' ' ' < "$work/provider-version.txt")"
+  ldd "$provider" > "$work/provider-ldd.txt" 2>&1 || true
+  ! grep -qi fuse "$work/provider-ldd.txt" || fail "vault fuse3: the provider loads a FUSE library: $(tr '\n' ' ' < "$work/provider-ldd.txt")"
+  unlocked created
+  mkdir -p "$view/files" && printf '%s\n' "$sentinel" > "$view/files/fuse3.txt" && sync "$view/files/fuse3.txt" || fail "vault fuse3: writing the unlocked view failed"
+  locked created
+  in_project "$P" --json vault unlock --passphrase-file "$secrets/passphrase" --idle 0 > "$work/unlock-passphrase.json" 2>&1 \
+    || fail "vault fuse3: unlock by passphrase: $(tail -c 300 "$work/unlock-passphrase.json")"
+  unlocked passphrase
+  grep -qx "$sentinel" "$view/files/fuse3.txt" || fail "vault fuse3: unlocked by passphrase, its file changed"
+  locked passphrase
+  in_project "$P" --json vault unlock --recovery-file "$secrets/recovery" --idle 0 > "$work/unlock-recovery.json" 2>&1 \
+    || fail "vault fuse3: unlock by recovery secret: $(tail -c 300 "$work/unlock-recovery.json")"
+  unlocked recovery
+  grep -qx "$sentinel" "$view/files/fuse3.txt" || fail "vault fuse3: unlocked by recovery secret, its file changed"
+  locked recovery
+  shim=$(readlink "$(dirname "$provider")/bin/fusermount" 2> /dev/null || true)
+  jq -cn --arg provider "$(head -n 1 "$work/provider-version.txt")" --arg fusermount "$(command -v fusermount || true)" --arg shim "$shim" \
+    '{fuse3_only: true, libfuse_so_2: false, provider: $provider, linked: "libfuse 29", pinned: true, fusermount: $fusermount, shim: $shim, unlocked_by: ["passphrase", "recovery"]}' \
+    | tee "$OUT/vault-fuse3.json" | sed 's/^/vault fuse3: /'
+)
+
+# The static provider on fresh distributions with FUSE 3 alone, through the probe's mount mode (create, mount, write, fsync, lock) as
+# a user: as root, libfuse mounts without fusermount. ubuntu:24.04 has fuse3's fusermount link; fedora:45 has fusermount3 alone, so
+# the provider runs with its own `fusermount` link. Read back is the runner's (vault_fuse3) and a real Fedora's, at the release gate.
+vault_distros() (
+  step "the static provider on Ubuntu 24.04 and Fedora 45 with FUSE 3 alone, as a user (cl-1000)"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault distros: Linux runners only"; exit 0; }
+  [ -x "${VAULT_PROBE:-}" ] || fail "vault distros: VAULT_PROBE names no built e2e/vault-provider probe"
+  local work helper uid gid containers=()
+  work=$(mktemp -d "$OUT/vault-distros.XXXXXX") uid=$(id -u) gid=$(id -g)
+  helper=$(vault_helper musl-static "${RUNNER_TEMP:-$OUT}/vault-throughput/musl-static" 2> "$work/helper.log") || fail "vault distros: no pinned securefs: $(tail -c 300 "$work/helper.log")"
+  trap 'for c in "${containers[@]}"; do docker rm -f "$c" > /dev/null 2>&1 || true; done' EXIT
+  # distro <name> <image> <install>: the probe's mount mode in that image, as uid $uid.
+  distro() {
+    local name=$1 image=$2 install=$3 c=cozy-vault-$1-$$ as fusermount fusermount3 shim
+    containers+=("$c")
+    as=(docker exec --user "$uid:$gid" -e HOME=/home/prover -e COZY_VAULT_PROVIDER_DIAGNOSTICS=/home/prover/provider.log -w /home/prover "$c")
+    # Its home on the runner's disk, as a computer's is (run 43785258153: on the container's overlay, the read back was refused).
+    mkdir -p "$work/$name-home"
+    # Privileged: Docker's own sandbox (seccomp, AppArmor, capabilities) refused the mount or its read back in runs 43785258153 and
+    # 43787853550, where the runner itself passes; the probe mounts and reads in one process, as one user.
+    docker run -d --name "$c" --privileged --device /dev/fuse -v "$work/$name-home:/home/prover" \
+      -v "$VAULT_PROBE:/usr/local/bin/vault-provider:ro" -v "$helper:/opt/securefs/securefs:ro" "$image" sleep 3600 > "$work/$name-run.log" 2>&1 \
+      || { check "vault $name: $image did not start: $(tail -c 300 "$work/$name-run.log")"; return; }
+    timeout 900 docker exec "$c" sh -c "$install" > "$work/$name-install.log" 2>&1 || { check "vault $name: $install: $(tail -c 400 "$work/$name-install.log")"; return; }
+    docker exec "$c" sh -c "getent group $gid > /dev/null || echo 'prover:x:$gid:' >> /etc/group
+      getent passwd $uid > /dev/null || echo 'prover:x:$uid:$gid::/home/prover:/bin/sh' >> /etc/passwd
+      mkdir -p /home/prover && chown $uid:$gid /home/prover" > "$work/$name-user.log" 2>&1 || { check "vault $name: no user $uid: $(tail -c 300 "$work/$name-user.log")"; return; }
+    ! docker exec "$c" sh -c 'ldconfig -p | grep "libfuse\.so\.2"' > "$work/$name-libfuse2.txt" 2>&1 || { check "vault $name: libfuse.so.2 is installed: $(cat "$work/$name-libfuse2.txt")"; return; }
+    fusermount3=$("${as[@]}" sh -c 'command -v fusermount3' || true) fusermount=$("${as[@]}" sh -c 'command -v fusermount' || true)
+    [ -n "$fusermount3" ] || { check "vault $name: fuse3 gave no fusermount3"; return; }
+    [ "$name" != fedora ] || [ -z "$fusermount" ] || { check "vault fedora: fuse3 alone has a fusermount ($fusermount): the link is not what this proves"; return; }
+    # Mount, write, fsync, lock: no read back. Inside Docker it's refused (EACCES) right after a write, privileged or not, while the
+    # runner itself reads back (vault_fuse3, projectvault): Docker's FUSE sandbox; a real Fedora reads back at the release gate.
+    timeout 900 "${as[@]}" /usr/local/bin/vault-provider mount /opt/securefs/securefs /home/prover/proof > "$work/$name.out" 2> "$work/$name.err" \
+      || { check "vault $name: the probe's mount as uid $uid (home $(docker exec "$c" stat -c %u:%g /home/prover 2>&1)): $(tail -c 500 "$work/$name.err") provider: $(tail -c 800 "$work/$name-home/provider.log" 2> /dev/null)"; return; }
+    shim=$(docker exec "$c" readlink /home/prover/proof/tools/securefs/2.0.0/bin/fusermount 2> /dev/null || true)
+    [ -n "$fusermount" ] || [[ $shim == */fusermount3 ]] || { check "vault $name: no fusermount, and the provider made no fusermount link to fusermount3 (${shim:-none})"; return; }
+    tail -n 1 "$work/$name.out" | jq -c --arg image "$image" --arg fusermount "$fusermount" --arg fusermount3 "$fusermount3" --arg shim "$shim" \
+      '{image: $image, result: .result, wrote: .wrote, fusermount: $fusermount, fusermount3: $fusermount3, shim: $shim, libfuse_so_2: false}' \
+      | tee "$OUT/vault-distro-$name.json" | sed "s/^/vault $name: /" || check "vault $name: the probe printed no result: $(tail -c 300 "$work/$name.out")"
+    docker rm -f "$c" > /dev/null 2>&1 || true
+  }
+  distro ubuntu ubuntu:24.04 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends fuse3'
+  distro fedora fedora:45 'dnf install -y -q --setopt=install_weak_deps=False fuse3'
 )
 
 # cl-1002: `cozy open` in a locked encrypted project, on a real terminal (e2e/cli/open_unlock.py): it asks for the passphrase (a
