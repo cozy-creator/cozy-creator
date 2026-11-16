@@ -2,8 +2,9 @@
 // panel, allowing you to open up more machines", and "when there are too many machines in that panel (it runs out of space) it should also
 // have an expandable section like ... so you can see a bigger list of all the machines you have running (there could be quite a few)".
 // With more machines than fit, the tabs stay one row in the bar, the rest behind "N more", which opens Machines listing every one, those
-// with no tab first. The + sits right after the tabs, as tall as they are, and opens New machine on the rent form; Esc closes it, and so
-// does a press outside, never one that began inside. Nothing is rented. The machines are one stand-in, another user's cozy on this runner
+// with no tab first. Paul, 11-16: "have the + (for new projects) connected to the project list, and the + for new machines connected to the
+// machine list": the + ends the machines' strip, after "N more", as tall as the tabs and never over them, and opens New machine on the
+// rent form; Esc closes it, and so does a press outside, never one that began inside. Nothing is rented. The machines are one stand-in, another user's cozy on this runner
 // (machineset.sh's stand_in), added under twelve names. Each view at 1440×900 and 1920×1080, paper and dark, kept for a person to look at.
 const { spawn } = require('child_process');
 const { closeSync, mkdirSync, openSync, readFileSync } = require('fs');
@@ -54,6 +55,7 @@ const geometry = (page) => page.evaluate(() => {
     nav: box(nav),
     kids: [...(nav?.children ?? [])].map(box),
     plus: box(document.querySelector('a[aria-label="New machine"]')),
+    last: nav?.lastElementChild?.getAttribute('aria-label') ?? null,
     ptab: box(document.querySelector('nav.ptabs .ptab')),
     projectPlus: box(document.querySelector('button[aria-label="New project"]')),
   };
@@ -81,14 +83,17 @@ test('machine-tabs', { tag: '@solo' }, async ({ page, project, api, cli }) => {
     await expect(nav.locator('.mtab[data-machine="local"]')).toBeVisible();
     return `${width}x${height}-${theme}`;
   };
-  // The + where it belongs: right after the tabs, as tall as they are and centred on them, a control at least 28 px tall.
+  // The + where it belongs: the end of the machines' strip, joined to the tab before it, as tall as the tabs, at least 28 px.
   const plusPlaced = async (tag) => {
     const at = await geometry(page);
-    expect.soft(at.plus, `${tag}: a + beside the machine tabs`).toBeTruthy();
+    expect.soft(at.plus, `${tag}: a + in the machines' strip`).toBeTruthy();
     if (!at.plus || !at.nav) return;
-    expect.soft(at.plus.left - at.nav.right, `${tag}: the + just right of the tabs`).toBeGreaterThanOrEqual(0);
-    expect.soft(at.plus.left - at.nav.right, `${tag}: the + just right of the tabs`).toBeLessThanOrEqual(20);
-    expect.soft(Math.abs((at.plus.top + at.plus.bottom) / 2 - (at.nav.top + at.nav.bottom) / 2), `${tag}: centred on the tabs`).toBeLessThanOrEqual(1.5);
+    expect.soft(at.last, `${tag}: the strip ends in the +`).toBe('New machine');
+    const before = at.kids.at(-2);
+    expect.soft(at.plus.left - before.right, `${tag}: joined to the tab before it`).toBeGreaterThanOrEqual(0);
+    expect.soft(at.plus.left - before.right, `${tag}: joined to the tab before it`).toBeLessThanOrEqual(4);
+    expect.soft(at.plus.right, `${tag}: inside the strip`).toBeLessThanOrEqual(at.nav.right + 0.5);
+    expect.soft(Math.abs(at.plus.top - before.top) + Math.abs(at.plus.height - before.height), `${tag}: as tall as the tabs, in line`).toBeLessThanOrEqual(1);
     expect.soft(at.plus.height, `${tag}: the + at least 28 px tall`).toBeGreaterThanOrEqual(28);
     if (at.projectPlus) expect.soft(Math.round(at.plus.width), `${tag}: as wide as the project tabs' +`).toBe(Math.round(at.projectPlus.width));
   };
@@ -97,6 +102,7 @@ test('machine-tabs', { tag: '@solo' }, async ({ page, project, api, cli }) => {
     for (const one of LOOKS) {
       const tag = await look(one);
       await page.screenshot({ path: join(shots, `plus-${tag}.png`) });
+      await page.screenshot({ path: join(shots, `plus-bar-${tag}.png`), clip: { x: 0, y: 0, width: one.width, height: 72 } });
       await plusPlaced(tag);
     }
   });
@@ -139,7 +145,7 @@ test('machine-tabs', { tag: '@solo' }, async ({ page, project, api, cli }) => {
         await expect.poll(known, { message: `${tag}: the page has all ${all.length}` }).toBe(all.length);
         await page.waitForTimeout(500);
         await page.screenshot({ path: join(shots, `overflow-${tag}.png`) });
-        await page.screenshot({ path: join(shots, `overflow-bar-${tag}.png`), clip: { x: one.width / 2, y: 0, width: one.width / 2, height: 64 } });
+        await page.screenshot({ path: join(shots, `overflow-bar-${tag}.png`), clip: { x: 0, y: 0, width: one.width, height: 72 } });
         await expect(more, `${tag}: "N more" past what fits`).toBeVisible();
         const shown = await tabbed();
         const hidden = all.filter((name) => !shown.includes(name));

@@ -162,8 +162,8 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
 
 /** Each machine, top right, `local` first: what it's doing at a glance, and a click shows each thing with how far it is, and Render here,
  *  which makes it one of the open project's preferred machines, green (Paul 11-12). Kept by the stream. As many as fit the strip's width,
- *  the rest behind "N more", which lists them first; then + for a new machine wherever renting is (Paul 11-16). As ProjectTabs fits its
- *  own: a hidden copy of every tab says what each takes, what it holds refits it in that frame, a size changing by the next. */
+ *  the rest behind "N more", which lists them first, and the strip ends in + for a new machine wherever renting is (Paul 11-16). As
+ *  ProjectTabs fits its own: a hidden copy of every tab says what each takes, what it holds refits it in that frame, a size by the next. */
 export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; projectId: string | null }) {
   const { client, stream } = useConnection()
   const { data } = useQuery(machinesQuery(client))
@@ -196,15 +196,17 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
       const space = (Number.parseFloat(style.maxWidth) || Number.POSITIVE_INFINITY) - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight)
       const gap = Number.parseFloat(style.columnGap) || 0
       const widths = [...ghost.children].map((child) => child.getBoundingClientRect().width)
+      const add = renting ? (widths.pop() ?? 0) : null
       const more = widths.pop() ?? 0
-      const fits = (n: number) => [...widths.slice(0, n), ...(n < widths.length ? [more] : [])].reduce((sum, each) => sum + each + gap, -gap) <= space
+      const fits = (n: number) =>
+        [...widths.slice(0, n), ...(n < widths.length ? [more] : []), ...(add === null ? [] : [add])].reduce((sum, each) => sum + each + gap, -gap) <= space
       if (fits(widths.length)) return widths.length
       let n = 1
       while (n < widths.length - 1 && fits(n + 1)) n++
       return n
     }
   })
-  useLayoutEffect(() => setCount(fit.current()), [named])
+  useLayoutEffect(() => setCount(fit.current()), [named, renting])
   // Never inside the observer: WebKit says the loop (cl-973). The window's width moves the strip's (40vw); a tab's own, the hidden copy's.
   useLayoutEffect(() => {
     let frame = 0
@@ -227,7 +229,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
   const shown = open && tabs.find((machine) => machine.name === open.name)
   return (
     <>
-      {machines.length > 0 && (
+      {(machines.length > 0 || renting) && (
         <nav className="mtabs" aria-label="Machines" ref={strip}>
           {tabs.map((machine) => (
             <button
@@ -251,14 +253,12 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
               {hidden.length} more
             </Link>
           )}
+          {renting && (
+            <Link className="ptab add" to={to("machines/new")} aria-label="New machine" title="New machine">
+              +
+            </Link>
+          )}
         </nav>
-      )}
-      {renting && (
-        <span className="ptabs-add">
-          <Link className="ptab add" to={to("machines/new")} aria-label="New machine" title="New machine">
-            +
-          </Link>
-        </span>
       )}
       <div className="mtabs-ghost" aria-hidden>
         <div ref={sizes}>
@@ -268,6 +268,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
             </span>
           ))}
           <span className="mtab">{machines.length} more</span>
+          {renting && <span className="ptab add">+</span>}
         </div>
       </div>
       {open && shown && <Activity machine={shown} doing={doingOf(shown, runs, projectId)} boxes={boxes} to={to} chip={open.chip} close={() => setOpen(null)} />}
