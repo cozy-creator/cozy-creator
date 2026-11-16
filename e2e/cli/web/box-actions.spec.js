@@ -1,6 +1,6 @@
 // box-actions (cl-973 core cell 14): two boxes copied and pasted over the canvas are two more with names of their own and the same tool, words,
 // takes and approval, the same files by digest and no bytes copied, a mention between them naming the copy; one Undo takes both back (cl-924).
-// Ctrl+D, an Alt-drag and the menu's Duplicate each make a copy; Ctrl+V in a box's words pastes words only. Star is the API's and leads Files
+// Ctrl+D, an Alt-drag and the menu's Duplicate each make a copy; Ctrl+V in a box's words pastes words only. Star is the API's and leads Assets
 // with a ★ through Undo and Redo (cl-892); Rename renames the box, its mentions and the API's. Download saves a box's shown take as its name,
 // and a take as its own (cl-891). A picture held over a box that takes it outlines that box as the canvas draws it (cl-1048 row 17). An X
 // beside a box's tool on the canvas takes the tool off (Paul, 11-16).
@@ -135,21 +135,21 @@ test('box-actions', async ({ page, project, api }) => {
     expect.soft(await names(), 'and makes no box').toEqual(before);
   });
 
-  await test.step('menu › Star, check Files, then Ctrl+Z and Ctrl+Shift+Z; menu › Rename', async () => {
+  await test.step('menu › Star, check Assets, then Ctrl+Z and Ctrl+Shift+Z; menu › Rename', async () => {
     await menuItem('other', 'Star');
     await expect.poll(async () => (await project.asset('other')).starred, { message: "Star is the API's" }).toBe(true);
     await page.locator('details.main-menu > summary').click();
-    await page.locator('details.main-menu nav').getByRole('link', { name: 'Files', exact: true }).click();
+    await page.locator('details.main-menu nav').getByRole('link', { name: 'Assets', exact: true }).click();
     const rowsListed = page.locator('aside.drawer .assetlist .assetrow');
     const first = rowsListed.first();
-    await expect.soft(first, 'Files lists it first').toHaveAttribute('data-asset', 'other');
+    await expect.soft(first, 'Assets lists it first').toHaveAttribute('data-asset', 'other');
     await expect.soft(first.getByLabel('Starred'), 'with ★').toHaveText('★');
     await page.keyboard.press('ControlOrMeta+z');
     await expect.poll(async () => Boolean((await project.asset('other')).starred), { message: 'Undo unstars it' }).toBe(false);
-    await expect.soft(rowsListed.filter({ has: page.getByLabel('Starred') }), 'with no ★ in Files').toHaveCount(0);
+    await expect.soft(rowsListed.filter({ has: page.getByLabel('Starred') }), 'with no ★ in Assets').toHaveCount(0);
     await page.keyboard.press('ControlOrMeta+Shift+z');
     await expect.poll(async () => (await project.asset('other')).starred, { message: 'Redo stars it again' }).toBe(true);
-    await expect.soft(first, 'first in Files again').toHaveAttribute('data-asset', 'other');
+    await expect.soft(first, 'first in Assets again').toHaveAttribute('data-asset', 'other');
     await expect.soft(first.getByLabel('Starred')).toHaveText('★');
     await page.keyboard.press('Escape');
     await expect(page.locator('aside.drawer')).toHaveCount(0);

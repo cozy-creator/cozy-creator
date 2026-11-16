@@ -10,7 +10,6 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 mod access;
-mod browser;
 mod maintenance_source;
 mod api;
 mod authorized;
@@ -34,6 +33,7 @@ mod tools;
 pub use tools::{Say, prefetch};
 mod machines;
 mod machine_client;
+mod old_outputs;
 mod outputs;
 mod others;
 mod page;
@@ -301,6 +301,12 @@ impl Calcifer {
         let projects = Instant::now();
         project::vault::sweep_runtime(home);
         project::vault::restore_plain_roots(&store);
+        // The old landing folder held for the projects that show it and set aside, before any open (cl-1036).
+        let registered: Vec<(String, PathBuf)> = store.read(|conn| {
+            let mut rows = conn.prepare("SELECT id, path FROM projects")?;
+            Ok(rows.query_map([], |row| Ok((row.get(0)?, PathBuf::from(row.get::<_, String>(1)?))))?.collect::<rusqlite::Result<_>>()?)
+        })?;
+        old_outputs::start(home, &registered);
         tracing::info!(target: "cozy.service_health", step = "store_projects", ms = projects.elapsed().as_millis() as u64, "started");
         // A run outside any project stages its inputs here; a project's run in the project (`private_io::input_root`).
         let inputs = home.join("inputs");

@@ -353,6 +353,7 @@ impl Projects {
         }
         // Opened for a call: used now, which the index lists by.
         api.calcifer.store().project_opened(&project.id, &identity(&project.folder.dir).1, &project.root, Some(now_ms()), Some(&project.code))?;
+        used_now(api, &project.id);
         Ok(project)
     }
 
@@ -488,6 +489,8 @@ impl Projects {
         api.calcifer.note_open(RunOwner::of(&project, &api.calcifer));
         // Its deleted boxes looked at as it opens, if it has any.
         purge::opened(&project.id, &project.folder);
+        // What it shows of the old landing folder, if that waits for it to be read (cl-1036), held first.
+        crate::old_outputs::opened(&api.machines.hubs.home().calcifer(), &project.id, &project.root);
         // What the legacy cut held for it in this computer's TensorFS store, copied in now it can be read (cl-1003).
         if crate::store::kept_path(&api.machines.hubs.home().calcifer(), &project.root).exists() {
             match keep_left_on_local(&project.root, &api.machines.hubs.home().calcifer()) {
@@ -904,6 +907,50 @@ pub(crate) fn left_on_local(root: &FsPath) -> Option<Vec<tensorfs::format::Objec
         .collect())
 }
 
+/// What the project at `root` shows that only the old landing folder holds (`outputs`: `~/.cozy/outputs`, then where it is set aside;
+/// cl-1036, `old_outputs`): each file of its `files/` that links into that folder (an older cozy's media link), and each file its lock
+/// names that `files/` lacks and whose bytes are there (found by length, then hash). The files there that hold them: none for a
+/// folder no longer there (deleted, or moved to a place not known), which shows nothing; not known when it can't be read now (locked,
+/// or its lock unreadable), when nothing it shows can be proven not to be there.
+pub(crate) fn kept_in_outputs(root: &FsPath, outputs: &[PathBuf]) -> Option<Vec<PathBuf>> {
+    let landing = outputs.first()?;
+    if !outputs.iter().any(|dir| dir.is_dir()) || !root.is_dir() { return Some(vec![]); }
+    if vault::locked_now(root) { return None; }
+    let physical = vault::resolve_path(root).ok()?;
+    let files = physical.join(folder::FILES);
+    let canonical = std::fs::canonicalize(landing).ok();
+    let mut found = vec![];
+    for entry in std::fs::read_dir(&files).into_iter().flatten().flatten() {
+        let Ok(target) = std::fs::read_link(entry.path()) else { continue };
+        let target = if target.is_absolute() { target } else { files.join(target) };
+        let tail = target.strip_prefix(landing).ok().map(FsPath::to_path_buf)
+            .or_else(|| canonical.as_ref().and_then(|landing| target.strip_prefix(landing).ok().map(FsPath::to_path_buf)));
+        if let Some(source) = tail.and_then(|tail| outputs.iter().map(|dir| dir.join(&tail)).find(|source| source.is_file())) { found.push(source); }
+    }
+    let folder = Folder::at(&physical);
+    let lock = folder.lock().ok()?;
+    let mut missing: HashMap<u64, Vec<String>> = HashMap::new();
+    for file in lock.files.values().filter(|file| file.machine.is_empty() && std::fs::symlink_metadata(folder.path(&file.path)).is_err()) {
+        if let Some(hex) = file.sha256.strip_prefix("sha256:") { missing.entry(file.length).or_default().push(hex.to_owned()); }
+    }
+    let mut dirs: Vec<PathBuf> = if missing.is_empty() { vec![] } else { outputs.iter().filter(|dir| dir.is_dir()).cloned().collect() };
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() { dirs.push(entry.path()); continue; }
+            if !kind.is_file() { continue; }
+            let Some(wanted) = entry.metadata().ok().and_then(|meta| missing.get_mut(&meta.len())) else { continue };
+            let Ok(hex) = folder::hash(&entry.path()) else { continue };
+            let hex = hex.trim_start_matches("sha256:").to_owned();
+            if let Some(at) = wanted.iter().position(|sha| *sha == hex) {
+                wanted.swap_remove(at);
+                found.push(entry.path());
+            }
+        }
+    }
+    Some(found)
+}
+
 /// Projects an open is copying the legacy cut's held files into now: a second open of one leaves it to the first.
 static COPYING: std::sync::LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = std::sync::LazyLock::new(Mutex::default);
 
@@ -953,14 +1000,24 @@ pub(crate) fn keep_left_on_local(root: &FsPath, calcifer: &FsPath) -> Result<Opt
         if entry.file_name().to_str().is_some_and(|name| name.starts_with('.') && name.ends_with(".cut-part")) { let _ = std::fs::remove_file(entry.path()); }
     }
     let mut gone = 0;
-    for file in lock.files.values().filter(|file| file.machine == "local") {
+    for file in lock.files.values() {
         let at = folder.path(&file.path);
         let Some(hex) = file.sha256.strip_prefix("sha256:") else { continue };
+        // Here, itself or by a link whose bytes are still there. A link left dangling (into the old landing folder, set aside; cl-1036)
+        // is as missing as a file left on `local`: its bytes were held for it. One kept nowhere is copied in when the store has it (a
+        // file whose bytes only that folder had), and is no loss of this upgrade's when it hasn't.
         if at.is_file() { continue; }
-        let object = tensorfs::format::ObjectRef { sha256: hex.to_owned(), length: file.length };
+        let left = file.machine == "local" || std::fs::symlink_metadata(&at).is_ok_and(|meta| meta.file_type().is_symlink());
+        if !left && !file.machine.is_empty() { continue; }
         let ours = hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) && own.join(&hex[..2]).join(&hex[2..4]).join(hex).is_file();
         if ours { continue; }
-        let Some(from) = store.path(&object).ok().filter(|from| from.is_file()) else { gone += 1; continue };
+        // A link's entry has no length in the lock (`Folder::lock`): the held copy's is the file's.
+        let held = tensorfs::format::ObjectRef { sha256: hex.to_owned(), length: file.length };
+        let Some((from, length)) = store.path(&held).ok().and_then(|from| Some((from.clone(), std::fs::metadata(&from).ok().filter(|meta| meta.is_file())?.len()))) else {
+            if left { gone += 1; }
+            continue;
+        };
+        let object = tensorfs::format::ObjectRef { length, ..held };
         // Hidden while it's written: a name that starts with its hash would be taken for the file itself (`Folder::lock`).
         let part = at.with_file_name(format!(".{}.{nonce}.cut-part", at.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()));
         let done = (|| -> Result<bool, &'static str> {
@@ -1773,6 +1830,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     };
     let opened = opened(id, code, key, &dir);
     api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()), Some(&opened.code))?;
+    used_now(&api, &opened.id);
     let next = vec!["cozy open".into()];
     let response = Json(Opened { next, said, recovery_secret, ..opened }).into_response();
     Ok(if open.unencrypted { response } else { vault::private(response) })
@@ -1914,6 +1972,17 @@ fn owning(path: &FsPath, source: bool) -> Result<PathBuf, Error> {
     Err(Error::new(Kind::NotFound, "project_not_found", format!("{} isn't in a project: there's no {} in it or in any folder above it.", path.display(), db::DB))
         .remedy("Run this from a project's folder, or make a new project.")
         .next("cozy new"))
+}
+
+/// Project `id` used now, which the index lists by (cl-1096): written off the caller's path, as a write waits on whatever holds the
+/// writer (cl-1010).
+pub(crate) fn used_now(api: &Arc<Api>, id: &str) {
+    let (api, id, at) = (api.clone(), id.to_owned(), now_ms());
+    let write = move || if let Err(e) = api.calcifer.store().project_used(&id, at) { warn!("state.db: {e}"); };
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => drop(runtime.spawn_blocking(write)),
+        Err(_) => write(),
+    }
 }
 
 fn now_ms() -> i64 {

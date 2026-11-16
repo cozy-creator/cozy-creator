@@ -178,7 +178,8 @@ async function died(why) {
   };
 
   during = 'a project';
-  await goto(paper, '/projects');
+  await goto(paper, '/');
+  await paper.getByRole('button', { name: 'New project', exact: true }).click();
   await paper.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-look-${Date.now()}`));
   await paper.getByLabel('Create without encryption', { exact: true }).check();
   await paper.click('form button[type=submit]');
@@ -426,19 +427,19 @@ async function died(why) {
   if (slowRun) await shoot('drawer-run', { open: (page) => goto(page, `${projectPath}/runs/${slowRun}`) });
   const failedRun = await tryStep('the failed run', async () => ((await api(`/v1/projects/${id}/runs?limit=50`)).body?.runs ?? []).find((run) => run.project_id === id && run.status === 'failed')?.number);
   if (failedRun) await shoot('drawer-run-failed', { open: (page) => goto(page, `${projectPath}/runs/${failedRun}`) });
-  await shoot('drawer-files', { open: (page) => goto(page, `${projectPath}/files`) });
+  await shoot('drawer-assets', { open: (page) => goto(page, `${projectPath}/assets`) });
   await shoot('drawer-account', { open: (page) => goto(page, `${projectPath}/account`) });
   await shoot('drawer-vault', { open: (page) => goto(page, `${projectPath}/vault`) });
   await shoot('drawer-projects-open', { open: (page) => goto(page, `${projectPath}/projects`) });
-  // The open project's own tab: Projects, ready for a new one's name (cl-958: the bar's one + is Add files).
+  // The open project's own tab: Projects, most recently used first.
   await shoot('drawer-projects-from-tab', {
     open: async (page) => {
       await goto(page, projectPath);
       await page.click('nav.ptabs a.ptab.on');
-      await page.locator('.drawer input[aria-label="New project\'s folder"]').waitFor();
+      await page.locator('.drawer ul.list a').first().waitFor();
     },
   });
-  await shoot('drawer-library', { open: (page) => goto(page, `${projectPath}/packages`) });
+  await shoot('drawer-installations', { open: (page) => goto(page, `${projectPath}/packages`) });
   await shoot('drawer-models', { open: (page) => goto(page, `${projectPath}/models`) });
   await both((page) => goto(page, projectPath));
 

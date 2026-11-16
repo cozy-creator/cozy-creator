@@ -12,7 +12,7 @@ use std::{
 
 use crate::project::vault;
 mod hard_cut;
-pub(crate) use hard_cut::kept_path;
+pub(crate) use hard_cut::{hold, kept_path};
 use api::{
     calcifer::{Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem, Reason, Run, Status, Warning},
     config::Origin,
@@ -2042,6 +2042,7 @@ impl Store {
         let rest = std::time::Instant::now();
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;
+        crate::state::project_used(&writer)?;
         // What older Calcifers kept beside the store, at every start until none is left (cl-1003): a cut stopped after its rename
         // still loses them.
         if let Some(home) = path.parent() {

@@ -336,6 +336,9 @@ pub(crate) struct Execution {
     /// When it waited for its weights to download (Unix ms), as its meter saw them arrive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fetched: Option<(u64, u64)>,
+    /// What this machine had of what it loads, and what it fetched for it (`Account`), as first reckoned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<Account>,
     #[serde(default)]
     pub executor: Option<ExecutorFacts>,
     pub result: Option<ResultRecord>,
@@ -536,6 +539,17 @@ pub(crate) struct ProgressSnapshot {
     pub at_ms: u64,
 }
 
+/// What a machine had of what a call loads and what it waits for, in bytes (cl-1102, `access::Needs`): `has`, what of its needs
+/// was here; `needs`, what wasn't, all its call waits on (it comes once: an earlier run's download may be what brings it, so runs'
+/// needs don't sum to what a machine downloaded); `extras`, what comes besides in the background, which nothing waits on.
+/// Read as a run's measurements' `weights` (`cozy run watch --full`, the release gate's cells).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct Account {
+    pub has: u64,
+    pub needs: u64,
+    pub extras: u64,
+}
+
 /// Weights arriving for a run (`access::meter`): their repositories, and the bytes here of their
 /// total.
 #[derive(Clone, Debug, PartialEq)]
@@ -583,8 +597,9 @@ pub(crate) struct Journal {
 
 /// The record layout this machine writes. A newer journal still opens: unknown fields are
 /// ignored and rows it cannot read are skipped, never a refusal of the whole journal. 3: no run
-/// that ended here before projects kept their own is left (`cut_legacy`).
-pub(crate) const JOURNAL_FORMAT: u32 = 3;
+/// that ended here before projects kept their own is left but one that retains an output, wordless
+/// (`cut_legacy`); 4: nor one of those whose objects no header file root names (cl-1036).
+pub(crate) const JOURNAL_FORMAT: u32 = 4;
 const FILE: &str = "executions.sqlite3";
 /// One unreadable row (written by a newer machine, or damaged) must not hide every other run.
 fn readable(rows: Vec<String>) -> Vec<Execution> {
@@ -851,28 +866,38 @@ impl Journal {
         Ok(())
     }
 
-    /// Whether this journal is an earlier version's (format below 3), whose legacy cut (`Engine::cut_legacy`) is still due.
-    pub(crate) fn legacy_cut_due(&self) -> io::Result<bool> {
+    /// This journal's format when it is an earlier version's, whose legacy cut (`Engine::cut_legacy`) is still due: below 3, all of
+    /// it; 3, cl-1036's part. None once done.
+    pub(crate) fn legacy_cut_due(&self) -> io::Result<Option<u32>> {
         let format: Option<u32> = self.connection.query_row("SELECT value FROM machine_metadata WHERE key='journal_format'", [], |row| row.get::<_, String>(0))
             .optional().map_err(db_error)?.and_then(|format| format.parse().ok());
-        Ok(format.is_none_or(|format| format < 3))
+        Ok(match format { Some(format) if format >= JOURNAL_FORMAT => None, format => Some(format.unwrap_or(0)) })
     }
 
-    /// The legacy cut's runs (cl-1003, cl-1035), each of a family (a root and its children) that ended and no project owns: `gone`, a
-    /// family that retains nothing (no asset of theirs has a `native_outputs` row); `kept`, one with an output retained, which its client
-    /// never released, so the run stays, wordless (`scrub_legacy`). A project's runs and a family still going are neither. With their
-    /// triage subjects.
-    pub(crate) fn legacy_runs(&self) -> io::Result<LegacyRuns> {
+    /// The legacy cut's runs (cl-1003, cl-1035, cl-1036), each of a family (a root and its children) that ended and no project owns:
+    /// `kept`, one with an output retained (its client never released it) that names an object a header file root keeps (`rooted`: a
+    /// project's files its client holds for it, a header file a project shows), so the run stays, wordless (`scrub_legacy`); `gone`, any
+    /// other. A project's runs and a family still going are neither. With their triage subjects.
+    pub(crate) fn legacy_runs(&self, rooted: &std::collections::HashSet<String>) -> io::Result<LegacyRuns> {
         let rows: Vec<(i64, String, bool, String)> = {
             let mut statement = self.connection.prepare("SELECT id, COALESCE(NULLIF(json_extract(invocation,'$.root'),''), CAST(id AS TEXT)),
                 json_extract(invocation,'$.local_private.project_id') IS NULL AND state IN ('completed','failed','canceled'), record FROM executions").map_err(db_error)?;
             let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).map_err(db_error)?;
             rows.collect::<Result<_, _>>().map_err(db_error)?
         };
-        let (mut live, mut retained) = (std::collections::HashSet::new(), std::collections::HashSet::new());
-        for (_, family, ended, record) in &rows {
-            if !ended { live.insert(family.clone()); } else if self.retains(record)? { retained.insert(family.clone()); }
+        let (mut live, mut retained, mut held) = (std::collections::HashSet::new(), std::collections::HashSet::new(), std::collections::HashSet::new());
+        for (id, family, ended, record) in &rows {
+            if !ended { live.insert(family.clone()); continue; }
+            if self.retains(record)? { retained.insert(family.clone()); }
+            let named: Vec<String> = {
+                let mut statement = self.connection.prepare("SELECT sha256 FROM run_objects WHERE execution=?1").map_err(db_error)?;
+                let rows = statement.query_map([id], |row| row.get(0)).map_err(db_error)?;
+                rows.collect::<Result<_, _>>().map_err(db_error)?
+            };
+            if named.iter().any(|sha256| rooted.contains(sha256)) { held.insert(family.clone()); }
         }
+        // Paul 11-16, "Delete both": a retained output of a run from before stays only while a project holds it.
+        retained.retain(|family| held.contains(family));
         let mut runs = LegacyRuns::default();
         for (id, family, _, _) in rows.into_iter().filter(|(_, family, _, _)| !live.contains(family)) {
             let triage: Option<String> = self.connection.query_row("SELECT record FROM triage WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
@@ -954,6 +979,47 @@ impl Journal {
             for table in ["run_specs", "run_logs", "run_log_lengths", "package_log_dropped", "run_calls", "run_products", "triage"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
             }
+        }
+        tx.commit().map_err(db_error)
+    }
+
+    /// What the runs no project owns still here retain (`retains`): their assets' retention owners, and the objects they name. A
+    /// retained output named by neither is one of a run the cut took (`Engine::cut_legacy`).
+    pub(crate) fn kept_retention(&self) -> io::Result<(std::collections::HashSet<String>, std::collections::HashSet<String>)> {
+        let (mut owners, mut objects) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+        let rows: Vec<(i64, String)> = {
+            let mut statement = self.connection.prepare("SELECT id, record FROM executions WHERE json_extract(invocation,'$.local_private.project_id') IS NULL").map_err(db_error)?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).map_err(db_error)?;
+            rows.collect::<Result<_, _>>().map_err(db_error)?
+        };
+        for (id, record) in rows {
+            let record = decoded_execution(&record).ok();
+            if let Some((context, result)) = record.as_ref().and_then(|record| Some((record.submission.as_ref()?, record.result.as_ref()?))) {
+                for binding in &result.asset_bindings {
+                    let owner = crate::runs::retention_owner(&self.workspace_id, &context.actor, &context.request_id, &binding.asset_ref)
+                        .map_err(|error| db_error(error.message))?;
+                    owners.insert(metadata_actor(&owner));
+                }
+            }
+            let mut statement = self.connection.prepare("SELECT sha256 FROM run_objects WHERE execution=?1").map_err(db_error)?;
+            for row in statement.query_map([id], |row| row.get::<_, String>(0)).map_err(db_error)? { objects.insert(row.map_err(db_error)?); }
+        }
+        Ok((owners, objects))
+    }
+
+    /// Every retained output no project owns: (actor, owner, its record).
+    pub(crate) fn unscoped_native_outputs(&self) -> io::Result<Vec<(String, String, Vec<u8>)>> {
+        let mut statement = self.connection.prepare("SELECT actor,owner,source FROM native_outputs").map_err(db_error)?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(db_error)?;
+        let rows: Vec<(String, String, Vec<u8>)> = rows.collect::<Result<_, _>>().map_err(db_error)?;
+        Ok(rows.into_iter().filter(|(_, _, source)| private_journal::scope(source).is_ok_and(|scope| scope.is_none())).collect())
+    }
+
+    /// `outputs` (actor, owner) no longer retained: their objects age out of the store as any unused one.
+    pub(crate) fn delete_native_outputs(&mut self, outputs: &[(String, String)]) -> io::Result<()> {
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        for (actor, owner) in outputs {
+            tx.execute("DELETE FROM native_outputs WHERE actor=?1 AND owner=?2", params![actor, owner]).map_err(db_error)?;
         }
         tx.commit().map_err(db_error)
     }
@@ -1858,6 +1924,7 @@ fn insert(
         executed_ms: 0,
         width: 0,
         fetched: None,
+        needs: None,
         executor: None,
         result: None,
         pending_completion: None,
@@ -2526,6 +2593,19 @@ impl Journal {
                 return Ok(false);
             }
             record.fetched = Some((from, to));
+            Ok(true)
+        })
+        .map(drop)
+    }
+
+    /// What its machine had of what it loads and what it fetches for it, as first reckoned: what a fetch before its call brought
+    /// was fetched for it too.
+    pub(crate) fn needs(&mut self, id: &str, account: Account) -> io::Result<()> {
+        self.update(id, |record| {
+            if record.state.terminal() || record.needs.is_some() {
+                return Ok(false);
+            }
+            record.needs = Some(account);
             Ok(true)
         })
         .map(drop)

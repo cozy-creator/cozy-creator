@@ -196,7 +196,8 @@ echo "$P" > "$OUT/pre-switch.at"
 # guessed onto this computer, where the last cell left its package and weights, though with all else equal a render goes to another
 # machine before this computer: what a machine has counts. Its box says it's ready here, on its board and in the page beside its
 # Render ("Ready on this computer", web/ready.js, which looks at it and presses Render); the render, naming no machine, goes here
-# as guessed, quoted nothing to download, and this machine fetches nothing and builds no environment for it.
+# as guessed, quoted nothing to download; its record says it needed none (`weights.needs`, cl-1102), and this machine fetches nothing
+# and builds no environment for it.
 prefetch_ready() {
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || return 0
 step "prefetch (cl-1104): a box says its machine is ready, and Render goes there and downloads and installs nothing"
@@ -230,6 +231,9 @@ run_show "$OUT" pre-made "$run"
 echo "prefetch ready: guessed on $(jq -r .machine <<< "$row"); its render $run went to $(run_get "$OUT" pre-made .machine), placed $(jq -c '.placed | {machine, fetch_bytes, prepare_ms, warm}' "$OUT/pre-made.json" 2> /dev/null)"
 J '.machine == "local"' "$OUT/pre-made.json" || check "prefetch ready: its render went to $(run_get "$OUT" pre-made .machine), not the machine its guess made ready (local)"
 J '(.placed.fetch_bytes // 0) == 0' "$OUT/pre-made.json" || check "prefetch ready: its render was quoted $(run_get "$OUT" pre-made .placed.fetch_bytes) bytes to download on the machine made ready for it"
+# What its machine had of what it loads, and fetched for it (cl-1102): all of it there, nothing to wait for.
+echo "prefetch ready: its run's weights: $(jq -c '.measurements.weights // "none said"' "$OUT/pre-made.json" 2> /dev/null)"
+J '(.measurements.weights.needs // 0) == 0' "$OUT/pre-made.json" || check "prefetch ready: its run waited for $(run_get "$OUT" pre-made .measurements.weights.needs) bytes of weights on the machine made ready for it"
 pre_log local "$OUT/pre-ready.tensord.log"
 pre_judge "$OUT/pre-ready.tensord.log" "$began" '{}' <<'JUDGE' > "$OUT/pre-ready.failed"
 print(json.dumps({"fetched_objects": len(weights), "installs": len(installs)}), file=sys.stderr)

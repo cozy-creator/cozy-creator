@@ -1118,6 +1118,10 @@ pub enum StreamEvent {
     /// Public protection metadata reaches every tab, including tabs showing another project.
     #[serde(rename = "project.vault")]
     ProjectVault { id: String, state: String },
+    /// Before a lock, a storage change or a stop closes the project, to each page showing it: send what's typed of it now, then answer
+    /// `POST /v1/events/{stream}/saved` (cl-1067). A page that doesn't know it skips it, as any type it doesn't know.
+    #[serde(rename = "project.saving")]
+    ProjectSaving { id: String },
     /// Its folder is gone (deleted, moved away, on a drive that isn't there): where it was. Nothing of it reads, so a stream showing it
     /// is told this in place of `project.changed`, and asks it nothing more (cl-980).
     #[serde(rename = "project.gone")]
@@ -2326,6 +2330,11 @@ pub struct CutFiles {
     pub held_bytes: u64,
     /// Where the holds are: deleting it lets those files go.
     pub kept: PathBuf,
+    /// How many projects the old landing folder, set aside, waits for (cl-1036), and where it is: deleting it lets it go.
+    #[serde(default)]
+    pub old_outputs_waiting: u64,
+    #[serde(default)]
+    pub old_outputs: PathBuf,
 }
 
 /// A project's files left on a machine that were gone from it before the legacy cut could copy them in: its folder, and how many.

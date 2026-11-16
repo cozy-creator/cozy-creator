@@ -146,6 +146,9 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `job.updated {project, job, seq}`: one job of a project's render, whole, each time it changes; `id` names it for as long as the render goes, and the board has them all. A client reads the board, then keeps what's newer than its `seq`.
 - `ahead.updated {project, ahead}`: what a machine is fetching ahead of a project's queued jobs, as it stands now: `{function, machine, run, stage?, done, total, ready?, held_back?}`. The board's `ahead` has them all.
 - `history {id, undo?, redo?}`: a project's history moved, an edit, an undo or a redo, and the entries undo and redo would take now, as `GET /v1/projects/{id}/history` lists them.
+- `project.vault {id, state}`: a project's protection changed, to every stream: `unlocked`, `locking`, `locked`, `plain`.
+- `project.saving {id}`: before a lock, encrypt, decrypt, rotate or a stop closes it, to each page showing it: send what's typed of it
+  now, then answer `saved` (below). Not past a deadline: a lapsed view takes no write.
 - `resync`: this stream fell behind and goes on: read again what you hold.
 
 Newer services add optional `project.changed.cursor {generation, sequence}` and full project-state `covered` with the same shape.
@@ -163,6 +166,9 @@ installation; a page orders its first project-state GET after its own held ackno
 without an authoritative per-ID result. `404
 stream_unknown` once the stream has ended: the next stream's `hello` names it. The page sends what all its tabs show, from the tab that
 holds the stream, each time that changes.
+
+`POST /v1/events/{stream}/saved` `{project}`: `204`, the page on this stream sent what it typed of `project` after `project.saving`, from
+every tab showing it. Calcifer waits for each stream showing the project to say so, or to end, up to 10 s, then closes it anyway.
 
 ACK-capable pages share the stable `cozy-events-presence-v1` Web Lock and BroadcastChannel. An older open page retains its older
 coordination cohort during an upgrade, so it cannot strand a new page waiting for an acknowledgement it does not implement. This is a
@@ -674,7 +680,8 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   files from before `project.db` is imported by the first call that names it, a format 2 one upgraded first, and `GET /v1/projects/{id}` says it in
   `warnings`. What can't convert refuses with why, its files as they were.
 - `POST /v1/projects/{id}/imports` `{source, name?, at?: {x, y, w?}, description?, exact?, moves?, placed?}`, with an `Idempotency-Key`: `{name, sha256, field, path, already?, kept?}`. One call, one transaction, makes an element: the file in `files/`, a box `{approved, description?}` under its name, with `at` its row on the canvas, and `moves`, the rows its drop pushed aside, each with its revision in `placed` as `PATCH /canvas` takes it (`kept` the ones another wrote since, as they are). `source` is `sha256:<hex>` (a held file, moved rather than copied, or one the project has; else `404 file_not_held`), the start of the hash of a file the project has, or an `http(s)` URL (64 MiB at most, public addresses only at every hop); a client's own file comes held, never by its path. `name` absent: the stem of a URL, lower-cased, else `file`; the browser sends the file's name. It goes through `as_name`, and a name the project has, by the rule names match, gets `_2`, so `name` in the answer is the one it got. With `exact`, a person typed it: `409 asset_exists`, naming what has it. The same file twice is a second element with no new bytes, `already` saying so. `field` is `image`, `video` or `audio`, from the bytes; anything else is `400 import_failed`.
-- `GET /v1/projects?limit=&before=`: the index, last used first: `{projects: [{id, name, path, used_at_ms, busy?}], older}`. A project whose folder
+- `GET /v1/projects?limit=&before=`: the index, last used first: `{projects: [{id, name, path, used_at_ms, busy?}], older}`. Used: made, opened
+  for a call, or newly shown by a page (`PUT /v1/events/{stream}`); a locked project keeps its time. A project whose folder
   no longer holds `project.db` (deleted, moved, on a drive that's away) leaves the index and frees its name; opened again by its path
   it is back by its id, under its name, or `<name>_2` if another took it.
 - `GET|PUT /v1/projects/{id}/key` (`{key}`): `{key, former}`, the key its runs are named by and the keys it had here, which still name
@@ -801,7 +808,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | Verb | Calls |
 |---|---|
 | `cozy new [directory]` | `POST /v1/projects` with the selected absolute path |
-| `cozy open [--port PORT]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; then `POST /v1/browser/open`, else prints the page's URL |
+| `cozy open [--port PORT]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; starts a private window of the user's browser (`$BROWSER`'s, else the default's, else an installed one's: `--incognito`, `--inprivate`, `--private-window`) at the page's URL (`/p/<code>`) and prints it; with none, prints it and opens nothing; `--json` prints it and starts none |
 | `cozy status` | project health, warnings and suggested actions from `GET /v1/projects/{id}` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}`; `--previews DIR`, `GET /v1/runs/{id}/preview` each second while it runs |

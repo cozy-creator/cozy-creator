@@ -623,8 +623,11 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
     found
 }
 
-/// The slots a run of a function waits for before it starts, the one set a quote's download sums over (cl-1071): today each not on
-/// demand, which TensorD fetches ahead; an on-demand one is built and fetched when the function first reads it.
+/// The slots a run of a function waits for before it starts, the one set a quote's download sums over (cl-1071): its needs, as
+/// its machine reckons them (TensorD's `access::Needs`, cl-1102). Their source is the rules in its interface, evaluated against the
+/// request (`checkpoints`' `made`) by the evaluator TensorD shares (cl-1103): an on-demand slot the request is sure to read is
+/// waited for, and its bytes are in the quote's download. Until a function has rules this is the same fallback as TensorD's
+/// (`Plan::needs`): each slot not on demand; an on-demand one comes in the background and is fetched at once when first read.
 fn waited(slots: &[Slot]) -> impl Iterator<Item = &Slot> {
     slots.iter().filter(|slot| !slot.on_demand)
 }

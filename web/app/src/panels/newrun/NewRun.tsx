@@ -247,7 +247,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
   )
 }
 
-/** A function, from a package, a typed name, the Library, or a run being run again. */
+/** A function, from a package, a typed name, Installations, or a run being run again. */
 export function NewRun() {
   const { client } = useConnection()
   const id = useProjectId()!

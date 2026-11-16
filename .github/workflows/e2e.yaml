@@ -803,7 +803,7 @@ jobs:
         working-directory: .web-src/web/app
         run: pnpm install --frozen-lockfile
       - name: Install the optional project-encryption filesystem driver
-        if: (startsWith(matrix.shard, 'projectvault') && !startsWith(matrix.shard, 'projectvault-nofuse') && !startsWith(matrix.shard, 'projectvault-static')) || startsWith(matrix.shard, 'hardcut') || (matrix.shard == 'web-engines' || startsWith(matrix.shard, 'web-engines@')) || (matrix.shard == 'web-vault' || startsWith(matrix.shard, 'web-vault@')) || (matrix.shard == 'web-solo' || startsWith(matrix.shard, 'web-solo@')) || startsWith(matrix.shard, 'web-2d-solo') || startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-opens')
+        if: (startsWith(matrix.shard, 'projectvault') && !startsWith(matrix.shard, 'projectvault-nofuse') && !startsWith(matrix.shard, 'projectvault-static')) || startsWith(matrix.shard, 'hardcut') || (matrix.shard == 'web-engines' || startsWith(matrix.shard, 'web-engines@')) || (matrix.shard == 'web-vault' || startsWith(matrix.shard, 'web-vault@')) || (matrix.shard == 'web-drawers' || startsWith(matrix.shard, 'web-drawers@')) || (matrix.shard == 'web-solo' || startsWith(matrix.shard, 'web-solo@')) || startsWith(matrix.shard, 'web-2d-solo') || startsWith(matrix.shard, 'containment') || startsWith(matrix.shard, 'web-opens')
         run: bash .creator/e2e/cli/install-vault-driver.sh
       # cl-1000: the provider probe (e2e/vault-provider) projectvault-static's cells run, not embedding the provider, and FUSE 3 beside
       # libfuse.so.2, which the glibc securefs build it times the static one against loads.

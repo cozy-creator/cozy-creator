@@ -189,9 +189,6 @@ const asks = (path: string) => path.split("?")[0].endsWith("/held")
 export class Client {
   readonly transport: Transport
   private hooks: Hooks
-  private frozen = false
-  private writes = 0
-  private readonly settledWrites = new Set<() => void>()
 
   constructor(transport: Transport, hooks: Hooks) {
     this.transport = transport
@@ -200,30 +197,9 @@ export class Client {
 
   retireProject(id: string) { this.transport.retireProject(id) }
   allowProject(id: string) { this.transport.allowProject(id) }
-  freezeWrites() { this.frozen = true }
-  resumeWrites() { this.frozen = false }
-  /** Writes sent and not yet answered. */
-  unsentWrites() { return this.writes }
-  async savedWrites() {
-    while (this.writes) await new Promise<void>((done) => this.settledWrites.add(done))
-  }
-
-  private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
-    // By segment, not route literal: scripts/web-routes.sh reads every `/v1/` string here as a call.
-    const [, , root] = path.split("?")[0].split("/")
-    const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && !(root === "down" && path.split("/").length === 3) && !asks(path)
-    if (writing && this.frozen && !options.action && root !== "events") {
-      throw new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving your edits before the page closes" })
-    }
-    if (writing) this.writes++
-    try { return await this.exchange(path, init, options) }
-    finally {
-      if (writing) { this.writes--; for (const done of this.settledWrites) done(); this.settledWrites.clear() }
-    }
-  }
 
   /** What can't reach Calcifer tries again where that's safe, saying each attempt, then gives up. */
-  private async exchange(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
+  private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
     const headers = new Headers(init.headers)
     headers.set(PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION)
     init = { ...init, headers }
@@ -300,6 +276,11 @@ export class Client {
   /** The one stream, opened once: `EventStream` does its own reconnecting. */
   events(signal: AbortSignal): Promise<Response> {
     return this.transport.fetch("/v1/events", { signal, headers: { Accept: "text/event-stream" } })
+  }
+
+  /** The page on `stream` sent what it typed of `project`, as `project.saving` asked before it closes. */
+  async saved(stream: string, project: string): Promise<void> {
+    await this.send(`/v1/events/${encodeURIComponent(stream)}/saved`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }) })
   }
 
   /** The projects the tabs on `stream` show, which Calcifer holds open while it lasts, and whether one shows a machine's view: the stream

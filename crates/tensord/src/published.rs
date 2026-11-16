@@ -192,8 +192,6 @@ impl std::fmt::Debug for Providers {
     }
 }
 
-/// Checkpoints by header, each with the components read (`access::Selected`).
-type Selected = Vec<(String, Vec<String>)>;
 
 /// Where a preparation's stage and bytes are reported as they change.
 pub(crate) type Observer = Box<dyn Fn(&str, u64, u64) + Send + Sync>;
@@ -1513,10 +1511,9 @@ impl Publisher {
         Ok((plan, warnings))
     }
 
-    /// What `request`'s function reads up front and may read on demand (`Plan::upfront`, `Plan::possible`), from its
-    /// installation's interface alone: each slot resolved and its structure landed, nothing journaled, so its environment
-    /// need not be built yet (cl-966).
-    pub(crate) fn predicted(&self, service: &Service, request: &Request, observe: Option<Observer>, stop: Option<&Stop>) -> Result<(Selected, Selected), Failure> {
+    /// What a call of `request`'s function needs (`Plan::needs`), from its installation's interface alone: each slot resolved
+    /// and its structure landed, nothing journaled, so its environment need not be built yet (cl-966).
+    pub(crate) fn predicted(&self, service: &Service, request: &Request, observe: Option<Observer>, stop: Option<&Stop>) -> Result<crate::access::Needs, Failure> {
         let installation = request.installed.as_ref().ok_or(("release_root_installation_absent", "no installation to read".to_string()))?;
         if !declares_models(installation, &request.entrypoint) {
             return Ok(Default::default());
@@ -1526,7 +1523,7 @@ impl Publisher {
         let Granted { grants, unbound, .. } = self.grants(service, &gpu, installation, request, &job)?;
         let plan = gpu.prepare_root(installation, &request.entrypoint, &request.choices, &grants, unbound, request.gpus)
             .map_err(|e| ("model_preparation_failed", e.to_string()))?;
-        Ok((plan.upfront(), plan.possible()))
+        Ok(plan.needs())
     }
 
     /// Each model slot of the request's function resolved, all at once (cl-966): its choice, else its declared default (also

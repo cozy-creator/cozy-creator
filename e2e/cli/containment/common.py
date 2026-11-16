@@ -1,4 +1,4 @@
-"""Hosted proof transport. Private request/CLI bodies remain in RAM, never evidence files."""
+"""Hosted qualification helpers. Private request/CLI bodies remain in RAM, never evidence files."""
 from __future__ import annotations
 
 import base64
@@ -12,13 +12,11 @@ from pathlib import Path
 import re
 import secrets
 import signal
-import socket
 import subprocess
 import time
 from typing import NotRequired, TypedDict, TypeVar, Unpack, cast
 from urllib.parse import quote, urlsplit
 
-DOMAIN = "cozy.project-containment.proof.v1"
 T = TypeVar("T")  # not PEP 695 syntax: legacy.sh's `uv run` may pick a Python before 3.12
 
 
@@ -61,34 +59,6 @@ class Project(TypedDict):
     text_file: str
     native_run_id: NotRequired[str]
     native_allowed_sha256: NotRequired[str]
-
-
-class Observed(TypedDict, total=False):
-    """The proof channel's observation of an action (the fields these fixtures read)."""
-    present: bool
-    pages: int
-    processes: list[Birth]
-    birth: Birth
-    profile: str
-    retirement_incomplete: bool
-    page_ready: bool
-    cards: int
-    typed: bool
-    visible: bool
-    owned_injected: bool
-    admitted: bool
-    principal: str
-    daemon_birth: str
-    status: int
-    no_store: bool
-    range: bool
-    body_sha256: str
-    development: bool
-    value: int
-    csp_nonce: str
-    refresh_nonce: str
-    style_nonce: str
-    document_sha256: str
 
 
 class RunRow(TypedDict):
@@ -152,49 +122,29 @@ class RawOptions(TypedDict, total=False):
 
 # Closed fixture case codes only; never serialize a free-form exception message.
 _FAILURE_CODES = frozenset({
-    "managed_execution_failed", "managed_path_outside_project", "managed_environment_in_project", "managed_cache_contents", "managed_core_limit",
-    'a_lock_after_b_saved', 'a_lock_unexpected_refusal', 'actual_private_browser_flags',
-    'actual_private_browser_redirects', 'b_edit_not_persisted', 'born_encrypted',
-    'browser_birth_reused', 'browser_durable_storage', 'browser_edit_not_visible',
-    'browser_ownership_distinct', 'busy_edit_resume', 'busy_lock_lost_b_draft',
-    'caf_crash_page_ready', 'caf_crash_browser_tree_not_retired', 'caf_crash_profile_not_retired',
-    'chrome_missing', 'cli_exit', 'closed_health_sink',
-    'cold_page_ready', 'composed_candidate_not_ready', 'controller_update_not_refused', 'core_control_not_authorized',
-    'core_pattern_invalid', 'crash_page_ready', 'crashed_browser_tree_not_retired',
-    'crashed_profile_not_retired', 'csrf_no_store_refusal', 'development_config_changed',
-    'development_config_shape', 'development_hosted_only', 'development_web_commit_unread', 'development_web_not_candidate', 'development_native_bearer_bridge_present',
-    'development_owned_paths', 'development_pnpm_missing', 'development_private_path_forwarded',
-    'development_probe_replaced', 'development_process_replaced', 'development_server_exited',
-    'development_server_readiness', 'encrypted_create_identity', 'exact_unlocked_project_root',
-    'fixture_failure', 'fixture_requires_stopped_calcifer', 'foreign_browser_changed',
-    'foreign_browser_start', 'foreign_cleanup_birth', 'foreign_profile_tmpfs',
-    'holder_loopback', 'holder_ready', 'hosted_display_missing',
-    'hosted_linux_only', 'kill_process_birth', 'last_window_process_tree_alive',
-    'last_window_profile_left', 'lock_closed_admission_before_browser_drain', 'lock_discarded_pending_b_edit',
-    'last_window_profile_left', 'legacy_public_bootstrap_account', 'legacy_public_bootstrap_cli',
-    'legacy_public_bootstrap_database', 'legacy_public_bootstrap_hosted', 'legacy_public_bootstrap_installed_cohort',
-    'legacy_public_bootstrap_interface', 'legacy_public_bootstrap_old_holder', 'legacy_public_bootstrap_release_absent',
-    'legacy_public_bootstrap_run_list', 'legacy_public_bootstrap_schema_changed', 'legacy_public_bootstrap_source_is_project',
+    'a_lock', 'born_encrypted', 'cli_exit', 'closed_health_sink', 'composed_candidate_not_ready', 'controller_update_not_refused',
+    'core_control_not_authorized', 'core_pattern_invalid', 'csrf_no_store_refusal', 'development_config_changed',
+    'development_config_shape', 'development_csp_header', 'development_hosted_only', 'development_web_commit_unread', 'development_web_not_candidate', 'development_native_bearer_bridge_present',
+    'development_owned_paths', 'development_pnpm_missing', 'development_private_path_forwarded', 'development_process_replaced',
+    'development_server_exited', 'development_server_readiness', 'development_web_without_dev', 'encrypted_create_identity',
+    'exact_unlocked_project_root', 'fixture_failure', 'fixture_requires_stopped_calcifer', 'hmr_websocket_page',
+    'hmr_websocket_refusal', 'holder_loopback', 'holder_ready', 'hosted_linux_only', 'kill_process_birth',
+    'legacy_public_bootstrap_account', 'legacy_public_bootstrap_cli', 'legacy_public_bootstrap_database',
+    'legacy_public_bootstrap_hosted', 'legacy_public_bootstrap_installed_cohort', 'legacy_public_bootstrap_interface',
+    'legacy_public_bootstrap_old_holder', 'legacy_public_bootstrap_release_absent', 'legacy_public_bootstrap_run_list',
+    'legacy_public_bootstrap_schema_changed', 'legacy_public_bootstrap_source_is_project',
     'legacy_public_bootstrap_static_source', 'legacy_public_bootstrap_unproven_run', 'legacy_public_bootstrap_v7',
-    'legacy_public_bootstrap_version', 'lock_closed_admission_before_browser_drain', 'lock_discarded_pending_b_edit',
-    'lock_not_started', 'native_absolute_write_not_denied', 'native_allowed_preexists',
-    'native_auth_required', 'native_capability', 'native_core_file_created',
-    'native_core_protection_failed', 'native_file_not_retained_after_restart', 'native_history_not_retained_after_restart',
-    'native_http_status', 'native_outside_file_created', 'native_private_run_identity_missing',
-    'native_project_write_failed', 'native_terminal_result_missing', 'not_own_page_refusal', 'old_holder_authority_survived',
-    'other_user_account', 'other_user_refusal', 'outside_baseline_replaced', 'outside_project_canary', 'owned_browser_tree_not_retired',
-    'owned_media_capability', 'owned_page_injected', 'hmr_websocket_page', 'hmr_websocket_refusal', 'upgrade_needs_bearer',
-    'development_web_without_dev',
-    'owned_hmr_csp_header', 'owned_hmr_initial_module', 'owned_hmr_nonce_missing',
-    'owned_hmr_reloaded_document', 'owned_hmr_update', 'owned_host_core_control_required',
-    'owned_host_core_control_unavailable', 'owned_no_store_200', 'owned_no_store_206',
-    'owned_no_store_conditional', 'owned_page_ready', 'owned_profile_volatile',
-    'piped_core_not_refused', 'piped_core_refusal_not_specific', 'private_browser_argv_canary', 'private_browser_failed', 'private_browser_unavailable',
-    'proof_action', 'proof_fd5_in_use', 'proof_frame',
-    'proof_handshake', 'proof_process_birth', 'real_browser_edit',
-    'receipt_schema', 'regular_core_native_execution_failed', 'reopened_page_ready',
-    'response_object', 'restart_holder_ready', 'scan_decoder_unavailable',
-    'scan_markers_missing', 'scan_process', 'shared_owned_browser', 'whole_browser_retirement',
+    'legacy_public_bootstrap_version', 'managed_cache_contents', 'managed_core_limit', 'managed_environment_in_project',
+    'managed_execution_failed', 'managed_path_outside_project', 'native_absolute_write_not_denied', 'native_allowed_preexists',
+    'native_auth_required', 'native_capability', 'native_core_file_created', 'native_core_protection_failed',
+    'native_file_not_retained_after_restart', 'native_history_not_retained_after_restart', 'native_http_status',
+    'native_outside_file_created', 'native_private_run_identity_missing', 'native_project_write_failed',
+    'native_terminal_result_missing', 'not_own_page_refusal', 'old_holder_authority_survived', 'other_user_account',
+    'other_user_refusal', 'outside_baseline_replaced', 'outside_project_canary', 'owned_host_core_control_required',
+    'owned_host_core_control_unavailable', 'page_capability', 'page_no_store_200', 'page_no_store_206',
+    'page_no_store_conditional', 'piped_core_not_refused', 'piped_core_refusal_not_specific', 'receipt_schema',
+    'regular_core_native_execution_failed', 'response_object', 'restart_holder_ready', 'scan_decoder_unavailable',
+    'scan_markers_missing', 'scan_process', 'upgrade_needs_bearer',
 })
 
 class Failure(Exception):
@@ -243,11 +193,6 @@ def until(read: Callable[[], T], wanted: Callable[[T], object], code: str, secon
         try:
             value = read()
         except (FileNotFoundError, ConnectionRefusedError):
-            time.sleep(0.1)
-            continue
-        except Failure as error:
-            if str(error) != "proof_action":
-                raise
             time.sleep(0.1)
             continue
         if wanted(value):
@@ -319,7 +264,6 @@ class Native:
         self.cli = cli
         self.failure: dict[str, object] | None = None
         # The last `cozy open`, as closed facts: its exit, whether Cozy's own browser started, and why not (Calcifer's step code).
-        self.opened: dict[str, object] = {}
 
     @staticmethod
     def failure_facts(completed: subprocess.CompletedProcess[bytes], words: tuple[str, ...]) -> dict[str, object]:
@@ -329,7 +273,6 @@ class Native:
             "exit_code": completed.returncode,
             "stdout_sha256": sha(completed.stdout),
             "stderr_sha256": sha(completed.stderr),
-            "action_open": words[:1] == ("open",),
             "action_vault": words[:1] == ("vault",),
         }
         error = None
@@ -358,13 +301,8 @@ class Native:
         if error is None:
             return facts
         allowed = {
-            "code": {"project_busy", "project_locked", "project_storage_update_required", "project_storage_migration_pending",
-                     "private_browser_unavailable", "private_browser_failed", "private_browser_profile", "private_browser_recovery_pending",
-                     "private_browser_retirement_incomplete", "browser_open_needs_bearer", "project_not_found",
+            "code": {"project_busy", "project_locked", "project_storage_update_required", "project_storage_migration_pending", "project_not_found",
                      "project_required", "project_storage_unsupported", "calcifer_unreachable", "unauthenticated"},
-            "cause": {"browser_executable", "browser_home", "browser_profile_setup", "browser_capture", "browser_seal", "browser_pipe", "browser_spawn",
-                      "browser_birth", "browser_ownership", "browser_context", "browser_target", "browser_attach",
-                      "browser_navigate", "browser_activate"},
             "kind": {"usage", "validation", "not_found", "credential", "forbidden", "conflict", "capacity", "unavailable", "internal"},
         }
         for field, values in allowed.items():
@@ -374,27 +312,6 @@ class Native:
                     facts[field + "_" + value] = True
                 else:
                     facts[field + "_sha256"] = sha(value.encode())
-        metadata = error.get("metadata")
-        if isinstance(metadata, dict):
-            protocol = metadata.get("browser_protocol_code")
-            if isinstance(protocol, int) and not isinstance(protocol, bool) and protocol in {-32700, -32600, -32601, -32602, -32603, -32000}:
-                facts["browser_protocol_code"] = protocol
-            for field in ("browser_startup_unreadable", "browser_startup_bounded", "browser_startup_no_sandbox", "browser_startup_no_display",
-                          "browser_startup_permission_denied", "browser_startup_invalid_descriptor", "browser_startup_no_space", "browser_startup_socket_path_too_long",
-                          "browser_startup_namespace", "browser_startup_crashpad", "browser_startup_fatal", "browser_startup_devtools_pipe",
-                          "browser_startup_zygote", "browser_startup_logging", "browser_startup_profile", "browser_startup_allocator",
-                          "browser_startup_ozone_display", "browser_startup_dbus", "browser_startup_user_namespace", "browser_startup_icu",
-                          "browser_startup_ptrace", "browser_startup_shared_memory", "browser_startup_invalid_flag",
-                          "browser_process_exited", "browser_exit_before_retirement", "browser_startup_retired"):
-                if isinstance(metadata.get(field), bool):
-                    facts[field] = metadata[field]
-            for field in ("browser_startup_bytes", "browser_exit_code", "browser_exit_signal"):
-                value = metadata.get(field)
-                if value is None or isinstance(value, int) and not isinstance(value, bool):
-                    facts[field] = value
-            digest = metadata.get("browser_startup_sha256")
-            if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
-                facts["browser_startup_sha256"] = digest
         return facts
 
     def command(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None, success: bool = True) -> bytes:
@@ -402,7 +319,7 @@ class Native:
         deadline = time.monotonic() + 90
         while True:
             completed = subprocess.run([str(self.cli), "--json", *words], input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
-            if success and completed.returncode and (words[:2] == ("vault", "lock") or words[:1] == ("open",)):
+            if success and completed.returncode and words[:2] == ("vault", "lock"):
                 try:
                     busy = json.loads(completed.stdout).get("error", {}).get("code") == "project_busy"
                 except (ValueError, AttributeError):
@@ -415,35 +332,6 @@ class Native:
                     self.failure = self.failure_facts(completed, words)
                 raise Failure("cli_exit")
             return completed.stdout
-
-    def open(self, cwd: Path) -> None:
-        # The project in Cozy's own private browser: since cl-980 `--json open` only prints a link and starts none.
-        deadline = time.monotonic() + 90
-        while True:
-            completed = subprocess.run([str(self.cli), "open"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
-            # A browser that couldn't start: open.rs warns "Cozy's private browser couldn't start (<code>)" and exits 0 with a link.
-            declined = re.search(rb"private browser couldn't start \((browser_[a-z_]+|private_browser_unavailable)\)", completed.stderr)
-            self.opened = {"open_exit": completed.returncode, "open_private": completed.returncode == 0 and declined is None,
-                           **({"open_cause_" + declined.group(1).decode().removeprefix("browser_"): True} if declined else {})}
-            if completed.returncode and re.search(rb"^error\[project_busy\]", completed.stderr, re.M) and time.monotonic() < deadline:
-                time.sleep(0.1)
-                continue
-            # The one text this cell prints: why Cozy's Chrome didn't start (its exit and startup line, from before any page
-            # or project reached it), or that there is none.
-            failed = re.search(rb"^error\[private_browser_failed\]: (.*)$", completed.stderr, re.M)
-            missing = re.search(rb"Cozy's private browser couldn't start \((.*)\): open .*, which isn't private$", completed.stderr, re.M)
-            cause = re.search(rb"^cause: (browser_[a-z_]+)$", completed.stderr, re.M)
-            if said := failed or missing:
-                print("Cozy's private browser didn't start:", said[1].decode(errors="replace")[:600], (cause[1].decode() if cause else ""), flush=True)
-            if completed.returncode:
-                if self.failure is None:
-                    self.failure = self.failure_facts(completed, ("open",))
-                    if cause:
-                        self.failure["cause_" + cause[1].decode()] = True
-                raise Failure("private_browser_failed" if failed else "cli_exit")
-            if missing:
-                raise Failure("private_browser_unavailable")
-            return
 
     def document(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None) -> dict[str, object]:
         return cast(dict[str, object], json.loads(self.command(*words, cwd=cwd, stdin=stdin)))  # cast: the CLI's --json document
@@ -566,60 +454,11 @@ class OtherAccount:
             return not self.home.exists()
 
 
-class Proof:
-    """The one inherited socket; peer authority is validated again inside real Calcifer."""
+class Calcifer:
+    """The installed `cozy calcifer`, this fixture's own child."""
     def __init__(self, cli: Path):
-        parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-        parent.settimeout(90)
-        parent.sendall((DOMAIN + "\n").encode())
-        descriptor = child.fileno()
-        # Never replace an unrelated parent descriptor. Reserve the one child-only slot before
-        # spawn; pass_fds explicitly preserves it, with no arbitrary pre_exec Python callback.
-        copied = descriptor != 5
-        if copied:
-            require(not self._open(5), "proof_fd5_in_use")
-            os.dup2(descriptor, 5, inheritable=True)
-        try:
-            self.process = subprocess.Popen([str(cli), "calcifer"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=(5,))
-        finally:
-            if copied:
-                os.close(5)
-        child.close()
-        self.socket, self.reader = parent, parent.makefile("rb")
+        self.process = subprocess.Popen([str(cli), "calcifer"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.birth = birth(self.process.pid)
-        self._write({"domain": DOMAIN, "parent": birth(os.getpid()), "calcifer": self.birth})
-        hello = self._read()
-        require(hello.get("domain") == DOMAIN and hello.get("ready") is True and hello.get("calcifer") == self.birth, "proof_handshake")
-
-    @staticmethod
-    def _open(fd: int) -> bool:
-        try:
-            os.fstat(fd)
-            return True
-        except OSError:
-            return False
-
-    def _write(self, value: dict[str, object]) -> None:
-        self.socket.sendall(json.dumps(value, separators=(",", ":")).encode() + b"\n")
-
-    def _read(self) -> dict[str, object]:
-        line = self.reader.readline((2 << 20) + 1)
-        require(0 < len(line) <= 2 << 20, "proof_frame")
-        return cast(dict[str, object], json.loads(line))  # cast: the proof channel's JSON frame
-
-    def ask(self, request: str, **fields: object) -> Observed:
-        require(alive(self.birth), "proof_process_birth")
-        self._write({"request": request, **fields})
-        response = self._read()
-        require(response.get("ok") is True, "proof_action")
-        return cast(Observed, response["observed"])  # cast: the proof channel's JSON observation
-
-    def exercise(self, project: str, action: str, **payload: object) -> Observed:
-        return self.ask("exercise_fixed", project=project, action={"action": action, **payload})
-
-    def close_channel(self) -> None:
-        self.reader.close()
-        self.socket.close()
 
 
 def kill_exact(expected: Birth) -> None:

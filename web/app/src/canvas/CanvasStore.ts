@@ -508,11 +508,12 @@ export class CanvasStore {
     this.retire()
   }
 
+  /** Everything typed in it written now, and answered: before its project closes. */
   async prepareClose() {
     if (this.retired) return
     const saved = await Promise.all([...this.views.keys()].map((name) => this.save(name)))
     this.sendMoves()
-    if (saved.some((saved) => !saved)) throw new Error("A canvas edit still needs attention before the browser can close")
+    if (saved.some((saved) => !saved)) throw new Error("A canvas edit still needs attention")
   }
 
   retire() {

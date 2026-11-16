@@ -1,6 +1,6 @@
 // focus (cl-973 core cell 4): a double click opens a box in Focus, at its own address; every way out (Esc, Close focus, Back to canvas, the
 // browser's Back, and while a trackpad's scroll or pinch still glides: cl-955) puts the canvas back exactly where it was, and Forward and a
-// reload come back to Focus on the same box. A press that began inside Focus, the Files drawer or a box's menu and was let go outside keeps
+// reload come back to Focus on the same box. A press that began inside Focus, the Assets drawer or a box's menu and was let go outside keeps
 // it open; one that began outside closes it (Paul, 11-12). In Focus the wheel zooms the picture, never the canvas, and a sharper one loads
 // with no blank frame. An edit's backdrop shows every picture its words use, as large as they can be (cl-949).
 const { test, expect, canvasIdle, focus, middle, observeStill, openPoint, png, canvasPoint, canvasVisible } = require('./fixtures');
@@ -159,9 +159,9 @@ test('focus', async ({ page, project, api }) => {
     await backHome(page, project, before, 'a press and release outside');
   });
 
-  await test.step('do the same in the Files drawer and in the box menu', async () => {
+  await test.step('do the same in the Assets drawer and in the box menu', async () => {
     await page.locator('details.main-menu > summary').click();
-    await page.locator('details.main-menu nav').getByRole('link', { name: 'Files', exact: true }).click();
+    await page.locator('details.main-menu nav').getByRole('link', { name: 'Assets', exact: true }).click();
     const drawer = page.locator('aside.drawer');
     await expect(drawer).toBeVisible();
     await expect(page).toHaveURL(project.url('files'));
