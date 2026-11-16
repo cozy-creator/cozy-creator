@@ -177,7 +177,8 @@ test('soak', { tag: '@solo' }, async ({ context, project, api, signIn, removeAft
     const noise = Math.max(...two.heap) - Math.min(...two.heap);
     const heapAllowed = Math.max(Math.abs(ten.heap[0] - two.heap[0]), 3 * noise);
     soft(last.heap[0] - two.heap[0], `the JS heap after cycle 20 against cycle 2 (allowed: cycles 2–10's difference, at least 3× the noise ${noise}): ${two.heap[0]} → ${ten.heap[0]} → ${last.heap[0]}`).toBeLessThanOrEqual(heapAllowed);
-    for (const key of ['textureBytes', 'pinnedTextures', 'labels', 'estimatedLabelBytes']) {
+    // Pinned: what's drawn holds. Unpinned textures are the scene's LRU, which may fill to its stated allowance (checked below).
+    for (const key of ['pinnedBytes', 'pinnedTextures', 'labels', 'estimatedLabelBytes']) {
       const allowed = Math.abs(ten.resources[key] - two.resources[key]);
       soft(last.resources[key] - two.resources[key], `the scene's ${key} after cycle 20 against cycle 2 (allowed: cycles 2–10's difference): ${two.resources[key]} → ${ten.resources[key]} → ${last.resources[key]}`).toBeLessThanOrEqual(allowed);
     }
