@@ -3,7 +3,7 @@ use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as F
 use axum::{body::Bytes, extract::{Path, State, rejection::BytesRejection}, http::{HeaderValue, header}, response::{IntoResponse, Response}};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultStatus}, error::{Error, Kind}};
 use project_mount::{MountOptions, Mounted, Provider};
-use project_vault::{Credential, Keybag, ProjectSecret, SecretString, SessionPolicy, SessionTimer, KEYBAG_FILE};
+use project_vault::{Credential, Hold, Keybag, ProjectSecret, SecretString, SessionPolicy, SessionTimer, KEYBAG_FILE};
 use sha2::{Digest as _, Sha256};
 use crate::api::{Api, Refusal, parse};
 use super::vault_operation::{self, Progress};
@@ -431,7 +431,7 @@ fn status(root: &FsPath) -> VaultStatus {
             if state == "unlocked" { view = Some(session.mount.view().to_owned()); }
             let idle_at = (session.idle > 0).then(|| session.active_ms.saturating_add(milliseconds(session.idle)));
             // Work in progress defers the maximum until it ends.
-            let max_at = (session.maximum > 0 && !session.timer.held()).then(|| session.began_ms.saturating_add(milliseconds(session.maximum)));
+            let max_at = (session.maximum > 0 && session.timer.held() != Hold::Working).then(|| session.began_ms.saturating_add(milliseconds(session.maximum)));
             expires = match (idle_at, max_at) { (Some(a), Some(b)) => Some(a.min(b)), (a,b) => a.or(b) };
         }
     }
@@ -878,9 +878,9 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     let (needs, deadline) = held(&root).map_or((false, None), |session| {
         let mut session = session.lock().expect("vault session");
         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
-        // Work in progress holds it open, its maximum included: the clocks go on when the last of it
-        // ends. Only an explicit lock ends work (owner 11-11: "runs count as activity").
-        session.timer.hold(work.is_some());
+        // Work going holds it open, its maximum included: the clocks go on when the last of it ends. Only an explicit lock ends
+        // it (owner 11-11: "runs count as activity"). A run its machine hasn't begun holds the idle clock alone (cl-1082).
+        session.timer.hold(work.map_or(Hold::Nothing, |work| work.held));
         if let Some(work) = work.filter(|_| !session.closing) {
             session.active_ms = super::now_ms();
             if session.idle > 0 { say(&root, "held", || format!("its idle clock is held by {}", work.why)); }
@@ -929,6 +929,15 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, due: Instant, forced: bool) {
         lapsed(&session)
     });
     if !still_needs { return; }
+    // A run its machine hasn't begun doesn't keep it open past its maximum (cl-1082): it ends `vault_locked` before anything else. An
+    // explicit lock (closing) has ended the project's runs its own way.
+    let clocked = held(root).is_some_and(|session| { let session = session.lock().expect("vault session"); !session.closing && expired(&session) });
+    if let Some(id) = project_id(root).filter(|_| clocked) {
+        if let Err(failure) = api.calcifer.end_unstarted(&id).map_err(|_| error("run_cancel", "the project's runs not begun could not be ended")) {
+            idle_lock_failed(root, &failure);
+            return;
+        }
+    }
     // What its runs still owe lands first, judged by progress (cl-1060); then the project's turn, and `close` revokes nothing while
     // a writer is still active.
     if let Err(failure) = drain_saves(api, root, || {}) { idle_lock_failed(root, &failure); return; }
@@ -1221,34 +1230,39 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
     Ok(VaultChanged { vault: status(root), recovery_secret, ended: vec![], skipped_files: progress.skipped(), unsaved: vec![], deferred: vec![] })
 }
 
-/// What holds an unlocked vault open: why, and whether its end stirs the vault clock. One that doesn't is looked at again shortly.
+/// What holds an unlocked vault open: why, whether its end stirs the vault clock (one that doesn't is looked at again shortly), and how
+/// (cl-1082): work going holds both clocks; a run its machine hasn't begun, its driver or a client following it, only the idle one.
 #[derive(Clone, Copy)]
-struct Work { why: &'static str, told: bool }
+struct Work { why: &'static str, told: bool, held: Hold }
 
-/// What holds an unlocked vault open now, if anything: a client following a run, a request, a private process, a render, cut or file
-/// move, a reader, a run not settled.
+/// What holds an unlocked vault open now, if anything: a request, a private process, a run saving its outputs, a render, cut or file
+/// move, a reader, a run not settled or its driver, a client following a run.
 fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
-    let told = |why| Some(Work { why, told: true });
-    let untold = |why| Some(Work { why, told: false });
-    if FOLLOWING.lock().expect("vault followers").contains_key(root) { return told("a client following a run"); }
-    if api.projects.active_requests(root) { return told("a project request being answered"); }
-    if crate::local_code::private_process_active(root) { return told("a private process"); }
+    let going = |why, told| Some(Work { why, told, held: Hold::Working });
+    let waiting = Some(Work { why: "a run its machine hasn't begun", told: true, held: Hold::Waiting });
+    if api.projects.active_requests(root) { return going("a project request being answered", true); }
+    if crate::local_code::private_process_active(root) { return going("a private process", true); }
+    let following = FOLLOWING.lock().expect("vault followers").contains_key(root);
     let projects = api.projects.now_open();
-    let project = projects.iter().find(|project| project.root == root)?;
-    // A finished call still owes the project its settling and outputs, saved after its row settles (cl-1060).
-    if api.calcifer.driving_into(&project.id).is_some() { return untold("a run not yet settled"); }
-    if api.calcifer.writing_into(&project.id).is_some() { return untold("a run saving its outputs"); }
-    if *project.walking.lock().expect("walking lock") { return told("a render"); }
-    if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return untold("a move or cut"); }
-    let Ok(transition) = exclusive(root) else { return untold("a reader holding the project") };
-    let Ok(store) = api.projects.transition_store(api, &project.id, &transition) else { return untold("a journal it cannot read") };
+    let Some(project) = projects.iter().find(|project| project.root == root) else {
+        return if following { going("a client following a run", true) } else { None };
+    };
+    if api.calcifer.writing_into(&project.id).is_some() { return going("a run saving its outputs", false); }
+    if *project.walking.lock().expect("walking lock") { return going("a render", true); }
+    if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return going("a move or cut", false); }
+    let Ok(transition) = exclusive(root) else { return going("a reader holding the project", false) };
+    let Ok(store) = api.projects.transition_store(api, &project.id, &transition) else { return going("a journal it cannot read", false) };
     // The transition authority can inspect already-accepted work even if an idle
     // deadline just expired. Public viewing admission is deliberately stricter.
-    match (store.unsettled(), store.unsettled_here()) {
-        (Ok(sent), Ok(here)) if sent.is_empty() && here.is_empty() => None,
-        (Ok(_), Ok(_)) => told("runs not settled"),
-        _ => untold("a journal it cannot read"),
-    }
+    let (Ok(sent), Ok(here), Ok(unstarted)) = (store.unsettled(), store.unsettled_here(), store.unsettled_unstarted()) else {
+        return going("a journal it cannot read", false);
+    };
+    // A run its machine began holds both clocks (owner 11-11: "runs count as activity"), and so does a driver whose run did: one
+    // settling or handing on its outputs (cl-1060).
+    if !here.is_empty() || sent.len() > unstarted.len() { return going("runs not settled", true); }
+    let driven = api.calcifer.driven_into(&project.id);
+    if driven.iter().any(|id| !unstarted.contains(id)) { return going("a run not yet settled", false); }
+    if !unstarted.is_empty() || !driven.is_empty() || following { waiting } else { None }
 }
 
 /// A sweeper's reason, said at most every 10 seconds per project: a test's diagnostics name what kept a vault open.
