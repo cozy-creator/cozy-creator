@@ -804,6 +804,19 @@ fn unanswered_seal() -> Error {
         .next("cozy machine show local")
 }
 
+/// A lock's runs of the project on a `local` that doesn't answer (cl-1064): settled here as canceled, asked only when it has some
+/// there. Whether it didn't answer.
+fn settle_unanswered(api: &Arc<Api>, root: &FsPath) -> Result<bool, Error> {
+    let Some(id) = project_id(root).filter(|_| encrypted(root)) else { return Ok(false) };
+    if !api.calcifer.unsettled_on(&id, "local").map_err(|_| error("run_cancel", "the project's work could not be read"))?
+        || tokio::runtime::Handle::current().block_on(api.machines.answers("local"))
+    {
+        return Ok(false);
+    }
+    api.calcifer.cancel_unanswered_for_lock(&id, "local").map_err(|_| error("run_cancel", "the project's work could not be cancelled"))?;
+    Ok(true)
+}
+
 /// What `root`'s last lock says of a machine that didn't answer it, once.
 fn owed_said(root: &FsPath) -> Option<String> {
     OWED_SAID.lock().expect("owed said").remove(root).then(|| OWED_LINE.to_owned())
@@ -820,16 +833,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resul
     vault_operation::revoke(root);
     // A lock never waits on a machine that doesn't answer (cl-1064): the project's runs on local settle here as the lock ends them,
     // and what local ran in its view is owed a clean-up for when it answers.
-    let unanswered = match project_id(root).or_else(|| plain_project_id(root)) {
-        Some(id) if encrypted(root)
-            && api.calcifer.unsettled_on(&id, "local").map_err(|_| error("run_cancel", "the project's work could not be read"))?
-            && !tokio::runtime::Handle::current().block_on(api.machines.answers("local")) =>
-        {
-            api.calcifer.cancel_unanswered_for_lock(&id, "local").map_err(|_| error("run_cancel", "the project's work could not be cancelled"))?;
-            true
-        }
-        _ => false,
-    };
+    let unanswered = settle_unanswered(api, root)?;
     // Existing accepted work may drain while the key is retained, but no new viewing stream can read it.
     forget(api, root, transition)?;
     let sealed = match unanswered {
@@ -1124,6 +1128,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         return Err(Error::new(Kind::NotFound, "project_gone", "Its folder is gone, so its encrypted view ended: nothing of it stays unlocked."));
     }
     let (mut ended, mut cut, mut deferred) = (vec![], vec![], vec![]);
+    let mut unanswered = false;
     if ask.action == "lock" {
         // A lock that found the project busy already revoked its view: this one finishes it, and admits no receipt into
         // a view that can no longer be opened.
@@ -1142,10 +1147,12 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
         // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
         ended = end_work(&api, &root)?;
+        // Its runs on a local that doesn't answer settle here now (cl-1064), so the lock goes on rather than wait for them.
+        unanswered = settle_unanswered(api, root)?;
         // What the project's runs still owe lands before the machine's side closes, judged by progress (cl-1060).
         (cut, deferred) = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
         // A request still holds the project: its view is revoked, and the sweeper locks once it ends.
-        if let Some(busy) = busy {
+        if let Some(busy) = busy.filter(|_| !unanswered) {
             if ended.is_empty() { return Err(busy); }
             progress.readable = readable_token(root);
             return Ok(VaultChanged { vault: status(&root), recovery_secret: None, ended, skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None });
@@ -1157,7 +1164,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     // A decrypt reads the view it converts after its own close revoked it (a retried close revokes it first): the view must be
     // open when it's asked.
     if ask.action == "decrypt" && held(root).is_some() { view(root)?; }
-    let settling = !ended.is_empty();
+    let settling = !ended.is_empty() && !unanswered;
     // A storage change closes the machine's side as a lock does: what the project's runs still owe lands first (cl-1060).
     if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate") {
         let (more_cut, more_deferred) = drain_saves(api, root, || progress.phase("saving its outputs first"))?;
@@ -1180,7 +1187,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let mut changed = loop {
         match change(&api, &root, ask, progress, &transition) {
             // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-            Err(busy) if !ended.is_empty() && busy.code == "project_busy" => break VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None },
+            Err(busy) if settling && busy.code == "project_busy" => break VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![], unsaved: vec![], deferred: vec![], owed: None },
             // Its view is revoked, so nothing new opens it: what still holds it (a request, a journal read, a measurement) is
             // finishing. A lock or a decrypt waits for that a moment rather than refuse; its pages sent what they typed already.
             Err(busy) if drains && busy.code == "project_busy" && std::time::Instant::now() < draining => {

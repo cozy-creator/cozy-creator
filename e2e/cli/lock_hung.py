@@ -223,8 +223,10 @@ def main() -> None:
         done = subprocess.run([str(cell.cli), "--json", "vault", "lock"], cwd=cell.project, capture_output=True, timeout=BOUND * 3)
         (cell.out / "lock-stopped.json").write_bytes(done.stdout)
         (cell.out / "lock-stopped.stderr").write_bytes(done.stderr)
+        while done.returncode == 0 and time.monotonic() - began < BOUND and cell.state() != "locked":
+            time.sleep(1)
         facts["lock_s"] = round(time.monotonic() - began, 1)
-        if done.returncode != 0:
+        if done.returncode != 0 or cell.state() != "locked":
             # The release notes' workaround, as a person does it: the hung machine ended, then the lock asked again.
             facts["lock_failed"] = (done.stdout[-400:] + done.stderr[-400:]).decode(errors="replace")
             os.kill(pid, signal.SIGKILL)
@@ -235,7 +237,6 @@ def main() -> None:
         lines = [line for line in done.stdout.splitlines() if line.strip()]
         locked = cast(dict[str, object], json.loads(lines[-1])) if lines else {}
         facts["lock_said"] = locked.get("owed")
-        assert cell.state() == "locked", "the vault isn't locked after its lock answered"
         facts["lock"] = hung(cell, "lock", scanner, view, locked)
 
         # 2. Unlocked again before local answers: the old view's run is canceled here, and stays so once local goes on.
