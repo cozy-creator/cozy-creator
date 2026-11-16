@@ -46,13 +46,19 @@ test('move', { tag: '@engines' }, async ({ page, project }) => {
     await page.keyboard.up('Shift');
     await expect.poll(() => selectedNames(page)).toContain('A');
     await expect.poll(() => selectedNames(page)).toContain('B');
-    const shown = await drawn(page);
+    // Both drawn before they're compared: one under the pointer is its hover card for a moment, then drawn again.
+    const both = async () => {
+      let seen;
+      await expect.poll(async () => { seen = await drawn(page); return ['A', 'B'].every((name) => seen[name]); }, { message: 'A and B drawn' }).toBe(true);
+      return seen;
+    };
+    const shown = await both();
     const from = await head('A');
     const by = { x: 60, y: 40 };
     await drag(page, from, { x: from.x + by.x, y: from.y + by.y });
     await canvasIdle(page);
     await expect.poll(async () => offBy(await rows(project), afterOne, by, ['A', 'B']), { message: 'A and B moved by one move' }).toEqual([]);
-    expect.soft(offBy(await drawn(page), shown, by, ['A', 'B']), 'both drawn where they were let go').toEqual([]);
+    expect.soft(offBy(await both(), shown, by, ['A', 'B']), 'both drawn where they were let go').toEqual([]);
     expect.soft(offBy(await rows(project), afterOne, { x: 0, y: 0 }, ['C']), 'C stayed').toEqual([]);
   });
 
