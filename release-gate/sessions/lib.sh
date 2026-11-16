@@ -189,28 +189,29 @@ billed() {
     '.rentals[] | select(.rental_id == $r) | "\(.spend_usd_micros // 0) micro-USD \(.spend_basis // "?"), the provider \(.provider_cost_usd_micros // "?") \(.provider_cost_basis // ""), \(.ran_s // "?") s"'
 }
 
-# quote <seconds> [SKU…]: the quote and the guard for one rental of each SKU named ($SKU by default): the Hub's one price
-# an hour, the machine with its disk and traffic, which its order carries as its cap; fails unless CAP buys the seconds.
-# Ends the $0 pre-flight unless RENT=true.
+# quote <seconds> [SKU[:GPUS]…]: the quote and the guard for one rental of each SKU named ($SKU by default; GPUS of it, else one):
+# the Hub's one price an hour, the machine with its disk and traffic, which its order carries as its cap; fails unless CAP buys the
+# seconds. Ends the $0 pre-flight unless RENT=true.
 quote() {
   local need=$1; shift
-  local skus=("${@:-$SKU}") s price hourly=0 said=''
+  local skus=("${@:-$SKU}") s price hourly=0 said='' f gpus
   say "cozy $(cozy --version); $(cozy whoami 2>&1 | grep -E '^account')"
   ! listed pr-pod-session-probe || fail "gone-check: a rental that never existed reads live (no machine listing answers?)"
   for s in "${skus[@]}"; do
     # A SKU no provider has is often offered again within minutes: asked again, six times over about 6 min, as `order` does.
     local try=1 pause=15
-    while cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$OUT/quote-$s.json" 2>&1 || true
-      grep -q sku_out_of_stock "$OUT/quote-$s.json" && [ "$try" -lt 6 ]; do
+    f=$OUT/quote-${s/:/x}.json gpus=(); [[ $s != *:* ]] || gpus=(--gpus "${s#*:}")
+    while cozy machine rent "${s%%:*}" "${gpus[@]}" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$f" 2>&1 || true
+      grep -q sku_out_of_stock "$f" && [ "$try" -lt 6 ]; do
       say "no provider has $s now (attempt $try/6): asking again in ${pause}s"
       sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
     done
-    grep -q quote_unagreed "$OUT/quote-$s.json" || fail "a quote without --yes did not refuse: $(tail -c 300 "$OUT/quote-$s.json")"
-    price=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote-$s.json" 2>/dev/null | head -1)
-    [ -n "$price" ] || fail "no quote for $s: $(tail -c 300 "$OUT/quote-$s.json")"
+    grep -q quote_unagreed "$f" || fail "a quote without --yes did not refuse: $(tail -c 300 "$f")"
+    price=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$f" 2>/dev/null | head -1)
+    [ -n "$price" ] || fail "no quote for $s: $(tail -c 300 "$f")"
     hourly=$((hourly + price)); said="$said $s $price"
   done
-  cp "$OUT/quote-${skus[0]}.json" "$OUT/quote.json"
+  cp "$OUT/quote-${skus[0]/:/x}.json" "$OUT/quote.json"
   CAP_S=$(awk -v c="$CAP" -v h="$hourly" 'BEGIN{printf "%d", c*1e6 / h * 3600}')
   [ "$CAP_S" -ge "$need" ] || fail "\$$CAP leaves only ${CAP_S}s for$said micro-USD/h"
   say "quote$said micro-USD/h, $DISK GB each: \$$CAP buys about ${CAP_S}s; the guard ends them by what the Hub bills"
