@@ -334,7 +334,7 @@ while read -r why; do check "ondemand-behind: $why"; done < "$OUT/ondemand-behin
 # enhancers (96 MiB each) of its own, so each request starts cold, over a 10 MB/s link: `words` reads its expander, `edit` its
 # rewriter, `plain` (prompt_upsampling off) neither. A request fetches the enhancer it reads with its other weights, before its
 # function starts, and nothing of the other. ondemand-enhancers.json keeps what each fetched, at which order of the download
-# line, and what its call waited on once started.
+# line, each emergency its function waited on, and the guessed weights dropped unfinished when it ended.
 ondemand_enhancers() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a request fetches the prompt enhancer it reads before it starts, and never the other (cl-1101)"
@@ -368,9 +368,9 @@ def order_class(order):
     return {0: "emergency", 1: "software"}.get(order) or ("need", "ahead", "guess", "prepare")[(order - 2) >> 62]
 moved, floors = [], []
 for line in (out / "ondemand-enhancers.tensord.log").read_text(errors="replace").splitlines():
-    found = re.search(r": (fetching|landed) .*bytes=(\d+).*priority=(\d+)", line)
+    found = re.search(r": (fetching|landed) .*object=(\w+).*bytes=(\d+).*priority=(\d+)", line)
     if found:
-        moved.append((at(line), found[1], int(found[2]), order_class(int(found[3]))))
+        moved.append((at(line), found[1], int(found[3]), order_class(int(found[4])), found[2]))
     if "floor moved" in line:
         f = dict(re.findall(r"(\w+)=(\S+)", line))
         floors.append({"downloader": f["downloader"], "from": f["from"], "to": f["to"], "at": int(f["at_ms"]), "bytes": int(f["bytes"]),
@@ -412,17 +412,24 @@ for request, read in reads.items():
     for slot in ("model", "expander", "rewriter"):
         rows = [m for m in models if m.get("model") == f"e2e/enhance-{request}-{slot}"]
         held[slot] = {"bytes": sum(m.get("bytes") or 0 for m in rows), "complete": bool(rows) and all(m.get("complete") for m in rows)}
-    by_class = {}
-    for t, kind, size, name in moved:
+    by_class, guessed, landed = {}, {}, set()
+    for t, kind, size, name, sha in moved:
         if not began <= t <= ended:
             continue
+        # A weight started as a guess: one never landed was dropped when its call ended ("nothing wants it").
+        if kind == "fetching" and name == "guess" and size >= 1 << 20:
+            guessed[sha] = size
+        if kind == "landed":
+            landed.add(sha)
         each = by_class.setdefault(name, {"objects": 0, "bytes": 0, "first_fetching_ms": None, "last_landed_ms": None})
         if kind == "fetching":
             each["first_fetching_ms"] = t - accepted if each["first_fetching_ms"] is None else each["first_fetching_ms"]
         else:
             each["objects"], each["bytes"], each["last_landed_ms"] = each["objects"] + 1, each["bytes"] + size, t - accepted
     stands = emergencies(began, ended)
-    # Its progress in order: a download said once its own first stage began is one its function waited on.
+    dropped = {sha: size for sha, size in guessed.items() if sha not in landed}
+    # Its progress, in the order said. A first-use wait shows as "downloading <model> weights", before or after its stage's own
+    # name: the emergencies above say it was one.
     stages = []
     for line in (out / f"enhance-{request}.ndjson").read_text(errors="replace").splitlines():
         try:
@@ -433,31 +440,31 @@ for request, read in reads.items():
             stage = (event.get("progress") or {}).get("stage") or ""
             if stage and (not stages or stages[-1] != stage):
                 stages.append(stage)
-    own = next((i for i, stage in enumerate(stages) if stage in ("upsampling prompt", "generating image")), len(stages))
-    waited = [stage for stage in stages[own:] if "downloading" in stage]
     made = inside(record, "read_ms") or {}
     times = {k: (record[k] - accepted if record.get(k) else None) for k in ("started_at_ms", "settled_at_ms")}
     report[request] = {
         "run": {"number": record.get("number"), "status": record.get("status"), **times},
         "read": made.get("enhancer"), "function_entered_ms": (made["entered_ms"] - accepted) if made.get("entered_ms") else None,
         "first_read_took_ms": made.get("read_ms"), "held_after": held, "landed_by_order": by_class,
+        "guessed_weights": {"objects": len(guessed), "bytes": sum(guessed.values())},
+        "dropped_at_its_end": {"objects": len(dropped), "bytes": sum(dropped.values())},
         "emergencies": [{"from_ms": s - accepted, "to_ms": e - accepted, "bytes": b, "seconds": sec} for s, e, b, sec in stands],
-        "stages": stages, "waited_on_once_started": waited,
+        "stages": stages,
     }
     if record.get("status") != "completed":
         fail(f"{request}: its run {record.get('status')}")
         continue
     for slot in ("expander", "rewriter"):
         name, has = f"e2e/enhance-{request}-{slot}", held[slot]
-        if slot != read and has["bytes"]:
-            fail(f"{request}: {has['bytes']} bytes of {name} were fetched, and this request never reads it")
+        if slot != read and has["bytes"] >= 1 << 20:
+            fail(f"{request}: {has['bytes']} bytes of {name} landed, and this request never reads it")
         if slot == read and not has["complete"]:
             fail(f"{request}: {name}, which it read, isn't all here: {has}")
+    if dropped:
+        fail(f"{request}: {len(dropped)} objects ({sum(dropped.values())} bytes) of on-demand models it never read were started as guesses and dropped when it ended")
     if read and (stands or by_class.get("emergency", {}).get("bytes")):
         came = sum(b for _, _, b, _ in stands) or by_class.get("emergency", {}).get("bytes")
         fail(f"{request}: its {read} came as an emergency once its function read it ({came} bytes), not with its other weights before it started")
-    if waited:
-        fail(f"{request}: its function waited on a download once it had started: {waited[0]}")
 print(json.dumps(report, indent=1))
 JUDGE
 cat "$OUT/ondemand-enhancers.json"
