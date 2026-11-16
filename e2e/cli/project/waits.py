@@ -36,6 +36,26 @@ def wait(payload: Waiting, adj: Adjustments) -> ImageResult:
     return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
 
 
+class Held(msgspec.Struct, kw_only=True):
+    instructions: Prompt[Image] = Prompt()
+    megapixels: Annotated[float, Range(0.25, 4, step=0.25, unit="MP")] | None = None
+    seconds: Annotated[float, Range(0, 600, unit="s")] = 0
+    home: int = -1
+    seed: Seed | None = None
+
+
+@app.tool(label="Hold elsewhere, then draw", named="held")
+def held(payload: Held, adj: Adjustments) -> ImageResult:
+    """`wait`, holding only on a machine another user runs (a stand-in), not on the one user `home` runs (cl-1085): a run a stand-in's end
+    cuts short, retried on this computer, lands at once."""
+    if os.getuid() != payload.home:
+        time.sleep(payload.seconds)
+    asked = ImageRequest(payload.instructions.text, None, payload.megapixels, payload.seed)
+    width, height = asked.size(adj, None, SIZES, megapixels=0.25)
+    image = ImageFile.from_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
+    return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
+
+
 class Kept(msgspec.Struct, kw_only=True):
     video: VideoFile
 

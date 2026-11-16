@@ -128,6 +128,10 @@ pub struct Warning {
 /// A run's `Warning` code for a mention its function can't use, left out (cl-944): a note, nothing to act on.
 pub const MENTION_UNUSED: &str = "mention_unused";
 
+/// A run's `Reason` code when its machine ended under it (shut down, released, or lost), and a box's failure for it (cl-1085): `cozy run
+/// retry` and the page's Retry ask it again where it finishes soonest now.
+pub const MACHINE_LOST: &str = "machine_lost";
+
 /// A run's `Warning` code for a first-party package run from a dev home's packages checkout (xs-195): its branch and commit, a
 /// note.
 pub const FROM_SOURCE: &str = "from_source";

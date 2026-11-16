@@ -86,7 +86,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         None => project.here_only(ctx, &state, &args).await?,
     };
     // The page's stream, showing this project, from before the board is read: no change falls between.
-    let mut watch = project.watch().await?;
+    let watch = project.watch().await?;
     let head: State = project.calcifer.get(&format!("{}?assets=false", project.at(&[]))).await?;
     let board = head.board.unwrap_or_default();
     let mut follow = Follow::new(ctx, &args.names, &board);
@@ -119,9 +119,14 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         return Ok(follow.nothing(&said));
     }
     follow.begin(&state, &said);
+    landed(follow, &project, watch, ask.as_deref()).await
+}
+
+/// Until what `follow` follows has landed, as the project's stream says: then its answer.
+async fn landed(mut follow: Follow<'_>, project: &Project, mut watch: Watch<StreamEvent>, ask: Option<&str>) -> Result<ExitCode, Error> {
     loop {
-        follow.land(&project).await?;
-        if follow.done(ask.as_deref()) {
+        follow.land(project).await?;
+        if follow.done(ask) {
             break;
         }
         match watch.change().await {
@@ -140,6 +145,45 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         }
     }
     follow.end()
+}
+
+/// A project's stream and board, opened before an ask whose takes are then followed with nothing missed: `cozy run retry` of a box's
+/// take (cl-1085).
+pub(crate) struct Watching<'a> {
+    ctx: &'a Context,
+    project: Project,
+    watch: Watch<StreamEvent>,
+    state: State,
+    board: Board,
+}
+
+impl<'a> Watching<'a> {
+    pub(crate) async fn begin(ctx: &'a Context, id: &str) -> Result<Self, Error> {
+        let calcifer = ctx.calcifer().await?;
+        let state: State = calcifer.get(&path(&["v1", "projects", id])).await?;
+        let project = Project { id: state.id.clone(), dir: state.path.clone(), calcifer };
+        let watch = project.watch().await?;
+        let head: State = project.calcifer.get(&format!("{}?assets=false", project.at(&[]))).await?;
+        Ok(Self { ctx, project, watch, state, board: head.board.unwrap_or_default() })
+    }
+
+    /// What `asked` added, followed by its boxes as `cozy render` follows them, until their takes land.
+    pub(crate) async fn follow(self, asked: Asked) -> Result<ExitCode, Error> {
+        let mut names: Vec<String> = vec![];
+        for job in asked.board.jobs.iter().filter(|job| !self.board.jobs.iter().any(|before| before.id == job.id)) {
+            if !names.contains(&job.asset) {
+                names.push(job.asset.clone());
+            }
+        }
+        let mut follow = Follow::new(self.ctx, &names, &self.board);
+        follow.adopt();
+        follow.board(asked.board.clone());
+        if follow.mine.is_empty() {
+            return Ok(follow.nothing(&asked.said));
+        }
+        follow.begin(&self.state, &asked.said);
+        landed(follow, &self.project, self.watch, asked.ask.as_deref()).await
+    }
 }
 
 /// The current project, as its routes name it.

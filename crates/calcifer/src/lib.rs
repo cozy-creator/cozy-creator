@@ -2050,9 +2050,8 @@ impl Calcifer {
                         let left = match (run.pinned, run.wants.as_str()) {
                             (false, "any") => self.with_run_store(id.as_str(), |store| store.unplace(id.as_str())),
                             _ => self.with_run_store(id.as_str(), |store| store.fail(id.as_str(), Reason {
-                                code: "machine_released".into(),
-                                message: format!("{name} shut itself down before it started this run: {message}. Run it on another machine, or rent a new one."),
-                                next: vec![format!("cozy run {} … --on new", run.target)],
+                                code: ::api::calcifer::MACHINE_LOST.into(),
+                                message: format!("{name} shut itself down before it started {}: {message}", self.run_name(&run)),
                                 ..Default::default()
                             })),
                         };

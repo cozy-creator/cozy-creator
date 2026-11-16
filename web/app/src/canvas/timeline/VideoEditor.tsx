@@ -505,7 +505,7 @@ export function VideoEditor({ name }: { name: string }) {
       setSelected(null)
       armed.current = null
       commit(before.filter((_, n) => n !== index))
-      say(`Removed ${gone.name ?? named(gone)} from the edit`, undefined, { action: { label: "Undo", run: () => commit(before) }, ms: 8_000 })
+      say(`Removed ${gone.name ?? named(gone)} from the edit`, undefined, { action: { label: "Undo", run: () => commit(before) } })
     },
     [commit],
   )

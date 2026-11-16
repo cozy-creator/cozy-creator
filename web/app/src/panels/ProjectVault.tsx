@@ -4,6 +4,7 @@ import QRCode from "react-qr-code"
 import { ApiError, type Client, type VaultAsk, type VaultProgress } from "../api/client"
 import { useConnection } from "../app/Connection"
 import { useProjectId } from "../app/Shell"
+import { CopyButton } from "../ui/Copyable"
 import { useSignal } from "../ui/signal"
 import { DrawerFrame } from "./Drawer"
 import { Failure, useAsk } from "./common"
@@ -50,7 +51,6 @@ function pendingLine(pending: Pending | null): string {
 
 export function Recovery({ secret, onDone, disabled = false }: { secret: string; onDone: () => void; disabled?: boolean }) {
   const [saved, setSaved] = useState(false)
-  const [copied, setCopied] = useState(false)
   const download = () => {
     const url = URL.createObjectURL(new Blob([`${secret}\n`], { type: "text/plain;charset=utf-8" }))
     const link = document.createElement("a")
@@ -82,7 +82,7 @@ export function Recovery({ secret, onDone, disabled = false }: { secret: string;
       <pre className="yaml" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{secret}</pre>
       <QRCode value={secret} size={180} title="Scan to save the recovery secret on your phone or another device" />
       <div className="row">
-        <button className="tb" type="button" onClick={() => void navigator.clipboard.writeText(secret).then(() => setCopied(true))}>{copied ? "Copied" : "Copy"}</button>
+        <CopyButton text={secret} title="Copy the recovery secret" />
         <button className="tb" type="button" onClick={download}>Download</button>
         <button className="tb" type="button" onClick={print}>Print</button>
       </div>

@@ -3,7 +3,7 @@ import { lost } from "../api/outbox"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Asset, Imported, Card, Tool, Opened } from "../api/calcifer"
-import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage, UNDO_MS } from "./CanvasStore"
+import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
 import type { BasicNodeKind } from "./palette"
 import { type CopiedBox, copyOf } from "./copy"
@@ -198,7 +198,7 @@ export class Placer {
   }
 
   private pasted(names: string[], edit: string, verb = "Pasted") {
-    say(`${verb} ${names.length === 1 ? names[0] : `${names.length} boxes`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) }, ms: UNDO_MS })
+    say(`${verb} ${names.length === 1 ? names[0] : `${names.length} boxes`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) } })
   }
 
   /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. Each takes its step and its turn

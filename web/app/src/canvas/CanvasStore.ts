@@ -13,6 +13,7 @@ import type {
   AssetPatched,
   Asset,
   BoxEstimate,
+  ErrorBody,
   HistoryStepped,
   MainFile,
   Pickup,
@@ -218,7 +219,8 @@ const NOT_YET = Number.POSITIVE_INFINITY
 
 /** What goes with one render: a pickup, and its take's id, made at the click (cl-945). */
 type Also = { pickup?: Pickup; take?: string }
-export const UNDO_MS = 10_000
+/** A box's failure when its machine shut down under its run (Calcifer's `MACHINE_LOST`, cl-1085): its note offers Retry. */
+const MACHINE_LOST = "machine_lost"
 const TYPING_PAUSE_MS = 300
 /** Whether a write can go on past the page (`keepalive`): a browser keeps at most 64 KiB of them on their way. */
 const lasts = (body: AssetPatch) => JSON.stringify(body).length < 48_000
@@ -939,7 +941,7 @@ export class CanvasStore {
     for (const failure of state.unsent ?? []) {
       if (this.unsentSaid.has(failure.message)) continue
       this.unsentSaid.add(failure.message)
-      say(failure.message, new ApiError(0, failure), { stays: true })
+      say(failure.message, new ApiError(0, failure))
     }
     // Queued: its turn not come, as the walk's queue says, or a take of it not sent yet, as its row lists it (cl-945).
     const queued = new Set([...(state.queue ?? []).filter((item) => !item.running).map((item) => item.name), ...state.assets.filter((asset) => asset.takes?.some((take) => take.queued)).map((asset) => asset.name)])
@@ -961,9 +963,9 @@ export class CanvasStore {
         // What a take's run warned of, once it made the take, is the box's to show (its Warnings), never a note: a handled fallback
         // is no error (Paul, 11-12: a burst of "CUDA graph" notes over a picture that came out fine).
         // A render that fails says so as it fails, wherever the person is looking, the same failure again too once this page asked for it,
-        // in one note that stays until it's dismissed. One that failed before this page opened is the box's to show.
+        // in a note that goes by itself (Paul, 11-16). One that failed before this page opened is the box's to show.
         const answered = view.asked !== undefined && view.asked < this.began
-        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }), { stays: true })
+        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) this.failed(asset.name, asset.failure)
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.canceling && !asset.making?.length && !asset.takes?.length && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
@@ -1580,6 +1582,26 @@ export class CanvasStore {
     })
   }
 
+  /** `name`'s render failed, said. One its machine's shutdown stopped offers Retry (Paul, 11-16, cl-1085): "you push the retry button and
+   *  we'll try to place that run on a different machine". */
+  private failed(name: string, failure: ErrorBody) {
+    if (failure.code !== MACHINE_LOST) return void say(`${name} didn't render`, new ApiError(0, { ...failure, message: failure.message.replace(`${name}: `, "") }))
+    say(failure.message, new ApiError(0, failure), { action: { label: "Retry", run: () => this.retry(name) } })
+  }
+
+  /** Its render again, as Render asks one: placed where it finishes soonest on the machines up now, which the one that shut down isn't.
+   *  With none up it waits for one, and says so, with Rent. */
+  retry(name: string) {
+    const key = this.resolveName(name)
+    if (!this.views.get(key)?.asset) return
+    if (!this.machines().length) {
+      this.patch(key, { waiting: {}, asking: undefined })
+      say(`No machine is up to render ${name} on: rent one, and it renders there`, undefined, { action: { label: "Rent", run: () => this.rent() } })
+      return
+    }
+    this.run(key)
+  }
+
   /** An Edit's film joined here, free, from its cut as it stands now, as `cozy render` would: its next version, unless that cut has one. What's
    *  looked at stays as it is (cl-957). */
   join(name: string) {
@@ -2081,9 +2103,9 @@ export class CanvasStore {
       this.openHere(name)
       this.pickTake(name, this.get(name)?.asset?.prefixes?.find((held) => id && held.id === id)?.number ?? number)
     } }
-    if (landed.length > 1) return void say(`${landed.length} renders are ready: ${[...new Set(landed.map((one) => one.name))].join(", ")}`, undefined, { action: view, ms: 10_000 })
+    if (landed.length > 1) return void say(`${landed.length} renders are ready: ${[...new Set(landed.map((one) => one.name))].join(", ")}`, undefined, { action: view })
     const noun = this.get(name)?.asset?.noun ?? "take"
-    say(`${noun.charAt(0).toUpperCase()}${noun.slice(1)} ${number} of ${name} is ready`, undefined, { action: view, ms: 10_000, picture: sha256 && this.projectId ? this.client.thumb(this.projectId, sha256) : undefined })
+    say(`${noun.charAt(0).toUpperCase()}${noun.slice(1)} ${number} of ${name} is ready`, undefined, { action: view, picture: sha256 && this.projectId ? this.client.thumb(this.projectId, sha256) : undefined })
   }
 
   /** Stops one of its takes, by its id (cl-945), gone from the box at once, and its others go on: one sent, its run; one queued, that take. */
@@ -2110,7 +2132,7 @@ export class CanvasStore {
     this.patch(name, { asked: undefined, taking: undefined, canceling: busy || undefined, ...(this.get(name)?.asset?.kind === "image" ? { watch: undefined } : {}) })
     this.act(name, {
       send: (served, write) => this.client.cancelRender(this.projectId!, [served], write.once),
-      done: () => say(`Canceled ${name}'s render`, undefined, { action: { label: "Undo", run: () => this.run(name) }, ms: 8_000 }),
+      done: () => say(`Canceled ${name}'s render`, undefined, { action: { label: "Undo", run: () => this.run(name) } }),
       refused: (error) => {
         this.patch(name, { canceling: undefined })
         say(`Couldn't cancel ${name}`, error)
@@ -2773,7 +2795,7 @@ export class CanvasStore {
   /** A note saying what `edit` did, its Undo the history's: one that's undone goes. */
   private offer(edit: string, message: string): number {
     if (!this.history.kept.get()) return say(message)
-    const note = say(message, undefined, { action: { label: "Undo", run: () => this.undo({ edit }) }, ms: UNDO_MS })
+    const note = say(message, undefined, { action: { label: "Undo", run: () => this.undo({ edit }) } })
     this.offers.set(edit, note)
     return note
   }
@@ -2825,7 +2847,7 @@ export class CanvasStore {
         shown.forEach((one) => one.settle())
         if (answer.lost?.length) {
           dismiss(note)
-          this.stepped = say(`${back ? "Undone" : "Redone"}: ${taken.length} ${taken.length === 1 ? "edit" : "edits"}. ${lostSaid(answer.lost)}`, undefined, { ms: UNDO_MS })
+          this.stepped = say(`${back ? "Undone" : "Redone"}: ${taken.length} ${taken.length === 1 ? "edit" : "edits"}. ${lostSaid(answer.lost)}`)
         }
         if (answer.stopped) say(`Couldn't ${verb} them all`, new ApiError(409, answer.stopped))
         this.history.read()
@@ -2850,7 +2872,7 @@ export class CanvasStore {
     const verb = back ? "undo" : "redo"
     for (const edit of this.history.editsOf(target)) dismiss(this.offers.get(edit) ?? 0)
     dismiss(this.stepped)
-    const note = say(`${back ? "Undone" : "Redone"}: ${words}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) }, ms: UNDO_MS })
+    const note = say(`${back ? "Undone" : "Redone"}: ${words}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) } })
     this.stepped = note
     this.outbox.add<HistoryStepped>({
       send: (once, action) => this.client[verb](id, target, { once, action }),
@@ -2859,7 +2881,7 @@ export class CanvasStore {
         // A box whose undo window ended comes back without its files: said, with the same Redo or Undo (cl-919).
         if (answer.lost?.length) {
           dismiss(note)
-          this.stepped = say(`${back ? "Undone" : "Redone"}: ${words}. ${lostSaid(answer.lost)}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) }, ms: UNDO_MS })
+          this.stepped = say(`${back ? "Undone" : "Redone"}: ${words}. ${lostSaid(answer.lost)}`, undefined, { action: { label: back ? "Redo" : "Undo", run: () => (back ? this.redo(target) : this.undo(target)) } })
         }
         this.history.read()
       },

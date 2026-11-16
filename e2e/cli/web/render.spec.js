@@ -128,11 +128,11 @@ async function carry(page, from, to) {
   await page.mouse.up();
 }
 
-/** Every note the page puts up, as it comes, in each page this context loads. */
+/** Every note the page puts up, each once as it comes, in each page this context loads: a note goes by itself (Paul, 11-16). */
 function keepNotes() {
-  const said = (window.__notes = []);
+  const said = (window.__notes = []), ids = new Set();
   new MutationObserver(() => {
-    for (const note of document.querySelectorAll('[data-note]')) if (!said.includes(note.innerText)) said.push(note.innerText);
+    for (const note of document.querySelectorAll('[data-note]')) if (!ids.has(note.dataset.note)) { ids.add(note.dataset.note); said.push(note.innerText); }
   }).observe(document, { subtree: true, childList: true, characterData: true });
 }
 
@@ -418,7 +418,7 @@ test('render', async ({ page, project, api, cli }) => {
     };
     await gone('failed');
     await notesOver(page, 2000);
-    await expect.soft(toast, 'said once').toHaveCount(1);
+    expect.soft((await page.evaluate(() => window.__notes)).filter((text) => text.includes("broken didn't render")), 'said once').toHaveLength(1);
     await pull();
     await page.reload();
     region = focused(page);
