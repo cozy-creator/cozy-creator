@@ -11,7 +11,7 @@ export const target = (run: Run) => (run.kind === "call" ? shown(run.target) : `
 
 /** `Canceling` once a cancel is asked; a waiting run's place in its line. */
 export function statusWord(run: Run): string {
-  if (run.queue_position !== undefined) return `Queued, ${ordinal(run.queue_position)} in line`
+  if (run.queue_position != null) return `Queued, ${ordinal(run.queue_position)} in line`
   if (run.cancel_requested && !settled(run)) return "Canceling"
   const word = run.status === "in_progress" ? "running" : run.status
   return word.charAt(0).toUpperCase() + word.slice(1)
