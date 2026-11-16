@@ -313,9 +313,10 @@ struct Share {
     cap: AtomicUsize,
     /// What one weight request moves at full speed, bytes/s (f64 bits): the cap's unit.
     connection: AtomicU64,
-    /// What the downloaders moved unpaced, bytes/s (f64 bits): th-364's sample (`Stats`), where a share starts from.
-    unpaced: AtomicU64,
-    /// A downloader's ramp has settled unpaced: the link's speed is a measured number, and only then is a share taken of it.
+    /// What a downloader moved in its last unpaced window with its ramp settled, bytes/s (f64 bits): where a share starts from.
+    settled: AtomicU64,
+    /// A downloader's ramp has settled unpaced since the downloaders were last idle: the link's speed is a measured number,
+    /// and only then is a share taken of it.
     measured: AtomicBool,
     /// The install under way, as it says what it received.
     install: Mutex<Install>,
@@ -472,6 +473,7 @@ impl Share {
         // little as that long ago does (another network, another cell's shaped link).
         if since > 2 * WINDOW {
             judged.capacity *= 0.5f64.powf(since.as_secs_f64() / FORGET.as_secs_f64());
+            self.measured.store(false, Ordering::Release);
             return;
         }
         let seconds = since.as_secs_f64();
@@ -496,12 +498,7 @@ impl Share {
             true => link.max(judged.capacity * 0.5f64.powf(seconds / FORGET.as_secs_f64())),
             false => link.max(judged.capacity),
         };
-        // A share starts from the higher of that and what the downloaders moved unpaced.
-        if allowance == 0.0 && self.installs.load(Ordering::Acquire) > 0 {
-            judged.capacity = judged.capacity.max(f64::from_bits(self.unpaced.load(Ordering::Acquire)));
-        }
-        let capacity = judged.capacity;
-        if self.installs.load(Ordering::Acquire) == 0 || capacity <= 0.0 {
+        if self.installs.load(Ordering::Acquire) == 0 || judged.capacity <= 0.0 {
             judged.downloading = false;
             drop(judged);
             return self.whole("no install under way");
@@ -512,6 +509,11 @@ impl Share {
             judged.downloading = false;
             return;
         }
+        // A share starts from the higher of that and the speed a ramp last settled at, unpaced: an old high idles away.
+        if allowance == 0.0 && (readable != Some(true) || install > judged.capacity / 1024.0) {
+            judged.capacity = judged.capacity.max(f64::from_bits(self.settled.load(Ordering::Acquire)));
+        }
+        let capacity = judged.capacity;
         // Its sockets can't be read here: half the link while it runs, so neither starves the other.
         if readable != Some(true) {
             let blind = !self.paced();
@@ -1221,9 +1223,8 @@ impl Shared {
         let rate = (received - pace.seen) as f64 / WINDOW.as_secs_f64();
         // What the link moves (th-364's report): a window the weights were paced in measures the share, not the link.
         if received > pace.seen && !SHARE.paced() {
-            let ms = self.stats.receiving_ms.fetch_add(WINDOW.as_millis() as u64, Ordering::Relaxed) + WINDOW.as_millis() as u64;
-            let unpaced = self.stats.unpaced.fetch_add(received - pace.seen, Ordering::Relaxed) + (received - pace.seen);
-            SHARE.unpaced.store((unpaced as f64 * 1e3 / ms as f64).to_bits(), Ordering::Release);
+            self.stats.receiving_ms.fetch_add(WINDOW.as_millis() as u64, Ordering::Relaxed);
+            self.stats.unpaced.fetch_add(received - pace.seen, Ordering::Relaxed);
         }
         pace.seen = received;
         if self.busy.load(Ordering::Acquire) == 0 {
@@ -1247,6 +1248,7 @@ impl Shared {
         // Settled (two windows after a doubling that grew the rate less than `GAIN`) or at every place it may have, unpaced:
         // what the link carries is measured, and a share may be taken of it.
         if measured && (pace.settled || pace.level >= pace.max) && !SHARE.paced() {
+            SHARE.settled.store(rate.to_bits(), Ordering::Release);
             SHARE.measured.store(true, Ordering::Release);
         }
         if !(waiting || tail) || pace.settled || pace.level >= pace.max || !measured {
