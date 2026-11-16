@@ -123,10 +123,10 @@ test('previews: a picture whose file is gone', async ({ page, project, guards })
     // Drawn from the thumbnail Calcifer made when it came in (thumbs outlive their file), or a placeholder while asked for and then said
     // unavailable: either way settled, never asked for in a loop.
     const drawn = async () => Boolean((await canvasCard(page, 'lost'))?.rendered?.media.ready);
-    // Calcifer says the file isn't here: the box says where it is kept and the page asks for nothing (the canvas's own rule, cl-1048).
-    const kept = async () => /^Kept on /.test((await canvasCard(page, 'lost'))?.rendered?.labels.note?.text ?? '');
+    // Calcifer says the file isn't here: the box says where it is stored and the page asks for nothing (the canvas's own rule, cl-1048).
+    const kept = async () => /^Stored on /.test((await canvasCard(page, 'lost'))?.rendered?.labels.note?.fullText ?? '');
     await expect.poll(async () => (await drawn()) || (await placeholder()), { message: 'its picture, or a placeholder while it is asked for' }).toBe(true);
-    if (await kept()) expect.soft(asks.length, 'said kept elsewhere, and never asked for').toBe(0);
+    if (await kept()) expect.soft(asks.length, 'said stored elsewhere, and never asked for').toBe(0);
     else if (!(await drawn())) {
       await expect.poll(() => asks.length, { message: 'asked for' }).toBeGreaterThan(0);
       const first = asks[0];

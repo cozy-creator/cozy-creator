@@ -117,9 +117,9 @@ test('isolation', async ({ page, project, guards }) => {
     // Settled one way or the other: drawn from the thumbnail Calcifer made when it came in (thumbs outlive their file), or said unavailable.
     await expect.configure({ soft: true }).poll(async () => {
       const shown = (await canvasCard(page, 'gone_file'))?.rendered;
-      // Drawn from its thumbnail, a placeholder, or, Calcifer saying the file isn't here, where it is kept (asked for not at all).
-      return Boolean(shown?.media?.ready || shown?.media?.failed || /^Kept on /.test(shown?.labels?.note?.text ?? ''));
-    }, { message: 'the gone file: drawn from its thumbnail, a placeholder, or said kept elsewhere', timeout: 90_000 }).toBe(true);
+      // Drawn from its thumbnail, a placeholder, or, Calcifer saying the file isn't here, where it is stored (asked for not at all).
+      return Boolean(shown?.media?.ready || shown?.media?.failed || /^Stored on /.test(shown?.labels?.note?.fullText ?? ''));
+    }, { message: 'the gone file: drawn from its thumbnail, a placeholder, or said stored elsewhere', timeout: 90_000 }).toBe(true);
     const settled = asks.length;
     await page.waitForTimeout(5_000);
     expect.soft(asks.length - settled, `the gone file not asked for again once given up (${settled} asks before)`).toBe(0);
