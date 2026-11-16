@@ -81,7 +81,8 @@ function recorders() {
   window.fetch = async function (input, init) {
     const response = await real.call(this, input, init);
     try {
-      const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+      // The page passes a URL object (transport.ts `resolve`), a string or a Request.
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
       if (url.pathname !== '/v1/events' || (init?.method ?? 'GET') !== 'GET' || !response.body) return response;
       const [ours, theirs] = response.body.tee();
       (async () => {
@@ -158,6 +159,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
 
   // The page's stream, as it read it: each change of a run or machine, kept and judged. A wait is on these, never on a clock.
   const runs = new Map(), machines = new Map(), last = new Map(), waiters = new Set(), watching = new Set();
+  let heard = 0;
   const mine = (run) => run.project_id === project.id || run.project === project.name;
   const watch = (run) => {
     // Each run's own events, by the CLI, from its first sight: its progress frames aren't in its log after.
@@ -169,6 +171,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     child.on('exit', () => closeSync(out));
   };
   await context.exposeBinding('__flowEvent', (source, at, line) => {
+    heard += 1;
     appendFileSync(join(FLOW, 'events.ndjson'), `{"at":${at},"event":${line}}\n`);
     const event = JSON.parse(line);
     const key = event.run ? `run ${event.run.id}` : event.machine ? `machine ${event.machine.name}` : null;
@@ -433,6 +436,10 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       mark('edit made');
     });
 
+    // Every wait from here is on the page's own stream: heard before anything is bought, or nothing is (red 43866620725 bought A and
+    // heard nothing: the page passes its fetch a URL object).
+    await expect.poll(() => heard, { message: "the page's event stream, as the page reads it", timeout: 60_000 }).toBeGreaterThan(0);
+    mark('stream heard', { events: heard });
     const A = await test.step(`machine A rented through the page: ${SKU}, one GPU`, async () => {
       const m = await order('A', SKU, 1);
       return RENT ? ready(m) : m;
