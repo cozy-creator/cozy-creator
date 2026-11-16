@@ -99,7 +99,11 @@ export class CardView {
   private shown?: Presentation
 
   /** Draw again from scratch on the next update (context restored, fonts loaded). */
-  refresh() { this.signature = ""; this.shown = undefined }
+  refresh() {
+    this.signature = ""; this.shown = undefined
+    // After a lost context, every texture this card shows uploads again from its kept source.
+    for (const picture of this.pictures.values()) { picture.handle?.texture?.source.update(); picture.crop?.source.update() }
+  }
 
   /** A card whose drawing threw: a plain tile, still selectable and openable. */
   fault(node: SceneNode, env: CardEnv) {
