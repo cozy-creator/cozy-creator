@@ -213,22 +213,28 @@ impl Calcifer {
         lock(&self.exports.runs).contains_key(id)
     }
 
-    /// Whether the run's exporter still moves its bytes into its project (cl-1060): it started, or bytes landed, within
-    /// `EXPORT_SILENCE`. One that stalls (its machine offline, or not starting) holds no vault open: its outputs stay owed, and
-    /// the project's next opening exports them.
-    /// The exporter of `id` begins a phase (cl-1060): activity, as a byte written is.
-    fn beat(&self, id: &RunId) {
-        if let Some(seen) = lock(&self.exports.seen).get_mut(id) { seen.1 = Instant::now(); }
+    /// Its exports' bytes in place now, over every item in flight.
+    fn bytes_in_place(&self, id: &RunId) -> u64 {
+        lock(&self.exports.moving).iter().filter(|((run, ..), _)| run == id).map(|(_, (moved, _))| moved.load(Ordering::Relaxed)).sum()
     }
 
+    /// An item of `id` landed (cl-1060): progress, as bytes past its high-water mark are; the mark starts again from what's left.
+    fn landed_progress(&self, id: &RunId) {
+        let left = self.bytes_in_place(id);
+        if let Some(seen) = lock(&self.exports.seen).get_mut(id) { *seen = (left, Instant::now()); }
+    }
+
+    /// Whether the run's exporter still moves its outputs into its project (cl-1060): bytes in place past their high-water mark, or
+    /// an item landed, within `EXPORT_SILENCE` (a new exporter has that long to start). Nothing else counts: an attempt that
+    /// starts again with nothing moved, a wake, a retry. One that stalls holds no vault open: its outputs stay owed.
     pub(super) fn export_moving(&self, id: &RunId) -> bool {
         if !self.exporting(id) { return false; }
-        let moved: u64 = lock(&self.exports.moving).iter().filter(|((run, ..), _)| run == id).map(|(_, (moved, _))| moved.load(Ordering::Relaxed)).sum();
+        let in_place = self.bytes_in_place(id);
         let now = Instant::now();
         let mut seen = lock(&self.exports.seen);
-        let last = seen.entry(id.clone()).or_insert((moved, now));
-        if last.0 != moved { *last = (moved, now); }
-        now.duration_since(last.1) < EXPORT_SILENCE
+        let mark = seen.entry(id.clone()).or_insert((in_place, now));
+        if in_place > mark.0 { *mark = (in_place, now); }
+        now.duration_since(mark.1) < EXPORT_SILENCE
     }
 
     /// Starts the run's exporter, or wakes it.
@@ -241,7 +247,8 @@ impl Calcifer {
             }
             let wake = Arc::new(Notify::new());
             runs.insert(id.clone(), wake.clone());
-            lock(&self.exports.seen).insert(id.clone(), (0, Instant::now()));
+            // A new exporter has `EXPORT_SILENCE` to move its first bytes; one started again keeps its run's mark (cl-1060).
+            lock(&self.exports.seen).entry(id.clone()).or_insert((0, Instant::now()));
             wake
         };
         let (me, run) = (self.clone(), id.clone());
@@ -424,8 +431,8 @@ impl Calcifer {
                                 again = true;
                             }
                         }
-                        // Its run never reads completed with an output that isn't saved (cl-1060).
-                        let lost = ::api::calcifer::Reason { code: "output_not_saved".into(), message: format!("output {name} wasn't saved: {reason}"), ..Default::default() };
+                        // Its run never reads completed with an output that isn't saved (cl-1060), typed by why.
+                        let lost = ::api::calcifer::Reason { code: lost_code(&reason).into(), message: format!("output {name} wasn't saved: {reason}"), ..Default::default() };
                         if let Ok(events) = self.with_run_store(id.as_str(), |store| store.outputs_not_saved(id.as_str(), &lost)) { self.publish(id, events); }
                     }
                     Err(Failure::Again(message) | Failure::Refused(message) | Failure::Wrong(message)) => {
@@ -470,7 +477,6 @@ impl Calcifer {
             Err(StoreError::Locked(code)) if code != "project_busy" => {
                 warn!("an exporter ends with its outputs owed: {code}");
                 drop(runs.remove(id));
-                lock(&self.exports.seen).remove(id);
                 lock(&self.exports.tasks).remove(id);
             }
             _ => {}
@@ -539,7 +545,6 @@ impl Calcifer {
         lock(&self.exports.moving).insert(key.clone(), (moved.clone(), item.length));
         // Its project, whose read each write batch holds (cl-1060): a lock and a write never interleave.
         let gate = self.row_owner(run).ok().flatten();
-        self.beat(&run.id);
         let work = async {
             tokio::fs::create_dir_all(&out_dir).await.map_err(|e| {
                 Failure::Again(format!("cannot create {}: {e}", out_dir.display()))
@@ -551,10 +556,8 @@ impl Calcifer {
                 let appended = lock(&self.exports.appended).get(&appended).copied();
                 fetch_file(link, &target, item, &dest, appended, &moved, &gate).await?
             };
-            self.beat(&run.id);
             let measured = self.measured(item, &staged).await;
             let _batch = batch(&gate).await.map_err(Failure::Again)?;
-            self.beat(&run.id);
             // It waits on its project's turn and the store's commit: off the async workers, which answer the page.
             tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref()))?;
             remove(&suffixed(&dest, HELD));
@@ -606,6 +609,7 @@ impl Calcifer {
             }
         };
         lock(&self.exports.moving).remove(&key);
+        if done.is_ok() { self.landed_progress(&run.id); }
         if done.is_ok()
             && let Some(machine) = &run.machine
         {
@@ -990,12 +994,25 @@ fn remove(path: &Path) {
 /// This revision's bytes in `<file>.part`, checked against its digest. A revision that extends
 /// the one the file holds reads only its new tail; an attempt cut off before resumes with what it
 /// left in place (`.part.held`), cleared by a digest that doesn't match.
-/// How long an exporter may show no activity (no byte written, no phase begun) and still hold its project's vault open past a
-/// deadline (cl-1060). Tripping it ends nothing: the vault only stops being held, the lock that follows was already due, and the
-/// save resumes whole at the next unlock. It can misjudge a writer that moves no byte for this long on a slow or busy disk; the
-/// project then locks at its deadline, the run shows its outputs still to be saved, and they're saved at the next unlock, with
-/// nothing lost and no error to act on. Progress is counted per chunk written (each a body read's bytes, never a whole file) and at
-/// each phase (fetch, measure, landing), so one large write doesn't look silent.
+/// Why an output wasn't saved, typed (cl-1060): its machine said it no longer holds it (`output_gone`); refused this read for good
+/// (`output_refused`: 400, 412, 416, 501); gave other bytes on every read (`output_unreadable`); ended (`machine_ended`); was never
+/// reached (`machine_unreached`); else `output_not_saved`.
+fn lost_code(reason: &str) -> &'static str {
+    match reason {
+        r if r.starts_with("the machine no longer holds it") => "output_gone",
+        r if r.starts_with("the machine refused it") => "output_refused",
+        r if r.starts_with("read ") => "output_unreadable",
+        r if r.starts_with("its machine ") => "machine_ended",
+        r if r.starts_with("the run never reached a machine") => "machine_unreached",
+        _ => "output_not_saved",
+    }
+}
+
+/// How long an exporter may move no byte past its high-water mark and land no item, and still count as saving (cl-1060): a lock
+/// waits that long on it before it cuts it. Progress is counted per chunk written (one body read's bytes, never a whole file) and
+/// at each landing. It can misjudge a writer that moves nothing for this long on a slow or busy disk, or one checking or measuring a
+/// very large file it fetched; a lock then cuts it: a remote machine's output stays owed and is saved at the next unlock, a local
+/// one is recorded not saved, its run failed and the lock's answer saying so.
 pub(crate) const EXPORT_SILENCE: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// An ended save's half-written files in its project (cl-1060): none is seen half-written, and the next unlock fetches the outputs

@@ -8,7 +8,8 @@ In an unlocked synthetic vault on this computer's machine, through the installed
    unlocked, finishes and lands its file, and then the vault locks. Its file is video-sized (cl-1060): saved into the project
    after its call ends, past the maximum, which the vault waits for; a lock could cut the save off at the run's end.
    Then Calcifer's own logs name neither the project's code nor its runs.
-4. An explicit lock as a run's output starts coming in goes through at once; the next unlock saves the file whole.
+4. An explicit lock as a run's 2 GB output starts coming in waits for its save, then locks; the file and a second output queued
+   behind it are whole after the next unlock, and nothing half-written is left.
 The caller owns the vault before and after: it is left unlocked with no idle limit, as it was found.
 """
 from __future__ import annotations
