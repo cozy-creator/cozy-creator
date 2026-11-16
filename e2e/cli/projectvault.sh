@@ -379,7 +379,9 @@ vault_distros() (
     as=(docker exec --user "$uid:$gid" -e HOME=/home/prover -e COZY_VAULT_PROVIDER_DIAGNOSTICS=/home/prover/provider.log -w /home/prover "$c")
     # Its home on the runner's disk, as a computer's is (run 43785258153: on the container's overlay, the read back was refused).
     mkdir -p "$work/$name-home"
-    docker run -d --name "$c" --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined -v "$work/$name-home:/home/prover" \
+    # Privileged: Docker's own sandbox (seccomp, AppArmor, capabilities) refused the mount or its read back in runs 43785258153 and
+    # 43787853550, where the runner itself passes; the probe mounts and reads in one process, as one user.
+    docker run -d --name "$c" --privileged --device /dev/fuse -v "$work/$name-home:/home/prover" \
       -v "$VAULT_PROBE:/usr/local/bin/vault-provider:ro" -v "$helper:/opt/securefs/securefs:ro" "$image" sleep 3600 > "$work/$name-run.log" 2>&1 \
       || { check "vault $name: $image did not start: $(tail -c 300 "$work/$name-run.log")"; return; }
     timeout 900 docker exec "$c" sh -c "$install" > "$work/$name-install.log" 2>&1 || { check "vault $name: $install: $(tail -c 400 "$work/$name-install.log")"; return; }
@@ -391,7 +393,7 @@ vault_distros() (
     [ -n "$fusermount3" ] || { check "vault $name: fuse3 gave no fusermount3"; return; }
     [ "$name" != fedora ] || [ -z "$fusermount" ] || { check "vault fedora: fuse3 alone has a fusermount ($fusermount): the link is not what this proves"; return; }
     timeout 900 "${as[@]}" /usr/local/bin/vault-provider normal /opt/securefs/securefs /home/prover/proof > "$work/$name.out" 2> "$work/$name.err" \
-      || { check "vault $name: the probe's normal mode as uid $uid: $(tail -c 500 "$work/$name.err") provider: $(tail -c 800 "$work/$name-home/provider.log" 2> /dev/null)"; return; }
+      || { check "vault $name: the probe's normal mode as uid $uid (home $(docker exec "$c" stat -c %u:%g /home/prover 2>&1)): $(tail -c 500 "$work/$name.err") provider: $(tail -c 800 "$work/$name-home/provider.log" 2> /dev/null)"; return; }
     shim=$(docker exec "$c" readlink /home/prover/proof/tools/securefs/2.0.0/bin/fusermount 2> /dev/null || true)
     [ -n "$fusermount" ] || [[ $shim == */fusermount3 ]] || { check "vault $name: no fusermount, and the provider made no fusermount link to fusermount3 (${shim:-none})"; return; }
     tail -n 1 "$work/$name.out" | jq -c --arg image "$image" --arg fusermount "$fusermount" --arg fusermount3 "$fusermount3" --arg shim "$shim" \

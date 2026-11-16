@@ -699,6 +699,8 @@ case $SHARD in
   # cl-1000: the static provider timed beside the glibc build, then on FUSE 3 alone through cozy, then on fresh Ubuntu and Fedora
   # (e2e.yaml builds the probe and installs fuse3 and libfuse2t64 for it).
   projectvault-static) parts="vault_throughput vault_fuse3 vault_distros logs" ;;
+  # Its containers alone (dispatch only).
+  projectvault-static-distros) parts="vault_distros logs" ;;
   projectvault) parts="
     idle_vault
     vault_times
