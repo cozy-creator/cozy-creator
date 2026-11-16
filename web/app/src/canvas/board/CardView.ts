@@ -29,7 +29,7 @@ export const TITLE = 15.5 * 1.35
 const SMALL = BODY * 0.9
 const hits = new WeakMap<Container, Hit>()
 /** One-line labels in small type share a glyph atlas (BitmapText) instead of a canvas and texture each: a card's open costs its title and words. */
-const SMALL_LABELS = new Set(["version", "tool", "shape", "machine", "time", "count", "cancel", "duration", "kind", "ratio"])
+const SMALL_LABELS = new Set(["version", "tool", "shape", "machine", "time", "count", "duration", "kind", "ratio"])
 /** The card part a federated event's target belongs to. */
 export function hitOf(target: Container | null): Hit | null {
   for (let at: Container | null = target; at; at = at.parent) { const hit = hits.get(at); if (hit) return hit }
@@ -312,7 +312,6 @@ export class CardView {
       this.drawn.chips.push({ text: run.text, struck: run.struck, box })
     }
     flush()
-    this.drawn.full.set("words", show.words)
   }
 
   private entity(show: Presentation, w: number, colors: Palette, label: LabelFn, pictures: Set<string>, env: CardEnv) {
