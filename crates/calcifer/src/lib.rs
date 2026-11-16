@@ -601,13 +601,6 @@ impl Calcifer {
         self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id))
     }
 
-    /// Ends `project`'s exporters (cl-1060), for a lock asked for: each stops at its next write batch, which the lock's turn holds
-    /// off, and its outputs stay owed. The runs whose exporter it ended.
-    pub(crate) fn end_exports(&self, project: &str) -> Vec<RunId> {
-        let ended: Vec<RunId> = self.routed(project).into_iter().filter(|id| self.exporting(id)).collect();
-        self.retire_exports(&ended.iter().map(|id| id.to_string()).collect());
-        ended
-    }
 
     /// What a run that ended still owes its project, handed on before its driver lets go (cl-1060): what stays on its machine noted,
     /// and its exporter started, so it's never neither driven nor exporting while its project is owed a write. A lock's turn on the
