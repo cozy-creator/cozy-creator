@@ -739,6 +739,7 @@ case $SHARD in
     run_filters
     project_keys
     run_failures
+    quantize_outside
     bound_runs
     own_references
     lane_fit
