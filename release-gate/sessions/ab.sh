@@ -31,8 +31,8 @@
 #              dispatch input's 65,535 characters
 #   max_fails  optional: the failed cells that stop the session (2); a memory matrix whose tight caps may fail on both
 #              arms sets more
-#   floor_mb_s optional: while the first cell's update and run move files, an upload or weights download reporting under
-#              this many MB/s 2 min into its step ends the session, `host too slow` (a slow host's fetch would eat the cap)
+#   floor_mb_s, floor_after_s  optional: the slow-host floor (lib.sh `step`; 50 MB/s, 120 s; 0 for none); a cell's own
+#              "floor_mb_s", "floor_after_s" override them for it
 #   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
 #              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
 #              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
@@ -42,8 +42,9 @@ if [ -n "$F" ]; then
   F=$(dirname "$0")/../../$F; jq -e 'type == "object"' "$F" > /dev/null 2>&1 || fail "params file $F"; PARAMS=$(cat "$F")
 fi
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '') GPUS=$(param gpus 1)
-MAX_FAILS=$(param max_fails 2) FLOOR_MBS=$(param floor_mb_s '')
-[[ -z $FLOOR_MBS || $FLOOR_MBS =~ ^[0-9]+$ ]] || fail "floor_mb_s $FLOOR_MBS"
+MAX_FAILS=$(param max_fails 2) FLOOR_MBS=$(param floor_mb_s 50) FLOOR_AFTER=$(param floor_after_s 120)
+[[ $FLOOR_MBS =~ ^[0-9]+$ && $FLOOR_AFTER =~ ^[0-9]+$ ]] || fail "floor_mb_s $FLOOR_MBS, floor_after_s $FLOOR_AFTER"
+FLOOR0=$FLOOR_MBS AFTER0=$FLOOR_AFTER
 [[ $MAX_FAILS =~ ^[1-9][0-9]*$ ]] || fail "max_fails $MAX_FAILS"
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
 [[ $GPUS =~ ^[1-8]$ ]] || fail "gpus $GPUS"
@@ -194,6 +195,7 @@ fails=0
 declare -A MADE=()
 for k in "${names[@]}"; do
   c=$(jq -c --arg k "$k" 'map(select(.name==$k)) | first' <<<"$CELLS"); mapfile -t args < <(jq -r '.args[]' <<<"$c")
+  FLOOR_MBS=$(jq -r --arg d "$FLOOR0" '.floor_mb_s // $d' <<<"$c") FLOOR_AFTER=$(jq -r --arg d "$AFTER0" '.floor_after_s // $d' <<<"$c")
   for i in "${!args[@]}"; do
     a=${args[$i]//\{ref\}/$REF}
     while [[ $a =~ \{out:([A-Za-z0-9_-]+)\} ]]; do
@@ -223,7 +225,7 @@ for k in "${names[@]}"; do
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
   say "$k: start"  # what each process held as it started: gpu-pod.log's last reading before this (cr-297)
-  step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?; FLOOR_MBS=''
+  step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
   # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
   cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
