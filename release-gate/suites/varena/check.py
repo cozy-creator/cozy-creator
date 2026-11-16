@@ -11,8 +11,8 @@ kernels, time and VRAM against the last pass.
   - no cell ends with varena backing that holds no page (resident - ready): a canceled prefetch's pages go back with it;
   - a graph served each cell of WARM. Falling back to eager is fine for a call and never an error, so nothing else would
     say that a model stopped using graphs: SDXL's steady step went from 0.08 s to 0.27 s with every rule and fault passing.
-  - each cell of ENCODER replayed its text encoder: the graph its second call recorded and checked against the call as
-    written (cr-300: a graph that differs is discarded, so its third call would run as written, unnoticed).
+  - each cell of ENCODER replayed its text encoder: the graph an earlier call recorded and checked against the call as
+    written (cr-300: a graph that differs is discarded, so a later call would run as written, unnoticed).
     check.py <gate dir> <SKU>     the same verdict alone"""
 import json, os, re, subprocess, sys
 from collections.abc import Iterator
@@ -25,9 +25,10 @@ from runs import Baseline, GateHistory, GateRuns, KnownFailing, Memory, Run  # n
 GIB = 1 << 30
 CHURN = 0.25
 WARM = 'warm-sdxl',  # a warm call whose model has graphs on every card; known-failing.json parks one that can't
-#: Anima's third call on one prompt, uncapped and at 6 GiB, and the region that must replay in it (cr-300, Paul 11-16:
-#: "get CUDA graphs working right again")
-ENCODER = ('anima-graphs-3', 's6-anima-3'), 'model.text_encoder'
+#: Anima's fourth call on one prompt, uncapped and at 6 GiB, and the region that must replay in it (cr-300, Paul 11-16:
+#: "get CUDA graphs working right again"). The fourth: a cold first call's time defers the capture from the second
+#: call to the third (the request's capture share)
+ENCODER = ('anima-graphs-4', 's6-anima-4'), 'model.text_encoder'
 FLOOR, KEEP = 0.8, 5
 CELL = re.compile(r's(\d+)-([a-z0-9]+)(?:-(\d+))?')
 HERE = os.path.dirname(os.path.abspath(__file__))
