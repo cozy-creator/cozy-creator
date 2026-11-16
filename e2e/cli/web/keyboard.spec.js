@@ -3,7 +3,7 @@
 // it. Tab reaches it, a named region whose description says its keys; arrows select every box in one order, each brought into view and said
 // by name in a live region; Enter opens Focus and Esc comes back with the box still selected and the keys still on the canvas; Delete
 // deletes it and Ctrl+Z restores it; the menu key opens the box's menu, whose items take the keys; Rename is reachable by Tab in Focus. What
-// a screen reader is given is kept as a11y.json.
+// a screen reader is given is kept as a11y.json, and the canvas lists its boxes in a named listbox, selected as on the canvas (cl-1028 row 34).
 const { writeFileSync } = require('fs');
 const { test, expect, canvasIdle, canvasNames, canvasPoint, canvasVisible, selectedNames, png } = require('./fixtures');
 
@@ -144,6 +144,24 @@ test('keyboard', { tag: '@engines' }, async ({ page, project }, testInfo) => {
     await expect.poll(async () => Boolean(await project.asset('renamed_by_keys')), { message: 'renamed' }).toBe(true);
     await page.keyboard.press('Escape');
     await expect(focused).toHaveCount(0);
+  });
+
+  await test.step('the canvas lists its boxes for a screen reader: a named list, one option a box by its name, selected as on the canvas', async () => {
+    // cl-1028 acceptance row 34: the GPU picture has no DOM for its boxes, so a visually hidden list mirrors them. Red until the new canvas
+    // layer adds it (today's canvas offers only the region and its live name).
+    const list = page.locator('ul.canvas-cards[role="listbox"]');
+    await expect.soft(list, 'the canvas has a list of its boxes (ul.canvas-cards, role listbox): not on this canvas yet').toHaveCount(1);
+    if (!(await list.count())) return;
+    expect.soft(await list.evaluate((el) => el.getAttribute('aria-label') || (el.getAttribute('aria-labelledby') && document.getElementById(el.getAttribute('aria-labelledby'))?.textContent) || ''), 'the list is named').not.toBe('');
+    const options = list.locator('li[role="option"]');
+    const names = (await canvasNames(page)).sort();
+    expect.soft((await options.evaluateAll((all) => all.map((li) => li.dataset.asset))).sort(), 'one option a box').toEqual(names);
+    expect.soft(await options.evaluateAll((all) => all.filter((li) => !li.textContent.includes(li.dataset.asset.replace(/^placing:\d+$/, ''))).map((li) => li.dataset.asset)), 'each says its name').toEqual([]);
+    await region(page).focus();
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(async () => (await selectedNames(page)).length, { message: 'a box selected by the keys' }).toBe(1);
+    const selected = await selectedNames(page);
+    await expect.configure({ soft: true }).poll(() => options.evaluateAll((all) => all.filter((li) => li.getAttribute('aria-selected') === 'true').map((li) => li.dataset.asset).sort()), { message: 'selected in the list as on the canvas' }).toEqual(selected);
   });
 
   await test.step('what a screen reader is given, kept', async () => {

@@ -2,12 +2,12 @@
 // takes and approval, the same files by digest and no bytes copied, a mention between them naming the copy; one Undo takes both back (cl-924).
 // Ctrl+D, an Alt-drag and the menu's Duplicate each make a copy; Ctrl+V in a box's words pastes words only. Star is the API's and leads Files
 // with a ★ through Undo and Redo (cl-892); Rename renames the box, its mentions and the API's. Download saves a box's shown take as its name,
-// and a take as its own (cl-891).
+// and a take as its own (cl-891). A picture held over a box that takes it outlines that box as the canvas draws it (cl-1028 row 17).
 const { createHash } = require('crypto');
 const { readdirSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasIdle, focus, middle, png, TEXT_END, canvasCard, canvasNames, canvasPoint, canvasVisible, selectedNames } = require('./fixtures');
-const { drag, drawn, rows, rowsOf } = require('./geometry');
+const { test, expect, box, canvasIdle, focus, middle, openPoint, png, screenshotPixels, TEXT_END, canvasCard, canvasNames, canvasPoint, canvasVisible, selectedNames } = require('./fixtures');
+const { carry, drag, drawn, rows, rowsOf } = require('./geometry');
 
 const WORDS = 'a lighthouse in <hei.2> beside <other>';
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -186,5 +186,35 @@ test('box-actions', async ({ page, project, api }) => {
     await expect(page.getByRole('menu', { name: "two.1's menu" }), 'Download shuts the menu').toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(region).toHaveCount(0);
+  });
+
+  await test.step('a picture held over a box that takes it: that box outlined on the canvas, and Esc lets go of nothing', async () => {
+    // cl-1028 acceptance row 17: the drop target's outline is drawn by the canvas itself, not only on a card a hover mounts. hei (BiRefNet)
+    // takes a picture; harbour (other, renamed above) is one. The ring is measured where it goes, a few pixels outside hei's picture on every
+    // side: those pixels change once harbour is held over hei, against the same pixels before (no colour assumed: the page's tokens pick it).
+    await page.getByRole('button', { name: /more zoom options$/ }).click();
+    await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
+    await canvasIdle(page);
+    const open = await openPoint(page);
+    await page.mouse.move(open.x, open.y);
+    const body = (await canvasCard(page, 'hei')).rendered.body;
+    const ring = [];
+    for (let t = 0.1; t <= 0.9; t += 0.1) {
+      ring.push({ x: body.x + body.width * t, y: body.y - 6 }, { x: body.x + body.width * t, y: body.y + body.height + 6 });
+      ring.push({ x: body.x - 6, y: body.y + body.height * t }, { x: body.x + body.width + 6, y: body.y + body.height * t });
+    }
+    const look = async () => { const read = screenshotPixels(await page.screenshot()); return ring.map((point) => read(point.x, point.y)); };
+    const before = await look();
+    const was = (await rows(project)).harbour;
+    const during = await carry(page, await canvasPoint(page, 'harbour', 'title'), await middle(body), async () => {
+      await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+      const seen = await look();
+      await page.keyboard.press('Escape');
+      return seen;
+    });
+    const changed = during.filter((pixel, i) => pixel.reduce((sum, value, c) => sum + Math.abs(value - before[i][c]), 0) > 60).length;
+    expect.soft(changed / ring.length, `hei outlined around its picture while harbour is held over it: ${changed} of ${ring.length} ring points changed`).toBeGreaterThanOrEqual(0.7);
+    await canvasIdle(page);
+    expect.soft((await rows(project)).harbour, 'Esc let go of nothing: harbour where it was').toEqual(was);
   });
 });

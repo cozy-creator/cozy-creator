@@ -2,9 +2,10 @@
 // the API put it, looked at 0.25, 0.5, 1 and 2, then one open in Focus. No box or label lies on another; nothing is cut off, nothing that floats
 // over the canvas lies on another, and Focus is under none of it; no scrollbar anywhere. Words read at 10 px or more (a box's at 100%: they're
 // drawn at the canvas's scale, cl-890); a prompt over a picture is bold, 4.5:1 or more against its surface (cl-901). A render's Cancel shows at
-// 1 and at 0.5, and the Focus frame fits the window. Each finding names its rule, where, and what (layout.js's rules, measured).
+// 1 and at 0.5, and the Focus frame fits the window. A name cut at rest says itself whole under the pointer (cl-1028 row 18). Each finding
+// names its rule, where, and what (layout.js's rules, measured).
 const { randomUUID } = require('crypto');
-const { test, expect, canvasCard, canvasNames, canvasIdle, hoverBox, focus, fixtureTool, observeStill, openPoint, screenshotPixels, MP4, png } = require('./fixtures');
+const { test, expect, canvasCard, canvasNames, canvasIdle, hoverBox, focus, fixtureTool, middle, observeStill, openPoint, screenshotPixels, MP4, png } = require('./fixtures');
 
 test.use({
   launchOptions: {
@@ -313,6 +314,30 @@ test('layout', async ({ page, project, api }) => {
       await zoomMenu('Zoom to 200%');
       await looked('at 2');
       await zoomMenu('Zoom to fit');
+    });
+
+    await test.step('a name cut at rest says itself whole under the pointer, and nothing else moves', async () => {
+      // cl-1028 acceptance row 18 (Paul's): the long name, cut with an ellipsis where its box ends at rest; hovered, the whole of it.
+      await zoomMenu('Zoom to fit');
+      await passive(page);
+      const label = (await canvasCard(page, LONG))?.rendered?.labels?.title;
+      expect.soft(Boolean(label) && label.text !== label.fullText && label.text.trimEnd().endsWith('…') && label.fullText === LONG,
+        `cut at rest, with an ellipsis: ${JSON.stringify(label && { text: label.text, fullText: label.fullText })}`).toBe(true);
+      const where = () => page.evaluate(() => {
+        const inspection = document.querySelector('.canvas-root').canvasInspection;
+        return { camera: inspection.camera(), at: Object.fromEntries(inspection.names().map((name) => [name, inspection.card(name)?.position ?? null])) };
+      });
+      const before = await where();
+      const nm = (await hoverBox(page, LONG)).locator('.head .nm');
+      const point = await middle(nm);
+      await page.mouse.move(point.x, point.y);
+      const said = await nm.evaluate((el) => {
+        const r = el.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { title: el.title, whole: el.scrollWidth <= el.clientWidth + 1, text: el.textContent.trim(), under_pointer: hit === el || el.contains(hit) };
+      });
+      expect.soft((said.title === LONG || (said.whole && said.text === LONG)) && said.under_pointer, `whole under the pointer: ${JSON.stringify(said)}`).toBe(true);
+      expect.soft(await where(), 'nothing else moves as it is hovered').toEqual(before);
+      await passive(page);
     });
 
     await test.step('then open one box in Focus', async () => {

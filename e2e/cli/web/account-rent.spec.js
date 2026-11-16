@@ -14,7 +14,7 @@ const { appendFileSync, mkdirSync, readFileSync, readdirSync } = require('fs');
 const http = require('http');
 const { dirname, join } = require('path');
 const { promisify } = require('util');
-const { test, expect, canvasIdle, focus, canvasVisible } = require('./fixtures');
+const { test, expect, canvasCard, canvasIdle, focus, canvasVisible, openPoint } = require('./fixtures');
 
 const need = (name) => process.env[name] || (() => { throw new Error(`$${name} is not set: web.sh's web_suite runs where e2e/isolated.sh sets it`); })();
 const run = promisify(execFile);
@@ -423,11 +423,26 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await canvasIdle(page);
       // Asked first: were it not said to render poorly here, its Render would run Qwen Image 2 on this runner's CPU.
       expect(await api.post(project.at('/fit'), { names: ['kite'] }), 'the Hub, by the stand-in, places it on the rtx-4090').toMatchObject({ tools: [{ names: ['kite'] }], rent: { sku: CARD.name, card: 'RTX 4090' } });
-      const region = await focus(page, 'kite');
-      const asking = region.getByRole('group', { name: 'Render here?' });
+      let region = await focus(page, 'kite');
+      let asking = region.getByRole('group', { name: 'Render here?' });
       await region.getByRole('button', { name: 'Render', exact: true }).click();
       await expect(asking, 'it asks on the box itself').toBeVisible({ timeout: 60_000 });
       expect.soft(await asking.getByRole('button').allInnerTexts(), 'Rent a GPU first, Run here anyway second').toEqual(['Rent an RTX 4090', 'Run here anyway']);
+      // At rest too (cl-1028 acceptance row 17): out of Focus with nothing under the pointer, the box still asks on its own tile, as the
+      // canvas draws it, not only on the card a hover mounts. Its words, whatever role the canvas files them under.
+      await region.getByRole('button', { name: 'Back to canvas', exact: true }).click();
+      await expect(region).toHaveCount(0);
+      await canvasIdle(page);
+      const open = await openPoint(page);
+      await page.mouse.move(open.x, open.y);
+      await expect(page.locator('.canvas-node')).toHaveCount(0);
+      await expect.configure({ soft: true }).poll(async () => {
+        const shown = (await canvasCard(page, 'kite'))?.rendered;
+        return shown ? Object.values(shown.labels ?? {}).map((label) => label.fullText ?? label.text).join(' | ') : 'not drawn';
+      }, { message: 'kite asks on its tile at rest: Rent an RTX 4090, or Run here anyway' }).toMatch(/Rent an RTX 4090|Run here anyway/);
+      region = await focus(page, 'kite');
+      asking = region.getByRole('group', { name: 'Render here?' });
+      await expect(asking, 'still asking in Focus').toBeVisible();
       await asking.getByRole('button', { name: 'Rent an RTX 4090', exact: true }).click();
       await expect(page, 'Machines, the card asked for').toHaveURL(`${project.url('machines')}?rent=${CARD.name}&gpus=1`);
       await expect.soft(rent.getByRole('listitem').filter({ has: page.getByText(CARD.name, { exact: true }) }), 'the rtx-4090 chosen').toHaveAttribute('aria-current', 'true');

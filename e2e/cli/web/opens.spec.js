@@ -3,7 +3,8 @@
 // box's frame is drawn and when each preview is, from the project's first state; how long a request waited for a connection, and the most
 // connections to Calcifer at once; with one tab and with two more of the same Calcifer open. A box whose preview is on its way pulses,
 // faintly, paper and dark. Its thumbnails are stored in the project as its files land: an open makes none, and one for a file added while
-// it's open is drawn soon after it lands. Zoomed out from 100%, every box in the new view is drawn in each frame of the zoom.
+// it's open is drawn soon after it lands. Zoomed out from 100%, every box in the new view is drawn in each frame of the zoom. Opened in turn
+// ten times by its tab and panned whole, what it holds of pictures comes to rest at the same (cl-1028 row 27).
 // `@solo`: its times are held to bars and it clears the thumbnail cache, so it has the job to itself; that job has the filesystem driver
 // its encrypted copy needs.
 const { createHash, randomBytes } = require('crypto');
@@ -625,6 +626,46 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     expect.soft(shownAt !== null && shownAt - landed <= BAR.landed_ms, `a landed picture is drawn within ${BAR.landed_ms} ms: ${JSON.stringify(seen.landed)}`).toBe(true);
     expect.soft(madeNow.some((file) => file.startsWith(join(projects.plain.view, '.thumbs'))), `a landed picture has its thumbnail stored in its project: ${JSON.stringify(seen.landed)}`).toBe(true);
     seen.landed.pixels = await provePixels('landed', first, [PICTURES]);
+    await context.close();
+  });
+
+  await test.step('opened in turn ten times by its tab, panned whole twice each: what it holds of pictures comes to rest at the same', async () => {
+    // cl-1028 acceptance row 27: repeated opens and whole-scene pans reach a bounded texture count. Bounded: after the first two cycles'
+    // warm-up, no later cycle at rest holds more than the most cycles 2 to 6 held (measured, not a number chosen here), and what isn't on
+    // screen stays within the cache's own stated allowance (resources().unusedTargetBytes). The vault cell already proves a lock retires
+    // every texture and label.
+    const { context, first } = await fresh();
+    await first.goto(projects.plain.url);
+    const tabOf = (one) => first.getByRole('navigation', { name: 'Projects' }).locator(`a[href$="/p/${one.code}"]`);
+    const resources = () => first.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.resources() ?? null);
+    const atRest = async () => {
+      await canvasIdle(first);
+      await soft.poll(async () => { const held = await resources(); return held ? held.loading + held.queued : -1; }, { message: 'nothing loading', timeout: WAIT_MS }).toBe(0);
+      return resources();
+    };
+    const samples = [];
+    for (let cycle = 1; cycle <= 10; cycle++) {
+      for (const one of [projects.sealed, projects.plain]) {
+        await expect(tabOf(one), `${one === projects.plain ? 'plain' : 'sealed'}'s tab in the strip`).toBeVisible();
+        await tabOf(one).click();
+        await expect(first).toHaveURL(one.url);
+        await soft.poll(() => previewsDrawn(first), { message: `cycle ${cycle}: its previews drawn`, timeout: WAIT_MS }).toBeGreaterThanOrEqual(PICTURES);
+        await first.keyboard.press('Shift+Digit0');
+        await canvasIdle(first);
+        const pane = await first.locator('.canvas-root').boundingBox();
+        await first.mouse.move(pane.x + pane.width / 2, pane.y + pane.height / 2);
+        for (const sign of [1, -1]) for (let i = 0; i < 8; i++) await first.mouse.wheel(sign * 400, sign * 150);
+      }
+      const held = await atRest();
+      samples.push({ cycle, textures: held?.textures, textureBytes: held?.textureBytes, pinnedTextures: held?.pinnedTextures, unusedBytes: held?.unusedBytes, unusedTargetBytes: held?.unusedTargetBytes, labels: held?.labels });
+    }
+    seen.traversal = samples;
+    const warm = samples.slice(1, 6);
+    for (const key of ['textures', 'textureBytes', 'labels']) {
+      const most = Math.max(...warm.map((one) => one[key] ?? Infinity));
+      expect.soft(samples.slice(6).map((one) => one[key]).filter((value) => !(value <= most)), `${key} after cycles 7–10 no more than cycles 2–6 held at most (${most}): ${JSON.stringify(samples.map((one) => one[key]))}`).toEqual([]);
+    }
+    expect.soft(samples.filter((one) => !(one.unusedBytes <= one.unusedTargetBytes)).map((one) => one.cycle), 'what is off screen within the cache allowance').toEqual([]);
     await context.close();
   });
 
