@@ -808,6 +808,25 @@ pub struct Asset {
     pub unseen: Vec<u32>,
 }
 
+/// `POST /v1/projects/{id}/read`: these boxes, as they stand, at once: what a page reads of what the stream said changed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReadAssets {
+    pub names: Vec<String>,
+}
+
+/// Its answer: each box named that's there, as a project read has it, and each that isn't. Gone is an answer, never a 404, which a browser
+/// logs as an error.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AssetsRead {
+    pub found: Vec<Asset>,
+    pub gone: Vec<String>,
+    /// The project document's heads they were read at.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heads: Vec<String>,
+}
+
 /// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

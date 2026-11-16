@@ -1,6 +1,6 @@
 import { QueryClient } from "@tanstack/react-query"
 import { createContext, useContext } from "react"
-import { ApiError, Client, type RunFilter } from "../api/client"
+import { Client, type RunFilter } from "../api/client"
 import { EventStream } from "../api/events"
 import { Outbox } from "../api/outbox"
 import { nextProjectOrder } from "../api/projectOrder"
@@ -29,8 +29,6 @@ interface Owed {
   head: boolean
   whole: boolean
   wholeCursor: ProjectEventCursor | null
-  /** Each box being read now, by name: the page taking it off ends its read. */
-  reading: Map<string, AbortController>
 }
 
 /** Stream events into the query cache. The stream invalidates, so nothing goes stale by itself. */
@@ -47,11 +45,11 @@ class Bridge {
   private flushing = false
   private privateBlocked = new Set<string>()
   private privacyEpoch = new Map<string, number>()
-  /** The boxes the stream has said are gone from each project, until it says they're back: no read asks for one, which could only 404. */
+  /** The boxes the stream has said are gone from each project, until it says they're back: no read asks for one, which could only find it gone. */
   private gone = new Map<string, Set<string>>()
   /** The boxes this page has taken off itself (a delete, an Undo of a paste, a Redo of a delete), until the stream says they're gone, the
    *  page says they're back, or the stream says one changed after Calcifer answered its taking off: another writer's add, which always shows.
-   *  Before that answer, a change it says may be of before the page took it off, and a read of it 404s. By name: whether it's answered. */
+   *  Before that answer, a change it says may be of before the page took it off, and a read would find it gone. By name: whether it's answered. */
   private taken = new Map<string, Map<string, boolean>>()
 
   allowProject(id: string) { this.privateBlocked.delete(id); this.client.allowProject(id) }
@@ -87,7 +85,7 @@ class Bridge {
   changed(id: string, change: { assets?: string[] | null; gone?: string[]; head?: boolean; cursor?: ProjectEventCursor | null }) {
     if (this.privateBlocked.has(id)) return
     let slot = this.owed.get(id)
-    if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false, wholeCursor: null, reading: new Map() }))
+    if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false, wholeCursor: null }))
     // What's said last of a box is what's read: changed, then gone, it's gone, and no read asks for it; gone, then back, it's read.
     let gone = this.gone.get(id)
     if (!gone) this.gone.set(id, (gone = new Set()))
@@ -123,8 +121,8 @@ class Bridge {
     this.changed(id, { assets: names.filter((name) => !gone?.has(name)), head: true })
   }
 
-  /** Boxes this page has taken off: a read of one still owed or going ends, and none asks for one again until it's gone or back, as one
-   *  could only 404. */
+  /** Boxes this page has taken off: a read of one still owed goes, and none asks for one again until it's gone or back, as it could only
+   *  find it gone. */
   forget(id: string, names: string[]) {
     let taken = this.taken.get(id)
     if (!taken) this.taken.set(id, (taken = new Map()))
@@ -132,7 +130,6 @@ class Bridge {
     for (const name of names) {
       taken.set(name, false)
       slot?.names.delete(name)
-      slot?.reading.get(name)?.abort()
     }
   }
 
@@ -180,23 +177,15 @@ class Bridge {
     }
     const began = nextProjectOrder()
     try {
+      // What changed, in one read that says a box gone as an answer: one deleted as it's asked for is no 404 a browser logs (cl-973).
       const [read, said] = await Promise.all([
-        Promise.all(names.map((name) => {
-          const reading = new AbortController()
-          held.reading.set(name, reading)
-          return this.client.asset(id, name, reading.signal).then(({ asset, heads }) => ({ asset, heads }), (error) => {
-            if ((error instanceof ApiError && error.status === 404) || reading.signal.aborted) return null
-            throw error
-          }).finally(() => {
-            if (held.reading.get(name) === reading) held.reading.delete(name)
-          })
-        })),
+        names.length ? this.client.readAssets(id, names) : undefined,
         head ? this.client.projectHead(id) : undefined,
       ])
-      const rows = read.map((row) => row?.asset ?? null)
-      const heads = Object.fromEntries(read.flatMap((row) => (row?.heads?.length ? [[row.asset.name, row.heads]] : [])))
+      const at = read?.heads ?? []
+      const heads: Record<string, string[]> = Object.fromEntries(at.length ? (read?.found ?? []).map((asset) => [asset.name, at]) : [])
       if (this.privateBlocked.has(id) || (this.privacyEpoch.get(id) ?? 0) !== epoch) return
-      const asked = rows.flatMap((row) => row ?? [])
+      const asked = read?.found ?? []
       // One not found went after the stream said it changed: renamed or deleted, as the stream says next. Taken off now, a rename would
       // come as another box, and its Focus and what's typed in it would go.
       const left = gone

@@ -342,6 +342,16 @@ discarded?: Array<number>,
 call?: JsonValue | null, call_warnings?: Array<string>, };
 
 /**
+ * Its answer: each box named that's there, as a project read has it, and each that isn't. Gone is an answer, never a 404, which a browser
+ * logs as an error.
+ */
+export type AssetsRead = { found: Array<Asset>, gone: Array<string>,
+/**
+ * The project document's heads they were read at.
+ */
+heads?: Array<string>, };
+
+/**
  * A booting rental's acquisition attempt: the first is 1. `state` is the Hub's: obligated or
  * ambiguous while its create is answered, booting, or replanning between attempts. Times are
  * the Hub's clock (unix ms).
@@ -2511,6 +2521,11 @@ at?: Array<string>,
  * does, and only then. None while it has no state.
  */
 key?: string | null, };
+
+/**
+ * `POST /v1/projects/{id}/read`: these boxes, as they stand, at once: what a page reads of what the stream said changed.
+ */
+export type ReadAssets = { names: Array<string>, };
 
 /**
  * Why a run or call did not succeed: a stable code, message and origin, with detail and next commands.
