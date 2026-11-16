@@ -27,14 +27,14 @@ export const TAB = crypto.randomUUID().slice(0, 4)
 class Refused extends Error {
   readonly response: Response
   constructor(response: Response) {
-    super("Calcifer won't answer this page")
+    super("Cozy won't open this page")
     this.response = response
   }
 }
 
 /** An answer as Calcifer gives a refusal, made here. */
 const refusal = (status: number, kind: string, code: string, message: string) =>
-  new Response(JSON.stringify({ error: { kind, code, message, next: ["reload"] } }), { status, headers: { "Content-Type": "application/json" } })
+  new Response(JSON.stringify({ error: { kind, code, message } }), { status, headers: { "Content-Type": "application/json" } })
 
 export function sameOrigin(): Transport {
   const resolve = (path: string) => {
@@ -78,10 +78,10 @@ export function sameOrigin(): Transport {
     if (response.status === 403) throw new Refused(response)
     const capability = response.ok ? await response.json() : null
     if (capability?.version !== 3 || !String(capability?.principal ?? "").startsWith("user:")) {
-      throw new Error("Calcifer cannot prove project storage protocol 3 for this page")
+      throw new Error("This page doesn't match the version of Cozy on this computer. Reload the page.")
     }
     pinned ??= capability.principal
-    if (capability.principal !== pinned) throw new Refused(refusal(403, "forbidden", "other_user", "Another account answers at this page's address"))
+    if (capability.principal !== pinned) throw new Refused(refusal(403, "forbidden", "other_user", "A different user's Cozy is running at this page's address"))
     proven = provenOnce = true
   }
   // What carries a passphrase or a recovery secret: an encrypted project's creation, a vault unlock or recovery.

@@ -377,6 +377,7 @@ async function died(why) {
   if (failedRun) await shoot('drawer-run-failed', { open: (page) => goto(page, `${projectPath}/runs/${failedRun}`) });
   await shoot('drawer-files', { open: (page) => goto(page, `${projectPath}/files`) });
   await shoot('drawer-account', { open: (page) => goto(page, `${projectPath}/account`) });
+  await shoot('drawer-vault', { open: (page) => goto(page, `${projectPath}/vault`) });
   await shoot('drawer-projects-open', { open: (page) => goto(page, `${projectPath}/projects`) });
   // The open project's own tab: Projects, ready for a new one's name (cl-958: the bar's one + is Add files).
   await shoot('drawer-projects-from-tab', {

@@ -73,7 +73,7 @@ export async function sendFile(client: Client, file: File, digest: string, signa
       }
     }
   }
-  throw new Error("Calcifer took every part and doesn't hold the file")
+  throw new Error("The upload finished, but Cozy doesn't have the whole file. Try again.")
 }
 
 export type Moving = { stage: "reading" | "sending"; done: number }

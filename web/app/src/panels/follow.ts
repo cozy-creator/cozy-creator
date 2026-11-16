@@ -52,7 +52,7 @@ export async function follow(
 export function followingLine(following: Following, waitingFor: string): string | null {
   switch (following.state) {
     case "waiting":
-      return `Another tab is following ${waitingFor}. This one starts when that's closed.`
+      return `Another tab is showing ${waitingFor}. This tab will show it once you close that one.`
     case "reconnecting":
       return `Reconnecting, attempt ${following.attempt}`
     default:
