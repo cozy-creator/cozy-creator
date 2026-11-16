@@ -5,7 +5,8 @@
 """The cli suite's orchestrators (cl-1077): `edit` loads no model and calls `used` (e2e/calls-used), never `unused`
 (e2e/calls-unused), as H3's `edit` calls its segments and never `upscale`'s regenerate. `adapt` calls `adapted` with a LoRA
 (e2e/calls-lora) on its `base` (e2e/calls-base) beside its own `extra` (e2e/calls-other), as H3's `edit` puts its edit LoRA on a
-segment's base beside the turbo LoRA."""
+segment's base beside the turbo LoRA. `early` reads e2e/calls-early itself; `late` calls `late_call`, which reads
+e2e/calls-late, as LTX and H3's `edit` met on one machine."""
 
 import asyncio
 
@@ -57,3 +58,19 @@ def adapted(payload: Ask, base: Extra, extra: Extra) -> Said:
 async def adapt(payload: Ask) -> Said:
     """Calls `adapted` with e2e/calls-lora on its base."""
     return await call(adapted, Ask(), models={"base": ModelChoice(lora=(Lora("e2e/calls-lora", 1.0),))})
+
+
+@app.entrypoint(accelerator=False, defaults={"extra": "e2e/calls-early@0.1.0"})
+def early(payload: Ask, extra: Extra) -> Said:
+    return Said(used="e2e/calls-early")
+
+
+@app.entrypoint(private=True, accelerator=False, defaults={"extra": "e2e/calls-late@0.1.0"})
+def late_call(payload: Ask, extra: Extra) -> Said:
+    return Said(used="e2e/calls-late")
+
+
+@app.entrypoint(accelerator=False)
+async def late(payload: Ask) -> Said:
+    """Calls `late_call` at once: its root holds no GPU."""
+    return await call(late_call, Ask())
