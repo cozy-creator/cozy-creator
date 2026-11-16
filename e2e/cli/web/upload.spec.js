@@ -29,7 +29,9 @@ const TWENTY = [
 
 /** Every box of `names` as it's drawn, by name: its card's rect and its picture's. */
 const drawn = (page, names) => page.evaluate((names) => {
-  const scene = document.querySelector('.canvas-root').canvasInspection;
+  // Until a reload's canvas is mounted there is nothing drawn yet, not an error: the poll asks again.
+  const scene = document.querySelector('.canvas-root')?.canvasInspection;
+  if (!scene) return {};
   return Object.fromEntries(names.flatMap(name => {
     const card = scene.card(name), shown = card?.rendered;
     if (!card) return [];
@@ -109,7 +111,9 @@ test('upload', { tag: '@engines' }, async ({ page, project, guards }) => {
   const coast = png(60);
   /** Where each box stands on the canvas, by name: its node's place in canvas units, and its card's size. */
   const places = () => page.evaluate(() => {
-    const root = document.querySelector('.canvas-root'), scene = root.canvasInspection, view = scene.camera(), pane = root.getBoundingClientRect();
+    const root = document.querySelector('.canvas-root'), scene = root?.canvasInspection;
+    if (!scene) return {};
+    const view = scene.camera(), pane = root.getBoundingClientRect();
     const fixed = value => Math.round(value * 1000) / 1000;
     return Object.fromEntries(scene.names().flatMap(name => {
       const card = scene.card(name), shown = card?.rendered, native = document.querySelector(`.canvas-node:has(.card[data-asset=${JSON.stringify(name)}])`);

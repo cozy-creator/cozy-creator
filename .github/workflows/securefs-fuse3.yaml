@@ -1,0 +1,114 @@
+name: securefs-fuse3
+# Cozy's Linux filesystem provider: securefs 2.0.0 on libfuse 3 with libfuse linked in (scripts/build-securefs-fuse3.sh), built and
+# tested on amd64 and arm64, then published as assets of the release `tag` with its LGPL corresponding source and SHA256SUMS.
+# crates/project-mount/helper/manifest.json pins the zips by sha256; the run's summary prints them. A tag is published once: a
+# rebuild takes the next. Dispatching needs this file on master; the run builds the --ref's script and patch:
+#   gh workflow run securefs-fuse3.yaml -R cozy-creator/cozy-creator --ref <branch> -f tag=securefs-2.0.0-fuse3.1
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, securefs-2.0.0-fuse3.<n>; never an existing one
+        type: string
+        default: securefs-2.0.0-fuse3.1
+      publish:
+        description: Publish the release; off, build and check only
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04, as upstream's own Linux release: gcc 11, glibc 2.35, so the glibc floor stays 2.34.
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      # fuse3 serves securefs's FUSE integration tests alone; the build links libfuse from its pinned tarball, never the system's.
+      - name: Install build tools and FUSE 3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config meson ninja-build git curl zip unzip tar python3 fuse3
+          sudo modprobe fuse || test -c /dev/fuse
+      - name: Build, test and check
+        run: bash scripts/build-securefs-fuse3.sh "$RUNNER_TEMP/out" --test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: securefs-fuse3-${{ matrix.arch }}
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: securefs-fuse3-*
+          path: built
+      - name: Assemble
+        run: |
+          set -euo pipefail
+          mkdir release
+          cp built/securefs-fuse3-amd64/securefs-linux-amd64-fuse3.zip built/securefs-fuse3-arm64/securefs-linux-arm64-fuse3.zip release/
+          # One corresponding source: the arches' differ only in the vcpkg tools it leaves out.
+          cp built/securefs-fuse3-amd64/securefs-2.0.0-fuse3-sources.tar.gz release/
+          (cd release && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: release/*.zip
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ $TAG =~ ^securefs-2\.0\.0-fuse3\.[0-9]+$ ]] || { echo "tag $TAG is not securefs-2.0.0-fuse3.<n>"; exit 1; }
+          # A published asset is never replaced: an existing tag, with or without its release, refuses.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" > /dev/null 2>&1 || gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "$TAG exists; a rebuild takes the next tag"; exit 1
+          fi
+          info=$(unzip -p release/securefs-linux-amd64-fuse3.zip BUILDINFO.json)
+          libfuse=$(jq -r .libfuse.version <<< "$info") glibc=$(jq -r .glibc_floor <<< "$info")
+          run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          cat > notes.md <<NOTES
+          securefs v2.0.0 ([netheril96/securefs@c959a8f](https://github.com/netheril96/securefs/tree/v2.0.0)) ported to libfuse 3 and statically linked with libfuse $libfuse: Cozy's Linux filesystem provider. It needs glibc $glibc or newer, \`/dev/fuse\` and \`fusermount3\`, nothing else. Built by [this run]($run) from $GITHUB_SHA with \`scripts/build-securefs-fuse3.sh\`.
+
+          libfuse's library is licensed under the GNU LGPL 2.1 (\`licenses/libfuse.txt\` in each zip). \`securefs-2.0.0-fuse3-sources.tar.gz\` is the corresponding source: libfuse's release tarball, securefs's source, the patch, the build script and the source archive of every other library linked in. To relink with a modified libfuse: \`LIBFUSE_SOURCE=<its source> scripts/build-securefs-fuse3.sh <out-dir>\`, then \`COZY_SECUREFS_PROVIDER=<out-dir's securefs>\`.
+          NOTES
+          # Prerelease and never Latest: Latest is the promoted cozy release.
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "securefs 2.0.0 on libfuse 3 ($TAG)" --notes-file notes.md release/*
+          amd64=$(sha256sum release/securefs-linux-amd64-fuse3.zip | cut -d ' ' -f 1)
+          arm64=$(sha256sum release/securefs-linux-arm64-fuse3.zip | cut -d ' ' -f 1)
+          {
+            echo "### $TAG published"
+            echo "crates/project-mount/helper/manifest.json: \`\"tag\": \"$TAG\"\`, x86_64-unknown-linux-gnu \`$amd64\`, aarch64-unknown-linux-gnu \`$arm64\`"
+            echo '```'
+            cat release/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

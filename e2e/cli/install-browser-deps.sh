@@ -18,4 +18,5 @@ CONFIG
 # Running only install-deps as root preserves APT_CONFIG through Playwright's apt subprocess.
 # The browser download remains the ordinary runner's separate `install firefox` command.
 sudo env APT_CONFIG="$apt_root/apt.conf" "$(command -v node)" "$pw/node_modules/playwright-core/cli.js" install-deps firefox
-sudo env APT_CONFIG="$apt_root/apt.conf" apt-get install -y --no-install-recommends libavcodec-extra
+# Mesa's software GL and a virtual display: a runner has no GPU, and Firefox makes no WebGL context (the canvas, cl-991) headless or with no GL.
+sudo env APT_CONFIG="$apt_root/apt.conf" apt-get install -y --no-install-recommends libavcodec-extra libegl1 libegl-mesa0 libgl1-mesa-dri libglx-mesa0 libgbm1 xvfb

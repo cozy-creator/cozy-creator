@@ -26,9 +26,9 @@ export function defaultFolder(paths: string[], home: string): string {
 }
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
-const baseName = (folder: string) => folder.split(/[\\/]/).filter(Boolean).pop() ?? folder
+const baseName = (folder: string) => folder.split(/[\\/]/).filter(Boolean).pop() ?? ""
 
-/** A new project, made in place: its folder (suggested, edited where it is), its encryption, and its recovery secret shown once. The
+/** A new project, made in place: its name and folder, its encryption, and its recovery secret shown once. The
  *  strip's +, the Projects drawer and a first drop on an empty canvas all make one here, as `cozy new` does: `POST /v1/projects {path}`. */
 export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = false }: {
   onCreated(project: Opened): void
@@ -43,7 +43,13 @@ export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = fals
   const { data: listed } = useQuery(projectsQuery(client))
   const suggested = listed ? defaultFolder(listed.projects.map((project) => project.path), status.home) : null
   const [typed, setTyped] = useState<string | null>(null)
-  const folder = typed ?? suggested ?? ""
+  const [named, setNamed] = useState<string | null>(null)
+  const base = typed ?? suggested ?? ""
+  const name = named ?? baseName(base)
+  const stem = base.replace(/[\\/]+$/, "")
+  const parent = !stem || /^[A-Za-z]:$/.test(stem) ? base : stem.slice(0, Math.max(stem.lastIndexOf("/"), stem.lastIndexOf("\\")) + 1)
+  const folder = named === null ? base : parent + named
+  const invalidName = /[\\/]/.test(name)
   const [unencrypted, setUnencrypted] = useState(false)
   const [passphrase, setPassphrase] = useState("")
   const [confirmation, setConfirmation] = useState("")
@@ -62,7 +68,7 @@ export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = fals
     setError(new Error("Project access changed. Unlock the created project and replace/save its recovery secret before adding private files."))
   }, [])
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; authority.current = null } }, [])
-  useEffect(() => { newFolder.set(baseName(folder)) }, [folder])
+  useEffect(() => { newFolder.set(name) }, [name])
   useEffect(() => () => newFolder.set(""), [])
   useEffect(() => stream.subscribe((event) => {
     const held = authority.current
@@ -76,8 +82,9 @@ export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = fals
     if (created && (!protection.data?.encrypted || protection.data.state !== "unlocked" || protection.isError || bridge.projectEpoch(created.id) !== authority.current?.epoch)) revoke()
   }, [created, protection.data, protection.isError, bridge, revoke])
   useEffect(() => {
-    if (autoFocus) field.current?.focus()
+    if (autoFocus) { field.current?.focus(); field.current?.select() }
   }, [autoFocus])
+  useEffect(() => { if (named === null && field.current === document.activeElement) field.current?.select() }, [suggested, named])
   useEffect(() => { onHolding?.(busy || Boolean(recovery)) }, [onHolding, busy, recovery])
 
   const verify = async (held: { id: string; epoch: number }) => {
@@ -107,7 +114,7 @@ export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = fals
   const mismatch = !unencrypted && confirmation !== "" && passphrase !== confirmation
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (busy || !folder.trim() || (!unencrypted && (!passphrase || passphrase !== confirmation))) return
+    if (busy || !folder.trim() || !name.trim() || invalidName || (!unencrypted && (!passphrase || passphrase !== confirmation))) return
     const body = { path: folder.trim(), unencrypted, ...(!unencrypted ? { passphrase } : {}) }
     setBusy(true); setError(undefined); setPassphrase(""); setConfirmation("")
     try {
@@ -142,9 +149,15 @@ export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = fals
   return (
     <form className="stack" onSubmit={(event) => void submit(event)}>
       <label className="said-beside">
+        Name
+        <input ref={field} className="field wide" aria-label="New project's name" spellCheck={false} value={name} disabled={busy} aria-invalid={invalidName || undefined}
+          onChange={(event) => { setTyped(base || defaultFolder([], status.home)); setNamed(event.target.value); if (ofFolder) setError(undefined) }} />
+        {invalidName && <span className="beside" role="alert">Use a name without slashes.</span>}
+      </label>
+      <label className="said-beside">
         Folder
-        <input ref={field} className="field wide" aria-label="New project's folder" spellCheck={false} value={folder} disabled={busy}
-          onChange={(event) => { setTyped(event.target.value); if (ofFolder) setError(undefined) }} />
+        <input className="field wide" aria-label="New project's folder" spellCheck={false} value={folder} disabled={busy}
+          onChange={(event) => { setTyped(event.target.value); setNamed(null); if (ofFolder) setError(undefined) }} />
         {ofFolder && <span className="beside" role="alert">{said(error)}</span>}
       </label>
       <label><input type="checkbox" checked={unencrypted} disabled={busy} onChange={(event) => { setUnencrypted(event.target.checked); setPassphrase(""); setConfirmation("") }} /> Create without encryption</label>
@@ -158,7 +171,7 @@ export function ProjectCreate({ onCreated, onCancel, onHolding, autoFocus = fals
       </>}
       {!ofFolder && <Failure error={error} plain />}
       <div className="row">
-        <button type="submit" className="tb primary" disabled={busy || !folder.trim() || (!unencrypted && (!passphrase || passphrase !== confirmation))}>{busy ? "Creating…" : "Create project"}</button>
+        <button type="submit" className="tb primary" disabled={busy || !folder.trim() || !name.trim() || invalidName || (!unencrypted && (!passphrase || passphrase !== confirmation))}>{busy ? "Creating…" : "Create project"}</button>
         {onCancel && <button type="button" className="tb" disabled={busy} onClick={onCancel}>Cancel</button>}
       </div>
     </form>

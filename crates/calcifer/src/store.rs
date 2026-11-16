@@ -564,6 +564,8 @@ const ANSWERS: &str = "
         body BLOB NOT NULL,
         at_ms INTEGER NOT NULL
     ) STRICT;";
+/// The newest run number whose measurements `drop_measurements` has gone past.
+const MEASUREMENTS_DROPPED: &str = "CREATE TABLE IF NOT EXISTS measurements_dropped (through INTEGER NOT NULL) STRICT;";
 /// How long an answer is kept for its write's retries.
 const ANSWER_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -928,8 +930,93 @@ pub(crate) struct Store {
     /// Projects whose legacy files this Calcifer found nothing left of to retire, until another import changes what is left.
     settled: Mutex<std::collections::HashSet<String>>,
     writer: Mutex<Connection>,
-    reader: Mutex<Connection>,
+    readers: Readers,
     durable: Durable,
+}
+
+/// How many reads go on at once: a slow one (a scan on a cold, busy disk) holds up only itself (cl-1010).
+const READERS: usize = 8;
+
+/// The store's read connections. WAL lets each read while the writer commits.
+struct Readers {
+    idle: Mutex<Idle>,
+    returned: std::sync::Condvar,
+}
+
+struct Idle {
+    conns: Vec<Connection>,
+    /// A checkpoint waiting for every reader: no read starts meanwhile.
+    draining: bool,
+}
+
+impl Readers {
+    fn open(path: &Path) -> Result<Self> {
+        let conns = (0..READERS).map(|_| {
+            let reader = Connection::open(path)?;
+            register_owner(&reader, None)?;
+            reader.pragma_update(None, "query_only", "ON")?;
+            reader.pragma_update(None, "temp_store", "MEMORY")?;
+            Ok(reader)
+        }).collect::<Result<_>>()?;
+        Ok(Self { idle: Mutex::new(Idle { conns, draining: false }), returned: std::sync::Condvar::new() })
+    }
+
+    /// An idle reader, waited for while every one reads.
+    fn take(&self) -> Reader<'_> {
+        let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if !idle.draining && let Some(conn) = idle.conns.pop() {
+                return Reader { readers: self, conn: Some(conn) };
+            }
+            idle = self.returned.wait(idle).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// Every reader, once the reads going end: no snapshot pins the WAL while it's held.
+    fn all(&self) -> Drained<'_> {
+        let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+        while idle.draining {
+            idle = self.returned.wait(idle).unwrap_or_else(|e| e.into_inner());
+        }
+        idle.draining = true;
+        while idle.conns.len() < READERS {
+            idle = self.returned.wait(idle).unwrap_or_else(|e| e.into_inner());
+        }
+        idle.draining = false;
+        Drained { readers: self, _idle: idle }
+    }
+}
+
+/// Every reader held: the reads waiting go on once it's dropped.
+struct Drained<'a> {
+    readers: &'a Readers,
+    _idle: std::sync::MutexGuard<'a, Idle>,
+}
+
+impl Drop for Drained<'_> {
+    fn drop(&mut self) {
+        self.readers.returned.notify_all();
+    }
+}
+
+struct Reader<'a> {
+    readers: &'a Readers,
+    conn: Option<Connection>,
+}
+
+impl std::ops::Deref for Reader<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.conn.as_ref().expect("held until dropped")
+    }
+}
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        let Some(conn) = self.conn.take() else { return };
+        self.readers.idle.lock().unwrap_or_else(|e| e.into_inner()).conns.push(conn);
+        self.readers.returned.notify_all();
+    }
 }
 
 /// Group commit. A commit only writes the WAL, under the writer lock; one flush of the WAL then
@@ -1331,8 +1418,9 @@ macro_rules! journal_methods {
     pub(crate) fn batched(&self, id: &str) -> Result<Vec<RunRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1 OR (state IN ('queued', 'sent') AND batch <> ''
-                     AND (batch, machine) = (SELECT batch, machine FROM runs WHERE id = ?1)) ORDER BY number"
+                // The rest by `runs_owed`, never every run.
+                "SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1 OR (state <> 'settled' AND machine = (SELECT machine FROM runs WHERE id = ?1)
+                     AND state IN ('queued', 'sent') AND batch <> '' AND batch = (SELECT batch FROM runs WHERE id = ?1)) ORDER BY number"
             ))?;
             let rows = statement.query_map([id], run_row)?;
             rows.map(|row| row?).collect()
@@ -1471,17 +1559,18 @@ macro_rules! journal_methods {
         })
     }
 
-    /// Drops the measurements of the next runs past number `after` that settled before `before_ms`,
-    /// in one short write. The number to go on from; None: no run past `after` is that old.
-    pub(crate) fn drop_measurements(&self, after: i64, before_ms: i64) -> Result<Option<i64>> {
+    /// Drops the measurements of the next runs that settled before `before_ms`, past the last one done (kept, so a start never
+    /// reads the old ones again: cl-1010), in one short write. False: no run past it is that old.
+    pub(crate) fn drop_measurements(&self, before_ms: i64) -> Result<bool> {
         self.write(|tx| {
+            let after: i64 = tx.query_row("SELECT coalesce(max(through), 0) FROM measurements_dropped", [], |row| row.get(0))?;
             let mut next = tx.prepare("SELECT number, created_at FROM runs WHERE number > ?1 ORDER BY number LIMIT 64")?;
             let next = next
                 .query_map([after], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             // A run that settled before then was created before then, and numbers go up with time.
             let Some(through) = next.iter().take_while(|(_, created)| *created < before_ms).last().map(|(n, _)| *n) else {
-                return Ok(None);
+                return Ok(false);
             };
             let ids: Vec<String> = {
                 let mut rows = tx.prepare("SELECT id FROM runs WHERE number > ?1 AND number <= ?2 AND settled_at < ?3")?;
@@ -1522,7 +1611,9 @@ macro_rules! journal_methods {
                     }
                 }
             }
-            Ok(Some(through))
+            tx.execute("DELETE FROM measurements_dropped", [])?;
+            tx.execute("INSERT INTO measurements_dropped (through) VALUES (?1)", [through])?;
+            Ok(true)
         })
     }
 
@@ -1904,8 +1995,9 @@ macro_rules! journal_methods {
     pub(crate) fn exports_owed(&self) -> Result<Vec<(RunId, u64)>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
-                "SELECT DISTINCT runs.id, runs.number FROM outputs JOIN runs ON runs.id = outputs.run
-                 WHERE {OWED} AND (?1 IS NULL OR runs.owner=?1) AND runs.custody='owned' ORDER BY runs.number"
+                // From `outputs_unexported`: a run's row is read only when it owes one (cl-1010).
+                "SELECT runs.id, runs.number FROM runs WHERE runs.id IN (SELECT outputs.run FROM outputs WHERE {OWED})
+                 AND (?1 IS NULL OR runs.owner=?1) AND runs.custody='owned' ORDER BY runs.number"
             ))?;
             let rows = statement
                 .query_map([self.owner_id()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
@@ -1922,7 +2014,7 @@ macro_rules! journal_methods {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT runs.id, runs.number, outputs.name, outputs.idx, outputs.length
-                 FROM outputs JOIN runs ON runs.id = outputs.run
+                 FROM outputs CROSS JOIN runs ON runs.id = outputs.run
                  WHERE runs.machine = ?1 AND {OWED} AND (?2 IS NULL OR runs.owner=?2) AND runs.custody='owned'
                  ORDER BY runs.number, outputs.created_seq"
             ))?;
@@ -2087,11 +2179,14 @@ impl Store {
         }
         fence_legacy_unseen(&mut writer)?;
         run_list_indexes(&writer)?;
+        writer.execute_batch("CREATE INDEX IF NOT EXISTS machines_live ON machines (name) WHERE state <> 'ended';")?;
         writer.execute_batch(ANSWERS)?;
+        writer.execute_batch(MEASUREMENTS_DROPPED)?;
         writer.execute_batch(crate::project::journal::PLACEMENTS)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
         writer.execute_batch(crate::state::TABLES)?;
+        writer.execute_batch(MACHINE_LOGS)?;
         index_legacy_owners(&mut writer)?;
         migrate_maintenance_asks(&mut writer)?;
         migrate_maintenance_runs(&mut writer)?;
@@ -2099,23 +2194,20 @@ impl Store {
         crate::state::project_codes(&writer)?;
         writer.pragma_update(None,"synchronous",if wal {"NORMAL"} else {"FULL"})?;
         private(path);
-        let reader = Connection::open(path)?;
-        register_owner(&reader,None)?;
-        reader.pragma_update(None, "query_only", "ON")?;
-        reader.pragma_update(None, "temp_store", "MEMORY")?;
+        let readers = Readers::open(path)?;
         let mut journal = path.as_os_str().to_owned();
         journal.push("-wal");
         Ok(Self {
             legacy_home: path.parent().unwrap_or(Path::new(".")).to_owned(),
             settled: Mutex::default(),
             writer: Mutex::new(writer),
-            reader: Mutex::new(reader),
+            readers,
             durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
         })
     }
 
     /// The warm items this journal's runs set on `machine` (`spec.set`), without what a Status says of them: of a machine's warm
-    /// set, what this controller's views show. Read from its warm runs that carry a set (`runs_warm`), never every run.
+    /// set, what this controller's views show. Read from its warm runs that carry a set (`runs_warm_set`), never every warm run (cl-1010).
     pub(crate) fn warm_items(&self, machine: &str) -> Result<Vec<v1::WarmItem>> {
         let rows = self.read(|conn| {
             let mut statement = conn.prepare(&format!(
@@ -2226,10 +2318,10 @@ impl Store {
         })
     }
 
-    /// Waiting for another reader, loading rows and opening private records may block on I/O.
-    /// Hand the async worker back before taking the lock, as writes do before their commit.
+    /// Waiting for a reader, loading rows and opening private records may block on I/O.
+    /// Hand the async worker back before taking one, as writes do before their commit.
     pub(crate) fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let read = || f(&self.reader.lock().unwrap_or_else(|e| e.into_inner()));
+        let read = || f(&self.readers.take());
         match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
             Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(read),
             _ => read(),
@@ -2503,7 +2595,7 @@ impl Store {
         // copy of unresolved private history; retire only after every owner is verified.
         if self.migration_required()? {return Err(StoreError::Protected("project_migration_pending".into()));}
         let writer = self.writer.lock().expect("store writer");
-        let _reader = self.reader.lock().expect("store reader");
+        let _readers = self.readers.all();
         writer.pragma_update(None, "secure_delete", "ON")?;
         let checkpoint = |conn: &Connection| -> Result<()> {
             let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
@@ -2519,7 +2611,7 @@ impl Store {
 
     fn checkpoint_legacy_retirement(&self)->Result<()> {
         let writer=self.writer.lock().expect("store writer");
-        let _reader=self.reader.lock().expect("store reader");
+        let _readers=self.readers.all();
         let busy:i64=writer.query_row("PRAGMA wal_checkpoint(TRUNCATE)",[],|row|row.get(0))?;
         if busy!=0 {return Err(StoreError::Protected("legacy_retirement_checkpoint_pending".into()));}
         Ok(())
@@ -2571,6 +2663,23 @@ impl Store {
         self.write(|tx| put_machine_in(tx, machine))
     }
 
+    /// Keeps `text` as the newest of the machine's own lines, in place of those kept before (cl-1012).
+    pub(crate) fn keep_machine_log(&self, machine: &str, text: &str) -> Result<()> {
+        self.write(|tx| {
+            tx.execute(
+                "INSERT INTO machine_logs (machine, text) SELECT name, ?2 FROM machines WHERE name = ?1
+                 ON CONFLICT (machine) DO UPDATE SET text = excluded.text",
+                params![machine, text],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The machine's own lines kept, if any.
+    pub(crate) fn machine_log(&self, machine: &str) -> Result<Option<String>> {
+        self.read(|conn| Ok(conn.query_row("SELECT text FROM machine_logs WHERE machine = ?1", [machine], |r| r.get(0)).optional()?))
+    }
+
     pub(crate) fn machine(&self, name: &str) -> Result<Option<MachineRow>> {
         self.read(|conn| {
             conn.query_row(
@@ -2586,6 +2695,15 @@ impl Store {
     pub(crate) fn machines(&self) -> Result<Vec<MachineRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!("SELECT {MACHINE_COLUMNS} FROM machines ORDER BY name"))?;
+            let rows = statement.query_map([], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.into_iter().collect()
+        })
+    }
+
+    /// The machines not ended: what a listing shows, never every rental this computer ever had (cl-1010).
+    pub(crate) fn live_machines(&self) -> Result<Vec<MachineRow>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(&format!("SELECT {MACHINE_COLUMNS} FROM machines WHERE state <> 'ended' ORDER BY name"))?;
             let rows = statement.query_map([], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             rows.into_iter().collect()
         })
@@ -2878,11 +2996,26 @@ fn output_row(r: &Row) -> rusqlite::Result<OutputRow> {
     })
 }
 
+/// The newest of each remote machine's own lines (`StatusFrame::machine_log`), so an ended one's still read (cl-1012). They go
+/// with the machine's row.
+const MACHINE_LOGS: &str = "
+    CREATE TABLE IF NOT EXISTS machine_logs (
+        machine TEXT PRIMARY KEY REFERENCES machines (name) ON DELETE CASCADE,
+        text TEXT NOT NULL
+    ) STRICT;";
+
 fn put_machine_in(tx: &Transaction, machine: &MachineRow) -> Result<()> {
     let (worker, address, pin) = match &machine.endpoint {
         Some(e) => (Some(&e.worker_id), Some(&e.address), Some(e.pin.to_vec())),
         None => (None, None, None),
     };
+    // A new machine under an ended one's name keeps none of its lines.
+    if machine.state != MachineState::Ended {
+        tx.execute(
+            "DELETE FROM machine_logs WHERE machine = ?1 AND EXISTS (SELECT 1 FROM machines WHERE name = ?1 AND state = 'ended')",
+            [&machine.name],
+        )?;
+    }
     tx.execute(
         "INSERT INTO machines (name, kind, hub, rental_id, worker_id, address, pin, key, state,
              served, reason, created_at)
@@ -2930,7 +3063,8 @@ fn run_list_indexes(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS runs_private_targets ON runs(number) WHERE {private};
          CREATE INDEX IF NOT EXISTS runs_list_metadata ON runs(number,target,state,status,machine,out_dir,id,{private});
          DROP INDEX IF EXISTS runs_settled_at;
-         CREATE INDEX IF NOT EXISTS runs_warm ON runs(machine) WHERE kind = 'warm';"
+         CREATE INDEX IF NOT EXISTS runs_warm ON runs(machine) WHERE kind = 'warm';
+         CREATE INDEX IF NOT EXISTS runs_warm_set ON runs(machine) WHERE kind = 'warm' AND instr(spec, CAST('\"set\":{{' AS BLOB)) > 0;"
     ))?;
     Ok(())
 }
@@ -3169,6 +3303,7 @@ fn move_machine(tx: &Transaction, from: &str, to: &str, alias: Option<&str>) -> 
     )?;
     tx.execute("UPDATE runs SET machine = ?2 WHERE machine = ?1", params![from, to])?;
     tx.execute("UPDATE asks SET machine = ?2 WHERE machine = ?1", params![from, to])?;
+    tx.execute("UPDATE machine_logs SET machine = ?2 WHERE machine = ?1", params![from, to])?;
     tx.execute("DELETE FROM machines WHERE name = ?1", [from])?;
     Ok(())
 }
@@ -3310,6 +3445,7 @@ impl From<&MachineRow> for Machine {
             end_failed: None,
             end_unconfirmed: None,
             rc: None,
+            held: None,
         }
     }
 }

@@ -2,7 +2,7 @@
 // secret said once, saved, then a picture dropped and downloaded; outside
 // its mount the folder holds no plaintext copy of it. `cozy` locks it while a second tab is open and reading it: every tab is covered at once, and neither
 // the DOM, Web Storage, Cache Storage nor IndexedDB keeps a name or a picture. Unlocked with the passphrase and locked from the page, then
-// unlocked with the recovery secret, each time the canvas back with no reload; decrypted, its files and history are kept. A first drop on an
+// unlocked with the recovery secret, each time the canvas back with no reload; decrypted while it's read, its files and history are kept. A first drop on an
 // unowned canvas asks for a project and sends nothing until it's made and its secret saved; its draft shows once the project's lock is read.
 // How long each encrypted project took to make is in the cell's report (`vault_create`).
 // `@vault`: on the job with the filesystem driver, sharing its Calcifer, so it touches only its own projects.
@@ -142,6 +142,26 @@ async function privateRetired(tab) {
   expect.soft(state.points.filter(point => read(point.x, point.y).every((value, c) => Math.abs(value - point.expected[c]) <= 20)), 'none of the private picture pixels remain').toEqual([]);
 }
 
+/** What the cell keeps reading of its project while it locks or decrypts it. */
+const READS = ['', '/view', '/canvas', '/history?limit=50'];
+
+/** `count` reads of `paths` from the test's own client, as Calcifer's other clients (a CLI, more tabs) read, each asked again as it
+ *  answers, a moment later when refused, until `stop()`. `said` counts the answers by status and code. */
+function keepReading(api, paths, count) {
+  const reads = { asked: 0, said: {}, going: true };
+  const loops = Array.from({ length: count }, async (_, i) => {
+    while (reads.going) {
+      reads.asked += 1;
+      const answer = await api.raw('GET', paths[i % paths.length]).catch(() => null);
+      const body = await answer?.text().catch(() => '') ?? '';
+      const heard = `${answer?.status ?? 'failed'} ${answer?.ok ? '' : body.match(/"code":"([a-z_]+)"/)?.[1] ?? ''}`.trim();
+      reads.said[heard] = (reads.said[heard] ?? 0) + 1;
+      if (!answer?.ok) await new Promise((wait) => setTimeout(wait, 20));
+    }
+  });
+  return { reads, stop: async () => { reads.going = false; await Promise.all(loops); } };
+}
+
 test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guards, removeAfter, vaults }) => {
   const name = `web-vault-${randomBytes(3).toString('hex')}`;
   const passphrase = randomBytes(18).toString('base64url');
@@ -279,7 +299,6 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     // Reads of the project, each asked again as it answers, until the lock has answered (cl-1025): four from the second tab, and
     // twelve from Calcifer's other clients (a CLI, more tabs), so some read holds the project at any moment. Refused once it's
     // locking, each waits a moment before asking again.
-    const paths = ['', '/view', '/canvas', '/history?limit=50'];
     await second.evaluate(({ id, paths }) => {
       const reads = window.__reads = { asked: 0, answered: 0, stop: false, said: {} };
       for (const path of paths) {
@@ -295,31 +314,20 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
           }
         })();
       }
-    }, { id: made.id, paths });
-    const others = { asked: 0, stop: false, said: {} };
-    const reading = Array.from({ length: 12 }, async (_, i) => {
-      while (!others.stop) {
-        others.asked += 1;
-        const answer = await api.raw('GET', at(paths[i % paths.length])).catch(() => null);
-        const body = await answer?.text().catch(() => '') ?? '';
-        const heard = `${answer?.status ?? 'failed'} ${answer?.ok ? '' : body.match(/"code":"([a-z_]+)"/)?.[1] ?? ''}`.trim();
-        others.said[heard] = (others.said[heard] ?? 0) + 1;
-        if (!answer?.ok) await new Promise((wait) => setTimeout(wait, 20));
-      }
-    });
+    }, { id: made.id, paths: READS });
+    const others = keepReading(api, READS.map((path) => at(path)), 12);
     await expect.poll(() => second.evaluate(() => window.__reads.answered), { message: 'the second tab reads the project' }).toBeGreaterThan(40);
-    const before = await second.evaluate(() => window.__reads.asked) + others.asked;
+    const before = await second.evaluate(() => window.__reads.asked) + others.reads.asked;
     let said;
     try {
       said = await cli('--json', 'vault', '--directory', made.path, 'lock');
     } finally {
-      others.stop = true;
+      await others.stop();
     }
-    const during = await second.evaluate(() => { window.__reads.stop = true; return window.__reads.asked; }) + others.asked - before;
-    await Promise.all(reading);
+    const during = await second.evaluate(() => { window.__reads.stop = true; return window.__reads.asked; }) + others.reads.asked - before;
     // How the reads were answered, by status and code: a test's diagnostics say what refused them.
     const heard = await second.evaluate(() => window.__reads.said);
-    test.info().annotations.push({ type: 'lock_reads', description: `the tab's ${JSON.stringify(heard)}, the clients' ${JSON.stringify(others.said)}` });
+    test.info().annotations.push({ type: 'lock_reads', description: `the tab's ${JSON.stringify(heard)}, the clients' ${JSON.stringify(others.reads.said)}` });
     expect.soft(during, 'reads went on while cozy locked it').toBeGreaterThan(16);
     // Runs 43401337115 and 43751040408: refused `project_busy` while the second tab's reads held the project, though its view was
     // revoked and it locked. The lock polled for the project's gate, and lost to the reads (cl-1025).
@@ -375,8 +383,16 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     await drawer.locator('summary', { hasText: /^Decrypt project$/ }).click();
     const decrypt = drawer.getByRole('button', { name: 'Decrypt project', exact: true });
     await expect(decrypt, 'nothing waits to be saved').toBeEnabled();
-    await decrypt.click();
-    await expect(drawer.locator('[data-vault-state="plain"]')).toBeVisible({ timeout: 60_000 });
+    // Reads go on while the page decrypts it (cl-1008): a decrypt that met one in flight refused `project_busy`, and once its close
+    // had begun, left the project locked.
+    const reading = keepReading(api, READS.map((path) => at(path)), 12);
+    try {
+      await decrypt.click();
+      await expect(drawer.locator('[data-vault-state="plain"]')).toBeVisible({ timeout: 60_000 });
+    } finally {
+      await reading.stop();
+      test.info().annotations.push({ type: 'decrypt_reads', description: JSON.stringify(reading.reads.said) });
+    }
     await expect.poll(async () => {
       const { encrypted, state } = await vault();
       return { encrypted, state };
@@ -399,6 +415,8 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     // A global route keeps an unowned canvas behind its drawer: a first drop there asks for a project.
     await page.goto(`${api.origin}/runs`);
     await expect(page.locator('.empty-canvas')).toBeVisible();
+    // Every request of this document kept, so the new project's first lock reads are there to be timed.
+    await page.evaluate(() => performance.setResourceTimingBufferSize(10_000));
     const dropped = Buffer.concat([png(109), randomBytes(16)]);
     const droppedDigest = `sha256:${createHash('sha256').update(dropped).digest('hex')}`;
     await drop(page, [{ name: 'new_private_drop.png', type: 'image/png', bytes: dropped }], await openPoint(page));
@@ -423,11 +441,12 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     const shownAt = Date.now();
     expect.soft(Boolean(secret) && (await saving.locator('pre').innerText()).trim() === secret, 'the page shows the recovery secret it was given').toBe(true);
     expect.soft(writes, 'nothing sent before its recovery secret is saved').toEqual([]);
-    // The drop's draft (its name field, there since the drop) goes on into the project, kept in memory, and is covered from when the page
-    // moves to the project until its lock is read: when it moved, the first read of its lock begun after, when the field was hidden, whether
-    // it was covered and kept meanwhile, and when it showed again, each on the page's clock. Watched in the page: no request is held.
+    // The drop's draft goes on into the project, and its name field shows only once a lock read of the new project has answered: nothing of
+    // an encrypted project is drawn before its lock is known. The read may be one the page made for it before moving there (cl-991's canvas
+    // keeps its page across the move; React Flow's remounted and read again). Kept in memory: the drop lands, below. Watched in the page:
+    // no request is held.
     await page.evaluate(({ id, code }) => {
-      const seen = window.__adoption = { moved: null, read: null, hidden: null, covered: false, kept: false, field: null };
+      const seen = window.__adoption = { moved: null, created: null, read: null, field: null };
       for (const name of ['pushState', 'replaceState']) {
         const was = history[name];
         history[name] = function (...args) {
@@ -436,27 +455,19 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
           return out;
         };
       }
-      performance.clearResourceTimings();
-      new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-          if (seen.read === null && seen.moved !== null && entry.startTime >= seen.moved && new URL(entry.name).pathname === `/v1/projects/${id}/vault`) seen.read = entry.responseEnd;
-        }
-      }).observe({ type: 'resource' });
-      const look = () => {
-        if (seen.moved === null || seen.field !== null) return;
-        const fields = [...document.querySelectorAll('.nm-field')];
-        const shown = fields.some((field) => field.checkVisibility());
-        if (seen.hidden === null) {
-          if (!shown) seen.hidden = performance.now();
-          else return;
-        }
-        if (shown) seen.field = performance.now();
-        else {
-          seen.covered ||= Boolean(document.querySelector('.gate')?.checkVisibility());
-          seen.kept ||= fields.length === 1;
+      const look = (entries) => {
+        for (const entry of entries) {
+          const path = new URL(entry.name).pathname;
+          if (path === '/v1/projects' && entry.initiatorType === 'fetch') seen.created ??= entry.responseEnd;
+          if (seen.read === null && seen.created !== null && entry.startTime >= seen.created && path === `/v1/projects/${id}/vault`) seen.read = entry.responseEnd;
         }
       };
-      new MutationObserver(look).observe(document, { subtree: true, childList: true, attributes: true });
+      look(performance.getEntriesByType('resource'));
+      new PerformanceObserver((list) => look(list.getEntries())).observe({ type: 'resource' });
+      new MutationObserver(() => {
+        if (seen.moved === null || seen.field !== null) return;
+        if ([...document.querySelectorAll('.nm-field')].some((field) => field.checkVisibility())) seen.field = performance.now();
+      }).observe(document, { subtree: true, childList: true, attributes: true });
     }, { id: implicit.id, code: implicit.code });
     await saving.getByLabel('I saved this somewhere away from this computer').check();
     const done = Date.now();
@@ -467,7 +478,7 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     await expect(page, 'it opens at its address, still on runs').toHaveURL(`${api.origin}/p/${implicit.code}/runs`);
     await expect.poll(() => page.evaluate(() => window.__adoption?.read ?? null), { message: "its lock read once it's opened" }).not.toBeNull();
     const adoption = await page.evaluate(() => window.__adoption ?? 'the page loaded again: the draft is lost');
-    expect.soft(typeof adoption === 'object' && adoption.hidden !== null && adoption.covered && adoption.kept && adoption.field >= adoption.read, `the draft is kept and covered until its lock is read: ${JSON.stringify(adoption)}`).toBe(true);
+    expect.soft(typeof adoption === 'object' && adoption.read !== null && adoption.field !== null && adoption.field >= adoption.read, `the draft's field shows only once the new project's lock is read: ${JSON.stringify(adoption)}`).toBe(true);
     await naming.fill('new_private_drop');
     await naming.press('Enter');
     const implicitAt = `/v1/projects/${encodeURIComponent(implicit.id)}`;

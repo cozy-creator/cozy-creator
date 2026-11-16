@@ -184,11 +184,37 @@ test('fields', async ({ page, project, api, cli }) => {
     await leave(page);
     await fit(page);
     await focus(page, 'still');
+    const viewer = region.locator('.focus-viewer').first();
+    const before = await viewer.boundingBox();
     await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
     const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
+    await expect(picker).toBeVisible();
+    // Paul, 11-15: in Focus the picker opens in front of the picture; the picture keeps its size.
+    const after = await viewer.boundingBox();
+    expect.soft(after, 'the picture keeps its size and place with the picker open').toEqual(before);
+    const box = await picker.boundingBox();
+    expect.soft(box && after && box.y < after.y + after.height && box.y + box.height > after.y, 'the picker lies over the picture').toBe(true);
+    const front = await picker.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + 20);
+      return Boolean(top && element.contains(top));
+    });
+    expect.soft(front, 'the picker is in front of the picture').toBe(true);
     await picker.locator('button[data-model-slot]', { hasText: /^VAE$/ }).click();
     await expect(picker.locator('.model-picker-choices [role="radio"]').filter({ hasText: 'madebyollin / Texture Fix VAE' })).toHaveCount(1);
-    await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(picker, 'Escape closes it').toHaveCount(0);
+    await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
+    await expect(picker).toBeVisible();
+    const open = await picker.boundingBox();
+    // A press that begins inside and lets go outside dismisses nothing; one that begins outside does.
+    await page.mouse.move(open.x + 40, open.y + 30);
+    await page.mouse.down();
+    await page.mouse.move(open.x - 40, open.y + open.height + 60, { steps: 4 });
+    await page.mouse.up();
+    await expect.soft(picker, 'a press from inside let go outside keeps it').toBeVisible();
+    await page.mouse.click(after.x + 8, after.y + after.height - 8);
+    await expect(picker, 'a press outside closes it').toHaveCount(0);
     await leave(page);
   });
 

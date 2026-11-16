@@ -85,6 +85,8 @@ fn main() {
     v.visit::<project::FitAsk>();
     v.visit::<project::Fit>();
     v.visit::<project::AssetVersions>();
+    v.visit::<project::ReadAssets>();
+    v.visit::<project::AssetsRead>();
     v.visit::<project::NewAsset>();
     v.visit::<project::AssetMade>();
     v.visit::<project::Copies>();
