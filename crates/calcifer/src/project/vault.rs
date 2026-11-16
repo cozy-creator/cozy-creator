@@ -1041,7 +1041,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     // Its folder gone: it ends now, not at its deadline (cl-1124).
     if end_if_gone(api, &root) { return None; }
     let work = working(api, &root);
-    let (needs, deadline, past) = held(&root).map_or((false, None, false), |session| {
+    let (needs, deadline, past, until) = held(&root).map_or((false, None, false, None), |session| {
         let mut session = session.lock().expect("vault session");
         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
         // Work going holds it open, its maximum included: the clocks go on when the last of it ends. Only an explicit lock ends
@@ -1051,7 +1051,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
             session.active_ms = super::now_ms();
             if session.idle > 0 { say(&root, "held", || format!("its idle clock is held by {}", work.why)); }
         }
-        (lapsed(&session), session.timer.deadline(), session.timer.held_past_limit())
+        (lapsed(&session), session.timer.deadline(), session.timer.held_past_limit(), session.timer.held_until())
     });
     drop(operation);
     // Past its idle limit or maximum, held only by its runs: its lock waits on their machine, and one that doesn't answer never keeps
@@ -1078,7 +1078,9 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     }
     if !needs {
         DUE.lock().expect("vault deadlines").remove(&root);
-        return match work { Some(Work { told: false, .. }) => again(), _ => deadline };
+        // Held by its runs short of a limit: looked at again as it passes one, so the ask above comes then, though they never end.
+        let asks = until.filter(|_| work.is_some_and(|work| work.runs));
+        return match work { Some(Work { told: false, .. }) => again(), _ => deadline.into_iter().chain(asks).min() };
     }
     let due = *DUE.lock().expect("vault deadlines").entry(root.clone()).or_insert_with(Instant::now);
     let forced = due.elapsed() >= SAVE_GRACE;
