@@ -444,11 +444,7 @@ impl Service {
         let Some(store) = self.store() else {
             return false;
         };
-        let ended = self.end_idle_for_disk(&store, incoming);
-        if !ended.is_empty() {
-            tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(incoming), ended.join(", "));
-        }
-        !ended.is_empty()
+        !self.end_idle_for_disk(&store, incoming).is_empty()
     }
 
     /// Room on the disk for the `missing` bytes of run `run`'s weights, before any is wanted: the
@@ -487,11 +483,17 @@ impl Service {
         };
         let idle: BTreeSet<u32> = self.pool().map(|pool| pool.idle_executors().into_iter().map(|(pid, _)| pid).collect()).unwrap_or_default();
         let evictable = room.freed(|lane| lane.holders.iter().all(|pid| idle.contains(pid)));
-        let now = free().unwrap_or(0);
-        if now.saturating_add(evictable) < missing {
+        // A disk below its reserve lacks that too, as the store judges each admit.
+        let (now, below) = crate::reclaim::measure(store.root()).map_or((0, 0), |disk| (disk.free(), disk.reserve().saturating_sub(disk.available)));
+        let short = missing + below - now.min(missing);
+        if evictable < short {
+            let past = match below {
+                0 => format!("{} free past its reserve", size(now)),
+                below => format!("the disk {} below its reserve", size(below)),
+            };
             return Err(format!(
-                "machine_disk_full: its weights need {} more on this disk, and it can make only {} free ({} free past its reserve, {} in models no queued or running job holds){}",
-                size(missing), size(now + evictable), size(now), size(evictable), crate::reclaim::advice(store.root(), missing)
+                "machine_disk_full: its weights need {} more on this disk, and it can make only {} free ({past}, {} in models no queued or running job holds){}",
+                size(missing), size((now + evictable).saturating_sub(below)), size(evictable), crate::reclaim::advice(store.root(), missing)
             ));
         }
         let ended = self.end_idle_for_disk(&store, missing);
@@ -499,7 +501,7 @@ impl Service {
             Ok(made) if !made.evicted.is_empty() => {
                 let each: Vec<String> = made.evicted.iter().map(|e| format!("{} ({}, unused {} min)", e.name, size(e.bytes), e.idle.as_secs() / 60)).collect();
                 let idle = if ended.is_empty() { String::new() } else { "; their idle executors ended first".into() };
-                warn(format!("the disk was short {} for its weights: evicted {}{idle}", size(missing.saturating_sub(now)), each.join(", ")));
+                warn(format!("the disk was short {} for its weights: evicted {}{idle}", size(short), each.join(", ")));
             }
             Ok(_) => {}
             Err(error) => warn(format!("making room for its weights' {}: {error}", size(missing))),
@@ -508,7 +510,8 @@ impl Service {
     }
 
     /// Ends idle executors, least recently used first, while the models only they hold open
-    /// would give the disk `incoming` more bytes it lacks: an executor ends only when its holds
+    /// would give the disk what it lacks for `incoming` more bytes and its reserve, as the store
+    /// judges an admit (0: one of unknown length, or none): an executor ends only when its holds
     /// alone keep some of that room, never one a queued or running job also holds. The models
     /// they held, by name.
     fn end_idle_for_disk(&self, store: &crate::storage::Store, incoming: u64) -> Vec<String> {
@@ -516,7 +519,8 @@ impl Service {
             return vec![];
         };
         let idle = pool.idle_executors();
-        let need = crate::reclaim::measure(store.root()).map_or(0, |disk| incoming.saturating_sub(disk.free()));
+        // Below its reserve the disk lacks room for any write (kamitsure, 11-16: its idle LTX stayed while outputs went).
+        let need = crate::reclaim::measure(store.root()).map_or(0, |disk| (disk.reserve() + incoming.max(1)).saturating_sub(disk.available));
         if idle.is_empty() || need == 0 {
             return vec![];
         }
@@ -541,6 +545,9 @@ impl Service {
                 names.extend(room.lanes.iter().filter(|lane| lane.holders.contains(&pid)).map(|lane| lane.name.clone()));
                 (ended, can) = (with, more);
             }
+        }
+        if !names.is_empty() {
+            tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(need), names.join(", "));
         }
         names
     }
@@ -578,6 +585,10 @@ impl Service {
             })?;
             if let Some(calls) = self.calls().filter(|_| all) {
                 if disk()?.short().is_some() {
+                    // An idle executor's models go before any held output (kamitsure kept its idle LTX's 71.5 GB and let outputs go).
+                    if let Some(store) = self.store() {
+                        self.end_idle_for_disk(&store, 0);
+                    }
                     let (count, bytes) = calls.make_room()?;
                     swept.add(crate::reclaim::Kind::Object, count, bytes);
                 }
