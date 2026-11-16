@@ -418,7 +418,8 @@ if [ -n "$needs" ]; then
     rm -f "$seed/disk.safetensors"
   fi
   if [[ " $needs " == *" spare "* ]]; then
-    random_weights "$seed/pagebox.safetensors" 900
+    # ondemand_share's weights (cl-1007): more than the 60 Mbit link moves while its install runs.
+    random_weights "$seed/pagebox.safetensors" 1600
     mirror "$seed/pagebox.safetensors" lilylilith/pagebox bf16 0.1.0 https://huggingface.co/lilylilith/pagebox --source-format as-is
     rm -f "$seed"/*.safetensors
   fi

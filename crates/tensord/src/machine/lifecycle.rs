@@ -441,7 +441,7 @@ fn keep_lease(state: &std::path::Path, keys: &[ed25519_dalek::VerifyingKey]) {
         .map_err(io::Error::from)
         .and_then(|raw| super::identity::write_atomic(&state.join("lease.json"), &raw, 0o600));
     if let Err(error) = written {
-        tracing::warn!("keeping the Hub's lease: {error}");
+        tracing::warn!(target: crate::config::MACHINE, "keeping the Hub's lease: {error}");
     }
 }
 
@@ -463,13 +463,13 @@ pub(crate) async fn keep_authority(hub: Arc<Hub>, keys: Keys, state: PathBuf) {
                 lease / 2
             }
             Err(Refusal::Ended) => {
-                tracing::error!("the Hub says this rental has ended; no new control is admitted, and its keys are asked for no more");
+                tracing::error!(target: crate::config::MACHINE, "the Hub says this rental has ended; no new control is admitted, and its keys are asked for no more");
                 keep_lease(&state, &[]);
                 keys.revoke();
                 return;
             }
             Err(Refusal::Denied(why)) => {
-                tracing::error!("the Hub denied rental authority ({why}); no new control is admitted");
+                tracing::error!(target: crate::config::MACHINE, "the Hub denied rental authority ({why}); no new control is admitted");
                 keep_lease(&state, &[]);
                 keys.revoke();
                 unanswered = (unanswered * 2).min(MOST);
@@ -519,18 +519,18 @@ pub(crate) async fn release_when_idle(
                     Ok(()) => {
                         match lifecycle.broken.get() {
                             Some(why) => tracing::info!("broken ({why}); Tensorhub accepted the release"),
-                            None => tracing::info!("15 minutes without a job; Tensorhub accepted the release"),
+                            None => tracing::info!(target: crate::config::MACHINE, "15 minutes without a job; Tensorhub accepted the release"),
                         }
                         return;
                     }
                     // Its rental is over at the Hub, yet the pod is here: only it can end itself.
                     Err(Refusal::Ended) => {
-                        tracing::warn!("idle, and the Hub says this rental has ended; ending this pod itself");
+                        tracing::warn!(target: crate::config::MACHINE, "idle, and the Hub says this rental has ended; ending this pod itself");
                         end_itself(provider.as_ref()).await;
                         return;
                     }
                     Err(error) => {
-                        tracing::warn!("idle release not accepted; retrying without extending the deadline: {error}");
+                        tracing::warn!(target: crate::config::MACHINE, "idle release not accepted; retrying without extending the deadline: {error}");
                         unanswered = (unanswered * 2).min(60_000);
                         next_ask = now + match &error {
                             Refusal::Transport(_, Some(wait)) => wait.as_millis() as i64,
@@ -546,7 +546,7 @@ pub(crate) async fn release_when_idle(
         }
         // Read at each wake, not at each ask: an ask can wait as long as the Hub last said to.
         if lifecycle.released() && on_its_own(hub.contact_ms(), lifecycle.deadline_ms(), lifecycle.grace, now_ms()) {
-            tracing::warn!("released, and Tensorhub has not ended this rental: silent for a whole idle window, or a whole window past the deadline; ending it itself");
+            tracing::warn!(target: crate::config::MACHINE, "released, and Tensorhub has not ended this rental: silent for a whole idle window, or a whole window past the deadline; ending it itself");
             end_itself(provider.as_ref()).await;
             return;
         }

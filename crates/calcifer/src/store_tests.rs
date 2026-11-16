@@ -6,7 +6,10 @@ fn store() -> Arc<Store> {
         legacy_home: PathBuf::new(),
         settled: Mutex::default(),
         writer: Mutex::new(Connection::open_in_memory().unwrap()),
-        reader: Mutex::new(Connection::open_in_memory().unwrap()),
+        readers: Readers {
+            idle: Mutex::new(Idle { conns: (0..READERS).map(|_| Connection::open_in_memory().unwrap()).collect(), draining: false }),
+            returned: std::sync::Condvar::new(),
+        },
         durable: Durable::sqlite(),
     })
 }
@@ -24,8 +27,8 @@ fn assert_lock_wait_yields(writer: bool) {
     let (release, released) = mpsc::channel();
     let locked_store = store.clone();
     let holder = std::thread::spawn(move || {
-        let lock = if writer { &locked_store.writer } else { &locked_store.reader };
-        let _held = lock.lock().unwrap();
+        let _writer = writer.then(|| locked_store.writer.lock().unwrap());
+        let _readers = (!writer).then(|| locked_store.readers.all());
         locked.send(()).unwrap();
         let _ = released.recv();
     });

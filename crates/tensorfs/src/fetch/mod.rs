@@ -37,7 +37,7 @@ pub use volume::VolumeOrigin;
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{self, Header, ObjectRef, Tree};
 pub use ask::{Backoff, ATTEMPTS};
-pub use download::{Fetching, GiveWay, Phase};
+pub use download::{install_received, installing, Fetching, Installing, Phase, EMERGENCY, SOFTWARE};
 use download::{Shared, Task};
 
 /// GET `url` from byte `from` into `sink`, for bytes the caller holds to a digest: any public host
@@ -237,7 +237,8 @@ pub struct Stats {
     pub requests: u64,
     pub retries: u64,
     pub steals: u64,
-    /// Bytes received from the origin, over the time any of them was arriving.
+    /// Bytes received from the origin, over the time any of them was arriving, the weights unpaced (cl-1007): what the
+    /// link moves.
     pub received: u64,
     pub receiving: std::time::Duration,
     /// Answers that were not 2xx, by status.
@@ -283,18 +284,12 @@ impl Fetcher {
             requests: counters.requests.load(Ordering::Relaxed),
             retries: counters.retries.load(Ordering::Relaxed),
             steals: counters.steals.load(Ordering::Relaxed),
-            received: counters.received.load(Ordering::Relaxed),
+            received: counters.unpaced.load(Ordering::Relaxed),
             receiving: std::time::Duration::from_millis(counters.receiving_ms.load(Ordering::Relaxed)),
             statuses: counters.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
             volume_written: counters.volume_written.load(Ordering::Relaxed),
             volume_skipped: counters.volume_skipped.load(Ordering::Relaxed),
         }
-    }
-
-    /// Until the guard drops, every request at a later order than `order` gives way at its next bytes and none
-    /// starts: a transfer outside this downloader at that order (an install's packages, from their index) has the link.
-    pub fn give_way(&self, order: u64) -> GiveWay {
-        self.shared.give_way(order)
     }
 
     /// Each of `objects`' task as its waiters see it (`Fetching`): None for one with no task open

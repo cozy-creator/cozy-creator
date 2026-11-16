@@ -533,6 +533,24 @@ pub(crate) async fn source(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
 /// What a lock of `code`'s copy for `hub` leaves beside the copy (`locked`): `lock`, the lock it made or nothing when the tree's
 /// own stood, and with one made, `copy`, the tree again with that lock in the package's folder. The copy itself stays the tree
 /// as it was sent, which a lock or publication asked of it reads.
+/// What `locked` made for a code and Hub, kept machine-wide for unencrypted projects (`shared_lock`).
+#[derive(Serialize, Deserialize)]
+struct SharedLock {
+    changed: bool,
+    lock: String,
+}
+
+/// Where the machine keeps the lock of `code` for `hub` (cl-1011): `<calcifer>/code-locks/<key>.json`, the key the SHA-256 of the
+/// Hub, the tree's digest and the package's path in it, so the same code locks once. An encrypted project's stays inside it
+/// (none here): an entry named by its content would outlive its lock.
+fn shared_lock(home: &Home, code: &LocalCode, hub: &Origin) -> Result<Option<PathBuf>, Error> {
+    if crate::private_io::current().is_some_and(|scope| !scope.storage.ordinary) { return Ok(None); }
+    let dir = home.calcifer().join("code-locks");
+    fs::create_dir_all(&dir).map_err(|e| refuse("code_unwritable", format!("{}: {e}", dir.display())))?;
+    let key = Digest::of(format!("{}\n{}\n{}", hub.as_str(), hex(&code.tree), code.at).as_bytes());
+    Ok(Some(dir.join(format!("{}.json", &hex(&key)[..32]))))
+}
+
 fn lock_dir(home: &Home, code: &LocalCode, hub: &Origin) -> Result<PathBuf, Error> {
     let key = Digest::of(format!("{}\n{}", hub.as_str(), code.at).as_bytes());
     Ok(copy_of(home, code)?.join(format!("locked-{}", &hex(&key)[..16])))
@@ -567,7 +585,8 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
     let _turn = turn.lock().await;
     // A lock that took the open RC's build by URL (its floor no release meets, xs-194) names a wheel the next Runtime merge
     // removes: one that isn't the RC's newest is made again.
-    if let Some(rc) = crate::floor::rc_runtime(&sent).await? {
+    let rc = crate::floor::rc_runtime(&sent).await?;
+    if let Some(rc) = &rc {
         let made = fs::read_to_string(done.join("lock")).ok().filter(|made| !made.is_empty());
         let held = made.or_else(|| fs::read_to_string(sent.join("uv.lock")).ok());
         if done.is_dir() && !held.is_some_and(|lock| lock.contains(&rc.url)) {
@@ -579,7 +598,22 @@ pub(crate) async fn locked(home: &Home, code: &LocalCode, hubs: &Hubs, hub: &Ori
         // A project's own code is the project's: nothing of it in Calcifer's log (cl-984).
         let private = crate::private_io::current().is_some();
         let say = |line: &str| if !private { tracing::info!("{}: {line}", project.name) };
-        let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;
+        // The same code for the same Hub locks once on this machine (cl-1011): another unencrypted project's copy of it takes the lock
+        // the first made, so a second project builds no new environment for a release that went up meanwhile.
+        let shared = shared_lock(home, code, hub)?;
+        let kept = shared.as_ref().and_then(|at| fs::read(at).ok()).and_then(|bytes| serde_json::from_slice::<SharedLock>(&bytes).ok())
+            .filter(|kept| rc.as_ref().is_none_or(|rc| kept.lock.contains(&rc.url)));
+        let made = match kept {
+            Some(kept) => kept,
+            None => {
+                let made = crate::hub::author::locked(hubs, hub, &project, &within, false, &[], &say).await?;
+                let made = SharedLock { changed: made.changed, lock: made.lock };
+                if let Some(at) = &shared {
+                    let _ = serde_json::to_vec(&made).map_err(std::io::Error::other).and_then(|bytes| durable::replace(at, &bytes, 0o600).map_err(std::io::Error::other));
+                }
+                made
+            }
+        };
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let part = done.with_extension(format!("part-{}-{nanos}", std::process::id()));
         let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", part.display()));

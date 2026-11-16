@@ -388,10 +388,17 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     crate::browser::hosted_proof(api.clone());
     crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");
-    match calcifer.resume() {
-        Ok(_) => steps.done("resume"),
-        Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
-    }
+    // What an earlier Calcifer left is taken up beside the answers, never ahead of them: a big store's reads take what they
+    // take on a cold, busy disk (cl-1010).
+    let resuming = calcifer.clone();
+    tokio::spawn(async move {
+        let began = Instant::now();
+        match tokio::task::spawn_blocking(move || resuming.resume()).await {
+            Ok(Ok(_)) => info!(target: "cozy.service_health", step = "resume", ms = began.elapsed().as_millis() as u64, "started"),
+            Ok(Err(e)) => warn!("resuming what an earlier Calcifer left: {e}"),
+            Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
+        }
+    });
     tokio::spawn(crate::hub::jobs::resume(api.clone()));
     crate::events::tell(api.clone());
     crate::project::previews(api.clone());
@@ -464,20 +471,16 @@ async fn shutdown_after_signal(api: Arc<Api>) {
 /// Drops measurements past [`MEASURED_FOR`], now and daily. Each write is followed by a pause as long
 /// as it took, so the store's one writer is never held more than half the time.
 async fn drop_old_measurements(calcifer: Arc<Calcifer>) {
-    let mut after = 0;
     loop {
         let began = Instant::now();
         let before_ms = crate::store::now_ms() - MEASURED_FOR.as_millis() as i64;
         let dropped = {
             let _took = crate::took::Took::new("drop_measurements");
-            calcifer.store().drop_measurements(after, before_ms)
+            calcifer.store().drop_measurements(before_ms)
         };
         match dropped {
-            Ok(Some(next)) => {
-                after = next;
-                tokio::time::sleep(began.elapsed()).await;
-            }
-            Ok(None) => tokio::time::sleep(Duration::from_secs(24 * 3600)).await,
+            Ok(true) => tokio::time::sleep(began.elapsed()).await,
+            Ok(false) => tokio::time::sleep(Duration::from_secs(24 * 3600)).await,
             Err(e) => {
                 warn!("dropping old measurements: {e}");
                 tokio::time::sleep(Duration::from_secs(24 * 3600)).await;

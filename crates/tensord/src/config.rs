@@ -146,23 +146,86 @@ fn named(message: &str) -> String {
     message
 }
 
+/// The target of the machine's own lines: its boot, software, service, GPUs, disk, Hub lease and end. Never a run, a
+/// prompt, or a project's file, package or path: Calcifer keeps these lines after the machine is gone (cl-1012).
+pub(crate) const MACHINE: &str = "machine";
+/// `machine.log` past this rotates to `machine.log.1`.
+const MACHINE_ROTATE: u64 = 256 << 10;
+/// The most one machine line holds.
+const MACHINE_LINE: usize = 4 << 10;
+
 /// Logs to stderr, and to `<dir>/tensord.<date>.log` when a directory is given: rolled daily,
-/// the newest seven kept.
+/// the newest seven kept. The [`MACHINE`] lines also go to `<dir>/machine.log`, one line each.
 pub(crate) fn init_logs(dir: Option<&Path>) {
-    use tracing_subscriber::fmt::writer::MakeWriterExt;
-    let builder = tracing_subscriber::fmt().with_ansi(false);
-    let file = dir.and_then(|dir| {
+    use tracing_subscriber::{
+        filter::{filter_fn, LevelFilter},
+        fmt::writer::MakeWriterExt,
+        layer::SubscriberExt as _,
+        util::SubscriberInitExt as _,
+        Layer as _,
+    };
+    let dir = dir.filter(|dir| {
         std::fs::create_dir_all(dir)
             .map_err(|e| eprintln!("tensord: no log directory {}: {e}", dir.display()))
-            .ok()?;
+            .is_ok()
+    });
+    let file = dir.and_then(|dir| {
         DailyLog::open(dir)
             .map_err(|e| eprintln!("tensord: no log file in {}: {e}", dir.display()))
             .ok()
     });
-    let _ = match file {
-        Some(file) => builder.with_writer(file.and(std::io::stderr)).try_init(),
-        None => builder.with_writer(std::io::stderr).try_init(),
+    let all = match file {
+        Some(file) => tracing_subscriber::fmt::layer().with_ansi(false).with_writer(file.and(std::io::stderr)).boxed(),
+        None => tracing_subscriber::fmt::layer().with_ansi(false).with_writer(std::io::stderr).boxed(),
     };
+    let machine = dir.map(|dir| {
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(MachineLog(dir.join("machine.log")))
+            .with_filter(filter_fn(|meta| meta.target() == MACHINE))
+    });
+    let _ = tracing_subscriber::registry().with(all.with_filter(LevelFilter::INFO)).with(machine).try_init();
+}
+
+/// `machine.log`: each event one line (its newlines folded, at most [`MACHINE_LINE`]), appended, rotated once past
+/// [`MACHINE_ROTATE`]. The parent and its service both append; Status sends its newest lines (cl-1012).
+struct MachineLog(PathBuf);
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for MachineLog {
+    type Writer = MachineLine;
+
+    fn make_writer(&'a self) -> MachineLine {
+        MachineLine(self.0.clone())
+    }
+}
+
+struct MachineLine(PathBuf);
+
+impl io::Write for MachineLine {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let text = String::from_utf8_lossy(bytes);
+        let mut line = text.trim_end().replace(['\r', '\n'], " ⏎ ");
+        if line.len() > MACHINE_LINE {
+            let cut = (0..=MACHINE_LINE).rev().find(|&i| line.is_char_boundary(i)).unwrap_or(0);
+            line.truncate(cut);
+        }
+        line.push('\n');
+        // The parent and its service take turns: two rotating at once would rename one's fresh file over the older one.
+        let turn = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(self.0.with_extension("log.lock"))?;
+        turn.lock()?;
+        if std::fs::metadata(&self.0).is_ok_and(|meta| meta.len() > MACHINE_ROTATE) {
+            let _ = std::fs::rename(&self.0, self.0.with_extension("log.1"));
+        }
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&self.0)?;
+        io::Write::write_all(&mut file, line.as_bytes())?;
+        drop(turn);
+        crate::activity::status_changed();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// `<dir>/tensord.<UTC date>.log`, appended to: a new file at each UTC midnight, and the oldest

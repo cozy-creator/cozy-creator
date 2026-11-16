@@ -156,7 +156,7 @@ pub(crate) async fn pictures(api: &Arc<Api>, machines: &[On], update: bool, now:
 pub(crate) async fn prior(api: &Arc<Api>, picture: &Picture, job: &Job) -> u64 {
     match &picture.ready_at_ms {
         Some(_) => match api.machines.coming(&picture.name, now_ms()) {
-            Some(coming) => crate::coming::card_time(api, &coming.hub, &coming.way, &job.target, &job.size).await.0 as u64,
+            Some(coming) => crate::coming::card_time(api, &coming.way, &job.target, &job.size).0 as u64,
             None => 0,
         },
         None => api.calcifer.prior_ms(&job.target, &picture.name, &job.size),

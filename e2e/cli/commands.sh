@@ -211,6 +211,50 @@ J '[.runs[]? | select(.target | test("parts") | not)] | length >= 1' "$OUT/secon
 echo "second project: machine environments $(echo "$before" | grep -c .) then $(echo "$after" | grep -c .); its store $(du -sh "$other/.vault-machine/objects" 2> /dev/null | cut -f1)"
 }
 
+# cl-1011: a lock takes no release the machines can't install. A local index holds a dependency at 1.0 (a wheel for any platform)
+# and 2.0 (a macOS wheel alone, as a release still uploading to PyPI is): local code needing it locks 1.0 and runs here.
+lock_platforms() {
+step "a lock passes over a release no rental can install (cl-1011)"
+[ -n "$LOCAL" ] || return 0
+local L=$OUT/lock-platforms
+rm -rf "$L" && mkdir -p "$L/index" && cp -r "$here/weightless" "$L/code" || { check "lock platforms: no copy of weightless"; return; }
+python3 - "$L/index" <<'PY' || { check "lock platforms: no index"; return; }
+import base64, hashlib, sys, zipfile
+from pathlib import Path
+index = Path(sys.argv[1])
+def wheel(version: str, tag: str) -> None:
+    name, info = "e2e_cl1011_dep", f"e2e_cl1011_dep-{version}.dist-info"
+    files = {f"{name}/__init__.py": f'VERSION = "{version}"\n',
+             f"{info}/METADATA": f"Metadata-Version: 2.1\nName: e2e-cl1011-dep\nVersion: {version}\n",
+             f"{info}/WHEEL": f"Wheel-Version: 1.0\nGenerator: e2e\nRoot-Is-Purelib: {'true' if tag == 'py3-none-any' else 'false'}\nTag: {tag}\n"}
+    record = [f"{path},sha256={base64.urlsafe_b64encode(hashlib.sha256(body.encode()).digest()).rstrip(b'=').decode()},{len(body.encode())}" for path, body in files.items()]
+    files[f"{info}/RECORD"] = "\n".join(record + [f"{info}/RECORD,,"]) + "\n"
+    with zipfile.ZipFile(index / f"e2e_cl1011_dep-{version}-{tag}.whl", "w") as out:
+        for path, body in files.items():
+            out.writestr(path, body)
+wheel("1.0", "py3-none-any")
+wheel("2.0", "py3-none-macosx_11_0_arm64")
+PY
+sed -i 's/^name = "e2e-weightless"/name = "e2e-lock-platforms"/; s/"msgspec>=0.19"\]/"msgspec>=0.19", "e2e-cl1011-dep"]/' "$L/code/pyproject.toml"
+printf '\n[[tool.uv.index]]\nname = "e2e-cl1011"\nurl = "file://%s"\nformat = "flat"\n\n[tool.uv.sources]\ne2e-cl1011-dep = { index = "e2e-cl1011" }\n' "$L/index" >> "$L/code/pyproject.toml"
+cat >> "$L/code/e2e_weightless/__init__.py" <<'PY'
+
+
+class Dependency(msgspec.Struct):
+    version: str
+
+
+@app.entrypoint(accelerator=False)
+def dependency() -> Dependency:
+    import e2e_cl1011_dep
+    return Dependency(version=e2e_cl1011_dep.VERSION)
+PY
+in_project "$RUN_PROJECT" --json run "$L/code/dependency" --on local > "$L/run.ndjson" 2> "$L/run.err" \
+  || { check "lock platforms: the run failed, a lock that took 2.0 (a macOS wheel alone)?: $(tail -c 300 "$L/run.err")"; return; }
+grep -q '"version": *"1.0"' "$L/run.ndjson" || check "lock platforms: the dependency is not 1.0: $(grep -o '"version": *"[^"]*"' "$L/run.ndjson" | tail -1)"
+echo "lock platforms: $(grep -o '"version": *"[^"]*"' "$L/run.ndjson" | tail -1) of 1.0 (any) and 2.0 (macOS alone)"
+}
+
 # safetensors_file <file>: a 4×4 F16 .safetensors file.
 safetensors_file() {
 uv run -q --no-project python -I - "$1" <<'PY'

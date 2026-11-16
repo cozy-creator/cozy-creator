@@ -683,9 +683,9 @@ async fn instead_of_renting(api: &Arc<Api>, run: Weighed<'_>) -> Option<(On, Str
     let chosen = chosen.ok()?;
     let offer = offers.first()?.iter().find(|offer| offer.machine == chosen && offer.fits)?.clone();
     let rental = api.machines.new_rental(run.hub, run.spec).await.ok()?;
-    let way = crate::rentals::OnItsWay { ready_at_ms: 0, sku: rental.sku.clone(), card: rental.card.clone(), gpus: rental.gpus };
+    let way = crate::rentals::OnItsWay { ready_at_ms: 0, card: rental.card.clone(), gpus: rental.gpus };
     let target = format!("{}/{}", run.package, run.function);
-    let (one_ms, _) = crate::coming::card_time(api, run.hub, &way, &target, &run.size).await;
+    let (one_ms, _) = crate::coming::card_time(api, &way, &target, &run.size);
     let prepare_ms = api::estimate::prepare_ms(false, rental.weight_bytes, api::estimate::LINK, 0.0);
     let now = crate::store::now_ms();
     let new_finish = now + rental.boot_ms + (prepare_ms + one_ms) as i64;
@@ -730,7 +730,7 @@ pub(crate) fn default_on(api: &Api) -> On {
     if platform::Os::CURRENT.local_inference() {
         return local;
     }
-    let machines = api.calcifer.store().machines().unwrap_or_default();
+    let machines = api.calcifer.store().live_machines().unwrap_or_default();
     match machines.iter().any(|row| row.kind != MachineKind::Local && row.state != MachineState::Ended && api.machines.ordered(row)) {
         true => On::Any,
         false => local,

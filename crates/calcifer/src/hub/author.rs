@@ -61,6 +61,9 @@ fn git_missing() -> Error {
         .next("cozy doctor")
 }
 
+/// The platform every rental runs (cl-1011): a lock requires its wheels unless the author declares environments.
+const RENTAL_ENVIRONMENT: &str = "sys_platform == 'linux' and platform_machine == 'x86_64'";
+
 /// A private copy of the project to lock and build in.
 struct Stage {
     _dir: tempfile::TempDir,
@@ -121,6 +124,13 @@ impl Stage {
             if !excluded.iter().any(|held| held.as_str() == Some(name)) {
                 excluded.push(name);
             }
+        }
+        // A lock takes only versions every rental can install (cl-1011): one still uploading, its Linux wheels not up yet, is passed
+        // over, never shipped. An author's own environments stand.
+        let declared = doc.get("tool").and_then(|tool| tool.get("uv"))
+            .is_some_and(|uv| uv.get("environments").is_some() || uv.get("required-environments").is_some());
+        if !declared {
+            doc["tool"]["uv"]["required-environments"] = toml_edit::value(toml_edit::Array::from_iter([RENTAL_ENVIRONMENT]));
         }
         fs::write(&path, doc.to_string()).map_err(|e| refuse("stage_unavailable", e))?;
         Ok(Self { _dir: dir, root, src, uv })

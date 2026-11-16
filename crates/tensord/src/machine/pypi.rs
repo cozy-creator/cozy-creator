@@ -27,7 +27,7 @@ pub(crate) fn wheel(distribution: &str, version: &str, uv: &super::uv::Uv, pytho
     let plan = super::update::compile_sdk(uv, python, &input, stop, true)?
         .map_err(|why| io::Error::other(format!("{project} {version}: {why}")))?;
     let wheel = selected(&plan, &project, version)?;
-    wheel_at(&wheel.url, &wheel.hashes.sha256, &wheel.filename()?, dir, machine, priority::NOW, stop)
+    wheel_at(&wheel.url, &wheel.hashes.sha256, &wheel.filename()?, dir, machine, priority::SOFTWARE, stop)
 }
 
 #[derive(serde::Deserialize)]

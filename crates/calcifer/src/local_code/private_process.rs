@@ -29,7 +29,7 @@ impl Drop for Running {
         let mut active=ACTIVE.lock().expect("private controller tools");
         if let Some(tools)=active.get_mut(&self.root) {
             tools.retain(|tool|!Arc::ptr_eq(tool,&self.cancelled));
-            if tools.is_empty() {active.remove(&self.root);}
+            if tools.is_empty() {active.remove(&self.root); drop(active); crate::project::vault::work_ended(&self.root);}
         }
     }
 }

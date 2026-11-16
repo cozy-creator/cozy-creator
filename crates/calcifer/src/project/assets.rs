@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use api::{
     error::{Error, Kind},
-    calcifer::project::{NewAsset, AssetDeleted, AssetMade, Copied, Copies, AssetPatch, AssetPatched, AssetVersions, NewVersion, Version as VersionRow, VersionMoved, VersionPatch, VersionPatched},
+    calcifer::project::{NewAsset, AssetDeleted, AssetMade, AssetsRead, Copied, Copies, AssetPatch, AssetPatched, AssetVersions, NewVersion, ReadAssets, Version as VersionRow, VersionMoved, VersionPatch, VersionPatched},
     calcifer::tool::{self, FieldType},
 };
 
@@ -265,6 +265,23 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
         false => (None, vec![]),
     };
     Ok(Json(AssetVersions { asset, versions, heads: model.heads(), discarded, call, call_warnings }))
+}
+
+/// How many boxes one read may name: a page reads more than this whole.
+const READ_MOST: usize = 256;
+
+/// `POST /v1/projects/{id}/read` `{names}`: each box named as it stands, or that it's gone, at once and as an answer: a box deleted as it was
+/// asked for is said gone, never a 404, which a browser logs as an error.
+pub(super) async fn read_many(State(api): State<Arc<Api>>, Path(id): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Json<AssetsRead>, Refusal> {
+    let asked: ReadAssets = parse(&body?)?;
+    if asked.names.len() > READ_MOST {
+        return Err(Refusal(Error::new(Kind::Validation, "read_too_many", format!("{} boxes named, over {READ_MOST}", asked.names.len())).remedy("read the project whole")));
+    }
+    let project = api.projects.get(&api, &id)?;
+    let model = model::of(&api, &project).await.map_err(Refusal)?;
+    let (found, gone): (Vec<_>, Vec<_>) = asked.names.into_iter().map(|name| (model.doc.find(&name), name)).partition(|(i, _)| i.is_some());
+    let is: Vec<usize> = found.iter().filter_map(|(i, _)| *i).collect();
+    Ok(Json(AssetsRead { found: model.rows_of(&project, &is), gone: gone.into_iter().map(|(_, name)| name).collect(), heads: model.heads() }))
 }
 
 #[derive(Deserialize)]

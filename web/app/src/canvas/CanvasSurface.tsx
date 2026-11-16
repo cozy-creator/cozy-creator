@@ -146,7 +146,7 @@ export function CanvasSurface(props: Props) {
     let drawnSelection = ""
     let renderFrames = 0
     let graphics: { backend: string; renderer: string; version: string; software: boolean } | null = null
-    let sceneWork = false
+    let sceneWork = false, sceneFault = false
     const requestedRuns = new Set<number>()
     let previewIntent: AbortController | null = null
     const stopHoverPreview = () => {
@@ -213,7 +213,7 @@ export function CanvasSurface(props: Props) {
       const moved = was.x !== camera.x || was.y !== camera.y || was.zoom !== camera.zoom
       if (moved) settle = 2
       const version = revision, refresh = version !== painted
-      if (refresh) {
+      if (refresh) try {
         const names: SceneNode[] = []
         const offering = element.closest(".stage")?.hasAttribute("data-offering") ?? false
         sceneWork = false
@@ -249,6 +249,9 @@ export function CanvasSurface(props: Props) {
         if (store.focusedName.get() && !store.focusEntering.get()) hiddenNames.add(store.focusedName.get()!)
         scene.update({ nodes: names, camera, screen: { width, height, dpr: devicePixelRatio || 1 }, theme: theme.get() === "dark" ? "dark" : "paper", hiddenNames })
         releasedBodies.current.clear()
+      } catch (error) {
+        // The frame is still rendered: what was drawn stays, and pans and zooms still move it (a throw here froze the canvas).
+        if (!sceneFault) { sceneFault = true; console.error("The canvas couldn't update its boxes:", error) }
       }
       const wasAnimating = animating
       if (refresh || animating) animating = scene.advance(now)
@@ -550,7 +553,8 @@ export function CanvasSurface(props: Props) {
   }, [controller, store, projectId, client, queries, projectEpoch, loggedOut])
 
   const node = hovered ? controller.getNodes().find(n => n.data.name === store.resolveName(hovered)) : undefined
-  const native = active && node && focused !== node.data.name ? node : null
+  // A box being named keeps its field under a cover (a project's lock read, say): unmounting it accepts the name (NameField).
+  const native = node && focused !== node.data.name && (active || store.get(node.data.name)?.draft !== undefined) ? node : null
   const view = native && store.get(native.data.name)
   return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby={helpId}>
     {props.children}
