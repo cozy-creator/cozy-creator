@@ -3621,7 +3621,7 @@ mention: string,
  */
 at: string,
 /**
- * For people: `Moss Image doesn't support reference images`.
+ * For people: `MOSS-Image doesn't support reference images`.
  */
 why: string, };
 

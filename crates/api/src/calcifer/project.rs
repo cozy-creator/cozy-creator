@@ -393,7 +393,7 @@ pub struct Unused {
     pub mention: String,
     /// Where: `instructions`, `beats.0.description`.
     pub at: String,
-    /// For people: `Moss Image doesn't support reference images`.
+    /// For people: `MOSS-Image doesn't support reference images`.
     pub why: String,
 }
 
