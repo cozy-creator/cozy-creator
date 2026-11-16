@@ -13,6 +13,8 @@
 #     machine's store (a TensorFS header root beside Calcifer's store), still there after every use and the bytes are 8 days old,
 #     TensorD is stopped and a collection ran; the first unlock copies them in and lets go of its hold, the store keeps them for
 #     the other; the second does the same, and the store lets them go; at the next start no copy is left to let go of;
+#   - the third project's shot of its own seed: once its unlock copied its latents in, the machine's record of that run (the use
+#     naming them and its manifest) is gone too, and nothing in the machine's store names the file's digest or its path;
 #   - every box of the three (the locked ones once unlocked) lists the files it did and answers each, and its preview, with the
 #     same bytes;
 #   - the `state.db.pre-*` copies beside the store are gone.
@@ -23,7 +25,7 @@ CUT_USER=cozy-cut CUT_FROM=${CUT_FROM:-7}
 hard_cut() {
 step "legacy hard cut (cl-1003): a $CUT_RELEASE home's old runs go, every project file stays (a locked one's from its unlock)"
 [ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "hard cut: $CUT_RELEASE runs as another user of a fresh GitHub runner"; return; }
-local home P E F pass before facts latents pin pinf blob
+local home P E F pass before facts latents solo record manifests paths pin pinf blob
 id "$CUT_USER" > /dev/null 2>&1 || sudo useradd -m "$CUT_USER" || { check "hard cut: no user"; return; }
 home=$(getent passwd "$CUT_USER" | cut -d: -f6)
 P=$home/plain E=$home/sealed F=$home/sealed2 pass=$home/pass
@@ -40,7 +42,7 @@ printf '%s\n' 'synthetic hard cut passphrase' | sudo -u "$CUT_USER" tee "$pass" 
 for folder in "$P" "$E" "$F"; do
   cut_cozy old --json new --unencrypted "$folder" > "$OUT/cut-new.json" || { check "hard cut: new $folder: $(tail -c 300 "$OUT/cozy-cut.err")"; return; }
 done
-cut_fill old "$P" plain && cut_fill old "$E" sealed && cut_fill old "$F" sealed2 || return
+cut_fill old "$P" plain && cut_fill old "$E" sealed && cut_fill old "$F" sealed2 solo || return
 # The second and third encrypted after their runs, as Paul's were: what they left on local is only in the machine's store.
 for folder in "$E" "$F"; do
   cut_in "$folder" old --json vault encrypt --passphrase-file "$pass" --recovery-out "$folder.recovery" > "$OUT/cut-encrypt.json" \
@@ -54,6 +56,9 @@ latents=$(jq -r '.shot.latents.sha256 | sub("^sha256:"; "")' "$OUT/cut-sealed-be
 [ "$(jq -r .shot.latents.sha256 "$OUT/cut-plain-before.json" "$OUT/cut-sealed2-before.json" | sort -u)" = "sha256:$latents" ] \
   || { check "hard cut: the projects' latents differ: $(jq -r .shot.latents.sha256 "$OUT"/cut-*-before.json | tr '\n' ' ')"; return; }
 blob=$home/.cache/tensorfs/blobs/${latents:0:2}/${latents:2:2}/$latents
+# The last locked project's own latents: no other project's, so its machine's record of that run survives the collection.
+solo=$(jq -r '.solo.latents.sha256 | sub("^sha256:"; "")' "$OUT/cut-sealed2-before.json")
+[ "$solo" != "$latents" ] || { check "hard cut: the third project's own shot shares the others' latents"; return; }
 sudo test -f "$blob" || { check "hard cut: the locked project's latents aren't in its machine's store before the cut"; return; }
 cut_sql "SELECT user_version FROM pragma_user_version" > "$OUT/cut-version-before" && [ "$(cat "$OUT/cut-version-before")" = 7 ] \
   || { check "hard cut: $CUT_RELEASE's store is at version $(cat "$OUT/cut-version-before"), not 7"; return; }
@@ -119,12 +124,29 @@ cut_admit || check "hard cut: a file into the machine's store, to collect"
 [ "$(sudo find "$home/.cache/tensorfs/uses/.swept" -newermt '-5 minutes' | wc -l)" = 1 ] || check "hard cut: no collection ran"
 sudo test -f "$blob" || check "hard cut: the locked projects' latents were collected before their unlock"
 for use in $(cut_naming uses); do echo "hard cut: a use naming the latents after the collection: ${use##*/}: $(sudo cat "$use" | tr '\n' ' ')"; done
+# The machine's record of the run that made the third project's own latents: a use naming them beside its manifest, which names
+# the file's path in that run.
+record=$(cut_naming uses "$solo" | head -1)
+[ -n "$record" ] || check "hard cut: no use names the third project's own latents after the collection"
+manifests=$([ -z "$record" ] || sudo grep -vx "$solo" "$record")
+for m in $manifests; do echo "hard cut: the run's manifest ${m:0:12}: $(sudo cat "$home/.cache/tensorfs/blobs/${m:0:2}/${m:2:2}/$m" | head -c 400)"; done
+paths=$(for m in $manifests; do sudo cat "$home/.cache/tensorfs/blobs/${m:0:2}/${m:2:2}/$m" | jq -r '.files // {} | keys[]' 2> /dev/null; done)
+[ -z "$record" ] || [ -n "$paths" ] || check "hard cut: the run's manifest names no file"
 
 cut_unlock "$E" sealed "$pin"
 sudo test -f "$blob" || check "hard cut: the first unlock let go of latents the other locked project still needs"
 sudo test -f "$pinf" || check "hard cut: the other locked project's hold went with the first unlock"
 cut_unlock "$F" sealed2 "$pinf"
 sudo test ! -e "$blob" || cut_still_held
+# With the last copy in, the machine's record of its run goes too: the use, its manifest, and every mention of the file.
+[ -z "$record" ] || sudo test ! -e "$record" || check "hard cut: the use naming the third project's own latents is still there: $(sudo cat "$record" | tr '\n' ' ')"
+for m in $manifests; do sudo test ! -e "$home/.cache/tensorfs/blobs/${m:0:2}/${m:2:2}/$m" || check "hard cut: the run's manifest ${m:0:12} is still in the machine's store"; done
+[ -z "$(sudo grep -rlF "$solo" "$home/.cache/tensorfs" 2> /dev/null)" ] \
+  || check "hard cut: the machine's store still mentions the third project's own latents: $(sudo grep -rlF "$solo" "$home/.cache/tensorfs" | tr '\n' ' ')"
+for path in $paths; do
+  [ -z "$(sudo grep -rlF "$path" "$home/.cache/tensorfs" 2> /dev/null)" ] \
+    || check "hard cut: the machine's store still names the run's file $path: $(sudo grep -rlF "$path" "$home/.cache/tensorfs" | tr '\n' ' ')"
+done
 # What a copy couldn't let go of is let go of at the next start: none is left once nothing holds them.
 sudo pkill -KILL -u "$CUT_USER" || true
 while pgrep -u "$CUT_USER" > /dev/null; do sleep 0.2; done
@@ -160,10 +182,10 @@ cut_tensord_stopped() {
   while pgrep -u "$CUT_USER" -x tensord > /dev/null; do sleep 0.2; done
   echo "hard cut: TensorD stopped; live holds naming the locked project's latents: $(cut_holds)"
 }
-# cut_naming <uses|holds>: the TensorFS records of that kind that name the locked project's latents (read as root: the folder is
-# its user's alone).
+# cut_naming <uses|holds> [digest]: the TensorFS records of that kind that name the shared latents, or `digest` (read as root:
+# the folder is its user's alone).
 cut_naming() {
-  sudo find "$home/.cache/tensorfs/$1" -type f -exec grep -lx "$latents" {} + 2> /dev/null
+  sudo find "$home/.cache/tensorfs/$1" -type f -exec grep -lx "${2:-$latents}" {} + 2> /dev/null
 }
 # cut_holds: how many TensorFS holds of a live process name the locked project's latents.
 cut_holds() {
@@ -247,7 +269,7 @@ PY
 # cut_fill <old|new> <folder> <tag>: its boxes made and rendered on local: a still, a shot whose latents stay on the machine, and an
 # uploaded picture. What each box holds is kept in $OUT/cut-<tag>-before.json.
 cut_fill() {
-  local which=$1 P=$2 tag=$3 png=$OUT/cut-$3.png sha i name
+  local which=$1 P=$2 tag=$3 solo=${4:-} png=$OUT/cut-$3.png sha i name want=3
   python3 -c 'import os,sys,zlib,struct
 w=h=8; raw=b"".join(b"\0"+os.urandom(3)*w for _ in range(h))
 c=lambda t,d: struct.pack(">I",len(d))+t+d+struct.pack(">I",zlib.crc32(t+d)&0xffffffff)
@@ -258,29 +280,35 @@ open(sys.argv[1],"wb").write(b"\x89PNG\r\n\x1a\n"+c(b"IHDR",struct.pack(">IIBBBB
     && cut_api "$P" /assets -X POST -H 'Content-Type: application/json' \
       -d '{"name": "shot", "exact": true, "tool": "/opt/cozy-cut/shaped.py/shot", "kind": "video", "fields": {"summary": "a grey shot", "beats": [{"description": "one beat"}], "seed": 7}}' > /dev/null \
     || { check "hard cut ($tag): its boxes: $(tail -c 300 "$OUT/cozy-cut.err")"; return 1; }
+  if [ -n "$solo" ]; then
+    want=4
+    cut_api "$P" /assets -X POST -H 'Content-Type: application/json' \
+      -d '{"name": "solo", "exact": true, "tool": "/opt/cozy-cut/shaped.py/shot", "kind": "video", "fields": {"summary": "a shot of its own", "beats": [{"description": "one beat"}], "seed": 8}}' > /dev/null \
+      || { check "hard cut ($tag): its own shot: $(tail -c 300 "$OUT/cozy-cut.err")"; return 1; }
+  fi
   local holder address token
   holder=$(sudo cat "$(getent passwd "$CUT_USER" | cut -d: -f6)/.cozy/calcifer/calcifer.lock.holder")
   address=$(jq -r .address <<< "$holder") token=$(jq -r .token <<< "$holder")
   sudo -u "$CUT_USER" curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $token" --data-binary @- "http://$address/v1/files/$sha" < "$png" > /dev/null \
     && cut_api "$P" /imports -X POST -H 'Content-Type: application/json' -d "$(jq -nc --arg source "$sha" '{source: $source, name: "pic", exact: true}')" > /dev/null \
     || { check "hard cut ($tag): its upload"; return 1; }
-  for name in card shot; do
+  for name in card shot ${solo:+solo}; do
     cut_api "$P" /runs -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: cut-$tag-$name-$RANDOM$RANDOM" -d "{\"names\":[\"$name\"],\"on\":[\"local\"]}" > /dev/null \
       || { check "hard cut ($tag): render $name"; return 1; }
   done
   for i in $(seq 600); do
     cut_api "$P" "" > "$OUT/cut-$tag-state.json" 2> /dev/null || true
-    J '[.assets[] | select(.name == "card" or .name == "shot" or .name == "pic")] | length == 3 and all(.versions >= 1 and ((.making // []) | length) == 0)' "$OUT/cut-$tag-state.json" 2> /dev/null && break
+    J --argjson want "$want" '[.assets[] | select(.name == "card" or .name == "shot" or .name == "pic" or .name == "solo")] | length == $want and all(.versions >= 1 and ((.making // []) | length) == 0)' "$OUT/cut-$tag-state.json" 2> /dev/null && break
     J 'any(.assets[]; .failure != null)' "$OUT/cut-$tag-state.json" 2> /dev/null && { check "hard cut ($tag): a render failed: $(jq -c '[.assets[] | {name, failure}]' "$OUT/cut-$tag-state.json")"; return 1; }
     sleep 1
   done
   cut_files "$P" > "$OUT/cut-$tag-before.json"
-  J 'length == 3 and (.shot.latents.sha256 | test("^sha256:")) and (.card.image.sha256 | test("^sha256:")) and (.pic.image.sha256 | test("^sha256:"))' "$OUT/cut-$tag-before.json" \
+  J --argjson want "$want" 'length == $want and (.shot.latents.sha256 | test("^sha256:")) and (.card.image.sha256 | test("^sha256:")) and (.pic.image.sha256 | test("^sha256:"))' "$OUT/cut-$tag-before.json" \
     || { check "hard cut ($tag): its boxes hold $(cat "$OUT/cut-$tag-before.json")"; return 1; }
 }
 # cut_files <folder>: each box's files now, by output name: its hash and its path in the project, as its Calcifer lists them.
 cut_files() {
-  cut_api "$1" "" | jq -c '[.assets[] | select(.name == "card" or .name == "shot" or .name == "pic") | {key: .name, value: (.files // {} | map_values({sha256, path}))}] | from_entries'
+  cut_api "$1" "" | jq -c '[.assets[] | select(.name == "card" or .name == "shot" or .name == "pic" or .name == "solo") | {key: .name, value: (.files // {} | map_values({sha256, path}))}] | from_entries'
 }
 # cut_check <folder> <tag>: after the cut each box lists the files it did, and the project answers each one, from its own files/,
 # with the same bytes, and a picture's or video's preview.
