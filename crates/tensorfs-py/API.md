@@ -601,7 +601,9 @@ The default endpoint is `https://tensorhub.com`; environment settings include
 `TENSORFS_ENDPOINT`, `TENSORFS_HOME` and `TENSORFS_TOKEN`. Public reads need no account.
 
 `configure` updates only non-`None` arguments. Its token applies to open, materialize,
-`download_file`, `upload_folder` and `Writer`; pass provider-specific tokens explicitly to
+`download_file`, `upload_folder` and `Writer`, and goes only to the default endpoint
+(`configure`'s, else `TENSORFS_ENDPOINT`'s): a call whose `endpoint=` is another origin sends
+its own `token=`, or none. Pass provider-specific tokens explicitly to
 `convert_to_cozytensors`. `ca_der` (DER bytes) adds a private CA as a trusted root, on top of
 the system roots, for every later call in the process; no other call takes it. An explicitly
 constructed `Endpoint` has its own `token` and `ca_der`.
