@@ -89,6 +89,9 @@ export class Media {
   private stopped = false
   private framed = false
   private owed = false
+  /** Pictures landed while others were still on their way: told together, one frame for all of them (cl-1018). */
+  private landed = new Set<Entry>()
+  private landing?: ReturnType<typeof setTimeout>
   /** A video preview that failed every try, by digest, until when it isn't asked for again. */
   private unpreviewable = new Map<string, number>()
 
@@ -224,6 +227,8 @@ export class Media {
 
   destroy() {
     this.stopped = true
+    clearTimeout(this.landing)
+    this.landed.clear()
     for (const entry of [...this.entries.values()]) this.discard(entry)
     for (const latent of [...this.latents.values()]) this.dropLatent(latent)
     for (const video of [...this.videos]) video.stop()
@@ -239,6 +244,22 @@ export class Media {
       this.framed = false
       if (this.owed && !this.stopped) { this.owed = false; this.tell(() => {}) }
     })
+  }
+
+  /** What landed is told once nothing else is on its way, or 100 ms after the first of it: a software-rendered frame costs ~100 ms, and
+   *  N pictures landing together then cost one frame, not N. */
+  private land() {
+    if (!this.landed.size || this.stopped) return
+    if (this.active > 0) { this.landing ??= setTimeout(() => { this.landing = undefined; this.tellLanded() }, 100); return }
+    this.tellLanded()
+  }
+
+  private tellLanded() {
+    clearTimeout(this.landing)
+    this.landing = undefined
+    const landed = [...this.landed]
+    this.landed.clear()
+    for (const entry of landed) if (this.entries.get(entry.key) === entry) for (const listener of [...entry.listeners]) this.tell(listener)
   }
 
   private pump() {
@@ -302,18 +323,19 @@ export class Media {
       this.bytes += entry.bytes
       bitmap = undefined
       entry.failed = false
-      for (const listener of [...entry.listeners]) this.tell(listener)
+      this.landed.add(entry)
       this.evict()
     } catch {
       if (!live()) return
       entry.tries++
       if (sha256 && entry.tries < THUMB_TRIES) this.wait(entry, sha256, thumbWait(entry.tries))
-      else { entry.failed = true; for (const listener of [...entry.listeners]) this.tell(listener) }
+      else { entry.failed = true; this.landed.add(entry) }
     } finally {
       bitmap?.close()
       this.active--
       if (entry.loading === loading) entry.loading = undefined
       this.pump()
+      this.land()
     }
   }
 
