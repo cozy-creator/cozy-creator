@@ -62,7 +62,7 @@ test('notes', async ({ page, guards }) => {
       await dropFiles(page, FILES, away);
       await expect(stack.filter({ hasText: REFUSED }), 'a note for each file').toHaveCount(3);
       // Held while the pointer is on one, as a person reads them.
-      await stack.filter({ hasText: 'todo.txt' }).hover();
+      await stack.filter({ hasText: 'todo.txt' }).locator('.line').hover();
       order = await stack.evaluateAll((all) => all.map((one) => one.querySelector('.line').textContent));
       await page.screenshot({ path: join(shots, `stack-${tag}.png`) });
       if (!first) return;
@@ -122,6 +122,7 @@ test('notes', async ({ page, guards }) => {
       await expect(opened).toBeVisible();
       await page.mouse.click(away.x, away.y);
       await expect(opened, 'a click outside closes it').toHaveCount(0);
+      await page.evaluate(() => window.getSelection().removeAllRanges());
     });
 
     await test.step(`${tag}: the history lists them, newest first, and opens one in full`, async () => {
