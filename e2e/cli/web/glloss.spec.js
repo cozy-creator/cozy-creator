@@ -59,7 +59,7 @@ test('glloss', { tag: '@engines' }, async ({ page, project }) => {
         window.__lose?.loseContext();
         return Boolean(window.__lose);
       }), 'the browser can lose this context').toBe(true);
-      await expect(lost(page), 'the canvas says its graphics are lost').toContainText(/lost/i);
+      await expect(lost(page), 'the canvas says it stopped drawing and comes back').toContainText(/stopped drawing/i);
       await expect.soft(page.getByRole('dialog'), 'nothing over the page').toHaveCount(0);
       const menu = page.locator('details.main-menu');
       await menu.locator('> summary').click();

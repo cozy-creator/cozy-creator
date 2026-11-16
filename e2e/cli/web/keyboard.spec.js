@@ -132,9 +132,9 @@ test('keyboard', { tag: '@engines' }, async ({ page, project }, testInfo) => {
     let reached = false;
     for (let i = 0; i < 40 && !reached; i++) {
       await page.keyboard.press('Tab');
-      reached = await page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Rename node');
+      reached = await page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Rename box');
     }
-    expect(reached, 'Tab reaches Rename node').toBe(true);
+    expect(reached, 'Tab reaches Rename box').toBe(true);
     await page.keyboard.press('Enter');
     const field = page.getByRole('textbox', { name: 'Name', exact: true });
     await expect(field).toBeFocused();
