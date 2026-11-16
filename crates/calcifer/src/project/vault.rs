@@ -619,6 +619,12 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
 }
 
 fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Result<(), Error> {
+    forget_with(api, root, transition, true)
+}
+
+/// [`forget`], `snapshot` when what's next reads its files as they are (a conversion, a lock): project.db's WAL checkpointed into it.
+/// A folder moved whole (cl-1097) takes its WAL with it, and waits on no reader for that.
+fn forget_with(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, snapshot: bool) -> Result<(), Error> {
     let available = !encrypted(root) || held(root).is_some_and(|session| session.lock().expect("vault session").mount.is_mounted().unwrap_or(false));
     if api.projects.active_requests(root) || crate::local_code::private_process_active(root) {
         return Err(Error::new(Kind::Conflict, "project_busy", "a project request or tool is still finishing; retry after it stops"));
@@ -644,11 +650,11 @@ fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resu
         *project.told.lock().expect("project told") = None;
         crate::events::release_project_readers(&project.id);
         crate::local_code::forget_readings(&project.id);
-        project.folder.close_connections(available)?;
+        project.folder.close_connections(available && snapshot)?;
         api.projects.open.lock().expect("projects lock").remove(&project.id);
         crate::events::project_closed(&project.id);
     }
-    if available {
+    if available && snapshot {
         // A vault may have no retained Project/Folder reader at all. Still checkpoint it before
         // a read-only source mount: immutable SQLite must never ignore committed WAL frames.
         let source = if encrypted(root) { work_view(root)? } else { root.to_owned() };
@@ -1275,6 +1281,74 @@ fn end_work(api: &Arc<Api>, root: &FsPath) -> Result<Vec<u64>, Error> {
         ended.extend(api.calcifer.cancel_for_lock(&id).map_err(|_| error("run_cancel", "the project's work could not be cancelled"))?);
     }
     Ok(ended.into_iter().collect())
+}
+
+/// Where a project's folder goes (cl-1097): renamed where it is, or to the OS trash.
+pub(super) enum Relocation { Rename(PathBuf), Trash }
+
+/// Project `root`'s folder moved as `to` says, once nothing of it is open (cl-1097), as a person would move it by hand: what the index
+/// keeps of it follows (a rename) or goes (the trash, as a folder found gone does). An unlocked encrypted project locks first, which
+/// needs no secret: its mounted view is bound to the folder. The trash ends its runs first; a rename ends none, and waits on no render:
+/// its results land by the folder's path. Where the trash keeps it, when the OS says.
+pub(super) fn relocate(api: &Arc<Api>, root: &FsPath, to: &Relocation) -> Result<Option<PathBuf>, Error> {
+    let busy = |why: &str| Error::new(Kind::Conflict, "project_busy", format!("It's {why}. Try again once that's done."));
+    if let Relocation::Rename(_) = to {
+        let projects = api.projects.now_open();
+        if let Some(project) = projects.iter().find(|project| project.root == root) {
+            if *project.walking.lock().expect("walking lock") { return Err(busy("rendering")); }
+            if api.calcifer.exporting_into(&project.id).is_some() || api.calcifer.writing_into(&project.id).is_some() { return Err(busy("saving a run's results")); }
+        }
+    }
+    if held(root).is_some() {
+        if let Relocation::Rename(_) = to { if let Some(work) = working(api, root).filter(|work| work.told) { return Err(busy(work.why)); } }
+        let mut ask = VaultAsk { action: "lock".into(), passphrase: None, recovery_secret: None, idle_timeout_s: None, max_duration_s: None };
+        operate(api, root, &mut ask, &mut Progress::quiet())?;
+        let due = Instant::now() + LOCK_DRAIN;
+        while held(root).is_some() {
+            if Instant::now() >= due { return Err(busy("still locking")); }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+    let op = operation(root);
+    let _guard = op.lock().expect("vault operation");
+    // From here no new request opens it (`view` answers `vault_busy`), and the index keeps it while it moves: a listing never takes the
+    // old path for a folder gone.
+    if matches!(to, Relocation::Trash) && !encrypted(root) { end_work(api, root)?; }
+    CONVERTING.lock().expect("vault conversions").insert(root.to_owned());
+    let _converting = Converting(root.to_owned());
+    let due = Instant::now() + LOCK_DRAIN;
+    let transition = loop {
+        let transition = exclusive_within(api, root, due.saturating_duration_since(Instant::now()))?;
+        match forget_with(api, root, &transition, false) {
+            Ok(()) => break transition,
+            Err(held) if held.code == "project_busy" && Instant::now() < due => {
+                drop(transition);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(held) => return Err(held),
+        }
+    };
+    let store = api.calcifer.store();
+    let moved = match to {
+        Relocation::Rename(next) => {
+            // Its machine side closes as a lock closes it: nothing there holds the old place (an encrypted one's closed as it locked).
+            if !encrypted(root) {
+                tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
+                crate::runs::files::release_private(root)?;
+                if let Some(id) = plain_project_id(root) { api.calcifer.retire_project(&id); }
+            }
+            fs::rename(root, next).map_err(|e| Error::new(Kind::Conflict, "project_rename", format!("Couldn't rename {}: {e}", root.display())))?;
+            store.project_moved(root, next).map_err(|e| error("vault_index", e.to_string()))?;
+            if !encrypted(next) { crate::private_io::moved(root, next)?; }
+            if let Some(id) = plain_project_id(next).or_else(|| project_id(next)) {
+                if let Err(e) = register_plain_root(next, &id) { tracing::warn!("{}: {}", next.display(), e.message); }
+            }
+            None
+        }
+        Relocation::Trash => platform::trash::put(root).map_err(|e| Error::new(Kind::Unavailable, "project_trash", format!("Couldn't move {} to the trash: {e}", root.display())))?,
+    };
+    drop(transition);
+    Ok(moved)
 }
 
 fn require_transition_ready(root: &FsPath, action: &str) -> Result<(), Error> {

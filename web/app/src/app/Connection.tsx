@@ -313,6 +313,13 @@ class Bridge {
         void this.queries.invalidateQueries({ queryKey: ["project-vault", event.id] })
         break
       }
+      // The index changed (a project renamed or deleted, cl-1097): the tabs and the list read it again.
+      case "projects.changed":
+        void this.queries.invalidateQueries({ queryKey: ["projects"] })
+        break
+      case "appearance":
+        this.queries.setQueryData(["appearance"], event.appearance)
+        break
       // Its folder gone, nothing of it is read again: whatever shows it says where it was (cl-980).
       case "project.gone":
         this.queries.setQueryData(["project-gone", event.id], event.path)

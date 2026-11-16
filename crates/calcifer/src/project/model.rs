@@ -148,7 +148,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
     let notes = rows.iter().flat_map(|row| row.unused.iter().map(|unused| api::calcifer::project::Warning::of(&row.name, unused.line(&row.name)))).collect();
-    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads, queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, notes, next, board: None, unsent: vec![], machines: vec![] };
+    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads, queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, notes, next, board: None, unsent: vec![], machines: vec![], appearance: None };
     Ok(Model { rev, heard, doc, lock, head, rows, stand, ids })
 }
 

@@ -7,7 +7,7 @@
 // of full screen at 1440×900 and 1920×1080, paper and dark: $OUT/web/fullscreen/<browser>. Chrome in lane 2, Firefox in the engines lane.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, focus, canvasVisible, canvasIdle, fixtureTool } = require('./fixtures');
+const { test, expect, themed, focus, canvasVisible, canvasIdle, fixtureTool } = require('./fixtures');
 const { ffmpeg, fit, leave } = require('./hands');
 
 const FPS = 24;
@@ -280,9 +280,10 @@ test('fullscreen', { tag: '@engines' }, async ({ page, project, api, cli }) => {
   await test.step('to look at: in and out of full screen at 1440×900 and 1920×1080, paper and dark, 16:9 and 9:16', async () => {
     for (const theme of ['paper', 'dark']) {
       if (await region.count()) await leave(page);
-      await page.evaluate((chosen) => localStorage.setItem('cozy.theme', chosen), theme);
+      await project.look(theme);
       await page.reload();
       await expect(page.locator('.stage')).toBeVisible();
+      await themed(page, theme);
       for (const [width, height] of [[1440, 900], [1920, 1080]]) {
         if (await region.count()) await leave(page);
         await page.setViewportSize({ width, height });

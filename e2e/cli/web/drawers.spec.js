@@ -11,7 +11,7 @@
 const { mkdirSync } = require('fs');
 const { join } = require('path');
 const { randomBytes } = require('crypto');
-const { test, expect } = require('./fixtures');
+const { test, expect, themed } = require('./fixtures');
 
 test.use({ projectOptions: { encrypted: true } });
 
@@ -33,6 +33,8 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
     await menu.locator('nav').getByRole('link', { name, exact: true }).click();
   };
   const titled = (title) => drawer.locator('.drawer-head b', { hasText: title });
+  /** Everywhere's appearance (cl-1097): a locked project has no other. Put back as Paper after. */
+  const looks = (theme) => api.call('PUT', '/v1/appearance', { theme });
   const plus = tabs.getByRole('button', { name: 'New project', exact: true });
   /** The strip's + is its last item, and no tab reaches it. */
   const plusEnds = async (tag) => {
@@ -51,9 +53,10 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
       for (const { width, height, theme } of LOOKS) {
         const tag = `${width}x${height}-${theme}`;
         await page.setViewportSize({ width, height });
-        await page.evaluate((one) => localStorage.setItem('cozy.theme', one), theme);
+        await project.look(theme);
         await page.reload();
         await expect(page.locator('.stage')).toBeVisible();
+        await themed(page, theme);
         await plusEnds(tag);
         await page.screenshot({ path: join(shots, `header-${tag}.png`), clip: { x: 0, y: 0, width, height: 120 } });
       }
@@ -135,7 +138,7 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
       await expect(page.locator('.stage')).toBeVisible();
       await menu.locator('summary').click();
       const items = (await menu.locator('nav > *').allInnerTexts()).map((text) => text.trim()).filter(Boolean);
-      expect.soft(items.at(-1), `the menu: ${items}`).toBe('Account');
+      expect.soft(items.slice(-2), `the menu: ${items}`).toEqual(['Account', 'Settings']);
       expect.soft(items, 'Installations, not Library').toContain('Installations');
       expect.soft(items, 'Assets, not Files').toContain('Assets');
       expect.soft(items).not.toContain('Library');
@@ -180,7 +183,7 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
       for (const { width, height, theme } of LOOKS) {
         const tag = `${width}x${height}-${theme}`;
         await page.setViewportSize({ width, height });
-        await page.evaluate((one) => localStorage.setItem('cozy.theme', one), theme);
+        await looks(theme);
         await page.goto(`${project.url()}/projects`);
         await expect(titled('Projects')).toBeVisible();
         await expect(page.getByRole('button', { name: 'Unlock project' })).toBeVisible();
@@ -199,6 +202,7 @@ test('drawers', { tag: '@vault' }, async ({ page, project, api, cli, removeAfter
       }
     });
   } finally {
+    await looks('paper');
     if ((await api.get(project.at('/vault'))).state !== 'locked') await cli('--json', 'vault', '--directory', project.path, 'lock');
   }
   guards.over();

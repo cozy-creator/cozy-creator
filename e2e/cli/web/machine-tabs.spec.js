@@ -12,7 +12,7 @@
 const { spawn } = require('child_process');
 const { closeSync, mkdirSync, openSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, fixtureTool } = require('./fixtures');
+const { test, expect, themed, fixtureTool } = require('./fixtures');
 
 const LOOKS = [
   { width: 1440, height: 900, theme: 'paper' },
@@ -82,9 +82,10 @@ test('machine-tabs', { tag: '@solo' }, async ({ page, project, api, cli }) => {
   const more = nav.getByRole('link', { name: /^\d+ more$/ });
   const look = async ({ width, height, theme }) => {
     await page.setViewportSize({ width, height });
-    await page.evaluate((one) => localStorage.setItem('cozy.theme', one), theme);
+    await project.look(theme);
     await page.goto(project.url());
     await expect(page.locator('.stage')).toBeVisible();
+    await themed(page, theme);
     await expect(nav.locator('.mtab[data-machine="local"]')).toBeVisible();
     return `${width}x${height}-${theme}`;
   };

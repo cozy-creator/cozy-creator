@@ -18,7 +18,7 @@
 // everything is a tool on this panel"): the sidebar has no heading and no "Tools" text; its name for a screen reader stays.
 const { mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, observeStill, canvasCard, canvasIdle, canvasNames, canvasPoint, canvasVisible, focus, png, MP4, wav } = require('./fixtures');
+const { test, expect, themed, observeStill, canvasCard, canvasIdle, canvasNames, canvasPoint, canvasVisible, focus, png, MP4, wav } = require('./fixtures');
 const { carry, drawn, onCanvas, rows, rowsOf } = require('./geometry');
 const { dropFiles, fit, leave } = require('./hands');
 
@@ -52,13 +52,14 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
   /** The page at each of `sizes` on paper and dark, each a reload as the page's own switch keeps it, `again` putting back what's looked at,
    *  and `part` of it cropped: kept for a person to look at (Paul, 11-12: look at your own UI). Then as it was. */
   const look = async (what, again, part, sizes = [[1440, 900]]) => {
-    const [was, size] = [await page.evaluate(() => localStorage.getItem('cozy.theme')), page.viewportSize()];
-    const theme = (chosen) => page.evaluate((one) => (one === null ? localStorage.removeItem('cozy.theme') : localStorage.setItem('cozy.theme', one)), chosen);
+    const [was, size] = [(await project.state()).appearance?.theme ?? null, page.viewportSize()];
+    const theme = (chosen) => project.look(chosen);
     for (const one of ['paper', 'dark']) for (const [width, height] of sizes) {
       await theme(one);
       await page.setViewportSize({ width, height });
       await page.reload();
       await expect(page.locator('.stage')).toBeVisible();
+      await themed(page, one);
       await again();
       await canvasIdle(page);
       await page.screenshot({ path: join(shots, `${what}-${width}x${height}-${one}.png`) });

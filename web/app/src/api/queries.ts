@@ -115,6 +115,13 @@ export const canvasQuery = (client: Client, stream: EventStream, id: string) =>
     structuralSharing: false,
   })
 
+/** How the page looks everywhere (cl-1097): kept by the stream's `appearance`, and read again at each `hello`. */
+export const appearanceQuery = (client: Client) =>
+  queryOptions({
+    queryKey: ["appearance"],
+    queryFn: ({ signal }) => client.appearance(signal),
+  })
+
 export const projectsQuery = (client: Client) =>
   queryOptions({
     queryKey: ["projects"],

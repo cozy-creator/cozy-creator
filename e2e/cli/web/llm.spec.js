@@ -11,7 +11,7 @@
 const { randomUUID } = require('crypto');
 const { mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, canvasIdle, canvasNames, canvasPoint, canvasText, canvasVisible, fixtureTool, focus, MP4, png, wav } = require('./fixtures');
+const { test, expect, themed, canvasIdle, canvasNames, canvasPoint, canvasText, canvasVisible, fixtureTool, focus, MP4, png, wav } = require('./fixtures');
 const { carry, rowsOf } = require('./geometry');
 const { fit, leave, toolRow } = require('./hands');
 
@@ -44,13 +44,14 @@ test('llm', async ({ page, project, api }) => {
   /** The page at 1440×900 and 1920×1080, on paper and dark, each a reload as the page's own switch keeps it, `again` putting back what's
    *  looked at: kept for a person to look at (Paul, 11-12: look at your own UI). Then as it was. */
   const look = async (what, again) => {
-    const [was, size] = [await page.evaluate(() => localStorage.getItem('cozy.theme')), page.viewportSize()];
-    const theme = (chosen) => page.evaluate((one) => (one === null ? localStorage.removeItem('cozy.theme') : localStorage.setItem('cozy.theme', one)), chosen);
+    const [was, size] = [(await project.state()).appearance?.theme ?? null, page.viewportSize()];
+    const theme = (chosen) => project.look(chosen);
     for (const [width, height] of [[1440, 900], [1920, 1080]]) for (const one of ['paper', 'dark']) {
       await theme(one);
       await page.setViewportSize({ width, height });
       await page.reload();
       await expect(page.locator('.stage')).toBeVisible();
+      await themed(page, one);
       await fit(page);
       await again();
       await canvasIdle(page);

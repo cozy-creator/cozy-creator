@@ -207,6 +207,37 @@ pub(crate) fn project_vault(id: &str, state: &str) {
     let _ = PROJECTS.said.send(StreamEvent::ProjectVault { id: id.to_owned(), state: state.to_owned() });
 }
 
+/// The streams showing project `id` now.
+pub(crate) fn showing(id: &str) -> Vec<String> {
+    SHOWN.lock().expect("shown lock").iter()
+        .filter(|(_, shows)| shows.readers.iter().any(|reader| reader.id() == id))
+        .map(|(stream, _)| stream.clone()).collect()
+}
+
+/// Project `id` held again by each of `streams` that's still going (cl-1097): renamed, it was let go, and the pages that showed it
+/// go on showing it.
+pub(crate) fn show_again(api: &Arc<Api>, streams: &[String], id: &str) {
+    for stream in streams {
+        let Ok(reader) = api.projects.reader(api, id) else { return };
+        if let Some(shows) = SHOWN.lock().expect("shown lock").get_mut(stream) { shows.readers.push(reader); }
+    }
+}
+
+/// Tells every stream the index changed (cl-1097): a project renamed or deleted.
+pub(crate) fn projects_changed() {
+    let _ = PROJECTS.said.send(StreamEvent::ProjectsChanged);
+}
+
+/// Tells every stream project `id` is gone, deleted here (cl-1097): what showed it no longer holds it.
+pub(crate) fn project_deleted(id: &str, path: &std::path::Path) {
+    let _ = PROJECTS.said.send(StreamEvent::ProjectGone { id: id.to_owned(), path: path.to_string_lossy().into_owned() });
+}
+
+/// Tells every stream how the page looks everywhere now (cl-1097).
+pub(crate) fn appearance(appearance: &api::calcifer::Appearance) {
+    let _ = PROJECTS.said.send(StreamEvent::Appearance { appearance: appearance.clone() });
+}
+
 /// Tells every stream project `id`'s render, whole: more than one job of it changed.
 pub(crate) fn board_updated(id: &str, board: &api::calcifer::project::Board) {
     let _ = PROJECTS.said.send(StreamEvent::BoardUpdated { project: id.to_owned(), board: Box::new(board.clone()) });
@@ -542,11 +573,11 @@ impl Watch {
 
     fn visible(&self, event: &StreamEvent) -> bool {
         let project_id = match event {
-            StreamEvent::ProjectVault { .. } => return true,
+            StreamEvent::ProjectVault { .. } | StreamEvent::ProjectsChanged | StreamEvent::Appearance { .. } => return true,
             // A page's alone: this computer's cozy has nothing typed to send.
             StreamEvent::ProjectSaving { id } => return self.showing.as_ref().is_some_and(|showing| showing.page() && showing.includes(id)),
-            // Out of the index by now: told to whoever shows it.
-            StreamEvent::ProjectGone { id, .. } => return self.showing.as_ref().is_some_and(|showing| showing.includes(id)),
+            // Out of the index by now, and let go by every stream: told to all (cl-1097).
+            StreamEvent::ProjectGone { .. } => return true,
             StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
             StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } | StreamEvent::Thumb { project, .. } => Some(project),
             StreamEvent::RunUpdated { run } => {

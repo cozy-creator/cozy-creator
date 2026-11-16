@@ -3,11 +3,9 @@ import { type FormEvent, useEffect, useRef, useState } from "react"
 import QRCode from "react-qr-code"
 import { ApiError, type Client, type VaultAsk, type VaultProgress } from "../api/client"
 import { useConnection } from "../app/Connection"
-import { useProjectId } from "../app/Shell"
 import { readAddressesAgain } from "../app/project"
 import { CopyButton } from "../ui/Copyable"
 import { useSignal } from "../ui/signal"
-import { DrawerFrame } from "./Drawer"
 import { Failure, useAsk } from "./common"
 import { bytes } from "./format"
 
@@ -93,7 +91,8 @@ export function Recovery({ secret, onDone, disabled = false }: { secret: string;
   )
 }
 
-function VaultBody({ id }: { id: string }) {
+/** A project's encryption: on and off, lock and unlock, its passphrase and recovery secret (in Project settings, cl-1097). */
+export function VaultBody({ id }: { id: string }) {
   const { client, outbox, bridge } = useConnection()
   const queries = useQueryClient()
   const { data: status, error, refetch } = useQuery(vaultQuery(client, id))
@@ -251,11 +250,6 @@ function VaultBody({ id }: { id: string }) {
       {ask.busy && <p role="status">{pendingLine(operation)}</p>}
     </div>
   )
-}
-
-export function ProjectVault() {
-  const id = useProjectId()
-  return <DrawerFrame title="Project encryption">{id ? <VaultBody key={id} id={id} /> : <p>Open a project to see its encryption.</p>}</DrawerFrame>
 }
 
 export function ProjectLocked({ id }: { id: string }) {

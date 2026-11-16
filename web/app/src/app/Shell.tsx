@@ -7,7 +7,7 @@ import { DrawerFrame } from "../panels/Drawer"
 import { ProjectLocked, vaultQuery } from "../panels/ProjectVault"
 import { protectProjectView, privateProject } from "./view"
 import { say } from "../ui/notes"
-import { projectQuery, projectsQuery, projectViewQuery } from "../api/queries"
+import { appearanceQuery, projectQuery, projectsQuery, projectViewQuery } from "../api/queries"
 import { CanvasHost } from "../canvas/CanvasHost"
 import { warningsOf } from "../canvas/graph"
 import { noHash } from "../canvas/text"
@@ -21,7 +21,7 @@ import logo from "../ui/logo.png"
 import { Notes } from "../ui/NoteList"
 import { pressBeganOutside } from "../ui/press"
 import { useSignal } from "../ui/signal"
-import { landscape, setLandscape, setTheme, theme } from "../ui/theme"
+import { shown as lookShown, showAppearance } from "../ui/theme"
 import { useConnection } from "./Connection"
 import { projectPath, rememberProject, useProjectId, useTo } from "./project"
 import { opened, useByUse } from "../panels/Projects"
@@ -203,21 +203,24 @@ function ProjectTabs({ id: project, folder, readable, children }: { id: string |
   )
 }
 
-function ThemeSwitch() {
-  const now = useSignal(theme)
-  const shown = useSignal(landscape)
-  return (
-    <>
-      <button type="button" className="tb" onClick={() => setTheme(now === "dark" ? "paper" : "dark")}>
-        {now === "dark" ? "Paper" : "Dark"}
-      </button>
-      {now === "paper" && (
-        <button type="button" className="tb" onClick={() => setLandscape(!shown)}>
-          {shown ? "Hide landscape" : "Show landscape"}
-        </button>
-      )}
-    </>
-  )
+/** How the page looks (cl-1097): the open project's own, else everywhere's. What isn't read yet keeps what's shown; everywhere's, never
+ *  set on this computer, is what this browser shows. */
+function useAppearance(id: string | null, readable: boolean) {
+  const { client, stream } = useConnection()
+  const everywhere = useQuery(appearanceQuery(client))
+  const { data: state } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
+  const seeded = useRef(false)
+  useEffect(() => {
+    if (everywhere.data !== null || seeded.current) return
+    seeded.current = true
+    void client.setAppearance(lookShown.get()).catch(() => { seeded.current = false })
+  }, [everywhere.data, client])
+  const own = id && readable ? (state ? (state.appearance ?? null) : undefined) : null
+  const wanted = own === undefined ? undefined : (own ?? everywhere.data ?? undefined)
+  const key = wanted && JSON.stringify(wanted)
+  useLayoutEffect(() => {
+    if (wanted && key !== JSON.stringify(lookShown.get())) showAppearance(wanted)
+  }, [key])
 }
 
 /** A new project, made in place over the empty canvas (cl-980): the strip's + asks for one, as a first drop does. A press that began outside it,
@@ -308,14 +311,16 @@ function MainMenu({ id, readable }: { id: string | null; readable: boolean }) {
             Assets
           </Link>
         )}
-        {id && <Link className="tb" to={to("vault")}>Project encryption</Link>}
-        <ThemeSwitch />
-        {/* Last (Paul, 11-16). */}
+        {id && <Link className="tb" to={to("project-settings")}>Project settings</Link>}
+        {/* Last, Account then Settings (Paul, 11-16). */}
         {!client.transport.channel && (
           <Link className="tb" to={to("account")}>
             Account
           </Link>
         )}
+        <Link className="tb" to={to("settings")}>
+          Settings
+        </Link>
       </nav>
     </details>
   )
@@ -382,7 +387,10 @@ export function Shell() {
   // adopted): those are covered until they're checked, as before.
   // The next one's canvas view is read first, as its canvas would read it before drawing anything: until it's here, the last canvas stays.
   const nextView = useQuery({ ...projectViewQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
-  const viewing = readable && Boolean(id) && !nextView.data && !nextView.error
+  // And its state, which says how it looks (cl-1097): the last canvas stays until the next one shows in its own colors.
+  const nextState = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
+  const viewing = readable && Boolean(id) && (!nextView.data || !nextState.data) && !nextView.error && !nextState.error
+  useAppearance(id, readable)
   const shown = useRef<{ id: string | null; key: string } | null>(null)
   if (readable && heldCanvas && !viewing) shown.current = { id, key: hostKey }
   const last = shown.current
@@ -538,7 +546,7 @@ export function Shell() {
         // A first drop waiting on its project holds the canvas still: its box keeps its name field for when the project is made.
         : heldCanvas && <div hidden={!readable} inert={!readable || making?.by === "drop"} style={{ display: readable ? "contents" : "none" }}><CanvasHost key={hostKey} projectId={id} active={readable} slot={readable ? slot : null} history={readable ? history : null} onAdopt={adopt} /></div>}
       {making && !id && <NewProject />}
-      {!readable && id && !between && (checking || !checked || uncertain ? <main className="gate">{vault.isError && <><p>Couldn't check whether this project is locked.</p><button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button></>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Encryption</p></main> : <ProjectLocked id={id} />)}
+      {!readable && id && !between && (checking || !checked || uncertain ? <main className="gate">{vault.isError && <><p>Couldn't check whether this project is locked.</p><button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button></>}</main> : location.pathname.endsWith("/project-settings") ? <main className="gate"><p>This project is locked.</p></main> : <ProjectLocked id={id} />)}
       {handle?.drawer && (
         <aside ref={drawer} className="drawer" hidden={covered} inert={covered} style={covered ? { display: "none" } : undefined}>
           {sealed && !heldCanvas
