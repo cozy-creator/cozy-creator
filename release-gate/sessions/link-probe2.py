@@ -39,6 +39,10 @@ def main() -> None:
         add("tensord_cores", max(0, row["tensord"]["cpu_ticks"] - last["tensord"]["cpu_ticks"]) / dt / 100)
         add("dirty_mb", row["dirty_kb"] / 1e3)
         add("writeback_mb", row["writeback_kb"] / 1e3)
+        if "memory_some_total_us" in row and "memory_some_total_us" in last:
+            add("memory_pressure_share", max(0, row["memory_some_total_us"] - last["memory_some_total_us"]) / dt / 1e6)
+            add("cgroup_dirty_mb", row["cgroup_dirty_kb"] / 1e3)
+            add("cgroup_writeback_mb", row["cgroup_writeback_kb"] / 1e3)
         for disk, (written, busy) in row["disks"].items():
             before = last["disks"].get(disk)
             if before:
@@ -50,7 +54,7 @@ def main() -> None:
         for key, xs in values.items():
             if key.endswith(("_n",)):
                 summary[stage][key] = max(xs)
-            elif key in ("dirty_mb", "writeback_mb") or key.endswith("_busy"):
+            elif key in ("dirty_mb", "writeback_mb", "cgroup_dirty_mb", "cgroup_writeback_mb", "memory_pressure_share") or key.endswith("_busy"):
                 summary[stage][key] = {"p50": quantile(xs, 0.5), "max": round(max(xs), 2)}
             else:
                 summary[stage][key] = {"p50": quantile(xs, 0.5), "p90": quantile(xs, 0.9), "max": round(max(xs), 2)}
@@ -70,7 +74,19 @@ def main() -> None:
             **{name: {"p50": quantile([x[i] for x in samples], 0.5), "p95": quantile([x[i] for x in samples], 0.95), "max": round(max(x[i] for x in samples), 4)}
                for i, name in enumerate(("connect_s", "tls_s", "total_s"))},
         }
-    print(json.dumps({"hub_http_versions": sorted(versions), "sock_diag": sorted({str(r.get("sock_diag")) for r in rows}), "stages": summary}))
+    # Stage 3 as a series, every 5 s: arrival, TensorD's writes and cores, dirty and writeback, the busiest disk.
+    series = []
+    for last, row in zip(rows, rows[1:]):
+        if row["stage"] != "weights-alone" or row["t"] <= last["t"]:
+            continue
+        dt = row["t"] - last["t"]
+        busy = max((max(0, b - last["disks"].get(d, [0, b])[1]) / dt / 1e3 for d, (_, b) in row["disks"].items()), default=0.0)
+        series.append([round(row["t"] - rows[0]["t"]), round(max(0, row["weights"]["bytes"] - last["weights"]["bytes"]) / dt / 1e6),
+                       round(max(0, row["tensord"]["write_bytes"] - last["tensord"]["write_bytes"]) / dt / 1e6),
+                       round(max(0, row["tensord"]["cpu_ticks"] - last["tensord"]["cpu_ticks"]) / dt / 100, 2),
+                       round(row["dirty_kb"] / 1e3), round(row["writeback_kb"] / 1e3), round(busy, 2)])
+    print(json.dumps({"hub_http_versions": sorted(versions), "sock_diag": sorted({str(r.get("sock_diag")) for r in rows}), "stages": summary,
+                      "weights_alone_series_t_arrive_write_cores_dirty_writeback_busy": series[::5]}))
 
 
 main()

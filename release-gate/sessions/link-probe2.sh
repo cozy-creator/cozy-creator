@@ -113,6 +113,14 @@ while not os.path.exists("/tmp/probe2.stop"):
     row["tensord"] = {"pids": len(tensord), "write_bytes": written, "cpu_ticks": ticks}
     mem = dict(line.split(":", 1) for line in open("/proc/meminfo"))
     row["dirty_kb"], row["writeback_kb"] = int(mem["Dirty"].split()[0]), int(mem["Writeback"].split()[0])
+    # The container's memory pressure and its own dirty and writeback page-cache bytes (cgroup v2), where it can be read.
+    try:
+        some = open("/sys/fs/cgroup/memory.pressure").readline().split()
+        row["memory_some_total_us"] = int(some[-1].split("=")[1])
+        stat = dict(line.split() for line in open("/sys/fs/cgroup/memory.stat"))
+        row["cgroup_dirty_kb"], row["cgroup_writeback_kb"] = int(stat.get("file_dirty", 0)) // 1024, int(stat.get("file_writeback", 0)) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
     disks = {}
     for line in open("/proc/diskstats"):
         f = line.split()
