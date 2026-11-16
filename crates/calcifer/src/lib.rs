@@ -311,12 +311,14 @@ impl Calcifer {
             api: OnceLock::new(),
             opened_ms: std::sync::atomic::AtomicI64::new(store::now_ms()),
         });
+        let runs = std::time::Instant::now();
         let maintenance: Vec<String> = calcifer.store.read(|conn| {
             let mut rows = conn.prepare("SELECT id FROM runs")?;
             Ok(rows.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })?;
         lock(&calcifer.run_owners).extend(maintenance.into_iter().map(|id| (id, None)));
         calcifer.sweep_inputs()?;
+        tracing::info!(target: "cozy.service_health", step = "store_runs", ms = runs.elapsed().as_millis() as u64, "started");
         Ok(calcifer)
     }
 

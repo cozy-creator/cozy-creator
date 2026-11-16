@@ -364,9 +364,18 @@ fn migrate_maintenance_runs(writer: &mut Connection) -> Result<()> {
     loop {
         let tx = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_batch("DELETE FROM temp.maintenance_batch")?;
+        // Ids alone first, from the id index: a store with none left to move (every start until cl-1003's cut) reads no fenced
+        // run's row, which on a laptop's store is a scan of more than a gigabyte (cl-1010).
         let batch: Vec<(String, String)> = {
-            let mut stmt = tx.prepare(&format!("SELECT id, idempotency_key FROM legacy_project_runs WHERE id NOT IN (SELECT id FROM temp.maintenance_fenced) {owners} LIMIT 2000"))?;
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+            let mut ids = tx.prepare(&format!("SELECT id FROM legacy_project_runs WHERE id NOT IN (SELECT id FROM temp.maintenance_fenced) {owners} LIMIT 2000"))?;
+            let ids: Vec<String> = ids.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+            let mut key = tx.prepare("SELECT idempotency_key FROM legacy_project_runs WHERE id = ?1")?;
+            let mut batch = vec![];
+            for id in ids {
+                let keyed: String = key.query_row([&id], |row| row.get(0))?;
+                batch.push((id, keyed));
+            }
+            batch
         };
         if batch.is_empty() { tx.commit()?; break; }
         {
@@ -2181,6 +2190,7 @@ impl Store {
 
     pub(crate) fn open(path: &Path) -> Result<Self> {
         std::sync::LazyLock::force(&STARTED_MS);
+        let began = std::time::Instant::now();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         }
@@ -2234,9 +2244,14 @@ impl Store {
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
         writer.execute_batch(crate::state::TABLES)?;
         writer.execute_batch(MACHINE_LOGS)?;
+        // The store step's parts, in the closed health log: a slow start names its slow part (cl-1010).
+        let said = |part: &'static str, since: std::time::Instant| tracing::info!(target: "cozy.service_health", step = part, ms = since.elapsed().as_millis() as u64, "started");
+        said("store_schema", began);
+        let legacy = std::time::Instant::now();
         index_legacy_owners(&mut writer)?;
         migrate_maintenance_asks(&mut writer)?;
         migrate_maintenance_runs(&mut writer)?;
+        said("store_legacy", legacy);
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;
         writer.pragma_update(None,"synchronous",if wal {"NORMAL"} else {"FULL"})?;
