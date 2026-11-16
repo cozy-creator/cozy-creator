@@ -620,7 +620,7 @@ impl Calcifer {
                     Some(owner) if owner.when_admitted().await.is_ok() => continue,
                     _ => break,
                 },
-                Err(e) => { warn!(run = %id, "what stays on its machine is not in its project's lock: {e}"); break; }
+                Err(e) => { warn!("what a run left on its machine isn't noted in its project: {e}"); break; }
                 Ok(()) => break,
             }
         }

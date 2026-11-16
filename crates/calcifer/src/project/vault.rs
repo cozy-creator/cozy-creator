@@ -177,6 +177,11 @@ pub(crate) fn register_plain_root(root: &FsPath, id: &str) -> Result<(), Error> 
 }
 
 /// Logical registered path of an unlocked mount, including any relative subpath.
+/// Whether `path` is inside an encrypted project: what no log outside it may name a run of (cl-1060).
+pub(crate) fn encrypted_within(path: &FsPath) -> bool {
+    logical(path).ancestors().any(encrypted)
+}
+
 pub(crate) fn logical(path: &FsPath) -> PathBuf {
     for (view, root) in ROOTS.lock().expect("vault roots").iter() {
         if let Ok(rest) = path.strip_prefix(view) { return root.join(rest); }
@@ -398,7 +403,8 @@ static LOCK_RETRIES: LazyLock<Mutex<BTreeMap<PathBuf, LockRetry>>> = LazyLock::n
 fn idle_lock_failed(root: &FsPath, failure: &Error) {
     let mut retries = LOCK_RETRIES.lock().expect("lock retries");
     let retry = retries.entry(root.to_owned()).or_insert_with(|| LockRetry { backoff: tensorfs::fetch::Backoff::background(), at: std::time::Instant::now(), next: vec![] });
-    let why = format!("{} did not lock at its deadline: {}", root.display(), failure.message);
+    // Its code alone, with the folder: what refused it can name a run, which no log outside the project carries (cl-1060).
+    let why = format!("{} did not lock at its deadline: {}", root.display(), failure.code);
     let (wait, said) = retry.backoff.again(&why, false, None).unwrap_or_else(|| {
         // Never left unlocked quietly: say the spent round and start another.
         let spent = retry.backoff.spent(&why);
@@ -685,14 +691,13 @@ fn prepare_browser(api: &Arc<Api>) -> Result<Option<crate::browser::PreparedBrow
     tokio::runtime::Handle::current().block_on(api.browser.prepare_close()).map(Some).map_err(|error| error.0)
 }
 
-/// A run still writing into the project, as a lock refuses on it: named, with what to do (cl-1060).
-fn saving(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Option<Error> {
+/// A run still writing into the project, as a deadline's or a stop's lock waits on it (cl-1060). It names no run and no project:
+/// this refusal is logged, outside the project.
+fn saving(api: &Arc<Api>, root: &FsPath) -> Option<Error> {
     let projects = api.projects.now_open();
     let project = projects.iter().find(|project| project.root == root)?;
-    let id = api.calcifer.writing_into(&project.id)?;
-    let number = api.projects.transition_store(api, &project.id, transition).ok()
-        .and_then(|store| store.run(id.as_str()).ok().flatten()).map(|row| row.number);
-    Some(saving_refusal(project, &id, number))
+    api.calcifer.writing_into(&project.id)?;
+    Some(Error::new(Kind::Conflict, "project_busy", "a run is still writing into the project; it locks once that's done"))
 }
 
 /// A lock asked for ends the saves going into the project (cl-1060): each exporter stops at a write-batch boundary (this holds
@@ -702,7 +707,7 @@ fn end_saves(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> R
     let projects = api.projects.now_open();
     let Some(project) = projects.iter().find(|project| project.root == root) else { return Ok(vec![]) };
     if api.calcifer.driving_into(&project.id).is_some() {
-        return Err(Error::new(Kind::Conflict, "project_busy", "a run is still settling into the project; it takes a moment"));
+        return Err(Error::new(Kind::Conflict, "project_busy", "a run is still settling into the project; lock again in a moment").next("cozy vault lock"));
     }
     let store = api.projects.transition_store(api, &project.id, transition)?;
     let mut unsaved = vec![];
@@ -714,11 +719,7 @@ fn end_saves(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> R
     Ok(unsaved)
 }
 
-fn saving_refusal(project: &super::Project, id: &crate::RunId, number: Option<u64>) -> Error {
-    let run = number.map_or_else(|| "a run".to_owned(), |number| format!("{}-{number}", project.key()));
-    Error::new(Kind::Conflict, "project_busy", format!("{run} is saving its outputs; lock again when it finishes, or cancel the run"))
-        .next(format!("cozy run cancel {}", number.map_or_else(|| id.to_string(), |number| number.to_string())))
-}
+
 
 fn retire_browser(api: &Arc<Api>, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
     if let Some(prepared) = browser.take() {
@@ -740,7 +741,7 @@ enum Saves {
 fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser: &mut Option<crate::browser::PreparedBrowserClose>, saves: Saves) -> Result<Vec<String>, Error> {
     // Under the project's turn and before anything is revoked (cl-1060).
     let unsaved = match saves {
-        Saves::Wait => match saving(api, root, transition) { Some(error) => return Err(error), None => vec![] },
+        Saves::Wait => match saving(api, root) { Some(error) => return Err(error), None => vec![] },
         Saves::End => end_saves(api, root, transition)?,
     };
     if let Some(session) = held(root) {
@@ -1235,7 +1236,8 @@ fn working(api: &Arc<Api>, root: &FsPath) -> Option<Work> {
     let projects = api.projects.now_open();
     let project = projects.iter().find(|project| project.root == root)?;
     // A finished call still owes the project its settling and outputs, saved after its row settles (cl-1060).
-    if api.calcifer.writing_into(&project.id).is_some() { return untold("a run's writes still owed: its outputs being saved"); }
+    if api.calcifer.driving_into(&project.id).is_some() { return untold("a run not yet settled"); }
+    if api.calcifer.writing_into(&project.id).is_some() { return untold("a run saving its outputs"); }
     if *project.walking.lock().expect("walking lock") { return told("a render"); }
     if project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return untold("a move or cut"); }
     let Ok(transition) = exclusive(root) else { return untold("a reader holding the project") };
