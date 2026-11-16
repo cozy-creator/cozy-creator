@@ -203,6 +203,7 @@ case $key in
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
   cli:ondemand) needs='packages birefnet downloads spare' ;;
+  cli:ondemand-ramp) needs='packages spare' ;;
   cli:disk) needs='packages disk' ;;
   # H3's Models & LoRAs, Qwen's VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
   cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
