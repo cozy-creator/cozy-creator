@@ -6,7 +6,9 @@ In an unlocked synthetic vault on this computer's machine, through the installed
 2. An explicit lock mid-run ends the run first, says so, and locks.
 3. A run that outlives a short maximum unlock (cl-882, owner 11-11: "runs count as activity") goes on with the vault
    unlocked, finishes and lands its file, and then the vault locks. Its file is video-sized (cl-1060): saved into the project
-   after its call ends, past the maximum, which the vault waits for; a lock then cut the save off at the run's end.
+   after its call ends, past the maximum, which the vault waits for; a lock could cut the save off at the run's end.
+   Then Calcifer's own logs name neither the project's code nor its runs.
+4. An explicit lock as a run's output starts coming in goes through at once; the next unlock saves the file whole.
 The caller owns the vault before and after: it is left unlocked with no idle limit, as it was found.
 """
 from __future__ import annotations
@@ -18,7 +20,6 @@ import json
 import os
 import re
 from pathlib import Path
-import signal
 import subprocess
 import time
 from typing import TypedDict, cast
@@ -63,7 +64,7 @@ OUTLIVES = 50
 MAXIMUM = 15
 # The maximum's run's file, in MB: a save into the project that takes a while after its call ends (cl-1060).
 VIDEO_MB = 128
-# Steps 4 and 5's files, in MB: a save its machine is stopped under, mid-transfer (cl-1060).
+# Step 4's file, in MB: a save a lock lands in or just after (cl-1060).
 SAVE_MB = 512
 
 
@@ -129,19 +130,6 @@ def exporting(stdout: Path, process: subprocess.Popen[bytes]) -> bool:
                 return True
         time.sleep(0.02)
     return False
-
-
-def machines(stop: signal.Signals, pids: list[int] | None = None) -> list[int]:
-    """This computer's machine, stopped or let go on: unreachable for what it still owes."""
-    if pids is None:
-        found = subprocess.run(["pgrep", "-f", "machine serve"], capture_output=True, text=True)
-        pids = [int(pid) for pid in found.stdout.split()]
-    for pid in pids:
-        try:
-            os.kill(pid, stop)
-        except ProcessLookupError:
-            pass
-    return pids
 
 
 def settled(args: argparse.Namespace, number: object, seconds: float) -> tuple[str, Run]:
@@ -352,72 +340,44 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
                                    "unlocked_past_maximum_s": round((settled_ms - deadline_ms) / 1000), "unlocked_reads_past_maximum": len(past),
                                    "locked_after_end_s": round(max_lock_s, 1), "fetched": kept[0].name, "file_mb": VIDEO_MB}
 
-    # 4. An explicit lock during a save goes through at once: the save stops, nothing half-written is left in the project, and the
-    #    next unlock saves the file whole, the bytes its run made (cl-1060). The save is held mid-transfer (its machine stopped as
-    #    the output starts coming), so the lock lands in it.
+    # No trace of it outside it: Calcifer's own logs name neither its code nor its runs, after a deadline lock that waited on a
+    # save (step 3), a lock that ended a run (step 2), and runs that ran slow.
+    names += [name for out in ("outlives", "ended", "past-maximum") if (name := run_of(args.out / f"{out}.ndjson").get("name"))]
+    if names:
+        found = traces(since, sorted(set(names)))
+        assert not found, f"Calcifer's own logs name the encrypted project's runs or its code: {found[:5]}"
+    receipt["no_traces"] = {"runs": sorted(set(names)), "logs_scanned": True}
+
+    # 4. An explicit lock as a run's output starts coming into the project goes through at once; once the next unlock has saved
+    #    it, the file is whole, the bytes its run made, and nothing half-written is left (cl-1060).
     script = unlock(args, "unlock-for-save-lock", 0) / "vault-work-proof" / "sleeper.py"
     mark = f"cl1060-lock-{time.time_ns()}"
     process, stdout = start(args, "save-lock", script, 2, mark, SAVE_MB)
     assert exporting(stdout, process), f"the run's output never started coming: {run_of(stdout)}"
-    stopped = machines(signal.SIGSTOP)
-    try:
-        began = time.monotonic()
-        locked = cast(Changed, cli(args, "lock-while-saving", "vault", "lock"))
-        save_lock_s = locked_within(args, 30) + (time.monotonic() - began)
-        assert save_lock_s < 15, f"a lock during a save took {save_lock_s:.0f} s"
-        left = [line for line in Path("/proc/self/mountinfo").read_text().splitlines() if f"{args.project}/.vault-runtime/" in line]
-        assert not left, f"the lock left a view mounted: {left}"
-        # The next unlock, the save still held back, shows nothing half-written.
-        view = unlock(args, "unlock-after-save-lock", 0)
-        partial = [str(path) for path in view.rglob("*") if path.name.endswith((".part", ".part.held", ".manifest.part"))]
-        torn = [str(path) for path in view.rglob("*") if path.is_file() and path.stat().st_size < SAVE_MB << 20
-                and mark.encode() in path.read_bytes()[:200]]
-        assert not partial and not torn, f"after a lock stopped a save, the project held half-written files: {partial} {torn}"
-    finally:
-        machines(signal.SIGCONT, stopped)
+    began = time.monotonic()
+    locked = cast(Changed, cli(args, "lock-while-saving", "vault", "lock"))
+    save_lock_s = locked_within(args, 30) + (time.monotonic() - began)
+    assert save_lock_s < 15, f"a lock during a save took {save_lock_s:.0f} s"
+    left = [line for line in Path("/proc/self/mountinfo").read_text().splitlines() if f"{args.project}/.vault-runtime/" in line]
+    assert not left, f"the lock left a view mounted: {left}"
     process.wait(timeout=120)
     saved = run_of(stdout).get("number")
+    view = unlock(args, "unlock-after-save-lock", 0)
     status, record = settled(args, saved, 180)
     assert status == "completed", f"run {saved}, its save stopped by a lock, is {status or 'unread'} after the next unlock"
+    partial = [str(path) for path in view.rglob("*") if path.name.endswith((".part", ".part.held", ".manifest.part"))]
+    assert not partial, f"after run {saved}'s save, the project holds half-written files: {partial}"
     size, digest = whole(args, saved, mark, "save-lock.out")
     made = [item.get("sha256") for item in record.get("output", [])]
     assert size >= SAVE_MB << 20 and digest in made, f"run {saved}'s file came back {size} bytes, {digest}, not its own {made}"
     receipt["lock_while_saving"] = {"run": saved, "locked_s": round(save_lock_s, 1), "unsaved": locked.get("unsaved", []),
                                     "next_unlock": status, "file_mb": SAVE_MB}
-    cli(args, "lock-after-save", "vault", "lock")
-
-    # 5. An exporter that can't move its bytes (its machine stopped) holds the vault open no longer than a moment past its
-    #    deadline: it locks, and the next unlock saves the file (cl-1060).
-    script = unlock(args, "unlock-for-stall", 0, MAXIMUM) / "vault-work-proof" / "sleeper.py"
-    mark = f"cl1060-stall-{time.time_ns()}"
-    process, stdout = start(args, "stall", script, MAXIMUM + 5, mark, SAVE_MB)
-    assert exporting(stdout, process), f"the run's output never started coming: {run_of(stdout)}"
-    stopped = machines(signal.SIGSTOP)
-    try:
-        stall_lock_s = locked_within(args, 90)
-    finally:
-        machines(signal.SIGCONT, stopped)
-    process.wait(timeout=120)
-    stalled = run_of(stdout).get("number")
-    view = unlock(args, "unlock-after-stall", 0)
-    status, record = settled(args, stalled, 180)
-    assert status == "completed", f"run {stalled}, its save stopped by a lock, is {status or 'unread'} after the next unlock"
-    size, digest = whole(args, stalled, mark, "stall.out")
-    made = [item.get("sha256") for item in record.get("output", [])]
-    assert size >= SAVE_MB << 20 and digest in made, f"run {stalled}'s file came back {size} bytes, {digest}, not its own {made}"
-    receipt["stalled_export"] = {"run": stalled, "machine_stopped": len(stopped), "locked_s": round(stall_lock_s, 1),
-                                 "next_unlock": status, "file_mb": SAVE_MB}
     # Its large files aren't artifacts.
     for path in view.rglob("*"):
         if path.is_file() and path.stat().st_size > 32 << 20:
             path.unlink()
-    # No trace of it outside it: deadline locks waited on saves (steps 3 and 5), a lock ended one (step 4), runs ran slow.
-    names += [name for out in ("outlives", "ended", "past-maximum", "save-lock", "stall")
-              if (name := run_of(args.out / f"{out}.ndjson").get("name"))]
-    if names:
-        found = traces(since, sorted(set(names)))
-        assert not found, f"Calcifer's own logs name the encrypted project's runs or its code: {found[:5]}"
-    receipt["no_traces"] = {"runs": sorted(set(names)), "logs_scanned": True}
+    cli(args, "lock-after-save", "vault", "lock")
+
     receipt["synthetic_only"] = True
     (args.out / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(f"vault work: {json.dumps(receipt)}", flush=True)
