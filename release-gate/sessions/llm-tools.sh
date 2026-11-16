@@ -101,11 +101,8 @@ say "on the RC: $(jq -r '"cozy \(.status.version) · Runtime \(.status.runtime) 
 # cli: each package asked about the photo and the video, by mention.
 run_page import "$PICTURE" --name photo > "$OUT/import-photo.json" 2>&1 || fail "import the photo: $(tail -c 300 "$OUT/import-photo.json")"
 run_page import "$VIDEO" --name clip > "$OUT/import-clip.json" 2>&1 || fail "import the video: $(tail -c 300 "$OUT/import-clip.json")"
-for _ in $(seq 100); do
-  photo=$(run_page asset photo | jq -r '.sha256 // empty') clip=$(run_page asset clip | jq -r '.sha256 // empty')
-  [ -n "$photo" ] && [ -n "$clip" ] && break; sleep 0.2
-done
-[ -n "$photo" ] && [ -n "$clip" ] || fail "the imports hold no files: $photo $clip"
+photo=$(jq -r '.sha256 // empty' "$OUT/import-photo.json") clip=$(jq -r '.sha256 // empty' "$OUT/import-clip.json")
+[ -n "$photo" ] && [ -n "$clip" ] || fail "the imports hold no files: $(head -c 300 "$OUT/import-photo.json") $(head -c 300 "$OUT/import-clip.json")"
 ask() { jq -cn --arg k "$1" --arg t "$2" --arg f "sha256:${3#sha256:}" --arg q "$4" '{text: $q, references: [{key: $k, type: $t, file: $f}]}'; }
 ON_PHOTO=$(ask photo image "$photo" 'What is in <photo>? Answer in two sentences.')
 ON_CLIP=$(ask clip video "$clip" 'What does <clip> show? Answer in two sentences.')
