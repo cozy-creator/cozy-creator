@@ -1,4 +1,7 @@
-import { BitmapText, CanvasTextMetrics, type Container, Text } from "pixi.js"
+import { BitmapFontManager, BitmapText, CanvasTextMetrics, type Container, Text } from "pixi.js"
+
+// Shared glyphs sharp on a high-density screen at 100%; the page's few small sizes keep the atlas small.
+BitmapFontManager.defaultOptions.resolution = Math.max(2, Math.ceil(devicePixelRatio || 1))
 
 /** The page's own families (tokens.css), with a font epoch so a late web font retires earlier rasters and bitmap glyphs. */
 let epoch = 0

@@ -28,6 +28,8 @@ export class Camera {
   private ends = new Set<(view: Viewport) => void>()
   private draws = new Set<() => void>()
   private drawn = false
+  /** The canvas element's place on the page, read once per layout change, not on every conversion (each read forces layout). */
+  private rect: DOMRect | null = null
   /** Asks the canvas for a tick: a move or an animation of the camera needs frames. */
   wake: () => void = () => {}
 
@@ -52,6 +54,7 @@ export class Camera {
   bind(element: HTMLElement, viewport: PixiViewport): () => void {
     this.element = element
     this.viewport = viewport
+    this.measure()
     this.place(this.view)
     this.setInteractionEnabled(this.enabled)
     return () => {
@@ -88,13 +91,16 @@ export class Camera {
     return Boolean(plugin && (plugin.x || plugin.y))
   }
 
+  /** The element moved or resized (the Stage calls it from its ResizeObserver). */
+  measure() { this.rect = this.element?.getBoundingClientRect() ?? null }
+
   screenToWorld(point: Point): Point {
-    const rect = this.element?.getBoundingClientRect()
+    const rect = this.rect
     return { x: (point.x - (rect?.left ?? 0) - this.view.x) / this.view.zoom, y: (point.y - (rect?.top ?? 0) - this.view.y) / this.view.zoom }
   }
 
   worldToScreen(point: Point): Point {
-    const rect = this.element?.getBoundingClientRect()
+    const rect = this.rect
     return { x: point.x * this.view.zoom + this.view.x + (rect?.left ?? 0), y: point.y * this.view.zoom + this.view.y + (rect?.top ?? 0) }
   }
 
@@ -121,7 +127,8 @@ export class Camera {
   }
 
   fitView({ bounds, padding = {}, minZoom = MIN_ZOOM, maxZoom = MAX_ZOOM, duration }: Fit): Promise<boolean> {
-    const rect = this.element?.getBoundingClientRect()
+    this.measure()
+    const rect = this.rect
     const boxes = bounds.filter((box) => [box.x, box.y, box.w, box.h].every(Number.isFinite))
     if (!rect || rect.width <= 0 || rect.height <= 0 || !boxes.length) return Promise.resolve(false)
     const left = Math.min(...boxes.map((box) => box.x)), top = Math.min(...boxes.map((box) => box.y))
