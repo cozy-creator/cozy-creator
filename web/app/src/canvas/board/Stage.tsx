@@ -343,7 +343,8 @@ export function Stage(props: StageProps) {
       const locked = signedOut.get() || store.projectId === null || (project !== null && bridge.projectEpoch(project) !== projectEpoch)
       if (renderer && chosen && !locked) parkRenderer(chosen)
       else {
-        if (renderer && "gl" in renderer) (renderer as unknown as { gl: WebGLRenderingContext }).gl.getExtension("WEBGL_lose_context")?.loseContext()
+        const gl = renderer && "gl" in renderer ? (renderer as unknown as { gl: WebGLRenderingContext }).gl : null
+        if (gl && !gl.isContextLost()) gl.getExtension("WEBGL_lose_context")?.loseContext()
         renderer?.destroy({ removeView: true })
       }
       forgetMeasurements()
