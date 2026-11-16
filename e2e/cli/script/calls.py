@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.43.1", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[adapters]>=0.45", "msgspec>=0.19"]
 # ///
 """The cli suite's orchestrators (cl-1077): `edit` loads no model and calls `used` (e2e/calls-used), never `unused`
 (e2e/calls-unused), as H3's `edit` calls its segments and never `upscale`'s regenerate. `adapt` calls `adapted` with a LoRA
@@ -11,8 +11,9 @@ e2e/calls-late, as LTX and H3's `edit` met on one machine."""
 import asyncio
 
 import msgspec
+import torch
 
-from cozy_runtime.author import App, Loader, Lora, Model, ModelChoice, call
+from cozy_runtime.author import App, Loader, Lora, Model, ModelChoice, Serving, call
 
 app = App()
 
@@ -49,8 +50,34 @@ async def edit(payload: Ask) -> Said:
     return await call(used, Ask())
 
 
-@app.entrypoint(private=True, accelerator=False, defaults={"base": "e2e/calls-base@0.1.0", "extra": "e2e/calls-other@0.1.0"})
-def adapted(payload: Ask, base: Extra, extra: Extra) -> Said:
+class Proj(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.proj = torch.nn.Linear(8192, 8192, bias=False)
+
+
+class Graph:
+    def __init__(self) -> None:
+        self.components = {"transformer": Proj()}
+
+
+class Transformer(Model[Graph]):
+    """e2e/calls-base's transformer, one linear `proj` (256 MiB) that e2e/calls-lora adapts, as cli/script/lora.py's."""
+
+    serving = Serving(encoded_leaves=False, loras=("transformer",))
+    graph: Graph
+
+    def load(self, loader: Loader) -> None:
+        self.graph = loader.construct(lambda config: Graph())
+
+
+@app.entrypoint(
+    private=True,
+    accelerator=False,
+    defaults={"base": "e2e/calls-base@0.1.0", "extra": "e2e/calls-other@0.1.0"},
+    components={"base": ("transformer",)},
+)
+def adapted(payload: Ask, base: Transformer, extra: Extra) -> Said:
     return Said(used="e2e/calls-base under e2e/calls-lora, and e2e/calls-other")
 
 

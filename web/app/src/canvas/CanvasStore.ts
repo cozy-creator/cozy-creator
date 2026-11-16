@@ -881,8 +881,8 @@ export class CanvasStore {
     const owner = this.owners.get(run.number) ?? [...this.views].find(([, view]) => watched(view)?.run === run.number)?.[0]
     if (!owner) return
     const viewed = this.get(owner)
-    // A take looked at that's canceled is gone; one that failed stays looked at, its error in its frame (cl-954).
-    if (viewed && watched(viewed)?.run === run.number && run.status === "canceled") this.patch(owner, { watch: undefined })
+    // A take looked at that failed or is canceled is gone: the frame goes back to what it showed (cl-1070).
+    if (viewed && watched(viewed)?.run === run.number && (run.status === "failed" || run.status === "canceled")) this.patch(owner, { watch: undefined })
     // The run its frame is on: the take looked at (cl-945), else the first going. Another's progress is its own tile's.
     const making = this.get(owner)?.asset?.making ?? []
     const view = this.get(owner)
@@ -964,7 +964,7 @@ export class CanvasStore {
         const answered = view.asked !== undefined && view.asked < this.began
         if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }), { stays: true })
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
-        if (view.canceling && !asset.making?.length && !asset.takes?.some((take) => !take.failure) && !queued.has(asset.name)) change.canceling = undefined
+        if (view.canceling && !asset.making?.length && !asset.takes?.length && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (answered) change.asked = undefined
         // Its own takes (cl-945): each listed from the click until Calcifer lists it, as a take or as its version, or a read begun after
@@ -994,7 +994,7 @@ export class CanvasStore {
           const watching = watched({ ...view, asset })
           const seen = watching && madeHere(asset.tool) && (newest ?? 0) > (view.asset?.prefixes?.at(-1)?.number ?? 0) ? { ...watching, number: newest } : watching
           const still =(id: string) => listed.has(id) || Boolean(taking?.some((take) => take.id === id))
-          if (!view.here && view.watch !== undefined && !asset.takes?.some((take) => !take.failure) && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
+          if (!view.here && view.watch !== undefined && !asset.takes?.length && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
           else if (seen?.number !== undefined) Object.assign(change, { watch: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Ended with no version (failed, canceled): nothing of it to look at.
           else if (view.watch !== undefined && !still(view.watch)) change.watch = undefined
@@ -1813,18 +1813,6 @@ export class CanvasStore {
     note = this.offer(edit, `Discarded ${asset.noun} ${number} of ${name}.${stands}${read}`)
   }
 
-  /** What take or version `number` of `name` says of its file, whole, at once: orbit viewing on for any video, or off. With no number, the
-   *  file a box with no version shows, which Calcifer numbers first. A note offers Undo. */
-  setMetadata(name: string, number: number | undefined, metadata: Record<string, unknown>, words: string) {
-    const key = this.resolveName(name)
-    const asset = this.views.get(key)?.asset
-    if (!asset) return
-    const prefixes = asset.prefixes?.map((version) => (version.number === number && version.main ? { ...version, main: { ...version.main, metadata } } : version))
-    const edit = this.step(words, [key])
-    this.over(key, number === undefined || !prefixes ? {} : { prefixes }, (served, write) => this.client.patchVersion(this.projectId!, served, number ?? 0, metadata, write).then(() => ({})), `change ${asset.noun} ${number ?? ""} of`, edit)
-    this.offer(edit, words)
-  }
-
   /** Take `number` off its box, in its turn, under `edit`: what's approved going leaves it following its inputs. */
   private dropTake(key: string, number: number, edit: string, refused?: () => void) {
     const asset = this.views.get(key)?.asset
@@ -2109,10 +2097,9 @@ export class CanvasStore {
     if (take.id) this.patch(name, { gone: [...(view.gone ?? []), take.id] })
     // One with an id is off by it (`gone`), and what's listed after stays as read; a run no take names is off its runs until a read.
     const making = take.id ? {} : { making: asset.making?.filter((number) => number !== take.run) }
-    // One that failed is deleted by its id (cl-954); one sent, its run is stopped; one queued is dropped by its id.
-    const run = take.failure ? undefined : take.run
+    const run = take.run
     const send = run !== undefined ? (_: string, write: Write) => this.client.cancelRun({ project, run }, write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(project, [take.id], write.once).then(() => ({}))
-    this.over(name, making, send, take.failure ? "delete a failed take of" : run !== undefined ? `cancel run ${this.runName(run)} of` : "cancel a take of", undefined)
+    this.over(name, making, send, run !== undefined ? `cancel run ${this.runName(run)} of` : "cancel a take of", undefined)
   }
 
   /** Its render stops, wherever it is: what's queued leaves, its runs are canceled (as `cozy run cancel`), and it says Cancelling… until

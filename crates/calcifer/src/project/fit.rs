@@ -8,7 +8,7 @@
 //! 'render' we should display to them some sort of estimated time"), by the estimator placement uses, and the tool's recommended GPU
 //! when renting it would be far faster.
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path as FsPath,
     sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
@@ -52,7 +52,18 @@ const LONGER_S: f64 = 60.0;
 const ESTIMATED: Duration = Duration::from_secs(20);
 
 static PLACED: LazyLock<Mutex<HashMap<String, (Instant, Option<Placed>)>>> = LazyLock::new(Mutex::default);
-static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<(String, u64)>)>>> = LazyLock::new(Mutex::default);
+static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<Lane>)>>> = LazyLock::new(Mutex::default);
+
+/// A checkpoint as a Hub card lists it in one lane.
+#[derive(Clone, Debug)]
+struct Lane {
+    /// `sha256:<hex>` of its tree.
+    checkpoint: String,
+    /// Its whole closure.
+    bytes: u64,
+    /// Its header, what its components' chunks are read from (cl-1071).
+    header: Option<::api::hub::types::ObjectRef>,
+}
 
 /// What the Hub places a run of a release's function on, and each model it loads there, by its parameter.
 #[derive(Clone)]
@@ -517,7 +528,7 @@ fn placed_now(hub: &str, package: &str, release: &str, function: &str) -> Option
 
 /// What a model card last said of a checkpoint's bytes, however long ago.
 fn sized_now(hub: &str, written: &str, lane: Option<&str>) -> Option<u64> {
-    SIZED.lock().expect("sized lock").get(&format!("{hub}\n{written}\n{}", lane.unwrap_or_default())).and_then(|(_, held)| held.as_ref().map(|(_, bytes)| *bytes))
+    SIZED.lock().expect("sized lock").get(&format!("{hub}\n{written}\n{}", lane.unwrap_or_default())).and_then(|(_, held)| held.as_ref().map(|lane| lane.bytes))
 }
 
 /// The Hub's last word on each card's speed for `target` (`org/pkg/fn@release`), however long ago: what `estimate::References` scales
@@ -601,7 +612,7 @@ fn per_render(usd_micros_per_hour: i64, ms: f64) -> String {
 
 /// A checkpoint's bytes in `lane`, else its least: a Hub model's release or checkpoint, by its card, kept a while. None: the Hub doesn't say.
 async fn sized(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<u64> {
-    checkpoint(api, hub, written, lane).await.map(|(_, bytes)| bytes)
+    checkpoint(api, hub, written, lane).await.map(|lane| lane.bytes)
 }
 
 /// The repository (`org/name`) a slot's choice names, as a machine names what it downloads; empty for any other choice.
@@ -612,8 +623,8 @@ fn repository(written: &str) -> String {
     }
 }
 
-/// The checkpoint and bytes of a checkpoint in `lane`, else its least, as `sized` reads them.
-async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<(String, u64)> {
+/// The checkpoint, bytes and header of a checkpoint in `lane`, else its least, as `sized` reads them.
+async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<Lane> {
     let key = format!("{hub}\n{written}\n{}", lane.unwrap_or_default());
     if let Some((_, held)) = SIZED.lock().expect("sized lock").get(&key).filter(|(at, _)| at.elapsed() < KEPT) {
         return held.clone();
@@ -628,8 +639,8 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
     let found = match (&checkpoint, &release) {
         (Some(checkpoint), _) => (card.releases.iter().flat_map(|release| release.lanes.values()))
             .find(|held| &held.checkpoint == checkpoint)
-            .map(|held| (held.checkpoint.clone(), held.bytes))
-            .or_else(|| card.checkpoints.iter().find(|held| &held.id == checkpoint).map(|held| (held.id.clone(), held.bytes))),
+            .map(|held| (held.checkpoint.clone(), held.bytes, held.header.clone()))
+            .or_else(|| card.checkpoints.iter().find(|held| &held.id == checkpoint).map(|held| (held.id.clone(), held.bytes, held.header.clone()))),
         (None, release) => {
             let release = match release {
                 Some(version) => card.releases.iter().find(|held| &held.version == version),
@@ -637,31 +648,61 @@ async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> 
             };
             release
                 .and_then(|release| lane.and_then(|lane| release.lanes.get(lane)).or_else(|| release.lanes.values().filter(|held| held.bytes > 0).min_by_key(|held| held.bytes)))
-                .map(|held| (held.checkpoint.clone(), held.bytes))
+                .map(|held| (held.checkpoint.clone(), held.bytes, held.header.clone()))
         }
     };
-    let found = found.filter(|(_, bytes)| *bytes > 0).map(|(checkpoint, bytes)| (checkpoint, bytes as u64));
+    let found = (found.filter(|(_, bytes, _)| *bytes > 0))
+        .map(|(checkpoint, bytes, header)| Lane { checkpoint, bytes: bytes as u64, header: Some(header).filter(|header| !header.sha256.is_empty()) });
     SIZED.lock().expect("sized lock").insert(key, (Instant::now(), found.clone()));
     found
 }
 
-/// The checkpoints `function` of `package` reads, on a GPU or not, each by its Hub card's lane checkpoint and bytes: what a machine's
-/// estimate counts the fetch of (cl-816, cl-1047). What the Hub doesn't say in time is left out.
-pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Vec<api::machine::ModelRef> {
-    let Some(weights) = Interface::parse(package.document()).ok().and_then(|interface| Weights::read(&interface, function, made)) else { return vec![] };
+/// The slots a run of a function waits for before it starts, the one set a quote's download sums over (cl-1071): today each not on
+/// demand, which TensorD fetches ahead; an on-demand one is built and fetched when the function first reads it.
+fn waited(slots: &[Slot]) -> impl Iterator<Item = &Slot> {
+    slots.iter().filter(|slot| !slot.on_demand)
+}
+
+/// What `function` of `package` fetches before it starts, as TensorD fetches it (cl-1071): each slot it waits for (`waited`), by its Hub
+/// card's lane checkpoint, and the bytes of the chunks its components read that no slot before it reads, each object once across
+/// checkpoints (a fine-tune composed of a base's parts shares them); and, of its on-demand slots, those it may fetch besides, which a
+/// quote can't know it reads. A header that can't be read counts its checkpoint whole. What a machine's estimate counts the fetch of
+/// (cl-816, cl-1047); what the Hub doesn't say in time is left out.
+pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> Fetched {
+    let Some(weights) = Interface::parse(package.document()).ok().and_then(|interface| Weights::read(&interface, function, made)) else { return Fetched::default() };
     let placed = match package.local {
         None => placed(api, hub, &package.name, &package.release, function).await,
         Some(_) => None,
     };
-    let mut found = vec![];
-    for slot in &weights.slots {
+    let mut counted: HashSet<String> = HashSet::new();
+    let mut fetched = Fetched::default();
+    let waited: Vec<&Slot> = waited(&weights.slots).collect();
+    let on_demand = weights.slots.iter().filter(|slot| !waited.iter().any(|held| std::ptr::eq(*held, *slot)));
+    for (slot, ahead) in waited.iter().map(|slot| (*slot, true)).chain(on_demand.map(|slot| (slot, false))) {
         let param = Weights::param(slot);
         let Some(written) = weights.on_box.get(param).or(slot.default.as_ref()) else { continue };
         let placed = placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param));
         let lane = placed.map(|(_, lane, _)| lane.clone()).or_else(|| slot.lane.clone());
-        if let Some((checkpoint, bytes)) = checkpoint(api, hub, written, lane.as_deref()).await {
-            found.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written), reads: 0 });
+        let Some(held) = checkpoint(api, hub, written, lane.as_deref()).await else { continue };
+        let chunks = match &held.header {
+            Some(header) => crate::hub::headers::wanted(api, hub, header, &slot.fetched_components()).await,
+            None => None,
+        };
+        let bytes = match chunks {
+            Some(chunks) => chunks.iter().filter(|chunk| counted.insert(chunk.sha256.clone())).map(|chunk| chunk.length).sum(),
+            None => held.bytes,
+        };
+        match ahead {
+            true => fetched.models.push(api::machine::ModelRef { checkpoint: held.checkpoint, bytes, model: repository(written), reads: 0 }),
+            false => fetched.on_demand_bytes += bytes,
         }
     }
-    found
+    fetched
+}
+
+/// What a function fetches (`checkpoints`): what it waits for before it starts, and the most it may fetch on demand besides.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Fetched {
+    pub models: Vec<api::machine::ModelRef>,
+    pub on_demand_bytes: u64,
 }

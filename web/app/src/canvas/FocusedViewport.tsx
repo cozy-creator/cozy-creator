@@ -6,7 +6,7 @@ import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
 import { caretToEnd } from "./MentionText"
 import { NameField } from "./NameField"
-import { failureOf, makingRun, shownOf, watched } from "./shown"
+import { makingRun, shownOf, watched } from "./shown"
 import { RunDone, RunFace, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
 import { noHash } from "./text"
@@ -78,7 +78,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   }, [name, store, onCopyVersion])
   // Made, its file still on its way here: it says so as a render on its way does.
   const arriving = useArriving(view)
-  // The run its render's row last spoke of: once its take lands the row stays, saying so (Paul, 11-12).
+  // The run its render's row last spoke of: once its take lands the row stays, saying so (Paul, 11-12); one that made none goes (cl-1070).
   const going = view?.asset && (view.asset.standing === "making" || Boolean(view.queued) || view.asked !== undefined) ? makingRun(view) : arriving
   const [spoke, setSpoke] = useState<{ name: string; run: number } | null>(null)
   useEffect(() => {
@@ -118,7 +118,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
-      {view.asset?.rendering == null && !view.asset?.timeline && !failureOf(view) && (onItsWay || arriving !== undefined ? <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above /> : spoke?.name === name && <RunDone view={view} number={spoke.run} />)}
+      {view.asset?.rendering == null && !view.asset?.timeline && (onItsWay || arriving !== undefined ? <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above /> : spoke?.name === name && view.asset?.prefixes?.some((held) => held.run === spoke.run) && <RunDone view={view} number={spoke.run} />)}
       {view.warned && warnings.length > 0 && (
         <div className="warned-lines focus-warnings">
           {warnings.map((warning) => (

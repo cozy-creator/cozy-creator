@@ -1012,6 +1012,10 @@ pub struct EstimateJob {
     /// is then Measured. 0: runs elsewhere.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub prior_runs: u32,
+    /// Of its weights fetched only when the function first reads them (on demand), the most it may download, beside those it waits for
+    /// before it starts: in no time, as a quote can't know which it reads (cl-1071).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub on_demand_bytes: u64,
     /// The soonest it can start, ms from now: when what it reads is made.
     #[serde(skip_serializing_if = "is_zero")]
     pub after_ms: u64,
