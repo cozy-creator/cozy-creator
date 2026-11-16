@@ -59,13 +59,16 @@ async function leave(page) {
   await canvasIdle(page);
 }
 
-/** Tools › `operation` opened, and its row for tool `id`, to carry out. */
+/** Tools › `operation`'s row for tool `id`, to carry out: its group opened, or the row itself where the operation has that one tool. */
 async function toolRow(page, operation, id) {
   const tools = page.getByRole('complementary', { name: 'Tools' });
   const category = tools.getByRole('button', { name: operation, exact: true });
-  if ((await category.getAttribute('aria-expanded')) !== 'true') await category.click();
-  await expect(category).toHaveAttribute('aria-expanded', 'true');
   const row = tools.locator(`li[data-implementation][data-tool=${JSON.stringify(id)}]`);
+  await expect(row.or(category).first()).toBeVisible();
+  if (await category.count()) {
+    if ((await category.getAttribute('aria-expanded')) !== 'true') await category.click();
+    await expect(category).toHaveAttribute('aria-expanded', 'true');
+  }
   await expect(row).toBeVisible();
   return row;
 }

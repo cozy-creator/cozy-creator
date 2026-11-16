@@ -88,10 +88,10 @@ test('mention', async ({ page, project, api, cli }) => {
 
   await test.step("a video the tool can't use is struck through, saying why", async () => {
     const walk = words.locator('.chip[data-mention="walk"]');
-    await expect(walk).toHaveClass(/\bunused\b/);
+    await expect(walk).toHaveClass(/\bunsupported\b/);
     expect.soft(await walk.evaluate((el) => getComputedStyle(el).textDecorationLine), 'struck through').toContain('line-through');
     await expect.soft(walk, 'why, on hover').toHaveAttribute('title', /can't use videos/);
-    await expect.soft(words.locator('.chip[data-mention="amy"]').first(), 'a picture it uses').not.toHaveClass(/\bunused\b/);
+    await expect.soft(words.locator('.chip[data-mention="amy"]').first(), 'a picture it uses').not.toHaveClass(/\bunsupported\b/);
   });
 
   await test.step('the caret never lands in a chip', async () => {

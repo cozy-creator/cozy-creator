@@ -21,6 +21,7 @@ import { BufferedImage } from "./BufferedImage"
 import type { VideoPlayback } from "./timeline/Player"
 import { FPS } from "./ranges"
 import { useArriving } from "./RunFace"
+import { UNSUPPORTED } from "./Unsupported"
 
 const STRIP_FRAMES = 8
 /** How long the pointer rests on a video before its preview plays: one passing over on its way somewhere starts nothing. */
@@ -634,7 +635,7 @@ function Said({ words, view, name }: { words: string; view: ElementView; name: s
   const chipOf = (mention: string) => {
     const gone = view.asset?.missing?.includes(mention) || (store.mentionOf(mention, name)?.gone ?? isSelf(mention))
     const unused = gone ? undefined : view.asset?.unused?.find((one) => one.mention === mention)?.why
-    return { className: `chip ${gone ? "missing" : unused ? "unused" : ""}`, title: unused }
+    return { className: `chip ${gone ? "missing" : unused ? UNSUPPORTED : ""}`, title: unused }
   }
   return (
     <p className="words">

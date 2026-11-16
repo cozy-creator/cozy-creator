@@ -183,7 +183,7 @@ test('instant', async ({ page, project, api, guards }) => {
     const path = new URL(request.url()).pathname;
     if (request.method() !== 'GET' && path.startsWith(at)) writes.push(`${request.method()} ${path.slice(at.length)}`);
   });
-  const text = page.getByRole('complementary', { name: 'Tools' }).locator('li[data-node="text"]');
+  const text = page.getByRole('complementary', { name: 'Tools' }).locator('li[data-implementation][data-tool="text"]');
   const lines = () => page.locator('.notes .note .line').allInnerTexts();
   let first;
   let second;

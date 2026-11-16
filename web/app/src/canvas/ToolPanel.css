@@ -19,6 +19,3 @@
 .tools .tool-implementations {
   padding-left: 12px;
 }
-.tool-node.selected {
-  background: var(--tint);
-}

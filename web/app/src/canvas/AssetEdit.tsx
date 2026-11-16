@@ -19,6 +19,7 @@ import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } fr
 import { RenderTime } from "./RenderTime"
 import { makes, watched } from "./shown"
 import { mentionsIn, type Row, rowsIn, textsIn } from "./text"
+import { UNSUPPORTED, UnsupportedNote } from "./Unsupported"
 import { WhenOff, whenOff } from "./When"
 import "./FocusParameters.css"
 
@@ -321,7 +322,7 @@ function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; m
   const frames = framesIn(file?.duration_ms, fps)
   return (
     <div className={`slot-held ${missing ? "missing" : ""}`}>
-      <span className={`chip ${wrong && !missing ? "unused" : ""}`} title={wrong && !missing ? wrong : mention} data-mention={mention}>
+      <span className={`chip ${wrong && !missing ? UNSUPPORTED : ""}`} title={wrong && !missing ? wrong : mention} data-mention={mention}>
         {baseOf(mention)}
         {range && ` ${timecode(range.from, fps)}–${timecode(range.to ?? frames, fps)}`}
         {angled && ` ${degrees(angled)}`}
@@ -436,6 +437,7 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
       )}
       {spans && <span className={`spans ${spans.differs ? "warn" : ""}`}>{spans.says}</span>}
       {view.asset?.missing?.some((gone) => held.includes(gone)) && <span className="muted">No longer in this project</span>}
+      <UnsupportedNote unused={(view.asset?.unused ?? []).filter((one) => one.at === place && held.includes(one.mention))} />
     </div>
   )
 }
