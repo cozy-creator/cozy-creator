@@ -8,6 +8,7 @@
 // picture (project/clip.py) let go on a picture makes a new video box reading it, one step that Undo takes away. On a sound, which it can't
 // read, the LLM changes nothing and says why. The LLM row, the Text box with its answer and the new box beside the picture are kept at
 // 1440×900 and 1920×1080, on paper and dark.
+const { randomUUID } = require('crypto');
 const { mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, canvasIdle, canvasNames, canvasPoint, canvasText, canvasVisible, fixtureTool, focus, MP4, png, wav } = require('./fixtures');
@@ -203,8 +204,9 @@ test('llm', async ({ page, project, api }) => {
 // them; LLM_SEES_PICTURE and LLM_SEES_VIDEO what an answer that saw each says (case-insensitive patterns). A Text box with words and the
 // LLM on it rendered twice: two versions of words, different, each whole in Focus and the newest on the box at rest. The LLM let go on
 // the picture and on the video: a new box of words right of it, `<name>` its prompt, the caret after it; " write a caption" typed and
-// rendered: its run's input carries the file and its answer describes it. Answers, runs and machines in $OUT/web/llm-gpu/answers.json,
-// with the page at 1440×900 and 1920×1080, on paper and dark.
+// rendered: its run's input carries the file and its answer describes it. A box whose prompt mentions the photo's caption box is sent the
+// caption's words (cozy-creator #3603). Answers, runs and machines in $OUT/web/llm-gpu/answers.json, with the page at 1440×900 and
+// 1920×1080, on paper and dark.
 test('llm: real models on a GPU', { tag: '@gpu' }, async ({ page, project, api, cli }) => {
   const machine = process.env.LLM_MACHINE, want = process.env.LLM_TOOL;
   test.skip(!machine || !want, 'release-gate/sessions/llm-tools.sh sets LLM_MACHINE and LLM_TOOL');
@@ -328,4 +330,20 @@ test('llm: real models on a GPU', { tag: '@gpu' }, async ({ page, project, api, 
       await shoot(`beside-${kind}`);
     });
   }
+
+  // cozy-creator #3603: a `<name>` of an LLM box is sent its answer's words in place, not the literal mention.
+  await test.step("a box whose prompt mentions the photo's caption is sent the caption's words", async () => {
+    const [caption, [said]] = Object.entries(kept.boxes).find(([, versions]) => versions[0]?.reads === 'photo');
+    await project.add({ name: 'reply', tool: tool.id, kind: 'text', fields: { instructions: `<${caption}> Say this in French, in one sentence.` }, at: { x: 1440, y: 0 } });
+    await api.call('POST', project.at('/runs'), { names: ['reply'], on: [machine] }, { headers: { 'Idempotency-Key': randomUUID() } });
+    await lands('reply', 1);
+    const [version] = (await project.asset('reply')).prefixes;
+    const words = JSON.stringify(said.text.trim().slice(0, 60)).slice(1, -1);
+    kept.boxes.reply = [{ reads: caption, kind: 'answer', version: version.number, field: version.main?.field ?? null, text: version.main?.text ?? '', ...(await runOf(version.run, words)) }];
+    keep();
+    const [one] = kept.boxes.reply;
+    expect.soft(one.carries, `its run's input carries ${caption}'s words`).toBe(true);
+    expect.soft(one.input, 'not the literal mention').not.toContain(`<${caption}>`);
+    expect.soft(one.text.trim().length, 'an answer in words').toBeGreaterThan(0);
+  });
 });

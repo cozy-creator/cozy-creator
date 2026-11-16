@@ -15,7 +15,8 @@
 #          reading it heard (fixtures/llm-tools/gpu_use.py); the GPUs section at 1440×900 and 1920×1080, paper and dark.
 #   page   xs-204 in Chrome (`llm: real models on a GPU`, gpu.config.js), the project's renders on the rental: Qwen3.6 on a Text box
 #          rendered twice, two versions of words; let go on the photo and on the video, a new box beside it, "write a caption"
-#          rendered: its run carries the file and its answer describes it.
+#          rendered: its run carries the file and its answer describes it; a box whose prompt mentions that caption is sent its words
+#          (cozy-creator #3603).
 # Without `rent`, $0: the quote, then both page cells on this runner's own machine, the LLM the local fixture (e2e/cli/project/llm.py),
 # so the hands are proven before anything is rented. Each run's numbers and answers in summary.md and the job summary.
 # params:
@@ -43,7 +44,7 @@ kernels "$SOURCE/qwen3.6"
 # A dev home, its first-party packages from the checkout.
 cfg=$HOME/.cozy/config.toml
 mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
-{ echo 'dev = true'; grep -v '^dev *=' "$cfg"; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
+{ echo 'dev = true'; grep -v '^dev *=' "$cfg" || true; } > "$cfg.new" && mv "$cfg.new" "$cfg" || fail "dev = true not written"
 awk -v source="$SOURCE" '
   function ours() { print "packages = \"" source "\""; put = 1 }
   /^packages *=/ { next } { print } /^\[calcifer\]/ { ours() } END { if (!put) { printf "\n[calcifer]\n"; ours() } }' \
