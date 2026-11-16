@@ -120,7 +120,7 @@ while not os.path.exists("/tmp/probe.stop"):
     time.sleep(1)
 PY
 )
-quote 1800
+quote "$(param need_s 1800)"
 pod() { timeout "${T:-120}" cozy machine ssh "$NAME" "$@"; }
 # link_rate: MB/s the pod's interfaces received over `seconds` while its weights download.
 link_rate() {
