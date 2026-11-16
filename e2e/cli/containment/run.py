@@ -327,6 +327,11 @@ def main() -> int:
         if ready.get("development_web") is True:
             phase = "development_start"
             development = Development()
+            # The page under test is the candidate's own web: its commit in the receipt, and the same as the one cozy was built from.
+            web_commit = development.commit()
+            receipt.web(web_commit)
+            built = re.search(r"\+g([0-9a-f]{7,40})\b", subprocess.run([str(cli), "--version"], check=True, capture_output=True, text=True).stdout)
+            require(built is None or web_commit.startswith(built.group(1)), "development_web_not_candidate")
             development.start()
             # Before any project or browser: a Calcifer with `[calcifer] development_web` and no top-level `dev = true` ignores it.
             phase = "development_needs_dev"
@@ -589,9 +594,9 @@ def main() -> int:
                 receipt.add("browser_open_failure", present=observed.get("present") is True,
                             retirement_incomplete=observed.get("retirement_incomplete") is True,
                             caf_alive=alive(proof.birth), observed_processes=len(observed.get("processes", [])),
-                            pages=pages if type(pages) is int else -1, **readiness)
+                            pages=pages if type(pages) is int else -1, **readiness, **native.opened)
             except BaseException:
-                receipt.add("browser_open_failure", snapshot_unavailable=True, caf_alive=alive(proof.birth), **readiness)
+                receipt.add("browser_open_failure", snapshot_unavailable=True, caf_alive=alive(proof.birth), **readiness, **native.opened)
             if readiness["slot"] >= 0:
                 try:
                     page = proof.exercise(projects[readiness["slot"]]["id"], "diagnose")

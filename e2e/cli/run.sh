@@ -55,6 +55,7 @@ parse "$@"
 . "$(dirname "$0")/harness.sh"
 . "$(dirname "$0")/devstart.sh"
 . "$(dirname "$0")/standing.sh"
+. "$(dirname "$0")/llm.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -88,7 +89,7 @@ step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 # web_serves reads what the gate costs from Calcifer's Server-Timing, which it sends only with its diagnostics on (cl-985); coming keeps
 # its project's walk log (.vault-calcifer/diagnostics/walk.log) with them on.
-case $SHARD in projectvault | projectvault-static | plan | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
+case $SHARD in projectvault | projectvault-static | projectvault-unstarted | plan | stuck | coming | thumbs) calcifer_diagnostics ;; *) [[ " $(echo $parts) " != *" web_serves "* ]] || calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason, and web_serves reads the gate's Server-Timing: Calcifer started again with config.toml's
@@ -488,6 +489,9 @@ WEB_1=(
   timeline
   open
   gone
+  references
+  previews
+  play-link
 )
 WEB_2=(
   fields
@@ -497,6 +501,10 @@ WEB_2=(
   delete-undo
   canvas-nav
   resize
+  isolation
+  input
+  hover
+  notes
   fullscreen
 )
 WEB_3=(
@@ -511,6 +519,23 @@ WEB_3=(
   move
   dblclick-text
   svg
+  density
+  keyboard
+  steady
+  rendering
+  glloss
+  llm
+)
+# The path of a computer with no GPU: the canvas in 2D (cl-1048), for the core cells (web.sh's lane `2d`; coordinator, 11-16).
+WEB_2D=(
+  create
+  move
+  open
+  type
+  focus
+  upload
+  resize
+  nogpu
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(
@@ -520,18 +545,30 @@ WEB_ENGINES=(
   move
   open
   vault
+  glloss
+  keyboard
+  input
   fullscreen
+  play-link
 )
 # What stops, restarts or re-points Calcifer, or needs the job to itself (`@solo`), one at a time, with the filesystem driver.
 WEB_SOLO=(
-  opens
   open
+  machine-details
   account-rent
+  machine-tabs
   offline
 )
+# The timing and memory cells, `@solo`, in 2D: a runner's software GL drawing the WebGL path with MSAA is no computer's path, and the 2D
+# path is a computer with no GPU's (aa315b64, 11-16: large in 2D found a 1.1 MB-a-cycle heap leak).
+WEB_2D_SOLO=(
+  large
+  opens
+)
 # macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout, and what the old native cells durable, see and undo
-# checked (instant, canvas-nav, delete-undo).
+# checked (instant, canvas-nav, delete-undo), and opens on a Mac's real GL (Windows skips it).
 WEB_NATIVE=(
+  opens
   layout
   # offline: its step 5 renders on local, which macOS and Windows don't run (lib.sh's LOCAL)
   canvas-nav
@@ -560,6 +597,7 @@ case $SHARD in
     lazy_slots
     describe
     first_run
+    llm_write
     previews
     second_executor
     lifetime
@@ -631,6 +669,7 @@ case $SHARD in
     weightless
     describe
     first_run
+    llm_write
     previews
     run_flags
     run_playback
@@ -743,6 +782,8 @@ case $SHARD in
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
   web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
+  web-2d) export WEB_RENDERER=2d; web_cells=(${WEB_2D[@]+"${WEB_2D[@]}"}); parts="web_lane logs" ;;
+  web-2d-solo) export WEB_RENDERER=2d; web_cells=(${WEB_2D_SOLO[@]+"${WEB_2D_SOLO[@]}"}); parts="web_lane logs" ;;
   web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
   # Pictures imported into a plain project get their thumbnails stored (cl-1054: none on macOS).
   thumbs) parts="thumbs_stored logs" ;;
@@ -750,7 +791,7 @@ case $SHARD in
   # whose named machines can't take it placed where one naming none goes.
   standing) parts="folder_private protocol_free machine_set logs" ;;
   # cl-982's opens on a busy computer: 3,000 other loopback connections open (web/busy.js), as the gate's lookups meet them (cl-985).
-  web-opens-busy) export BUSY_SOCKETS=3000; web_cells=(opens); parts="web_lane logs" ;;
+  web-opens-busy) export BUSY_SOCKETS=3000 WEB_RENDERER=2d; web_cells=(opens); parts="web_lane logs" ;;
   # The page as Calcifer's own and what the access rule refuses (cl-985), alone.
   web-serves) parts="tools_read web_serves logs" ;;
   # A project cozy 0.24.0 made keeps every take under this cozy, and a take asked by id lands as that version (cl-945).
@@ -823,12 +864,21 @@ case $SHARD in
     hard_cut
     vault_leftovers
     kept_latents
+    vault_purge_due
     vault_swapped
     ended_logs
+    vault_reattach
+    vault_unstarted
     logs
   " ;;
+  # A run on local after a lock that ended one, a run and a lock, attaches (cl-1082), alone. Named projectvault-* for its driver.
+  projectvault-reattach) parts="vault_reattach logs" ;;
+  # A run its machine hasn't begun never holds a vault past its maximum (cl-1082), alone.
+  projectvault-unstarted) parts="vault_unstarted logs" ;;
   # An ended machine's own lines still read; a locked project's run nowhere outside it (cl-1012). Named projectvault-* for its driver.
   projectvault-ended-logs) parts="ended_logs logs" ;;
+  # A deleted box's next purge kept for a plaintext project only, never an encrypted one's (cl-1010). Named projectvault-* for its driver.
+  projectvault-purge-due) parts="vault_purge_due logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   # A keyed write cut off mid-request, sent again (cl-885).
   projectdb-keyed) parts="db_keyed logs" ;;

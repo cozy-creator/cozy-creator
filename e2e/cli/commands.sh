@@ -1622,8 +1622,8 @@ J '.error.code == "run_not_found" and (.error.message | test("QQ987"))' "$root-n
 
 run_playback() {
 step "run playback API"
-# The player link hands a browser the output straight from its machine. A project's output goes only by an owned private
-# media transport, which that link is not: its playback is refused, naming its project route. The output is a weightless still.
+# The player link hands a browser the output straight from its machine: a plaintext project's too (cl-1066), its link naming the run
+# and the output; web/play-link plays it. Before, a project's was refused project_play_unavailable. The output is a weightless still.
 local holder=$HOME/.cozy/calcifer/calcifer.lock.holder base id project
 base="http://$(jq -r .address "$holder")"
 (cd "$here" && cell play-still ./project/draw.py/draw "instructions=play $RANDOM") || true
@@ -1633,8 +1633,9 @@ if [ "$first" = none ] || [ -z "$name" ]; then check "run playback API: no still
   read -r id project < <(cozy --json run watch "$first" --once | jq -r '"\(.id) \(.project_id)"')
   curl -sS -G -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' \
     --data-urlencode "output=$name" --data-urlencode "expires=30s" "$base/v1/projects/$project/runs/$id/play" > "$OUT/play.json" || true
-  J '.error.code == "project_play_unavailable"' "$OUT/play.json" \
-    || check "run playback API: project run $first's output was not refused project_play_unavailable: $(head -c 300 "$OUT/play.json")"
+  J --arg id "$id" --arg name "$name" '(.url | startswith("https://cozy-creator.github.io/cozy-creator/play/#")) and (.url | contains("r=" + $id))
+    and (.url | contains("o=" + $name)) and (.token | length > 0) and .expires_s == 30' "$OUT/play.json" \
+    || check "run playback API: project run $first's output has no link: $(head -c 300 "$OUT/play.json")"
 fi
 }
 

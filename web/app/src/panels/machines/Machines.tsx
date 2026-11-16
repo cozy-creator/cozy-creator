@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { type FormEvent, useEffect, useState } from "react"
-import { Link, useNavigate } from "react-router-dom"
+import { Link, useLocation, useNavigate } from "react-router-dom"
 import { machinesQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
@@ -13,11 +13,11 @@ import { Rent } from "./Rent"
 import { Checks, RenderCheck, Spec, useRenderMachines } from "./RenderHere"
 import { endsWords, stableName } from "./words"
 
-function MachineRow({ machine, now, here }: { machine: Machine; now: number; here: boolean }) {
+function MachineRow({ machine, now, here, tabbed }: { machine: Machine; now: number; here: boolean; tabbed?: boolean }) {
   const to = useTo()
   const trying = machine.state === "booting" && machine.kind === "rental"
   return (
-    <li className={`runrow machine ${trying ? "trying" : ""} ${here ? "render-here" : ""}`} data-machine={machine.name}>
+    <li className={`runrow machine ${trying ? "trying" : ""} ${here ? "render-here" : ""} ${tabbed ? "tabbed" : ""}`} data-machine={machine.name}>
       <Spec machine={machine} now={now} />
       {Boolean(machine.running || machine.queued) && (
         <small className="under">
@@ -85,6 +85,16 @@ function AddMachine() {
   )
 }
 
+/** What the tabs ask of this drawer: the machines with no tab first. */
+export interface MachinesAsk {
+  first?: string[]
+}
+
+/** Signed in at every Hub the machines list read: renting is open. */
+function useCanRent(data: MachineList | undefined) {
+  return useSignedIn() && !data?.signed_out?.length
+}
+
 /** The machines, live, and renting one. */
 export function Machines() {
   const { client } = useConnection()
@@ -92,6 +102,8 @@ export function Machines() {
   const to = useTo()
   const { data, error } = useQuery(machinesQuery(client))
   const { project, chosen } = useRenderMachines()
+  const ask: MachinesAsk = useLocation().state ?? {}
+  const first = new Set(ask.first)
 
   // Rentals other computers made, as `cozy machine ls` lists every Hub first. The list shows meanwhile, and a Hub that doesn't answer says so.
   useEffect(() => {
@@ -110,12 +122,13 @@ export function Machines() {
   const machines = data?.machines.filter((machine) => machine.state !== "ended") ?? []
   const now = useNow(machines.some((machine) => machine.state !== "stopped"))
   // This computer's, and apart, what other computers rented on the same account.
-  const mine = machines.filter((machine) => machine.ordered !== false)
-  const others = machines.filter((machine) => machine.ordered === false)
+  const byTab = (a: Machine, b: Machine) => Number(first.has(b.name)) - Number(first.has(a.name))
+  const mine = machines.filter((machine) => machine.ordered !== false).sort(byTab)
+  const others = machines.filter((machine) => machine.ordered === false).sort(byTab)
   const hourlyOf = (list: Machine[]) => list.reduce((sum, machine) => sum + (machine.rental?.usd_micros_per_hour ?? 0), 0)
   const rentals = mine.filter((machine) => machine.rental)
   const hourly = hourlyOf(rentals)
-  const signedIn = useSignedIn() && !data?.signed_out?.length
+  const signedIn = useCanRent(data)
   const renting = !client.transport.channel
   // The project's machines that aren't up are listed too, so each can be taken off.
   const gone = chosen.filter((name) => !machines.some((machine) => machine.name === name))
@@ -135,8 +148,8 @@ export function Machines() {
       ))}
       {project && data && !chosen.length && <p className="muted">Cozy picks where this project renders. Check Prefer on a machine to render there.</p>}
       <ul className="rows">
-        {mine.map((machine) => (
-          <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} />
+        {mine.map((machine, at) => (
+          <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} tabbed={at > 0 && first.has(mine[at - 1].name) && !first.has(machine.name)} />
         ))}
         {gone.map((name) => (
           <li key={name} className="runrow machine render-here" data-machine={name}>
@@ -155,7 +168,7 @@ export function Machines() {
         ))}
       </ul>
       {others.length > 0 && (
-        <details className="sect">
+        <details className="sect" open={others.some((machine) => first.has(machine.name)) || undefined}>
           <summary>
             {others.length} rented by your other computers, {usd(hourlyOf(others))}/h
           </summary>
@@ -178,6 +191,18 @@ export function Machines() {
       )}
       {renting && <Rent signedIn={signedIn} />}
       <AddMachine />
+    </DrawerFrame>
+  )
+}
+
+/** The header's +: the rent form alone, as Machines holds it. */
+export function NewMachine() {
+  const { client } = useConnection()
+  const { data } = useQuery(machinesQuery(client))
+  const signedIn = useCanRent(data)
+  return (
+    <DrawerFrame title="New machine">
+      <Rent signedIn={signedIn} />
     </DrawerFrame>
   )
 }

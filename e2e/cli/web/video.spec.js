@@ -7,7 +7,7 @@
 // in its draft, said there, and sent as the take and its last frame.
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, focus, fixtureTool, DARK_OPEN, canvasCard, canvasVisible, hoverBox, screenshotPixels } = require('./fixtures');
+const { test, expect, box, focus, fixtureTool, DARK_OPEN, canvasCard, canvasVisible, hoverBox, newCanvas, previewState, previewsPlaying, screenshotPixels } = require('./fixtures');
 const { ffmpeg, fit, leave, rest, posterSpread } = require('./hands');
 
 const SEGMENTS = fixtureTool('segments.py/segments');
@@ -49,13 +49,14 @@ test('video', async ({ page, project, api, guards, cli }) => {
       await page.mouse.move(4, 600);
       await expect.poll(async () => (await canvasCard(page, name))?.rendered?.media.ready ?? false, { message: `${name}'s poster`, timeout: 60_000 }).toBe(true);
       expect.soft(await posterSpread(page, name), `${name}'s poster shows something, not a black frame`).toBeGreaterThanOrEqual(12);
+      // Rested on: the old canvas's hover card's picture, the new canvas's drawn body.
       await hoverBox(page, name);
-      await rest(page, box(page, name).locator('.media'));
-      const preview = box(page, name).locator('video.preview.on');
-      await expect.poll(async () => (await preview.count()) && (await playing(preview)).at > 0.3, { message: `${name}'s preview plays`, timeout: 45_000 }).toBe(true);
-      expect.soft(await playing(preview), `${name}'s preview: muted and looping`).toMatchObject({ muted: true, loop: true });
+      await rest(page, (await newCanvas(page)) ? (await canvasCard(page, name)).body : box(page, name).locator('.media'));
+      await expect.poll(async () => (await previewState(page, name)).playing, { message: `${name}'s preview plays`, timeout: 45_000 }).toBe(true);
+      const state = await previewState(page, name);
+      expect.soft(state, `${name}'s preview: muted and looping`).toMatchObject({ muted: true, loop: true });
       await page.mouse.move(4, 600);
-      await expect(page.locator('video.preview.on')).toHaveCount(0);
+      await expect.poll(() => previewsPlaying(page), { message: 'no preview left playing' }).toBe(0);
     }
   });
 

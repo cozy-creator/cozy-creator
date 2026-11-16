@@ -177,7 +177,7 @@ by_name = {m.name: label for label, m in machines.items() if m.name}
 
 
 def gone_at(m: Machine) -> float | None:
-    """When it left by itself: gone from the page's list with End never pressed (a rental idle 15 min releases itself)."""
+    """When it left with End never pressed: gone from the page's list (a rental idle 15 min releases itself; or ended elsewhere)."""
     if m.record.get('end_pressed_at'):
         return None
     return num(m.record.get('left_at')) or removed.get(m.name)
@@ -409,8 +409,9 @@ for label, m in sorted(machines.items()):
         if went:
             idle_from = max([r.settled_at or 0.0 for r in ran_here] + [num(m.record.get('ready_at')) or 0.0])
             check(f'{label} ended through the page', None,
-                  f"it ended by itself at {datetime.fromtimestamp(went / 1000, timezone.utc):%H:%M:%S}, before End was pressed, {fmt(secs(idle_from, went), ' s')} after "
-                  + (f"its last run settled (requests {[r.request for r in ran_here]})" if ran_here else 'it was ready: no request ran on it') + '; a rental idle 15 min releases itself')
+                  f"gone from the list at {datetime.fromtimestamp(went / 1000, timezone.utc):%H:%M:%S}, before End was pressed, {fmt(secs(idle_from, went), ' s')} after "
+                  + (f"its last run settled (requests {[r.request for r in ran_here]})" if ran_here else 'it was ready: no request ran on it')
+                  + ': a rental idle 15 min releases itself, or it was ended from another computer')
         elif pressed:
             check(f'{label} ended through the page', bool(ended), f"gone from the list {fmt(secs(pressed, ended), ' s')} after End" if ended else 'End pressed, never gone from the list')
 
@@ -515,15 +516,19 @@ def request_of(d: Decision) -> int:
     return min(near)[1] if near else 0
 
 
+# A machine's update (a dev home's move to the RC's builds), as the page's stream has it: a run sent to it says "waiting for <machine>
+# to finish updating", and the machine says another Runtime or TensorFS when it's back. Calcifer's log keeps no line of it.
 updates: list[tuple[str, float, float | None]] = []  # (machine, began, ready again)
-for line in read_text('calcifer.log').splitlines():
-    if 'to the open RC' not in line:
-        continue
-    began, who = iso_ms(line), re.search(r'machine="?([^"\s]+)', line)
-    if began is None or not who:
-        continue
-    after = [t for t, one in machine_events.get(who.group(1), []) if t >= began and '.dev' in text(one.get('runtime'))]
-    updates.append((who.group(1), began, min(after) if after else None))
+held_for: dict[str, float] = {}
+for timeline_ in run_events.values():
+    for at, one in timeline_:
+        said_ = re.search(r'waiting for (\S+) to finish updating', text(one.get('waiting')))
+        if said_:
+            held_for[said_.group(1)] = min(at, held_for.get(said_.group(1), at))
+for name_, began_ in held_for.items():
+    software = [(t, (text(one.get('runtime')), text(one.get('tensorfs')))) for t, one in machine_events.get(name_, [])]
+    was = next((v for t, v in reversed(software) if t <= began_ and any(v)), ('', ''))
+    updates.append((name_, began_, next((t for t, v in software if t > began_ and any(v) and v != was), None)))
 
 if renting:
     done = [r for r in rows if r.started_at and r.settled_at]
@@ -647,7 +652,7 @@ check('no toast shows a CLI command (cl-1085)', not commands, '; '.join(commands
 cost = [obj(c) for c in arr(load('cost.json'))]
 spent = sum(num(c.get('spend_usd_micros')) or 0.0 for c in cost) / 1e6
 each = ', '.join('%s %s: $%.2f' % (text(c.get('rental_id')), text(c.get('sku')), (num(c.get('spend_usd_micros')) or 0.0) / 1e6) for c in cost) or 'not read'
-tools = ', '.join(text(obj(t).get('id')) + '@' + text(obj(t).get('version')) for t in arr(flow.get('tools'))) or '?'
+tools = ', '.join(text(obj(t).get('id')) + '@' + (text(obj(t).get('version')) or '?') + (' from source' if obj(t).get('source') else '') for t in arr(flow.get('tools'))) or '?'
 fails = [v for v in verdict if v.startswith('FAIL')]
 out = [f"### user-flow: {'PASS' if not fails else 'FAIL'} ({len(fails)} of {sum(1 for v in verdict if not v.startswith('NOTE'))} checks failed)\n",
        f"cozy {text(flow.get('cozy')) or '?'}; A {text(flow.get('sku'))} x1, B {text(flow.get('sku_b'))} x{flow.get('gpus_b')}; tools {tools}; billed ${spent:.2f} ({each})\n",
@@ -679,8 +684,8 @@ out += ["\n#### Download events: each request's weights, then each machine's fet
         '| machine | what | fetched | already there | started | stage | rate |', '|---|---|---|---|---|---|---|']
 for r in rows:
     if r.dl_bytes:
-        began = r.first.get('downloading')
-        clock = datetime.fromtimestamp(began / 1000, timezone.utc).strftime('%H:%M:%S') if began else '?'
+        dl_began = r.first.get('downloading')
+        clock = datetime.fromtimestamp(dl_began / 1000, timezone.utc).strftime('%H:%M:%S') if dl_began else '?'
         out.append(f"| {r.label} | request {r.request}'s weights ({r.target.split('/')[-1] or '?'}) | {r.dl_bytes / GB:.2f} GB in {fmt(r.dl_s, ' s')} | - | {clock} | | "
                    f"{fmt(r.dl_bytes / r.dl_s / 1e6 if r.dl_s else None, ' MB/s')} |")
 for h in held_rows:

@@ -52,6 +52,8 @@ export interface StageProps {
 
 /** A frame slower than this on average, from frame to frame, is a slow machine's: decorative animation stands still. */
 const SLOW_FRAME_MS = 40
+/** A wheel event this soon after the last is the same gesture: a trackpad's stream, its glide after the hand has gone. */
+const WHEEL_GAP_MS = 200
 
 /** The canvas: one renderer, frames drawn on demand, the scene, the camera, input, and DOM only where text is typed. */
 export function Stage(props: StageProps) {
@@ -70,6 +72,8 @@ export function Stage(props: StageProps) {
   const live = useRef({ invalidate: () => {}, enable: () => {} })
   const [failed, setFailed] = useState<string | null>(null)
   const [lostGraphics, setLostGraphics] = useState(false)
+  // Bumped when a lost GPU context comes back: the canvas starts over on a new renderer (cl-1043).
+  const [generation, setGeneration] = useState(0)
   const [said, setSaid] = useState("")
   const [overlays, setOverlays] = useState<{ name: string; draft?: string; box: { x: number; y: number; w: number; under: number } }[]>([])
   const [cards, setCards] = useState<{ name: string; label: string; selected: boolean; cancel: boolean }[]>([])
@@ -80,7 +84,7 @@ export function Stage(props: StageProps) {
   useEffect(() => {
     const element = root.current
     if (!element) return
-    let stopped = false, lost = false
+    let stopped = false, lost = false, restart = false
     let renderer: Renderer | null = null, viewport: PixiViewport | null = null, scene: Scene | null = null
     let interaction: ReturnType<typeof createInteraction> | null = null
     let wakeTimer: ReturnType<typeof setTimeout> | undefined
@@ -106,7 +110,7 @@ export function Stage(props: StageProps) {
       }
       const delta = Math.min(100, Math.max(0, took))
       last = time
-      tick(delta)
+      tick(delta, Math.min(1000, Math.max(0, took)))
       if (running && !stopped) frame = requestAnimationFrame(loop)
     }
     const start = () => { if (running) return; running = true; last = performance.now(); paced = 0; frame = requestAnimationFrame(loop) }
@@ -167,13 +171,19 @@ export function Stage(props: StageProps) {
       if (world.current) world.current.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.zoom})`
     }
 
-    const tick = (delta: number) => {
+    const tick = (delta: number, took = delta) => {
       if (stopped || !renderer || !viewport || !scene) return
       if (!visible()) { stop(); return }
       const began = performance.now()
       if (open.read < 0 && store.hasRead) open.read = frames
       let moving = false
-      try { viewport.update(delta); moving = board.camera.sync() } catch (error) { console.error("Camera:", error) }
+      try {
+        viewport.update(delta)
+        // A glide (a zoom step, a fit) runs in real time where frames are slow: the rest of a long frame moves it on, never stretching it
+        // out. Coasting keeps the 100 ms step, so a flick never jumps.
+        if (took > delta) (viewport.plugins.get("animate") as { update(elapsed: number): void } | null)?.update(took - delta)
+        moving = board.camera.sync()
+      } catch (error) { console.error("Camera:", error) }
       if (moving) placeWorld()
       if (dirty || moving || animating) {
         dirty = false
@@ -217,7 +227,9 @@ export function Stage(props: StageProps) {
       made.canvas.className = "canvas-pixels canvas-pane"
       element.prepend(made.canvas)
       const contextLost = (event: Event) => { event.preventDefault(); lost = true; setLostGraphics(true); enable() }
-      const contextRestored = () => { lost = false; setLostGraphics(false); enable(); scene?.redrawAll(); invalidate() }
+      // A context given back holds none of what was drawn, and Pixi's own restore left some pictures black (cl-1043): the canvas starts over
+      // on a new renderer and context, from the board and the store, with no reload.
+      const contextRestored = () => { lost = false; restart = true; setLostGraphics(false); setGeneration((count) => count + 1) }
       made.canvas.addEventListener("webglcontextlost", contextLost)
       made.canvas.addEventListener("webglcontextrestored", contextRestored)
       stops.push(() => { made.canvas.removeEventListener("webglcontextlost", contextLost); made.canvas.removeEventListener("webglcontextrestored", contextRestored) })
@@ -236,6 +248,17 @@ export function Stage(props: StageProps) {
       scene = new Scene({ world: layer, overlay, board, store, client, media, software: taken.backend === "canvas", invalidate, contextOf })
       board.camera.wake = invalidate
       stops.push(board.camera.bind(element, viewport), () => { board.camera.wake = () => {} })
+      // A trackpad's wheel goes on after the hand has gone (cl-955): a stream that began while the canvas was held (Focus, its way back from
+      // Focus) is one gesture, all of it held, until it pauses. Not left to the glide back outlasting it: a glide runs in real time.
+      let wheelLast = -Infinity, wheelHeld = false
+      const wheel = (event: WheelEvent) => {
+        const now = performance.now()
+        if (now - wheelLast > WHEEL_GAP_MS) wheelHeld = latest.current.disabled
+        wheelLast = now
+        if (wheelHeld) { event.stopImmediatePropagation(); event.preventDefault() }
+      }
+      element.addEventListener("wheel", wheel, { capture: true, passive: false })
+      stops.push(() => element.removeEventListener("wheel", wheel, { capture: true }))
       interaction = createInteraction({
         root: element, stage, viewport, camera: board.camera, board, store, hitOf,
         scene: {
@@ -364,7 +387,7 @@ export function Stage(props: StageProps) {
       // A project switch keeps the page's one renderer and context (its textures are already gone with the scene and media); a lock or a
       // sign-out loses the context whole, so nothing of a private project's pictures stays on the card.
       const locked = signedOut.get() || store.projectId === null || (project !== null && bridge.projectEpoch(project) !== projectEpoch)
-      if (renderer && chosen && !locked) parkRenderer(chosen)
+      if (renderer && chosen && !locked && !restart) parkRenderer(chosen)
       else {
         // Pixi's destroy loses the GL context itself; one already lost isn't lost again (WebKit logs that as an error).
         const gl = renderer && "gl" in renderer ? (renderer as unknown as { gl: WebGLRenderingContext; context: { extensions: { loseContext?: unknown } } }) : null
@@ -375,7 +398,7 @@ export function Stage(props: StageProps) {
       delete (element as HTMLDivElement & { canvasInspection?: unknown }).canvasInspection
       live.current = { invalidate: () => {}, enable: () => {} }
     }
-  }, [board, store, client, queries, projectEpoch, loggedOut])
+  }, [board, store, client, queries, projectEpoch, loggedOut, generation])
 
   return <div ref={root} className="canvas-root" tabIndex={0} role="region" aria-label="Project canvas" aria-describedby={helpId}>
     {props.children}

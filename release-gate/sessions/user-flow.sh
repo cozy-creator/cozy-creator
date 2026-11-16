@@ -18,13 +18,17 @@
 #   quiet_min    a wait fails once nothing it watches has moved for this long (default 20)
 #   dev_home     false: a dev build's rentals stay on their image's release (a red run before the RC's machine fixes); default: a dev
 #                build is a dev home, as Paul's laptop is, so its rentals move to the open RC's builds
+#   tree         a dev home's packages: a packages_refs checkout's name (`-f packages_refs=rc=<the packages RC>`, tree rc). Its
+#                first-party packages run from it, as Paul's laptop's do (`[calcifer] packages`, xs-195). A dev home needs one: the
+#                Hub's releases are the last release's, which the RC's Runtime can't run (green 43948824859: minimax-h3 0.13.0rc2 on
+#                Runtime 0.47.0.dev2296, every run `TypeError: call() got an unexpected keyword argument 'payload'`)
 #   seconds      what the cap must buy of A and B together (default 4800)
 . "$(dirname "$0")/lib.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 WEB=$(cd "$HERE/../../e2e/cli/web" && pwd) || fail "no e2e/cli/web"
 FIX=$HERE/fixtures/user-flow
 for tool in jq node npm google-chrome ffmpeg python3; do command -v "$tool" > /dev/null || fail "no $tool"; done
-SKU_B=$(param sku_b "$SKU") GPUS_B=$(param gpus_b 2) PLATE_S=$(param plate_s 5) DEV_HOME=$(param dev_home true)
+SKU_B=$(param sku_b "$SKU") GPUS_B=$(param gpus_b 2) PLATE_S=$(param plate_s 5) DEV_HOME=$(param dev_home true) TREE=$(param tree '')
 [[ $GPUS_B =~ ^[1-8]$ && $PLATE_S =~ ^[0-9]+$ && $PLATE_S -ge 1 && $PLATE_S -le 15 ]] || fail "gpus_b $GPUS_B, plate_s $PLATE_S"
 FLOW=$OUT/flow
 mkdir -p "$FLOW"
@@ -41,16 +45,24 @@ if [ ! -x "$SECUREFS/securefs" ]; then
     chmod 755 "$SECUREFS/securefs" || fail "securefs not put in $SECUREFS"
 fi
 V=$(cozy --version | awk '{print $2}')
+SOURCE=
 if [[ $V == *-dev* && $DEV_HOME != false ]]; then
   cfg=$HOME/.cozy/config.toml
   grep -qxE 'dev *= *true' "$cfg" 2> /dev/null ||
     { mkdir -p "${cfg%/*}" && { echo 'dev = true'; [ ! -f "$cfg" ] || grep -v '^dev *=' "$cfg"; } > "$cfg.new" && mv "$cfg.new" "$cfg"; } || fail "dev = true not written"
+  # Its packages, from the checkout, with the Triton sets a release ships (built before anything is rented).
+  [ -n "$TREE" ] && [ -f "$PACKAGES/$TREE/minimax-h3/pyproject.toml" ] ||
+    fail "a dev home runs first-party packages from a checkout: dispatch with -f packages_refs=<name>=<the packages RC> and params.tree=<name>"
+  SOURCE=$(cd "$PACKAGES/$TREE" && pwd)
+  kernels "$SOURCE/minimax-h3"
 fi
 # Each project's walk says where it placed each take, every machine's quote beside it (tests only, `calcifer.diagnostics`): the judge's
 # record of the placement, kept in the project's own storage.
 cfg=$HOME/.cozy/config.toml
 mkdir -p "${cfg%/*}" && touch "$cfg" || fail "no $cfg"
-awk '/^diagnostics *=/ { next } { print } /^\[calcifer\]/ { print "diagnostics = true"; put = 1 } END { if (!put) printf "\n[calcifer]\ndiagnostics = true\n" }' \
+awk -v source="$SOURCE" '
+  function ours() { print "diagnostics = true"; if (source != "") print "packages = \"" source "\""; put = 1 }
+  /^(diagnostics|packages) *=/ { next } { print } /^\[calcifer\]/ { ours() } END { if (!put) { printf "\n[calcifer]\n"; ours() } }' \
   "$cfg" > "$cfg.next" 2> /dev/null && mv "$cfg.next" "$cfg" || fail "calcifer.diagnostics not written"
 # Calcifer started before the driver, the dev home and its diagnostics: started again, as after an install.
 cozy restart > "$OUT/restart.txt" 2>&1 || fail "cozy restart: $(tail -c 300 "$OUT/restart.txt")"
@@ -67,7 +79,7 @@ RENTING=$RENT
 RENT=true quote "$(param seconds 4800)" "$SKU" "$SKU_B:$GPUS_B"
 GUARD_ALSO=own
 [ "$RENTING" != true ] || guard
-say "the flow on cozy $V$(grep -qxE 'dev *= *true' "$HOME/.cozy/config.toml" 2> /dev/null && echo ', a dev home'): A $SKU x1, B $SKU_B x$GPUS_B, a ${PLATE_S} s plate$([ "$RENTING" = true ] || echo '; pre-flight: the page up to its quotes, nothing ordered')"
+say "the flow on cozy $V$(grep -qxE 'dev *= *true' "$HOME/.cozy/config.toml" 2> /dev/null && echo ', a dev home')$([ -z "$SOURCE" ] || echo ", packages from $TREE $(git -C "$SOURCE" rev-parse --short=8 HEAD 2> /dev/null), minimax-h3 $(sed -n 's/^version = "\(.*\)"/\1/p' "$SOURCE/minimax-h3/pyproject.toml" | head -1)"): A $SKU x1, B $SKU_B x$GPUS_B, a ${PLATE_S} s plate$([ "$RENTING" = true ] || echo '; pre-flight: the page up to its quotes, nothing ordered')"
 
 COZY_VERSION=$V FLOW_OUT=$FLOW FLOW_RENT=$RENTING SKU=$SKU SKU_B=$SKU_B GPUS_B=$GPUS_B PLATE=$FLOW/plate.mp4 PLATE_S=$PLATE_S \
   QUIET_MIN=$(param quiet_min 20) HOLDER=$HOME/.cozy/calcifer/calcifer.lock.holder COZY=$(command -v cozy) \

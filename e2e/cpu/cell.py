@@ -112,6 +112,12 @@ def answers(count: int) -> Check:
     return check
 
 
+def wrote(result: Json, files: list[Path]) -> str | None:
+    """The result holds a box's words (`text`), not empty (xs-204)."""
+    text = result.get("text") if isinstance(result, dict) else None
+    return None if isinstance(text, str) and text.strip() else f"the result's text is {json.dumps(text)[:200]}, not words"
+
+
 @contextlib.contextmanager
 def defined() -> Iterator[None]:
     """While a fixture builds its models, `torch.empty` fills NaN, so a tensor its class leaves uninitialized is drawn

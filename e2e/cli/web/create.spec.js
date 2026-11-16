@@ -2,9 +2,10 @@
 // drag an image tool on there"), and an operation of one tool is that one row, called what the operation is, with nothing to open (Paul,
 // 11-16: Video Timeline, Text); a video edit is a row of Video (Paul, 11-16: no Edit Video). A picture, a video and a sound dropped from the
 // computer, Tools › Text and a Hub tool from Tools › Image, each let go on open canvas, is a box of its kind where it was let go; the tool's
-// says "Package · Tool" under its picture. On the dropped picture a video tool changes nothing and says why at the bottom left, in one line; an
-// image tool goes on. A box's menu never offers to change its tool (Paul, 11-12: a tool changes only by a drop from the palette). Each package
-// the Hub was seeded with is listed under what it makes. A reload finds all five where they were. Any image tool goes on any picture (Paul,
+// says "Package · Tool" under its picture. On the dropped picture a video tool that reads pictures makes a video box from it, which Undo takes
+// away (xs-204); an image tool on the video changes nothing and says why at the bottom left, in one line; on the picture it goes on. A box's
+// menu never offers to change its tool (Paul, 11-12: a tool changes only by a drop from the palette). Each package the Hub was seeded with is
+// listed under what it makes. A reload finds all five where they were. Any image tool goes on any picture (Paul,
 // 11-16): SDXL, which reads none, goes on a picture with no tool and offers no reference, and the picture its words start from is struck
 // through in red, its reason on hover and in one line under them; Qwen Image 2, which reads pictures, goes on in its place and uses it. The X
 // on the tool line takes the tool off, Undo puts it back. The sidebar and SDXL's struck picture are kept at 1440×900, on paper and dark; the
@@ -226,19 +227,35 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     expect.soft(order.every((i, n) => i >= 0 && (n === 0 || i > order[n - 1])), `MOSS-Image, Qwen-Image-2.1, SDXL, then BiRefNet: ${image.map((one) => one.label).join(', ')}`).toBe(true);
   });
 
-  await test.step('drop a video tool, then an image tool, onto the dropped picture', async () => {
+  await test.step('a video tool on the dropped picture makes a video box from it, which Undo takes away; an image tool on the video changes nothing and says why; on the picture it goes on', async () => {
     const target = names.image;
     const onIt = () => canvasPoint(page, target);
     await openOperation('video');
-    // MiniMax H3's Shot, which makes a video from nothing.
+    // MiniMax H3's Shot, whose words read pictures: a tool on a box of another kind it reads makes a new box from it (xs-204).
     const video = implementations('video').and(palette.locator('[data-tool="minimax-h3/generate"]'));
     const videoId = await video.getAttribute('data-tool');
-    const videoWire = tools.find((tool) => tool.id === videoId);
     const before = await project.asset(target);
-    const count = (await project.assets()).length;
+    const was = (await project.assets()).map((asset) => asset.name);
     await carry(page, video, await onIt());
-    const why = page.locator('.notes .note .line').filter({ hasText: `${named(videoWire)} makes video: drop it on a video box` });
-    await expect(why, 'a video tool on a picture says why').toHaveCount(1);
+    let made;
+    await expect.poll(async () => (made = (await project.assets()).find((asset) => !was.includes(asset.name)))?.name ?? null, { message: 'a video tool on a picture makes a box' }).not.toBeNull();
+    expect.soft(made, 'a video box of the video tool').toMatchObject({ kind: 'video', tool: videoId });
+    expect.soft(JSON.stringify(made.fields), 'that reads the picture').toContain(`<${target}>`);
+    const kept = await project.asset(target);
+    expect.soft({ tool: kept.tool ?? null, kind: kept.kind, fields: kept.fields, versions: kept.versions }, 'the picture stays as it was').toEqual({ tool: before.tool ?? null, kind: before.kind, fields: before.fields, versions: before.versions });
+    await page.locator('.top .history').getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect.poll(async () => (await project.assets()).map((asset) => asset.name).sort(), { message: 'Undo takes it away' }).toEqual([...was].sort());
+    const count = was.length;
+
+    // Qwen Image 2's words read pictures only: on the video it changes nothing, and says why at the bottom left, in one line.
+    await openOperation('image');
+    const image = implementations('image').and(palette.locator('[data-tool^="qwen-image-2/"]')).first();
+    const imageId = await image.getAttribute('data-tool');
+    const imageWire = tools.find((tool) => tool.id === imageId);
+    const onVideo = await project.asset(names.video);
+    await carry(page, image, await canvasPoint(page, names.video));
+    const why = page.locator('.notes .note .line').filter({ hasText: `${named(imageWire)} can't use videos, so it can't go on ${names.video}` });
+    await expect(why, 'an image tool on a video says why').toHaveCount(1);
     const [line, view] = [await why.evaluate((el) => {
       const r = el.getBoundingClientRect();
       const style = getComputedStyle(el);
@@ -246,13 +263,10 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     }), page.viewportSize()];
     expect.soft(line.x < view.width / 2 && line.bottom > view.height * 0.6, `said at the bottom left: ${JSON.stringify(line)}`).toBe(true);
     expect.soft(Math.round(line.height / line.line), 'in one line').toBe(1);
-    const after = await project.asset(target);
-    expect.soft({ tool: after.tool ?? null, kind: after.kind, fields: after.fields, versions: after.versions }, 'the video tool changes nothing').toEqual({ tool: before.tool ?? null, kind: before.kind, fields: before.fields, versions: before.versions });
+    const after = await project.asset(names.video);
+    expect.soft({ tool: after.tool ?? null, kind: after.kind, fields: after.fields, versions: after.versions }, 'the image tool changes nothing').toEqual({ tool: onVideo.tool ?? null, kind: onVideo.kind, fields: onVideo.fields, versions: onVideo.versions });
     expect.soft((await project.assets()).length, 'and makes no box').toBe(count);
 
-    await openOperation('image');
-    const image = implementations('image').and(palette.locator('[data-tool^="qwen-image-2/"]')).first();
-    const imageId = await image.getAttribute('data-tool');
     await carry(page, image, await onIt());
     await expect.poll(async () => (await project.asset(target)).tool, { message: 'the image tool goes on the picture' }).toBe(imageId);
     expect.soft((await project.assets()).length, 'and makes no box').toBe(count);

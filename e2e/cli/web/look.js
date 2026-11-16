@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { holderToken, projectFolder, BARS, DARK_OPEN, MP4, STEP_MS, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload, canvasBox, canvasView } = require('./page');
+const { holderToken, projectFolder, BARS, DARK_OPEN, MP4, STEP_MS, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload, canvasBox, canvasView } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const SIZES = [[1440, 900], [1920, 1080]];
@@ -118,6 +118,11 @@ async function died(why) {
         if (open) await open(page, theme);
         await settled(page);
         const target = await locate(page);
+        if (target === null) throw new Error('not on the canvas');
+        // Partly off the window, a crop is a strip of it: listed as missed instead.
+        if (target?.bounds && (target.bounds.x < 0 || target.bounds.y < 0 || target.bounds.x + target.bounds.width > page.viewportSize().width || target.bounds.y + target.bounds.height > page.viewportSize().height)) {
+          throw new Error(`partly off the window: ${JSON.stringify(target.bounds)}`);
+        }
         const box = target?.bounds ? { x: Math.max(0,target.bounds.x-pad), y: Math.max(0,target.bounds.y-pad), right: Math.min(page.viewportSize().width,target.bounds.x+target.bounds.width+pad), bottom: Math.min(page.viewportSize().height,target.bounds.y+target.bounds.height+pad) } : await target.evaluate((el, pad) => {
           // A box's lines under it hang outside its node.
           const rects = [el, ...el.querySelectorAll('.tile-under')].map((one) => one.getBoundingClientRect());
@@ -280,10 +285,11 @@ async function died(why) {
     await tryStep('slow rendering', async () => {
       await post(`${at}/runs`, { names: ['slow'], on: ['local'] });
       await post(`${at}/runs`, { names: ['waits'], on: ['local'] });
-      await until('slow saying how far it is', () => boxOf(paper, 'slow').evaluate((node) => node.querySelectorAll('.tile-under .run-face p').length), (n) => n >= 2, FIRST_RUN_MS);
+      // The canvas draws a box at rest (cl-991): its run's line is the scene's, not a DOM card's.
+      await until('slow saying how far it is', () => canvasBox(paper, 'slow').then((card) => card?.rendered?.progress ?? null), (progress) => Boolean(progress?.state && progress?.time), FIRST_RUN_MS);
       await paper.waitForTimeout(6000);
     });
-    seen.states = Object.fromEntries(await Promise.all(['slow', 'waits', 'fresh', 'broken'].map(async (name) => [name, await boxOf(paper, name).locator('.state-dot').getAttribute('aria-label').catch(() => null)])));
+    seen.states = Object.fromEntries(await Promise.all(['slow', 'waits', 'fresh', 'broken'].map(async (name) => [name, await canvasBox(paper, name).then((card) => card?.rendered?.state ?? null).catch(() => null)])));
   }
 
   // The canvas: fitted (as it opens), at 100%, far out.
@@ -315,8 +321,53 @@ async function died(why) {
     },
   });
 
-  // Each box close, at 100%: selected, then at rest.
-  const tileOf = (page, name) => canvasBox(page, name);
+  // The selection as Figma draws it (Paul, 11-16): one box selected, then every box, fitted and at 25%, 100% and 200% about it.
+  const select = { one: async (page) => {
+    await leave(page);
+    await fitCanvas(page);
+    const { x, y, width, height } = (await canvasBox(page, 'still')).body;
+    await page.mouse.click(x + width / 2, y + height / 2);
+    await settled(page);
+  }, all: async (page) => {
+    await leave(page);
+    await fitCanvas(page);
+    await page.keyboard.press('ControlOrMeta+a');
+    await settled(page);
+  } };
+  for (const [which, open] of Object.entries(select)) {
+    for (const [at, zoom] of [['fit', null], ['25', 0.25], ['100', 1], ['200', 2]]) {
+      await shoot(`select-${which}-${at}`, {
+        open,
+        prepare: async (page) => {
+          await fitCanvas(page);
+          if (zoom === null) return;
+          await page.keyboard.press('Shift+2');
+          await settled(page);
+          await zoomMenu(page, /^Zoom to 100%/);
+          // The zoom's steps, out or in, until the canvas is at `zoom`.
+          for (let i = 0; i < 16 && (await zoomOf(page)) > zoom * 1.01; i++) { await page.click('button[aria-label="Zoom out"]'); await settled(page); }
+          for (let i = 0; i < 16 && (await zoomOf(page)) < zoom * 0.99; i++) { await page.click('button[aria-label="Zoom in"]'); await settled(page); }
+          (seen.select_zoom ??= {})[`${which}-${at}`] = await zoomOf(page);
+          await page.mouse.move(4, 600);
+          await settled(page);
+        },
+      });
+    }
+  }
+  await both((page) => leave(page).then(() => fitCanvas(page)));
+
+  // Each box close, at 100%: selected, then at rest. A box at rest is the scene's (cl-991): its card's bounds with what hangs off them, its
+  // name above and its lines under it, from what the canvas drew.
+  const tileOf = (page, name) => page.evaluate((name) => {
+    const card = document.querySelector('.canvas-root')?.canvasInspection?.card(name);
+    if (!card) return null;
+    const drawn = card.rendered;
+    const rects = [card.bounds, ...(drawn ? [...Object.values(drawn.labels), ...drawn.controls, drawn.stateDot, drawn.meter].filter(Boolean) : [])]
+      .filter((r) => r.width > 0 && r.height > 0);
+    const left = Math.min(...rects.map((r) => r.x)), top = Math.min(...rects.map((r) => r.y));
+    const right = Math.max(...rects.map((r) => r.x + r.width)), bottom = Math.max(...rects.map((r) => r.y + r.height));
+    return { bounds: { x: left, y: top, width: right - left, height: bottom - top } };
+  }, name);
   for (const name of boxes) {
     const centre = async (page) => {
       await leave(page);

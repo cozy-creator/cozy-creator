@@ -18,7 +18,7 @@ from safetensors.torch import load_file, save_file
 from transformers import Qwen3_5Config, Qwen3_5ForConditionalGeneration
 from transformers.models.qwen3_5 import modeling_qwen3_5
 
-from cell import NARROW, Cell, answers, module, packages, qwen_tokenizer, save
+from cell import NARROW, Cell, answers, module, packages, qwen_tokenizer, save, wrote
 
 REF = "qwen/qwen3.5-9b@0.2.0"
 
@@ -93,6 +93,15 @@ def cells(picture: Callable[[Path], Path], clip: Callable[[Path], Path]) -> list
                                                         "max_tokens": 8, "temperature": 0.8, "seed": 3}, "check": answers(2)},
         {"entry": "caption", "name": "image", "payload": {"max_tokens": 12}, "files": {"images.0": picture},
          "check": answers(1)},
+        # xs-204, Paul 11-16: "attach an LLM (ideally VLLM) to an image node, or a video node, and ask it to produce a
+        # caption, and it'll produce text". The box's tool: each mention's picture or video where it's first mentioned.
+        {"entry": "write", "name": "text", "payload": {"instructions": {"text": "Write one line about the sea."},
+                                                      "max_tokens": 12, "seed": 3}, "check": wrote},
+        {"entry": "write", "name": "mentions",
+         "payload": {"instructions": {"text": "Caption <fox>, then say what moves in <clip> and in <fox>.",
+                                      "references": [{"key": "fox", "type": "image"}, {"key": "clip", "type": "video"}]},
+                     "max_tokens": 12, "seed": 3},
+         "files": {"instructions.references.0.file": picture, "instructions.references.1.file": clip}, "check": wrote},
         {"entry": "quantize", "name": "int8", "payload": {}, "skip": NARROW},
     ]
 

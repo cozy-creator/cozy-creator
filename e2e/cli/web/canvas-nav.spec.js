@@ -1,11 +1,11 @@
 // canvas-nav (cl-973 core cell 15), on 300 boxes made by one API batch: − and + step along the zooms about the middle of what's visible; the
-// zoom menu's Zoom to fit shows every box and its 100% is scale 1; Shift+1 and Shift+0 do what they do; at 11% each wheel pans and all 300
-// stay present when in view. The dots follow the canvas's scale and are never over a picture. A box's name as the canvas zooms (Paul, 11-13: "the text size
+// zoom menu's Zoom to fit shows every box and its 100% is scale 1; Shift+1 and Shift+0 do what they do; two quick steps out are two steps
+// (cl-1048 row 35); at 11% each wheel pans and all 300 stay present when in view. The dots follow the canvas's scale and are never over a picture. A box's name as the canvas zooms (Paul, 11-13: "the text size
 // should be limited ... rather than just truncating"): pictures and words with short and long names, stacked and side by side as close as
 // the layout keeps them, zoomed by − from 100% to the farthest and back by +, then by the wheel: each box where it was, each name one line,
 // cut with an ellipsis where its box ends and whole under the pointer, on no box, no other name and not its own picture; so too at 100%,
 // 45%, 25% and the farthest, at 1440×900 and 1920×1080, paper and dark.
-const { test, expect, canvasNames, canvasIdle, hoverBox, middle: middleOf, openPoint, png, screenshotPixels } = require('./fixtures');
+const { test, expect, canvasNames, canvasIdle, hoverBox, middle: middleOf, nameUnderPointer, openPoint, png, screenshotPixels } = require('./fixtures');
 const { camera, colours, sameCamera } = require('./geometry');
 
 const COUNT = 300;
@@ -239,6 +239,24 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
     expect.soft(sameCamera(one, hundred), `Shift+0 is Zoom to 100%: ${JSON.stringify(one)}, ${JSON.stringify(hundred)}`).toBe(true);
   });
 
+  await test.step('two quick steps out are two steps: Zoom out twice from 50%, and Ctrl+− twice from 100%', async () => {
+    // cl-1048 acceptance row 35 (cl-1027): a second press while the first step still glides steps on from where the first is going.
+    const presses = [
+      ['Zoom to 50%', 'Zoom out twice', () => page.getByRole('button', { name: 'Zoom out', exact: true }).click()],
+      ['Zoom to 100%', 'Ctrl+− twice', () => page.keyboard.press('ControlOrMeta+Minus')],
+    ];
+    for (const [from, how, press] of presses) {
+      await zoomMenu(from);
+      await passive(page);
+      const was = (await camera(page)).zoom, want = stepped(stepped(was, -1), -1);
+      await press();
+      await press();
+      await canvasIdle(page);
+      expect.soft((await camera(page)).zoom, `${how} from ${Math.round(was * 100)}%: two steps, ${Math.round(want * 100)}%`).toBeCloseTo(want, 4);
+      await shows(want);
+    }
+  });
+
   await test.step('wheel-pan at 11%', async () => {
     // The page's own last view saved first, so the one set here is the one a reload reads.
     const now = await camera(page);
@@ -404,13 +422,8 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
     // A long name cut short says itself whole under the pointer: its title, on what the pointer finds there.
     const hover = [];
     for (const name of LONG) {
-      const native = await hoverBox(page, name), nm = native.locator('.head .nm');
-      const point = await middleOf(nm);
-      await page.mouse.move(point.x, point.y);
-      hover.push(await nm.evaluate((nm, name) => {
-        const r = nm.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-        return { name, cut: nm.scrollWidth > nm.clientWidth, title: nm.title, under_pointer: hit === nm || nm.contains(hit) };
-      }, name));
+      const { cut, title, under_pointer } = await nameUnderPointer(page, name);
+      hover.push({ name, cut, title, under_pointer });
       await passive(page);
     }
     expect.soft(hover, 'a long name is cut, and says itself under the pointer').toEqual(LONG.map((name) => ({ name, cut: true, title: name, under_pointer: true })));

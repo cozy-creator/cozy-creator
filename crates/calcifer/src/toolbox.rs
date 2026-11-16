@@ -730,7 +730,7 @@ pub(crate) async fn tool_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<To
         return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package, not a tool. Pick one of its functions: {functions}.")));
     };
     tool::tools_of(&found.package, &found.release, &interface, &found.summary).into_iter().find(|held| held.function == function)
-        .ok_or_else(|| Error::new(Kind::Usage, "tool_not_a_tool", format!("{tool} isn't a tool: its function has no @app.tool, or makes no media.")))
+        .ok_or_else(|| Error::new(Kind::Usage, "tool_not_a_tool", format!("{tool} isn't a tool: its function has no @app.tool, or makes nothing a box can show.")))
 }
 
 /// `tool` as `GET /v1/tools` lists it from the Hub: its package's newest release, by its card. None for local code, or what the Hub hasn't.
@@ -760,7 +760,7 @@ pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fi
     crate::hub::checkpoints::check_choices(api, &hub, &crate::hub::checkpoints::slots_of(&interface, callable), &choices).await
 }
 
-/// What `tool` makes, `image`, `video` or `audio`, as its function's output says, and what a new box of it is called, read as a run of it
+/// What `tool` makes, `image`, `video`, `audio` or `text`, as its function's output says, and what a new box of it is called, read as a run of it
 /// on this computer would be. A tool can be local code, by a path from `dir`, and a package with one public function names that one.
 pub(crate) async fn read(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<(String, String), Error> {
     if tool == tool::EDIT {
@@ -777,6 +777,6 @@ pub(crate) async fn read(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<(Stri
         return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package, not a tool. Pick one of its functions: {functions}.")).next(format!("cozy run {package}")));
     };
     let callable = interface.callables.iter().find(|callable| callable.name == name);
-    let made = callable.and_then(|callable| Some((tool::output_kind(callable)?.to_owned(), tool::box_name(&package, callable))));
-    made.ok_or_else(|| Error::new(Kind::Usage, "tool_makes_no_media", format!("{package}/{name} doesn't make an image, video or sound.")).next("cozy package ls"))
+    let made = callable.and_then(|callable| Some((tool::makes(callable)?.to_owned(), tool::box_name(&package, callable))));
+    made.ok_or_else(|| Error::new(Kind::Usage, "tool_makes_no_media", format!("{package}/{name} doesn't make an image, a video, a sound or text.")).next("cozy package ls"))
 }

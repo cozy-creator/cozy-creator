@@ -218,6 +218,22 @@ async function removeFolder(folder) {
 }
 
 /** In every page of a guarded context: CSP violations and modal dialogs, said to the fixture as they happen. */
+/** Test-only, in this file and nowhere in the product (no setting or URL reaches it; coordinator, 11-16): a runner has no GPU, and the canvas
+ *  draws in 2D when WebGL is only software (cl-1048). Every lane but web-2d and web-2d-solo names the runner's software WebGL as a hardware GPU, so the
+ *  canvas takes the WebGL path most people's computers take, still drawn by the runner's software GL; those two (WEB_RENDERER=2d, run.sh)
+ *  leave the browser as it is, the path of a computer with no GPU. */
+function hardwareGl() {
+  for (const Context of [globalThis.WebGLRenderingContext, globalThis.WebGL2RenderingContext].filter(Boolean)) {
+    const read = Context.prototype.getParameter;
+    Context.prototype.getParameter = function (name) {
+      // RENDERER, and WEBGL_debug_renderer_info's UNMASKED_RENDERER_WEBGL.
+      if (name === 0x1f01 || name === 0x9246) return 'Test GPU (hardware, for the web suite)';
+      return read.call(this, name);
+    };
+  }
+}
+const WEBGL_PATH = process.env.WEB_RENDERER !== '2d';
+
 function guardPage() {
   addEventListener('securitypolicyviolation', (event) => window.__cozyGuard(`CSP violation: ${event.violatedDirective} blocked ${event.blockedURI}`));
   const showModal = HTMLDialogElement.prototype.showModal;
@@ -354,6 +370,7 @@ const test = base.extend({
 
   context: async ({ context, guards }, use) => {
     await guards.watch(context);
+    if (WEBGL_PATH) await context.addInitScript(hardwareGl);
     await context.addInitScript(watchBoxes);
     await use(context);
     guards.over();
@@ -366,6 +383,7 @@ const test = base.extend({
       const context = await browser.newContext(options);
       made.push(context);
       await guards.watch(context);
+      if (WEBGL_PATH) await context.addInitScript(hardwareGl);
       return context;
     });
     guards.over();
@@ -413,6 +431,12 @@ const test = base.extend({
     await use(page);
     // Torn down before the context, which closes this page: the cell is over from here.
     guards.over();
+    // Which renderer drew the cell, and how many frames it drew in how long: read on every runner, kept with its result.
+    const drew = page.isClosed() ? null : await page.evaluate(() => {
+      const resources = document.querySelector('.canvas-root')?.canvasInspection?.resources();
+      return resources ? { graphics: resources.graphics, frames: resources.frames, ms: Math.round(performance.now()) } : null;
+    }).catch(() => null);
+    if (drew) testInfo.annotations.push({ type: 'renderer', description: JSON.stringify(drew) });
     if (testInfo.status !== testInfo.expectedStatus && !page.isClosed()) {
       const said = await page.evaluate(() => ({ url: location.href, log: window.boxLog?.slice(-60), focus: `${document.activeElement?.tagName}.${document.activeElement?.className}` }));
       await testInfo.attach('boxes', { body: JSON.stringify(said, null, 2), contentType: 'application/json' });
@@ -498,7 +522,8 @@ async function canvasPoint(page, name, part = 'body') {
     point = await page.evaluate(({ name, part }) => {
       const root = document.querySelector('.canvas-root'), inspection = root?.canvasInspection, card = inspection?.card(name);
       const nativeTitle = part === 'title' && document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] .head .nm`);
-      const rect = part === 'title' ? nativeTitle?.getBoundingClientRect() ?? card?.rendered?.labels.title ?? card?.title : card?.[part];
+      // The new canvas (cl-1048) says where each of a card's parts is drawn; the old one, its title label and its body.
+      const rect = card?.rendered?.parts?.[part] ?? (part === 'title' ? nativeTitle?.getBoundingClientRect() ?? card?.rendered?.labels.title ?? card?.title : card?.[part]);
       if (!rect || !rect.width || !rect.height) return null;
       const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
       const target = document.elementFromPoint(point.x, point.y);
@@ -509,15 +534,145 @@ async function canvasPoint(page, name, part = 'body') {
   return point;
 }
 
-/** Hover mounts the real card. An existing Focus stays open so another card can be carried into it. */
+/** Whether the page draws the new canvas (cl-1048): every card drawn by the scene, none mounted as a DOM card under the pointer. */
+const newCanvas = (page) => page.evaluate(() => typeof document.querySelector('.canvas-root')?.canvasInspection?.cards === 'function');
+
+/** The pointer on a box. The old canvas mounts its DOM card there (returned); the new draws it hovered, and has no DOM card: act on it with
+ *  partPoint, renameField, cornerPoint and previewState. An existing Focus stays open so another card can be carried into it. */
 async function hoverBox(page, name) {
   const focused = page.locator(`[data-focused-asset=${JSON.stringify(name)}]`);
   if (await focused.count()) return box(page, name);
   const point = await canvasPoint(page, name);
   await page.mouse.move(point.x, point.y);
+  if (await newCanvas(page)) {
+    await expect.poll(() => page.evaluate((name) => {
+      const card = document.querySelector('.canvas-root').canvasInspection.cards().find((one) => one.name === name);
+      return Boolean(card) && card.hovered !== false;
+    }, name), { message: `${name} hovered` }).toBe(true);
+    return box(page, name);
+  }
   await expect(box(page, name)).toBeVisible();
   return box(page, name);
 }
+
+/** Where a box's drawn part is on the screen (body, title, delete, cancel, corner), read with nothing under the pointer. */
+async function partPoint(page, name, part) {
+  const away = await openPoint(page);
+  await page.mouse.move(away.x, away.y);
+  let point = null;
+  await expect.poll(async () => {
+    point = await page.evaluate(({ name, part }) => {
+      const card = document.querySelector('.canvas-root')?.canvasInspection?.card(name), shown = card?.rendered;
+      const rect = shown?.parts?.[part]
+        ?? (part === 'delete' || part === 'cancel' ? shown?.controls?.find((one) => one.part === part) : part === 'title' ? shown?.labels?.title ?? card?.title : part === 'body' ? shown?.body ?? card?.body : null);
+      return rect && rect.width && rect.height ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : null;
+    }, { name, part });
+    return Boolean(point);
+  }, { message: `${name}'s ${part} drawn` }).toBe(true);
+  return point;
+}
+
+/** Its name where a hand takes it, to drag it by or click to rename it: the old canvas's hover card's name, the new canvas's drawn title. */
+async function titlePoint(page, name) {
+  if (await newCanvas(page)) return partPoint(page, name, 'title');
+  return middle((await hoverBox(page, name)).locator('.nm'));
+}
+
+/** Its name field, opened as a person opens it, a click on its name, and focused. The same NameField on both canvases. */
+async function renameField(page, name) {
+  const at = await titlePoint(page, name);
+  await page.mouse.click(at.x, at.y);
+  const field = page.getByRole('textbox', { name: 'Name', exact: true });
+  await expect(field).toBeFocused();
+  return field;
+}
+
+/** Its trash where a hand presses it: the old canvas's hover card's Delete, the new canvas's drawn one. */
+async function trashPoint(page, name) {
+  if (await newCanvas(page)) return partPoint(page, name, 'delete');
+  const head = await middle((await hoverBox(page, name)).locator('.nm'));
+  await page.mouse.move(head.x, head.y);
+  return middle((await hoverBox(page, name)).getByRole('button', { name: 'Delete', exact: true }));
+}
+
+/** Its corner, shown with the pointer on it: the old canvas's hover card's grip, the new canvas's drawn one. */
+async function cornerPoint(page, name) {
+  if (!(await newCanvas(page))) return middle((await hoverBox(page, name)).locator('.corner').first());
+  await hoverBox(page, name);
+  let point = null;
+  await expect.poll(async () => {
+    point = await page.evaluate((name) => {
+      const rect = document.querySelector('.canvas-root').canvasInspection.card(name)?.rendered?.parts?.corner;
+      return rect && rect.width && rect.height ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : null;
+    }, name);
+    return Boolean(point);
+  }, { message: `${name}'s corner drawn as it's hovered` }).toBe(true);
+  return point;
+}
+
+/** The shape said as a corner is pulled: the old canvas's `.ratio-live`, the new canvas's ratio label on the card being pulled. Null when none. */
+const liveRatio = (page) => page.evaluate(() => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (typeof inspection?.cards === 'function') {
+    const name = inspection.interaction().resizing;
+    return name ? inspection.card(name)?.rendered?.labels?.ratio?.text ?? null : null;
+  }
+  const said = document.querySelector('.ratio-live');
+  return said ? said.innerText.trim() : null;
+});
+
+/** Its hover preview as a person sees it. Old canvas: the hover card's `<video>`, its time, muted and loop. New: the canvas's preview texture,
+ *  up once its first frame is (no `<video>`: muted and loop are the scene's, null here). */
+const previewState = (page, name) => page.evaluate((name) => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (typeof inspection?.cards === 'function') {
+    const preview = inspection.card(name)?.rendered?.preview;
+    return { canvas: 'new', mounted: Boolean(preview?.active), playing: Boolean(preview?.active && preview?.ready), at: null, muted: preview?.muted ?? null, loop: preview?.loop ?? null };
+  }
+  const video = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] video.preview.on`);
+  return { canvas: 'old', mounted: Boolean(video), playing: Boolean(video && video.currentTime > 0.3), at: video?.currentTime ?? null, muted: video?.muted ?? null, loop: video?.loop ?? null };
+}, name);
+
+/** A long name with the pointer on it: whether it's cut at rest, what it says of itself under the pointer (the old canvas's hover card's
+ *  title attribute; the new canvas's drawn title, or another label saying it whole), and whether the pointer is on the name. */
+async function nameUnderPointer(page, name) {
+  if (!(await newCanvas(page))) {
+    const nm = (await hoverBox(page, name)).locator('.head .nm');
+    const point = await middle(nm);
+    await page.mouse.move(point.x, point.y);
+    return nm.evaluate((nm, name) => {
+      const r = nm.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { name, cut: nm.scrollWidth > nm.clientWidth, title: nm.title, whole: nm.scrollWidth <= nm.clientWidth + 1, text: nm.textContent.trim(), under_pointer: hit === nm || nm.contains(hit) };
+    }, name);
+  }
+  const point = await partPoint(page, name, 'title');
+  const rest = await page.evaluate((name) => document.querySelector('.canvas-root').canvasInspection.card(name)?.rendered?.labels?.title ?? null, name);
+  // Hovered first, then the pointer on its title, as a person reads a name (hoverBox rests on the body).
+  await hoverBox(page, name);
+  await page.mouse.move(point.x, point.y);
+  await expect.poll(() => page.evaluate((name) => {
+    const state = document.querySelector('.canvas-root').canvasInspection.interaction?.()?.state?.();
+    return !state || (state.hover?.name === name && state.hover?.part === 'title');
+  }, name), { message: `${name}'s title under the pointer` }).toBe(true);
+  // The canvas redraws a hovered title whole on its next frame: read it after two.
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  return page.evaluate(({ name, point, rest }) => {
+    const inspection = document.querySelector('.canvas-root').canvasInspection, labels = inspection.card(name)?.rendered?.labels ?? {};
+    const title = labels.title, full = title?.fullText ?? rest?.fullText ?? name;
+    // The whole name, said where the pointer is: the canvas's own tooltip (its root's title) or a label drawn whole.
+    const tooltip = document.querySelector('.canvas-root').getAttribute('title') ?? '';
+    const said = tooltip === full || title?.text === full || Object.entries(labels).some(([key, label]) => key !== 'title' && label?.text === full);
+    const hit = inspection.hitTest(point);
+    return { name, cut: Boolean(rest) && rest.text !== rest.fullText, title: said ? full : tooltip || title?.text || '', whole: title?.text === full, text: title?.text ?? '', under_pointer: hit?.name === name && hit?.part === 'title' };
+  }, { name, point, rest });
+}
+
+/** How many hover previews play anywhere on the canvas. */
+const previewsPlaying = (page) => page.evaluate(() => {
+  const inspection = document.querySelector('.canvas-root')?.canvasInspection;
+  if (typeof inspection?.cards === 'function') return inspection.cards().filter((one) => inspection.card(one.name)?.rendered?.preview?.active).length;
+  return document.querySelectorAll('video.preview.on').length;
+});
 
 /** The canvas's scale now. */
 const zoomOf = (page) => page.evaluate(() => document.querySelector('.canvas-root')?.canvasInspection?.camera().zoom ?? null);
@@ -633,4 +788,5 @@ const TEXT_END = process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End
 /** A local fixture tool (e2e/cli/project/<file>/<function>), as a box or `cozy run` names it. */
 const fixtureTool = (path) => join(__dirname, '..', 'project', path);
 
-module.exports = { test, expect, canvasCard, canvasNames, canvasText, canvasLabel, canvasPoint, canvasVisible, selectedNames, hoverBox, screenshotPixels, box, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, TEXT_END, TEXT_START, DARK_OPEN, MP4, photo, png, wav };
+module.exports = { test, expect, canvasCard, canvasNames, canvasText, canvasLabel, canvasPoint, canvasVisible, selectedNames, hoverBox, screenshotPixels, box,
+  newCanvas, partPoint, titlePoint, renameField, trashPoint, cornerPoint, liveRatio, previewState, previewsPlaying, nameUnderPointer, canvasIdle, focus, middle, observeStill, openPoint, recordAddress, stays, zoomOf, fixtureTool, TEXT_END, TEXT_START, DARK_OPEN, MP4, photo, png, wav };

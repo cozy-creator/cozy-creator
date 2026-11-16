@@ -33,8 +33,6 @@ import type {
   Keepalive,
   Machine,
   MachineList,
-  MachineModels,
-  MachinePackages,
   MachineUpdate,
   ModelDetail,
   ModelEdit,
@@ -790,14 +788,6 @@ export class Client {
   machineLogEvents(name: string, log: MachineLogName, lines: number, after: string | null, signal: AbortSignal): Promise<Response> {
     const place = after ? `&after=${encodeURIComponent(after)}` : ""
     return this.opened(`${machine(name)}/logs/${log}?lines=${lines}${place}`, signal)
-  }
-
-  machinePackages(name: string, signal?: AbortSignal): Promise<MachinePackages> {
-    return this.json(`${machine(name)}/packages`, { signal })
-  }
-
-  machineModels(name: string, signal?: AbortSignal): Promise<MachineModels> {
-    return this.json(`${machine(name)}/models`, { signal })
   }
 
   // Packages

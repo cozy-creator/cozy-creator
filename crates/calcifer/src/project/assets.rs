@@ -97,6 +97,9 @@ pub(super) async fn ready_new(api: &Arc<Api>, folder: &folder::Folder, asked: &m
     if text_asset && !asked.fields.contains_key(format::TEXT) {
         return Err(Error::new(Kind::Validation, "asset_says_nothing", "A box needs a tool, some text, or a kind of media.").remedy("Pick a tool, write some text, or make it an image, video or audio box."));
     }
+    if let Some(from) = asked.reads.clone().filter(|_| !no_tool) {
+        read_from(api, folder, asked, &from).await?;
+    }
     let plain = (!no_tool).then(|| format::plain_tool(&asked.tool, folder));
     let intrinsic_edit = plain.as_deref() == Some(tool::EDIT);
     let said = if intrinsic_edit { Some(tool::edit().makes) } else { declared };
@@ -167,6 +170,7 @@ pub(super) async fn copy(
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
     let folder = &project.folder;
+    let buried = std::cell::Cell::new(false);
     let copied = folder.act(|| {
         let written = folder.written()?;
         let mut taken = written.names();
@@ -190,8 +194,10 @@ pub(super) async fn copy(
             for (from, name, _) in &pairs {
                 let Some(held) = lock.asset(from).cloned() else { continue };
                 let key = name_key(name);
-                // What waits under its name for a rename or `reclaim` stays an orphan's.
-                lock.bury(&key);
+                // What waits under its name for a rename or `reclaim` stays an orphan's, its files purged when its window ends.
+                if lock.bury(&key) {
+                    buried.set(true);
+                }
                 let versions = held.versions.into_iter().map(|version| folder::Version { id: String::new(), ..version }).collect();
                 lock.assets.insert(key, folder::Asset { id: String::new(), name: name.clone(), versions, discarded: vec![], tried: None, failed: None, ..held });
             }
@@ -206,6 +212,9 @@ pub(super) async fn copy(
         Ok(copied)
     });
     let copied = copied.map_err(Refusal)?;
+    if buried.get() {
+        super::purge::deleted(&id, super::now_ms() + super::purge::window_ms());
+    }
     for reading in project.walker.lock().expect("walker lock").readings.values_mut() {
         copied.made.iter().for_each(|made| reading.moved(&made.name));
     }
@@ -367,14 +376,48 @@ pub(super) async fn ready_patch(api: &Arc<Api>, folder: &folder::Folder, name: &
     };
     // A tool going on a picture or a video starts from it: in its first required slot of that kind, else at the start of its first prompt.
     let start = match (&asked.tool, &holds) {
-        (Some(tool), Some(Some((_, kind)))) if !tool.is_empty() => crate::toolbox::fields_of(api, tool, &folder.dir).await.and_then(|fields| {
-            let slot = fields.iter().find(|field| field.required && field.ty == FieldType::Slot && field.accept.as_deref() == Some(kind.as_str()));
-            let prompt = || fields.iter().find(|field| field.ty == FieldType::Prompt);
-            slot.map(|field| Start::Slot(field.field.clone())).or_else(|| prompt().map(|field| Start::Prompt(field.field.clone())))
-        }),
+        (Some(tool), Some(Some((_, kind)))) if !tool.is_empty() => crate::toolbox::fields_of(api, tool, &folder.dir).await.and_then(|fields| start_of(&fields, kind, false)),
         _ => None,
     };
     Ok(PatchReady { validated_tool, incoming, start })
+}
+
+/// Where a box of a tool with `fields` starts from a box of `kind` (`tool::reads_kind`).
+fn start_of(fields: &[tool::ToolField], kind: &str, able: bool) -> Option<Start> {
+    let field = tool::reads_kind(fields, kind, able)?;
+    Some(match field.ty {
+        FieldType::Slot => Start::Slot(field.field.clone()),
+        _ => Start::Prompt(field.field.clone()),
+    })
+}
+
+/// A new box made from box `from` of another kind, a tool let go on it (xs-204): its mention where the tool reads that kind, as a tool
+/// put on a box of its own kind starts from it (`ready_patch`), and nothing written where it can't read it at all. A box of words with a
+/// tool of its own isn't words a mention reads yet.
+async fn read_from(api: &Arc<Api>, folder: &folder::Folder, asked: &mut NewAsset, from: &str) -> Result<(), Error> {
+    let doc = Doc::load(folder)?;
+    let asset = &doc.assets[doc.find(from).ok_or_else(|| own_lines(from))?];
+    let tool = crate::toolbox::tool_of(api, &asked.tool, &folder.dir).await?;
+    let readable = asset.kind != format::TEXT || asset.tool.is_none();
+    let start = readable.then(|| start_of(&tool.fields, &asset.kind, true)).flatten();
+    let own = format!("<{}>", asset.name);
+    match start {
+        Some(Start::Slot(field)) => drop(asked.fields.entry(field).or_insert_with(|| json!(own))),
+        Some(Start::Prompt(field)) => {
+            let words = asked.fields.get(&field).and_then(Value::as_str).unwrap_or_default();
+            if !super::graph::mentions(words).iter().any(|mention| name_key(mention) == name_key(&asset.name)) {
+                let words = if words.is_empty() { own } else { format!("{own} {words}") };
+                asked.fields.insert(field, json!(words));
+            }
+        }
+        None => {
+            let named = if tool.package_title.is_empty() { tool.label.clone() } else { tool.package_title.clone() };
+            let what = match asset.kind.as_str() { "image" => "images", "video" => "videos", "audio" => "audio", _ => "this box's words" };
+            let said = format!("{named} can't use {what}, so it can't make anything from {}.", asset.name);
+            return Err(Error::new(Kind::Validation, "tool_cant_read", said).remedy(format!("Choose a tool that reads {what}.")));
+        }
+    }
+    Ok(())
 }
 
 /// `asked` written to box `name` in one transaction (or the act it's in).
@@ -572,7 +615,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
     let gone = gone.map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&gone.name));
     project.asked.notify_one();
-    super::purge::due(&project.id, super::now_ms() + super::purge::window_ms());
+    super::purge::deleted(&project.id, super::now_ms() + super::purge::window_ms());
     Ok(gone)
 }
 

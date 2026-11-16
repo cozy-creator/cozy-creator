@@ -136,6 +136,9 @@ def measure(args: argparse.Namespace) -> None:
     routes = [("GET", "/v1/machines"), ("GET", "/v1/tools"), ("POST", "/v1/machines/local/keepalive"),
               ("GET", f"/v1/projects/{args.project}/address"), ("GET", "/v1/runs?limit=50"), ("GET", "/v1/events"),
               ("GET", f"/v1/projects/{args.project}/runs?limit=50"), ("GET", f"/v1/runs/{args.run}")]
+    # Projects of a real size: each's run list, and the tools a page lists for one's local code, which reads its document.
+    large = [p for p in args.large.split(",") if p]
+    routes += [("GET", f"/v1/projects/{p}/runs?limit=50") for p in large] + [("GET", f"/v1/tools?project={p}") for p in large[:1]]
     timed: list[Asked] = []
     lock, threads = threading.Lock(), []
 
@@ -151,6 +154,10 @@ def measure(args: argparse.Namespace) -> None:
             status = type(e).__name__
         with lock:
             route = path.split('?')[0].replace(args.project, '{id}').replace(f"/v1/runs/{args.run}", "/v1/runs/{id}")
+            for p in large:
+                route = route.replace(p, '{large}')
+            if "?project=" in path:
+                route += "?project={large}"
             timed.append(Asked(f"{method} {route}", round((asked - recorded) * 1000),
                                round((time.monotonic() - asked) * 1000, 1), status))
 
@@ -168,7 +175,7 @@ def measure(args: argparse.Namespace) -> None:
     starts = [i for i, line in enumerate(lines) if f'pid={holder["pid"]}' in line and 'event="started"' in line]
     mine = lines[max(starts[-1] - 6, 0):] if starts else []
     steps = {line.split('step="')[1].split('"')[0]: int(line.rsplit("ms=", 1)[1].split()[0]) for line in mine if 'started step="' in line}
-    slow = [line.split("INFO ", 1)[-1] for line in mine if "slow request" in line]
+    slow = [line.split("INFO ", 1)[-1] for line in mine if "slow request" in line or 'slow task task="purge"' in line]
     worst: dict[str, Route] = {}
     for t in sorted(timed, key=lambda t: t.at_ms):
         r = worst.setdefault(t.route, Route(t.route))
@@ -198,6 +205,6 @@ sub = parser.add_subparsers(dest="verb", required=True)
 p = sub.add_parser("fill"); p.add_argument("db"); p.add_argument("outputs"); p.add_argument("--runs", type=int, default=40_000); p.add_argument("--machines", type=int, default=3_000); p.add_argument("--unsettled", type=int, default=5)
 p = sub.add_parser("empty"); p.add_argument("db")
 p = sub.add_parser("measure"); p.add_argument("--holder", required=True); p.add_argument("--old-pid", type=int, required=True); p.add_argument("--project", required=True)
-p.add_argument("--log", required=True); p.add_argument("--run", required=True); p.add_argument("--timed", required=True); p.add_argument("--seconds", type=float, default=6); p.add_argument("--budget-ms", type=float, default=200)
+p.add_argument("--log", required=True); p.add_argument("--run", required=True); p.add_argument("--large", default=""); p.add_argument("--timed", required=True); p.add_argument("--seconds", type=float, default=6); p.add_argument("--budget-ms", type=float, default=200)
 args = parser.parse_args()
 {"fill": fill, "empty": empty, "measure": measure}[args.verb](args)

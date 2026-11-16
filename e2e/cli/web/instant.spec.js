@@ -6,7 +6,7 @@
 const { spawn } = require('child_process');
 const { join } = require('path');
 const { createInterface } = require('readline');
-const { test, expect, canvasIdle, focus, middle, zoomOf, canvasPoint, canvasText, selectedNames, hoverBox, screenshotPixels } = require('./fixtures');
+const { test, expect, canvasIdle, focus, middle, zoomOf, canvasPoint, canvasText, selectedNames, hoverBox, titlePoint, screenshotPixels } = require('./fixtures');
 
 /** Polls whose miss leaves the cell going, as `expect.soft` does. */
 const softly = expect.configure({ soft: true });
@@ -108,9 +108,12 @@ const centre = (page, dx = 0) => page.evaluate((dx) => {
 const armDrop = (page) => page.evaluate(() => {
   const names = () => {
     const scene = document.querySelector('.canvas-root')?.canvasInspection;
+    // A box's name is its drawn title, or, while it's being named, the name field over it (the new layer draws no title under it).
+    const fields = [...document.querySelectorAll('input.nm-field')].filter(field => field.checkVisibility()).map(field => field.getBoundingClientRect());
+    const over = (bounds) => bounds && fields.some(r => r.x + r.width / 2 >= bounds.x && r.x + r.width / 2 <= bounds.x + bounds.width && r.y + r.height / 2 >= bounds.y && r.y + r.height / 2 <= bounds.y + bounds.height);
     const retained = scene?.names().filter(name => {
-      const shown = scene.card(name)?.rendered;
-      return shown && shown.transform.alpha > 0 && shown.labels.title;
+      const card = scene.card(name), shown = card?.rendered;
+      return shown && shown.transform.alpha > 0 && (shown.labels.title || over(card.bounds));
     }) ?? [];
     const native = [...document.querySelectorAll('.canvas-node .card[data-asset]')].filter(card => card.checkVisibility()).map(card => card.dataset.asset);
     return [...new Set([...retained, ...native])];
@@ -128,7 +131,10 @@ const shownNames = (page) => page.evaluate(() => window.__instantNames());
 async function titlePixels(page, name) {
   const rect = await page.evaluate(name => {
     const native = document.querySelector(`.canvas-node .card[data-asset=${JSON.stringify(name)}] .nm`);
-    const r = native?.getBoundingClientRect() ?? document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered?.labels.title;
+    const card = document.querySelector('.canvas-root')?.canvasInspection?.card(name), b = card?.bounds;
+    // The new layer's name field over the box while it's named, its title otherwise.
+    const field = b && [...document.querySelectorAll('input.nm-field')].find(el => { const f = el.getBoundingClientRect(); return el.checkVisibility() && f.x + f.width / 2 >= b.x && f.x + f.width / 2 <= b.x + b.width && f.y + f.height / 2 >= b.y && f.y + f.height / 2 <= b.y + b.height; });
+    const r = native?.getBoundingClientRect() ?? card?.rendered?.labels.title ?? field?.getBoundingClientRect();
     return r && { x: r.x, y: r.y, width: r.width, height: r.height };
   }, name);
   expect(rect, `${name}'s presented title geometry`).toBeTruthy();
@@ -208,7 +214,7 @@ test('instant', async ({ page, project, api, guards }) => {
     // Carried by its name, as a hand moves a box: a drag where it draws nothing (its name row past its name) pans the canvas (Paul, 11-06).
     const zoom = await zoomOf(page);
     const was = await placeOf(page, first);
-    const grip = await middle((await hoverBox(page, first)).locator('.nm'));
+    const grip = await titlePoint(page, first);
     // Cross the click threshold; the canvas retains the original press as the drag anchor.
     const began = { x: grip.x + 4, y: grip.y + 2 };
     const to = { x: grip.x + 120, y: grip.y + 80 };
@@ -222,7 +228,9 @@ test('instant', async ({ page, project, api, guards }) => {
       const now = await placeOf(page, first);
       return now ? Math.round(Math.max(Math.abs(now.x - was.x - (to.x - grip.x) / zoom), Math.abs(now.y - was.y - (to.y - grip.y) / zoom))) : Infinity;
     }, { message: 'the move shows at once, on the canvas where it was let go: px off', timeout: 1000 }).toBeLessThanOrEqual(2);
-    const place = await placeOf(page, first);
+    // Where it rests once the carry's lift has eased back (about 90 ms): what the page then saves.
+    let place = null, last = null;
+    await expect.poll(async () => { place = await placeOf(page, first); const same = JSON.stringify(place) === JSON.stringify(last); last = place; return same; }, { message: 'its place at rest', intervals: [100] }).toBe(true);
     expect.soft(posts.calls.length, 'still the one POST, held').toBe(1);
     const going = writes.slice(writes.indexOf('POST /assets')).filter((write) => write === `PATCH /assets/${encodeURIComponent(first)}` || write === 'PATCH /canvas');
     expect.soft(going, 'its words and its move wait behind its POST').toEqual([]);
@@ -261,7 +269,7 @@ test('instant', async ({ page, project, api, guards }) => {
 
     // Another writer takes the name while this rename is on its way: it's refused, and the box is as it was.
     const renames = await hold(page, 'POST', project.at('/rename'));
-    const name = await middle((await hoverBox(page, first)).locator('.nm'));
+    const name = await titlePoint(page, first);
     await page.mouse.click(name.x, name.y);
     const field = page.getByRole('textbox', { name: 'Name', exact: true });
     await field.fill('taken');
@@ -309,7 +317,7 @@ test('instant', async ({ page, project, api, guards }) => {
     // The page's rename lands; its Undo shows at once and is held while another writer takes the old name, so Calcifer refuses it (that 409
     // is this cell's doing). The box goes back to the name Calcifer has for it, and the other writer's box shows under the name it took.
     guards.allow(/status of 409\b.*\/v1\/projects\/[^/ ]+\/history\/undo\b/);
-    const name = await middle((await hoverBox(page, first)).locator('.nm'));
+    const name = await titlePoint(page, first);
     await page.mouse.click(name.x, name.y);
     const field = page.getByRole('textbox', { name: 'Name', exact: true });
     await field.fill('renamed');

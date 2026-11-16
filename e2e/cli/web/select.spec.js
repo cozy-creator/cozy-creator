@@ -1,6 +1,8 @@
 // select (cl-973 core cell 3), at zoom 1 and 0.25: a click selects a box and opens nothing; Shift adds one; a Shift-drag selects exactly
-// what it touches; Ctrl+A selects all; a click on the canvas clears it; a hover never looks selected. A selected box has a ring of the
-// selection's own colour, with its glow, 3 px or more on screen.
+// what it touches; Ctrl+A selects all; a click on the canvas clears it; a hover never looks selected. The selection as Figma draws it
+// (Paul, 11-16: "I don't like the super thick right blue border around the selected node ... just do whatever would be typical for a
+// canvas-based app like figma"): a selected box has one line of the selection's colour on its edge, 2 px on screen at every zoom, with no
+// glow; a box under the pointer, 1 px of the same colour.
 const { test, expect, canvasCard, canvasNames, canvasPoint, canvasIdle, selectedNames, hoverBox, openPoint, png, screenshotPixels, zoomOf } = require('./fixtures');
 
 // Pictures 240 wide on the canvas, a row of three and one under them, clear of each other.
@@ -11,40 +13,8 @@ const NAMES = Object.keys(PLACES);
 let baseline;
 const near = (a, b, tolerance = 28) => a.every((value, i) => Math.abs(value - b[i]) <= tolerance);
 
-/** Fractional native hover strokes are judged against the same native card with only its outline suppressed.
- * At 25%, the outline, paper border and picture can share one device pixel; adjacent pixels do not contain that underpaint.
- * Require visible paint toward the hover colour, not alpha equal to ideal rectangle area: transformed rasterization mixes underpaint.
- * The restored stroke must change a channel by at least 3 and stay within 8 RGB residual levels; selection has its separate 3 px/glow bar. */
-function hoverCoverage(read, body, color, dpr, zoom = 1, withoutOutline = null) {
-  const noise=8,width=zoom,offset=2*zoom;
-  const sides=[['left',body.x,body.y+body.height/2,1,true],['right',body.x+body.width,body.y+body.height/2,-1,true],
-    ['top',body.y,body.x+body.width/2,1,false],['bottom',body.y+body.height,body.x+body.width/2,-1,false]];
-  return sides.map(([side,edge,across,inward,horizontal])=>{
-    const [low,high]=[(edge-inward*(offset+width))*dpr,(edge-inward*offset)*dpr].sort((a,b)=>a-b);
-    const start=Math.floor(low),end=Math.ceil(high)-1,outside=inward===1?start-1:end+1;
-    const pixel=coordinate=>horizontal?read(coordinate,Math.round(across*dpr)):read(Math.round(across*dpr),coordinate);
-    const near=pixel(outside),far=pixel(outside-inward),samples=[];
-    let visible=false;
-    for(let coordinate=start;coordinate<=end;coordinate++) {
-      const observed=pixel(coordinate),steps=(coordinate-outside)*inward;
-      const background=withoutOutline ? (horizontal ? withoutOutline(coordinate,Math.round(across*dpr)) : withoutOutline(Math.round(across*dpr),coordinate)) : near.map((value,c)=>value+(value-far[c])*steps),toward=color.map((value,c)=>value-background[c]);
-      const square=toward.reduce((sum,value)=>sum+value*value,0);
-      const alpha=square?observed.reduce((sum,value,c)=>sum+(value-background[c])*toward[c],0)/square:NaN;
-      const expected=Math.min(coordinate+1,high)-Math.max(coordinate,low);
-      const residual=Math.max(...observed.map((value,c)=>Math.abs(value-background[c]-alpha*toward[c])));
-      const uncertainty=square?noise*toward.reduce((sum,value)=>sum+Math.abs(value),0)/square:Infinity;
-      const delta=Math.max(...observed.map((value,c)=>Math.abs(value-background[c])));
-      const valid=delta<3 || (Number.isFinite(alpha) && alpha>0 && alpha<=1+uncertainty && residual<=noise && background.every(value=>value>=0 && value<=255));
-      if(delta>=3)visible=true;
-      samples.push({coordinate,observed,background,delta,geometricArea:expected,coverage:Number.isFinite(alpha)?alpha:null,residual:Number.isFinite(residual)?residual:null,uncertainty:Number.isFinite(uncertainty)?uncertainty:null,valid});
-    }
-    const valid=visible && samples.length>0 && samples.every(sample=>sample.valid);
-    const projectedAlphaSum=samples.every(sample=>sample.coverage!==null)?samples.reduce((sum,sample)=>sum+sample.coverage,0):null;
-    return {side,valid,projectedAlphaSum,nominalStrokeWidth:width,outlineOffset:offset,noise,backgroundSamples:[near,far],samples};
-  });
-}
-
-/** Four rays through real screenshot pixels: the solid selection stroke and its translucent outer glow. */
+/** Four rays through real screenshot pixels: each side's run of the selection's colour across the box's edge, and any translucent glow
+ *  outside it. */
 function edge(read, body, color, dpr) {
   const rays = [t => [body.x + t, body.y + body.height / 2], t => [body.x + body.width - t, body.y + body.height / 2],
     t => [body.x + body.width / 2, body.y + t], t => [body.x + body.width / 2, body.y + body.height - t]];
@@ -72,61 +42,19 @@ async function rings(page) {
   const state = await page.evaluate(names => {
     const inspection = document.querySelector('.canvas-root').canvasInspection;
     const probe = document.createElement('i'); document.body.append(probe);
-    const color = token => {
-      probe.style.color = `var(${token})`;
-      const css = getComputedStyle(probe).color, values = css.match(/[\d.]+/g).map(Number).slice(0, 3);
-      return css.startsWith('color(') ? values.map(value => value * 255) : values;
-    };
-    const result = { select: color('--select'), hover: color('--line2'), dpr: devicePixelRatio, zoom: inspection.camera().zoom,
-      bodies: Object.fromEntries(names.map(name => [name, inspection.card(name)?.body])) };
-    const native = [...document.querySelectorAll('.canvas-node .card')].find(card => card.matches(':hover'));
-    const media = native?.querySelector(':scope > .media');
-    if (media) {
-      const r = media.getBoundingClientRect(), style = getComputedStyle(media);
-      result.native = { name: native.dataset.asset, shadow: style.boxShadow, body: { x: r.x, y: r.y, width: r.width, height: r.height },
-        outline: { style: style.outlineStyle, width: style.outlineWidth, color: style.outlineColor, offset: style.outlineOffset } };
-    }
-    probe.remove(); return result;
+    probe.style.color = 'var(--select)';
+    const css = getComputedStyle(probe).color, values = css.match(/[\d.]+/g).map(Number).slice(0, 3);
+    probe.remove();
+    return { select: css.startsWith('color(') ? values.map(value => value * 255) : values, dpr: devicePixelRatio, zoom: inspection.camera().zoom,
+      cards: Object.fromEntries(names.map(name => { const card = inspection.card(name); return [name, { body: card?.body, ring: card?.rendered?.ring ?? null }]; })) };
   }, NAMES);
-  let withoutOutline = null, artifacts;
-  if (state.native) {
-    const css = state.native.outline.color, values = css.match(/[\d.]+/g).map(Number).slice(0, 3);
-    expect(state.native.outline.style, 'hover has a solid native outline').toBe('solid');
-    expect(css.startsWith('color(') ? values.map(value => value * 255) : values, 'the native hover outline uses --line2').toEqual(state.hover);
-    const media = page.locator(`.canvas-node .card[data-asset=${JSON.stringify(state.native.name)}] > .media`).first();
-    artifacts = { withoutOutline: test.info().outputPath(`hover-${state.zoom}-without-outline.png`), restored: test.info().outputPath(`hover-${state.zoom}-restored.png`) };
-    const inline = await media.evaluate(el => {
-      const held = { value: el.style.getPropertyValue('outline-style'), priority: el.style.getPropertyPriority('outline-style') };
-      el.style.setProperty('outline-style', 'none', 'important');
-      return held;
-    });
-    try {
-      const control = await media.evaluate(el => { const r = el.getBoundingClientRect(), style = getComputedStyle(el); return { style: style.outlineStyle, shadow: style.boxShadow, body: { x: r.x, y: r.y, width: r.width, height: r.height } }; });
-      expect(control, 'only the outline is suppressed; native geometry and shadow stay intact').toEqual({ style: 'none', shadow: state.native.shadow, body: state.native.body });
-      withoutOutline = screenshotPixels(await page.screenshot({ path: artifacts.withoutOutline }));
-    } finally {
-      await media.evaluate((el, held) => {
-        if (held.value) el.style.setProperty('outline-style', held.value, held.priority);
-        else el.style.removeProperty('outline-style');
-      }, inline);
-    }
-    const restored = await media.evaluate(el => {
-      const r = el.getBoundingClientRect(), style = getComputedStyle(el);
-      return { shadow: style.boxShadow, body: { x: r.x, y: r.y, width: r.width, height: r.height },
-        outline: { style: style.outlineStyle, width: style.outlineWidth, color: style.outlineColor, offset: style.outlineOffset } };
-    });
-    expect(restored, 'the native hover outline and geometry are restored after its negative control').toEqual({ shadow: state.native.shadow, body: state.native.body, outline: state.native.outline });
-  }
-  const read = screenshotPixels(await page.screenshot(artifacts ? { path: artifacts.restored } : {}));
+  const read = screenshotPixels(await page.screenshot());
   return Object.fromEntries(NAMES.map(name => {
-    const body = state.bodies[name];
+    const { body, ring } = state.cards[name];
     if (!body) return [name, null];
     const sides = edge(read, body, state.select, state.dpr);
-    const native = state.native?.name === name ? state.native : null;
-    const hovered = hoverCoverage(read, native?.body ?? body, state.hover, state.dpr, state.zoom, native ? withoutOutline : null);
     const px = Math.min(...sides.map(side => side.width));
-    return [name, { solid: sides.every(side => side.width >= 3), look: px >= 3 ? 'selection' : hovered.every(side => side.valid) ? 'hover' : 'neither',
-      glow: sides.filter(side => side.glow).length >= 2, px, sides, hovered, ...(native ? { native, artifacts, zoom: state.zoom, dpr: state.dpr } : {}) }];
+    return [name, { px, look: px >= 2 ? 'selection' : px >= 1 ? 'hover' : 'neither', glow: sides.filter(side => side.glow).length >= 2, ring, zoom: state.zoom, sides }];
   }));
 }
 
@@ -154,13 +82,15 @@ async function ringed(page, names) {
   let all;
   await expect.poll(async () => {
     all = await rings(page);
-    return NAMES.every(name => Boolean(all[name]) && (names.includes(name) ? all[name].solid && all[name].glow : all[name].look !== 'selection' && !all[name].glow));
+    return NAMES.every(name => Boolean(all[name]) && (names.includes(name) ? all[name].look === 'selection' && !all[name].glow : all[name].look !== 'selection'));
   }, { message: `the painted rings select ${names.join(', ') || 'nothing'}` }).toBe(true);
   for (const name of NAMES) {
     const said = all[name];
     if (names.includes(name)) {
-      expect.soft(said, `${name} ringed in the selection's colour, with its glow`).toMatchObject({ solid: true, look: 'selection', glow: true });
-      expect.soft(said.px, `${name}'s ring on screen, px`).toBeGreaterThanOrEqual(3);
+      expect.soft(said, `${name} ringed in the selection's colour, with no glow`).toMatchObject({ look: 'selection', glow: false });
+      expect.soft(said.px, `${name}'s ring, px on screen: one thin line`).toBeLessThanOrEqual(3);
+      // Inside the box's edge only where a line outside it would reach the name, its foot 12 canvas px over the box.
+      expect.soft(said.ring, `${name}: a 2 px ring, inside its edge only where it would reach its name`).toEqual({ kind: 'selected', px: 2, inside: 12 * said.zoom < 3 });
     } else expect.soft(said, `${name} not ringed`).toMatchObject({ look: expect.not.stringMatching(/^selection$/), glow: false });
   }
 }
@@ -252,12 +182,9 @@ test('select', async ({ page, project }) => {
         try {
           await expect.poll(async () => { hovered = (await rings(page)).D; return hovered.look; }, 'D looks hovered').toBe('hover');
         } finally {
-          if (hovered) {
-            await test.info().attach(`hover-${zoom}-rays`, { body: Buffer.from(JSON.stringify(hovered, null, 2)), contentType: 'application/json' });
-            for (const [kind, path] of Object.entries(hovered.artifacts ?? {})) await test.info().attach(`hover-${zoom}-${kind}`, { path, contentType: 'image/png' });
-          }
+          if (hovered) await test.info().attach(`hover-${zoom}-rays`, { body: Buffer.from(JSON.stringify(hovered, null, 2)), contentType: 'application/json' });
         }
-        expect.soft(hovered, 'a hover has no glow').toMatchObject({ glow: false });
+        expect.soft(hovered, 'a hover: 1 px of the selection\'s colour, no glow').toMatchObject({ look: 'hover', glow: false, ring: { kind: 'hovered', px: 1 } });
         expect.soft(await selectedNames(page)).not.toContain('D');
         await page.mouse.move(2, 500);
       });
