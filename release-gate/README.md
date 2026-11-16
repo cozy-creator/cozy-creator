@@ -185,6 +185,8 @@ cozy as TensorD, until H3's header lands: it resolves to int8, never to a 4-bit 
 `disk` runs the `disk` suite's cells on one pod under the session's TensorD (its installs only with `installs: yes`);
 `disk-valentino` (cl-774) is a 100 GB 4090 past a full disk: Qwen-Image 2.1 and turbo, then H3, which makes its room by
 ending turbo's idle executor and evicting both, H3 untouched while it renders, H3 bf16 refused before it downloads.
+`derived-disk` (cl-1081) bakes four SDXL LoRA stacks beside an idle model, leaves the disk short, and installs Qwen-Image 2.1:
+its room comes from the bakes, every model kept (`runtime`, `tensorfs`: the pod's wheels).
 `probes` (cl-775, cl-633) measures on one cpu pod whether an executor can read TensorD's memory (a benign check of a mapping's first four bytes), and WebRTC from the published HTTPS player in Chromium, Firefox and WebKit, which isn't Safari.
 `multi-machine` (xs-126) rents two pods with SSH and works in a shell on each (`cozy machine ssh`): a pod's `cozy` uses
 the image's TensorD as `local` beside the runner's runs, one pod controls the other by `authorize`/`add`, and the
