@@ -215,6 +215,19 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
     await beat.click();
     await page.keyboard.type(words);
   };
+  /** Option `option` of choice `label` in Focus `r`, as the page draws it: the browser's own menu (since cl-1066), the page's dropdown of
+   *  described options before it (tonight's RC, fc1956d16), or segments for a few. */
+  const choose = async (r, label, option) => {
+    const menu = r.getByRole('combobox', { name: label, exact: true });
+    const dropdown = r.locator(`button[aria-haspopup="listbox"][aria-label=${JSON.stringify(label)}]`);
+    await expect(menu.or(dropdown).or(r.getByRole('radiogroup', { name: label, exact: true })).first(), `the ${label} choice`).toBeVisible();
+    if (await menu.count()) return menu.selectOption({ label: option });
+    if (await dropdown.count()) {
+      await dropdown.click();
+      return r.getByRole('listbox', { name: label, exact: true }).getByRole('option').filter({ hasText: option }).first().click();
+    }
+    return r.getByRole('radiogroup', { name: label, exact: true }).getByRole('radio', { name: option, exact: true }).click();
+  };
   /** Focus `r` on a new take's words: a box showing a take (the plate's own file) offers its fields under New (takes.spec.js). */
   const draft = async (r) => {
     const take = r.getByLabel('Take', { exact: true });
@@ -403,7 +416,7 @@ test('user-flow', { tag: '@flow' }, async ({ context, project, api, cli, signIn,
       await expect.poll(async () => (await project.asset('plate'))?.tool ?? null, { message: 'the plate takes the Edit tool', timeout: 60_000 }).toBe(edit.id);
       const r = await look('plate');
       await draft(r);
-      await r.getByRole('combobox', { name: 'Edit', exact: true }).selectOption({ label: 'VFX edit' });
+      await choose(r, 'Edit', 'VFX edit');
       await typeBeat(r, 0, GUIDE);
       // Its beat as long as the plate, where the page offers a beat's length; an edit is as long as its plate either way.
       const duration = r.getByRole('slider', { name: "Beat 1's duration", exact: true });
