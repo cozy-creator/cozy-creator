@@ -103,7 +103,7 @@ export const heldBeyond = (fields: Record<string, unknown> | undefined, declared
   Object.entries(fields ?? {}).filter(([field, value]) => !["seed", "quality", "steps", "turbo"].includes(field) && !OWN.includes(field) && !empty(value) && !declared.some((held) => held.field === field))
 
 /** What a slot or a prompt's mention can hold, in words. */
-export const WANTED: Record<Media, string> = { image: "a picture", video: "a video", audio: "a sound" }
+export const WANTED: Record<Media, string> = { image: "an image", video: "a video", audio: "audio" }
 
 /** The sum a list group shows, of its member marked `total`. */
 export function totalOf(group: ToolField, rows: Row[]): { member: ToolField; sum: number } | null {

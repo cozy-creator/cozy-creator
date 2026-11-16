@@ -81,7 +81,7 @@ interface Drawn {
 function Reset({ field, bound }: { field: ToolField; bound: Bound }) {
   if (atDefault(field, bound.value)) return null
   return (
-    <button type="button" className="reset canvas-control" aria-label={`Reset ${field.label}`} title="Back to its default" onClick={bound.unset}>
+    <button type="button" className="reset canvas-control" aria-label={`Reset ${field.label}`} title="Reset to default" onClick={bound.unset}>
       ↺
     </button>
   )
@@ -282,7 +282,7 @@ function SeedField({ field, bound, label }: Drawn) {
         <input
           className="field seed canvas-control"
           type="number"
-          aria-label={`${label}: its number`}
+          aria-label={`${label} number`}
           min={0}
           step={1}
           defaultValue={held}
@@ -301,10 +301,10 @@ function SeedField({ field, bound, label }: Drawn) {
 /** What a mention would put in a slot that takes `accept`, or why it can't: by what the box it names is. */
 export function whyNotIn(store: CanvasStore, accept: Media | undefined, mention: string, besides: string, label: string): string | null {
   const said = store.mentionOf(mention, besides)
-  if (!said) return `${baseOf(mention)} is nothing in this project`
+  if (!said) return `${baseOf(mention)} isn't in this project`
   const kind = store.kindOf(mention, besides)
   if (!accept || kind === accept) return null
-  return `${label} takes ${WANTED[accept]}, and ${baseOf(mention)} is ${kind === "text" ? "words" : (WANTED[kind as Media] ?? "a file")}`
+  return `${label} takes ${WANTED[accept]}, and ${baseOf(mention)} is ${kind === "text" ? "text" : (WANTED[kind as Media] ?? "a file")}`
 }
 
 /** A slot's file: its thumbnail, and on a video its in and out. One its tool can't use, written by hand, is struck through, saying why: a render
@@ -325,7 +325,7 @@ function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; m
         {baseOf(mention)}
         {range && ` ${timecode(range.from, fps)}–${timecode(range.to ?? frames, fps)}`}
         {angled && ` ${degrees(angled)}`}
-        <button type="button" className="canvas-control" aria-label={`Take ${baseOf(mention)} out of ${label}`} onClick={onOff}>
+        <button type="button" className="canvas-control" aria-label={`Remove ${baseOf(mention)} from ${label}`} onClick={onOff}>
           ×
         </button>
       </span>
@@ -435,7 +435,7 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
         />
       )}
       {spans && <span className={`spans ${spans.differs ? "warn" : ""}`}>{spans.says}</span>}
-      {view.asset?.missing?.some((gone) => held.includes(gone)) && <span className="muted">Not in this project any more</span>}
+      {view.asset?.missing?.some((gone) => held.includes(gone)) && <span className="muted">No longer in this project</span>}
     </div>
   )
 }
@@ -455,7 +455,7 @@ function spanOf(store: CanvasStore, name: string, field: ToolField, mention: str
   const seconds = Math.round((frames / fps) * 10) / 10
   const differs = Math.abs(seconds - total.sum) >= 0.5
   const unit = total.member.unit ?? "s"
-  return { differs, says: differs ? `${field.label} is ${seconds} ${unit}, and the ${group.label.toLowerCase()} ${total.sum} ${unit}: the ${field.label.toLowerCase()} wins` : `${seconds} ${unit}` }
+  return { differs, says: differs ? `${field.label} is ${seconds} ${unit}, but the ${group.label.toLowerCase()} add up to ${total.sum} ${unit}, so the ${field.label.toLowerCase()}'s length is used` : `${seconds} ${unit}` }
 }
 
 /** One row of a list, or a block: each member drawn by these same rules. */
@@ -609,7 +609,7 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
         return <div className={`beat ${accordion ? "beat-accordion" : ""} ${kept[i] ? "beat-kept" : rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} data-beat-index={i} data-beat-kept={kept[i] || undefined} data-beat-status={status?.state} key={i}>
           {accordion ? <>
             <div className="beat-heading">{handle}<button type="button" className="beat-toggle" aria-label={`${called} ${i + 1}${statusWord ? `, ${statusWord.toLowerCase()}` : ""}`} aria-expanded={open} aria-controls={`${panelId}-${i}`} onClick={() => setExpanded(open ? null : i)}><b>{called} {i + 1}</b>{statusWord && <span className="beat-status">{statusWord}</span>}{duration != null && <span>{String(duration)} {timing?.unit ?? ""}</span>}<Icon name="forward" /></button>{remove}</div>
-            {status && status.state !== "kept" && status.state !== "skipped" && <div className="beat-progress" role="progressbar" aria-label={`${called} ${i + 1} published frames`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(status.completed * 100)}><span style={{ width: `${status.completed * 100}%` }} /></div>}
+            {status && status.state !== "kept" && status.state !== "skipped" && <div className="beat-progress" role="progressbar" aria-label={`${called} ${i + 1} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(status.completed * 100)}><span style={{ width: `${status.completed * 100}%` }} /></div>}
             <div className="beat-panel" id={`${panelId}-${i}`} data-open={open || undefined} aria-hidden={!open} inert={!open}>{body}</div>
           </> : <>{handle}{body}{remove}</>}
         </div>
@@ -715,7 +715,7 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
         type="button"
         className="run canvas-control"
         aria-label="Render"
-        title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
+        title={view.asset?.pinned ? `Render another ${view.asset.noun}. The approved one stays.` : "Render"}
         onClick={() => store.run(name)}
       >
         <Icon name="play" />

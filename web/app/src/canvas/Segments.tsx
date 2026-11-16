@@ -104,7 +104,7 @@ export function Segments({ name, view, inFrame = false }: { name: string; view: 
   }
   return (
     <div className="tl tl-take canvas-control" aria-label="Timeline">
-      <div className={`tl-bar ${pickup ? "redoes" : ""}`} role="toolbar" aria-label="Its segments">
+      <div className={`tl-bar ${pickup ? "redoes" : ""}`} role="toolbar" aria-label="Segments">
         {made && of && (
           <span className="continues" title={made.take}>
             {own ? `Redone from ${cutClock(made.out_frame / fps)}` : `Continues <${of.name}.${of.number}> from ${cutClock(made.out_frame / fps)}`}

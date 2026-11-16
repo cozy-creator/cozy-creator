@@ -332,7 +332,7 @@ test('render', async ({ page, project, api, cli }) => {
     await softly.poll(() => renderState(page, 'latent')).toBeNull();
 
     // Landed at rest: its note names it and its take, and View opens it on that take.
-    const note = page.locator('[data-note]').filter({ hasText: 'latent finished: version 1' });
+    const note = page.locator('[data-note]').filter({ hasText: 'Version 1 of latent is ready' });
     await expect.soft(note).toBeVisible();
     await note.getByRole('button', { name: 'View', exact: true }).click();
     region = focused(page);
@@ -340,7 +340,7 @@ test('render', async ({ page, project, api, cli }) => {
     await canvasIdle(page);
     await expect.soft(region.getByLabel('Take', { exact: true })).toHaveText('v1');
     await back(page);
-    expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`${first} finished`)), 'a take landing where it is looked at says nothing').toEqual([]);
+    expect.soft(notes.concat(await page.evaluate(() => window.__notes)).filter((text) => text.includes(`of ${first} is ready`)), 'a take landing where it is looked at says nothing').toEqual([]);
   });
 
   await test.step('Render all, on a slow box that mentions the first', async () => {

@@ -161,7 +161,7 @@ export class CardView {
       if (show.references.length) this.references(show, body, pictures, colors, env)
       const failed = this.pictures.get("main")
       const unavailable = Boolean(failed?.handle?.failed && !failed.handle.texture)
-      const sentence = unavailable ? "Selected image unavailable" : show.error ?? show.note
+      const sentence = unavailable ? "This image isn't available" : show.error ?? show.note
       // Far out a box is its picture and its name: words too small to read aren't drawn (look-at-your-own-ui).
       if (sentence && !far && show.picture && !unavailable && !show.error) {
         // Over a picture, a note sits on a pill along its foot.
