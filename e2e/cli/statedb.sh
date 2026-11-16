@@ -359,7 +359,11 @@ for path, rgb in zip(sys.argv[1:], [(200, 30, 30), (30, 30, 200)]):
   step "vault purge due: a copy named as a set-aside row holding a file makes its project due"
   rows=$(due_rows "$copies_id")
   [ "$rows" = 0 ] || check "vault purge due: the copies project was due before its copy ($rows rows)"
-  made=$(project_api "$copies" /copies -X POST -H 'Content-Type: application/json' -d '{"boxes": [{"from": "pic"}]}' | jq -r '.made[0].name // empty') \
+  # Asked as project_api asks, with no read after it: a later request that opens the project looks at its set-aside rows itself.
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$copies")
+  made=$(curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' -X POST -H 'Content-Type: application/json' \
+    -d '{"boxes": [{"from": "pic"}]}' "http://$(jq -r .address "$holder")/v1/projects/$encoded/copies" | jq -r '.made[0].name // empty') \
     || fail "vault purge due: the copy was refused"
   [ "$made" = pic_2 ] || fail "vault purge due: the copy is $made, not pic_2 over the set-aside row"
   rows=$(due_rows "$copies_id")
