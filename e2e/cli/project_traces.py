@@ -21,6 +21,7 @@ import secrets
 import subprocess
 import sys
 import time
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "containment"))
@@ -35,7 +36,7 @@ BIREFNET = "birefnet/remove_background"
 def document(cli: Path, *args: str, cwd: Path | None = None) -> dict[str, object]:
     done = subprocess.run([str(cli), "--json", *args], cwd=cwd, capture_output=True, check=False)
     assert done.returncode == 0, f"cozy {' '.join(args)}: {done.stderr[-300:]!r}"
-    return json.loads(done.stdout)
+    return cast(dict[str, object], json.loads(done.stdout))  # cast: the CLI's --json document
 
 
 def held(files: Path) -> set[str]:
@@ -92,9 +93,9 @@ def state(cli: Path, folder: Path) -> dict[str, object]:
 
 def scanner_for(folder: Path, identity: dict[str, object]) -> Scanner:
     scanner = Scanner()
-    for marker in identity["markers"]:  # type: ignore[union-attr]
-        scanner.add(str(marker))
-    for digest in identity["digests"]:  # type: ignore[union-attr]
+    for marker in cast(list[str], identity["markers"]):
+        scanner.add(marker)
+    for digest in cast(list[str], identity["digests"]):
         scanner.add(digest); scanner.add("sha256:" + digest)
     scanner.identity(folder, str(identity["id"]), folder.name)
     return scanner
@@ -109,7 +110,7 @@ def traces(scanner: Scanner, roots: list[Path], excluded: list[Path], receipt: P
         if not result["matches"]:
             return result
         time.sleep(10)
-    hashed = set(result["path_sha256"])  # type: ignore[arg-type]
+    hashed = set(cast(list[str], result["path_sha256"]))
     found = []
     for root in roots:
         for directory, dirs, names in os.walk(root, followlinks=False):
@@ -182,8 +183,8 @@ def main() -> None:
     assert not facts["away_still_known"] and not facts["deleted_still_known"], f"Calcifer's listing didn't let a gone project go: {facts['away_still_known']}, {facts['deleted_still_known']}"
     assert back == was, f"the project put back and opened isn't as it was: {json.dumps(was)[:600]} then {json.dumps(back)[:600]}"
     assert not left, "project traces: " + "; ".join(
-        f"{kind}: {result['matches']} places, {', '.join(result.get('paths', [])[:6]) or 'paths unknown'}" for kind, result in left.items())  # type: ignore[index,union-attr]
-    print(f"project traces: none left of the project away, deleted or locked, and back as it was ({json.dumps({k: v.get('files') for k, v in facts.items() if isinstance(v, dict) and k != 'back'})})", flush=True)  # type: ignore[union-attr]
+        f"{kind}: {result['matches']} places, {', '.join(result.get('paths', [])[:6]) or 'paths unknown'}" for kind, result in left.items())
+    print(f"project traces: none left of the project away, deleted or locked, and back as it was ({json.dumps({k: v.get('files') for k, v in facts.items() if isinstance(v, dict) and k != 'back'})})", flush=True)
 
 
 if __name__ == "__main__":
