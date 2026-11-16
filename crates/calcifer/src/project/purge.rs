@@ -91,7 +91,8 @@ pub(crate) fn forget(store: &crate::store::Store, id: &str) {
 pub(crate) fn opened(id: &str, folder: &Folder) {
     let legacy = |row: &super::folder::RunFile| row.run == 0 && row.output == "deleted";
     let set_aside = folder.reading_lock(|lock| lock.assets.keys().any(|key| key.contains(TOMBSTONE)) || lock.runs.iter().any(legacy));
-    if !matches!(set_aside, Ok(false)) {
+    // Its loose rows of a take's run not swept yet (cl-1093): one pass, once.
+    if !matches!(set_aside, Ok(false)) || !folder.late_rows_swept().unwrap_or(true) {
         due(id, now_ms());
     }
 }
