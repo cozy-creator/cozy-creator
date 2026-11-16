@@ -4,8 +4,8 @@
 //! computer, a dev build staged with the run. With none named, each moves to its Hub's target. On
 //! `local`, a `cozy` that `cozy update` installed and `local` does not run yet goes with it. The
 //! run holds new runs behind it and waits for those in flight; it succeeds only when the machine
-//! then runs what it asked for (`verified`). Work goes only to a machine on this cozy's minor: one on
-//! another is updated to it first (`current`), never while it has work going.
+//! then runs what it asked for (`verified`). Work goes to a machine of any version (cl-1069): one on an
+//! older minor that this computer may move is updated to this release first (`current`), never back.
 use std::{path::Path, sync::Arc};
 
 use axum::{
@@ -43,15 +43,6 @@ pub(crate) fn rc_version() -> bool {
     this_release().contains('-')
 }
 
-/// The command that moves `name` to this cozy: its release, or a dev build's own binary.
-pub(crate) fn update_command(name: &str) -> String {
-    let tensord = match (dev_build(), platform::exe::launch()) {
-        (true, Some(launch)) => launch.path.display().to_string(),
-        _ => this_release().to_owned(),
-    };
-    format!("cozy machine update {name} --tensord {tensord}")
-}
-
 /// This very `cozy`, held as a file an update stages (`--tensord <path>`): what a machine of this computer's platform runs to be on
 /// this build when it has no release to fetch.
 async fn this_build() -> Result<DevBuild, Error> {
@@ -63,10 +54,7 @@ async fn this_build() -> Result<DevBuild, Error> {
     Ok(DevBuild { sha256: digest, name: "cozy".into(), version: Some(::api::VERSION.into()) })
 }
 
-/// A machine on another minor than this cozy, which isn't updated unasked, or whose update failed: no work goes there.
-pub(crate) const OTHER_MINOR: &str = "machine_other_minor";
-
-/// Whether releases `a` and `b` share a major and minor: what a machine and this Calcifer must, for work to go there.
+/// Whether releases `a` and `b` share a major and minor.
 pub(crate) fn same_minor(a: &str, b: &str) -> bool {
     let minor = |release: &str| {
         let mut parts = release.trim_start_matches('v').split(['.', '+', '-']);
@@ -75,10 +63,24 @@ pub(crate) fn same_minor(a: &str, b: &str) -> bool {
     minor(a) == minor(b)
 }
 
+/// Whether release `machine` is of an older major or minor than `own`: a machine moves up for work, never down. One that doesn't
+/// read is taken as older.
+fn older_minor(machine: &str, own: &str) -> bool {
+    let minor = |release: &str| -> Option<(u64, u64)> {
+        let mut parts = release.trim_start_matches('v').split(['.', '+', '-']);
+        Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    };
+    match (minor(machine), minor(own)) {
+        (Some(machine), Some(own)) => machine < own,
+        _ => true,
+    }
+}
+
 impl Machines {
-    /// Whether work may go to `name` now (cl-816; Paul 11-07: pre-launch, no legacy support): only to a machine on this cozy's minor.
-    /// One on another is updated to this release first, as `cozy machine update` does, once per boot for all that send there: its
-    /// update run, to wait for. One added from another computer, or with work going, is left as it is: the refusal names the command.
+    /// What work for `name` waits for first (cl-1069; Paul 11-16: "It should be a standing rule that we allow version skew"): work
+    /// goes to a machine of any version. One on an older minor that this computer may move (`local`, or a rental it ordered, not held
+    /// by hand, with no work going) moves up to this release first, once per boot: its update run, to wait for. One newer than this
+    /// cozy is never moved back, and one it can't move, or whose update fails, gets work as it is.
     pub(crate) async fn current(self: &Arc<Self>, name: &str) -> Result<Option<Run>, Error> {
         if self.booting_for_rc(name) {
             return Err(Error::new(Kind::Unavailable, "machine_booting", format!("waiting for {name} to start")));
@@ -97,12 +99,20 @@ impl Machines {
         if same_minor(&frame.version, own) || rc_version() {
             return Ok(self.follow_rc(name, true).await);
         }
+        if !older_minor(&frame.version, own) {
+            return Ok(None);
+        }
         let row = self.named(name)?;
+        // Not this computer's to move: added from another, or a rental another client ordered.
+        let others = row.as_ref().is_some_and(|row| row.kind == MachineKind::Added || (row.kind == MachineKind::Rental && !self.ordered(row)));
+        if others || self.held_by_hand(name).is_some() {
+            return Ok(None);
+        }
         let id = row.as_ref().and_then(|row| row.rental_id.clone()).unwrap_or_else(|| name.to_owned());
         let key = format!("minor-{id}-{}-{own}", frame.boot_id);
-        let refused = |why: String| {
-            Error::new(Kind::Conflict, OTHER_MINOR, format!("{name} runs cozy {}, and this cozy is {own}: {why}", frame.version))
-                .next(update_command(name))
+        let as_is = |why: String| {
+            tracing::warn!(machine = name, "work goes to it as it is, on cozy {}: {why}", frame.version);
+            Ok(None)
         };
         if let Some(row) = self.store().keyed(&key).map_err(internal)? {
             let run = self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?;
@@ -110,16 +120,14 @@ impl Machines {
                 Status::Completed => Ok(None),
                 Status::Failed | Status::Canceled => {
                     let why = run.reason.as_ref().map_or_else(|| "it did not finish".to_owned(), |reason| reason.message.clone());
-                    Err(refused(format!("its update failed: {why}")))
+                    as_is(format!("its update to cozy {own} failed: {why}"))
                 }
                 _ => Ok(Some(run)),
             };
         }
-        if row.as_ref().is_some_and(|row| row.kind == MachineKind::Added) {
-            return Err(refused("it is its owner's to update".into()));
-        }
+        // An update would hold new runs behind the work it has going: they go as it is.
         if self.calcifer.each_store(|store|store.working(name)).map_err(internal)?.into_iter().sum::<u32>() > 0 {
-            return Err(refused("it has work going, which an update would hold new runs behind".into()));
+            return Ok(None);
         }
         // What it takes to run this build: `local`, the cozy installed here; else this release, or a dev build's own binary.
         let m = self.show(name).await?;
@@ -129,7 +137,7 @@ impl Machines {
             None if m.status.as_ref().is_some_and(|status| status.platform == format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH)) => {
                 Component::File(this_build().await?)
             }
-            None => return Err(refused("this cozy is a dev build of another platform than it, with no release to fetch".into())),
+            None => return as_is("this cozy is a dev build of another platform, with no release to fetch".into()),
         };
         // `local` below this cozy's Runtime minor takes this cozy's own Runtime in the same update, unless held by hand (cl-1055): a
         // project's run then finds it on the minor, with no second update.
@@ -138,8 +146,10 @@ impl Machines {
             None => self.own_runtime(name, &frame).await.filter(|runtime| !api::prerelease::dev(runtime)),
         };
         let ask = MachineUpdate { tensord: Some(tensord), runtime: runtime.map(Component::Version), ..Default::default() };
-        let (updating, _) = self.update(&key, name, ask).await.map_err(|e| refused(format!("its update was refused: {}", e.message)))?;
-        Ok(updating.run)
+        match self.update(&key, name, ask).await {
+            Ok((updating, _)) => Ok(updating.run),
+            Err(e) => as_is(format!("its update to cozy {own} was refused: {}", e.message)),
+        }
     }
 
     /// Starts the update `ask` of the machine `text` names under `key`: the same key again answers
