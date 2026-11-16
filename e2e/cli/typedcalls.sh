@@ -1,7 +1,8 @@
-# xs-198: a CPU caller -> child -> leaf -> private self call through separately installed environments.
-# The ordinary suite start owns candidate installation and the project; this cell only prepares local code and uses cozy.
+# xs-198: a CPU caller -> child -> leaf -> private self call through separately installed environments, then the
+# returned-media cases (owned image values). The ordinary suite start owns candidate installation and the project; this
+# cell only prepares local code and uses cozy.
 typed_calls() {
-step "typed package calls: media, assets, models, failures and dependency closure"
+step "typed package calls: media, assets, models, failures and dependency closure; returned media"
 [ -n "$LOCAL" ] || { check "typed calls need the Linux local machine"; return; }
 [ -f "$CAND_RT" ] && [[ $CAND_RT == *.whl ]] \
   || { check "typed calls need the exact candidate Runtime wheel (--runtime FILE)"; return; }
@@ -24,9 +25,10 @@ for distribution, wheel in wheels.items():
     with copied.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     sdk[distribution] = {"path": "../runtime/" + wheel.name, "sha256": digest}
-for name in ("caller", "child", "leaf"):
+for name, origin in (("caller", source / "caller"), ("child", source / "child"), ("leaf", source / "leaf"),
+                     ("media", source.parent / "returned-media" / "fixture")):
     target = fixture / name
-    shutil.copytree(source / name, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".venv", "uv.lock", "dist"))
+    shutil.copytree(origin, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".venv", "uv.lock", "dist"))
     project = target / "pyproject.toml"
     text = project.read_text()
     # A direct dependency makes the selected transitive TensorFS source participate in uv resolution.
@@ -52,4 +54,9 @@ uv run --no-project "$here/typed-calls/run.py" --cozy "$COZY" --project "$RUN_PR
   || { check "typed calls failed: $(tail -c 1000 "$root/run.log")"; return; }
 cat "$root/run.log"
 [ -s "$root/cases/qualified.json" ] || check "typed calls wrote no qualification receipt"
+uv lock --project "$fixture/media" > "$root/media-lock.log" 2>&1 \
+  || { check "returned media: locking its fixture failed: $(tail -c 600 "$root/media-lock.log")"; return; }
+uv run --script "$here/returned-media/run.py" --cozy "$COZY" --project "$RUN_PROJECT" --fixture "$fixture/media" \
+  --out "$root/media" --sdk-identity "$(sha256sum "$CAND_RT" | cut -c1-64)" > "$root/media.log" 2>&1 \
+  || check "returned media failed: $(grep -o '"case": "[^"]*"[^}]*"passed": false' "$root/media.log" | head -c 1000) $(tail -c 400 "$root/media.log")"
 }

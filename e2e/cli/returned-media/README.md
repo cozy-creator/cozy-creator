@@ -2,61 +2,12 @@
 
 This CPU fixture exercises `ImageFile.from_image` through actual package execution,
 frame encoding, output custody, child calls and exported bytes. It also keeps explicit
-`Outputs.publish` and bounded `save_video_stream` coverage. It uses the default Cozy
-home and an existing normal project, runs only on `local`, and rents nothing.
+`Outputs.publish` and bounded `save_video_stream` coverage. It runs only on `local`
+and rents nothing.
 
-Copy the fixture into a durable proof directory and pin an immutable candidate before
-running. As with `../typed-calls`, the repository fixture carries no machine-specific
-SDK path and is never published. Use the matching immutable Runtime and TensorFS wheels;
-Runtime 0.48 requires TensorFS 0.27, which may not yet be on PyPI. Do not reference a live
-SDK worktree: its environments and caches can be uploaded along with the source.
-
-```sh
-proof="<new durable proof directory>"
-runtime="<absolute candidate Runtime wheel>"
-tensorfs="<absolute matched TensorFS wheel>"
-mkdir -p "$proof/sdk"
-cp -a e2e/cli/returned-media/fixture "$proof/fixture"
-cp "$runtime" "$tensorfs" "$proof/sdk/"
-# The direct TensorFS dependency makes its source participate in uv's transitive resolution.
-# The authored Runtime floor and Runtime's own TensorFS bounds remain intact.
-sed -i 's/^dependencies = \[/dependencies = ["tensorfs", /' "$proof/fixture/pyproject.toml"
-cat >> "$proof/fixture/pyproject.toml" <<TOML
-
-[tool.uv.sources]
-cozy-runtime = { path = "../sdk/$(basename "$runtime")" }
-tensorfs = { path = "../sdk/$(basename "$tensorfs")" }
-
-[tool.uv]
-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
-TOML
-uv lock --project "$proof/fixture"
-sha256sum "$proof/sdk/"*.whl > "$proof/sdk-sha256.txt"
-chmod -R a-w "$proof/sdk"
-```
-
-The example uses the Linux x86_64 cohort. Keep both hashes and the actual lock alongside
-the receipts. The coordinator must install the compatible candidate CLI,
-Calcifer and machine first; the runner never starts a separate daemon or changes installed
-services. Do not set `COZY_HOME`. Choose a new output directory outside the fixture tree.
-
-```sh
-uv run --script e2e/cli/returned-media/run.py \
-  --cozy "<candidate cozy binary>" \
-  --project "<existing normal Cozy project>" \
-  --fixture "$proof/fixture" \
-  --out "$proof/receipts" \
-  --sdk-identity "<candidate commit or wheel SHA256>"
-```
-
-The runner preserves each command, stdout NDJSON, stderr, exports, input file hashes, CLI
-hash, SDK identity label, run IDs and verification result. `--sdk-identity` is the build
-owner's provenance label; the runner does not infer a source commit from a package version.
-It invokes all 27 cases sequentially, without a timeout or retries, and exits nonzero if any
-case fails verification. Existing receipt directories are refused rather than overwritten.
-Source description or an import is not process/custody evidence. This fixture uses the
-combined image and call hard cuts: `call(target, request)` and `ImageFile.from_image` only.
-The old `save_image` method is checked for absence rather than invoked.
+The `typed-calls` CLI shard (`../typedcalls.sh`) copies the fixture, pins it to the run's candidate Runtime and
+TensorFS wheels, locks it and runs `run.py`, which invokes the 27 cases below in order and fails if any case does.
+Every command, NDJSON, export and verification result is kept under the shard's output.
 
 | Case | Expected outcome |
 |---|---|
