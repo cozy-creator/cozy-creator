@@ -95,7 +95,8 @@ pub(super) fn keepers<'a>(lanes: &[Lane<'a>]) -> HashMap<&'a str, u32> {
 }
 
 /// `uses` as lanes: a use named by a digest another use keeps (a header its commit keeps, a
-/// commit a snapshot keeps) is that one's lane. Least recently used first.
+/// commit a snapshot keeps) is that one's lane; one that keeps only its own object (a run's input
+/// or output) is its own, whatever model holds the same bytes. Least recently used first.
 pub(super) fn lanes(uses: &[Use]) -> Vec<Lane<'_>> {
     let at: HashMap<&str, usize> = uses.iter().enumerate().map(|(i, u)| (u.name.as_str(), i)).collect();
     let mut parent: Vec<usize> = (0..uses.len()).collect();
@@ -106,8 +107,11 @@ pub(super) fn lanes(uses: &[Use]) -> Vec<Lane<'_>> {
         }
         i
     }
+    // A run's object equal to a model's file (H3's tokenizer, in the package run from source) made the model's whole lane
+    // the run's, held by TensorD while it keeps the run's objects (group-disk 43875722356).
+    let alone = |u: &Use| u.digests.len() == 1 && u.digests.contains(&u.name);
     for (i, u) in uses.iter().enumerate() {
-        for j in u.digests.iter().filter_map(|d| at.get(d.as_str()).copied()) {
+        for j in u.digests.iter().filter_map(|d| at.get(d.as_str()).copied()).filter(|&j| j == i || !alone(&uses[j])) {
             let (a, b) = (root(&mut parent, i), root(&mut parent, j));
             parent[a] = b;
         }
