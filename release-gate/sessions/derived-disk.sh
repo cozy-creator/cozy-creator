@@ -24,6 +24,9 @@ RT=$(wheel runtime "$(param runtime)") && [ -n "$RT" ] || fail "no Runtime wheel
 TF=$(wheel tensorfs "$(param tensorfs)") && [ -n "$TF" ] || fail "no TensorFS wheel from $(param tensorfs)"
 say "Runtime ${RT##*/}, TensorFS ${TF##*/}, TensorD $(cozy --version)"
 kernels "$TREE/sdxl"
+# ssh for the ballast file (`cozy machine ssh` needs a key the rental carries)
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+RENT_ARGS=--ssh
 quote "$(param need_s 2700)"
 rent
 
