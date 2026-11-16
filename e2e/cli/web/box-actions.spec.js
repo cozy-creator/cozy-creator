@@ -2,7 +2,8 @@
 // takes and approval, the same files by digest and no bytes copied, a mention between them naming the copy; one Undo takes both back (cl-924).
 // Ctrl+D, an Alt-drag and the menu's Duplicate each make a copy; Ctrl+V in a box's words pastes words only. Star is the API's and leads Files
 // with a ★ through Undo and Redo (cl-892); Rename renames the box, its mentions and the API's. Download saves a box's shown take as its name,
-// and a take as its own (cl-891). A picture held over a box that takes it outlines that box as the canvas draws it (cl-1048 row 17).
+// and a take as its own (cl-891). A picture held over a box that takes it outlines that box as the canvas draws it (cl-1048 row 17). An X
+// beside a box's tool on the canvas takes the tool off (Paul, 11-16).
 const { createHash } = require('crypto');
 const { readdirSync, readFileSync } = require('fs');
 const { join } = require('path');
@@ -217,5 +218,20 @@ test('box-actions', async ({ page, project, api }) => {
     expect.soft(changed / ring.length, `hei outlined around its picture while harbour is held over it: ${changed} of ${ring.length} ring points changed`).toBeGreaterThanOrEqual(0.7);
     await canvasIdle(page);
     expect.soft((await rows(project)).harbour, 'Esc let go of nothing: harbour where it was').toEqual(was);
+  });
+
+  await test.step('an X beside hei\'s tool on the canvas takes the tool off; a box with no tool has none', async () => {
+    // Paul, 11-16: "when you want to remove a tool from an attached node, there should be an X next to it, not a trash can. You are not
+    // deleting anything; you are closing it. Also that X should be visible in free roam mode".
+    await canvasIdle(page);
+    const parts = (name) => page.evaluate((name) => Object.keys(document.querySelector('.canvas-root')?.canvasInspection?.card(name)?.rendered?.parts ?? {}), name);
+    await expect.poll(() => parts('hei'), { message: 'hei, with a tool: an X beside it' }).toContain('untool');
+    expect.soft(await parts('harbour'), 'harbour, with no tool: no X').not.toContain('untool');
+    const x = await page.evaluate(() => document.querySelector('.canvas-root').canvasInspection.card('hei').rendered.parts.untool);
+    expect.soft(Math.round(x.width), 'its hit area 18 px on screen').toBe(18);
+    await page.mouse.click(x.x + x.width / 2, x.y + x.height / 2);
+    await expect.poll(async () => (await project.asset('hei'))?.tool ?? null, { message: 'the X took hei\'s tool off' }).toBe(null);
+    await expect.poll(() => parts('hei'), { message: 'and its X is gone' }).not.toContain('untool');
+    expect.soft(await names(), 'nothing deleted').toEqual(expect.arrayContaining(['hei', 'harbour']));
   });
 });
