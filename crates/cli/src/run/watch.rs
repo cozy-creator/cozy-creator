@@ -58,6 +58,9 @@ pub(crate) async fn exec(
     if let Some(report) = run.report.as_ref().filter(|r| !r.attention_pins.is_empty()) {
         fields = fields.field("attention kernel", report.attention_pins.join(", "));
     }
+    if let Some(weights) = weights(&run) {
+        fields = fields.field("weights", weights);
+    }
     fields.print(ctx);
     if !ctx.full {
         if !follow::settled(&run) {
@@ -135,6 +138,24 @@ pub(crate) async fn exec(
         follow::next(ctx, &run);
     }
     Ok(follow::exit_code(&run))
+}
+
+/// What the run's machine had of the weights it loads and what it downloaded for it, as its measurements say (`weights`, cl-1102):
+/// only what wasn't there is downloaded before it starts; extras come in the background, and it never waits for them.
+fn weights(run: &Run) -> Option<String> {
+    let weights = run.measurements.as_ref()?.get("weights")?;
+    let bytes = |key: &str| weights.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let (has, needs, extras) = (bytes("has"), bytes("needs"), bytes("extras"));
+    let mut words = match (needs, has) {
+        (0, 0) => return None,
+        (0, has) => format!("all {} already on this machine", output::bytes(has)),
+        (needs, 0) => format!("downloaded {}", output::bytes(needs)),
+        (needs, has) => format!("downloaded {}; {} already on this machine", output::bytes(needs), output::bytes(has)),
+    };
+    if extras > 0 {
+        words += &format!("; {} more in the background, not waited for", output::bytes(extras));
+    }
+    Some(words)
 }
 
 /// A table's rows before they meet the terminal. With more than one measured, each row leads

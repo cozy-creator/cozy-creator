@@ -603,6 +603,10 @@ impl Engine {
     pub(crate) fn fetched(&self, id: &str, from: u64, to: u64) -> io::Result<()> {
         self.journal.lock().unwrap().fetched(id, from, to)
     }
+    /// See `Journal::needs`.
+    pub(crate) fn needs(&self, id: &str, account: crate::journal::Account) -> io::Result<()> {
+        self.journal.lock().unwrap().needs(id, account)
+    }
     pub(crate) fn append_gpu(&self, id: &str, entry: &serde_json::Value) -> io::Result<u64> {
         let line = serde_json::to_vec(entry)?;
         let progress = self.progress.lock().unwrap();

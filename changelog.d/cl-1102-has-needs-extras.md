@@ -1,0 +1,5 @@
+A call's downloads follow one reckoning of what it needs and what the machine has: only what's missing is downloaded before it starts, in load order, and anything it may read later (an on-demand model, a function it may call) comes in the background behind every run's needs and is never waited for.
+- A run's record says what the machine had and downloaded for it (`cozy run watch <run> --full`: `weights`; `measurements.weights` in `--json`), and what a waiting run waits on says how much it downloads (`cozy machine show`, `cozy run watch`).
+- A machine lists only what a run waits on as its download: a background fetch no longer shows as that run's download or counts in its progress, and one download is counted once (its count restarted when the call began after its package installed).
+- A function's raw `Weights` come before it starts, in the machine's download line with their progress. Its executor fetched them as it read them, inside the run.
+- A running call's `prefetch(fn)` starts that function's download at once, at the run's place in line. Nothing was downloaded for it until the call came (a shot whose later segment needs another DiT waited for it then).

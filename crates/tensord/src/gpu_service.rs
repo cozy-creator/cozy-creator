@@ -199,6 +199,9 @@ pub(crate) struct PlanSource {
     pub lane: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub precision: String,
+    /// The components its function reads of it, as a quote counts them (`api::interface::Slot::fetched_components`); none: all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
 }
 
 /// A prepared call: its entrypoint, its construction (the package's generation, App, constructed
@@ -324,6 +327,29 @@ impl Plan {
     pub(crate) fn possible(&self) -> Vec<(String, Vec<String>)> {
         merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
+    /// What a call of it loads (`access::Needs`, cl-1102), as its function declares it. Needed: every slot's components but an
+    /// on-demand one's, and its raw weights' (its function read those through its own executor's fetch, inside its run, outside
+    /// the download line). Extras: its on-demand slots', which a stage may read.
+    pub(crate) fn needs(&self) -> crate::access::Needs {
+        let mut needed = self.upfront();
+        for source in &self.sources {
+            match needed.iter_mut().find(|(manifest, _)| *manifest == source.manifest) {
+                // No components named is the checkpoint whole.
+                Some((_, components)) if source.components.is_empty() => components.clear(),
+                Some((_, components)) if components.is_empty() => {}
+                Some((_, components)) => {
+                    let more: Vec<String> = source.components.iter().filter(|c| !components.contains(c)).cloned().collect();
+                    components.extend(more);
+                }
+                None => needed.push((source.manifest.clone(), source.components.clone())),
+            }
+        }
+        let extras = match self.possible() {
+            possible if possible.is_empty() => vec![],
+            possible => vec![("its on-demand models".to_owned(), possible)],
+        };
+        crate::access::Needs { needed, extras }
+    }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
     /// asked for by name (`cozy machine warm`), so its first call waits on no download (cl-790).
     pub(crate) fn read(&self) -> Vec<(String, Vec<String>)> {
@@ -376,6 +402,21 @@ fn merged<'a>(slots: impl IntoIterator<Item = &'a PlanSlot>) -> Vec<SelectedMani
         }
     }
     rows
+}
+
+/// The components a slot's function reads (`components=`), else every one its class's methods use; none: all of its checkpoint.
+fn declared_components(model: &serde_json::Value) -> Vec<String> {
+    let names = |value: &serde_json::Value| -> Vec<String> {
+        value.as_array().into_iter().flatten().filter_map(|name| name.as_str().map(str::to_owned)).collect()
+    };
+    match model.get("components") {
+        Some(declared) => names(declared),
+        None => {
+            let used = model.get("component_use").and_then(serde_json::Value::as_object);
+            let used: std::collections::BTreeSet<String> = used.into_iter().flatten().flat_map(|(_, components)| names(components)).collect();
+            used.into_iter().collect()
+        }
+    }
 }
 
 /// A model row of an interface entry that is constructed: not a `Weights[M]` argument.
@@ -2463,6 +2504,7 @@ impl Pool {
                     release: grant.release.clone(),
                     lane: grant.lane.clone(),
                     precision: precision(&self.store, &grant.manifest),
+                    components: declared_components(model).into_iter().filter(|c| grant.components.contains(c)).collect(),
                 });
                 continue;
             }
@@ -4899,8 +4941,14 @@ fn refused(error: &io::Error) -> Option<&Refused> {
 /// kernels that served, Sol's dense and sparse calls), its residency (graph counters) and the
 /// models it ran, as resolved.
 pub(crate) fn record_measurements(engine: &Engine, id: &str, plan: &Plan, reply: &Frame, driver: &[platform::gpu::Used]) {
-    let software = engine.get(id).ok().and_then(|run| run.executor.map(|executor| executor.software(run.attempt)));
-    let measurements = measured(plan, reply, software, call_memory(reply, driver));
+    let run = engine.get(id).ok();
+    // What the machine had of its weights and what it fetched for it (`journal::Account`, cl-1102).
+    let weights = run.as_ref().and_then(|run| run.needs);
+    let software = run.and_then(|run| run.executor.map(|executor| executor.software(run.attempt)));
+    let mut measurements = measured(plan, reply, software, call_memory(reply, driver));
+    if let Some(weights) = weights {
+        measurements["weights"] = serde_json::json!(weights);
+    }
     let recorded = serde_json::to_vec(&measurements)
         .map_err(io::Error::other)
         .and_then(|bytes| engine.with_journal(|journal| journal.record_measurements(id, &bytes)));
