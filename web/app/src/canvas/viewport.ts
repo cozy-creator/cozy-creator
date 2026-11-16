@@ -44,13 +44,16 @@ export class CanvasController {
   private drawn = false
   private enabled = true
   private binding: { element: HTMLElement; viewport: PixiViewport; stop: () => void } | null = null
-  private animation: { frame: number; resolve: (landed: boolean) => void } | null = null
+  private animation: { frame: number; resolve: (landed: boolean) => void; step: (now: number) => void } | null = null
 
   constructor(initial: Viewport = { x: 0, y: 0, zoom: 1 }, private limits: Limits = { minZoom: 0.05, maxZoom: 4 }) {
     this.view = validView(initial) ? { ...initial } : { x: 0, y: 0, zoom: 1 }
   }
 
   getViewport = (): Viewport => this.view
+
+  /** A glide's step for this frame, run by the renderer before it draws, so it draws the camera this frame shows. Its own frame runs it otherwise. */
+  advance(now: number) { this.animation?.step(now) }
   getNodes = (): readonly CanvasNode[] => this.nodes
   getNode = (id: string): CanvasNode | undefined => this.byId.get(id)
 
@@ -186,10 +189,9 @@ export class CanvasController {
     const from = this.view
     const started = performance.now()
     return new Promise((resolve) => {
-      const move = { frame: 0, resolve }
-      this.animation = move
       const step = (now: number) => {
         if (this.animation !== move) return
+        cancelAnimationFrame(move.frame)
         const t = Math.min(1, Math.max(0, (now - started) / duration))
         const ease = t * t * (3 - 2 * t)
         this.place(t === 1 ? target : { x: from.x + (target.x - from.x) * ease, y: from.y + (target.y - from.y) * ease, zoom: from.zoom + (target.zoom - from.zoom) * ease })
@@ -201,6 +203,8 @@ export class CanvasController {
           resolve(true)
         }
       }
+      const move = { frame: 0, resolve, step }
+      this.animation = move
       move.frame = requestAnimationFrame(step)
     })
   }
@@ -279,9 +283,12 @@ export class CanvasController {
       this.publish(view)
     }
     const end = () => { read(); this.end() }
+    // pixi-viewport ends a move only on a frame after one that changed. A gesture whose events net to nothing within a frame (a wheel at a
+    // zoom limit, which clamps back) changes no frame, so a still frame ends it too.
+    const frame = () => { read(); if (!viewport.moving && !viewport.zooming) this.end() }
     const interrupt = () => { if (this.enabled) this.cancelMove() }
     const binding = { element, viewport, stop: () => {
-      viewport.off("moved", read).off("zoomed", read).off("frame-end", read)
+      viewport.off("moved", read).off("frame-end", frame)
       viewport.off("moved-end", end).off("zoomed-end", end)
       element.removeEventListener("pointerdown", interrupt)
       element.removeEventListener("wheel", interrupt)
@@ -291,7 +298,8 @@ export class CanvasController {
       this.setDrawn(false)
     } }
     this.binding = binding
-    viewport.on("moved", read).on("zoomed", read).on("frame-end", read)
+    // Not on `zoomed`: a wheel or pinch emits it before clamp-zoom clamps, with a zoom past the limits. `moved` follows the clamp.
+    viewport.on("moved", read).on("frame-end", frame)
     viewport.on("moved-end", end).on("zoomed-end", end)
     element.addEventListener("pointerdown", interrupt, { passive: true })
     element.addEventListener("wheel", interrupt, { passive: true })

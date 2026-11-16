@@ -63,6 +63,9 @@ export function CanvasSurface(props: Props) {
   const [failed, setFailed] = useState<string | null>(null)
   const hover = useRef<string | null>(null)
   const nativeName = useRef<string | null>(null)
+  /** The native card whose own pixels are up, and the one waiting for them since when. */
+  const revealed = useRef<string | null>(null)
+  const revealing = useRef<{ id: string; since: number } | null>(null)
   const committedBodies = useRef<{ native: string | null; focused: string | null }>({ native: null, focused: null })
   const releasedBodies = useRef(new Set<string>())
   const update = useRef<() => void>(() => {})
@@ -79,8 +82,35 @@ export function CanvasSurface(props: Props) {
 
   useLayoutEffect(() => {
     hover.current = hovered
-    // Keep passive pixels and hit geometry until React has actually committed their native replacement.
-    nativeName.current = native?.data.name ?? null
+    // Keep passive pixels and hit geometry until React has actually committed their native replacement, and its pixels until the
+    // native card's own media is up: a fresh card's picture loads for a few frames, which showed as an empty frame on every hover.
+    // Meanwhile the native card takes input unseen. Shown once, it stays shown.
+    const name = native?.data.name ?? null
+    if (revealed.current !== native?.id) revealed.current = null
+    if (revealing.current?.id !== native?.id) revealing.current = null
+    const element = native ? overlay.current?.querySelector<HTMLElement>(`.canvas-node[data-id="${CSS.escape(native.id)}"]`) : null
+    const loading = (card: HTMLElement) => Boolean(card.querySelector(".buffered-image[data-loading]")) || [...card.querySelectorAll("img")].some(image => !image.complete)
+    let stop = () => {}
+    const reveal = () => {
+      stop()
+      if (element) element.style.opacity = ""
+      if (native) revealed.current = native.id
+      nativeName.current = name
+    }
+    if (!native || !element || revealed.current === native.id || store.get(native.data.name)?.draft !== undefined || !loading(element)) reveal()
+    else {
+      nativeName.current = null
+      element.style.opacity = "0"
+      revealing.current ??= { id: native.id, since: performance.now() }
+      const ready = () => { if (!loading(element)) { reveal(); update.current() } }
+      const watch = new MutationObserver(ready)
+      watch.observe(element, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-loading", "src"] })
+      element.addEventListener("load", ready, true)
+      element.addEventListener("error", ready, true)
+      // A picture that never comes still gives its card over, soon.
+      const cap = setTimeout(() => { reveal(); update.current() }, Math.max(0, revealing.current!.since + 400 - performance.now()))
+      stop = () => { watch.disconnect(); element.removeEventListener("load", ready, true); element.removeEventListener("error", ready, true); clearTimeout(cap) }
+    }
     const next = {
       native: native && view ? native.id : null,
       focused: active && focused && !entering ? controller.getNodes().find(node => node.data.name === store.resolveName(focused))?.id ?? null : null,
@@ -91,6 +121,7 @@ export function CanvasSurface(props: Props) {
     }
     committedBodies.current = next
     update.current()
+    return stop
   }, [hovered, focused, entering, overlayVersion, active])
   useEffect(() => { enabled.current(); update.current() }, [active, disabled])
 
@@ -174,6 +205,8 @@ export function CanvasSurface(props: Props) {
     const draw = (now: number) => {
       frame = 0
       if (stopped || !renderer || !stage || !viewport || !scene || !visible()) return
+      // A glide steps here, before this frame is drawn: from its own animation frame it would land after this draw, a frame ahead of it.
+      controller.advance(now)
       const was = controller.getViewport()
       viewport.update(16.667)
       const camera = controller.getViewport()
@@ -196,7 +229,8 @@ export function CanvasSurface(props: Props) {
           if (run && store.projectId && onscreen && rendering) {
             const query = runFullQuery(client, store.projectId, run.number, 0)
             const full = queries.getQueryData(query.queryKey)
-            if (full) run = { ...full, ...run, request: full.request }
+            // The full read is fetched once: only what was asked (fixed for a run) comes from it, every live field from the run itself.
+            if (full) run = { ...run, request: full.request }
             else if (!requestedRuns.has(run.number)) {
               requestedRuns.add(run.number)
               void queries.ensureQueryData(query).then(invalidate, () => {})
@@ -336,7 +370,8 @@ export function CanvasSurface(props: Props) {
         callbacks.current.onDrag(event, current[0], current)
         invalidate(); return
       }
-      if (!pointerDown && event.pointerType === "mouse") {
+      // A press, wherever it began (a card's corner, its words), keeps the card it began on until it's let go (click-off-needs-press-outside).
+      if (!pointerDown && event.pointerType === "mouse" && !event.buttons) {
         const node = nodeAt(event.clientX, event.clientY)
         const hit = node && (hover.current !== node.data.name || !previewIntent) ? scene?.hitTest(controller.screenToWorld({ x: event.clientX, y: event.clientY })) : null
         const nativeMedia = event.target instanceof Element && event.target.closest(".media")?.closest<HTMLElement>(".canvas-node[data-id]")?.dataset.id === node?.id
@@ -411,7 +446,7 @@ export function CanvasSurface(props: Props) {
       }
       pointerDown = false; changeHover(null); settle = 3; invalidate()
     }
-    const leave = () => { stopHoverPreview(); if (!pointerDown) changeHover(null) }
+    const leave = (event: PointerEvent) => { stopHoverPreview(); if (!pointerDown && !event.buttons) changeHover(null) }
     const handlers = { pointerdown: down, pointermove: move, pointerup: up, pointercancel: cancel, dblclick: double, contextmenu: menu, wheel, pointerleave: leave }
     for (const [name, handler] of Object.entries(handlers)) element.addEventListener(name, handler as EventListener, { capture: name === "pointerdown", passive: false })
     window.addEventListener("blur", cancel)
