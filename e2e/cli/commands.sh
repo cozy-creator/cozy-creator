@@ -1005,7 +1005,7 @@ in_project "$RUN_PROJECT" run e2e-scratch/probe "marker=CL1055_MOVED_$RANDOM" --
 grep -q "upgrading local.s Runtime 0.45.0 → 0.4[7-9][^ ]* for this project" "$OUT/floor-upgrade.err" \
   || check "runtime floor: the run didn't say it upgrades local's Runtime for this project: $(tail -c 400 "$OUT/floor-upgrade.err")"
 local temporary
-temporary=$(grep -o '"temporary": *"[^"]*"' "$OUT/floor-upgrade.out" | tail -1 | sed 's/.*: *"//; s/"$//') || temporary=
+temporary=$(awk '$1 == "temporary" { print $2 }' "$OUT/floor-upgrade.out" | tail -1)
 case $temporary in
   "$(realpath "$RUN_PROJECT")"/.vault-machine/scratch/*) ;;
   *) check "runtime floor: the moved run's temporary file was ${temporary:-nowhere said}, not in its project's scratch" ;;
