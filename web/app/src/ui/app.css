@@ -3134,29 +3134,6 @@ a.tab:hover {
 .tool-groups.stale {
   opacity: 0.55;
 }
-.tool-groups h4 {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin: 10px 0 2px;
-  padding: 0 6px;
-  color: var(--faint);
-  font-size: var(--heading);
-  font-weight: var(--w-heading);
-}
-.tool-groups section:first-of-type h4 {
-  margin-top: 2px;
-}
-.tool-groups h4 span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tool-groups h4 .icon {
-  width: 12px;
-  height: 12px;
-}
 .tools ul {
   list-style: none;
   margin: 0;
@@ -4342,15 +4319,6 @@ input[type="checkbox"] {
 }
 .tools .add {
   height: calc(30px * var(--ui));
-}
-.tool-groups h4 {
-  margin: calc(10px * var(--ui)) 0 calc(2px * var(--ui));
-  padding: 0 calc(6px * var(--ui));
-  gap: calc(5px * var(--ui));
-}
-.tool-groups h4 .icon {
-  width: calc(12px * var(--ui));
-  height: calc(12px * var(--ui));
 }
 .tools p {
   margin: calc(4px * var(--ui)) calc(6px * var(--ui));
