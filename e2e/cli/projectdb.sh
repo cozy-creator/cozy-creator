@@ -1248,10 +1248,17 @@ in_cozy "$now" || check "remote custody: this cozy back on its own store"
 # db_legacy_burst (cl-1003; #3470 on Paul's laptop: lab2's open aborted Calcifer twice, after its legacy import failed
 # `project_input_migration_pending` 13 times in 0.75 s and Calcifer reached 3.4 GB). A project whose old history can't be imported
 # (an old run's input bytes are nowhere) has it tried once in a Calcifer's life, not by each of a burst of its requests, and each
-# check of what is left reads one old run at a time. The 0.24.0 store's 200 runs land in the project, each with a 256 KiB spec.
-# A second project has lab2's other shape: 5 old runs on `local` that import, pending a custody only `local` can verify. Its
-# requests ask the worker once (`legacy_worker::migrate`, whose future overflowed a dev build's worker stack on the laptop).
-# The candidate is a release build (e2e/candidates/build.sh): the overflow itself is the laptop's dev build to show.
+# check of what is left reads one old run at a time. lab2's shape: the project's first 5 old runs ran on `local` and import, pending
+# a custody only `local` can verify; then 200 runs, each with a 256 KiB spec, whose import fails. With `local` running, the worker's
+# custody (`legacy_worker::migrate`, whose future overflowed a dev build's 2 MiB worker stack on the laptop: "thread
+# 'tokio-rt-worker' has overflowed its stack") is never asked for after the import failed. A second project's import succeeds
+# (5 runs on `local` alone): its burst asks the worker once. The candidate is a release build (e2e/candidates/build.sh) unless a
+# proof branch builds it with the dev profile, as the laptop's is.
+# What Calcifer said as it died, from its unit's journal: a stack overflow or an allocation failure aborts with one line.
+burst_died() {
+  XDG_RUNTIME_DIR=/run/user/$(id -u) timeout 30 journalctl --user -u cozy-calcifer.service --no-pager 2> /dev/null \
+    | grep -a -m 3 "overflowed its stack\|fatal runtime error\|memory allocation" || echo "no abort line in its journal"
+}
 db_legacy_burst() {
 step "a legacy import that fails is tried once per Calcifer, not by each of 20 requests at once; Calcifer stays up (cl-1003)"
 local D=$OUT/legacy-burst now=$OUT/cozy-now old P Q pid before after tried peak i failed=0 asked
@@ -1273,6 +1280,14 @@ assert db.execute("PRAGMA user_version").fetchone()[0] == 7, "not a 0.24 store"
 done = json.dumps({"status": "succeeded", "result": {}, "outputs": [], "execution_ms": 1000, "measurements": {"observations": []}})
 first = (db.execute("SELECT max(number) FROM runs").fetchone()[0] or 0) + 1
 db.execute("BEGIN")
+def on_local(root, tag, at):
+    for i in range(5):
+        db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, created_at, settled_at) "
+                   "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', 'local', 0, X'7B7D', ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?)",
+                   (f"run-{tag}{i:020d}", at + i, f"{tag}-{i}", root + "/.runs", done, 1700000001000 + at + i, 1700000001000 + at + i))
+# First (the owner index keeps the fence's order): the runs on local, imported before the import fails.
+on_local(here, "herelocal", first)
+first += 5
 for i in range(200):
     # An input whose bytes are in no staging folder, no project file and no store: its import fails project_input_migration_pending.
     gone = json.dumps([["sha256:" + os.urandom(32).hex(), 1234]])
@@ -1280,10 +1295,7 @@ for i in range(200):
     db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, inputs, created_at, settled_at) "
                "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', NULL, 0, ?, ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?, ?)",
                (f"run-burst{i:021d}", first + i, f"burst-{i}", spec, here + "/.runs", done, gone, 1700000000000 + i, 1700000000000 + i))
-for i in range(5):
-    db.execute("INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec, out_dir, state, status, outcome, created_at, settled_at) "
-               "VALUES (?, ?, ?, 'sha256:00', 'http://127.0.0.1:1', 'call', 'legacy/runs', 'local', 0, X'7B7D', ?, 'settled', 'completed', CAST(? AS BLOB), ?, ?)",
-               (f"run-onlocal{i:019d}", first + 200 + i, f"onlocal-{i}", local + "/.runs", done, 1700000001000 + i, 1700000001000 + i))
+on_local(local, "onlocal", first + 200)
 db.execute("COMMIT")
 db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 PY2
@@ -1291,7 +1303,11 @@ PY2
 cp "$now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer \
   || { check "legacy burst: this cozy on 0.24.0's store"; in_cozy "$now"; return; }
 pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")
+# `local` running first, by a run outside any project, as on the laptop: the worker's custody can be asked for.
+(cd "$D" && cozy --json run minimax-h3-tools/echo "text=local up" --on local > "$OUT/legacy-burst-up.ndjson" 2> "$OUT/legacy-burst-up.err") \
+  || check "legacy burst: a run to start local: $(tail -c 300 "$OUT/legacy-burst-up.err")"
 before=$(grep -ac "legacy history was not imported" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || before=0
+asked=$(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null) || asked=0
 # A page's open: 20 of the project's requests at once.
 for i in $(seq 20); do
   ( in_project "$P" --json run list > "$OUT/legacy-burst-$i.json" 2> "$OUT/legacy-burst-$i.err"; echo $? > "$OUT/legacy-burst-$i.code" ) &
@@ -1302,13 +1318,17 @@ after=$(grep -ac "legacy history was not imported" "$HOME/.cozy/calcifer/health.
 tried=$((after - before))
 echo "legacy burst: the failing import was tried $tried time(s) for 20 requests; Calcifer's peak resident ${peak:-unread}"
 kill -0 "$pid" 2> /dev/null && [ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$pid" ] \
-  || check "legacy burst: Calcifer $pid didn't live through the burst (now $(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null))"
+  || check "legacy burst: Calcifer $pid didn't live through the burst (now $(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null)): $(burst_died)"
 [ "$tried" = 1 ] || check "legacy burst: the failing import was tried $tried times for 20 requests, not once"
+[ "$(sql1 "$P" "SELECT count(*) FROM runs WHERE machine = 'local' AND custody = 'legacy_pending'")" = 5 ] \
+  || check "legacy burst: lab2's shape, its runs on local pending custody in project.db: $(sql1 "$P" "SELECT count(*) FROM runs WHERE machine = 'local'")"
+asked=$(( $(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy/calcifer/health.log" 2> /dev/null || echo 0) - asked ))
+[ "$asked" = 0 ] || check "legacy burst: after its import failed, the worker's custody was still asked $asked times"
 grep -a "legacy history was not imported" "$HOME/.cozy/calcifer/health.log" | tail -1 | grep -q "project_input_migration_pending" \
   || check "legacy burst: the import failed otherwise: $(grep -a 'legacy history was not imported' "$HOME/.cozy/calcifer/health.log" | tail -1)"
 for i in $(seq 20); do [ "$(cat "$OUT/legacy-burst-$i.code" 2> /dev/null)" = 0 ] || failed=$((failed + 1)); done
 [ "$failed" = 0 ] || check "legacy burst: $failed of 20 run lists failed: $(tail -c 300 "$OUT/legacy-burst-1.err")"
-# The project opens and takes new work, its old history left for the hard cut. That run starts `local`.
+# The project opens and takes new work, its old history left for the hard cut.
 in_project "$P" --json run minimax-h3-tools/echo "text=after the burst" > "$OUT/legacy-burst-run.ndjson" 2> "$OUT/legacy-burst-run.err" \
   || check "legacy burst: a new run refused: $(tail -c 300 "$OUT/legacy-burst-run.ndjson") $(tail -c 300 "$OUT/legacy-burst-run.err")"
 # lab2's other shape, with `local` running: its old runs on local import pending custody, and a burst asks the worker once.
@@ -1321,7 +1341,7 @@ asked=$(( $(grep -ac "old runs on local keep their custody pending" "$HOME/.cozy
 peak=$(awk '/^VmHWM/ {print $2 " " $3}' "/proc/$pid/status" 2> /dev/null) || peak=
 echo "legacy burst (local): the worker was asked $asked time(s) for 20 requests; Calcifer's peak resident ${peak:-unread}"
 kill -0 "$pid" 2> /dev/null && [ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$pid" ] \
-  || check "legacy burst (local): Calcifer $pid didn't live through the burst"
+  || check "legacy burst (local): Calcifer $pid didn't live through the burst: $(burst_died)"
 [ "$(sql1 "$Q" "SELECT count(*) FROM runs WHERE machine = 'local' AND custody = 'legacy_pending'")" = 5 ] \
   || check "legacy burst (local): its old runs on local in project.db: $(sql "$Q" "SELECT id, custody FROM runs WHERE machine = 'local'" | tr '\n' ' ')"
 [ "$asked" = 1 ] || check "legacy burst (local): the worker's custody was asked $asked times for 20 requests, not once"
