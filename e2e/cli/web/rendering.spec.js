@@ -75,6 +75,13 @@ test('rendering', async ({ page, project, api }) => {
   }
 
   await test.step("and its render's line on the tile goes on changing", async () => {
+    // Every box in view and nothing under the pointer: the tile as drawn at rest, not culled and not the hover card over it.
+    await page.keyboard.press('Shift+Digit1');
+    await canvasIdle(page);
+    const away = await openPoint(page);
+    await page.mouse.move(away.x, away.y);
+    await expect(page.locator('.canvas-node')).toHaveCount(0);
+    await expect.poll(() => canvasVisible(page, 'making')).toBe(true);
     const said = new Set();
     const end = Date.now() + 10_000;
     while (Date.now() < end) {
