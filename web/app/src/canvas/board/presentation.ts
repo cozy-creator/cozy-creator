@@ -89,7 +89,8 @@ function pictureOf(view: ElementView): ScenePicture | undefined {
   const shown = shownOf(view)
   const own = view.preview && (!view.preview.sha256 || !shown || hexOf(shown.sha256) === view.preview.sha256)
   if (own && view.preview) return { url: view.preview.url, kind: view.placing?.media ?? shown?.field ?? view.asset?.kind ?? "image" }
-  if (shown && !shown.absent && ["image", "video", "audio"].includes(shown.field)) {
+  // A file kept on another computer still has its thumbnail here (cl-982): it's drawn, and the note says where the file is.
+  if (shown && ["image", "video", "audio"].includes(shown.field)) {
     return { sha256: shown.sha256, path: shown.path, kind: shown.field, alpha: shown.alpha ?? undefined }
   }
   if (!shown && view.glimpse?.media === "image" && view.viewed === undefined) {
