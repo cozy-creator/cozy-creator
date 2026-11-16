@@ -142,7 +142,8 @@ export class CardView {
         if (!far) label("progress", show.progress.state, body.x + 12, body.y + body.h / 2 - BODY / 2, body.w - 24, { size: BODY, color: colors.ink, bold: true })
       }
       this.header(show, node, state, w, far, colors, label, env)
-      if (!far) this.under(show, body, w, colors, label)
+      // Clear of a selected box's ring, which sits outside the picture.
+      if (!far) this.under(show, body, w, colors, label, node.selected ? 6 + 12 / env.ring : 6)
     }
     if (show.progress?.fraction !== undefined && !node.view.canceling) {
       const meter = { x: body.x, y: body.y, w: body.w * Math.min(0.99, show.progress.fraction), h: Math.min(body.h, 3 / env.zoom) }
@@ -204,8 +205,8 @@ export class CardView {
   }
 
   /** Under a box at rest (cl-932, cl-898): its tool and shape; while it renders, where and how long, then what it's doing with Cancel. */
-  private under(show: Presentation, body: Box, w: number, colors: Palette, label: LabelFn) {
-    let y = body.y + body.h + 6
+  private under(show: Presentation, body: Box, w: number, colors: Palette, label: LabelFn, gap: number) {
+    let y = body.y + body.h + gap
     if (show.tool || show.shape || show.from) {
       const shape = show.shape ? Math.min(w * 0.5, width(show.shape, SMALL)) : 0
       label("tool", ellipsis([show.tool, show.from].filter(Boolean).join(" · "), w - shape - 10, SMALL), 0, y, w - shape - 10, { size: SMALL, color: colors.mute })
