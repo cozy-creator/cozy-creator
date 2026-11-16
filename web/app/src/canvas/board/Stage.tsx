@@ -183,7 +183,8 @@ export function Stage(props: StageProps) {
       const layer = new Container({ eventMode: "passive" })
       viewport.addChild(layer)
       scene = new Scene({ world: layer, board, store, client, media, software: software.value, invalidate, contextOf })
-      stops.push(board.camera.bind(element, viewport))
+      board.camera.wake = invalidate
+      stops.push(board.camera.bind(element, viewport), () => { board.camera.wake = () => {} })
       interaction = createInteraction({
         root: element, stage, viewport, camera: board.camera, board, store, hitOf,
         scene: {
@@ -213,6 +214,8 @@ export function Stage(props: StageProps) {
       watchDensity()
       stops.push(() => density?.removeEventListener("change", densityChanged))
       enable()
+      // One frame now: Pixi's events hit-test what was last rendered, and a pointer can move before the first tick.
+      renderer.render(stage)
       latest.current.onReady?.()
       setFailed(null)
       invalidate()
