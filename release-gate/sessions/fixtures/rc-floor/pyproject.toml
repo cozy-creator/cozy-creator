@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "rc-floor"
+version = "0.1.0"
+description = "A Runtime floor only the open RC's Runtime meets (rental-boot-first, cl-1069); the session sets it"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.47.0.dev0", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "rc_floor:app"
+
+[tool.uv.build-backend]
+module-name = "rc_floor"
+module-root = ""
