@@ -332,8 +332,13 @@ impl Calcifer {
         }
         // Its own work, which stopped with the Calcifer that was doing it, is carried out again by `hub::jobs::resume`.
         self.export_outputs()?;
-        // Ended machines past 90 days that went while no machine ended here go now, beside the answers (`Store::prune_machines`).
-        while self.store.prune_machines(256).is_ok_and(|pruned| pruned > 0) {}
+        // Ended machines past 90 days that went while no machine ended here go now, beside the answers (`Store::prune_machines`), a
+        // few at a time, each write followed by a pause as long as it took: the writer is never held more than half the time.
+        loop {
+            let began = Instant::now();
+            if !self.store.prune_machines(64).is_ok_and(|pruned| pruned > 0) { break; }
+            std::thread::sleep(began.elapsed());
+        }
         Ok(resumed)
     }
 

@@ -2179,8 +2179,9 @@ impl Store {
         self.write(|tx| {
             if has_table(tx, "legacy_project_runs")? { return Ok(0); }
             let pruned = tx.execute(
-                "DELETE FROM machines WHERE name IN (SELECT name FROM machines m WHERE state = 'ended' AND coalesce(ended_at, created_at) < ?1
-                     AND NOT EXISTS (SELECT 1 FROM runs WHERE machine = m.name) LIMIT ?2)",
+                // No index on runs(machine): one would take the plans that read `runs_owed` (unsettled runs) and read every run instead.
+                "DELETE FROM machines WHERE name IN (SELECT name FROM machines WHERE state = 'ended' AND coalesce(ended_at, created_at) < ?1
+                     AND name NOT IN (SELECT machine FROM runs WHERE machine IS NOT NULL) LIMIT ?2)",
                 params![before, limit],
             )?;
             if pruned > 0 { tx.execute_batch("PRAGMA incremental_vacuum(256)")?; }
@@ -3126,7 +3127,7 @@ fn run_list_indexes(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS runs_list_metadata ON runs(number,target,state,status,machine,out_dir,id,{private});
          DROP INDEX IF EXISTS runs_settled_at;
          CREATE INDEX IF NOT EXISTS runs_warm ON runs(machine) WHERE kind = 'warm';
-         CREATE INDEX IF NOT EXISTS runs_machine ON runs(machine) WHERE machine IS NOT NULL;
+         DROP INDEX IF EXISTS runs_machine;
          CREATE INDEX IF NOT EXISTS runs_warm_set ON runs(machine) WHERE kind = 'warm' AND instr(spec, CAST('\"set\":{{' AS BLOB)) > 0;"
     ))?;
     Ok(())
