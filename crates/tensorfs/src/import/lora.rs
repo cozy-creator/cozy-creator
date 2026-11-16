@@ -22,6 +22,9 @@ use crate::format::{Config, Dtype};
 
 /// PEFT's adapter config: a LoRA component's config file.
 pub(crate) const ADAPTER_CONFIG: &str = "adapter_config.json";
+/// Lightricks' IC-LoRAs' `__metadata__`: how many times smaller than the output their reference video is
+/// (ltx_pipelines iclora_utils.py `read_lora_reference_downscale_factor`), which the ltx-2.5 package reads from the config.
+const REFERENCE_DOWNSCALE: &str = "reference_downscale_factor";
 const A: &str = ".lora_A.weight";
 const B: &str = ".lora_B.weight";
 const ALPHA: &str = ".alpha";
@@ -121,7 +124,8 @@ mod saved_tests {
 /// states them (its patterns as they are: a caller that folds them into `.alpha` empties them),
 /// else `r` the commonest rank, `target_modules` the modules, `lora_alpha` `r` when every rank is
 /// `r` (omitted otherwise: each module states its own `.alpha`), and `base_model_name_or_path`
-/// `base_model`, else the source's, else kohya's `ss_sd_model_name`. Kohya's `ss_network_alpha`
+/// `base_model`, else the source's, else kohya's `ss_sd_model_name`; an IC-LoRA's integer
+/// `reference_downscale_factor` as it is. Kohya's `ss_network_alpha`
 /// is never a scale: its loaders, and ComfyUI's, read only `.alpha` tensors (none is `α = r`).
 pub(crate) fn adapter_config(
     modules: impl IntoIterator<Item = (String, u64)>,
@@ -147,6 +151,9 @@ pub(crate) fn adapter_config(
         .or_else(|| metadata.get("ss_sd_model_name").cloned());
     if let Some(base) = base {
         config.insert("base_model_name_or_path".into(), json!(base));
+    }
+    if let Some(factor) = metadata.get(REFERENCE_DOWNSCALE).and_then(|v| v.trim().parse::<u64>().ok()) {
+        config.entry(REFERENCE_DOWNSCALE).or_insert(json!(factor));
     }
     config
 }
