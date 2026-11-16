@@ -18,7 +18,7 @@ rent
 jq -e '.status.gpus | length == 1 and (.[0].family | ltrimstr("sm") | tonumber) >= 100' "$OUT/show.json" > /dev/null ||
   fail "not one card with FP4 tensor cores: $(jq -c '[.status.gpus[] | {name, family}]' "$OUT/show.json")"
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"
-cozy run -p "$RUN_PROJECT" "$T" --input "$OUT/request.json" --gpus=1 --on "$NAME" > "$OUT/run.txt" 2>&1 & follower=$!
+(cd "$RUN_PROJECT" && exec cozy run "$T" --input "$OUT/request.json" --gpus=1 --on "$NAME") > "$OUT/run.txt" 2>&1 & follower=$!
 lane='' t0=$(date +%s)
 while [ -z "$lane" ] && [ $(($(date +%s) - t0)) -lt 1200 ]; do
   sleep 5
