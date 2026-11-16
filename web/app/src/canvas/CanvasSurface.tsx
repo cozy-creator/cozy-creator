@@ -26,7 +26,7 @@ function startRenderer(width: number, height: number): Promise<WebGLRenderer> {
   // Pixi 8.23 applies the major-caveat gate in this probe, not in WebGLRenderer's context attributes.
   if (!isWebGLSupported(true)) return Promise.reject(new Error("Accelerated WebGL is not available in this browser."))
   const created = new WebGLRenderer()
-  return created.init({ width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias: true, gcActive: false }).then(() => created)
+  return created.init({ width: Math.max(1, width), height: Math.max(1, height), resolution: devicePixelRatio || 1, autoDensity: true, backgroundAlpha: 0, antialias: false, gcActive: false }).then(() => created)
 }
 /** A renderer begun as the page loads, before any project is read: the first canvas takes it rather than start its own once the project's
  *  state is already here. It holds nothing of any project until then. */
