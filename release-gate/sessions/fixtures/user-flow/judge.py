@@ -116,6 +116,8 @@ class Row:
     placed_s: float | None = None
     last_at: float | None = None
     first: dict[str, float] = field(default_factory=dict)
+    # Where its stream placed it, in turn: (machine, from, to); a move starts another.
+    spans: list[tuple[str, float, float]] = field(default_factory=list)
     dl_bytes: float = 0
     dl_s: float | None = None
     record: Run | None = None
@@ -207,6 +209,12 @@ for s in map(obj, arr(flow.get('sent'))):
     for at, one in timeline:
         row.first.setdefault(phase(one), at)
     row.last_at = timeline[-1][0] if timeline else None
+    for at, one in timeline:
+        where = text(one.get('machine'))
+        if where and (not row.spans or row.spans[-1][0] != where):
+            if row.spans:
+                row.spans[-1] = (row.spans[-1][0], row.spans[-1][1], at)
+            row.spans.append((where, at, 0.0))
     placed = next((at for at, one in timeline if one.get('machine')), None)
     row.placed_s = secs(row.sent_at, placed)
     downloads = [(at, obj(one.get('progress'))) for at, one in timeline if phase(one) == 'downloading']
@@ -238,6 +246,8 @@ for s in map(obj, arr(flow.get('sent'))):
         row.used.discard('')
         row.fallbacks = [f"{text(obj(c).get('component'))}: {obj(g).get('fallback')}" for part in measured for c in arr(part.get('components'))
                          for g in arr(obj(c).get('gemm')) if obj(g).get('fallback')]
+    if row.spans:
+        row.spans[-1] = (row.spans[-1][0], row.spans[-1][1], row.settled_at or row.last_at or 1e18)
     rows.append(row)
 
 # ---- Works
@@ -373,33 +383,141 @@ for h in held_rows:
             rate = r.dl_bytes / r.dl_s / 1e6
             check(f"request {r.request}'s download at 50 MB/s or more", rate >= 50, f"{r.dl_bytes / GB:.1f} GB in {r.dl_s:.0f} s, {rate:.0f} MB/s; link {h.speed or 'not reported'}")
 
-# ---- Placed right.
-done = [r for r in rows if r.started_at and r.settled_at]
-if renting and len(machines) > 1:
+# ---- Placed right (cl-1073, its GPU-only parts proven here). The walk's own words (walk.log, calcifer.diagnostics): each take it placed
+# or moved, every machine's quote beside it; Calcifer's log for each rental's move to the RC (an update); the page's stream for where each
+# run stood when.
+@dataclass
+class Decision:
+    at: float
+    key: str
+    to: str
+    moved_from: str
+    offers: dict[str, float | None]
+    line: str
+
+
+def iso_ms(stamp: str) -> float | None:
+    t = re.match(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?Z', stamp)
+    if not t:
+        return None
+    return (datetime.strptime(t.group(1), '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc).timestamp() + float('0' + (t.group(2) or '.0'))) * 1000
+
+
+def read_text(path: str) -> str:
+    try:
+        with open(os.path.join(FLOW, path), errors='replace') as f:
+            return f.read()
+    except OSError:
+        return ''
+
+
+decisions: list[Decision] = []
+for line in read_text('walk.log').splitlines():
+    w = re.match(r'^(\S+Z) (.+?) (?:goes to (\S+)|moves from (\S+) to (\S+)): (.*)$', line)
+    when = iso_ms(w.group(1)) if w else None
+    if not w or when is None:
+        continue
+    offers: dict[str, float | None] = {o.group(1): float(o.group(2)) for o in re.finditer(r"(\S+) finishes in (\d+) s \(", w.group(6))}
+    offers |= {o.group(1): None for o in re.finditer(r"(\S+) can't: ", w.group(6))}
+    decisions.append(Decision(when, w.group(2), w.group(3) or w.group(5) or '', w.group(4) or '', offers, line[:400]))
+name_of = {m.name: label for label, m in machines.items() if m.name}
+
+
+def held_on(name: str, at: float, but: int = 0) -> list[tuple[Row, float]]:
+    """Our runs on machine `name` at `at` (placed there and not yet gone or settled), each with when it left it."""
+    return [(o, until) for o in rows if o.request != but for where, since, until in o.spans if where == name and since <= at < until]
+
+
+def request_of(d: Decision) -> int:
+    """The request a decision is about: placed (or moved) where it says within a minute of it."""
+    near = [(abs(since - d.at), o.request) for o in rows for where, since, _ in o.spans if where == d.to and abs(since - d.at) <= 60_000]
+    return min(near)[1] if near else 0
+
+
+updates: list[tuple[str, float, float | None]] = []  # (machine, began, ready again)
+for line in read_text('calcifer.log').splitlines():
+    if 'to the open RC' not in line:
+        continue
+    began, who = iso_ms(line), re.search(r'machine="?([^"\s]+)', line)
+    if began is None or not who:
+        continue
+    after = [t for t, one in machine_events.get(who.group(1), []) if t >= began and '.dev' in text(one.get('runtime'))]
+    updates.append((who.group(1), began, min(after) if after else None))
+
+if renting:
+    done = [r for r in rows if r.started_at and r.settled_at]
     overlap = [(a.request, b.request) for a in done for b in done if a.label == 'A' and b.label == 'B'
                and (b.started_at or 0) < (a.settled_at or 0) and (a.started_at or 0) < (b.settled_at or 0)]
     check('B works while A is busy (cl-1073)', bool(overlap), f"overlapping requests (A, B): {overlap}" if overlap else f"runs: {[(r.request, r.label) for r in done]}")
-    # A run waiting on a busy machine while a preferred machine sits ready and idle: never more than 2 minutes.
+    check('the walk said where it placed each take (walk.log)', bool(decisions), f"{len(decisions)} decisions" if decisions else 'no walk.log decisions read')
+
+    # A busy machine's quote counts what its runs ahead still take: never "all but done" (cause 1: 6 s quoted, 528 s left).
+    short, judged = [], 0
+    for d in decisions:
+        for name, quoted in d.offers.items():
+            ahead = held_on(name, d.at, request_of(d))
+            if quoted is None or not ahead or name not in name_of:
+                continue
+            judged += 1
+            left = (max(until for _, until in ahead) - d.at) / 1000
+            if quoted < 0.5 * left and left - quoted > 120:
+                short.append(f"{datetime.fromtimestamp(d.at / 1000, timezone.utc):%H:%M:%S} {d.key}: {name} quoted {quoted:.0f} s, its runs ahead held it {left:.0f} s more")
+    check("a busy machine's quote counts its runs' time left (cl-1073)", (not short) if judged else None,
+          '; '.join(short[:3]) or (f"{judged} quotes of a busy machine, each at least half its runs' real time left" if judged else 'no quote of a busy machine to judge'))
+
+    # A new request goes to the free machine while the other is mid-run or downloading: request 3, sent while A holds 1 and 2 and B boots.
+    r3 = next((r for r in rows if r.request == 3), None)
+    if r3 and machines.get('B') and machines['B'].name:
+        busy_a = held_on(machines['A'].name, r3.sent_at, 3) if machines.get('A') else []
+        placing = next((d.line for d in decisions if request_of(d) == 3), '')
+        check('a new request goes to the free machine while the other is busy (cl-1073)', r3.label == 'B' if busy_a else None,
+              f"request 3 ran on {r3.label} {r3.machine}, A holding {[o.request for o, _ in busy_a]}; {placing}" if busy_a else 'A was free when request 3 was sent')
+
+    # A run waiting on a busy machine moves to one that finishes it clearly sooner (cause 3: an LTX run waited 40 min).
+    moved = [d for d in decisions if d.moved_from]
     worst, why = 0.0, ''
     for r in rows:
-        sent_run = next((text(obj(s).get('run')) for s in arr(flow.get('sent')) if num(obj(s).get('request')) == r.request), '')
-        timeline = run_events.get(sent_run, [])
-        nexts: list[float] = [at for at, _ in timeline[1:]] + [r.last_at or 0.0]
-        for (at, one), after in zip(timeline, nexts):
-            if phase(one) != 'queued' or not one.get('machine'):
+        for where, since, until in r.spans:
+            if r.started_at and since >= r.started_at:
                 continue
+            waited_to = min(until, r.started_at or until)
             for label, m in machines.items():
-                since = num(m.record.get('preferred_at'))
-                if not since or m.name == one.get('machine') or at < since:
+                free_from = max(num(m.record.get('preferred_at')) or 1e18, num(m.record.get('ready_at')) or 1e18)
+                if not m.name or m.name == where or free_from >= waited_to:
                     continue
-                busy = any(o.started_at and o.label == label and o.started_at <= at <= (o.settled_at or 1e18) for o in rows)
-                if not busy and (after - at) / 1000 > worst:
-                    worst, why = (after - at) / 1000, f"request {r.request} waited on {one.get('machine')} while {m.name} idled"
-    check('no run waits behind a busy machine while a preferred one idles (cl-1073)', worst <= 120, f"{worst:.0f} s: {why}" if why else 'never')
-for r in done:
-    mm = machines.get(r.label)
-    if mm and mm.gpus > 1:
-        check(f"request {r.request} takes every GPU of {r.label}", len(r.gpus) == mm.gpus, f"GPUs {r.gpus} of {mm.gpus}")
+                idle_from = max(since, free_from)
+                busy_until = max([u for _, u in held_on(m.name, idle_from)] or [idle_from])
+                if waited_to - busy_until > worst * 1000:
+                    worst, why = (waited_to - busy_until) / 1000, f"request {r.request} waited on {where} while {m.name} sat free"
+    if moved:
+        check('a waiting run moves to a machine clearly sooner (cl-1073)', worst <= 120,
+              '; '.join(f"request {request_of(d)} {d.key} moved from {d.moved_from} to {d.to}: {d.line.split(': ', 1)[-1][:200]}" for d in moved)
+              + (f"; but {why} {worst:.0f} s" if worst > 120 else ''))
+    else:
+        check('a waiting run moves to a machine clearly sooner (cl-1073)', False if worst > 120 else None,
+              f"{why} for {worst:.0f} s, never moved" if worst > 120 else 'no run waited on a busy machine while another was free')
+
+    # A machine updating (a dev home's move to the RC) isn't free: its quote waits for its update (cause 2: held 20 min "getting ready").
+    early, judged = [], 0
+    for name, began, ready_again in updates:
+        for d in decisions:
+            quoted = d.offers.get(name)
+            if ready_again is None or quoted is None or not began <= d.at < ready_again:
+                continue
+            judged += 1
+            if quoted < (ready_again - d.at) / 1000 - 30:
+                early.append(f"{d.key}: {name} quoted {quoted:.0f} s while its update took {(ready_again - d.at) / 1000:.0f} s more")
+    check("a machine updating isn't free (cl-1073)", (not early) if judged else None,
+          '; '.join(early[:3]) or (f"{judged} quotes during {len(updates)} updates, each after its update" if judged else f"{len(updates)} updates, no quote during one"))
+
+for label, m in machines.items():
+    on = [r for r in rows if r.label == label and r.started_at and r.settled_at]
+    if m.gpus <= 1 or not on:
+        continue
+    for r in on:
+        check(f"request {r.request} takes every GPU of {label} (cl-1073)", len(r.gpus) == m.gpus, f"GPUs {r.gpus} of {m.gpus}")
+    split = [(a.request, b.request) for a in on for b in on if a.request < b.request and (b.started_at or 0) < (a.settled_at or 0) and (a.started_at or 0) < (b.settled_at or 0)]
+    check(f"the next run on {label} queues or goes elsewhere, never beside one on its GPUs (cl-1073)", not split, f"ran at once: {split}" if split else f"{len(on)} runs, one at a time")
 
 # ---- The page tells the truth.
 tiles: dict[str, list[Obj]] = defaultdict(list)
@@ -424,8 +542,8 @@ if renting:
         shares = [t for t in said_tiles if t.get('phase') in ('Downloading', 'Rendering')]
         check(f"request {r.request}'s tile gives each phase its share (cl-1074)", bool(shares) and all(re.fullmatch(r'\d{1,3}%', text(t.get('share'))) for t in shares),
               f"{len(shares)} looks")
-        where = sorted({text(t.get('where')) for t in said_tiles if t.get('where')})
-        check(f"request {r.request}'s tile names its machine (cl-1074)", bool(r.machine) and any(r.machine in w for w in where), f"said {where}, ran on {r.machine}")
+        named = sorted({text(t.get('where')) for t in said_tiles if t.get('where')})
+        check(f"request {r.request}'s tile names its machine (cl-1074)", bool(r.machine) and any(r.machine in w for w in named), f"said {named}, ran on {r.machine}")
         check(f"request {r.request}'s tile has its own cancel (cl-1074)", all(t.get('cancel') for t in said_tiles),
               f"{sum(1 for t in said_tiles if t.get('cancel'))} of {len(said_tiles)} looks")
 rates = [text(s.get('text')) for s in seen if s.get('key') == 'MBps']
@@ -433,7 +551,7 @@ check('the page says rates in MB/s, never MBps (cl-1074)', not rates, '; '.join(
 zeros = [text(s.get('text')) for s in seen if s.get('key') == '0 of 0']
 check('the page never says "0 of 0" (cl-1074)', not zeros, '; '.join(zeros[:3]) or 'never')
 toasts = [text(s.get('text')) for s in seen if text(s.get('key')).startswith('note ')]
-commands = [t for t in toasts if re.search(r'\bcozy (run|machine|model|package|vault) ', t)]
+commands = [t for t in toasts if re.search(r'\bcozy (open|run|machine|model|package|vault|login|update|restart|new|status)\b', t)]
 check('no toast shows a CLI command (cl-1085)', not commands, '; '.join(commands[:3]) or f"{len(toasts)} toasts")
 
 # ---- Tables.
@@ -472,9 +590,9 @@ out += ["\n#### Download events: each machine's weights, as the page read them\n
 for h in held_rows:
     for op in h.ops:
         started = num(op.get('started_at_ms'))
-        when = datetime.fromtimestamp(started / 1000, timezone.utc).strftime('%H:%M:%S') if started else '?'
+        clock = datetime.fromtimestamp(started / 1000, timezone.utc).strftime('%H:%M:%S') if started else '?'
         out.append(f"| {h.label} | {text(op.get('subject'))} | {(num(op.get('bytes_done')) or 0.0) / GB:.2f} / {(num(op.get('bytes_total')) or 0.0) / GB:.2f} GB | "
-                   f"{(num(op.get('bytes_here')) or 0.0) / GB:.2f} GB | {when} | {text(op.get('stage'))} | {fmt((num(op.get('bytes_per_s')) or 0.0) / 1e6, ' MB/s')} |")
+                   f"{(num(op.get('bytes_here')) or 0.0) / GB:.2f} GB | {clock} | {text(op.get('stage'))} | {fmt((num(op.get('bytes_per_s')) or 0.0) / 1e6, ' MB/s')} |")
 out += ["\n#### Inference events: each run's phases, seconds after it was sent\n", '| # | run | ' + ' | '.join(PHASES) + ' |', '|---|---|' + '---|' * len(PHASES)]
 for r in rows:
     out.append(f"| {r.request} | {r.run} | " + ' | '.join(fmt(secs(r.sent_at, r.first.get(p))) for p in PHASES) + ' |')
