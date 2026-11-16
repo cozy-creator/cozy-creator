@@ -5,7 +5,8 @@
 #   state_import   OLD=<dir>, an earlier Calcifer's files as its build wrote them: imported at the next start, then gone; its sessions
 #                  deleted unread
 #   state_restart  Calcifer restarted on 40,000 runs and 3,000 ended rentals, the first read of each page of state.db slow as on a busy
-#                  disk's cold cache (busy-disk.c): every route a client asks answers in 200 ms while it takes up what it left, and
+#                  disk's cold cache (busy-disk.c), PyPI and the Hub 3 s late (slow_proxy.py): every route a client asks answers in
+#                  200 ms while it takes up what it left, and
 #                  none is said slow in health.log (cl-1010)
 # Uses project.sh's `api` and projectdb.sh's `kill9`, `db_calcifer` and `calcifer_halt`.
 
@@ -183,7 +184,13 @@ calcifer_halt || return
 python3 "$here/restart_store.py" fill "$db" "$HOME/.cozy/outputs/e2e-restart" --runs 40000 --machines 3000 > "$S/fill.json" 2>&1 \
   || { check "restart: the store wasn't filled: $(tail -c 300 "$S/fill.json")"; systemctl --user start cozy-calcifer; return; }
 echo "restart: store $(cat "$S/fill.json")"
-mkdir -p "${dropin%/*}" && printf '[Service]\nEnvironment=LD_PRELOAD=%s\nEnvironment=BUSY_DISK_LOG=%s\n' "$S/busy-disk.so" "$S/busy-disk.log" > "$dropin"
+# A laptop's network: PyPI and the Hub answer each request 3 s late (slow_proxy.py), so a route that waits on them can't pass here.
+local proxy proxied
+python3 "$here/slow_proxy.py" "$S/proxy.port" 3 2> "$S/proxy.log" & proxy=$!
+for _ in $(seq 50); do [ -s "$S/proxy.port" ] && break; sleep 0.1; done
+proxied=http://127.0.0.1:$(cat "$S/proxy.port")
+mkdir -p "${dropin%/*}" && printf '[Service]\nEnvironment=LD_PRELOAD=%s\nEnvironment=BUSY_DISK_LOG=%s\nEnvironment=HTTP_PROXY=%s\nEnvironment=HTTPS_PROXY=%s\nEnvironment=http_proxy=%s\nEnvironment=https_proxy=%s\n' \
+  "$S/busy-disk.so" "$S/busy-disk.log" "$proxied" "$proxied" "$proxied" "$proxied" > "$dropin"
 systemctl --user daemon-reload && systemctl --user start cozy-calcifer || check "restart: systemctl --user start cozy-calcifer failed"
 python3 "$here/restart_store.py" measure --holder "$holder" --old-pid "$pid" --project "$id" --log "$HOME/.cozy/calcifer/health.log" \
   --run "$(jq -r '.unsettled[0]' "$S/fill.json")" \
@@ -195,7 +202,7 @@ cat "$S/latency.ndjson"
 local going
 for _ in $(seq 120); do going=$(state1 "SELECT count(*) FROM runs WHERE id LIKE 'run-cl1010u%' AND state <> 'settled'") && [ "$going" = 0 ] && break; sleep 0.5; done
 [ "$going" = 0 ] || check "restart: $going of the runs left going weren't taken up 60 s after the restart"
-echo "restart: reads slowed $(tail -1 "$S/busy-disk.log" 2> /dev/null)"
+echo "restart: reads slowed $(tail -1 "$S/busy-disk.log" 2> /dev/null); network asks delayed $(grep -c . "$S/proxy.log" 2> /dev/null || echo 0)"
 # Ended machines are kept 90 days (Paul 11-15): those older went as Calcifer took up what it left; the rest stayed.
 local cut gone kept
 cut="(CAST(strftime('%s', 'now') AS INTEGER) - 90 * 86400) * 1000"
@@ -206,6 +213,7 @@ echo "restart: ended machines past 90 days left $gone, of $kept kept"
 [ "$kept" -ge 1400 ] || check "restart: only $kept of the ended machines within 90 days are kept"
 # The store as it was for what follows: its rows out, and Calcifer on its own disk again.
 rm -f "$dropin" && systemctl --user daemon-reload
+kill "$proxy" 2> /dev/null || true
 calcifer_halt || return
 python3 "$here/restart_store.py" empty "$db" || check "restart: the store's rows weren't taken out"
 cozy --json machine ls > /dev/null || check "restart: Calcifer didn't start again"
