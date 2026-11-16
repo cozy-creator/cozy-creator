@@ -406,7 +406,7 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
   // When each open drew all of its frames on screen, after its state.
   const framed = [];
   /** `page` opened on `one` (or reloaded): when its boxes and previews were drawn, against the bars of a `cold` or warm open. */
-  const opening = async (label, page, wire, one, { cold, reload = false, others = [], go = true, bars = true } = {}) => {
+  const opening = async (label, page, wire, one, { cold, reload = false, others = [], go = true, bars = true, clicked = null } = {}) => {
     const before = go ? thumbnails(stores(one)) : new Set();
     const from = wire.now;
     if (reload) await page.reload();
@@ -415,8 +415,8 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       const opens = window.__opens;
       const path = (entry) => new URL(entry.name).pathname;
       const resources = performance.getEntriesByType('resource');
-      const stateRead = resources.find((entry) => path(entry) === `/v1/projects/${encodeURIComponent(id)}` && !new URL(entry.name).search);
-      const canvasRead = resources.find((entry) => path(entry) === `/v1/projects/${encodeURIComponent(id)}/canvas`);
+      const stateRead = resources.filter((entry) => path(entry) === `/v1/projects/${encodeURIComponent(id)}` && !new URL(entry.name).search).at(-1);
+      const canvasRead = resources.filter((entry) => path(entry) === `/v1/projects/${encodeURIComponent(id)}/canvas`).at(-1);
       const rows = Object.entries(opens?.nodes ?? {}).filter(([name]) => /^pic_\d+$/.test(name) && Number(name.slice(4)) < pictures);
       const shown = rows.filter(([, row]) => row.onScreen);
       const api = resources.filter((entry) => path(entry).startsWith('/v1/') && !path(entry).includes('/thumbs/') && entry.startTime < 3000);
@@ -459,6 +459,8 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       state_read_ms: now.state_read_ms,
       first_frame_ms: sinceState(now.frames[0]),
       first_frame_from_state_ms: state === null || now.frames[0] === undefined ? null : Math.round(now.frames[0] - state),
+      clicked_ms: clicked === null ? null : Math.round(clicked), first_frame_from_click_ms: clicked === null || now.frames[0] === undefined ? null : Math.round(now.frames[0] - clicked),
+      all_frames_from_click_ms: clicked === null || !now.on_screen_frames.length ? null : Math.round(now.on_screen_frames[now.on_screen_frames.length - 1] - clicked), previews_from_click_ms: clicked === null || !now.on_screen_previews.length ? null : Math.round(now.on_screen_previews[now.on_screen_previews.length - 1] - clicked),
       busy_when_state_came: busy ?? null,
       all_frames_ms: now.on_screen && now.on_screen_frames.length >= now.on_screen ? sinceState(now.on_screen_frames[now.on_screen - 1]) : null,
       frames: now.frames.length,
@@ -498,6 +500,23 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
     return result;
   };
 
+  // Probe (macOS): the three ways a person opens a project, each timed (coordinator, 11-16): a fresh tab straight to it (no page before it),
+  // then in-app switches between the two (no navigation). Reloads and navigations from another page are the steps below.
+  if (process.platform === 'darwin') await test.step('flows: a fresh tab straight to it, then in-app switches', async () => {
+    const { context, wire } = await fresh();
+    const page = await context.newPage();
+    await wire.watch(page, 'f');
+    await signIn(page, projects.plain.url);
+    await opening('flow1_plain', page, wire, projects.plain, { go: false, bars: false });
+    for (const [label, one] of [['flow3_sealed', projects.sealed], ['flow3_plain', projects.plain], ['flow3_sealed_again', projects.sealed]]) {
+      await page.evaluate(() => { window.__opens.nodes = {}; });
+      const link = page.getByRole('navigation', { name: 'Projects' }).locator(`a[href$="/p/${one.code}"]`);
+      const clicked = await page.evaluate(() => performance.now());
+      await link.click();
+      await opening(label, page, wire, one, { go: false, bars: false, clicked });
+    }
+    await context.close();
+  });
   for (const kind of ['plain', 'sealed']) {
     await test.step(`${kind}: opened cold, then warm, then fitted`, async () => {
       const one = projects[kind];
