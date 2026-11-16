@@ -62,6 +62,8 @@ class PagesStats(TypedDict):
     persisted_bytes: int
     persist_skipped: int
     persist_failed: int
+    #: of `persisted`, the pages written from their own copy: the tier had no room to keep them
+    persisted_unkept: int
 
 
 class PlanPhase(TypedDict):

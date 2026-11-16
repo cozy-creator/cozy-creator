@@ -15,7 +15,7 @@ use pyo3::{exceptions::PyRuntimeError, ffi, prelude::*};
 use tensorfs::io::source::{IoTally, Item, ItemSource, Mode, Placement, Source as Store};
 use tensorfs::io::{self, Dst, ObjectRange, ReadControl, ReadOpts, Src};
 
-use super::pages::{self, Held, Page, Persisting, PyPages, Row, Tier, WINDOW};
+use super::pages::{self, Held, Page, Persisting, PyPages, Row, Tier, Unkept, WINDOW};
 use super::{Consumers, PyUse};
 use crate::store::PyCheckpoint;
 
@@ -467,6 +467,20 @@ impl Inner {
         Ok(Some(page))
     }
 
+    /// `view`'s bytes copied into `own`, a host page of its size that the tier does not keep.
+    fn copied(&self, py: Python<'_>, view: &Bound<'_, PyAny>, own: Unkept) -> PyResult<Unkept> {
+        // SAFETY: the memoryview ends with this call's objects, which the blocking copy outlives.
+        let host = unsafe {
+            Bound::from_owned_ptr_or_err(py, ffi::PyMemoryView_FromMemory(own.ptr().cast(), self.bytes as isize, ffi::PyBUF_WRITE))
+        }?;
+        let torch = py.import("torch")?;
+        let kwargs = pyo3::types::PyDict::new(py);
+        kwargs.set_item("dtype", torch.getattr("uint8")?)?;
+        let bytes = view.get_item(pyo3::types::PySlice::new(py, 0, self.bytes as isize, 1))?;
+        torch.call_method("frombuffer", (host,), Some(&kwargs))?.call_method1("copy_", (bytes,))?;
+        Ok(own)
+    }
+
     /// The derive on this thread, which holds no lock, with the bytes so far as a Tensor. `spare`:
     /// the page its stored bytes were read ahead into, which keeps what it makes (or, when it
     /// makes nothing, its stored bytes).
@@ -486,11 +500,19 @@ impl Inner {
                 if changed || self.stored.is_none() {
                     if let Some(key) = &self.page {
                         let kept = self.keep(key, py, &view, spare.take())?;
-                        if let (Some(_), Some(slot), Some(stored), true) = (kept, &self.slot, &self.stored, changed) {
-                            self.tier.persist(Persisting {
-                                checkpoint: stored.checkpoint.clone(), slot: slot.clone(), key: key.clone(),
-                                set: self.set.clone(), len: self.bytes, source: this.clone(),
-                            });
+                        if let (Some(slot), Some(stored), true) = (&self.slot, &self.stored, changed) {
+                            // A page the tier had no room to keep is written from its own copy: else a
+                            // full host bakes it again at every fill, request and process.
+                            let own = match kept {
+                                Some(_) => Some(None),
+                                None => self.tier.unkept(self.bytes).map(|own| self.copied(py, &view, own)).transpose()?.map(Some),
+                            };
+                            if let Some(own) = own {
+                                self.tier.persist(Persisting {
+                                    checkpoint: stored.checkpoint.clone(), slot: slot.clone(), key: key.clone(),
+                                    set: self.set.clone(), len: self.bytes, source: this.clone(), own,
+                                });
+                            }
                         }
                     }
                 }

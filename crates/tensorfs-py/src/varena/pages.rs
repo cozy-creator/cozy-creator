@@ -16,7 +16,7 @@
 //! reads it.
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -42,6 +42,11 @@ const FAULTERS: usize = 4;
 const AHEAD_READERS: usize = 2;
 /// Derived pages written under one sync, at most.
 const PERSIST_BATCH: usize = 16;
+/// Bytes of derived pages the tier had no room to keep on their way to disk in their own copies at
+/// once, past the first: a host too full to keep them writes them anyway, a page or so at a time, so
+/// no later fill, request or process bakes them again (tfs-299: Flux-2 Turbo re-baked 250 blocks in
+/// every request on a 4090 host with no room). One that would pass it waits for a later fill.
+const UNKEPT_IN_FLIGHT: usize = 512 << 20;
 
 /// Host bytes, page aligned, registered once filled: registering touched memory runs at about
 /// twice the rate of untouched memory. A window at a time, and no copy spans two: CUDA refuses it.
@@ -281,9 +286,33 @@ pub(super) struct Tier {
     persisted_bytes: AtomicU64,
     persist_skipped: AtomicU64,
     persist_failed: AtomicU64,
+    /// Of `persisted`, those written from their own copy (`Persisting::own`); and the bytes of
+    /// such copies queued or being written now.
+    persisted_unkept: AtomicU64,
+    unkept: Arc<AtomicUsize>,
 }
 
-/// A derived page the tier keeps, `len` bytes of `set`, to write to disk as page `key` of `slot`.
+/// A copy of a derived page the tier had no room to keep, made to be written to disk: its bytes count
+/// toward `UNKEPT_IN_FLIGHT` until it drops.
+pub(super) struct Unkept {
+    page: Page,
+    count: Arc<AtomicUsize>,
+}
+
+impl Unkept {
+    pub(super) fn ptr(&self) -> *mut u8 {
+        self.page.ptr
+    }
+}
+
+impl Drop for Unkept {
+    fn drop(&mut self) {
+        self.count.fetch_sub(self.page.len, Ordering::AcqRel);
+    }
+}
+
+/// A derived page, `len` bytes of `set`, to write to disk as page `key` of `slot`: the tier's kept
+/// page, else `own`, a copy made for the write alone where the tier had no room to keep it.
 pub(super) struct Persisting {
     pub(super) checkpoint: tensorfs::Checkpoint,
     pub(super) slot: String,
@@ -291,6 +320,7 @@ pub(super) struct Persisting {
     pub(super) set: String,
     pub(super) len: usize,
     pub(super) source: Weak<Inner>,
+    pub(super) own: Option<Unkept>,
 }
 
 /// A key being read ahead: no longer once this drops, however the read ended.
@@ -366,6 +396,7 @@ impl Tier {
             stores: Mutex::default(), objects: Mutex::default(), reader: OnceLock::new(), persists: OnceLock::new(),
             persisted: AtomicU64::new(0), persisted_bytes: AtomicU64::new(0),
             persist_skipped: AtomicU64::new(0), persist_failed: AtomicU64::new(0),
+            persisted_unkept: AtomicU64::new(0), unkept: Arc::default(),
         });
         tier.look(&mut tier.state(), &budget());
         super::host::join(Arc::downgrade(&tier), shared);
@@ -941,9 +972,26 @@ impl Tier {
         }
     }
 
-    /// Write a derived page the tier keeps to disk behind the fills: a later process reads it
-    /// there (`Checkpoint::keep_derived`). The writer takes it from the tier when its turn comes;
-    /// one the tier let go by then is made again, and written then.
+    /// A host page of `len` bytes to copy a derived page the tier has no room for into, and write
+    /// from (`Persisting::own`): None while other such copies hold `UNKEPT_IN_FLIGHT`.
+    pub(super) fn unkept(&self, len: usize) -> Option<Unkept> {
+        self.unkept.try_update(Ordering::AcqRel, Ordering::Acquire, |held| {
+            (held == 0 || held + len <= UNKEPT_IN_FLIGHT).then_some(held + len)
+        }).ok()?;
+        let count = self.unkept.clone();
+        match Page::new(len) {
+            Ok(page) => Some(Unkept { page, count }),
+            Err(_) => {
+                count.fetch_sub(len, Ordering::AcqRel);
+                None
+            }
+        }
+    }
+
+    /// Write a derived page to disk behind the fills: a later fill or process reads it there
+    /// (`Checkpoint::keep_derived`). The writer takes a kept page from the tier when its turn comes;
+    /// one the tier let go by then is made again, and written then. A page with its own copy is
+    /// written from it.
     pub(super) fn persist(self: &Arc<Self>, job: Persisting) {
         let sender = self.persists.get_or_init(|| {
             let (sender, jobs) = std::sync::mpsc::channel::<Persisting>();
@@ -961,39 +1009,55 @@ impl Tier {
 
     /// The writer: what is queued, up to `PERSIST_BATCH` pages under one sync, a checkpoint's at a time.
     fn persist_behind(&self, jobs: std::sync::mpsc::Receiver<Persisting>) {
+        /// A page on its way: what names it on disk, and its bytes, a kept page or its own copy.
+        struct Writing {
+            slot: String,
+            key: String,
+            source: Weak<Inner>,
+            kept: Option<Arc<Page>>,
+            own: Option<Unkept>,
+            len: usize,
+        }
         while let Ok(first) = jobs.recv() {
             let mut batch = vec![first];
             while batch.len() < PERSIST_BATCH {
                 let Ok(job) = jobs.try_recv() else { break };
                 batch.push(job);
             }
-            let mut groups: Vec<(tensorfs::Checkpoint, Vec<(Persisting, Arc<Page>)>)> = Vec::new();
+            let mut groups: Vec<(tensorfs::Checkpoint, Vec<Writing>)> = Vec::new();
             for job in batch {
-                let Some(page) = self.take(&job.key, &job.set, job.len, false) else {
+                let Persisting { checkpoint, slot, key, set, len, source, own } = job;
+                let kept = if own.is_none() { self.take(&key, &set, len, false) } else { None };
+                if kept.is_none() && own.is_none() {
                     self.persist_skipped.fetch_add(1, Ordering::Relaxed);
                     continue;
-                };
-                match groups.iter_mut().find(|(checkpoint, _)| checkpoint.id() == job.checkpoint.id()) {
-                    Some((_, pages)) => pages.push((job, page)),
-                    None => groups.push((job.checkpoint.clone(), vec![(job, page)])),
+                }
+                let writing = Writing { slot, key, source, kept, own, len };
+                match groups.iter_mut().find(|(known, _)| known.id() == checkpoint.id()) {
+                    Some((_, pages)) => pages.push(writing),
+                    None => groups.push((checkpoint, vec![writing])),
                 }
             }
             for (checkpoint, pages) in groups {
-                let written: Vec<(&str, &str, &[u8])> = pages.iter().map(|(job, page)| {
-                    // SAFETY: a kept page's bytes were written before it was shared, and `pages` holds it.
-                    let bytes = unsafe { std::slice::from_raw_parts(page.ptr.cast_const(), page.len) };
-                    (job.slot.as_str(), job.key.as_str(), bytes)
+                let written: Vec<(&str, &str, &[u8])> = pages.iter().map(|writing| {
+                    let ptr = writing.kept.as_ref().map_or_else(|| writing.own.as_ref().map_or(std::ptr::null_mut(), Unkept::ptr), |page| page.ptr);
+                    // SAFETY: either holds `len` bytes, written before it was queued, and `pages` holds it.
+                    let bytes = unsafe { std::slice::from_raw_parts(ptr.cast_const(), writing.len) };
+                    (writing.slot.as_str(), writing.key.as_str(), bytes)
                 }).collect();
                 match checkpoint.keep_derived(&written) {
                     Ok(kept) => {
-                        for ((job, page), object) in pages.iter().zip(kept) {
+                        for (writing, object) in pages.iter().zip(kept) {
                             if object.is_none() {
                                 self.persist_skipped.fetch_add(1, Ordering::Relaxed);
                                 continue;
                             }
                             self.persisted.fetch_add(1, Ordering::Relaxed);
-                            self.persisted_bytes.fetch_add(page.len as u64, Ordering::Relaxed);
-                            if let Some(source) = job.source.upgrade() {
+                            self.persisted_bytes.fetch_add(writing.len as u64, Ordering::Relaxed);
+                            if writing.own.is_some() {
+                                self.persisted_unkept.fetch_add(1, Ordering::Relaxed);
+                            }
+                            if let Some(source) = writing.source.upgrade() {
                                 source.persisted();
                             }
                         }
@@ -1317,11 +1381,12 @@ impl PyPages {
         row.set_item("read_ahead", read_ahead_pages)?;
         row.set_item("read_ahead_bytes", read_ahead_bytes)?;
         row.set_item("read_ahead_refused", read_ahead_refused)?;
-        row.set_item("persisted_scope", "derived pages written to disk this process, skipped, failed")?;
+        row.set_item("persisted_scope", "derived pages written to disk this process, skipped, failed, and of them written with no room to keep them")?;
         row.set_item("persisted", self.tier.persisted.load(Ordering::Relaxed))?;
         row.set_item("persisted_bytes", self.tier.persisted_bytes.load(Ordering::Relaxed))?;
         row.set_item("persist_skipped", self.tier.persist_skipped.load(Ordering::Relaxed))?;
         row.set_item("persist_failed", self.tier.persist_failed.load(Ordering::Relaxed))?;
+        row.set_item("persisted_unkept", self.tier.persisted_unkept.load(Ordering::Relaxed))?;
         Ok(row)
     }
 }
