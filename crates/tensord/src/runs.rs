@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use crate::stop::Stop;
 use tensorfs::format::ObjectRef;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     io,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -187,15 +187,28 @@ fn addressed(parameter: &str, package: &str, interface: &Value) -> Option<String
         .then(|| path.to_string())
 }
 
-/// `installation`'s internal functions that construct a model: what a function loading none
-/// itself calls.
-fn internal_models(installation: &Installation) -> Result<Vec<String>, Refused> {
+/// `installation`'s internal functions that construct a model and that `entrypoint`, loading none itself, calls: those its
+/// `calls` name (the Runtime's static reading, through its own helpers), and theirs in turn, in its package's order (cl-1077:
+/// H3's `edit` brought `upscale`'s upscaler). One that declares no `calls` may call any of them.
+fn internal_models(installation: &Installation, entrypoint: &str) -> Result<Vec<String>, Refused> {
     let interface: Value = serde_json::from_slice(&installation.interface)
         .map_err(|_| refused("package_interface_invalid", "held interface is corrupt"))?;
     let constructs = |entry: &Value| api::interface::models(entry).iter().any(crate::gpu_service::constructed);
+    let reached = api::interface::entrypoint(&interface, entrypoint).filter(|entry| entry.get("calls").is_some()).map(|root| {
+        let (mut reached, mut pending) = (BTreeSet::new(), vec![root]);
+        while let Some(entry) = pending.pop() {
+            for called in entry["calls"].as_array().into_iter().flatten().filter_map(|call| call["function"].as_str()) {
+                if reached.insert(called.to_owned()) {
+                    pending.extend(api::interface::entrypoint(&interface, called));
+                }
+            }
+        }
+        reached
+    });
     Ok(api::interface::entrypoints(&interface)
         .filter(|entry| api::interface::internal(entry) && constructs(entry))
         .filter_map(|entry| api::interface::name(entry).map(str::to_owned))
+        .filter(|name| reached.as_ref().is_none_or(|reached| reached.contains(name)))
         .collect())
 }
 
@@ -381,9 +394,9 @@ impl Runs {
     }
 
     /// What run `id` reads of `installation`, whose environment need not be built yet (cl-966): what its function reads up
-    /// front; for one that loads no model itself (an orchestrator), what its package's internal functions that construct one
-    /// all read up front (sure), then each one's own (guesses), in its package's order, each resolved at once. One that
-    /// doesn't resolve is left out.
+    /// front; for one that loads no model itself (an orchestrator), what the internal functions it calls that construct one
+    /// (`internal_models`) all read up front (sure), then each one's own (guesses), in its package's order, each resolved at
+    /// once. One that doesn't resolve is left out.
     #[allow(clippy::too_many_arguments)]
     fn reads(
         &self, id: &str, installation: &Installation, hub: Option<hub::Source>, asker: &Asker, entrypoint: &str,
@@ -399,7 +412,7 @@ impl Runs {
             let (sure, possible) = predicted(entrypoint)?;
             return Ok(crate::access::Reads { sure, guesses: guessed(possible) });
         }
-        let callees = internal_models(installation)?;
+        let callees = internal_models(installation, entrypoint)?;
         let private = crate::private_io::current();
         let each: Vec<_> = std::thread::scope(|scope| {
             let each: Vec<_> = callees.iter().map(|callee| scope.spawn(|| crate::private_io::within(private.clone(), || predicted(callee)))).collect();
@@ -1128,7 +1141,7 @@ impl Runs {
                 fetch
             });
             // An orchestrator's internal functions' weights come while it starts and imports (cl-905), if not already.
-            if plan.is_none() && spec.parent.is_empty() && internal_models(&installation).is_ok_and(|internal| !internal.is_empty()) {
+            if plan.is_none() && spec.parent.is_empty() && internal_models(&installation, &spec.entrypoint).is_ok_and(|internal| !internal.is_empty()) {
                 ahead = Some(early.take().unwrap_or_else(|| self.fetch_internal(id, &installation, hub.clone(), &spec)));
             }
             // A call wants what it reads now: its caller's guesses at it end, and their room is free.
@@ -1566,12 +1579,11 @@ impl Runs {
                     crate::private_io::warning(&self.service.engine, id, format_args!("{warning} ({error})"));
                 }
             }
-            // A function that loads no model itself (an orchestrator) runs on the ones it calls.
-            // The interface names no call graph, and internal functions exist only to be called:
-            // it brings its package's internal functions' models, each a member of its own.
+            // A function that loads no model itself (an orchestrator) runs on the ones it calls: it brings the models of the
+            // internal functions it calls, each a member of its own.
             let mut plans = vec![plan];
             if item.level > Level::Installed && plans[0].is_none() {
-                for callee in internal_models(&installation)? {
+                for callee in internal_models(&installation, &item.entrypoint)? {
                     let own: Vec<_> = item.models.iter().filter(|c| own_choice(c, &callee)).cloned().collect();
                     let report = observe.clone();
                     let (_, plan, _) = self.resolve(

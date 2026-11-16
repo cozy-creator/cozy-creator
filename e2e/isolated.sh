@@ -243,7 +243,7 @@ case $key in
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
-  cli:ondemand) needs='packages birefnet downloads' ;;
+  cli:ondemand) needs='packages birefnet downloads calls' ;;
   # pagebox's 1.6 GB (`spare`) beside the install (cl-1007).
   cli:ondemand-share) needs='packages birefnet downloads spare' ;;
   cli:ondemand-ramp) needs='packages spare' ;;
@@ -253,7 +253,7 @@ case $key in
   cli:env-cost) needs='packages birefnet' ;;
   # plan_fetch quotes a fine-tune composed of a base's parts (cl-1071).
   cli:plan) needs='packages birefnet downloads composed' ;;
-  cli:) needs='packages birefnet downloads spare loras vaes fits parts composed lorabase' ;;
+  cli:) needs='packages birefnet downloads spare loras vaes fits parts composed lorabase calls' ;;
   # shared_scratch's probe and its warm BiRefNet (cl-984).
   cli:projectvault) needs='packages birefnet scratch' ;;
   cli:*) needs='packages' ;;
@@ -436,6 +436,14 @@ if [ -n "$needs" ]; then
     random_weights "$seed/disk.safetensors" 2048 disk-big
     mirror "$seed/disk.safetensors" e2e/disk-big bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
     rm -f "$seed/disk.safetensors"
+  fi
+  if [[ " $needs " == *" calls "* ]]; then
+    # ondemand_calls' orchestrator (cl-1077): the model of the function it calls and of one it never calls, 32 MiB each.
+    for name in used unused; do
+      random_weights "$seed/calls.safetensors" 32 "calls-$name"
+      mirror "$seed/calls.safetensors" "e2e/calls-$name" bf16 0.1.0 https://github.com/cozy-creator/cozy-creator/tree/master/e2e --source-format as-is
+      rm -f "$seed/calls.safetensors"
+    done
   fi
   if [[ " $needs " == *" spare "* ]]; then
     # ondemand_share's weights (cl-1007): more than the 60 Mbit link moves while its install runs.
