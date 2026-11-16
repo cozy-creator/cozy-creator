@@ -1,0 +1,1 @@
+Downloads no longer open more connections than the link can use: TensorFS's ramp waits for the first bytes before it measures a rate, and gives back a doubling of its streams that didn't raise the download rate (a 28 MB/s pod had settled at 64 streams).
