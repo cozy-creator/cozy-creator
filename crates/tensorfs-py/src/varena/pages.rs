@@ -764,6 +764,68 @@ impl Tier {
         page
     }
 
+    /// A page for a derive's bytes (a LoRA baked into a block), which a later fill would otherwise
+    /// make again: a demand on the tier. Where `reserve` finds no room it sheds this tier's idle
+    /// pages, those of sets this request has not used, least recently used first (never one in
+    /// use), then asks idle processes for theirs, and tries again: a host holding idle models' pages
+    /// keeps the bake (tfs-299: Flux-2 Turbo kept none and baked 250 blocks in every request). Shed
+    /// only where that makes it fit. None: no room even so; the caller writes it from a copy.
+    pub(super) fn reserve_derived(&self, key: &str, set: &str, len: usize) -> PyResult<Option<Page>> {
+        if let Some(page) = self.reserve(key, set, len, false)? {
+            return Ok(Some(page));
+        }
+        let (gone, short) = {
+            let mut state = self.state();
+            if state.kept.contains_key(key) || state.off.is_some() {
+                return Ok(None);
+            }
+            let gone = self.shed_idle(&mut state, len as i64);
+            (gone, (len as i64 + state.headroom - state.room).max(len as i64) as u64)
+        };
+        let shed = !gone.pages.is_empty();
+        drop(gone); // Unregistering waits on the device: never under the lock.
+        if shed {
+            if let Some(page) = self.reserve(key, set, len, false)? {
+                return Ok(Some(page));
+            }
+        }
+        // What the room is short of, from processes in no request, which give pages back: asked
+        // whatever the room's sign (a tier's own look asks only while it is not over).
+        if super::host::peers_idle() && super::host::ask_idle(short) {
+            self.relook();
+            return self.reserve(key, set, len, false);
+        }
+        Ok(None)
+    }
+
+    /// This tier's pages of sets with no pass this request, least recently used first, let go until
+    /// `bytes` fit: none where letting all of them go would not.
+    fn shed_idle(&self, state: &mut State, bytes: i64) -> Gone {
+        let mut gone = self.trim(state);
+        let mut idle: Vec<(u64, String, i64)> = state.kept.iter()
+            .filter(|(_, kept)| !state.passes.contains_key(&kept.set))
+            .map(|(key, kept)| (kept.last, key.clone(), kept.page.len as i64))
+            .collect();
+        let all: i64 = idle.iter().map(|(_, _, len)| len).sum();
+        let fits_after = |freed: i64| {
+            !state.pressed && state.bytes as i64 - freed + bytes <= self.cap as i64 && state.room + freed - bytes >= state.headroom
+        };
+        if idle.is_empty() || !fits_after(all) {
+            return gone;
+        }
+        idle.sort_unstable();
+        for (_, key, _) in idle {
+            if self.fits(state, bytes) {
+                break;
+            }
+            if let Some(kept) = state.remove(&key, "shed") {
+                state.room += kept.page.len as i64;
+                gone.push(kept);
+            }
+        }
+        gone
+    }
+
     /// A page of `len` bytes, registered, faulted in first if `populate`. None: the driver refused,
     /// and the tier is off.
     fn registered(&self, len: usize, populate: bool) -> PyResult<Option<Page>> {

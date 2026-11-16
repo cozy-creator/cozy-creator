@@ -17,8 +17,8 @@
 #              `off`: the development VRAM cap); the pod's `machine update` before this cell, so cells before and
 #              after compare two pairs; "tensord" may also be an https URL of a `cozy` binary or release archive)}];
 #              "host_free_gib" (optional: before this cell a root-shell process holds the pod's host memory so that
-#              about this many GiB stay available, following what the executors take, killed first by the kernel;
-#              `off` ends it: a host tier with no room, as a full machine has);
+#              about this many GiB stay available as it starts, killed first by the kernel; `off` ends it: a host
+#              as full as a smaller computer's);
 #              "optional" (optional: true, its failure does not count toward the stop);
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
 #              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
@@ -200,8 +200,8 @@ hostmem() {
   timeout 60 cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$HOSTMEM") | base64 -d | sh" 2>&1 | grep -v '^Warning: Permanently added' > "$OUT/host-$1.txt"
   say "$1 host: $(head -1 "$OUT/host-$1.txt" | cut -c1-240); $(grep -m1 '^cgroup' "$OUT/host-$1.txt" | cut -c1-260)"
 }
-# ballast <cell> <GiB|off>: a root-shell process on the pod holds anonymous memory so about GiB stay available (the
-# tightest of MemAvailable and the pod's cgroup), following the executors each half second; oom_score_adj 1000.
+# ballast <cell> <GiB|off>: a root-shell process on the pod holds anonymous memory so about GiB stay available as it starts
+# (the tightest of MemAvailable and the pod's cgroup); what executors take later comes out of those GiB. oom_score_adj 1000.
 BALLAST='import mmap, os, sys, time
 open("/proc/self/oom_score_adj", "w").write("1000")
 keep, ready, step = int(float(sys.argv[1]) * 2**30), sys.argv[2], 256 << 20
@@ -217,18 +217,14 @@ def available():
         pass
     return a
 held, ones = [], b"\1" * (16 << 20)
+while available() > keep + step:
+    m = mmap.mmap(-1, step, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+    for _ in range(step // len(ones)):
+        m.write(ones)
+    held.append(m)
+open(ready, "w").write(f"{os.getpid()} {len(held) * step} {available()}\n")
 while True:
-    a = available()
-    if a > keep + step:
-        m = mmap.mmap(-1, step, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
-        for _ in range(step // len(ones)):
-            m.write(ones)
-        held.append(m)
-        continue
-    while held and a < keep - step:
-        held.pop().close(); a += step
-    open(ready, "w").write(f"{os.getpid()} {len(held) * step} {a}\n")
-    time.sleep(0.5)'
+    time.sleep(3600)'
 ballast() {
   local script
   if [ "$2" = off ]; then

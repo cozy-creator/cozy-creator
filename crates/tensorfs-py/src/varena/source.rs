@@ -444,7 +444,7 @@ impl Inner {
         let page = match spare {
             Some(page) => Some(page),
             None => {
-                let page = py.detach(|| self.tier.reserve(key, &self.set, self.bytes, false))?;
+                let page = py.detach(|| self.tier.reserve_derived(key, &self.set, self.bytes))?;
                 self.tier.reserve_ns.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 page
             }
@@ -505,6 +505,7 @@ impl Inner {
                             // full host bakes it again at every fill, request and process.
                             let own = match kept {
                                 Some(_) => Some(None),
+                                None if self.tier.holds(key) => None, // another fill kept it, and writes it
                                 None => py.detach(|| self.tier.unkept(self.bytes))
                                     .map(|own| self.copied(py, &view, own)).transpose()?.map(Some),
                             };

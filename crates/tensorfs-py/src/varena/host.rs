@@ -195,6 +195,10 @@ mod imp {
     pub(super) fn peers_running() -> bool {
         host().is_some_and(|host| host.table.peers_running(host.row))
     }
+
+    pub(super) fn peers_idle() -> bool {
+        host().is_some_and(|host| host.table.peers_idle(host.row))
+    }
 }
 
 /// `tier` gives and asks through this process's row; `shared`, on a person's computer.
@@ -224,6 +228,14 @@ pub(super) fn short(bytes: u64) -> u64 {
         let _ = bytes;
         0
     }
+}
+
+/// Another process holds idle host pages and is in no request: an ask may bring them back.
+pub(super) fn peers_idle() -> bool {
+    #[cfg(target_os = "linux")]
+    return imp::peers_idle();
+    #[cfg(not(target_os = "linux"))]
+    false
 }
 
 /// Ask idle peers for `bytes` and wait for their answers (a few seconds at most): whether any came
