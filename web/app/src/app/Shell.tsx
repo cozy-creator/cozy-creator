@@ -44,7 +44,7 @@ function Connectivity() {
       {health.state === "reconnecting" ? (
         <span className="pill warn" role="status">
           Cozy is offline{owed.count > 0 && `, ${changes} waiting`}
-          {health.attempt >= SAYS_HOW && ". Start it again on this computer"}
+          {health.attempt >= SAYS_HOW && ". Restart it"}
         </span>
       ) : owed.count > 0 && owed.slow ? (
         <span className="pill warn" role="status">
