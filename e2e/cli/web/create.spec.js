@@ -2,11 +2,14 @@
 // is a box of its kind, blank, where it was let go; the tool's says "Package · Tool" under its picture. On the blank Image box a video tool
 // changes nothing and says why at the bottom left, in one line; an image tool goes on. A box's menu never offers to change its tool (Paul,
 // 11-12: a tool changes only by a drop from the palette). Each package the Hub was seeded with is listed under what it makes. A reload finds all
-// five where they were.
+// five where they were. What makes pictures is one group, Image, editing one or not (cl-1068): a tool that reads no picture, dropped on a
+// picture with no tool, says it can't edit images and changes nothing; one that reads it goes on, its prompt starting from it. The X on the
+// tool line takes the tool off, Undo puts it back.
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, observeStill, canvasCard, canvasPoint, canvasVisible } = require('./fixtures');
+const { test, expect, observeStill, canvasCard, canvasNames, canvasPoint, canvasVisible, focus, png } = require('./fixtures');
 const { carry, drawn, onCanvas, rows, rowsOf } = require('./geometry');
+const { fit, leave } = require('./hands');
 
 const NODES = ['image', 'video', 'audio', 'text'];
 // Open canvas a box's room apart (a video's is 360 wide), right of the tools, under the bar, over the notes: the four nodes, then the Hub tool.
@@ -15,6 +18,9 @@ const POINTS = [{ x: 480, y: 170 }, { x: 840, y: 170 }, { x: 1280, y: 170 }, { x
 const placedAt = (flow) => ({ x: Math.round(flow.x - 120), y: Math.round(flow.y - 16) });
 /** A tool as the page names it (shown.ts toolName). */
 const named = (tool) => (tool.package_title && tool.package_title !== tool.label ? `${tool.package_title} · ${tool.label}` : tool.label);
+/** Whether a tool reads a picture: a slot of one, or a prompt that takes one (palette.ts readsPictures). */
+const reads = (fields) => fields.some((field) => (field.type === 'slot' && field.accept === 'image') ||
+  (field.type === 'prompt' && (!field.takes || field.takes.includes('image'))) || (field.type === 'group' && reads(field.members ?? [])));
 
 test('create', { tag: '@engines' }, async ({ page, project, api }) => {
   const { tools } = await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}`);
@@ -73,14 +79,19 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
   });
 
   let hub;
+  const seeded = JSON.parse(readFileSync(join(process.env.OUT, 'web', 'fixtures.json'), 'utf8')).hub;
+  /** The groups each tool is listed under, by id. */
+  const under = {};
   await test.step('open Tools › Image and drag a Hub tool to a fifth point', async () => {
     // Each package the Hub was seeded with, listed under what it makes: every operation's list opened in turn, as a person opens them.
-    const seeded = JSON.parse(readFileSync(join(process.env.OUT, 'web', 'fixtures.json'), 'utf8')).hub;
     const listed = {};
     for (const operation of await palette.locator('[data-palette="tools"] [data-operation]').evaluateAll((all) => all.filter((one) => !one.disabled).map((one) => one.dataset.operation))) {
       await openOperation(operation);
       const kind = await category(operation).getAttribute('data-kind');
-      for (const id of await implementations(operation).evaluateAll((all) => all.map((one) => one.dataset.tool))) (listed[id] ??= []).push(kind);
+      for (const id of await implementations(operation).evaluateAll((all) => all.map((one) => one.dataset.tool))) {
+        (listed[id] ??= []).push(kind);
+        (under[id] ??= []).push(operation);
+      }
     }
     for (const [name, ids] of Object.entries(seeded)) {
       const media = tools.filter((tool) => ids.includes(tool.id) && ['image', 'video'].includes(tool.makes));
@@ -98,6 +109,18 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     await whereLetGo(names.tool);
     expect.soft(await project.asset(names.tool), 'the tool box: what it makes, of that tool, blank').toMatchObject({ kind: hub.makes, tool: hub.id, versions: 0 });
     await expect.configure({ soft: true }).poll(async () => (await canvasCard(page, names.tool))?.rendered?.labels.tool?.fullText, { message: 'it says "Package · Tool" under its picture' }).toBe(named(hub));
+  });
+
+  await test.step('one Image group: no Edit Image, and each tool that makes a picture under Image, editing one or not', async () => {
+    // Paul, 11-16: "collapse image + image-edit in the tools to one section" (cl-1068).
+    const groups = await palette.locator('[data-palette="tools"] [data-operation][data-kind="image"] b').allTextContents();
+    expect.soft(groups, 'the groups of tools that make pictures').toEqual(['Image', 'Upscale Image']);
+    const astray = tools.filter((tool) => tool.makes === 'image' && under[tool.id] && !(under[tool.id].length === 1 && ['image', 'upscale_image'].includes(under[tool.id][0])));
+    expect.soft(astray.map((tool) => `${tool.id}: ${under[tool.id].join(', ')}`), 'each tool that makes a picture is listed once, under Image or Upscale Image').toEqual([]);
+    // BiRefNet's reads a picture it must be given: an edit, under Image.
+    const edits = tools.filter((tool) => seeded.birefnet.includes(tool.id) && tool.makes === 'image');
+    expect.soft(edits.length, 'BiRefNet: a tool that edits a picture').toBeGreaterThan(0);
+    for (const tool of edits) expect.soft(under[tool.id] ?? [], `${tool.id}, which edits a picture, under Image`).toEqual(['image']);
   });
 
   await test.step('drop a video tool, then an image tool, onto the blank Image box', async () => {
@@ -156,5 +179,62 @@ test('create', { tag: '@engines' }, async ({ page, project, api }) => {
     for (const name of all) {
       expect.soft(Math.abs(again[name].x - shown[name].x) <= 1 && Math.abs(again[name].y - shown[name].y) <= 1, `${name} drawn where it was: ${JSON.stringify(shown[name])} then ${JSON.stringify(again[name])}`).toBe(true);
     }
+  });
+
+  // A picture with no tool, right of the rest (cl-1068).
+  const PHOTO = 'photo';
+  let reader;
+  await test.step("on a picture with no tool, a tool that reads no picture says it can't edit images; one that reads it goes on", async () => {
+    const held = Object.values(await rows(project)).filter((row) => Number.isFinite(row.x) && Number.isFinite(row.y));
+    const at = { x: Math.round(Math.max(...held.map((row) => row.x + (row.w ?? 360))) + 120), y: Math.round(Math.min(...held.map((row) => row.y))) };
+    await project.import(png(90), { name: PHOTO, at });
+    await expect.poll(() => canvasNames(page), { message: 'the picture on the page' }).toContain(PHOTO);
+    await fit(page);
+    const onIt = () => canvasPoint(page, PHOTO);
+    const before = await project.asset(PHOTO);
+    expect(before.tool || null, 'the picture has no tool').toBeNull();
+    const count = (await project.assets()).length;
+
+    // SDXL's Image reads its words only: no picture slot, no prompt that takes one.
+    await openOperation('image');
+    const words = implementations('image').and(palette.locator('[data-tool^="sdxl/"]')).first();
+    await words.scrollIntoViewIfNeeded();
+    const wordsId = await words.getAttribute('data-tool');
+    const wordsTool = tools.find((tool) => tool.id === wordsId);
+    expect(wordsTool && !reads(wordsTool.fields), `${wordsTool?.id}: a tool that makes a picture and reads none`).toBe(true);
+    await carry(page, words, await onIt());
+    await expect.soft(page.locator('.notes .note .line').filter({ hasText: `${named(wordsTool)} can't edit images` }), "it says it can't edit images").toHaveCount(1);
+    const after = await project.asset(PHOTO);
+    expect.soft({ tool: after.tool || null, fields: after.fields, versions: after.versions }, 'and changes nothing').toEqual({ tool: null, fields: before.fields, versions: before.versions });
+    expect.soft((await project.assets()).length, 'and makes no box').toBe(count);
+
+    // Qwen Image 2's reads pictures in its prompt: it goes on, its prompt starting from the picture.
+    const reading = implementations('image').and(palette.locator('[data-tool^="qwen-image-2/"]')).first();
+    await reading.scrollIntoViewIfNeeded();
+    const readerId = await reading.getAttribute('data-tool');
+    reader = tools.find((tool) => tool.id === readerId);
+    expect(reader && reads(reader.fields), `${reader?.id}: a tool that reads a picture`).toBe(true);
+    await carry(page, reading, await onIt());
+    await expect.poll(async () => (await project.asset(PHOTO)).tool, { message: 'a tool that reads a picture goes on it' }).toBe(reader.id);
+    await expect.configure({ soft: true }).poll(async () => JSON.stringify((await project.asset(PHOTO)).fields?.instructions ?? null), { message: 'its prompt starts from the picture' }).toMatch(/<self\.\d+>/);
+    expect.soft((await project.assets()).length, 'and makes no box').toBe(count);
+  });
+
+  await test.step("the tool line's X takes the tool off, and Undo puts it back", async () => {
+    // Paul, 11-16: "there should be an X next to it, not a trash can. You are not deleting anything; you are closing it."
+    const region = await focus(page, PHOTO);
+    const off = region.getByRole('button', { name: 'Remove image tool', exact: true });
+    await expect(off).toBeVisible();
+    await expect.soft(off, 'it says what it does').toHaveAttribute('title', `Take ${named(reader)} off`);
+    await expect.soft(off.locator('svg'), 'an X, not a trash can').toHaveAttribute('data-icon', 'close');
+    const versions = (await project.asset(PHOTO)).versions;
+    await off.click();
+    await expect.poll(async () => (await project.asset(PHOTO)).tool || null, { message: 'the tool is off' }).toBeNull();
+    const note = page.locator('.notes .note').filter({ hasText: `${named(reader)} is off ${PHOTO}. Its pictures stay.` });
+    await expect(note, 'a note says so, with Undo').toHaveCount(1);
+    expect.soft((await project.asset(PHOTO)).versions, 'its picture stays').toBe(versions);
+    await note.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect.poll(async () => (await project.asset(PHOTO)).tool, { message: 'Undo puts it back' }).toBe(reader.id);
+    await leave(page);
   });
 });
