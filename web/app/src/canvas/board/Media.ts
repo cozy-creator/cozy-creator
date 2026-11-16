@@ -92,6 +92,7 @@ export class Media {
   /** Pictures landed while others were still on their way: told together, one frame for all of them (cl-1018). */
   private landed = new Set<Entry>()
   private landing?: ReturnType<typeof setTimeout>
+  private soon?: ReturnType<typeof setTimeout>
   /** A video preview that failed every try, by digest, until when it isn't asked for again. */
   private unpreviewable = new Map<string, number>()
 
@@ -105,7 +106,7 @@ export class Media {
     if (this.unpinned.delete(key)) this.unpinnedBytes -= held.bytes
     held.pins++
     held.listeners.add(onChange)
-    this.pump()
+    this.pumpSoon()
     let released = false
     return {
       get texture() { return held.texture },
@@ -228,6 +229,7 @@ export class Media {
   destroy() {
     this.stopped = true
     clearTimeout(this.landing)
+    clearTimeout(this.soon)
     this.landed.clear()
     for (const entry of [...this.entries.values()]) this.discard(entry)
     for (const latent of [...this.latents.values()]) this.dropLatent(latent)
@@ -260,6 +262,13 @@ export class Media {
     const landed = [...this.landed]
     this.landed.clear()
     for (const entry of landed) if (this.entries.get(entry.key) === entry) for (const listener of [...entry.listeners]) this.tell(listener)
+  }
+
+  /** Loads asked for while a frame is being built start once it's out: 50 fetches begun inside the first frame were a sixth of it on a Mac
+   *  (e2e 43794715946). */
+  private pumpSoon() {
+    if (this.soon) return
+    this.soon = setTimeout(() => { this.soon = undefined; this.pump() }, 0)
   }
 
   private pump() {
