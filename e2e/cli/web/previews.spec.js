@@ -104,9 +104,10 @@ test('previews: a picture whose file is gone', async ({ page, project, guards })
   expect(file, 'its file on disk').toBeTruthy();
   rmSync(join(project.path, 'files', file));
   // Its thumbnail asked for and refused on purpose, from here on.
-  guards.allow(new RegExp(`status of 4\\d\\d\\b.*\\/thumbs\\/(sha256(:|%3A))?${hex}`, 'i'));
+  // Its picture is asked for as a thumbnail, or, drawn larger than one, as its file (Scene.ts's request).
+  guards.allow(new RegExp(`status of 4\\d\\d\\b.*\\/(thumbs|files)\\/[^ ]*${hex}`, 'i'));
   const asks = [];
-  page.on('request', (request) => { if (request.url().includes('/thumbs/') && request.url().toLowerCase().includes(hex)) asks.push(Date.now()); });
+  page.on('request', (request) => { if (/\/(thumbs|files)\//.test(request.url()) && request.url().toLowerCase().includes(hex)) asks.push(Date.now()); });
 
   await test.step('opened: the other drawn, it pulses while asked for, then says it is unavailable, never asked in a loop', async () => {
     await page.goto(project.url());
