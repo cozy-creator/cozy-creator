@@ -13,7 +13,7 @@ interface Sources {
   board: Board; store: CanvasStore; media: Media
   scene(): Scene | null; renderer(): Renderer | null
   interaction(): { state(): { pointerDown: boolean; dragging: boolean; marquee: boolean; resizing: string | null; hover: { name: string; part: Part } | null; locked: boolean } } | null
-  frames(): number; open(): { read: number; cards: number; previews: number; log: number[][] }; ticking(): boolean; retired(): boolean
+  frames(): number; open(): { read: number; cards: number; previews: number; changed: number; log: number[][] }; ticking(): boolean; retired(): boolean
   graphics(): { backend: "webgl" | "canvas"; why: Why; gpu: string; state: "ready" } | { backend: "none"; state: "starting" | "failed"; refused: string }
 }
 

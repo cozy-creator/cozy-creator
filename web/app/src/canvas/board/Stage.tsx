@@ -83,7 +83,8 @@ export function Stage(props: StageProps) {
     let dirty = true, animating = false, frames = 0, width = element.clientWidth, height = element.clientHeight
     // The open, counted (cl-1018): frames rendered from the first tick that has the project read to the first with every box in view built
     // (cards) and with every picture in view drawn (previews); and each of those frames' start, scene and render ms.
-    const open = { read: -1, cards: -1, previews: -1, log: [] as number[][] }
+    const open = { read: -1, cards: -1, previews: -1, changed: 0, log: [] as number[][] }
+    let pictured = 0
     const stops: (() => void)[] = []
     const stage = new Container({ eventMode: "static" })
     const ticker = new Ticker()
@@ -171,6 +172,9 @@ export function Stage(props: StageProps) {
         const rendered = performance.now(), held = scene.coverage
         if (open.log.length < 24) open.log.push([Math.round(began), Math.round(updated - began), Math.round(rendered - updated)])
         if (open.cards < 0 && held.inView > 0 && held.built >= held.inView) open.cards = frames - open.read
+        // Frames that drew more pictures than the one before, apart from frames an animation alone asked for (a pulse on a GPU).
+        if (held.pictured > pictured) open.changed++
+        pictured = held.pictured
         if (open.cards >= 0 && held.pictured >= held.wanting) open.previews = frames - open.read
       }
       try { scene.didRender() } catch (error) { console.error("Seen:", error) }
