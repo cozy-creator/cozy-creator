@@ -371,9 +371,9 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     # No trace of it outside it: Calcifer's own logs name neither its code nor its runs, after a deadline lock that waited on a
     # save (step 3), a lock that ended a run (step 2), and runs that ran slow.
     names += [name for out in ("outlives", "ended", "past-maximum") if (name := run_of(args.out / f"{out}.ndjson").get("name"))]
-    if names:
-        found = traces(since, sorted(set(names)))
-        assert not found, f"Calcifer's own logs name the encrypted project's runs or its code: {found[:5]}"
+    # Recording run only: what the scan found is asserted at the end, so step 4 records what this build does.
+    found = traces(since, sorted(set(names))) if names else []
+    print(f"vault work: traces: {found[:3]}", flush=True)
     receipt["no_traces"] = {"runs": sorted(set(names)), "logs_scanned": True}
 
     # 4. An explicit lock lands in a save by its size: a 2 GB file whose save into the project takes seconds, locked as it starts
@@ -430,6 +430,7 @@ def vault_work_sleep(payload: Request, out: Outputs) -> Answer:
     assert len(landed) == len(record.get("output", [])) == 2, f"run {saved}'s outputs after the next unlock, the one behind the big one too: {observed}"
     cli(args, "lock-after-save", "vault", "lock")
 
+    assert not found, f"Calcifer's own logs name the encrypted project's runs or its code: {found[:5]}"
     receipt["synthetic_only"] = True
     (args.out / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(f"vault work: {json.dumps(receipt)}", flush=True)
