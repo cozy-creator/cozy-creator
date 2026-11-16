@@ -210,6 +210,11 @@ impl Calcifer {
     /// Whether the run's exporter still moves its bytes into its project (cl-1060): it started, or bytes landed, within
     /// `EXPORT_SILENCE`. One that stalls (its machine offline, or not starting) holds no vault open: its outputs stay owed, and
     /// the project's next opening exports them.
+    /// The exporter of `id` begins a phase (cl-1060): activity, as a byte written is.
+    fn beat(&self, id: &RunId) {
+        if let Some(seen) = lock(&self.exports.seen).get_mut(id) { seen.1 = Instant::now(); }
+    }
+
     pub(super) fn export_moving(&self, id: &RunId) -> bool {
         if !self.exporting(id) { return false; }
         let moved: u64 = lock(&self.exports.moving).iter().filter(|((run, ..), _)| run == id).map(|(_, (moved, _))| moved.load(Ordering::Relaxed)).sum();
@@ -516,6 +521,7 @@ impl Calcifer {
         lock(&self.exports.moving).insert(key.clone(), (moved.clone(), item.length));
         // Its project, whose read each write batch holds (cl-1060): a lock and a write never interleave.
         let gate = self.row_owner(run).ok().flatten();
+        self.beat(&run.id);
         let work = async {
             tokio::fs::create_dir_all(&out_dir).await.map_err(|e| {
                 Failure::Again(format!("cannot create {}: {e}", out_dir.display()))
@@ -527,8 +533,10 @@ impl Calcifer {
                 let appended = lock(&self.exports.appended).get(&appended).copied();
                 fetch_file(link, &target, item, &dest, appended, &moved, &gate).await?
             };
+            self.beat(&run.id);
             let measured = self.measured(item, &staged).await;
             let _batch = batch(&gate).await.map_err(Failure::Again)?;
+            self.beat(&run.id);
             // It waits on its project's turn and the store's commit: off the async workers, which answer the page.
             tokio::task::block_in_place(|| self.land(run, item, &staged, &dest, measured.as_ref()))?;
             remove(&suffixed(&dest, HELD));
@@ -964,10 +972,25 @@ fn remove(path: &Path) {
 /// This revision's bytes in `<file>.part`, checked against its digest. A revision that extends
 /// the one the file holds reads only its new tail; an attempt cut off before resumes with what it
 /// left in place (`.part.held`), cleared by a digest that doesn't match.
-/// How long an exporter may move no byte and still hold its project's vault open (cl-1060): longer than any pause between the
-/// batches of an export whose machine answers (a lane reconnecting and its first bytes take seconds), short enough that a stalled one
-/// (its machine offline, or not starting) keeps a vault past its deadline by no more than this.
+/// How long an exporter may show no activity (no byte written, no phase begun) and still hold its project's vault open past a
+/// deadline (cl-1060). Tripping it ends nothing: the vault only stops being held, the lock that follows was already due, and the
+/// save resumes whole at the next unlock. It can misjudge a writer that moves no byte for this long on a slow or busy disk; the
+/// project then locks at its deadline, the run shows its outputs still to be saved, and they're saved at the next unlock, with
+/// nothing lost and no error to act on. Progress is counted per chunk written (each a body read's bytes, never a whole file) and at
+/// each phase (fetch, measure, landing), so one large write doesn't look silent.
 pub(crate) const EXPORT_SILENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// An ended save's half-written files in its project (cl-1060): none is seen half-written, and the next unlock fetches the outputs
+/// whole.
+pub(crate) fn drop_partials(run: &RunRow, owed: &[OutputRow]) {
+    let Ok(out_dir) = crate::project::vault::resolve_path(&run.out_dir) else { return };
+    for item in owed {
+        let dest = out_dir.join(file_name(run.number, &item.name, item.index, &item.media_type));
+        remove(&suffixed(&dest, ".part"));
+        remove(&suffixed(&dest, HELD));
+        remove(&suffixed(&dest, ".manifest.part"));
+    }
+}
 
 /// A read of the project for one write batch into it (cl-1060): a lock waits for the batch, and no batch starts into a view a lock
 /// has. None for Calcifer's own runs, which write into no project.

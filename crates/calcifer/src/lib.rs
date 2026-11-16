@@ -580,11 +580,7 @@ impl Calcifer {
     /// its machine) or its exporter moving its outputs, latents among them, into the project (`export_moving`). The project's vault
     /// clock and every lock wait for it; an exporter that stalls stops holding them.
     pub(crate) fn writing_into(&self, project: &str) -> Option<RunId> {
-        let ids: Vec<String> = lock(&self.run_owners).iter()
-            .filter(|(_, owner)| owner.as_ref().is_some_and(|owner| owner.project_id() == project))
-            .map(|(id, _)| id.clone()).collect();
-        ids.into_iter().filter_map(|id| RunId::try_from(id).ok())
-            .find(|id| lock(&self.driving).contains(id) || self.export_moving(id))
+        self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id) || self.export_moving(id))
     }
 
     /// Run `id`'s driver task going, until the returned guard drops with it (cl-1060).
@@ -593,13 +589,24 @@ impl Calcifer {
         Driving { calcifer: self.clone(), id: id.clone() }
     }
 
-    /// A run of `project` whose exporter moves its outputs into it now (cl-1060): what an explicit lock refuses on before it revokes or
-    /// ends anything; a run still going is ended by it instead.
-    pub(crate) fn saving_into(&self, project: &str) -> Option<RunId> {
-        let ids: Vec<String> = lock(&self.run_owners).iter()
+    /// The routed runs of `project`.
+    fn routed(&self, project: &str) -> Vec<RunId> {
+        lock(&self.run_owners).iter()
             .filter(|(_, owner)| owner.as_ref().is_some_and(|owner| owner.project_id() == project))
-            .map(|(id, _)| id.clone()).collect();
-        ids.into_iter().filter_map(|id| RunId::try_from(id).ok()).find(|id| self.export_moving(id))
+            .filter_map(|(id, _)| RunId::try_from(id.clone()).ok()).collect()
+    }
+
+    /// A run of `project` whose driver's task is going (cl-1060): settling, handing on.
+    pub(crate) fn driving_into(&self, project: &str) -> Option<RunId> {
+        self.routed(project).into_iter().find(|id| lock(&self.driving).contains(id))
+    }
+
+    /// Ends `project`'s exporters (cl-1060), for a lock asked for: each stops at its next write batch, which the lock's turn holds
+    /// off, and its outputs stay owed. The runs whose exporter it ended.
+    pub(crate) fn end_exports(&self, project: &str) -> Vec<RunId> {
+        let ended: Vec<RunId> = self.routed(project).into_iter().filter(|id| self.exporting(id)).collect();
+        self.retire_exports(&ended.iter().map(|id| id.to_string()).collect());
+        ended
     }
 
     /// What a run that ended still owes its project, handed on before its driver lets go (cl-1060): what stays on its machine noted,
