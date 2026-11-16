@@ -519,6 +519,7 @@ case $SHARD in
     basics
     component_models
     second_project
+    lock_platforms
     yaml_requests
     run_flags
     run_follow
@@ -590,6 +591,8 @@ case $SHARD in
     remove
   " ;;
   # A project the newest release made, read by the candidate (cl-930); then the release refuses the candidate's store.
+  # A lock passing over a release no rental can install (cl-1011).
+  lock-platforms) parts="lock_platforms logs" ;;
   released) parts="released_project update logs" ;;
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
@@ -611,6 +614,7 @@ case $SHARD in
     basics
     component_models
     second_project
+    lock_platforms
     yaml_requests
     run_filters
     project_keys
