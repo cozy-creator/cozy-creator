@@ -134,14 +134,37 @@ fn run() -> Result<(), Failure> {
     assert_eq!(part, content[123_456..123_456 + part.len()]);
     drop(seek);
 
+    #[allow(unused_mut)]
+    let mut supervisor_environ = "unread";
     #[cfg(target_os = "linux")]
     {
+        // The supervisor holds the key and is non-dumpable (`disable_project_parent_dumps`): its environ reads only as root, which a CI
+        // runner is through passwordless sudo. Where there's none (a developer's computer) that check is SKIPPED, said as such.
         let pid = mounted.provider_pid();
         for path in [
             format!("/proc/{pid}/cmdline"),
             format!("/proc/{pid}/environ"),
         ] {
-            let bytes = fs::read(path)?;
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) if path.ends_with("environ") && error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    match Command::new("sudo").args(["-n", "cat", &path]).output() {
+                        Ok(output) if output.status.success() => {
+                            supervisor_environ = "checked as root";
+                            output.stdout
+                        }
+                        _ => {
+                            eprintln!("provider fixture: SKIPPED: the supervisor's environ is root's to read and there's no passwordless sudo");
+                            supervisor_environ = "SKIPPED: no passwordless sudo";
+                            continue;
+                        }
+                    }
+                }
+                Err(error) => return Err(format!("{path}: {error}").into()),
+            };
+            if path.ends_with("environ") && supervisor_environ == "unread" {
+                supervisor_environ = "checked";
+            }
             assert!(
                 !bytes
                     .windows(secret.len())
@@ -530,7 +553,7 @@ fn run() -> Result<(), Failure> {
     inspect(&backing, marker)?;
     println!(
         "{}",
-        json!({"result":"pass","provider":provider.storage_format(),"bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":read_only,"idle_lock":idle,"sqlite_durable_commit":true,"backing_marker_absent":true,"view":view})
+        json!({"result":"pass","provider":provider.storage_format(),"bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":read_only,"idle_lock":idle,"sqlite_durable_commit":true,"backing_marker_absent":true,"supervisor_environ":supervisor_environ,"view":view})
     );
     Ok(())
 }
@@ -564,10 +587,7 @@ fn new_secret() -> Result<Zeroizing<String>, Failure> {
     Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(*randomness)))
 }
 
-/// Writes `bytes` through a new encrypted view in 4 MiB chunks of a deterministic pattern, fsyncs, locks, unlocks and reads them
-/// back, checking every byte. Prints MB/s (10^6 bytes) of the I/O alone: making and checking the pattern is off the clock.
-/// Create, mount, write a file and fsync it, and lock: what a Docker container proves, where its FUSE sandbox refuses the read back
-/// that a computer's passes (cl-1000, runs 43785258153 and 43789239440).
+/// Create, mount, write a file, fsync it, read it back through a new descriptor, and lock: what a distro's container proves (cl-1000).
 fn mount_only(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
     let backing = artifacts.join("encrypted");
     let view = project_mount::view_path(&artifacts.join("runtime"))?;
@@ -581,9 +601,13 @@ fn mount_only(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
     output.write_all(&content)?;
     output.sync_all()?;
     drop(output);
+    eprintln!("provider fixture: read back");
+    if fs::read(view.join("mounted.bin"))? != content {
+        return Err("the file read back differs from what was written".into());
+    }
     eprintln!("provider fixture: lock");
     mounted.try_unmount()?;
-    println!("{}", json!({"result":"mounted","wrote":content.len(),"provider":provider.storage_format()}));
+    println!("{}", json!({"result":"mounted","wrote":content.len(),"read_back":true,"provider":provider.storage_format()}));
     Ok(())
 }
 
@@ -662,6 +686,8 @@ fn controls(provider: &Provider, artifacts: &Path) -> Result<(), Failure> {
     }
 }
 
+/// Writes `bytes` through a new encrypted view in 4 MiB chunks of a deterministic pattern, fsyncs, locks, unlocks and reads them
+/// back, checking every byte. Prints MB/s (10^6 bytes) of the I/O alone: making and checking the pattern is off the clock.
 fn throughput(provider: &Provider, artifacts: &Path, bytes: u64) -> Result<(), Failure> {
     const CHUNK: u64 = 4 << 20;
     // splitmix64 of each 8-byte word's index in the file: no two chunks alike.
