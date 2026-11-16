@@ -66,6 +66,8 @@ class Slot(TypedDict):
 class Entrypoint(TypedDict):
     name: str
     models: NotRequired[list[Slot]]
+    #: its `Files` input: the parameter (`parameter`) a call's `assets=` fill, and what it takes
+    assets: NotRequired[dict[str, Json]]
     #: the functions it calls (an orchestrator's segments)
     calls: NotRequired[list[dict[str, Json]]]
 
@@ -410,8 +412,10 @@ class Broker:
     KINDS = frozenset({"child_call", "child_poll", "child_cancel", "child_forget", "gpu_release", "stage_memo_lookup",
                        "stage_memo_store", "publish"})
 
-    def __init__(self, request: str, spool: Path, run: RunChild) -> None:
+    def __init__(self, request: str, spool: Path, run: RunChild, files_at: Mapping[str, str]) -> None:
         self.request, self.spool, self.run = request, spool, run
+        #: each function's `Files` parameter, by its export
+        self.files_at = files_at
         #: each file the caller holds, by digest: what it saved and passed, and what its children returned
         self.held: dict[str, Path] = {}
         self.settled: dict[int, Answer] = {}
@@ -447,6 +451,11 @@ class Broker:
         if not isinstance(request, dict):
             raise Failed("a child call has no request object")
         export = got.get("export", "")
+        # The files a call passes by `assets=`, beside its request, at the callee's Files parameter (`calls.rs` with_files).
+        if (takes := self.files_at.get(export)) is not None:
+            request[takes] = document.get("assets") or []
+        elif document.get("assets"):
+            raise Failed(f"a call to {export} passes files, and it takes none")
         loras: Loras = {}
         for parameter, choice in cast(dict[str, dict[str, Json] | None], document.get("models") or {}).items():
             if not choice:
@@ -1104,6 +1113,7 @@ def main() -> int:
         return 1
     version = next((ln.split('"')[1] for ln in (package_dir / "pyproject.toml").read_text().splitlines() if ln.startswith("version")), "0")
     entries = {row["name"]: row for row in interface["entrypoints"]}
+    files_at = {name: str(row["assets"]["parameter"]) for name, row in entries.items() if "parameter" in row.get("assets", {})}
     cells = [c for c in fixture.CELLS if only is None or c["name"] in only or f"{c['entry']}/{c['name']}" in only]
     executors: dict[int, Executor] = {}
     loaded: set[tuple[int, str]] = set()
@@ -1143,7 +1153,7 @@ def main() -> int:
                        "construction": construction, "input_metadata": {k: v[0] for k, v in rows_in.items()}})
         spool = out / "spool" / child
         spool.mkdir(parents=True)
-        executor.broker = Broker(child, spool, run_child)
+        executor.broker = Broker(child, spool, run_child, files_at)
         executor.broker.held |= {rows_in[field][1]["digest"]: path for field, path in files.items()}
         reply = executor.ask({"cmd": "invoke", "request_id": child, "entrypoint": export, "spool": str(spool),
                               "construction": construction, "deadline_s": 1800, "inputs": {k: v[1] for k, v in rows_in.items()}},
@@ -1215,7 +1225,7 @@ def main() -> int:
                 if executor.previewing:
                     executor.send({"cmd": "preview", "request_id": request, "for_ms": 3_600_000})
                 # TensorD answers every attempt's durable requests: a call, a GPU release, a stage memo.
-                executor.broker = Broker(request, spool, run_child)
+                executor.broker = Broker(request, spool, run_child, files_at)
                 executor.broker.held |= {g["digest"]: Path(g["local"]) for g in granted.values()}  # it may pass them on
                 # As long as the deadline it gave the attempt: a busy computer's 1080p decode outlasts 900 s.
                 reply = executor.ask(invoke, timeout=invoke["deadline_s"] + 60)
