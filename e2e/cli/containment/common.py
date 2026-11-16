@@ -318,6 +318,8 @@ class Native:
     def __init__(self, cli: Path):
         self.cli = cli
         self.failure: dict[str, object] | None = None
+        # The last `cozy open`, as closed facts: its exit, whether Cozy's own browser started, and why not (Calcifer's step code).
+        self.opened: dict[str, object] = {}
 
     @staticmethod
     def failure_facts(completed: subprocess.CompletedProcess[bytes], words: tuple[str, ...]) -> dict[str, object]:
@@ -419,6 +421,10 @@ class Native:
         deadline = time.monotonic() + 90
         while True:
             completed = subprocess.run([str(self.cli), "open"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+            # A browser that couldn't start: open.rs warns "Cozy's private browser couldn't start (<code>)" and exits 0 with a link.
+            declined = re.search(rb"private browser couldn't start \((browser_[a-z_]+|private_browser_unavailable)\)", completed.stderr)
+            self.opened = {"open_exit": completed.returncode, "open_private": completed.returncode == 0 and declined is None,
+                           **({"open_cause_" + declined.group(1).decode().removeprefix("browser_"): True} if declined else {})}
             if completed.returncode and re.search(rb"^error\[project_busy\]", completed.stderr, re.M) and time.monotonic() < deadline:
                 time.sleep(0.1)
                 continue

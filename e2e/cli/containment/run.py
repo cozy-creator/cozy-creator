@@ -594,9 +594,9 @@ def main() -> int:
                 receipt.add("browser_open_failure", present=observed.get("present") is True,
                             retirement_incomplete=observed.get("retirement_incomplete") is True,
                             caf_alive=alive(proof.birth), observed_processes=len(observed.get("processes", [])),
-                            pages=pages if type(pages) is int else -1, **readiness)
+                            pages=pages if type(pages) is int else -1, **readiness, **native.opened)
             except BaseException:
-                receipt.add("browser_open_failure", snapshot_unavailable=True, caf_alive=alive(proof.birth), **readiness)
+                receipt.add("browser_open_failure", snapshot_unavailable=True, caf_alive=alive(proof.birth), **readiness, **native.opened)
             if readiness["slot"] >= 0:
                 try:
                     page = proof.exercise(projects[readiness["slot"]]["id"], "diagnose")
