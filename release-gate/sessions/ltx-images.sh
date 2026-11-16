@@ -23,6 +23,8 @@
 #   retake      now's `retake` of text's take, 2-3.5 s redone (picture and sound): each frame's SSIM to the take, outside
 #               the latents redone (frames 0-36 and 96-120) and inside (48-84), and the sound's difference in each
 #   retake-sound the same with redo=sound: the picture held against the take, the sound redone in the window
+#   voice       now: <pearl> speaks in <line> (t2a's sound): Licon MSR's picture and voice; the model reads
+#               `Image 1: pearl.` and `Audio 1: line, belongs only to Image 1.`, and the box keeps both mentions
 # The `now` cells render with prompt_upsampling off unless named `-up`; each keeps the text the model read
 # ($OUT/sheets/<cell>.txt, the result's `prompt`) beside its sheet.
 # Each cell keeps its run record, its video, a contact sheet ($OUT/sheets/<cell>.jpg: the first picture, frames 0, 30, 60, 90 and
@@ -41,9 +43,11 @@ grep -q 'last_frame' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 takes no 
 for c in ref ref-up ref-first sound pickup text-up first-up video video-edges motion keys; do
   [[ ",$CELLS," != *",$c,"* ]] || grep -q 'prompt: Prompt\[Image' "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 is older than references (cell $c)"
 done
-for c in t2a:sound retake:retake retake-sound:retake; do
+for c in t2a:sound retake:retake retake-sound:retake voice:generate; do
   [[ ",$CELLS," != *",${c%%:*},"* ]] || grep -q "^def ${c#*:}(" "$NOW/ltx_2_5/__init__.py" || fail "now's ltx-2.5 has no ${c#*:} tool (cell ${c%%:*})"
 done
+[[ ",$CELLS," != *",voice,"* ]] || { grep -q 'speakers(' "$NOW/ltx_2_5/__init__.py" && [[ ",$CELLS," == *",t2a,"* ]]; } ||
+  fail "cell voice needs now's ltx-2.5 with MSR voices, and cell t2a for its line"
 [ -f "$FIX/pearl.jpg" ] && [ -f "$FIX/teapot.jpg" ] && [ -f "$REF/seed.jpg" ] || fail "no fixtures"
 command -v ffprobe > /dev/null || fail "no ffprobe (pod-session.yaml installs it from the tool cache)"
 mkdir -p "$OUT/wheel" "$OUT/sheets" "$OUT/videos" "$OUT/runs"
@@ -243,6 +247,19 @@ if has t2a; then
       jq -r '[.. | objects | select(has("sample_rate") and has("prompt")) | .prompt] | first // empty' "$OUT/runs/t2a.json" > "$OUT/sheets/t2a.txt"
       ffmpeg -v error -y -i "$f" -lavfi "showspectrumpic=s=1024x384:legend=1" "$OUT/sheets/t2a.png" || say "t2a: no spectrogram"
     else say "MISS t2a: no audio"; bad+=(t2a); fi
+fi
+if has voice; then
+  if [ -s "$OUT/videos/t2a.flac" ]; then
+    run_page import "$OUT/videos/t2a.flac" --name line > "$OUT/import-line.txt" 2>&1 || fail "import line: $(cat "$OUT/import-line.txt")"
+    cell voice "$NOW" "$(now '<pearl> sits by a sunlit window, turns to the camera and says, in <line>: "Oh, what a lovely day we are having!" A medium close-up, the camera remains static.')" "$OUT/pearl.jpg"
+    if [ -s "$OUT/sheets/voice.txt" ]; then
+      grep -q '^Image 1: pearl\.' "$OUT/sheets/voice.txt" && grep -q '^Audio 1: line, belongs only to Image 1\.' "$OUT/sheets/voice.txt" ||
+        { say "MISS voice: the model read no MSR cast"; bad+=(voice-cast); }
+      J '(.asset.unused // []) | length == 0' "$OUT/runs/voice-asset.json" || { say "MISS voice: the box says a mention is unused"; bad+=(voice-unused); }
+    fi
+  else
+    say "MISS voice: no t2a line to speak in"; bad+=(voice)
+  fi
 fi
 if has retake || has retake-sound; then
   take=$OUT/videos/text.mp4; [ -s "$take" ] || take=$OUT/videos/was-text.mp4
