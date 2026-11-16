@@ -83,9 +83,12 @@ test('play-link, encrypted since', { tag: '@vault' }, async ({ page, project, ap
   expect(encrypted.code, `cozy vault encrypt: ${encrypted.stderr.slice(-400)}`).toBe(0);
   try {
     expect(await api.get(project.at('/vault')), 'encrypted and unlocked').toMatchObject({ encrypted: true, state: 'unlocked' });
-    // Refused as no longer granted (`scope`: the workspace is encrypted, or at another generation), or as not open here: never read.
+    // A run in it opens its encrypted workspace on the machine, as any use does: the link's project is open there again, encrypted.
+    const ran = await cli('--json', 'run', DRAW, `instructions=encrypted ${Date.now()}`, '--on', 'local');
+    expect(ran.code, `cozy run, encrypted: ${ran.stderr.slice(-400)}`).toBe(0);
+    // Refused as no longer granted: the workspace is encrypted now, at another generation. Before, the machine read it.
     const after = await stream(page, play.url, landed.length);
-    expect(after.failed, 'the link made while plaintext is refused by the machine').toMatch(/^(scope|unavailable): /);
+    expect(after.failed, 'the link made while plaintext is refused by the machine').toMatch(/^scope: /);
     expect(after.got, 'and nothing of the output came').toBe(0);
     const again = await mint(project, api, run, item);
     expect(again.status, `a new link: ${JSON.stringify(again.play)}`).toBe(403);
