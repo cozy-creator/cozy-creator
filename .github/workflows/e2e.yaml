@@ -910,8 +910,9 @@ jobs:
           retention-days: 14
 
   # macOS (arm64) and Windows: the web suite's native lane (web-native: the `@engines` cells, WebKit's too on a Mac, layout and
-  # offline), against its own isolated Hub with only packages published (e2e/isolated.sh). The other cells and the catalog of
-  # published weights run on Linux; any other native shard runs the CLI's own native parts (run.sh).
+  # offline), an encrypted project made, locked, unlocked and read back (projectvault-native, cl-1049) and Paul's no-traces
+  # invariant (notraces, cl-984), against its own isolated Hub with only packages published (e2e/isolated.sh). The other cells and
+  # the catalog of published weights run on Linux; any other native shard runs the CLI's own native parts (run.sh).
   cli-os:
     name: cli ${{ matrix.runner }} ${{ matrix.shard }}
     needs: [affected, candidate-os, hub]
@@ -920,7 +921,7 @@ jobs:
       fail-fast: false
       matrix:
         runner: ${{ fromJSON(needs.affected.outputs.runners) }}
-        shard: ${{ fromJSON(inputs.native_shards || '["web-native"]') }}
+        shard: ${{ fromJSON(inputs.native_shards || '["web-native","projectvault-native","notraces"]') }}
     runs-on: ${{ matrix.runner }}
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.

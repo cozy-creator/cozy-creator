@@ -643,7 +643,7 @@ vault_swapped() (
 # administrator's would; its exit isn't the cell's.
 vault_native() (
   step "an encrypted project on this OS: made, written, locked, unlocked by passphrase and recovery, read back"
-  local py root=$OUT/vault-native helper
+  local py root=$OUT/vault-native
   py=$(command -v python3 || command -v python) || fail "vault native: no python"
   if [ "${RUNNER_OS:-}" = Windows ]; then
     cozy --json doctor --fix > "$OUT/vault-native-doctor.json" 2> "$OUT/vault-native-doctor.err" || true
@@ -651,13 +651,6 @@ vault_native() (
       || fail "vault native: doctor --fix left no WinFsp: $(tail -c 300 "$OUT/vault-native-doctor.err")"
   fi
   mkdir -p "$root"
-  "$py" "$E2E/cli/vault_native.py" --cli "$COZY" --root "$root" > "$OUT/vault-native.json" 2>&1 && { echo "vault native: $(tail -1 "$OUT/vault-native.json")"; exit 0; }
-  # Which context stops securefs here, beside what the refusal says (temporary, cl-1049).
-  if [ "${RUNNER_OS:-}" = Windows ]; then
-    helper=$(find "$HOME/.cozy/tools/securefs" -name securefs.exe 2> /dev/null | head -1)
-    [ -z "$helper" ] || "$py" "$E2E/cli/windows_vault_probe.py" --securefs "$helper" --out "$OUT/vault-native-probe" > "$OUT/vault-native-probe.json" 2>&1 || true
-    echo "vault native probe: $(cat "$OUT/vault-native-probe.json" 2> /dev/null)"
-    grep -h "encrypted filesystem provider failed" "$HOME"/.cozy/calcifer/calcifer.log* 2> /dev/null | tail -3 || true
-  fi
-  fail "vault native: $(tail -c 1200 "$OUT/vault-native.json")"
+  "$py" "$E2E/cli/vault_native.py" --cli "$COZY" --root "$root" > "$OUT/vault-native.json" 2>&1 || fail "vault native: $(tail -c 1200 "$OUT/vault-native.json")"
+  echo "vault native: $(tail -1 "$OUT/vault-native.json")"
 )

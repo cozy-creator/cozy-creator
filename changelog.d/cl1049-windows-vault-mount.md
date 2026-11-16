@@ -1,0 +1,1 @@
+Encrypted projects open on Windows again (cl-1049): the vault's mount supervisor refused to start there, so every encrypted create and unlock failed with "filesystem provider mount failed (Some(1))". When the filesystem provider fails, its error now ends with the provider's own cause, and Calcifer's log keeps what it said before the mount.
