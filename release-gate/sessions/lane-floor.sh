@@ -11,7 +11,8 @@
 #   target   the default probe's function (minimax-h3/generate), with an H3 request
 #   model    the model whose lane it judges (minimaxai/minimax-h3)
 #   want     the lane it must resolve to (int8)
-#   runtime  true: the pod's Runtime is this session's RUNTIME_WHEEL (dispatched from rc/<x>, or runtime_ref)
+#   runtime  the pod's Runtime: a wheel source as lib.sh `wheel_from` takes (a cozy-runtime dev-build run id: its wheel
+#            carries the kernels a machine requires); none: the pod's own
 . "$(dirname "$0")/lib.sh"
 T=$(param target minimax-h3/generate) M=$(param model minimaxai/minimax-h3) WANT=$(param want int8) PROBES=$(param probes '')
 jq -n --argjson s "$RANDOM$RANDOM" '{beats: [{description: "A lighthouse on a sea cliff at dusk, waves breaking below.", duration: 5}], seed: $s}' \
@@ -26,7 +27,8 @@ for ((i = 0; i < N; i++)); do
   tree=$(jq -r --argjson i "$i" '.[$i].tree // ""' <<<"$PROBES")
   [ -z "$tree" ] || [ -d "$PACKAGES/$tree" ] || fail "probe $i: no packages checkout $tree"
 done
-[ "$(param runtime false)" != true ] || [ -n "${RUNTIME_WHEEL:-}" ] || fail "runtime: true, and this session has no RUNTIME_WHEEL"
+RUNTIME='' SRC=$(param runtime '')
+if [ -n "$SRC" ]; then RUNTIME=$(wheel_from "$OUT/wheels/runtime" "$SRC") && [ -n "$RUNTIME" ] || fail "no Runtime wheel from $SRC"; fi
 quote $((1200 + 600 * N))
 rent
 
@@ -34,7 +36,7 @@ jq -e '.status.gpus | length == 1 and (.[0].family | ltrimstr("sm") | tonumber) 
   fail "not one card with FP4 tensor cores: $(jq -c '[.status.gpus[] | {name, family}]' "$OUT/show.json")"
 CARD=$(jq -r '.status.gpus[0] | "\(.name) (\(.family), \(.memory_bytes / 1e9 | floor) GB)"' "$OUT/show.json")
 step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "update"
-[ "$(param runtime false)" != true ] || step runtime machine update "$NAME" --runtime "$RUNTIME_WHEEL" -y || fail "the pod's Runtime"
+[ -z "$RUNTIME" ] || step runtime machine update "$NAME" --runtime "$RUNTIME" -y || fail "the pod's Runtime"
 
 # probe <i>: the probe's target run until its model's header lands; prints the lane it resolved to.
 probe() {
