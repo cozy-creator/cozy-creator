@@ -106,7 +106,9 @@ export class Media {
     if (this.unpinned.delete(key)) this.unpinnedBytes -= held.bytes
     held.pins++
     held.listeners.add(onChange)
-    this.pumpSoon()
+    // An import's own bytes are already here: decoded at once, as it's dropped. A fetch waits for the frame being built to go out.
+    if (request.source.kind === "local" && !held.texture && !held.loading && !held.waiting && !held.failed && this.visible && !this.stopped && this.active < LOADS) void this.load(held)
+    else this.pumpSoon()
     let released = false
     return {
       get texture() { return held.texture },
