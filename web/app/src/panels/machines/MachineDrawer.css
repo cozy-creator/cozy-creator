@@ -1,15 +1,15 @@
 /* A machine's drawer (cl-1100): its GPUs, disk, queue, packages and models, each a section. */
 .drawer-body {
-  --seg-models: var(--mak);
-  --seg-environments: #a8661c;
-  --seg-runtime: #7d4fb8;
-  --seg-runs: var(--cur);
-  --seg-other: var(--line2);
+  --dpart-models: var(--mak);
+  --dpart-environments: #a8661c;
+  --dpart-runtime: #7d4fb8;
+  --dpart-runs: var(--cur);
+  --dpart-other: var(--line2);
 }
 :root[data-theme="dark"] .drawer-body {
-  --seg-environments: #e0a458;
-  --seg-runtime: #b48cf0;
-  --seg-other: #6b6f78;
+  --dpart-environments: #e0a458;
+  --dpart-runtime: #b48cf0;
+  --dpart-other: #6b6f78;
 }
 .sect h3 .count {
   flex: none;
@@ -95,28 +95,28 @@
 .diskbar.full {
   border-color: var(--bad);
 }
-.seg {
+.dpart {
   display: block;
   flex: none;
   height: 100%;
 }
-.seg + .seg {
+.dpart + .dpart {
   box-shadow: inset 1px 0 0 var(--float);
 }
-.seg.models {
-  background: var(--seg-models);
+.dpart.models {
+  background: var(--dpart-models);
 }
-.seg.environments {
-  background: var(--seg-environments);
+.dpart.environments {
+  background: var(--dpart-environments);
 }
-.seg.runtime {
-  background: var(--seg-runtime);
+.dpart.runtime {
+  background: var(--dpart-runtime);
 }
-.seg.runs {
-  background: var(--seg-runs);
+.dpart.runs {
+  background: var(--dpart-runs);
 }
-.seg.other {
-  background: var(--seg-other);
+.dpart.other {
+  background: var(--dpart-other);
 }
 .disk-sum {
   margin: 6px 0 4px;
@@ -141,7 +141,7 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-.disk-legend .seg {
+.disk-legend .dpart {
   width: 11px;
   height: 11px;
   border-radius: 3px;

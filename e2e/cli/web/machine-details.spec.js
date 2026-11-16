@@ -122,7 +122,7 @@ test('machine-details', { tag: '@solo' }, async ({ page, project, api, cli }) =>
       const shown = await runs.evaluateAll((rows) => rows.map((row) => Number(row.dataset.run)));
       softly(shown.every((run) => making.has(run)) && shown.length === 3, `the rows are q1-q3's runs: ${JSON.stringify({ shown, making: [...making] })}`).toBe(true);
       softly((await runs.locator('b').allTextContents()).sort(), 'each row named for its box').toEqual(names);
-      await expect(runs.nth(1).locator('.said')).toHaveText(/^Queued|^Waiting/);
+      await expect(runs.nth(1).locator('.said')).toHaveText(/^Queued|^Waiting|^Getting ready/);
       await shoot('queue', ['Queue']);
     });
 

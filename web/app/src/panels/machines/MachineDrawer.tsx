@@ -133,9 +133,13 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
   )
 }
 
-/** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. */
+/** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. Calcifer counts a job it sent as running;
+ *  the machine says which of those it runs now and which wait there, as its queue does. */
 function Doing({ machine, now }: { machine: Machine; now: number }) {
-  const jobs = machine.running || machine.queued ? `${machine.running} running, ${machine.queued} queued` : "Nothing running"
+  const runs = machine.status?.runs
+  const total = machine.running + machine.queued
+  const running = runs ? Math.min(total, runs.filter((held) => held.state === "running" && (!held.run || held.run.kind === "call")).length) : machine.running
+  const jobs = total ? `${running} running, ${total - running} queued` : "Nothing running"
   const ends = endsWords(machine, now)
   const spent = spentWords(machine)
   return (

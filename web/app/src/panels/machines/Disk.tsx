@@ -48,7 +48,7 @@ export function Disk({ machine, status }: { machine: Machine; status: MachineSta
   return (
     <Section title="Disk">
       <div className={`diskbar ${full ? "full" : ""}`} role="img" aria-label={`${bytes(used)} used, ${bytes(free)} free of ${bytes(total)}`}>
-        {measured ? KINDS.map(([kind, label]) => parts[kind] > 0 && <i key={kind} className={`seg ${kind}`} style={{ width: share(parts[kind]) }} title={`${label}: ${bytes(parts[kind])}`} />) : <i className="seg other" style={{ width: share(used) }} />}
+        {measured ? KINDS.map(([kind, label]) => parts[kind] > 0 && <i key={kind} className={`dpart ${kind}`} style={{ width: share(parts[kind]) }} title={`${label}: ${bytes(parts[kind])}`} />) : <i className="dpart other" style={{ width: share(used) }} />}
       </div>
       <p className="disk-sum">
         <b>{bytes(free)} free</b> of {bytes(total)} · {Math.round((100 * used) / total)}% used
@@ -57,7 +57,7 @@ export function Disk({ machine, status }: { machine: Machine; status: MachineSta
         <ul className="disk-legend">
           {KINDS.map(([kind, label]) => (
             <li key={kind} data-kind={kind}>
-              <i className={`seg ${kind}`} />
+              <i className={`dpart ${kind}`} />
               {label} <b>{bytes(parts[kind])}</b>
             </li>
           ))}

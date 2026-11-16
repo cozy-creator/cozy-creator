@@ -62,10 +62,10 @@ function RunRow({ held, activity, project, boxes }: { held: LiveRun; activity: O
     : going
       ? workWords(run) || (waiting ? sentence(waiting) : "Running")
       : state === "queued"
-        ? waiting
-          ? sentence(waiting)
-          : run.queue_position
-            ? `Queued, ${ordinal(run.queue_position)} in line`
+        ? run.queue_position
+          ? `Queued, ${ordinal(run.queue_position)} in line`
+          : waiting
+            ? sentence(waiting)
             : "Queued"
         : waiting
           ? sentence(waiting)
