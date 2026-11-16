@@ -134,10 +134,12 @@ fn run() -> Result<(), Failure> {
     assert_eq!(part, content[123_456..123_456 + part.len()]);
     drop(seek);
 
+    #[allow(unused_mut)]
+    let mut supervisor_environ = "unread";
     #[cfg(target_os = "linux")]
     {
-        // The supervisor holds the key and is non-dumpable (`disable_project_parent_dumps`), so its environ reads only as root:
-        // refused is the protection, not a failure. Its cmdline is anyone's to read and must not hold the secret.
+        // The supervisor holds the key and is non-dumpable (`disable_project_parent_dumps`): its environ reads only as root, which a CI
+        // runner is through passwordless sudo. Where there's none (a developer's computer) that check is SKIPPED, said as such.
         let pid = mounted.provider_pid();
         for path in [
             format!("/proc/{pid}/cmdline"),
@@ -145,9 +147,24 @@ fn run() -> Result<(), Failure> {
         ] {
             let bytes = match fs::read(&path) {
                 Ok(bytes) => bytes,
-                Err(error) if path.ends_with("environ") && error.kind() == std::io::ErrorKind::PermissionDenied => continue,
+                Err(error) if path.ends_with("environ") && error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    match Command::new("sudo").args(["-n", "cat", &path]).output() {
+                        Ok(output) if output.status.success() => {
+                            supervisor_environ = "checked as root";
+                            output.stdout
+                        }
+                        _ => {
+                            eprintln!("provider fixture: SKIPPED: the supervisor's environ is root's to read and there's no passwordless sudo");
+                            supervisor_environ = "SKIPPED: no passwordless sudo";
+                            continue;
+                        }
+                    }
+                }
                 Err(error) => return Err(format!("{path}: {error}").into()),
             };
+            if path.ends_with("environ") && supervisor_environ == "unread" {
+                supervisor_environ = "checked";
+            }
             assert!(
                 !bytes
                     .windows(secret.len())
@@ -536,7 +553,7 @@ fn run() -> Result<(), Failure> {
     inspect(&backing, marker)?;
     println!(
         "{}",
-        json!({"result":"pass","provider":provider.storage_format(),"bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":read_only,"idle_lock":idle,"sqlite_durable_commit":true,"backing_marker_absent":true,"view":view})
+        json!({"result":"pass","provider":provider.storage_format(),"bundled_provider":project_mount::is_bundled(),"bytes":content.len(),"normal_io":true,"media_seek":true,"open_handle_result":busy,"manual_lock":true,"no_plaintext_fallback":true,"remount_parity":true,"read_only":read_only,"idle_lock":idle,"sqlite_durable_commit":true,"backing_marker_absent":true,"supervisor_environ":supervisor_environ,"view":view})
     );
     Ok(())
 }
