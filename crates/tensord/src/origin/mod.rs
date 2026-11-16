@@ -30,8 +30,12 @@ const VOLUME_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// The machine's one download line, smaller first (cl-905): what a reader is blocked on, then each
 /// run's needs in job order (acceptance, as its GPU work queues), then what jobs waiting on another's
-/// output will read, then guesses, then warm sets. The downloader finishes one before the next.
+/// output will read, then guesses, then warm sets. The downloader finishes one before the next. Everything after a
+/// run's needs is background (`tensorfs::fetch::BACKGROUND`): none of it starts, and what is in flight gives way, while a
+/// need is under way (cl-1101).
 pub(crate) mod priority {
+    // A run's needs are class 0; `ahead` (class 1) is the first background order.
+    const _: () = assert!(2 + (1 << 62) == tensorfs::fetch::BACKGROUND);
     /// What a started call's function reads now and isn't here yet (`ModelNeed`): before every weight (cl-966).
     pub(crate) const EMERGENCY: u64 = tensorfs::fetch::EMERGENCY;
     /// Software, no job's weights: the machine's update, a package's files as it installs. Weights yield to it (cl-1007).

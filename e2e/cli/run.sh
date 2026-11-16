@@ -706,12 +706,15 @@ case $SHARD in
     ondemand_calls
     ondemand_adapted
     ondemand_order
+    ondemand_behind
     logs
   " ;;
   # The install's share of the link beside 1.6 GB of weights (cl-1007): about 8 min on its own, so its own shard.
   ondemand-share) parts="ondemand_share logs" ;;
   # A model's weights alone through the 60 Mbit link, timed, with the streams the ramp settled at (th-378).
   ondemand-ramp) parts="ondemand_ramp logs" ;;
+  # What a request with two on-demand prompt enhancers fetches, and when (cl-1101): by dispatch until a request says which it reads.
+  ondemand-enhancers) parts="ondemand_enhancers logs" ;;
   # A small disk full of idle models' weights makes room for the next runs' (tfs-150).
   disk) parts="disk_full logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
