@@ -1,10 +1,6 @@
-import { useQuery } from "@tanstack/react-query"
 import { useBoard } from "./board/context"
 import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import { runQuery } from "../api/queries"
-import { useConnection } from "../app/Connection"
-import { useWaitsOn } from "../panels/machines/activity"
 import type { MainFile, Tool, ToolField } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
@@ -28,6 +24,7 @@ import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
 import { SlowNotice } from "./RenderTime"
 import { StateDot, viewState } from "./StateDot"
+import { TakeProgress } from "./TakeProgress"
 
 const WIDEST = 1600
 const LOWEST = 90
@@ -41,43 +38,6 @@ function kindOf(view: ElementView): string {
   if (madeHere(asset.tool)) return asset.kind === "video" ? "edit" : "frame"
   if (asset.field && !asset.tool) return asset.kind
   return asset.kind === "video" ? "shot" : asset.kind
-}
-
-/** How far a take being made is: its package installing or its weights arriving show as such, never as its own percentage. */
-function TakeProgress({ view, run }: { view: ElementView; run: number }) {
-  // Its own run, each tile (cl-945): the box follows only the one its frame is on.
-  const { client } = useConnection()
-  const project = useCanvasStore().projectId
-  const framed = view.run?.number === run
-  const { data } = useQuery({ ...runQuery(client, project ?? "", run), enabled: Boolean(project) && !framed })
-  const mine = framed ? view.run : data
-  const on = useWaitsOn(mine)
-  if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
-  const fraction = mine?.progress?.done_fraction
-  const said = fraction == null ? "…" : `${Math.round(fraction * 100)}%`
-  // What it has made so far plays on its tile, silent (cl-907): a pick of the tile plays it with its sound.
-  const glimpse = view.glimpse?.media === "video" && view.glimpse.number === run ? view.glimpse : undefined
-  return glimpse ? <TileGlimpse glimpse={glimpse} said={said} /> : <>{said}</>
-}
-
-function TileGlimpse({ glimpse, said }: { glimpse: NonNullable<ElementView["glimpse"]>; said: string }) {
-  const { client } = useConnection()
-  const store = useCanvasStore()
-  const [src, setSrc] = useState<string>()
-  useEffect(() => {
-    if (!store.projectId) { setSrc(undefined); return }
-    let live = true
-    void client.transport.src(client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)).then((url) => live && setSrc(url))
-    return () => {
-      live = false
-    }
-  }, [client, store.projectId, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
-  return (
-    <>
-      {src && <video className="take-glimpse" src={src} muted loop autoPlay playsInline preload="metadata" />}
-      <span className="take-said">{said}</span>
-    </>
-  )
 }
 
 /** A button on a card does its one thing, and a field takes the click: neither selects it. */
@@ -228,7 +188,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       {waiting && (
         <span className="take-at">
           <button type="button" className="take making" title="Queued" style={comingTile}>
-            …
+            <TakeProgress view={view} />
           </button>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
             <Icon name="trash" />
@@ -238,8 +198,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       {pending.map((take) => (
         <span key={take.id} className="take-at">
           <button type="button" className={`take making ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} title={take.run !== undefined ? `Run ${store.runName(take.run)}` : "Queued"} style={comingTile} onClick={() => store.watchTake(name, take.id)}>
-            <span className={`state-dot ${take.run !== undefined ? "running" : "queued"}`} role="img" aria-label={take.run !== undefined ? "Rendering" : "Queued"} />
-            {take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
+            <TakeProgress view={view} run={take.run} />
           </button>
           <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${store.runName(take.run)}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
             <Icon name="close" />
