@@ -512,6 +512,7 @@ WEB_3=(
   create
   project-name
   takes
+  unseen
   run-tiles
   no-overlap
   instant
