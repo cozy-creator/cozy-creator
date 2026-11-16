@@ -823,7 +823,7 @@ pub(crate) fn start(api: &Arc<Api>) {
     tokio::spawn(async move {
         loop {
             match runs.recv().await {
-                Ok((_, api::calcifer::Event::Created { .. } | api::calcifer::Event::Completed { .. } | api::calcifer::Event::Failed { .. } | api::calcifer::Event::Canceled { .. }))
+                Ok((_, api::calcifer::Event::Created { .. } | api::calcifer::Event::InProgress { .. } | api::calcifer::Event::Completed { .. } | api::calcifer::Event::Failed { .. } | api::calcifer::Event::Canceled { .. }))
                 | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => stir(),
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
@@ -899,7 +899,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
     LOCKING.lock().expect("vault locks").insert(root.clone());
     let api = api.clone();
     runtime.spawn_blocking(move || {
-        lock_lapsed(&api, &root, due, forced);
+        lock_lapsed(&api, &root);
         LOCKING.lock().expect("vault locks").remove(&root);
     });
     // Looked at again while it stays: a busy view or an unsaved page puts its lock off.
@@ -908,20 +908,7 @@ fn look(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Opti
 
 /// A vault past its deadline locks, in order (the browser's edits saved, its requests drained) and, past `SAVE_GRACE`, whatever is
 /// unsaved.
-fn lock_lapsed(api: &Arc<Api>, root: &FsPath, due: Instant, forced: bool) {
-    // The browser's save acknowledgements may include activity writes
-    // under the operation mutex. Never wait for them while owning it.
-    let mut browser = match prepare_browser(api) {
-        Ok(browser) => browser,
-        Err(why) if forced => {
-            let unsent = tokio::runtime::Handle::current().block_on(api.browser.unsent());
-            let unsent = unsent.map_or("an unknown number of".to_owned(), |count| count.to_string());
-            say(root, "forced", || format!("its deadline passed {} s ago and Cozy's browser has not confirmed its edits are saved ({}): locking anyway, {unsent} unsent edits left", due.elapsed().as_secs(), why.message));
-            if let Some(id) = project_id(root) { crate::events::project_vault(&id, "locking"); }
-            None
-        }
-        Err(why) => { say(root, "browser", || format!("its lock waits for Cozy's browser to save its edits: {}", why.message)); return; }
-    };
+fn lock_lapsed(api: &Arc<Api>, root: &FsPath) {
     let op = operation(root);
     let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its lock waits for a vault operation".into()); return; };
     let still_needs = held(root).is_some_and(|session| {
@@ -929,8 +916,8 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, due: Instant, forced: bool) {
         lapsed(&session)
     });
     if !still_needs { return; }
-    // A run its machine hasn't begun doesn't keep it open past its maximum (cl-1082): it ends `vault_locked` before anything else. An
-    // explicit lock (closing) has ended the project's runs its own way.
+    // A run its machine hasn't begun doesn't keep it open past its deadline (cl-1082): it ends before anything else, before a queued
+    // run can begin. An explicit lock (closing) has ended the project's runs its own way.
     let clocked = held(root).is_some_and(|session| { let session = session.lock().expect("vault session"); !session.closing && expired(&session) });
     if let Some(id) = project_id(root).filter(|_| clocked) {
         if let Err(failure) = api.calcifer.end_unstarted(&id).map_err(|_| error("run_cancel", "the project's runs not begun could not be ended")) {
@@ -938,6 +925,9 @@ fn lock_lapsed(api: &Arc<Api>, root: &FsPath, due: Instant, forced: bool) {
             return;
         }
     }
+    // No page's save is waited for: the view has lapsed, so a page can't save into it, and a wait only lets queued work begin past the
+    // deadline (cl-1082 review). Cozy's browser isn't asked to close the project's pages; they find it locked.
+    let mut browser = None;
     // What its runs still owe lands first, judged by progress (cl-1060); then the project's turn, and `close` revokes nothing while
     // a writer is still active.
     if let Err(failure) = drain_saves(api, root, || {}) { idle_lock_failed(root, &failure); return; }
