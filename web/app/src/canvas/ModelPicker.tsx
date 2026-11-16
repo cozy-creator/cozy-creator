@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { useDeferredValue, useEffect, useRef, useState } from "react"
+import { useDeferredValue, useEffect, useLayoutEffect, useRef, useState } from "react"
 import type { FoundModel, ModelDetail, Tool, ToolModel } from "../api/calcifer"
 import { useConnection } from "../app/Connection"
 import { Icon } from "../ui/Icon"
@@ -128,6 +128,22 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
     focus?.focus()
   }, [page])
   useEffect(() => { if (page && page !== "__legacy" && !active) setPage(null) }, [page, active])
+  // In Focus it rises over the picture from its button: as tall as the picture's room above the button, never off the screen.
+  useLayoutEffect(() => {
+    const element = dialog.current
+    const card = element?.closest(".focus-card")
+    const viewer = card?.querySelector(".focus-viewer")
+    const controls = element?.parentElement
+    if (!element || !viewer || !controls) return
+    const fit = () => {
+      const room = controls.getBoundingClientRect().top - Math.max(viewer.getBoundingClientRect().top, 0) - 16
+      element.style.maxHeight = `${Math.max(240, Math.min(640, room))}px`
+    }
+    fit()
+    const watch = new ResizeObserver(fit)
+    watch.observe(viewer)
+    return () => watch.disconnect()
+  }, [])
   useEffect(() => { if (!view?.asset) close.current() }, [view?.asset])
   if (!view?.asset) return null
   return (
