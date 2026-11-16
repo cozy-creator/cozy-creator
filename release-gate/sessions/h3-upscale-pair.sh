@@ -61,7 +61,8 @@ upscale() { render "$1" "$WAS/upscale" "$(jq -cn --arg v "<$2>" --arg to "$TO" -
 kernels "$WAS"
 cp "$REF/seed.jpg" "$OUT/skater.jpg"
 run_page import "$OUT/skater.jpg" --name "$HERO" > "$OUT/import.txt" 2>&1 || fail "import: $(cat "$OUT/import.txt")"
-RENT_ARGS=--ssh
+RENT_ARGS=--ssh  # the pod's root shell reads its GPU (gpu-reader.sh): the runner needs a key
+[ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
 quote "$(param need_s 6000)"
 rent
 . "$(dirname "$0")/gpu-reader.sh"
