@@ -1,4 +1,7 @@
-//! Open the current project in a browser and print its local URL. A `--json` caller is a program: it gets the link, and no browser starts.
+//! Open the current project in a private window of the user's own browser and print its local URL. A `--json` caller is a program: it
+//! gets the link, and no browser starts.
+mod window;
+
 use std::{
     net::{Ipv4Addr, TcpListener},
     process::ExitCode,
@@ -19,7 +22,7 @@ use crate::{
 };
 
 #[derive(clap::Args, Debug)]
-#[command(after_help = "With --json it prints the link and opens no browser.\n\nExamples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
+#[command(after_help = "It opens a private window of your browser ($BROWSER, else the default). With --json it prints the link and opens no browser.\n\nExamples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
 pub(crate) struct Args {
     /// Use this loopback port for Calcifer, and keep it for later commands.
     #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
@@ -34,60 +37,31 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             (ctx.calcifer().await?, project)
         }
     };
+    let url = page_url(&calcifer, &project)?;
     // A `--json` caller is a program: it gets the page's address, and no browser starts.
-    let opened = match ctx.json {
-        true => json!({ "url": page_url(&calcifer, &project)?, "private": false }),
-        false => private(ctx, &calcifer, &project).await?,
-    };
-    output::document(ctx, &opened);
+    if ctx.json {
+        output::document(ctx, &json!({ "url": url }));
+        return Ok(ExitCode::SUCCESS);
+    }
+    match window::open(&url).await {
+        Ok(browser) => output::document(ctx, &json!({ "url": url, "browser": browser })),
+        Err(why) => {
+            // Never a normal window: the point is that nothing of the project lands in the browser's history or cache.
+            output::warn(&format!("no browser with a private window could be started ({why}): open this address in one"));
+            output::document(ctx, &json!({ "url": url }));
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 
-/// The project in Cozy's own private browser, which Calcifer starts or reuses.
-async fn private(ctx: &Context, calcifer: &Client, project: &Address) -> Result<serde_json::Value, Error> {
-    let ask = json!({ "project": project.id });
-    let opening = calcifer.post::<_, Opened>("/v1/browser/open", &ask, None);
-    tokio::pin!(opening);
-    // Calcifer waits for Chrome while it lives (up to 2 minutes): a cold first start can take a while.
-    let opened = tokio::select! {
-        opened = &mut opening => opened,
-        () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
-            output::say(ctx, "starting Cozy's private browser; a first start can take a while");
-            opening.await
-        }
-    };
-    match opened {
-        // The printed URL is reference-only; authority was injected through the owned native pipe.
-        Ok(opened) => Ok(json!({ "url": opened.url, "private": true })),
-        // No Chrome, or no display: any browser on this computer opens the page, Calcifer's own (cl-980).
-        Err(error) if error.code == "private_browser_unavailable" => {
-            let reason = error.message.clone();
-            let url = page_url(calcifer, project)?;
-            let name = match crate::project::current(ctx).await {
-                Ok(state) => state.path.file_name().map(|name| name.to_string_lossy().into_owned()),
-                Err(_) => None,
-            }.unwrap_or_else(|| project.code.clone());
-            output::warn(&format!("Cozy's private browser couldn't start ({reason}): open {name} at this address in any browser, which isn't private"));
-            Ok(json!({ "url": url, "private": false, "reason": reason }))
-        }
-        // Chrome was found but didn't start: an error, saying why (its exit and first telling line), with the page's address.
-        Err(mut error) if error.code == "private_browser_failed" => {
-            error.remedy = Some(format!("{} opens it in any browser, which isn't private", page_url(calcifer, project)?));
-            Err(error)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct Opened {
-    url: String,
-}
-
-/// The project's page on this Calcifer, as the owned browser opens it: any browser of this account opens it as Calcifer's own page.
+/// The project's page on this Calcifer by its short code, as the page's own links say it (`/p/<code>`; Paul 11-16, of `/projects/<id>`:
+/// "where did this dumb other url come from?"). Any browser of this account opens it as Calcifer's own page.
 fn page_url(calcifer: &Client, project: &Address) -> Result<String, Error> {
     let holder = calcifer.holder().ok_or_else(|| Error::new(Kind::Unavailable, "calcifer_unavailable", "Calcifer isn't running").next("cozy open"))?;
-    Ok(format!("http://{}/projects/{}", holder.address, project.id))
+    Ok(match project.code.is_empty() {
+        false => format!("http://{}/p/{}", holder.address, project.code),
+        true => format!("http://{}/projects/{}", holder.address, project.id),
+    })
 }
 
 fn reserve_port(port: u16) -> Result<TcpListener, Error> {

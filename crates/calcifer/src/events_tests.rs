@@ -43,7 +43,7 @@ async fn runs_scope_skips_other_subscriptions_and_streams_run_updates() {
     });
     taken.recv().unwrap();
     let began = Instant::now();
-    let runs = subscribe(api.clone(), Scope::Runs).await;
+    let runs = subscribe(api.clone(), Scope::Runs, false).await;
     assert!(runs.said.is_none());
     assert!(runs.machines_changed.is_none());
     assert!(runs.showing.is_none());
@@ -58,7 +58,7 @@ async fn runs_scope_skips_other_subscriptions_and_streams_run_updates() {
     assert_eq!(hello["type"], "hello");
     assert!(!SHOWN.lock().unwrap().contains_key(hello["stream"].as_str().unwrap()));
 
-    let mut all = subscribe(api.clone(), Scope::All).await;
+    let mut all = subscribe(api.clone(), Scope::All, false).await;
     assert!(all.said.is_some());
     assert!(all.machines_changed.is_some());
     assert!(all.showing.is_some());

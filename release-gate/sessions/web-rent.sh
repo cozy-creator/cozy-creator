@@ -27,10 +27,10 @@ page=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "http://$ADDR/")
 [ "$page" = 200 ] || fail "this cozy serves no page: GET / answers $page"
 [ -z "$(own)" ] || fail "this runner's Calcifer already holds a rental: $(own | paste -sd' ')"
 
-# link: a fresh sign-in link, which works once.
+# link: the project's page, as `cozy --json open` prints it (no session, no browser started).
 link() {
-  cozy open --no-open > "$OUT/web-open.txt" 2>&1 || fail "cozy open --no-open: $(tail -c 300 "$OUT/web-open.txt")"
-  grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' "$OUT/web-open.txt" | head -1
+  cozy --json open > "$OUT/web-open.txt" 2>&1 || fail "cozy --json open: $(tail -c 300 "$OUT/web-open.txt")"
+  jq -r .url "$OUT/web-open.txt"
 }
 browser() {
   local json=$1; shift

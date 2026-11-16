@@ -241,13 +241,15 @@ pub(crate) struct Subscription {
 pub(crate) async fn stream(
     State(api): State<Arc<Api>>,
     query: Result<Query<Subscription>, QueryRejection>,
+    client: Option<axum::Extension<crate::loopback::Client>>,
 ) -> Result<Sse<impl Stream<Item = Result<sse::Event, Infallible>>>, crate::api::Refusal> {
     let Query(subscription) = query?;
-    let watch = subscribe(api, subscription.scope).await;
+    let page = matches!(client, Some(axum::Extension(crate::loopback::Client::Page)));
+    let watch = subscribe(api, subscription.scope, page).await;
     Ok(Sse::new(futures_util::stream::unfold(watch, Watch::next)).keep_alive(KeepAlive::default()))
 }
 
-async fn subscribe(api: Arc<Api>, scope: Scope) -> Watch {
+async fn subscribe(api: Arc<Api>, scope: Scope, page: bool) -> Watch {
     let all = scope == Scope::All;
     let machines_changed = all.then(|| {
         let mut changed = api.calcifer.machines_changed();
@@ -262,7 +264,7 @@ async fn subscribe(api: Arc<Api>, scope: Scope) -> Watch {
             HashMap::new()
         })
     } else { HashMap::new() };
-    let showing = all.then(Showing::new);
+    let showing = all.then(|| Showing::new(page));
     let id = showing.as_ref().map(|showing| showing.0.clone()).unwrap_or_else(stream_id);
     let hello = StreamEvent::Hello { version: ::api::VERSION.into(), stream: id };
     Watch {
@@ -287,6 +289,8 @@ static SHOWN: LazyLock<Mutex<HashMap<String, Shows>>> = LazyLock::new(Mutex::def
 struct Shows {
     readers: Vec<project::Reader>,
     machines: bool,
+    /// Calcifer's page, not this computer's cozy: what it typed is asked for before a project closes (`save_first`).
+    page: bool,
 }
 
 /// Closing storage releases the readers a still-connected page keeps alive. Drop outside SHOWN:
@@ -306,6 +310,67 @@ pub(crate) fn release_project_readers(id: &str) {
     drop(gone);
 }
 
+/// What each page was asked to send before its project closes, by stream and project, until it answers or its stream ends.
+static SAVING: LazyLock<Mutex<std::collections::HashSet<(String, String)>>> = LazyLock::new(Mutex::default);
+/// Told as a page answers, ends or shows other projects.
+static SAVED: LazyLock<Notify> = LazyLock::new(Notify::new);
+
+/// Before projects `ids` close (a lock, a storage change, a stop): each page's stream showing one hears `project.saving`, and
+/// the page sends what it typed of it, then answers (`saved`). Waits for each answer or stream end, at most `within`: how many didn't answer.
+pub(crate) async fn save_first(ids: &[String], within: std::time::Duration) -> usize {
+    let asked: Vec<(String, String)> = SHOWN.lock().expect("shown lock").iter().filter(|(_, shows)| shows.page)
+        .flat_map(|(stream, shows)| shows.readers.iter().filter(|reader| ids.iter().any(|id| id == reader.id())).map(|reader| (stream.clone(), reader.id().to_owned())))
+        .collect();
+    if asked.is_empty() { return 0; }
+    SAVING.lock().expect("saving lock").extend(asked.iter().cloned());
+    // Let go of however this ends, a stop whose caller went away included.
+    let _asked = Asked(&asked);
+    for id in ids { let _ = PROJECTS.said.send(StreamEvent::ProjectSaving { id: id.clone() }); }
+    let until = Instant::now() + within;
+    loop {
+        let mut told = std::pin::pin!(SAVED.notified());
+        told.as_mut().enable();
+        let left = asked.iter().filter(|asked| owes(asked)).count();
+        if left == 0 || Instant::now() >= until { break left; }
+        tokio::select! {
+            () = told => {}
+            () = tokio::time::sleep_until(until) => {}
+        }
+    }
+}
+
+/// One `save_first`'s asks, let go of as it ends.
+struct Asked<'a>(&'a [(String, String)]);
+
+impl Drop for Asked<'_> {
+    fn drop(&mut self) {
+        let mut saving = SAVING.lock().expect("saving lock");
+        for asked in self.0 { saving.remove(asked); }
+    }
+}
+
+/// Whether `stream` still owes its answer for `project`: asked, not answered, and showing it still.
+fn owes(asked: &(String, String)) -> bool {
+    let unanswered = SAVING.lock().expect("saving lock").contains(asked);
+    unanswered && SHOWN.lock().expect("shown lock").get(&asked.0).is_some_and(|shows| shows.readers.iter().any(|reader| reader.id() == asked.1))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct Saved {
+    project: String,
+}
+
+/// `POST /v1/events/{stream}/saved` `{project}`: the page on `stream` sent what it typed of `project` (`save_first`).
+pub(crate) async fn saved(
+    axum::extract::Path(stream): axum::extract::Path<String>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Result<axum::http::StatusCode, crate::api::Refusal> {
+    let Saved { project } = crate::api::parse(&body?)?;
+    SAVING.lock().expect("saving lock").remove(&(stream, project));
+    SAVED.notify_waiters();
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 /// A stream's place in `SHOWN`, by its id: what it holds is let go when it ends.
 struct Showing(String);
 
@@ -316,15 +381,20 @@ fn stream_id() -> String {
 }
 
 impl Showing {
-    fn new() -> Self {
+    fn new(page: bool) -> Self {
         let id = stream_id();
-        SHOWN.lock().expect("shown lock").insert(id.clone(), Shows::default());
+        SHOWN.lock().expect("shown lock").insert(id.clone(), Shows { page, ..Shows::default() });
         Self(id)
     }
 
     fn includes(&self, project: &str) -> bool {
         SHOWN.lock().expect("shown lock").get(&self.0)
             .is_some_and(|shows| shows.readers.iter().any(|reader| reader.id() == project))
+    }
+
+    /// Whether this stream is Calcifer's page's.
+    fn page(&self) -> bool {
+        SHOWN.lock().expect("shown lock").get(&self.0).is_some_and(|shows| shows.page)
     }
 
     /// Whether this stream's page shows a machine's view.
@@ -352,6 +422,7 @@ impl Drop for Showing {
         // Let go of outside the lock: the last reader of a project closes it.
         let held = SHOWN.lock().expect("shown lock").remove(&self.0);
         drop(held);
+        SAVED.notify_waiters();
     }
 }
 
@@ -385,10 +456,14 @@ pub(crate) async fn show(
             }
         }
     }
-    let was = SHOWN.lock().expect("shown lock").get_mut(&stream).map(|held| std::mem::replace(held, Shows { readers, machines: shown.machines }));
+    let was = SHOWN.lock().expect("shown lock").get_mut(&stream).map(|held| {
+        let page = held.page;
+        std::mem::replace(held, Shows { readers, machines: shown.machines, page })
+    });
     match was {
         Some(was) => {
             drop(was);
+            SAVED.notify_waiters();
             Ok(axum::Json(reply))
         }
         None => Err(gone()),
@@ -464,6 +539,8 @@ impl Watch {
     fn visible(&self, event: &StreamEvent) -> bool {
         let project_id = match event {
             StreamEvent::ProjectVault { .. } => return true,
+            // A page's alone: this computer's cozy has nothing typed to send.
+            StreamEvent::ProjectSaving { id } => return self.showing.as_ref().is_some_and(|showing| showing.page() && showing.includes(id)),
             // Out of the index by now: told to whoever shows it.
             StreamEvent::ProjectGone { id, .. } => return self.showing.as_ref().is_some_and(|showing| showing.includes(id)),
             StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
